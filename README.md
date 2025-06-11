@@ -40,7 +40,7 @@ They’re not perfect. But together, they’re unstoppable—usually on the seco
 
   * *Friday*: Frontline stage AI - designed to run a lightweight reasoning model or advanced oneshot LLM.  THe system builds near realtime summarizaiton for live context.  (Currently OpenAI gpt4.1-nano)
   * *Veronica*: Offline 'supervisor' AI Model (helps plan, frame, and debug scripts and templates.) (OpenAI o.1 / gpt4.1 as necessary)
-  * *Kronk*: Mid tier local mdoel running on Intel-IPEX Ollama.  Exposed through OpenWebUI, Basic tools and web search&scrape as a service for the frontline model. (Ollama Qwen3:4b / llama2 Qwen3:4b)
+  * *Kronk*: Mid tier local mdoel running on Intel-IPEX Ollama.  Exposed through OpenWebUI, Basic tools and web search&scrape as a service for the frontline model. (Ollama Qwen3:4b / llama3.2)
   * *Rosie*: Log czar and relentless cleaner.  (Scheduling engine for the vaccum cleaner. Rorbrock S7 MaxV)
   * *High Priestess*: The Context Summarizer. Knows everything the frontline stage does, has more time to think, and speaks fluent JSON. (Ollama Qwen3:4b)
 
