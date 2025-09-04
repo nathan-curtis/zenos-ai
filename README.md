@@ -80,16 +80,13 @@ They’re not perfect. But together, they’re unstoppable—usually on the seco
 **Core scripts include:**
 
 *Kung-Fu / NinjaSummarizer / DojoTOOLS*
-* KungFu - todo CRUD           : multitool for HA .todo domain - she shops, she tasks, she julinennes!
-* KungFu - calendar CRUD       : multitool for HA .calendar domain - yes ALL of it.
-* KungFu - file CRUD           : hijack your favorite HA Fes-style Trigger Text sensor.  Make it into a storage volume.  THAT'S how we roll.
-*   DojoTOOLS                  : Fes Global Variable Redirector (REQUIRED for FileCRUD)
-*   DojoTOOLS                  : Manifest (REQUIRED for FileCRUD)
-* Ninja2 Summarizer            : Context Summarizer.
-* Monastery Script             : Demand Prompt for local LLM inference.
-
-*InProgress*
-* file CRUD merged output
+* DojoTools todo           : multitool for HA .todo domain - she shops, she tasks, she julinennes!
+* DojoTools calendar       : multitool for HA .calendar domain - yes ALL of it.
+* DojoTools file cabinet   : hijack your favorite HA Fes-style Trigger Text sensor.  Make it into a storage volume.  THAT'S how we roll.
+*   DojoTOOLS              : Fes Global Variable Redirector (REQUIRED for FileCRUD)
+*   DojoTOOLS Manifest     : Manifest (REQUIRED for FileCRUD)
+* Ninja2 Summarizer        : Context Summarizer.
+* Monastery Script         : Demand Prompt for local LLM inference.
 
 Coming Soon: Maybe?
 * NEW DojoTOOLS Library Index v.2 : Update to the Library index, uses native HA bool set ops.  Callable by OTHER scripts.
