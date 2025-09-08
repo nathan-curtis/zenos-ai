@@ -1,239 +1,189 @@
-Friday's ZenOS-AI
+# Friday’s ZenOS-AI
 
-Modular AI Home Automation Core for Home Assistant
+**Modular AI Home Automation Core for Home Assistant**
 
-Powered by Friday, Kronk, Veronica, Rosie, the High Priestess, and a cast of AI personalities who know how to get things done - even if they occasionally bump into the furniture.
-
+ZenOS-AI blends structure, context-awareness, and modular AI into one delightfully over-engineered package. Powered by Friday, Kronk, Veronica, Rosie, the High Priestess, and a cast of digital personalities who know how to get things done—even if they occasionally bump into the furniture.
 
 ---
 
-🏋️ Welcome to the Home Monastery
+## 🏋️ Welcome to the Home Monastery
 
-ZenOS-AI brings structured automation, cheeky context-awareness, and modular AI together under one roof.
-
-Built for Home Assistant
-
-Designed for flexibility
-
-Driven by a lively pantheon of digital personalities
-
+* **Built for Home Assistant** – native integrations, clean YAML.
+* **Designed for flexibility** – modular tools, load what you need.
+* **Driven by personality** – a pantheon of quirky AI roles.
 
 Here, serious capability meets a sense of humor:
 We automate. We orchestrate. Sometimes we improvise.
-When the magic happens, it's legend - wait for it - dairy... 😎
-
-
----
-
-What We Do (and Where We're Headed)
-
-Modular AI Core: Friday's ZenOS-AI is scalable, quirky, and always improving.
-
-Context-Aware Automation: Dynamic room, mood, and situation-based decisions.
-
-Kata Summaries: Event-driven summarization offloaded to local LLMs.
-
-Zen DojoTools: Modular toolset with smart labeling, flexible intent handling, and context-driven logic.
-
-Distributed AI Roles: Personalities with specific functions and charming quirks.
-
-
+When the magic happens, it’s legend—wait for it—dairy. 😎
 
 ---
 
-🏠 Meet the Pantheon
+## 🚀 What We Do
 
-Name	Title	Specialty
-
-Friday	Chief Enlightenment Officer	Mastermind, coordinator
-Veronica	Snarky Supervisor	Attitude, taste, clarity
-Kronk	Curator of the Monastery	Context & kata wrangling
-Rosie	Mistress of Cleanliness	Clean code, clean logs
-High Priestess	Divine Automation Overseer	YAML exorcist
-
-
-Roles:
-
-Friday: Frontline AI; handles live queries with fast LLMs. (GPT-5 Mini, OpenAI)
-
-Veronica: Script debugger, planner, and sass engine. Uses GPT-5 Mini, OpenAI ChatGPT-5, and Codex as needed for creative and technical reasoning.
-
-Kronk: Local model for context + lookup. Runs locally on a dedicated GPU box with NVIDIA acceleration. Uses gpt-oss:20b for inference and LLaMA3.2-Vision for visual tasks.
-
-Rosie: Scheduling & cleanup czar. (Roborock S7 MaxV integrator)
-
-High Priestess: Handles deep summarization and vision processing. Runs both LLaMA3.2-Vision and gpt-oss:20b for inference and visual reasoning.
-
-
-Together? Not perfect - but usually unstoppable by the second try.
-
+* **Modular AI Core** – scalable, quirky, always improving.
+* **Context-Aware Automation** – room, mood, and situation-based decisions.
+* **Kata Summaries** – event-driven context rolled up by local LLMs.
+* **Zen DojoTools** – modular toolset with labeling, flexible intent, and logic.
+* **Distributed AI Roles** – each persona brings their own flavor of function.
 
 ---
 
-⏩ Quickstart
+## 🏠 Meet the Pantheon
 
+| Name               | Title                       | Specialty                     |
+| ------------------ | --------------------------- | ----------------------------- |
+| **Friday**         | Chief Enlightenment Officer | Mastermind, coordinator       |
+| **Veronica**       | Snarky Supervisor           | Attitude, taste, clarity      |
+| **Kronk**          | Curator of the Monastery    | Context & kata wrangling      |
+| **Rosie**          | Mistress of Cleanliness     | Clean code, clean logs        |
+| **High Priestess** | Divine Automation Overseer  | YAML exorcism, deep reasoning |
+
+**Roles & Engines**
+
+* **Friday** – front-line AI for live queries (OpenAI GPT-5 Mini).
+* **Veronica** – debugger, planner, sass engine (ChatGPT-5 + Codex).
+* **Kronk** – local context wrangler (gpt-oss:20b, LLaMA3.2-Vision).
+* **Rosie** – scheduling & cleanup czar (Roborock, Node-RED).
+* **High Priestess** – summaries & vision (gpt-oss:20b + LLaMA3.2-Vision).
+
+Together? Not perfect—unstoppable by the second try.
+
+---
+
+## ⏩ Quickstart
+
+```bash
 git clone https://github.com/nathan-curtis/zenos-ai.git
+```
 
 1. Copy Zen DojoTools scripts into your Home Assistant config.
-
-
-2. Load the Zen Index and Manifest.
-
-
-3. Test the automations, summaries, and file/cabinet storage.
-
-
-4. Review .gitignore (seriously).
-
-
+2. Load the **Zen Index** and **Manifest**.
+3. Test automations, summaries, and cabinet storage.
+4. Review `.gitignore` (seriously).
 5. Submit your own kata or PR when inspired.
 
+---
 
+## 🛠 Zen DojoTools (v1+)
 
+All tools follow the `zen_dojotools_<function>` convention.  
+Legacy `_crud` tools are deprecated.  
 
 ---
 
-Zen DojoTools (v1+)
+### ✅ GA Tools
 
-All tools follow the zen_dojotools_<function> convention as of v1.0.0+. Legacy _crud tools are deprecated.
+**Index Kit**  
+| Tool / Script                       | Description                                         |
+|-------------------------------------|-----------------------------------------------------|
+| `dojotools_zen_index`               | Core label-aware index (foundation for other tools) |
+| `dojotools_zen_index_event_handler` | Event handler for the Zen Index (automation glue)   |
+| `dojotools_zen_inspect`             | Inspection utility for reviewing entities & states  |
+| `zen_dojotools_labels`              | Label definitions & mapping                         |
 
-Tool	Description
-
-zen_dojotools_todo	Task & shopping list manager
-zen_dojotools_calendar	Calendar multitool for all HA domains
-zen_dojotools_file	File Cabinet volume manager (v1.0.0-RC)
-zen_dojotools_mealie	Recipe + shopping bridge (beta)
-zen_dojotools_grocy	Inventory + barcode integration (beta)
-zen_dojotools_index	Label-aware manifest index (required)
-zen_dojotools_manifest	Drawer/volume manifest (required by File tool)
-zen_dojotools_id	Tool/label/entity resolver (experimental alpha)
-zen_dojotools_library	Library Index v2 (WIP)
-
-
-Each tool is fully modular. Load only what you need.
-
+**FileCabinet Kit**  
+| Tool / Script                       | Description                                         |
+|-------------------------------------|-----------------------------------------------------|
+| `script.zen_dojotools_filecabinet`  | File Cabinet manager script (v1.0.0-RC)             |
+| `zen_dojotools_manifest`            | Drawer/volume manifest (required by File Cabinet)   |
+| `zen_dojotools_volume_redirector`   | Redirects volumes and drawers dynamically           |
 
 ---
 
-Requirements
+### 🧪 Experimental / Coming Soon
 
-Each Zen DojoTool module is self-contained and will list its own required dependencies.
+| Tool                                | Description                                         |
+|-------------------------------------|-----------------------------------------------------|
+| `zen_dojotools_todo`                | Task & shopping list manager                        |
+| `zen_dojotools_calendar`            | Calendar multitool (all HA domains)                 |
+| `zen_dojotools_mealie`              | Recipe + shopping bridge (beta)                     |
+| `zen_dojotools_grocy`               | Inventory + barcode integration (beta)              |
+| `zen_dojotools_id`                  | Tool/entity resolver (experimental alpha)           |
+| `zen_dojotools_library`             | Library Index v2 (WIP)                              |
 
+
+Load 'Kits' together, there are dependencies. only what you need.
+
+---
+
+## ⚙️ Requirements
+
+Each module lists its own dependencies.
 Examples:
 
-zen_dojotools_index is a core dependency for most tools.
+* `zen_dojotools_index` → core dependency.
+* `zen_dojotools_file` → requires both `index` and `manifest`.
+* `zen_dojotools_id` → metadata resolution (alpha).
 
-zen_dojotools_file (File Cabinet) specifically requires both zen_dojotools_index and zen_dojotools_manifest.
+Optional enhancements:
 
-zen_dojotools_id (experimental alpha) provides metadata resolution and tool-to-entity mapping.
-
-
-Optional enhancements include support for:
-
-volume_entity
-
-label_targets
-
-force_action, protect_write, and other runtime overrides
-
-
+* `volume_entity`, `label_targets`
+* `force_action`, `protect_write`, and runtime overrides
 
 ---
 
-Local Stack Overview
+## 🖥 Local Stack Overview
 
-Core Hardware:
+**Core Hardware**
 
-Proxmox host running Docker and HAOS VM
+* Proxmox host (Docker + HAOS VM)
+* Intel NUC 14 Enthusiast (A770 iGPU)
+* Thunderbolt 4 eGPU enclosure (NVIDIA 4070 Ti)
+* Local DNS via UniFi Identity & Access
+* Ollama container runtime for inference
 
-Intel NUC 14 Enthusiast w/ A770 iGPU
+**Inference Models**
 
-External Thunderbolt 4 eGPU enclosure (NVIDIA 4070 Ti)
+* `gpt-oss:20b` → general LLM
+* `LLaMA3.2-Vision` → vision & reasoning
+* `Qwen3:4b` → summarization (standby)
+* `OpenWebUI` → local chat test interface
 
-Local DNS, routed through UniFi Identity & Access
+**Hosting Roles**
 
-Inference traffic routed via Ollama container runtime
+* **Kronk** – middleware
+* **High Priestess** – summaries + JSON output
+* **Rosie** – housekeeping
 
+**Local Services**
 
-Inference Models:
-
-gpt-oss:20b → General-purpose LLM
-
-LLaMA3.2-Vision → Vision, object reasoning, scene summary
-
-Qwen3:4b → Context summarization (on standby)
-
-OpenWebUI → Local chat test interface
-
-
-Hosting Roles:
-
-Kronk = orchestration & middleware
-
-High Priestess = summaries + vision + JSON output
-
-Rosie = housekeeping via HA + Node-RED
-
-
-Local Services:
-
-Home Assistant (automations)
-
-Mealie (recipes & meal planning)
-
-Grocy (inventory + shopping)
-
-Portainer (container UI)
-
-Barcode Buddy (Grocy bridge)
-
-n8n (automation pipelines)
-
-
+* Home Assistant
+* Mealie (recipes)
+* Grocy (inventory)
+* Portainer (containers)
+* Barcode Buddy (Grocy bridge)
+* n8n (pipelines)
 
 ---
 
-Philosophy
+## ☯️ Philosophy
 
-Automation should be flexible, modular, and fun.
-
-Context is king; recovery is queen.
-
-Every bug is a lesson (and an automation trigger).
-
-Coffee fuels the logs; humor fuels the team.
-
-
+* Automation should be **flexible, modular, fun**.
+* Context is king; recovery is queen.
+* Every bug is a lesson (and sometimes a trigger).
+* Coffee fuels the logs; humor fuels the team.
 
 ---
 
-Contributing
+## 🤝 Contributing
 
-Pull requests, bug reports, ideas? Bring 'em.
+Pull requests, bug reports, ideas? Bring ’em.
 Come for the YAML, stay for the banter.
 
+---
+
+## 📜 License
+
+MIT License — blessed by Friday & friends.
 
 ---
 
-License
-
-MIT License - blessed by Friday & friends.
-See LICENSE.
-
-
----
-
-☯️ About
+## About
 
 Friday’s ZenOS-AI:
 
-> For homes that want to be smart and have a sense of humor.
+> “For homes that want to be smart *and* have a sense of humor.”
 
+> “We’ve got serious mojo—just don’t mind the occasional stubbed toe.”
 
-
-> “We’ve got serious mojo - just don’t mind the occasional stubbed toe.”
-
-
-
-Questions or bugs? Ping Kronk. He’ll get there. Eventually.
-
+Questions or bugs? Ping **Kronk**. He’ll get there… eventually.
