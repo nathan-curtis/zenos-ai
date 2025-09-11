@@ -88,19 +88,23 @@ Legacy `_crud` tools are deprecated.
 | `zen_dojotools_manifest`            | Drawer/volume manifest (required by File Cabinet)   |
 | `zen_dojotools_volume_redirector`   | Redirects volumes and drawers dynamically           |
 
+**Personal Assistant Kit**
+| Tool                                | Description                                         |
+|-------------------------------------|-----------------------------------------------------|
+| `zen_dojotools_todo`                | Task & shopping list manager                        |
+| `zen_dojotools_calendar`            | Calendar multitool (all HA domains)                 |
+
 ---
 
 ### 🧪 Experimental / Coming Soon
 
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
-| `zen_dojotools_todo`                | Task & shopping list manager                        |
-| `zen_dojotools_calendar`            | Calendar multitool (all HA domains)                 |
 | `zen_dojotools_mealie`              | Recipe + shopping bridge (beta)                     |
 | `zen_dojotools_grocy`               | Inventory + barcode integration (beta)              |
-| `zen_dojotools_id`                  | Tool/entity resolver (experimental alpha)           |
-| `zen_dojotools_library`             | Library Index v2 (WIP)                              |
-
+| `zen_dojotools_id`                  | ID resolver (experimental alpha)                    |
+| `zen_dojotools_library`             | Library Console v2 (WIP)                            |
+| `zen_dojotools_cabinet_indexer`     | File Cabinet Index Tool (WIP)                       |
 
 Load 'Kits' together, there are dependencies. only what you need.
 
