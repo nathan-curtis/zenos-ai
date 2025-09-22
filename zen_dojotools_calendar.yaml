@@ -1,0 +1,480 @@
+sequence:
+  - variables:
+      action_type: "{{ action_type | default('read') }}"
+      calendar_name: "{{ calendar_name | default('') }}"
+      calendar_query: >-
+        {{ (calendar_name in ['', None, '*'] and (label_targets | length == 0))
+        or action_type not in ['create', 'read'] }}
+      calendar_entity: |-
+        {%- if calendar_name[0:9] == 'calendar.' -%}
+          {{ calendar_name | lower | replace(' ', '_') }}
+        {%- else -%}
+          calendar.{{ calendar_name | lower | replace(' ', '_') }}
+        {%- endif -%}
+      valid_calendar_entities: "{{ states.calendar | map(attribute='entity_id') | map('lower') | list }}"
+      calendar_entity_exists: "{{ calendar_entity in valid_calendar_entities }}"
+      start: >-
+        {{ start if start is defined else now().replace(hour=0, minute=0,
+        second=0).isoformat() }}
+      end: >-
+        {{ end if end is defined else (now().replace(hour=0, minute=0, second=0)
+        + timedelta(days=1)).isoformat() }}
+      label_targets: |-
+        {{
+          (
+            label_targets
+            if label_targets is iterable and label_targets is not string
+            else label_targets.splitlines() if '\n' in label_targets
+            else label_targets.split(',')
+          )
+          | map('trim')
+          | map('lower')
+          | select('string')
+          | list
+        }}
+      label_target_entities: |-
+        {{
+          label_targets
+          | map('label_entities')
+          | sum(start=[])
+          | select('match', '^calendar\\.')      
+          | unique
+          | list
+        }}
+      target_calendars: >-
+        {%- if label_target_entities | length > 0 -%}{{ label_target_entities
+        }}{%- elif calendar_entity_exists -%}{{ calendar_entity }}{%- else
+        -%}[]{%- endif -%}
+      target_is_multi: |-
+        {%- if label_target_entities | length > 0 -%}
+          true
+        {%- elif calendar_entity_exists -%}
+          false
+        {%- endif -%}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ action_type in ['create','update','delete'] and
+              target_is_multi}}
+        sequence:
+          - variables:
+              final_response: |-
+                {{
+                  {
+                    "status": "error",
+                    "message": "Multiple calendars match the query. Please specify a single calendar for this action."
+                  } | tojson
+                }}
+          - stop: Pass response variables back to LLM
+            response_variable: final_response
+          - set_conversation_response: "{{ final_response }}"
+        alias: multiple targets error
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ action_type == 'read' and label_targets | length > 0 and
+              target_calendars | length == 0 }}
+        sequence:
+          - variables:
+              final_response: |-
+                {{
+                  {
+                    "status": "error",
+                    "message": "No calendars found for labels: " ~ (label_targets | join(', ')) ~ "."
+                  } | tojson
+                }}
+          - stop: Pass response variables back to LLM
+            response_variable: final_response
+          - set_conversation_response: "{{ final_response }}"
+        alias: no calendar for label error
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ calendar_query or (action_type in ['read', 'create', 'update']
+              and not calendar_entity_exists and (label_targets | length == 0))
+              }}
+        sequence:
+          - variables:
+              cal_list: |-
+                [
+                  {%- for cal in states.calendar -%}
+                    {
+                      "entity_id": "{{ cal.entity_id }}",
+                      "friendly_name": "{{ cal.attributes.friendly_name | default('') }}",
+                      "state": "{{ cal.state }}",
+                      "labels": [{% for lid in labels(cal.entity_id) %}"{{ label_name(lid) }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+                      "start_time": "{{ cal.attributes.start_time | default('') }}",
+                      "end_time": "{{ cal.attributes.end_time | default('') }}",
+                      "location": "{{ cal.attributes.location | default('') }}",
+                      "description": "{{ cal.attributes.description | default('') }}"
+                    }{% if not loop.last %}, {% endif %}
+                  {%- endfor -%}
+                ]
+              final_response: |-
+                {{
+                  {
+                    "status": "success",
+                    "message": "Listed all available calendars.",
+                    "calendars": cal_list
+                  } | tojson
+                }}
+          - stop: Pass response variables back to LLM
+            response_variable: final_response
+            enabled: true
+          - set_conversation_response: "{{ final_response }}"
+        alias: return available calendars
+      - conditions:
+          - condition: template
+            value_template: "{{ action_type == 'read' and target_calendars | length > 0 }}"
+        sequence:
+          - variables:
+              all_event_results: []
+            alias: Before the loop, initialize an empty results list
+          - repeat:
+              for_each: "{{ target_calendars }}"
+              sequence:
+                - data:
+                    start_date_time: "{{ start }}"
+                    end_date_time: "{{ end }}"
+                  response_variable: read_events
+                  action: calendar.get_events
+                  target:
+                    entity_id: "{{ repeat.item }}"
+                - variables:
+                    events: >-
+                      {{ read_events[repeat.item]['events'] if
+                      read_events[repeat.item] is defined else [] }}
+                    event_list: |-
+                      [
+                        {%- for event in events -%}
+                          {
+                            "summary": "{{ event.summary }}",
+                            "start": "{{ event.start }}",
+                            "end": "{{ event.end }}",
+                            "uid": "{{ event.uid | default('') }}",
+                            "description": "{{ event.description | default('') }}",
+                            "location": "{{ event.location | default('') }}",
+                            "all_day": {{ event.all_day | default(false) }},
+                            "created": "{{ event.created | default('') }}",
+                            "updated": "{{ event.updated | default('') }}"
+                          }{% if not loop.last %}, {% endif %}
+                        {%- endfor -%}
+                      ]
+                    one_result: |-
+                      {
+                        "calendar_entity": "{{ repeat.item }}",
+                        "event_count": {{ events | length }},
+                        "events": {{ event_list }}
+                      }
+                - variables:
+                    all_event_results: "{{ all_event_results + [one_result] }}"
+            alias: The repeat loop to collect events for each calendar entity
+          - variables:
+              final_response: |-
+                {{
+                  {
+                    "status": "success",
+                    "message": "Aggregated events from " ~ (target_calendars | length) ~ " calendars.",
+                    "results": all_event_results
+                  } | tojson
+                }}
+            alias: After the loop, construct the final response
+          - stop: Pass response variables back to LLM
+            response_variable: final_response
+            enabled: true
+          - set_conversation_response: "{{ final_response }}"
+        alias: read events from calendar
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ action_type == 'create' and not target_is_multi and
+              (calendar_entity_exists or label_entities | length == 1) }}
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ start < end }}"
+                sequence:
+                  - variables:
+                      create_data: >-
+                        {% set is_all_day = not 'T' in start and not 'T' in end
+                        %} {% set d = { 'entity_id': (calendar_entity if
+                        calendar_entity_exists else label_entities[0]),
+                        'summary': summary | default("Untitled Event") } %} {%
+                        if is_all_day %}
+                          {% set d = dict(d, start_date=start.split('T')[0], end_date=end.split('T')[0]) %}
+                        {% else %}
+                          {% set d = dict(d, start_date_time=start, end_date_time=end) %}
+                        {% endif %} {% if description %}
+                          {% set d = dict(d, description=description) %}
+                        {% endif %} {% if location %}
+                          {% set d = dict(d, location=location) %}
+                        {% endif %} {% if attendees %}
+                          {% set attendee_list = attendees.split(',') | map('trim') | list %}
+                          {% set d = dict(d, attendees=attendee_list) %}
+                        {% endif %} {{ d }}
+                  - data: "{{ create_data }}"
+                    action: calendar.create_event
+                  - variables:
+                      final_response: |-
+                        {{
+                          {
+                            "status": "success",
+                            "message": "Created calendar event \"" ~ create_data.summary ~ "\" on calendar \"" ~ (label_entities[0] if label_entities | length > 0 else calendar_entity) ~ "\".",
+                            "event": create_data
+                          } | tojson
+                        }}
+                  - stop: Pass response variables back to LLM
+                    response_variable: final_response
+                    enabled: true
+                  - set_conversation_response: "{{ final_response }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ start >= end }}"
+                sequence:
+                  - variables:
+                      final_response: |-
+                        {{
+                          {
+                            "status": "error",
+                            "message": "Invalid date range: start must be before end. Got start='" ~ start ~ "', end='" ~ end ~ "'."
+                          } | tojson
+                        }}
+                  - stop: Pass response variables back to LLM
+                    response_variable: final_response
+                    enabled: true
+                  - set_conversation_response: "{{ final_response }}"
+        alias: create calendar event
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ action_type == 'update' and not target_is_multi and
+              (calendar_entity_exists or label_entities | length == 1) }}
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ uid is not defined or uid == '' }}"
+                    alias: UID Not defined
+                sequence:
+                  - variables:
+                      final_response: |-
+                        {{
+                          {
+                            "status": "error",
+                            "message": "UID is required to update an event. Provide a UID."
+                          } | tojson
+                        }}
+                  - stop: Pass response variables back to LLM
+                    response_variable: final_response
+                  - set_conversation_response: "{{ final_response }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ uid is defined and uid != '' }}"
+                    alias: UID is Defined
+                sequence:
+                  - variables:
+                      update_data: >-
+                        {% set d = { 'entity_id': (calendar_entity if
+                        calendar_entity_exists else label_entities[0]), 'uid':
+                        uid } %} {% if summary %} {% set d = dict(d,
+                        summary=summary) %} {% endif %} {% if start and end %}
+                          {% set is_all_day = not 'T' in start and not 'T' in end %}
+                          {% if is_all_day %}
+                            {% set d = dict(d, start_date=start.split('T')[0], end_date=end.split('T')[0]) %}
+                          {% else %}
+                            {% set d = dict(d, start_date_time=start, end_date_time=end) %}
+                          {% endif %}
+                        {% endif %} {% if description %}{% set d = dict(d,
+                        description=description) %}{% endif %} {% if location
+                        %}{% set d = dict(d, location=location) %}{% endif %} {%
+                        if attendees %}
+                          {% set attendee_list = attendees.split(',') | map('trim') | list %}
+                          {% set d = dict(d, attendees=attendee_list) %}
+                        {% endif %} {{ d }}
+                  - data: "{{ update_data }}"
+                    action: calendar.update_event
+                  - variables:
+                      final_response: |-
+                        {{
+                          {
+                            "status": "success",
+                            "message": "Updated event '" ~ uid ~ "' on '" ~ (label_entities[0] if label_entities | length > 0 else calendar_entity) ~ "'.",
+                            "event": update_data
+                          } | tojson
+                        }}
+                  - stop: Pass response variables back to LLM
+                    response_variable: final_response
+                    enabled: true
+                  - set_conversation_response: "{{ final_response }}"
+        alias: update calendar event
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ action_type == 'delete' and not target_is_multi and
+              (calendar_entity_exists or label_entities | length == 1) }}
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ uid is not defined or uid == '' }}"
+                    alias: UID not Defined
+                sequence:
+                  - variables:
+                      final_response: |-
+                        {{
+                          {
+                            "status": "error",
+                            "message": "UID is required for deleting events.  Please provide a UID."
+                          } | tojson
+                        }}
+                  - stop: Pass response variables back to LLM
+                    response_variable: final_response
+                  - set_conversation_response: "{{ final_response }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ uid is defined and uid != '' }}"
+                    alias: UID is Defined
+                sequence:
+                  - variables:
+                      delete_data: >-
+                        {% set d = { 'entity_id': (calendar_entity if
+                        calendar_entity_exists else label_entities[0]), 'uid':
+                        uid } %} {{ d }}
+                  - data: "{{ delete_data }}"
+                    action: calendar.delete_event
+                  - variables:
+                      final_response: |-
+                        {{
+                          {
+                            "status": "success",
+                            "message": "Deleted calendar event by UID: '" ~ uid ~ "' from '" ~ (label_entities[0] if label_entities | length > 0 else calendar_entity) ~ "'.",
+                            "deleted_event": delete_data
+                          } | tojson
+                        }}
+                  - stop: Pass response variables back to LLM
+                    response_variable: final_response
+                    enabled: true
+                  - set_conversation_response: "{{ final_response }}"
+        alias: delete event from calendar
+      - conditions:
+          - condition: template
+            value_template: "{{ action_type == 'help' }}"
+        sequence:
+          - variables:
+              help_data: |-
+                {{
+                  {
+                    "status": "info",
+                    "message": "This is the Calendar CRUD Controller Help function.",
+                    "actions": {
+                      "read": "Reads events from a given calendar. Requires 'calendar_name'. Optional: 'start', 'end'.",
+                      "create": "Creates a new event. Requires 'calendar_name' and 'summary'. Optional: 'description', 'start', 'end'.",
+                      "delete": "Deletes an event by UID. Requires 'calendar_name' and 'uid'.",
+                      "help": "Returns this help response."
+                    },
+                    "defaults": {
+                      "start": "Defaults to today at 00:00 local time if not supplied.",
+                      "end": "Defaults to tomorrow at 00:00 local time if not supplied (i.e., end of today)."
+                    },
+                    "notes": [
+                      "Use '*' or blank for 'calendar_name' to list all calendars.",
+                      "Event titles must match exactly for deletion by summary.",
+                      "UID deletes are now supported. Summary-based fallback pending reimplementation.",
+                      "To reschedule an event, modify start/end times, not title.",
+                      "Action_type is required. If unknown or invalid, help is returned.",
+                      "Label targeting via label_targets works for read ops and aggregates all matching entities."
+                    ]
+                  } | tojson
+                }}
+          - stop: Pass response variables back to LLM
+            response_variable: help_data
+            enabled: true
+          - set_conversation_response: "{{ help_data }}"
+        alias: return help for calendar CRUD controller
+alias: Zen Dojotools Calendar
+description: >-
+  Zen Dojotools Calendar (1.5.0) for Home Assistant.
+  Provides create, read, update, delete, and help actions for any calendar entity.
+  Use '*' or ''  as calendar_name to list all calendars.
+  'start' and 'end' default to today (midnight to midnight next day) if not set.
+  Requires action_type and calendar_name for most actions.
+  UID deletes and updates are supported.
+  Supports targeting calendar entities by label.
+  (will return all resulting from a combined list of all calendars matching the submitted labels)
+  'attendees' and other advanced fields are reserved for future use and are not yet supported by the Home Assistant calendar integration.
+  Attempts to use  unsupported fields will return a warning.
+  Help action gives structured usage details, defaults, and notes.
+  For maximum compatibility, ensure dates are in ISO 8601 format.
+fields:
+  action_type:
+    description: "'create', 'read', 'update', 'delete', 'help' (Default: help)"
+    required: true
+    selector:
+      select:
+        options:
+          - create
+          - read
+          - update
+          - delete
+          - help
+    default: help
+  calendar_name:
+    description: Calendar name or entity_id. Use '*' or '' to list calendars.
+    required: false
+    selector:
+      text: null
+  summary:
+    description: Event title (used in create/delete). Required for create/delete.
+    required: false
+    selector:
+      text:
+        multiline: false
+  description:
+    description: Optional description text for the calendar event.
+    required: false
+    selector:
+      text:
+        multiline: true
+  uid:
+    description: Unique identifier for the event (used for UID-based delete).
+    required: false
+    selector:
+      text: null
+  start:
+    description: >-
+      Start time in ISO 8601 (e.g., 2025-06-01T09:00:00). Defaults to today if
+      not provided.
+    required: false
+    selector:
+      text: null
+  end:
+    description: >-
+      End time in ISO 8601. Required if not all-day. Defaults to tomorrow if not
+      provided.
+    required: false
+    selector:
+      text: null
+  location:
+    description: Optional location of the calendar event.
+    required: false
+    selector:
+      text: null
+  attendees:
+    description: Optional list of attendees (comma-separated emails or names).
+    required: false
+    selector:
+      text:
+        multiline: true
+  label_targets:
+    selector:
+      text:
+        multiple: true
+        multiline: true
+    name: label_targets
+    description: >-
+      ONLY used for read ops. When provided, overrides any other targeting
+      mechanism and aggregates all entities for the listed labels/tags into a
+      single result set.
+icon: mdi:calendar
