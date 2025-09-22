@@ -79,7 +79,7 @@ Legacy `_crud` tools are deprecated.
 | `dojotools_zen_index`               | Core label-aware index (foundation for other tools) |
 | `dojotools_zen_index_event_handler` | Event handler for the Zen Index (automation glue)   |
 | `dojotools_zen_inspect`             | Inspection utility for reviewing entities & states  |
-| `zen_dojotools_labels`              | Label definitions & mapping                         |
+| `zen_dojotools_labels`              | Label definitions & mapping (requires Spook - HACS) |
 
 **FileCabinet Kit**  
 | Tool / Script                       | Description                                         |
@@ -93,6 +93,12 @@ Legacy `_crud` tools are deprecated.
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_todo`                | Task & shopping list manager                        |
 | `zen_dojotools_calendar`            | Calendar multitool (all HA domains)                 |
+
+**Media Management Kit**
+| Tool                                | Description                                         |
+|-------------------------------------|-----------------------------------------------------|
+| `zen_dojotools_music_search`        | Search Tool for Music Assistant (reqires MA)        |
+|                                     |  (search the library without playing media)         |
 
 ---
 
