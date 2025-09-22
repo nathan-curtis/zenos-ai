@@ -98,7 +98,6 @@ Legacy `_crud` tools are deprecated.
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_music_search`        | Search Tool for Music Assistant (reqires MA)        |
-|                                     |  (search the library without playing media)         |
 
 ---
 
