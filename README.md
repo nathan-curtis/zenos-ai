@@ -84,7 +84,8 @@ Legacy `_crud` tools are deprecated.
 Dependencies: All tools in the Index kit are codependent - they must go in as a kit.
 
 * Note for Label Management, Friday uses the additional services for label management provided
-  by Spook for Homeassistant, by the one and only Frenck. Get Spook here: https://spook.boo/
+  by [Spook ](https://spook.boo/) for Homeassistant, by the one and only Frenck.
+  Get Spook here: https://spook.boo/
 
   Yes that Makes the Zen Index Kit 'techncially' depend on Spook.  Dependencies are in labels
   If you omit it you remove the dependency but your AI can no longer manage labels completely.
@@ -115,7 +116,7 @@ Dependencies: Requires Index kit.
 
 Dependencies: Requires Index kit.
 
-* Note for Media Management, Friday uses Music Assistant for Home Assistant
+* Note for Media Management, Friday uses [Music Assistant for Home Assistant](https://www.music-assistant.io/)
   and the LLM tools for Music assistant located here: https://github.com/music-assistant/voice-support
   Media Kit assumes these scripts are installed.
 
