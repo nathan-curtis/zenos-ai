@@ -86,7 +86,7 @@ Dependencies: All tools in the Index kit are codependent - they must go in as a 
 * Note for Label Management, Friday uses the additional services for label management provided
   by Spook for Homeassistant, by the one and only Frenck. Get Spook here: https://spook.boo/
 
-  Yes that Makes Core depend on Spook.  Dependencies are in the label management script
+  Yes that Makes the Zen Index Kit 'techncially' depend on Spook.  Dependencies are in labels
   If you omit it you remove the dependency but your AI can no longer manage labels completely.
   If HA Core brings in the functions to core to parity with Spook, I'll make the change.
   Until then, I strongly recommend installing Spook. ;)
