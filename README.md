@@ -81,6 +81,11 @@ Legacy `_crud` tools are deprecated.
 | `dojotools_zen_inspect`             | Inspection utility for reviewing entities & states  |
 | `zen_dojotools_labels`              | Label definitions & mapping (requires Spook - HACS) |
 
+Dependencies: All tools in the Index kit are codependent - they must go in as a kit.
+
+* Note for Label Management, Friday uses the additional services for label management provided
+  by Spook for Homeassistant, by the one and only Frenck. Get Spook here: https://spook.boo/
+
 **FileCabinet Kit**  
 | Tool / Script                       | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
@@ -88,16 +93,26 @@ Legacy `_crud` tools are deprecated.
 | `zen_dojotools_manifest`            | Drawer/volume manifest (required by File Cabinet)   |
 | `zen_dojotools_volume_redirector`   | Redirects volumes and drawers dynamically           |
 
+Dependencies: Requires Index kit.
+
 **Personal Assistant Kit**
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_todo`                | Task & shopping list manager                        |
 | `zen_dojotools_calendar`            | Calendar multitool (all HA domains)                 |
 
+Dependencies: Requires Index kit.
+
 **Media Management Kit**
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_music_search`        | Search Tool for Music Assistant (reqires MA)        |
+
+Dependencies: Requires Index kit.
+
+* Note for Media Management, Friday uses Music Assistant for Home Assistant
+  and the LLM tools for Music assistant located here: https://github.com/music-assistant/voice-support
+  Media Kit assumes these scripts are installed.
 
 ---
 
