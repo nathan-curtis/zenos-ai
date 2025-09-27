@@ -1,3 +1,11 @@
+alias: Zen Dojotools Calendar
+description: >-
+  Zen Dojotools Calendar (1.6.1) for Home Assistant. Provides create, read,
+  update (via delete+create), delete, and help actions for any calendar entity.
+  Use '*' or '' as calendar_name to list all calendars. 'start' and 'end'
+  default to today (midnight to midnight next day) if not set. Requires
+  action_type and calendar_name for most actions. Updates and deletes operate by
+  summary+time match only. Supports targeting calendar entities by label.
 sequence:
   - variables:
       action_type: "{{ action_type | default('read') }}"
@@ -101,8 +109,9 @@ sequence:
                     "actions": {
                       "read": "Reads events from a given calendar. Requires 'calendar_name'. Optional: 'start', 'end'.",
                       "create": "Creates a new event. Requires 'calendar_name' and 'summary'. Optional: 'description', 'start', 'end'.",
-                      "delete": "Deletes an event by UID. Requires 'calendar_name' and 'uid'.",
-                      "help": "Returns this help response."
+                      "delete": "Deletes an event by summary+time. Requires 'calendar_name', 'summary', 'start', 'end'.",
+                      "help": "Returns this help response.",
+                      "update": "Updates an event by summary+time. Internally does delete+create. Requires 'calendar_name', 'summary', 'start', 'end'."
                     },
                     "defaults": {
                       "start": "Defaults to today at 00:00 local time if not supplied.",
@@ -110,10 +119,10 @@ sequence:
                     },
                     "notes": [
                       "Use '*' or blank for 'calendar_name' to list all calendars.",
-                      "Event titles must match exactly for deletion by summary.",
-                      "UID deletes are now supported. Summary-based fallback pending reimplementation.",
+                      "Deletes and updates operate by summary+time match only.",
+                      "If multiple events match, update/delete is blocked.",
+                      "If no event matches delete, it returns a warning and effective success.",
                       "To reschedule an event, modify start/end times, not title.",
-                      "Action_type is required. If unknown or invalid, help is returned.",
                       "Label targeting via label_targets works for read ops and aggregates all matching entities."
                     ]
                   } | tojson
@@ -183,7 +192,6 @@ sequence:
         sequence:
           - variables:
               all_event_results: []
-            alias: Before the loop, initialize an empty results list
           - repeat:
               for_each: "{{ target_calendars }}"
               sequence:
@@ -205,7 +213,6 @@ sequence:
                             "summary": "{{ event.summary }}",
                             "start": "{{ event.start }}",
                             "end": "{{ event.end }}",
-                            "uid": "{{ event.uid | default('') }}",
                             "description": "{{ event.description | default('') }}",
                             "location": "{{ event.location | default('') }}",
                             "all_day": {{ event.all_day | default(false) }},
@@ -222,7 +229,6 @@ sequence:
                       }
                 - variables:
                     all_event_results: "{{ all_event_results + [one_result] }}"
-            alias: The repeat loop to collect events for each calendar entity
           - variables:
               final_response: |
                 {{
@@ -259,11 +265,10 @@ sequence:
                           {% set d = dict(d, start_date=start.split('T')[0], end_date=end.split('T')[0]) %}
                         {% else %}
                           {% set d = dict(d, start_date_time=start, end_date_time=end) %}
-                        {% endif %} {% if description %}
-                          {% set d = dict(d, description=description) %}
-                        {% endif %} {% if location %}
-                          {% set d = dict(d, location=location) %}
-                        {% endif %} {% if attendees %}
+                        {% endif %} {% if description %}{% set d = dict(d,
+                        description=description) %}{% endif %} {% if location
+                        %}{% set d = dict(d, location=location) %}{% endif %} {%
+                        if attendees %}
                           {% set attendee_list = attendees.split(',') | map('trim') | list %}
                           {% set d = dict(d, attendees=attendee_list) %}
                         {% endif %} {{ d }}
@@ -306,64 +311,67 @@ sequence:
             value_template: |2
                {{ action_type == 'update' and not target_is_multi and (calendar_entity_exists or label_target_entities | length == 1) }}
         sequence:
+          - variables:
+              delete_data: |
+                {{
+                  {
+                    'entity_id': (calendar_entity if calendar_entity_exists else label_entities[0]),
+                    'summary': summary,
+                    'start_date_time': start,
+                    'end_date_time': end
+                  }
+                }}
+          - data: "{{ delete_data }}"
+            action: calendar.delete_event
+          - variables:
+              delete_result: "{{ 'deleted' if summary and start and end else 'not_found' }}"
           - choose:
               - conditions:
                   - condition: template
-                    value_template: "{{ uid is not defined or uid == '' }}"
-                    alias: UID Not defined
+                    value_template: "{{ delete_result == 'not_found' }}"
                 sequence:
                   - variables:
-                      final_response: |-
-                        {{
-                          {
-                            "status": "error",
-                            "message": "UID is required to update an event. Provide a UID."
-                          } | tojson
-                        }}
-                  - stop: Pass response variables back to LLM
-                    response_variable: final_response
-                  - set_conversation_response: "{{ final_response }}"
+                      warn_msg: >-
+                        No existing event matched. Nothing deleted. Created new
+                        event instead.
               - conditions:
                   - condition: template
-                    value_template: "{{ uid is defined and uid != '' }}"
-                    alias: UID is Defined
+                    value_template: "{{ delete_result == 'deleted' }}"
                 sequence:
                   - variables:
-                      update_data: >-
-                        {% set d = { 'entity_id': (calendar_entity if
-                        calendar_entity_exists else label_entities[0]), 'uid':
-                        uid } %} {% if summary %} {% set d = dict(d,
-                        summary=summary) %} {% endif %} {% if start and end %}
-                          {% set is_all_day = not 'T' in start and not 'T' in end %}
-                          {% if is_all_day %}
-                            {% set d = dict(d, start_date=start.split('T')[0], end_date=end.split('T')[0]) %}
-                          {% else %}
-                            {% set d = dict(d, start_date_time=start, end_date_time=end) %}
-                          {% endif %}
-                        {% endif %} {% if description %}{% set d = dict(d,
-                        description=description) %}{% endif %} {% if location
-                        %}{% set d = dict(d, location=location) %}{% endif %} {%
-                        if attendees %}
-                          {% set attendee_list = attendees.split(',') | map('trim') | list %}
-                          {% set d = dict(d, attendees=attendee_list) %}
-                        {% endif %} {{ d }}
-                  - action: ms365_calendar.modify_calendar_event
-                    data: "{{ update_data }}"
-                  - variables:
-                      final_response: |-
-                        {{
-                          {
-                            "status": "success",
-                            "message": "Updated event '\" ~ uid ~ \"' on '\" ~ (
-                              (label_target_entities[0] if (label_target_entities is defined and label_target_entities | length > 0) else calendar_entity)
-                            ) ~ \"'.",
-                            "event": update_data
-                          } | tojson
-                        }}
-                  - stop: Pass response variables back to LLM
-                    response_variable: final_response
-                    enabled: true
-                  - set_conversation_response: "{{ final_response }}"
+                      warn_msg: Existing event deleted before create.
+          - variables:
+              create_data: >-
+                {% set is_all_day = not 'T' in start and not 'T' in end %} {%
+                set d = { 'entity_id': (calendar_entity if
+                calendar_entity_exists else label_entities[0]), 'summary':
+                summary | default("Untitled Event") } %} {% if is_all_day %}
+                  {% set d = dict(d, start_date=start.split('T')[0], end_date=end.split('T')[0]) %}
+                {% else %}
+                  {% set d = dict(d, start_date_time=start, end_date_time=end) %}
+                {% endif %} {% if description %}{% set d = dict(d,
+                description=description) %}{% endif %} {% if location %}{% set d
+                = dict(d, location=location) %}{% endif %} {% if attendees %}
+                  {% set attendee_list = attendees.split(',') | map('trim') | list %}
+                  {% set d = dict(d, attendees=attendee_list) %}
+                {% endif %} {{ d }}
+          - data: "{{ create_data }}"
+            action: calendar.create_event
+          - variables:
+              final_response: |-
+                {{
+                  {
+                    "status": "success",
+                    "message": "Updated event via delete+create on calendar \\\"" ~ (
+                      (label_target_entities[0] if (label_target_entities is defined and label_target_entities | length > 0) else calendar_entity)
+                    ) ~ "\\\". " ~ warn_msg,
+                    "event": create_data
+                  } | tojson
+                }}
+          - stop: Pass response variables back to LLM
+            response_variable: final_response
+            enabled: true
+          - set_conversation_response: "{{ final_response }}"
         alias: update calendar event
       - conditions:
           - condition: template
@@ -372,98 +380,36 @@ sequence:
                  and not target_is_multi
                  and (calendar_entity_exists or label_target_entities | length == 1) }}
         sequence:
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: "{{ uid is not defined or uid == '' }}"
-                sequence:
-                  - variables:
-                      final_response: |
-                        {{
-                          {
-                            "status": "warning",
-                            "message": "This calendar did not return a UID. UID delete is preferred. Falling back to summary+time match.",
-                            "requires": ["summary", "start", "end"]
-                          } | tojson
-                        }}
-                  - stop: Pass response variables back to LLM
-                    response_variable: final_response
-              - conditions:
-                  - condition: template
-                    value_template: >
-                      {{ (uid is not defined or uid == '') and summary != '' and
-                      start != '' and end != '' }}
-                sequence:
-                  - variables:
-                      delete_data: |
-                        {{
-                          {
-                            'entity_id': (calendar_entity if calendar_entity_exists else label_entities[0]),
-                            'summary': summary,
-                            'start_date_time': start,
-                            'end_date_time': end
-                          }
-                        }}
-                  - data: "{{ delete_data }}"
-                    action: calendar.delete_event
-                  - variables:
-                      final_response: |
-                        {{
-                          {
-                            "status": "success",
-                            "message": "Deleted calendar event by summary+time match: '" ~ summary ~ "'",
-                            "deleted_event": delete_data
-                          } | tojson
-                        }}
-                  - stop: Pass response variables back to LLM
-                    response_variable: final_response
-              - conditions:
-                  - condition: template
-                    value_template: "{{ uid is defined and uid != '' }}"
-                sequence:
-                  - variables:
-                      delete_data: |-
-                        {{
-                          { "entity_id": (calendar_entity if calendar_entity_exists else label_entities[0]),
-                            "uid": uid }
-                        }}
-                  - data: "{{ delete_data }}"
-                    action: calendar.delete_event
-                  - variables:
-                      final_response: |-
-                        {{
-                          {
-                            "status": "success",
-                            "message": "Deleted calendar event by UID: '" ~ uid ~ "' from '" ~
-                                     (label_target_entities[0] if (label_target_entities is defined
-                                     and label_target_entities | length > 0) else calendar_entity) ~ "'.",
-                            "deleted_event": delete_data
-                          } | tojson
-                        }}
-                  - stop: Pass response variables back to LLM
-                    response_variable: final_response
-                  - set_conversation_response: "{{ final_response }}"
+          - variables:
+              delete_data: |
+                {{
+                  {
+                    'entity_id': (calendar_entity if calendar_entity_exists else label_entities[0]),
+                    'summary': summary,
+                    'start_date_time': start,
+                    'end_date_time': end
+                  }
+                }}
+          - data: "{{ delete_data }}"
+            action: calendar.delete_event
+          - variables:
+              final_response: |-
+                {{
+                  {
+                    "status": "success",
+                    "message": "Deleted calendar event by summary+time match: '" ~ summary ~ "'. If no event was found, this was a no-op.",
+                    "deleted_event": delete_data
+                  } | tojson
+                }}
+          - stop: Pass response variables back to LLM
+            response_variable: final_response
+          - set_conversation_response: "{{ final_response }}"
         alias: delete event from calendar
-alias: Zen Dojotools Calendar
-description: >-
-  Zen Dojotools Calendar (1.6.0) for Home Assistant. Provides create, read,
-  update, delete, and help actions for any calendar entity. Use '*' or ''  as
-  calendar_name to list all calendars. 'start' and 'end' default to today
-  (midnight to midnight next day) if not set. Requires action_type and
-  calendar_name for most actions. UID preferred for deletes and updates.
-  Supports targeting calendar entities by label. (will return all resulting from
-  a combined list of all calendars matching the submitted labels) 'attendees'
-  and other advanced fields are reserved for future use and are not yet
-  supported by the Home Assistant calendar integration. Attempts to use 
-  unsupported fields will return a warning. Help action gives structured usage
-  details, defaults, and notes. For maximum compatibility, ensure dates are in
-  ISO 8601 format.
 fields:
   action_type:
     description: >-
-      'create', 'read', 'update', 'delete', 'help' (Default help) Note -
-      'update' support on ms365 calendars, if unsupported or fails, failback
-      'update' using delete / create
+      'create', 'read', 'update', 'delete', 'help' (Default help). Updates and
+      deletes use summary+time only.
     required: true
     selector:
       select:
@@ -480,7 +426,9 @@ fields:
     selector:
       text: null
   summary:
-    description: Event title (used in create/delete). Required for create/delete.
+    description: >-
+      Event title (used in create/delete/update). Required for
+      create/delete/update.
     required: false
     selector:
       text:
@@ -491,11 +439,6 @@ fields:
     selector:
       text:
         multiline: true
-  uid:
-    description: Unique identifier for the event (preferred for 'delete' and 'update').
-    required: false
-    selector:
-      text: null
   start:
     description: >-
       Start time in ISO 8601 (e.g., 2025-06-01T09:00:00). Defaults to today if
