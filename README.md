@@ -77,7 +77,7 @@ Legacy `_crud` tools are deprecated.
 | Tool / Script                       | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `dojotools_zen_index`               | Core label-aware index (foundation for other tools) |
-| `dojotools_zen_index_event_handler` | AUTOMATION to capture the Zen Index callson glue)   |
+| `dojotools_zen_index_event_handler` | /AUTOMATION to capture the Zen Index calls          |
 | `dojotools_zen_inspect`             | Inspection utility for reviewing entities & states  |
 | `zen_dojotools_labels`              | Label definitions & mapping (requires Spook - HACS) |
 
