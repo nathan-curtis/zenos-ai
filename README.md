@@ -77,7 +77,7 @@ Legacy `_crud` tools are deprecated.
 | Tool / Script                       | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `dojotools_zen_index`               | Core label-aware index (foundation for other tools) |
-| `dojotools_zen_index_event_handler` | Event handler for the Zen Index (automation glue)   |
+| `dojotools_zen_index_event_handler` | AUTOMATION to capture the Zen Index callson glue)   |
 | `dojotools_zen_inspect`             | Inspection utility for reviewing entities & states  |
 | `zen_dojotools_labels`              | Label definitions & mapping (requires Spook - HACS) |
 
@@ -97,7 +97,7 @@ Dependencies: All tools in the Index kit are codependent - they must go in as a 
 |-------------------------------------|-----------------------------------------------------|
 | `script.zen_dojotools_filecabinet`  | File Cabinet manager script (v1.0.0-RC)             |
 | `zen_dojotools_manifest`            | Drawer/volume manifest (required by File Cabinet)   |
-| `zen_dojotools_volume_redirector`   | Redirects volumes and drawers dynamically           |
+| `zen_dojotools_volume_redirector`   | /AUTOMATION to redirect volumes dynamically         |
 
 Dependencies: Requires Index kit.
 
