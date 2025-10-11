@@ -77,3 +77,223 @@ sequence:
             {
               "family_guid": fam_guid,
               "nickname": fam_name
+            }
+          ]
+        }}
+      mount_scan: "{{ mount_scan | default(true) }}"
+      existing_drawers: "{{ state_attr(cabinet_entity,'variables') | default({}, true) }}"
+      mounts_out: |-
+        {% if mount_scan and existing_drawers is mapping %}
+          {% set mounts = [] %}
+          {% for k in existing_drawers.keys() if '[' in k and 'mount:' in k %}
+            {% set rel = k.split('[')[0].strip() %}
+            {% set tgt = k.split('mount:')[1].split(']')[0] %}
+            {% set _ = mounts.append({'relation': rel, 'target_volume_id': tgt}) %}
+          {% endfor %}
+          {{ mounts }}
+        {% else %}[]{% endif %}
+      drawers_to_init:
+        AI_Cabinet_VolumeInfo: |-
+          {{
+            {
+              "value": {
+                "id": cabinet_guid,
+                "friendly_name": cabinet_friendly,
+                "type": cabinet_type,
+                "schema_version": schema_version,
+                "created": now_iso,
+                "updated": now_iso,
+                "flags": flags,
+                "acls": {
+                  "owner": (
+                    [{ "entity_id": owner_person,
+                       "sid": state_attr(owner_person,"user_id") | default("no-sid"),
+                       "role": "owner" }]
+                    if owner_person and owner_person.startswith("person.")
+                    else []
+                  ),
+                  "partner": (
+                    [{ "entity_id": partner_person,
+                       "sid": state_attr(partner_person,"user_id") | default("no-sid"),
+                       "role": "partner" }]
+                    if partner_person and partner_person.startswith("person.")
+                    else []
+                  ),
+                  "family": (
+                    acl_family
+                    if acl_family is iterable and not (acl_family is string)
+                    else (acl_family | from_json)
+                  )
+                },
+                "entity_labels":
+                  (["chat","history","secure","context","transcript","cabinet"]
+                   if cabinet_type | lower == 'chat history cabinet'
+                   else ["system","cabinet","volumeinfo"])
+              }
+            } | tojson
+          }}
+        _label_index: "{{ {'value': {}} | tojson }}"
+        _zen_relationships: |-
+          {{
+            {
+              "value": {
+                "mounts_out": mounts_out,
+                "mounts_in": [],
+                "mount_policy": "allow_all" if flag_profile == 'system' else "restricted"
+              }
+            } | tojson
+          }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ cabinet_entity in ['', None] }}"
+        sequence:
+          - variables:
+              response:
+                status: error
+                message: No cabinet_entity provided.
+          - stop: Missing entity
+            response_variable: response
+      - conditions:
+          - condition: template
+            value_template: "{{ state_attr(cabinet_entity,'variables') is none }}"
+        alias: Initialize New Cabinet
+        sequence:
+          - repeat:
+              for_each: "{{ drawers_to_init | dictsort }}"
+              sequence:
+                - event: set_variable_legacy
+                  event_data:
+                    key: "{{ repeat.item[0] }}"
+                    value: "{{ repeat.item[1] | from_json | default({}) }}"
+                    set_timestamp: true
+                    volume_entity: "{{ cabinet_entity }}"
+          - variables:
+              response:
+                status: success
+                message: >
+                  Cabinet '{{ cabinet_entity }}' initialized with GUID {{
+                  cabinet_guid }}, profile '{{ flag_profile }}', and {{
+                  mounts_out | length }} mounts.
+          - stop: Init complete
+            response_variable: response
+      - conditions:
+          - condition: template
+            value_template: "{{ state_attr(cabinet_entity,'variables') is mapping }}"
+        alias: Repair / Restamp
+        sequence:
+          - variables:
+              existing: "{{ state_attr(cabinet_entity,'variables') }}"
+              existing_guid: >-
+                {% set info = existing.get('AI_Cabinet_VolumeInfo',{}) %} {% if
+                info is mapping and info.get('value') is mapping %}
+                  {{ info.value.get('id','') }}
+                {% else %}''{% endif %}
+              guid_changed: "{{ force_new_guid or existing_guid != cabinet_guid }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ guid_changed }}"
+                sequence:
+                  - event: set_variable_legacy
+                    event_data:
+                      key: AI_Cabinet_VolumeInfo
+                      value: >-
+                        {{ drawers_to_init['AI_Cabinet_VolumeInfo'] | from_json
+                        | default({}) }}
+                      set_timestamp: true
+                      volume_entity: "{{ cabinet_entity }}"
+          - variables:
+              response:
+                status: success
+                message: >
+                  Repaired '{{ cabinet_entity }}' (profile '{{ flag_profile
+                  }}'). {% if guid_changed %}GUID restamped: {{ cabinet_guid
+                  }}.{% endif %}
+          - stop: Repair complete
+            response_variable: response
+    default:
+      - variables:
+          response:
+            status: error
+            message: Unknown cabinet state.
+      - stop: Fallback
+        response_variable: response
+  - set_conversation_response: "{{ response }}"
+fields:
+  confirm_action:
+    name: Confirm Destructive Action
+    description: Must be TRUE or script exits safely.
+    selector:
+      boolean: {}
+    default: false
+  cabinet_entity:
+    name: Cabinet Entity
+    selector:
+      entity:
+        filter:
+          - domain: sensor
+  cabinet_type:
+    name: Cabinet Type
+    selector:
+      select:
+        options:
+          - AI Data Storage Cabinet
+          - Zen Dojo Cabinet
+          - Zen Kata Cabinet
+          - User Cabinet
+          - AI User Cabinet
+          - Family Cabinet
+          - Household Cabinet
+          - System Cabinet
+          - Partner Cabinet
+          - Chat History Cabinet
+          - Archive Cabinet
+          - Other
+    default: AI Data Storage Cabinet
+  cabinet_guid:
+    name: Cabinet GUID (optional)
+    selector:
+      text: {}
+  force_new_guid:
+    name: Force New GUID
+    selector:
+      boolean: {}
+    default: false
+  auto_profile:
+    name: Auto-Detect Flag Profile
+    selector:
+      boolean: {}
+    default: true
+  explicit_flag_profile:
+    name: Manual Flag Profile (if auto disabled)
+    selector:
+      select:
+        options:
+          - system
+          - secure
+          - public
+          - standard
+    default: standard
+  mount_scan:
+    name: Scan Mounts for Links
+    selector:
+      boolean: {}
+    default: true
+  owner_person:
+    name: Owner (person)
+    selector:
+      entity:
+        filter:
+          - domain: person
+  partner_person:
+    name: Partner (person)
+    selector:
+      entity:
+        filter:
+          - domain: person
+  family_guid:
+    name: Family GUID
+    selector:
+      text: {}
+icon: mdi:database-cog
