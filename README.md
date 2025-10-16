@@ -120,12 +120,29 @@ Dependencies: Requires Index kit.
   and the LLM tools for Music assistant located here: https://github.com/music-assistant/voice-support
   Media Kit assumes these scripts are installed.
 
+**Zen AdminTools**
+| Tool                                | Description                                         |
+|-------------------------------------|-----------------------------------------------------|
+| `zen_admintools_cabinetadmin`       | Format / Repair Cabinets, requires valid Fes Sensor |
+| `zen_admintools_kungfu_writer`      | Assists loading inital Component into Dojo          |
+
+Load 'Kits' together, there are dependencies. only what you need.
+
 ---
 
 ### 🧪 Experimental / Coming Soon
 
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
+| `TBD(NinjaSummarizer)`              | Stage 1 Kata Summary                                |
+| `TBD(ZenSummarizer)`                | Stage 2 Attention Summary                           |
+| `zen_dojotools_library`             | Library 2.0 script (replaces original Zen library)  |
+| `zen_os_1.jinja`                    | Custom templates for librbary '~COMMANDS~`          |
+|   `macro prompt_header`             | Prompt Header, nuts and bolts                       |
+|   `macro prompt_system`             | Load rules, directives and cortex                   |
+|   `macro dojo_loader`               | Builds Zen Dojo Prompt from Dojo + Kata drawers     |
+|   `macro ai_capsule`                | AI Personality capsule customization loader         |
+|                                     |                                                     |
 | `zen_dojotools_mealie`              | Recipe + shopping bridge (beta)                     |
 | `zen_dojotools_grocy`               | Inventory + barcode integration (beta)              |
 | `zen_dojotools_id`                  | ID resolver (experimental alpha)                    |
