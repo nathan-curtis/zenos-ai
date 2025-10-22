@@ -101,6 +101,14 @@ Dependencies: All tools in the Index kit are codependent - they must go in as a 
 
 Dependencies: Requires Index kit.
 
+### 🧪 Zen Summarizer / BETA - EXPERIMENTAL
+
+| Tool                                | Description                                         |
+|-------------------------------------|-----------------------------------------------------|
+| `zen_dojotools_ninja_summarizer`    | Stage 1 Kata Summary                                |
+
+Dependencies: Requires Index kit.
+
 **Personal Assistant Kit**
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
@@ -134,7 +142,6 @@ Load 'Kits' together, there are dependencies. only what you need.
 
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
-| `TBD(NinjaSummarizer)`              | Stage 1 Kata Summary                                |
 | `TBD(ZenSummarizer)`                | Stage 2 Attention Summary                           |
 | `zen_dojotools_library`             | Library 2.0 script (replaces original Zen library)  |
 | `zen_os_1.jinja`                    | Custom templates for librbary '~COMMANDS~`          |
