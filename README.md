@@ -107,7 +107,7 @@ Dependencies: Requires Index kit.
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_ninja_summarizer`    | Stage 1 Kata Summary                                |
 
-Dependencies: Requires Index kit.
+Dependencies: Requires Index, FileCabinet kits.  Will be core in release
 
 **Personal Assistant Kit**
 | Tool                                | Description                                         |
