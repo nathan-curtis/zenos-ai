@@ -106,6 +106,7 @@ Dependencies: Requires Index kit.
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_ninja_summarizer`    | Stage 1 Kata Summary                                |
+| `zen_dojotools_supersummary`        | Stage 2 Attention Summary                           |
 
 Dependencies: Requires Index, FileCabinet kits.  Will be core in release
 
@@ -142,7 +143,6 @@ Load 'Kits' together, there are dependencies. only what you need.
 
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
-| `TBD(ZenSummarizer)`                | Stage 2 Attention Summary                           |
 | `zen_dojotools_library`             | Library 2.0 script (replaces original Zen library)  |
 | `zen_os_1.jinja`                    | Custom templates for librbary '~COMMANDS~`          |
 |   `macro prompt_header`             | Prompt Header, nuts and bolts                       |
