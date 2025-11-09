@@ -24,14 +24,7 @@ Explains how Friday and Kronk maintain awareness without flooding the context wi
 
 ---
 
-### **2. Dojo Cabinet**
-**Path:** `docs/cabinets/dojo/readme.md`  
-Describes the Dojo Cabinet — the structured workspace where all *Kung Fu Components* (subsystem definitions, runbooks, safety logic, and operational instructions) are stored as drawers.  
-Covers structure, schema, versioning, and how the Dojo feeds the Monastery and summarizers.
-
----
-
-### **3. Kung Fu Components**
+### **2. Kung Fu Components**
 **Path:** `docs/kung_fu/readme.md`  
 Explains the structure and purpose of Kung Fu Components:  
 - How each component defines a subsystem  
