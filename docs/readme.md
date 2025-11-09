@@ -38,10 +38,6 @@ Shows how to write, version, and maintain components using the **KungFu Writer**
 
 ---
 
-Got it — here’s the **compact blurb**, same style and size as your Kung Fu entry, no extra fluff, clean and drop-in-ready:
-
----
-
 ### **3. Cabinet System**
 
 **Path:** `docs/cabinets/readme.md`
@@ -55,8 +51,6 @@ Explains the ZenOS-AI Cabinet architecture — the structured filesystem that st
 - Label consistency across all cabinets for fast global lookups
 - Role of **CabinetAdmin** (structure, mounts, permissions) and **FileCabinet** (drawer read/write)
 - How summarizers, the Index, and the Monastery read across cabinets to build context
-
-Shows how cabinet structure provides semantic meaning, zero-trust isolation, and predictable overrides (system → household → family → user).
 
 ---
 
