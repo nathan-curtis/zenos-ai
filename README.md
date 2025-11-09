@@ -101,12 +101,13 @@ Dependencies: All tools in the Index kit are codependent - they must go in as a 
 
 Dependencies: Requires Index kit.
 
-### 🧪 Zen Summarizer / BETA - EXPERIMENTAL
+### 🧪 Zen Summarizer
 
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_ninja_summarizer`    | Stage 1 Kata Summary                                |
 | `zen_dojotools_supersummary`        | Stage 2 Attention Summary                           |
+| `zen_scheduler_automation`          | Summarization Orchestration (COMING SOON)           |
 
 Dependencies: Requires Index, FileCabinet kits.  Will be core in release
 
@@ -143,8 +144,10 @@ Load 'Kits' together, there are dependencies. only what you need.
 
 | Tool                                | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
+| `zen_dojotools_identity`            | ID resolver and prompt tool (RC)                    |
 | `zen_dojotools_library`             | Library 2.0 script (replaces original Zen library)  |
 | `zen_os_1.jinja`                    | Custom templates for librbary '~COMMANDS~`          |
+|   `macro identity_*`                | reusable common code for zen_identity               |
 |   `macro prompt_header`             | Prompt Header, nuts and bolts                       |
 |   `macro prompt_system`             | Load rules, directives and cortex                   |
 |   `macro dojo_loader`               | Builds Zen Dojo Prompt from Dojo + Kata drawers     |
@@ -152,8 +155,6 @@ Load 'Kits' together, there are dependencies. only what you need.
 |                                     |                                                     |
 | `zen_dojotools_mealie`              | Recipe + shopping bridge (beta)                     |
 | `zen_dojotools_grocy`               | Inventory + barcode integration (beta)              |
-| `zen_dojotools_id`                  | ID resolver (experimental alpha)                    |
-| `zen_dojotools_library`             | Library Console v2 (WIP)                            |
 | `zen_dojotools_cabinet_indexer`     | File Cabinet Index Tool (WIP)                       |
 
 Load 'Kits' together, there are dependencies. only what you need.
