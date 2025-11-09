@@ -77,7 +77,8 @@ Legacy `_crud` tools are deprecated.
 | Tool / Script                       | Description                                         |
 |-------------------------------------|-----------------------------------------------------|
 | `dojotools_zen_index`               | Core label-aware index (foundation for other tools) |
-| `dojotools_zen_index_event_handler` | /AUTOMATION to capture the Zen Index calls          |
+| `library_index.jinja`               | /custom_template supporting the Index Tools         |
+| `dojotools_zen_index_event_handler` | /automation to capture the Zen Index calls          |
 | `dojotools_zen_inspect`             | Inspection utility for reviewing entities & states  |
 | `zen_dojotools_labels`              | Label definitions & mapping (requires Spook - HACS) |
 
@@ -107,7 +108,7 @@ Dependencies: Requires Index kit.
 |-------------------------------------|-----------------------------------------------------|
 | `zen_dojotools_ninja_summarizer`    | Stage 1 Kata Summary                                |
 | `zen_dojotools_supersummary`        | Stage 2 Attention Summary                           |
-| `zen_scheduler_automation`          | Summarization Orchestration (COMING SOON)           |
+| `zen_scheduler_automation`          | /automation for  Orchestration (COMING SOON)        |
 
 Dependencies: Requires Index, FileCabinet kits.  Will be core in release
 
