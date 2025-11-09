@@ -255,16 +255,15 @@ Together, they ensure the cabinet ecosystem stays consistent and healthy.
 
 ---
 
-# 📚 More Documentation
+## 📚 Additional Documentation
 
-* Zen Summarizer
-* Dojo Cabinet
-* SYSTEM Cabinet
-* Kung Fu Components
-* Labeling System
-* MCP / Monastery Integration
-* FES Trigger Sensors
+- **Zen Summarizer**  
+  https://github.com/nathan-curtis/zenos-ai/blob/main/docs/zen_summarizer/readme.md
 
----
+- **Kung Fu Components (Dojo Subsystems)**  
+  https://github.com/nathan-curtis/zenos-ai/blob/main/docs/kung_fu/readme.md
+
+- **FES Trigger Sensors (Front-End Semantics Sensors)**  
+  https://community.home-assistant.io/t/trigger-based-template-sensor-to-store-global-variables/735474
 
 ```
