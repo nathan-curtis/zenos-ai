@@ -38,6 +38,28 @@ Shows how to write, version, and maintain components using the **KungFu Writer**
 
 ---
 
+Got it — here’s the **compact blurb**, same style and size as your Kung Fu entry, no extra fluff, clean and drop-in-ready:
+
+---
+
+### **3. Cabinet System**
+
+**Path:** `docs/cabinets/readme.md`
+Explains the ZenOS-AI Cabinet architecture — the structured filesystem that stores identity, preferences, digital-twin data, subsystem links, and OS-level metadata.
+- The four cabinet types: **SYSTEM**, **Dojo**, **Household (Home)**, **Family**, and **User**
+- How drawers store JSON defining profiles, prefs, state, lore, and digital-twin data
+- Cabinet ownership, hierarchy, and mounts (Household → Family → User / AI)
+- How the **Household cabinet** mirrors each Kung Fu Component with a 1:1 drawer
+- How the **Dojo cabinet** stores all subsystem definitions (Kung Fu Components)
+- How the **SYSTEM cabinet** loads OS directives, cortex metadata, and startup identity
+- Label consistency across all cabinets for fast global lookups
+- Role of **CabinetAdmin** (structure, mounts, permissions) and **FileCabinet** (drawer read/write)
+- How summarizers, the Index, and the Monastery read across cabinets to build context
+
+Shows how cabinet structure provides semantic meaning, zero-trust isolation, and predictable overrides (system → household → family → user).
+
+---
+
 ## 🧭 How to Navigate
 Each subsection contains a self-contained overview with links, examples, and reference structures.  
 Start with the **Zen Summarizer**, then explore the **Dojo** and **Kung Fu Components**, as these form the active working model Friday uses to reason about your home.
