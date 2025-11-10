@@ -191,6 +191,32 @@ Optional enhancements:
 
 ---
 
+📚 Docs: The Friday Protocol & ZenOS-AI Architecture
+
+Welcome to the brains behind the magic.
+This section gathers the deeper architectural write-ups that power Friday’s agentic behavior — from Cabinet semantics to cognitive cycles to hybrid inference design. If you’ve ever wondered how Friday thinks (or why she occasionally outsmarts the furniture), this is where the story lives.
+
+Inside you’ll find:
+
+The Friday Protocol — a full case study on voice-first UX and agentic smart-home design.
+
+Cognitive Architecture Guides — Cabinets, Katas, Kung Fu components, Monastery workflows, and how they fit together.
+
+Inference Stack Breakdown — why we run two asymmetric VMs on a NUC14-AI, how IONA and TARAN split workloads, and where GPT-5/GPT-5.1 fit into the bigger picture.
+
+Design Philosophy — the “why” behind our choices: privacy-first, context-heavy, modular, and fun.
+
+Persona & Role Definitions — how Friday, Veronica, Kronk, Rosie, and the High Priestess each contribute to the system.
+
+These documents are written for builders, tinkerers, researchers, and the curious souls who keep asking,
+
+“Okay but… how does she actually work?”
+
+Crack open the docs folder and wander the Monastery halls. (https://github.com/nathan-curtis/zenos-ai/tree/main/docs)
+Just don’t take anything off the shelves without Kronk’s supervision. He gets twitchy.
+
+---
+
 ## 🖥 Local Stack Overview
 
 **Core Hardware**
