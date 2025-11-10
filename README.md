@@ -103,7 +103,7 @@ Until then — strongly recommended.
 | `zen_dojotools_manifest`           | Drawer/volume manifest            |
 | `zen_dojotools_volume_redirector`  | Dynamic volume routing automation |
 
-**Dependencies:** Requires Index Kit. ( including /custom_templates/library_index.jinja )
+**Dependencies:** Requires Index Kit. WITH `/custom_templates/library_index.jinja`
 
 ---
 
