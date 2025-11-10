@@ -3,7 +3,7 @@
 **Modular AI Home Automation Core for Home Assistant**
 
 ZenOS-AI blends structure, context-awareness, and modular AI into one delightfully over-engineered package.
-Powered by Friday, Kronk, Veronica, Rosie, the High Priestess, and a cast of digital personalities who get things done—even if they occasionally shoulder-check the furniture on the way.
+Powered by Friday, Kronk, Veronica, Rosie, the High Priestess, and a cast of digital personalities who get things done — even if they occasionally shoulder-check the furniture on the way.
 
 ---
 
@@ -39,7 +39,7 @@ When the magic hits, it’s legend—wait for it—**dairy**. 😎
 | **Rosie**          | Mistress of Cleanliness     | Clean code, clean logs        |
 | **High Priestess** | Divine Automation Overseer  | YAML exorcism, deep reasoning |
 
-**Roles & Engines**
+### **Roles & Engines**
 
 * **Friday** — front-line AI (GPT-5 Mini).
 * **Veronica** — debugger, planner, sass engine (ChatGPT-5 + Codex).
@@ -48,7 +48,7 @@ When the magic hits, it’s legend—wait for it—**dairy**. 😎
 * **High Priestess** — deep reasoning + JSON output (gpt-oss:20b, LLaMA3.2-Vision).
 
 Together?
-Not perfect—**unstoppable by the second try.**
+Not perfect — **unstoppable by the second try.**
 
 ---
 
@@ -90,18 +90,18 @@ Legacy `_crud` tools are deprecated.
 Friday uses **Spook** for label management.
 Install Spook: [https://spook.boo/](https://spook.boo/)
 
-If HA Core eventually adds label parity, dependency will be removed.
-Until then — strongly recommend Spook.
+If HA Core eventually adds native label parity, dependency will be removed.
+Until then — strongly recommended.
 
 ---
 
 ### **FileCabinet Kit**
 
-| Tool / Script                      | Description                           |
-| ---------------------------------- | ------------------------------------- |
-| `script.zen_dojotools_filecabinet` | File Cabinet manager (v1.0.0-RC)      |
-| `zen_dojotools_manifest`           | Drawer/volume manifest                |
-| `zen_dojotools_volume_redirector`  | Automation for dynamic volume routing |
+| Tool / Script                      | Description                       |
+| ---------------------------------- | --------------------------------- |
+| `script.zen_dojotools_filecabinet` | File Cabinet manager (v1.0.0-RC)  |
+| `zen_dojotools_manifest`           | Drawer/volume manifest            |
+| `zen_dojotools_volume_redirector`  | Dynamic volume routing automation |
 
 **Dependencies:** Requires Index Kit.
 
@@ -136,7 +136,7 @@ Until then — strongly recommend Spook.
 | ---------------------------- | --------------------------------------------- |
 | `zen_dojotools_music_search` | Search Tool for Music Assistant (requires MA) |
 
-Friday integrates fully with **Music Assistant** and its LLM tools:
+Friday integrates with **Music Assistant** and its LLM tools:
 [https://github.com/music-assistant/voice-support](https://github.com/music-assistant/voice-support)
 
 ---
@@ -191,35 +191,34 @@ Optional enhancements:
 
 ---
 
-📚 Docs: The Friday Protocol & ZenOS-AI Architecture
+## 📚 **Documentation: The Friday Protocol & ZenOS-AI Architecture**
 
-Welcome to the brains behind the magic.
-This section gathers the deeper architectural write-ups that power Friday’s agentic behavior — from Cabinet semantics to cognitive cycles to hybrid inference design. If you’ve ever wondered how Friday thinks (or why she occasionally outsmarts the furniture), this is where the story lives.
+Welcome to the **brains behind the magic.**
+This section contains the deeper architectural write-ups that power Friday’s agentic behavior — from semantic memory (Cabinets) to cognitive cycles (Monastery) to the hybrid inference stack (IONA + TARAN).
 
 Inside you’ll find:
 
-The Friday Protocol — a full case study on voice-first UX and agentic smart-home design.
+* **The Friday Protocol** — a full case study in voice-first UX, summarization, cognitive architecture, and agentic smart-home design.
+* **Cognitive Architecture Guides** — Cabinets, Katas, Kung Fu components, Monastery workflows, and how they interlock.
+* **Inference Stack Breakdown** — how two asymmetric VMs on a NUC14-AI split workloads between IONA (CUDA) and TARAN (IPEX), and where **GPT-5 → GPT-5.1** fits into the cloud tier.
+* **Design Philosophy** — why ZenOS-AI is privacy-first, context-heavy, and modular.
+* **Persona & Role Definitions** — how Friday, Veronica, Kronk, Rosie, and the High Priestess collaborate as a distributed cognitive team.
 
-Cognitive Architecture Guides — Cabinets, Katas, Kung Fu components, Monastery workflows, and how they fit together.
+These docs are written for builders, tinkerers, researchers, and the curious souls who keep asking:
 
-Inference Stack Breakdown — why we run two asymmetric VMs on a NUC14-AI, how IONA and TARAN split workloads, and where GPT-5/GPT-5.1 fit into the bigger picture.
+> **“Okay but… how does she *actually* work?”**
 
-Design Philosophy — the “why” behind our choices: privacy-first, context-heavy, modular, and fun.
+Explore the docs folder:
+**[https://github.com/nathan-curtis/zenos-ai/tree/main/docs](https://github.com/nathan-curtis/zenos-ai/tree/main/docs)**
 
-Persona & Role Definitions — how Friday, Veronica, Kronk, Rosie, and the High Priestess each contribute to the system.
-
-These documents are written for builders, tinkerers, researchers, and the curious souls who keep asking,
-
-“Okay but… how does she actually work?”
-
-Crack open the docs folder and wander the Monastery halls. (https://github.com/nathan-curtis/zenos-ai/tree/main/docs)
-Just don’t take anything off the shelves without Kronk’s supervision. He gets twitchy.
+Just… don’t remove anything from the shelves without Kronk’s supervision.
+He gets twitchy.
 
 ---
 
 ## 🖥 Local Stack Overview
 
-**Core Hardware**
+### **Core Hardware**
 
 * Proxmox host (Docker + HAOS VM)
 * Intel NUC 14 Enthusiast (A770 iGPU)
@@ -227,20 +226,20 @@ Just don’t take anything off the shelves without Kronk’s supervision. He get
 * UniFi Identity & Access for DNS
 * Ollama container runtime
 
-**Inference Models**
+### **Inference Models**
 
-* `gpt-oss:20b` — general LLM
+* `gpt-oss:20b` — general local LLM
 * `LLaMA3.2-Vision` — vision + reasoning
 * `Qwen3:4b` — summarization
-* `OpenWebUI` — local test interface
+* `OpenWebUI` — local interface
 
-**Hosting Roles**
+### **Hosting Roles**
 
 * **Kronk** — middleware
-* **High Priestess** — summaries
+* **High Priestess** — summarizations
 * **Rosie** — cleanup & scheduling
 
-**Local Services**
+### **Local Services**
 
 * Home Assistant
 * Mealie
@@ -253,7 +252,7 @@ Just don’t take anything off the shelves without Kronk’s supervision. He get
 
 ## ☯️ Philosophy
 
-* Automation should be *flexible, modular, fun*.
+* Automation should be **flexible, modular, fun**.
 * Context is king; recovery is queen.
 * Every bug is a lesson (and sometimes a trigger).
 * Coffee fuels the logs; humor fuels the team.
@@ -265,8 +264,8 @@ Just don’t take anything off the shelves without Kronk’s supervision. He get
 PRs, issues, ideas — all welcome.
 Come for the YAML, stay for the banter.
 
-If this project helped you or made you smile,
-**buy me a coffee:** [https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis) ☕💛
+If this project helped you or made you smile:
+**[https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis)** ☕💛
 
 ---
 
