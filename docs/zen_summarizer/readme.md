@@ -1,4 +1,4 @@
-# ✅ **ZenOS-AI Summarization Pipeline — Full System README**
+# ✅ **ZenOS-AI Summarization Pipeline**
 
 ### *(Ninja Summarizer Edition: Expanded Scope)*
 
