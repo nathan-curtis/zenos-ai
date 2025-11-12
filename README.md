@@ -266,6 +266,7 @@ Come for the YAML, stay for the banter.
 
 If this project helped you or made you smile:
 **[https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis)** ☕💛
+Tokens cost money - and yes I use those too. :)
 
 ---
 
