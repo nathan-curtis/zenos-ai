@@ -1,212 +1,170 @@
-ZenOS-AI Library 2.0
+# **ZenOS-AI Library 2.0**
 
-Unified Utility Runner • Structured JSON Tools • DojoTools-Compliant
+**Unified Utility Runner • Structured JSON Tools • DojoTools-Compliant**
 
-The ZenOS-AI Library is a core DojoTool that provides Friday and the Monastery with a centralized utility runner. Instead of registering dozens of small helper tools in the LLM namespace, the Library exposes these utilities through a single script:
+---
 
+The **ZenOS-AI Library** is a core DojoTool that provides **Friday** and **the Monastery** with a centralized utility runner.
+Instead of registering dozens of small helper tools in the LLM namespace, the Library exposes these utilities through a single script:
+
+```
 script.zen_dojotools_library
+```
 
 The Library accepts:
 
-tool — the specific library function to invoke
+* **`tool`** — the specific library function to invoke
+* **`input_data`** — a structured JSON payload with parameters for that function
 
-input_data — a structured JSON payload with parameters for that function
-
-
-The output is always machine-readable JSON, making it safe for tool-calling models, the Summarizer pipeline, and Monastery agents.
-
+The output is always **machine-readable JSON**, making it safe for tool-calling models, the Summarizer pipeline, and Monastery agents.
 
 ---
 
-✅ Why the Library Exists
+## ✅ Why the Library Exists
 
-1. Avoids tool-namespace bloat
-Every “tiny helper” doesn’t need to be a separate tool.
-They can live behind one dispatcher.
+1. **Avoids tool-namespace bloat**
+   Every “tiny helper” doesn’t need to exist as a separate tool — they live behind one dispatcher.
 
+2. **Keeps Friday’s prompt clean**
+   Friday can request utility behavior without adding extra prompt weight.
 
-2. Keeps Friday’s prompt clean
-Friday can request utility behavior without adding extra prompt weight.
+3. **Standardizes JSON I/O across DojoTools**
+   All Library calls return normalized JSON, making automation predictable.
 
+4. **Allows complex DojoTools to call other DojoTools safely**
+   The Library serves as a neutral dispatch layer.
 
-3. Standardizes JSON I/O across DojoTools
-All Library calls return normalized JSON, making automation predictable.
-
-
-4. Allows complex DojoTools to call other DojoTools safely
-The Library serves as a neutral dispatch layer.
-
-
-5. Supports prompt-side ~COMMANDS~ macros
-The Library is referenced by these macros — but no new commands are invented.
-
-
-
+5. **Supports prompt-side `~COMMANDS~` macros**
+   These macros reference the Library, but no new macro language is introduced.
 
 ---
 
-✅ What the Library Currently Provides (Real Features Only)
+## ✅ What the Library Currently Provides (Real Features Only)
 
-The Library 2.0 script handles:
+### 1. Core Utility Functions
 
-1. Core utility functions
+* Hashing
+* Random number generation
+* Die rolls
+* Lightweight helper logic
 
-hashing
-
-random number generation
-
-die rolls
-
-lightweight helper logic
-
-
-(All of these are already implemented and shown in your screenshot.)
-
+All of these are implemented and active in Library 2.0.
 
 ---
 
-2. Unified JSON dispatcher
+### 2. Unified JSON Dispatcher
 
-The Library evaluates a tool value and routes the request to the appropriate sub-function inside the script.
-
-This creates one central DojoTool instead of 20+ small ones.
-
+The Library evaluates the `tool` value and routes the request to the appropriate sub-function inside the script.
+This creates **one central DojoTool** instead of 20+ small ones.
 
 ---
 
-3. Structured JSON output (always)
+### 3. Structured JSON Output
 
 Every Library call returns:
 
-a JSON header
-
-a standardized response block
-
-a timestamp
-
-the echo of the input query
-
+```json
+{
+  "header": {...},
+  "response": {...},
+  "timestamp": "...",
+  "input_echo": {...}
+}
+```
 
 This makes the Library safe for:
 
-Friday
-
-Monastery agents
-
-The Summarizer
-
-n8n
-
-Any automations that consume JSON
-
-
+* Friday
+* Monastery agents
+* The Summarizer
+* n8n
+* Any JSON-consuming automation
 
 ---
 
-4. DojoTools compliance
+### 4. DojoTools Compliance
 
-Library 2.0 conforms to the DojoTools architecture:
+Library 2.0 conforms fully to the **DojoTools architecture**:
 
-Same call structure
+* Same call structure
+* Same JSON schema
+* Same debug format
+* Same dispatcher rules
 
-Same JSON patterns
-
-Same debug output
-
-Same dispatcher rules
-
-
-This lets the Library integrate cleanly with FileCabinet, CabinetAdmin, Index tools, and Summarizers.
-
+This ensures clean integration with **FileCabinet**, **CabinetAdmin**, **Index Tools**, and **Summarizers**.
 
 ---
 
-5. Universal tool dispatch
+### 5. Universal Tool Dispatch
 
-If the caller routes a DojoTools action into the Library dispatcher, the Library can:
+If a caller routes a DojoTools action into the Library, the Library can:
 
-validate
+* validate
+* forward
+* wrap
+* or respond
 
-forward
-
-wrap
-
-or respond
-
-
-while preserving JSON safety.
+...while preserving JSON safety.
 
 This enables:
 
-high-level tool chaining
+* High-level tool chaining
+* Monastery-safe reasoning
+* Complex workflow composition
 
-Monastery-safe reasoning
-
-future complex workflows
-
-
-But importantly:
-
-We do not claim any tool names that don’t exist today.
-
+*(No fictional or speculative commands are defined here — only real, implemented, or explicitly planned features.)*
 
 ---
 
-✅ How the Library is Used Today
+## ✅ Integration Notes
 
-The Library runs via:
+The Library now acts as the **core DojoTool** for helper logic.
+It consolidates all lightweight functionality required by:
 
-service: script.zen_dojotools_library
-data:
-  tool: "library"
-  input_data: { ... }
+* **Friday** (interactive AI layer)
+* **Monastery agents** (reasoning layer)
+* **Summarizers** (context synthesis)
+* **FileCabinet / CabinetAdmin** (data layer)
+* **n8n agents** (automation layer)
 
-Or through prompt macros (~COMMANDS~) that ultimately call this script using valid arguments.
-
-
----
-
-✅ Integration Notes
-
-The Library is now a core DojoTool.
-
-It will eventually house more functions as they move out of the LLM prompt.
-
-It is the consolidation point for helper logic used by:
-
-Friday
-
-Monastery Agents
-
-Summarizers
-
-FileCabinet / CabinetAdmin
-
-n8n agents
-
-
-It is versioned (e.g., 2.0.0) and appears in HA Developer Tools under Scripts.
-
-
+Versioned (e.g. `2.0.0`) and visible in **Home Assistant Developer Tools → Scripts**.
 
 ---
 
-✅ Roadmap
+## ✅ Architecture Integration
 
-Centralized helper utilities for all DojoTools
+The Library is part of the broader **ZenOS-AI core utility stack**:
 
-Macro-driven context loaders (already partially implemented)
+| Layer              | Component                                         | Description                                               |
+| ------------------ | ------------------------------------------------- | --------------------------------------------------------- |
+| **Storage**        | [Cabinets & Drawers](../cabinets/cabinet_spec.md) | Hierarchical JSON stores for entities, AI, and metadata   |
+| **Index**          | [Index System](../library/index_system.md)        | Unified label/query engine with recursion and event logic |
+| **Execution**      | **Library 2.0** *(this file)*                     | Structured dispatcher for lightweight utility functions   |
+| **Administration** | [CabinetAdmin Tools](../cabinets/admin_tools.md)  | Schema enforcement and maintenance                        |
+| **Summarization**  | [Zen Summarizer](../zen_summarizer/readme.md)     | Context reduction and Kata generation                     |
 
-Additional structured JSON wrappers
+The Library interacts with the **Index System** by invoking it as a sub-tool or macro reference (`~INDEX~`) inside workflows that need label resolution, ensuring a consistent data interface from utility level to semantic layer.
 
-Lightweight cabinet helpers
+---
 
-Inline verification tools
+## ✅ Roadmap
 
-Capsule helpers
+| Phase   | Goal                            | Notes                                    |
+| ------- | ------------------------------- | ---------------------------------------- |
+| **2.1** | Add lightweight Cabinet helpers | cross-link drawer lookups to Index       |
+| **2.2** | Capsule utilities               | integrate signing & verification helpers |
+| **2.3** | Inline verification tools       | safety checks before cabinet writes      |
+| **2.4** | Macro-driven context loaders    | partially implemented                    |
+| **2.5** | Consolidate helper logic        | move small standalone tools into Library |
 
+All future expansions will remain JSON-structured and DojoTools-compliant.
 
-Again: no fictional commands — only planned expansions you’ve explicitly discussed.
+---
 
+**Version:** 2.0.1
+**Author:** Veronica (assistant to Nathan Curtis)
+**License:** MIT
+**Last Updated:** 2025-11-11
+**Related Docs:** [Index System](../library/index_system.md), [Cabinet Spec](../cabinets/cabinet_spec.md), [Zen Summarizer](../zen_summarizer/readme.md)
 
 ---
