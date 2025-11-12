@@ -78,40 +78,122 @@ Resolution follows the chain: **Dojo → Household → Kata**.
 
 ---
 
-## 🧩 Index & Library Integration
+## 🧺 **Collection Phase — Context Assembly & Preflight**
 
-**Index Mode**
-If the drawer defines `label: "lights"`, the Summarizer triggers:
+The **Collection Phase** is the opening act of the Ninja Summarizer — the part that gathers everything a Monk could possibly need before a single line of inference begins.
+Think of it as Friday’s data mise en place: every cabinet opened, every drawer inspected, every ingredient labeled before the cooking starts.
 
-```yaml
-service: script.dojotools_zen_index
-data:
-  operator: AND
-  expand_entities: true
-  label_1: "lights"
-  timeout: 2
-```
+---
 
-Result:
+### ⚙️ **Overview**
+
+The Summarizer starts by resolving cabinet locations and loading the contents of the relevant drawers.
+It pulls metadata from the **Dojo Cabinet** (canonical definitions) and **Household Cabinet** (context overrides) to construct a merged working snapshot for the target component.
+
+This snapshot defines:
+
+* What subsystem we’re summarizing
+* What it’s called and versioned as
+* What Index and Library operations apply
+* Whether the component is even “on” (via `master_switch`)
+
+Every field gathered here becomes the basis for all downstream reasoning.
+
+---
+
+### 🧭 **Sequence Summary**
+
+| Step  | Variable                                            | Purpose                                                                |
+| ----- | --------------------------------------------------- | ---------------------------------------------------------------------- |
+| **1** | `dojo_cabinet`, `household_cabinet`, `kata_cabinet` | Locate key cabinet entities via label lookup.                          |
+| **2** | `dojo_drawer`                                       | Pull component definition JSON from Dojo Cabinet variables.            |
+| **3** | `household_drawer`                                  | Pull override or live state JSON from Household Cabinet.               |
+| **4** | `version`, `friendly_name`, `master_switch`         | Merge base and override metadata (Dojo preferred, Household fallback). |
+| **5** | `index_command`                                     | Pull the component’s assigned Index label, if any.                     |
+| **6** | `library_command`                                   | Pull the component’s Library or interpreter command, if defined.       |
+| **7** | `component_summary`                                 | Load the component’s previous summary or self-description.             |
+| **8** | `tool`                                              | Record any declared external or automation tool reference.             |
+| **9** | `index_result`                                      | Optionally populate via live Index query when a label is defined.      |
+
+---
+
+### 🗄️ **How It Works**
+
+1. **Cabinet Resolution**
+   The script resolves each cabinet by its label:
+
+   ```jinja
+   dojo_cabinet = label_entities('Zen Dojo Cabinet') | first
+   household_cabinet = label_entities('Zen Default Household Cabinet') | first
+   kata_cabinet = label_entities('Zen Kata Cabinet') | first
+   ```
+
+   This guarantees the summarizer always targets the correct volume, even if multiple exist.
+
+2. **Drawer Lookup**
+   Using `component_slug` (the lowercase, slugified name of the Kung Fu component), it retrieves matching drawers from both cabinets:
+
+   ```jinja
+   dojo_drawer = state_attr(dojo_cabinet, 'variables')[component_slug]
+   household_drawer = state_attr(household_cabinet, 'variables')[component_slug]
+   ```
+
+   The Dojo drawer defines *what* the component is.
+   The Household drawer defines *how it’s currently behaving.*
+
+3. **Metadata Merge**
+   Each key attribute is extracted with a simple but deliberate fallback order:
+
+   ```jinja
+   {{ ( dojo_drawer.version ) or ( dojo_drawer_value.version ) }}
+   ```
+
+   Dojo values always win unless explicitly overridden.
+
+4. **Dynamic Field Assembly**
+   The collector builds runtime variables such as:
+
+   * `index_command` → label for entity discovery
+   * `library_command` → diagnostic or system command
+   * `component_summary` → last known contextual description
+   * `tool` → linked automation helper
+
+5. **Conditional Index Run**
+   If `index_command` is non-empty, the Summarizer triggers:
+
+   ```yaml
+   service: script.dojotools_zen_index
+   data:
+     operator: AND
+     expand_entities: true
+     label_1: "{{ index_command }}"
+   ```
+
+   The result populates `zen_index_result`, which becomes `index_result` — the first live data packet attached to the component’s summarization context.
+
+---
+
+### 🧩 **Result of the Collection Phase**
+
+By the time this phase completes, the Ninja Summarizer holds a fully prepared dataset:
 
 ```json
-{ "command": "lights", "result": { ... } }
+{
+  "component_slug": "hot_tub",
+  "dojo_source": "Zen Dojo Cabinet",
+  "household_source": "Zen Default Household Cabinet",
+  "version": "1.3.0",
+  "friendly_name": "Hot Tub System",
+  "master_switch": "on",
+  "index_command": "hot_tub",
+  "library_command": "",
+  "component_summary": "...",
+  "tool": "script.hot_tub_manager",
+  "index_result": { ... entity data ... }
+}
 ```
 
-**Library Mode**
-If the drawer defines `command: "get system status"`, the Summarizer runs:
-
-```jinja
-{{ command_interpreter.interpreter('get system status') }}
-```
-
-Result:
-
-```json
-{ "command": "get system status", "result": "<interpreter output>" }
-```
-
-Both results feed directly into the summarization context.
+This JSON block is the **review_data** base for later phases — fed into prompt construction (detailed in its own spec) before being passed to the **Monk Runner**.
 
 ---
 
