@@ -1,73 +1,132 @@
-# 📘 ZenOS-AI Documentation
+# 📘 **ZenOS-AI Documentation Hub**
 
-Welcome to the ZenOS-AI documentation hub.  
-This section provides the conceptual and technical foundations of the ZenOS-AI architecture, focusing on the components already implemented in v1.0.
-
-ZenOS-AI transforms Home Assistant into a fully agentic, persona-aware AI operating system.  
-The documents here explain *how* that works: the cabinets, the Monastery, the summarizers, the semantic labeling system, and the Dojo-driven kung fu subsystem architecture.
-
-Below is an index of the documentation currently included.
+> **Version:** 1.0.0 | **Last Updated:** November 2025  
+> **Author:** Nathan Curtis | **License:** MIT  
+> *Part of the Friday’s Party / ZenOS-AI project*
 
 ---
 
-## 📚 Included Documentation
+Welcome to the **ZenOS-AI Documentation** — your guide to the architecture, tools, and philosophy behind *Friday’s Party*.  
+
+ZenOS-AI transforms **Home Assistant** into a fully agentic, persona-aware AI operating system.  
+These documents explain *how* that happens — from the **Cabinet System** that defines the home’s structure, to the **Monastery** that reflects and reasons, to the **Summarizers** that keep awareness tight and efficient.
+
+Whether you’re building your own AI construct or exploring the Monastery’s inner workings, this is where you begin.
+
+---
+
+## 📚 **Included Documentation**
 
 ### **1. Zen Summarizer**
-**Path:** `docs/zen_summarizer/readme.md`  
-A complete walkthrough of the multi-layer summarization pipeline:  
+**Path:** [docs/zen_summarizer/readme.md](./zen_summarizer/readme.md)  
+A deep dive into the multi-layer summarization pipeline that keeps Friday and Kronk aware without flooding the context window.  
+Covers:
 - Dojo drawers and subsystem definitions  
-- Kata generation  
-- Monastery reflection  
+- Kata generation and reflection  
+- Monastery reduction  
 - Zen Summary consolidation  
 - Live Prompt assembly  
-Explains how Friday and Kronk maintain awareness without flooding the context window.
+
+Shows how awareness flows through the system — from environment to reasoning context.
 
 ---
 
 ### **2. Kung Fu Components**
-**Path:** `docs/kung_fu/readme.md`  
-Explains the structure and purpose of Kung Fu Components:  
-- How each component defines a subsystem  
-- Required context  
-- Operational instructions  
-- Safety constraints  
-- Master switches  
-- Interaction with the Index and Monastery
+**Path:** [docs/kung_fu/readme.md](./kung_fu/readme.md)  
+Defines how each *Kung Fu Component* acts as a modular subsystem within the Dojo.  
+Includes:
+- Required context and operational scope  
+- Safety constraints and master switches  
+- Interaction with the Index and Monastery  
+- Writing, versioning, and maintaining components using the **KungFu Writer** tool  
 
-Shows how to write, version, and maintain components using the **KungFu Writer** tool.
+Each component is a discipline — a repeatable “technique” Friday uses to act on the home.
 
 ---
 
 ### **3. Cabinet System**
+**Path:** [docs/cabinets/readme.md](./cabinets/readme.md)  
+Describes the structured filesystem that defines ZenOS-AI’s world — the **Cabinet System**.  
+Covers:
+- Core cabinet types: **SYSTEM**, **Dojo**, **Household (Home)**, **Family**, and **User**  
+- Drawer JSON structure for profiles, prefs, and digital-twin data  
+- Ownership hierarchy and mount relationships (Household → Family → User/AI)  
+- How the **Household Cabinet** mirrors each **Kung Fu Component** 1:1  
+- How the **Dojo Cabinet** stores subsystem definitions  
+- How the **SYSTEM Cabinet** loads directives, cortex metadata, and startup identity  
+- Consistent labeling for global lookups  
+- Role of **CabinetAdmin** (structure/mounts/permissions) and **FileCabinet** (read/write ops)  
+- How Summarizers, the Index, and the Monastery traverse cabinets to build state  
 
-**Path:** `docs/cabinets/readme.md`
-Explains the ZenOS-AI Cabinet architecture — the structured filesystem that stores identity, preferences, digital-twin data, subsystem links, and OS-level metadata.
-- The four cabinet types: **SYSTEM**, **Dojo**, **Household (Home)**, **Family**, and **User**
-- How drawers store JSON defining profiles, prefs, state, lore, and digital-twin data
-- Cabinet ownership, hierarchy, and mounts (Household → Family → User / AI)
-- How the **Household cabinet** mirrors each Kung Fu Component with a 1:1 drawer
-- How the **Dojo cabinet** stores all subsystem definitions (Kung Fu Components)
-- How the **SYSTEM cabinet** loads OS directives, cortex metadata, and startup identity
-- Label consistency across all cabinets for fast global lookups
-- Role of **CabinetAdmin** (structure, mounts, permissions) and **FileCabinet** (drawer read/write)
-- How summarizers, the Index, and the Monastery read across cabinets to build context
-
----
-
-## 🧭 How to Navigate
-Each subsection contains a self-contained overview with links, examples, and reference structures.  
-Start with the **Zen Summarizer**, then explore the **Dojo** and **Kung Fu Components**, as these form the active working model Friday uses to reason about your home.
-
-For OS-level behavior and identity, see the **SYSTEM Cabinet**.
+The Cabinet System is the backbone of ZenOS-AI — the filesystem for the mind.
 
 ---
 
-## 🛠 Contributing
-All documentation is versioned alongside ZenOS-AI’s codebase.  
-Contributions, improvements, and clarifications are welcome — especially around subsystem design patterns and label taxonomies.
+### **4. ZenOS-AI Library**
+**Path:** [docs/library/readme.md](./library/readme.md)  
+Centralized JSON utility runner for all DojoTools.  
+Provides:
+- Unified helper function dispatcher  
+- Structured JSON I/O  
+- Safe interoperability between Friday, Monastery agents, and Summarizers  
+- Integration with **FileCabinet**, **CabinetAdmin**, and the **Zen Indexer**  
+
+The Library keeps helper logic clean, predictable, and lightweight.
 
 ---
 
-If you're building your own agent with ZenOS-AI, this docs directory is your map.  
-Welcome to the Monastery.
-```
+### **5. Zen Index System**
+**Path:** [docs/library/index_system.md](./library/index_system.md)  
+Outlines the recursive label-query engine that powers cross-cabinet discovery.  
+Includes:
+- Library Index Core (macro layer)  
+- DojoTools Zen Index script (v2.7.1)  
+- Zen Index Event Handler (v2.0.0)  
+- Recursion and legacy `~INDEX~` translation loop  
+- Roadmap: integration into the ZenOS Command Interpreter  
+
+If the Cabinet System is the filesystem, the Index is its search engine — recursive, event-driven, and Dojo-aware.
+
+---
+
+## 🧭 **How to Navigate**
+
+Each section is self-contained and cross-linked.  
+Recommended reading order:
+
+1. [Zen Summarizer](./zen_summarizer/readme.md)  
+2. [Kung Fu Components](./kung_fu/readme.md)  
+3. [Cabinet System](./cabinets/readme.md)  
+4. [Library](./library/readme.md)  
+5. [Index System](./library/index_system.md)  
+
+For OS-level identity and behavior, see the **SYSTEM Cabinet**.
+
+---
+
+## 🧩 **Philosophy**
+
+ZenOS-AI is built on composability and reflection.  
+Each drawer, cabinet, and macro follows the same pattern:  
+
+> **Observe → Reflect → Select → Act → Summarize**
+
+The system doesn’t just automate — it learns to *describe* its own reasoning.
+
+---
+
+## 🛠 **Contributing**
+
+Documentation evolves alongside the codebase.  
+Contributions, clarifications, and new examples are welcome — especially for:
+- Subsystem design patterns  
+- Label taxonomies  
+- Monastery integrations  
+
+Join the conversation:  
+👉 [Home Assistant Community — Friday’s Party: Creating a Private Agentic AI](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120?u=nathancu)
+
+---
+
+If you’re building your own agent, this directory is your map.  
+Welcome to the Monastery. 🕯️
