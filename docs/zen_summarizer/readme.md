@@ -25,20 +25,14 @@ Let’s walk through the pipeline step by step.
 
 ZenOS-AI begins with **capabilities**, not prompts.
 
-These capabilities live in two places:
+These capabilities live in the dojo:
 
 ### **A. Dojo Drawers**
 These store:
 - operational directives  
-- identity  
-- role metadata  
-- persona blocks  
-- system logic  
-- tool descriptions  
 - cognitive “skills”
 
-### **B. Home Kung Fu Drawers**
-Installed by the user:
+...and possibly
 - Hot tub management  
 - Energy manager  
 - Water safety  
@@ -62,9 +56,9 @@ The Dojo isn’t executed — it’s *loaded* as part of Friday’s cognitive en
 
 This is the first active processor in the cognitive chain.
 
-The Ninja Summarizer:
-- Watches Home Assistant events  
-- Extracts relevant metadata  
+When triggered by the Scheduler The Ninja Summarizer:
+- Responds to and collects the trigger event
+- Collects defined context
 - Maps labels → context  
 - Generates a **Kata**  
 - Writes it to the File Cabinet
