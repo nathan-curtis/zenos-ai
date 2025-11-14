@@ -263,7 +263,9 @@ Together, they ensure the cabinet ecosystem stays consistent and healthy.
 - **Kung Fu Components (Dojo Subsystems)**  
   https://github.com/nathan-curtis/zenos-ai/blob/main/docs/kung_fu/readme.md
 
-- **FES Trigger Sensors (Front-End Semantics Sensors)**  
+- **FES Trigger-Based Template Sensors**
+
+This is the basis of how cabinets work. The volume redirector ties together a group of sensors. 
   https://community.home-assistant.io/t/trigger-based-template-sensor-to-store-global-variables/735474
 
 ```
