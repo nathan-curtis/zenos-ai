@@ -1,271 +1,429 @@
-# 🚀 **ZenOS-AI Cabinet System**
+🚪 ZenOS-AI Cabinet System
 
-### *The Identity, Semantic, and Preference Architecture of the ZenOS Home AI*
+Identity, Semantics & Preference Architecture for the Home AI
 
-```markdown
-# ZenOS-AI Cabinet System
-### Unified Identity, Settings, and Semantic Storage for the ZenOS Home AI
+The Cabinet System is the semantic backbone of ZenOS-AI — the place where identity, relationships, culture, rules, preferences, and operational data all live in structured, validated JSON.
 
-The ZenOS Cabinet System is the **core identity and context architecture** behind every Home AI instance.  
-Cabinets serve as structured JSON storage units that define:
+Every cabinet contains drawers, and every drawer contains JSON.
+Together they form the Home AI’s knowledge graph, context engine, and personalization layer.
 
-- Who exists in the system  
-- How people, families, and AIs relate  
-- What the home environment is  
-- What rules and preferences apply  
-- How the AI should interpret and act on context  
+This document explains the architecture, storage model, cabinet types, and how the Home AI reasons about the humans, AIs, and environment inside the home.
 
-Every cabinet contains **drawers**, and every drawer contains **JSON**.  
-This preserves structure, consistency, and performance.
 
 ---
 
-# 🏛 Cabinet Hierarchy
+🧱 1. Cabinet Hierarchy
 
-ZenOS uses a 3-tier identity scaffold:
+ZenOS uses a 3-tier cabinet model to map the home:
 
-```
+Household Cabinet (the home)
+ └── Family Cabinets (groups)
+     └── User Cabinets (people + AIs)
 
-Household (Home)
-└── Families
-└── Users (Human or AI)
+Each tier has specific responsibilities, override rules, and security boundaries.
 
-```
-
-Each type has specific responsibilities, scopes, and override rules.
 
 ---
 
-# 🏠 1. Household Cabinet  
-### *The Home’s Settings, Identity, and Digital Twin*
+🏠 2. Household Cabinet
 
-The **Household Cabinet** (sometimes called the Home Cabinet) is the **canonical source of truth** for:
+The Digital Twin, Home Identity & System-Wide Preferences
 
-- Home-level settings  
-- Zones, rooms, structure  
-- The home’s **digital twin**  
-- Semantic map (labels, tags, domains)  
-- High-level behavior rules  
-- System-wide preferences  
-- The Prime AI (via `owner.partner_ai`)  
+The Household Cabinet is the top-level, canonical definition of the home:
 
-### **🔁 Mirrored with DOJO**
-Each Kung Fu component in the Dojo Cabinet should have a **1:1 matching drawer** in the Household Cabinet.
+home identity
 
-Example:
+rooms, zones, structure
 
-- Dojo drawer: `water_manager`
-- Household drawer: `water_manager`
+digital twin metadata
 
-This allows:
-- one source of operational instructions (Dojo)  
-- one source of runtime state and settings (Household)  
+semantic labels
+
+global preferences
+
+automation policy
+
+mounted families & users
+
+partner AI for the home (typically Friday)
+
+
+🔁 Mirrors Dojo Instructions
+
+Each Kung Fu component (in the Dojo Cabinet) has a matching drawer here. Example:
+
+dojo.water_manager ↔ household.water_manager
+
+dojo.security_manager ↔ household.security_manager
+
+
+Dojo = instructions
+Household = runtime state + preferences
 
 ZenOS merges both at runtime.
 
----
-
-# 👪 2. Family Cabinet  
-### *Lore, Identity, History, Trust, and Shared Culture*
-
-A **Family Cabinet** represents a relational group inside the home.  
-This is where ZenOS stores the *human* parts of the system:
-
-- family structure  
-- lore & shared history  
-- norms & boundaries  
-- trust and emotional dynamics  
-- shared preferences  
-- rituals, holidays, vibes  
-- membership and relationship graph  
-
-Families map directly into Households.
-
-A home may contain:
-- nuclear families  
-- chosen families  
-- polycules  
-- guest circles  
-- housemate clusters  
-- “trusted tribe” groups  
-
-These shape how the AI interacts with its residents.
 
 ---
 
-# 🧍 3. User Cabinets  
-### *Per-Person Identity, Preferences, Profiles, and AI Partners*
+👨‍👩‍👧 3. Family Cabinets
 
-Every human and every AI construct gets a User Cabinet.
+Shared Lore, Norms, Trust, Culture, and Relationship Maps
+
+Family Cabinets store the human side of the system:
+
+family structure
+
+shared rituals, holidays, and culture
+
+emotional norms
+
+trust models
+
+boundaries & comfort levels
+
+relationship graphs
+
+shared preferences
+
+
+Multiple families may exist:
+
+nuclear families
+
+chosen families
+
+guest circles
+
+polycules
+
+friend groups
+
+housemate clusters
+
+
+ZenOS uses these to adjust tone, boundaries, and decision-making.
+
+
+---
+
+🧍‍♂️ 4. User Cabinets
+
+Identity, Preferences & Personal AI Context
+
+A User Cabinet exists for each:
+
+human
+
+frontline AI (Friday, Charming, Rosie…)
+
+secondary AI or agent
+
 
 Contains:
-- identity  
-- personal profile  
-- preferences  
-- private boundaries  
-- consent model  
-- AI persona (if applicable)  
-- partner AI (if they own one)  
-- device associations  
-- tags / labels  
-- personal settings  
 
-### **Override Rules**
-As context narrows, **overrides apply**:
+identity metadata
 
-```
+preferences
 
-Household-level setting
-→ overridden by Family setting
-→ overridden by User setting
+personal boundaries
 
-````
+consent model
 
-ZenOS determines final behavior through these cascading scopes.
+devices
 
-Users may have:
-- their own AI  
-- their own preferences  
-- their own permitted automations  
+sensors
 
-All private drawers stay private unless explicitly shared.
+private drawers
+
+partner AI (if applicable)
+
+
+🔽 Override Cascade
+
+ZenOS resolves preference conflicts by narrowing scope:
+
+Household → Family → User
+
+User-level always wins inside a user’s context.
+
 
 ---
 
-# 🧩 SYSTEM & DOJO = OS + Operational Instructions
+🧠 5. System & Dojo = OS + Operational Instruction Sets
 
-### **SYSTEM Cabinet**
-- OS kernel  
-- Cortex  
-- Directives  
-- Persona rules  
-- Runtime policies  
-- Boot metadata  
-- Hidden  
-- Read-only  
-- Never visible to frontline AIs  
+🖥 SYSTEM Cabinet
 
-### **DOJO Cabinet**
-- Kung Fu components  
-- Workflow definitions  
-- Runbooks  
-- Operating instructions  
-- Safety / reflection rules  
+Contains:
 
-DOJO = *“how to operate the home”*  
-SYSTEM = *“what AI you are and what rules you obey”*
+OS metadata
+
+directives
+
+persona roots
+
+cortex definitions
+
+runtime policies
+
+boot metadata
+
+global flags
+
+
+Marked as system, hidden, read-only.
+
+🥋 DOJO Cabinet
+
+Contains:
+
+Kung Fu components
+
+task/skill definitions
+
+subsystem schemas
+
+operating instructions
+
+safety policies
+
+reflection rules
+
+
+Dojo tells the AI how to operate.
+System tells the AI what it is.
+
 
 ---
 
-# 🔐 Security Model  
-### *Cabinet-Level Context & Boundaries*
+🔐 6. Security Model
 
-Cabinets define visibility boundaries:
+Cabinets define explicit boundaries:
 
-- **public**: visible to all household AIs  
-- **family-scoped**: visible only to AIs serving that family  
-- **user-private**: visible only to the user & SYSTEM  
-- **system**: visible only to backend processes  
+public — visible to any home AI
 
-Frontline AIs only access drawers allowed by their ACLs.
+family-only — visible to AI serving that family
+
+user-private — visible only to that user & System
+
+system — only backend processes
+
+
+ACLs inside the AI_Cabinet_VolumeInfo header govern access.
+
 
 ---
 
-# 🔗 Mounts: Relationship Graph
+🔗 7. Mounts: Relationship Graph
 
-Each cabinet can define **mounts**, linking to related cabinets:
+Example:
 
-```yaml
 mounts:
   household: sensor.home_cabinet
   families:
     - sensor.family_primary
   users:
-    - sensor.nathan_user
+    - sensor.nathan
+    - sensor.kim
   partner_ai: sensor.friday_cabinet
-````
 
-This creates a **semantic graph** that ZenOS uses to understand:
+Mounts let ZenOS understand:
 
-* who belongs to whom
-* who owns what
-* where context flows
-* how preferences propagate
-* which AI is primary for the system
+who belongs where
 
----
+who leads what
 
-# 🏷 Labeling System
+which preferences apply
 
-ZenOS labeling is **consistent across all cabinets**, allowing:
+which AI persona handles which scope
 
-* single-pass scanning
-* fast domain detection
-* cross-cabinet rule application
-* unified semantic understanding
 
-Labels propagate through:
-
-* drawers
-* cabinets
-* relationships
-* zones
-* Kung Fu components
-
-One label read = full semantic insight.
 
 ---
 
-# 🗂 JSON-First Storage
+🏷 8. Labels & Semantic Mapping
 
-Everything in ZenOS is stored as **JSON inside drawers**, ensuring:
+Labels unify domains across cabinets:
 
-* structure
-* simplicity
-* compatibility
-* schema validation
-* easy parsing
-* version tracking
-* safe merges
+security
 
-All tools (FileCabinet, CabinetAdmin, DojoLoader) operate on this JSON.
+water
 
----
+kitchen
 
-# 🧰 Tooling
+zen
 
-### **FileCabinet**
+cabinet
 
-* single-source writer
-* ensures schema correctness
-* prevents unsafe writes
-* enforces read-only flags
-* timestamps updates
+volumeinfo
 
-### **CabinetAdmin**
+component names
 
-* repairs cabinets
-* creates new ones
-* aligns schema
-* validates mounts
-* formats JSON
-* enforces cabinet-level security
 
-Together, they ensure the cabinet ecosystem stays consistent and healthy.
+A label is enough for ZenOS to:
+
+know the domain
+
+load the right Kata
+
+choose the right subsystem
+
+apply correct override rules
+
+
 
 ---
 
-## 📚 Additional Documentation
+📦 9. Storage Model: JSON Drawers
 
-- **Zen Summarizer**  
-  https://github.com/nathan-curtis/zenos-ai/blob/main/docs/zen_summarizer/readme.md
+Every drawer stores JSON, with:
 
-- **Kung Fu Components (Dojo Subsystems)**  
-  https://github.com/nathan-curtis/zenos-ai/blob/main/docs/kung_fu/readme.md
+version
 
-- **FES Trigger-Based Template Sensors**
+timestamp
 
-This is the basis of how cabinets work. The volume redirector ties together a group of sensors. 
-  https://community.home-assistant.io/t/trigger-based-template-sensor-to-store-global-variables/735474
+value
 
-```
+metadata
+
+linkages
+
+security flags
+
+
+Tools like FileCabinet and CabinetAdmin enforce schemas.
+
+
+---
+
+🧰 10. Tools That Work With Cabinets
+
+🗄 FileCabinet
+
+primary read/write tool
+
+validates drawers
+
+ensures schema integrity
+
+timestamps updates
+
+enforces read-only flags
+
+
+🔧 CabinetAdmin
+
+repairs cabinets
+
+aligns schema
+
+formats JSON
+
+builds new cabinets
+
+attaches mounts
+
+enforces ACLs
+
+
+🔀 Volume Redirector (DojoTools)
+
+The event router for legacy → cabinet writes.
+Full spec:
+zen_redirector_spec.md
+
+
+---
+
+🧩 11. How Cabinets Interact With the Reasoning Pipeline
+
+Cabinets feed:
+
+Friday
+
+Kronk
+
+The Monastery
+
+Kata processors
+
+Room Manager
+
+Security Manager
+
+Taskmaster
+
+Trash Trakker
+
+Water Manager
+
+
+Katas = compact summaries of cabinets
+Monks = the summarization pipeline
+RoomState = autonomic nervous system
+
+Cabinets → Katas → SuperSummary → Friday’s prompt loop.
+
+
+---
+
+🧪 12. Debugging & Observability
+
+Useful tools:
+
+cabinet_manifest
+
+CabinetAdmin validator
+
+Redirector probe mode
+
+Summarizer staleness markers
+
+Mount tree visualizer (coming soon™️)
+
+
+
+---
+
+📚 13. Additional Documentation
+
+Zen Redirector Spec
+zen_redirector_spec.md
+
+Cabinet Spec (VolumeInfo format)
+cabinet_spec.md
+
+Hypergraph Model
+hypergraph_model.md
+
+Kung Fu / Dojo Components
+../kung_fu/readme.md
+
+Zen Summarizer
+../zen_summarizer/readme.md
+
+
+
+---
+
+🔚 Conclusion
+
+The Cabinet System is the identity layer of ZenOS-AI — the foundation that makes Friday, Kronk, and the entire home ecosystem coherent, personalized, and safe.
+
+It provides:
+
+consistent JSON storage
+
+identity & preference hierarchies
+
+semantic labeling
+
+relationship graphs
+
+security boundaries
+
+runtime context for every subsystem
+
+
+Everything the AI is, knows, and cares about lives inside these Cabinets.
+
+Treat them with care and the system becomes infinitely extensible.
