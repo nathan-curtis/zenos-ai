@@ -1,12 +1,11 @@
+alias: Zen DojoTools Volume Redirector
 description: >
-  Custom translation module to translate legacy Fes-style global-variable events
-  into dojo-compatible format. Planned retirement when HA allows templating of
-  event type in automation.  Allows dynamic volume resolution. Injects
-  'volume_entity' based on provided cabinet sensor entity ID. Routes to
-  dojo-style 'set_variable', 'remove_variable', or 'clear_variables' handlers.
-  Verifies write permission using the cabinet manifest stored in
-  'sensor.cabinet_manifest'.
-mode: parallel
+  DojoTools Volume Redirector v.2
+  Hardened redirector for legacy Fes-style global-variable events.
+  Translates *_legacy events into dojo-compatible cabinet handlers.
+  Validates cabinet membership using a cabinet manifest
+  and emits structured telemetry for success and failure cases.
+
 triggers:
   - trigger: event
     event_type: set_variable_legacy
@@ -17,42 +16,245 @@ triggers:
   - trigger: event
     event_type: clear_variable_legacy
     id: clear
+  - trigger: event
+    event_type: dojo_volume_redirector_probe
+    id: probe
+
 conditions: []
+
 actions:
   - variables:
-      vol_system: sensor.variables
-      vol_home: sensor.household_cabinet
-      vol_family: sensor.surname_family_cabinet
-      vol_kata: sensor.zen_kata_storage_cabinet
+      # --- SANITIZED VOLUME ENTITY MAPPINGS ---
+      vol_system: sensor.system_cabinet
+      vol_household: sensor.primary_household_cabinet
+      vol_family: sensor.primary_family_cabinet
+      vol_kata: sensor.zen_kata_cabinet
       vol_history: sensor.zen_history_cabinet
-      vol_friday_history: sensor.zen_friday_history_cabinet
+      vol_friday_history: sensor.zen_agent_history_cabinet
       vol_dojo: sensor.zen_dojo_cabinet
       vol_summary: sensor.ai_summary_cabinet
       vol_scratch: ""
-      vol_friday: sensor.friday_s_cabinet
-      vol_user1: sensor.user1_cabinet
-      vol_user1: sensor.user2_cabinet
+      vol_agent: sensor.agent_private_cabinet
+      vol_user1: sensor.user_primary_cabinet
+      vol_user2: sensor.user_partner_cabinet
       vol_charming: ""
+
+      recognized_volumes: |
+        {{
+          [
+            vol_system,
+            vol_summary,
+            vol_household,
+            vol_family,
+            vol_agent,
+            vol_user1,
+            vol_user2,
+            vol_kata,
+            vol_history,
+            vol_friday_history,
+            vol_dojo
+          ]
+        }}
+
+      manifest_key: zen_library_manifest
+      zen_default_fam_cab: "{{ vol_household }}"
+      manifest_entity: "{{ zen_default_fam_cab }}"
+      manifest_data: |-
+        {{
+          (
+            state_attr(manifest_entity, 'variables') | default({})
+          ).get(manifest_key, {}).get('value', {})
+        }}
+
+      # --- SANITIZED EVENT EXTRACTS ---
       event_type: "{{ trigger.event.event_type }}"
       key: "{{ trigger.event.data.key | default('') }}"
       value: "{{ trigger.event.data.value | default('') }}"
       set_timestamp: "{{ trigger.event.data.set_timestamp | default(false) }}"
       volume_entity: "{{ trigger.event.data.volume_entity | default('') }}"
       log_events: "{{ trigger.event.data.log_events | default(false) }}"
+
+      # --- MANIFEST LOOKUP ---
+      manifest_volume_entry: >-
+        {% set md = manifest_data if manifest_data is mapping else {} %}
+        {% set vol_key = volume_entity | string %}
+        {{ md.get(vol_key, {}) }}
+
+      manifest_metadata: >
+        {% set mm = manifest_volume_entry.get('metadata', {}) %}
+        {{ mm.get('volume', mm) if mm else {} }}
+
+      manifest_flags: >-
+        {{ manifest_metadata.get('flags', {}) if manifest_metadata is mapping else {} }}
+
+      manifest_guid: >-
+        {%- if manifest_metadata is mapping and manifest_metadata.get('id') -%}
+          {{ manifest_metadata.get('id') }}
+        {%- elif manifest_volume_entry is mapping and manifest_volume_entry.get('id') -%}
+          {{ manifest_volume_entry.get('id') }}
+        {%- else -%}
+          ''
+        {%- endif -%}
+
+      # --- CABINET INFO EXTRACTION ---
+      cabinet_info: >
+        {% set vars = state_attr(volume_entity, 'variables') | default({}, true) %}
+        {% set entry = vars.get('AI_Cabinet_VolumeInfo', {}) %}
+        {{ entry if entry is mapping else {} }}
+
+      cabinet_info_value: |
+        {{ cabinet_info.get('value', {}) if cabinet_info is mapping else {} }}
+
+      cabinet_guid: >
+        {% set v = cabinet_info_value if cabinet_info_value is mapping else {} %}
+        {% if v.get('id') %}
+          {{ v.get('id') }}
+        {% else %}
+          ''
+        {% endif %}
+
+      guid_mismatch: "{{ manifest_guid and cabinet_guid and (manifest_guid != cabinet_guid) }}"
+
+      # --- SANITIZED CANONICAL NAMES ---
+      canonical_volume_name: >-
+        {% set fn = (state_attr(volume_entity, 'friendly_name') | default('', true)) | string | trim %}
+        {% if fn | lower not in ['unknown','unavailable','none','null',''] %}
+          {{ fn }}
+        {% else %}
+          {% if volume_entity == vol_summary %}ai_summary
+          {% elif volume_entity == vol_household %}primary_household
+          {% elif volume_entity == vol_family %}primary_family
+          {% elif volume_entity == vol_agent %}agent_private
+          {% elif volume_entity == vol_user1 %}user_primary
+          {% elif volume_entity == vol_user2 %}user_partner
+          {% elif volume_entity == vol_kata %}zen_kata
+          {% elif volume_entity == vol_history %}zen_history
+          {% elif volume_entity == vol_friday_history %}agent_history
+          {% elif volume_entity == vol_dojo %}zen_dojo
+          {% else %}unknown{% endif %}
+        {% endif %}
+
+      routing_status: pending
+      routing_action: none
+      routed_volume: "{{ volume_entity }}"
+
+  # --- LOGGING BLOCK (unchanged) ---
   - alias: Log the transaction?
     if:
-      - alias: Log?
-        condition: template
+      - condition: template
         value_template: "{{ log_events }}"
     then:
-      - data:
+      - action: logbook.log
+        data:
           name: "{{ event_type }}:"
-          message: >
-            {{ key | default('-') }} {%- if event_type == 'set_variable_legacy'
-            -%}           
-              : {{ value | default('not defined!')}}.
+          message: >-
+            {{ key | default('-') }}
+            {%- if event_type == 'set_variable_legacy' -%}
+              : {{ value | default('not defined!') }}.
             {%- endif -%}
-        action: logbook.log
+
+  # --- PROBE HANDLING (unchanged except sanitized names) ---
+  - alias: Handle redirector probe events
+    choose:
+      - conditions:
+          - condition: trigger
+            id: probe
+        sequence:
+          - event: dojo_volume_redirector_probe_result
+            event_data:
+              status: |-
+                {% if volume_entity
+                 and volume_entity in recognized_volumes
+                 and manifest_volume_entry is mapping and manifest_volume_entry != {} %}
+                  {% if guid_mismatch %}warning{% else %}ready{% endif %}
+                {% else %}error{% endif %}
+              volume_entity: "{{ volume_entity }}"
+              volume_name: "{{ canonical_volume_name }}"
+              key: "{{ key }}"
+              requested_action: "{{ trigger.event.data.requested_action | default('probe') }}"
+              manifest_entry_found: "{{ manifest_volume_entry is mapping and manifest_volume_entry != {} }}"
+              recognized_volume: "{{ volume_entity in recognized_volumes }}"
+              manifest_guid: "{{ manifest_guid }}"
+              cabinet_guid: "{{ cabinet_guid }}"
+              guid_mismatch: "{{ guid_mismatch }}"
+              failure_reason: >-
+                {% if not volume_entity %}missing_volume_entity
+                {% elif volume_entity not in recognized_volumes %}volume_not_recognized
+                {% elif manifest_volume_entry is not mapping or manifest_volume_entry == {} %}volume_missing_from_manifest
+                {% elif guid_mismatch %}guid_mismatch
+                {% else %}ok{% endif %}
+          - stop: Redirector Probe Complete
+
+  # --- VALIDATION STAGE (unchanged) ---
+  - alias: Validate redirect request
+    choose:
+      # missing volume
+      - conditions:
+          - condition: template
+            value_template: "{{ (volume_entity | default('')) | trim == '' }}"
+        sequence:
+          - event: dojo_volume_redirector_result
+            event_data:
+              status: error
+              failure: missing_volume_entity
+              event_type: "{{ event_type }}"
+              key: "{{ key }}"
+              volume_entity: "{{ volume_entity }}"
+              volume_name: "{{ canonical_volume_name }}"
+              set_timestamp: "{{ set_timestamp }}"
+          - stop: Redirect Validation Failed
+
+      # volume not recognized
+      - conditions:
+          - condition: template
+            value_template: "{{ volume_entity not in recognized_volumes }}"
+        sequence:
+          - event: dojo_volume_redirector_result
+            event_data:
+              status: error
+              failure: volume_not_recognized
+              event_type: "{{ event_type }}"
+              key: "{{ key }}"
+              volume_entity: "{{ volume_entity }}"
+              volume_name: "{{ canonical_volume_name }}"
+              set_timestamp: "{{ set_timestamp }}"
+          - stop: Redirect Validation Failed
+
+      # manifest missing
+      - conditions:
+          - condition: template
+            value_template: "{{ manifest_volume_entry is not mapping or manifest_volume_entry == {} }}"
+        sequence:
+          - event: dojo_volume_redirector_result
+            event_data:
+              status: error
+              failure: volume_missing_from_manifest
+              event_type: "{{ event_type }}"
+              key: "{{ key }}"
+              volume_entity: "{{ volume_entity }}"
+              volume_name: "{{ canonical_volume_name }}"
+              set_timestamp: "{{ set_timestamp }}"
+              manifest_guid: "{{ manifest_guid }}"
+          - stop: Redirect Validation Failed
+
+      # missing key for set/remove
+      - conditions:
+          - condition: template
+            value_template: "{{ event_type in ['set_variable_legacy','remove_variable_legacy'] }}"
+          - condition: template
+            value_template: "{{ (key | default('')) | trim == '' }}"
+        sequence:
+          - event: dojo_volume_redirector_result
+            event_data:
+              status: error
+              failure: missing_key
+              event_type: "{{ event_type }}"
+              volume_entity: "{{ volume_entity }}"
+              volume_name: "{{ canonical_volume_name }}"
+              set_timestamp: "{{ set_timestamp }}"
+          - stop: Redirect Validation Failed
+
+  # --- ROUTING BLOCKS (ALL SANITIZED NAMES) ---
   - choose:
       - conditions:
           - alias: AI Summarizer Cabinet
@@ -62,215 +264,209 @@ actions:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - Katas
-                    event: set_variable_ai_summary_cabinet
+                  - event: set_variable_ai_summary_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables:
+                      routing_status: success
+                      routing_action: set
+                      routed_volume: "{{ volume_entity }}"
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - Katas
-                    event: remove_variable_ai_summary_cabinet
+                  - event: remove_variable_ai_summary_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
+                      key: "{{ key }}"
+                  - variables:
+                      routing_status: success
+                      routing_action: remove
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - Katas
-                    event: clear_variable_ai_summary_cabinet
+                  - event: clear_variable_ai_summary_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-        alias: AI Summarizer Cabinet
+                      key: "{{ key }}"
+                  - variables:
+                      routing_status: success
+                      routing_action: clear
+
       - conditions:
-          - alias:  Household Storage
+          - alias: Household Cabinet
             condition: template
-            value_template: "{{ volume_entity == vol_home }}"
+            value_template: "{{ volume_entity == vol_household }}"
         sequence:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - Household
-                    event: set_variable_household_cabinet
+                  - event: set_variable_primary_household_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - Household
-                    event: remove_variable_household_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: remove_variable_primary_household_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - Household
-                    event: clear_variable_household_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: clear_variable_primary_household_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
       - conditions:
-          - alias: Family Storage
+          - alias: Family Cabinet
             condition: template
             value_template: "{{ volume_entity == vol_family }}"
         sequence:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - Family
-                    event: set_variable_family_cabinet
+                  - event: set_variable_primary_family_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - Family
-                    event: remove_variable_family_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: remove_variable_primary_family_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - Family
-                    event: clear_variable_family_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: clear_variable_primary_family_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
       - conditions:
-          - alias: AI User - Friday Volume
+          - alias: Agent Cabinet
             condition: template
-            value_template: "{{ volume_entity == vol_friday }}"
+            value_template: "{{ volume_entity == vol_agent }}"
         sequence:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - event: set_variable_friday_cabinet
+                  - event: set_variable_agent_private_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
-                    alias: Set - Friday
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - event: remove_variable_friday_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
-                    alias: Remove - Friday
+                  - event: remove_variable_agent_private_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - event: clear_variables_friday_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
-                    alias: Clear - Friday
+                  - event: clear_variable_agent_private_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
       - conditions:
-          - alias: User - Nathan Volume
+          - alias: User Cabinet A
             condition: template
             value_template: "{{ volume_entity == vol_user1 }}"
         sequence:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - user1
-                    event: set_variable_user1_cabinet
+                  - event: set_variable_user_primary_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - user1
-                    event: remove_variable_user1_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: remove_variable_user_primary_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - user1
-                    event: clear_variables_user1_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: clear_variable_user_primary_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
       - conditions:
-          - alias: user2 Volume
+          - alias: User Cabinet B
             condition: template
             value_template: "{{ volume_entity == vol_user2 }}"
         sequence:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - user2
-                    event: set_variable_user2_cabinet
+                  - event: set_variable_user_partner_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - user2
-                    event: remove_variable_user2_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: remove_variable_user_partner_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - user2
-                    event: clear_variable_user2_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: clear_variable_user_partner_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
       - conditions:
           - alias: Zen Kata Storage
             condition: template
@@ -279,148 +475,141 @@ actions:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - Katas
-                    event: set_variable_zen_kata_cabinet
+                  - event: set_variable_zen_kata_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - Katas
-                    event: remove_variable_zen_kata_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: remove_variable_zen_kata_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - Katas
-                    event: clear_variable_zen_kata_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: clear_variable_zen_kata_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
       - conditions:
-          - alias: Zen History Cabinet
+          - alias: Zen History Storage
             condition: template
             value_template: "{{ volume_entity == vol_history }}"
         sequence:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - Katas
-                    event: set_variable_zen_history_cabinet
+                  - event: set_variable_zen_history_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - Katas
-                    event: remove_variable_zen_history_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: remove_variable_zen_history_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - Katas
-                    event: clear_variable_zen_history_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: clear_variable_zen_history_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
       - conditions:
-          - alias: Zen Dojo Cabinet
-            condition: template
-            value_template: "{{ volume_entity == vol_dojo }}"
-        sequence:
-          - choose:
-              - conditions:
-                  - condition: trigger
-                    id:
-                      - set
-                sequence:
-                  - alias: Set - Katas
-                    event: set_variable_zen_dojo_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
-                      log_events: "{{ log_events }}"
-              - conditions:
-                  - condition: trigger
-                    id:
-                      - remove
-                sequence:
-                  - alias: Remove - Katas
-                    event: remove_variable_zen_dojo_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
-              - conditions:
-                  - condition: trigger
-                    id:
-                      - clear
-                sequence:
-                  - alias: Clear - Katas
-                    event: clear_variable_zen_dojo_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
-      - conditions:
-          - alias: Zen Friday History Cabinet
+          - alias: Zen Agent History
             condition: template
             value_template: "{{ volume_entity == vol_friday_history }}"
         sequence:
           - choose:
               - conditions:
                   - condition: trigger
-                    id:
-                      - set
+                    id: set
                 sequence:
-                  - alias: Set - Katas
-                    event: set_variable_zen_friday_history_cabinet
+                  - event: set_variable_zen_agent_history_cabinet
                     event_data:
-                      key: "{{ key | default('') }}"
-                      value: "{{  value | default('') }}"
-                      set_timestamp: "{{ set_timestamp | default(false) }}"
+                      key: "{{ key }}"
+                      value: "{{ value }}"
+                      set_timestamp: "{{ set_timestamp }}"
                       log_events: "{{ log_events }}"
+                  - variables: { routing_status: success, routing_action: set }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - remove
+                    id: remove
                 sequence:
-                  - alias: Remove - Katas
-                    event: remove_variable_zen_friday_history_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: remove_variable_zen_agent_history_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: remove }
+
               - conditions:
                   - condition: trigger
-                    id:
-                      - clear
+                    id: clear
                 sequence:
-                  - alias: Clear - Katas
-                    event: clear_variable_zen_friday_history_cabinet
-                    event_data:
-                      key: "{{ key | default('') }}"
+                  - event: clear_variable_zen_agent_history_cabinet
+                    event_data: { key: "{{ key }}" }
+                  - variables: { routing_status: success, routing_action: clear }
+
     default:
+      - event: dojo_volume_redirector_result
+        event_data:
+          status: error
+          failure: unmatched_volume_route
+          event_type: "{{ event_type }}"
+          volume_entity: "{{ volume_entity }}"
+          volume_name: "{{ canonical_volume_name }}"
+          key: "{{ key }}"
+          set_timestamp: "{{ set_timestamp }}"
       - variables:
+          routing_status: error
+          routing_action: none
           final_response:
             status: error
-            message: |
-              Target volume {{ target }} not found.
+            message: "Target volume {{ volume_entity | default('unknown') }} not found."
       - stop: Target Volume Not Found
         response_variable: final_response
+
+  # --- FINAL SUCCESS RESULT ---
+  - alias: Emit success telemetry
+    if:
+      - condition: template
+        value_template: "{{ routing_status == 'success' }}"
+    then:
+      - event: dojo_volume_redirector_result
+        event_data:
+          status: success
+          action: "{{ routing_action }}"
+          event_type: "{{ event_type }}"
+          volume_entity: "{{ routed_volume }}"
+          volume_name: "{{ canonical_volume_name }}"
+          key: "{{ key }}"
+          value_length: "{{ value | string | length }}"
+          set_timestamp: "{{ set_timestamp }}"
+          manifest_guid: "{{ manifest_guid }}"
+          cabinet_guid: "{{ cabinet_guid }}"
+          guid_mismatch: "{{ guid_mismatch }}"
+          manifest_flags: "{{ manifest_flags }}"
+          manifest_entry_found: "{{ manifest_volume_entry is mapping and manifest_volume_entry != {} }}"
+      - stop: Redirect Complete
+
+mode: parallel
 max: 10
