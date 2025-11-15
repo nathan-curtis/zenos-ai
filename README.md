@@ -30,7 +30,7 @@ The ZenOS-AI roadmap defines the evolution of the system across four pillars:
 * Privilege model (public → guest → partner → owner → prime)  
 * ACL enforcement baked into every tool  
 * Persona capsules + essence bootflow  
-* “LSA” (Local Soul Authority) — because calling it Local Security Authority was *way* too on-the-nose  
+* “LSA” (Local Selfhood Authority) — because calling it Local Security Authority was *way* too on-the-nose  
 
 ### **2. Cabinet System v3**
 * Fully dynamic redirector  
