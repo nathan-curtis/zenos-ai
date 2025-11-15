@@ -30,19 +30,19 @@ The ZenOS-AI roadmap defines the evolution of the system across four pillars:
 * Privilege model (public → guest → partner → owner → prime)  
 * ACL enforcement baked into every tool  
 * Persona capsules + essence bootflow  
-* “LSA” (Local Selfhood Authority) — because calling it Local Security Authority was *way* too on-the-nose  
+* “LSA” (Local Selfhood Authority)
 
 ### **2. Cabinet System v3**
 * Fully dynamic redirector  
 * Governance drawer with persona-level access  
 * Consistent metadata for drawers/volumes  
-* Household → User → AI cascade 
+* Household → User → AI cascade
 
 ### **3. DojoTools 2.0**
 * Standardized JSON I/O  
-* Indexer upgrade to recursive label + cabinet search  
-* Identity shim for go/no-go evaluation at the front door of every tool  
-* CabinetIndexer + improved Manifest engine
+* Indexer upgrade: recursive label + cabinet search  
+* Identity shim for go/no-go evaluation  
+* CabinetIndexer + advanced Manifest engine
 
 ### **4. Zen Summarizer Pipeline**
 * Kata engine v2  
@@ -50,7 +50,7 @@ The ZenOS-AI roadmap defines the evolution of the system across four pillars:
 * Weight-based reflection loop  
 * Monastery integration for local reasoning
 
-Full roadmap is in:  
+Full roadmap lives in:  
 **`docs/roadmap.md`**
 
 ---
@@ -72,19 +72,38 @@ Full roadmap is in:
 | **Friday**         | Chief Enlightenment Officer | Mastermind, coordinator       |
 | **Veronica**       | Snarky Supervisor           | Attitude, taste, clarity      |
 | **Kronk**          | Curator of the Monastery    | Context & kata wrangling      |
-| **Rosie**          | Mistress of Cleanliness     | Clean code, clean logs        |
+| **Rosie**          | Mistress of Cleanliness     | Clean floors & clean logs     |
 | **High Priestess** | Divine Automation Overseer  | YAML exorcism, deep reasoning |
 
 ### **Roles & Engines**
 
-* **Friday** — front-line AI (GPT-5 Mini).  
-* **Veronica** — debugger, planner, sass engine (ChatGPT-5 + Codex).  
-* **Kronk** — local context wrangler (gpt-oss:20b, LLaMA3.2-Vision).  
-* **Rosie** — scheduling & cleanup czar (Roborock, Node-RED).  
-* **High Priestess** — deep reasoning + JSON output (gpt-oss:20b).
+* **Friday** — front-line AI  
+* **Veronica** — debugger, planner, sass engine  
+* **Kronk** — local reasoning (gpt-oss:20b, LLaMA3.2-Vision)  
+* **Rosie** — cleanup & history  
+* **High Priestess** — deep reasoning + JSON discipline  
 
 Together?  
 Not perfect — **unstoppable by the second try.**
+
+---
+
+## 👥 Contributors
+
+ZenOS-AI is built by a small legion of over-caffeinated humans and extremely opinionated AIs.
+
+### **Core Maintainers**
+| Name | Role | Notes |
+|------|------|-------|
+| **Nathan Curtis** | Architect & Prime | The Boss. Wrangler of AIs & oak trees. |
+| **Veronica** | Snarky Supervisor | Overseer of taste, sass, and system coherence. |
+
+### **New Contributor**
+| Name | Contribution | Notes |
+|------|-------------|-------|
+| **teskanoo** | 1st! - Added delete-action validation to Calendar tool | First external contributor. Clean patch. Friday-approved. |
+
+> If your PR makes Kronk sigh less than three times, you too may join the list.
 
 ---
 
@@ -92,230 +111,174 @@ Not perfect — **unstoppable by the second try.**
 
 ```bash
 git clone https://github.com/nathan-curtis/zenos-ai.git
+````
 
 1. Copy Zen DojoTools scripts into your Home Assistant config.
-
-
 2. Load the Zen Index and Manifest.
-
-
-3. Test the automations, summarizers, and cabinet storage.
-
-
-4. Read .gitignore (seriously, don’t skip it).
-
-
-5. Submit your kata or PR when inspiration strikes.
-
-```
-
+3. Test automations, summarizers, and cabinet storage.
+4. Read `.gitignore`. Really.
+5. Send kata, PRs, or memes when inspired.
 
 ---
 
-🛠 Zen DojoTools (v1+)
+## 🛠 Zen DojoTools (v1+)
 
-All tools follow the zen_dojotools_<function> naming.
-Legacy _crud tools are deprecated.
+All tools follow the `zen_dojotools_<function>` naming.
+Legacy `_crud` tools are deprecated.
 
-✅ GA Tools
+### **Index Kit**
 
-Index Kit
+| Tool / Script                     | Description                      |
+| --------------------------------- | -------------------------------- |
+| dojotools_zen_index               | Core label-aware index           |
+| library_index.jinja               | Template powering the Index Kit  |
+| dojotools_zen_index_event_handler | Automation capturing index calls |
+| dojotools_zen_inspect             | Entity/state inspection          |
+| zen_dojotools_labels              | Label definitions & mapping      |
 
-Tool / Script	Description
-
-dojotools_zen_index	Core label-aware index
-library_index.jinja	Template supporting the Index Kit
-dojotools_zen_index_event_handler	Automation capturing index calls
-dojotools_zen_inspect	Entity/state inspection utility
-zen_dojotools_labels	Label definitions & mapping (requires Spook)
-
-
-Dependencies: Install all tools as a complete kit.
-
+Dependencies: install the complete kit.
 
 ---
 
-FileCabinet Kit
+### **FileCabinet Kit**
 
-Tool / Script	Description
+| Tool / Script                    | Description            |
+| -------------------------------- | ---------------------- |
+| script.zen_dojotools_filecabinet | File Cabinet manager   |
+| zen_dojotools_manifest           | Drawer/volume manifest |
+| zen_dojotools_volume_redirector  | Dynamic volume routing |
 
-script.zen_dojotools_filecabinet	File Cabinet manager (v1.0.0-RC)
-zen_dojotools_manifest	Drawer/volume manifest
-zen_dojotools_volume_redirector	Dynamic volume routing automation
-
-
-Dependencies: Requires Index Kit.
-
+Requires Index Kit.
 
 ---
 
-🧪 Zen Summarizer
+### **Zen Summarizer**
 
-Tool	Description
-
-zen_dojotools_ninja_summarizer	Stage 1 Kata Summary
-zen_dojotools_supersummary	Stage 2 Attention Summary
-zen_scheduler_automation	Orchestration automation (coming)
-
-
+| Tool                           | Description               |
+| ------------------------------ | ------------------------- |
+| zen_dojotools_ninja_summarizer | Kata Stage 1              |
+| zen_dojotools_supersummary     | Stage 2 Attention Summary |
+| zen_scheduler_automation       | Coming soon               |
 
 ---
 
-Personal Assistant Kit
+### **Personal Assistant Kit**
 
-Tool	Description
-
-zen_dojotools_todo	Task & shopping list manager
-zen_dojotools_calendar	Calendar multitool
-
-
+| Tool                   | Description             |
+| ---------------------- | ----------------------- |
+| zen_dojotools_todo     | Task & shopping manager |
+| zen_dojotools_calendar | Multi-calendar tool     |
 
 ---
 
-Media Management Kit
+### **Media Management Kit**
 
-Tool	Description
-
-zen_dojotools_music_search	Search tool for Music Assistant (requires MA)
-
-
+| Tool                       | Description            |
+| -------------------------- | ---------------------- |
+| zen_dojotools_music_search | Music Assistant search |
 
 ---
 
-Zen AdminTools
+### **Zen AdminTools**
 
-Tool	Description
-
-zen_admintools_cabinetadmin	Cabinet formatting/repair
-zen_admintools_kungfu_writer	Writes initial subsystem components into Dojo
-
-
+| Tool                         | Description                 |
+| ---------------------------- | --------------------------- |
+| zen_admintools_cabinetadmin  | Cabinet formatting/repair   |
+| zen_admintools_kungfu_writer | Writes subsystem components |
 
 ---
 
-⚙️ Requirements
+## ⚙️ Requirements
 
-Each module documents its dependencies. Examples:
+Each module documents dependencies. Examples:
 
-zen_dojotools_index → core dependency
-
-zen_dojotools_filecabinet → index + manifest
-
-zen_dojotools_id → metadata resolver (alpha)
-
-
+* **zen_dojotools_index** → core dependency
+* **zen_dojotools_filecabinet** → index + manifest
+* **zen_dojotools_id** → metadata resolver (alpha)
 
 ---
 
-📚 Documentation: Friday Protocol & ZenOS-AI Architecture
+## 📚 Documentation: Friday Protocol & ZenOS-AI Architecture
 
 Explore the docs folder:
-https://github.com/nathan-curtis/zenos-ai/tree/main/docs
 
-Inside you’ll find:
+[https://github.com/nathan-curtis/zenos-ai/tree/main/docs](https://github.com/nathan-curtis/zenos-ai/tree/main/docs)
 
-Cognitive architecture
+Inside you'll find:
 
-Cabinets, Katas, Summaries
+* Cognitive architecture
+* Cabinets, Katas, Summaries
+* Monastery workflows
+* Inference stack
+* Persona systems
+* Design philosophy
+* Roadmap (docs/roadmap.md)
 
-Monastery workflows
-
-Inference-stack breakdown
-
-Persona systems
-
-Design philosophy
-
-Full Roadmap (docs/roadmap.md)
-
-
-Don’t remove anything from the shelves without Kronk’s supervision.
-He gets twitchy.
-
+Kronk reminder:
+Don’t remove items from the shelves without supervision.
 
 ---
 
-🖥 Local Stack Overview
+## 🖥 Local Stack Overview
 
-Hardware
+### **Hardware**
 
-Proxmox host
+* Proxmox host
+* NUC 14 Enthusiast
+* TB4 eGPU (4070 Ti)
+* UniFi Identity
+* Ollama runtime
 
-NUC 14 Enthusiast
+### **Inference Models**
 
-TB4 eGPU (4070 Ti)
+* gpt-oss:20b
+* LLaMA3.2-Vision
+* Qwen3:4b
+* OpenWebUI
 
-UniFi Identity
+### **Local Services**
 
-Ollama runtime
-
-
-Inference Models
-
-gpt-oss:20b
-
-LLaMA3.2-Vision
-
-Qwen3:4b
-
-OpenWebUI
-
-
-Local Services
-
-HA
-
-Mealie
-
-Grocy
-
-Portainer
-
-n8n pipelines
-
-
+* Home Assistant
+* Mealie
+* Grocy
+* Portainer
+* n8n
 
 ---
 
-☯️ Philosophy
+## ☯️ Philosophy
 
 Automation should be flexible, modular, fun.
-
 Context is king; recovery is queen.
-
 Every bug is a lesson.
-
 Coffee fuels the logs; humor fuels the team.
 
-
-
 ---
 
-🤝 Contributing
+## 🤝 Contributing
 
-PRs, issues, ideas — all welcome.
+PRs, issues, and ideas welcome.
 If this helped you or made you smile:
-https://buymeacoffee.com/ncurtis ☕💛
-
+[https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis) ☕💛
 
 ---
 
-📜 License
+## 📜 License
 
 MIT License — blessed by Friday & friends.
 
-
 ---
 
-About
+### About
 
 Friday’s ZenOS-AI:
 
 > “For homes that want to be smart and have a sense of humor.”
-“We’ve got serious mojo — just don’t mind the occasional stubbed toe.”
-
-
+> “We’ve got serious mojo — just don’t mind the occasional stubbed toe.”
 
 Questions or bugs?
-Ping Kronk.
-He’ll get there… eventually.
+Ping Kronk. He’ll get there… eventually.
+
+
+Just say the word, boss.
+```
