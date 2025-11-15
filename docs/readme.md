@@ -89,6 +89,36 @@ If the Cabinet System is the filesystem, the Index is its search engine — recu
 
 ---
 
+### **6. ZenOS-AI Roadmap**
+**Path:** [docs/roadmap.md](./roadmap.md)  
+A living map of where ZenOS-AI is going next.  
+Covers upcoming milestones for:
+
+- **Identity & Proprioception Module (LSA)** —  
+  A unified system for selfhood, access control, security shimming, and instance awareness.
+
+- **Rollback Contracts** —  
+  How expensive, controlled, and ethical rollback operations will work for AI constructs.
+
+- **FileCabinet v3 & Access Model** —  
+  Expanded ACLs, cabinet summaries, permission resolution, and the security shim at the Index front door.
+
+- **ZenDojoTools v3** —  
+  Query/translation helpers, safe wrappers, and integration into the Command Interpreter.
+
+- **Persona Bootflow** —  
+  Essence capsules, core Kata sets, and load-time state assembly.
+
+- **AI → Monastery → Summarizer Pipeline v2** —  
+  Stability, caching, and context refresh logic between agents.
+
+- **MCP Integration** —  
+  Connecting local tools to external nodes while respecting Zero Trust boundaries.
+
+The roadmap sets direction, boundaries, and the philosophy behind Friday’s evolution.
+
+---
+
 ## 🧭 **How to Navigate**
 
 Each section is self-contained and cross-linked.  
@@ -99,6 +129,7 @@ Recommended reading order:
 3. [Cabinet System](./cabinets/readme.md)  
 4. [Library](./library/readme.md)  
 5. [Index System](./library/index_system.md)  
+6. [Roadmap](./roadmap.md)  
 
 For OS-level identity and behavior, see the **SYSTEM Cabinet**.
 
