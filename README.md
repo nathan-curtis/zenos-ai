@@ -126,7 +126,7 @@ git clone https://github.com/nathan-curtis/zenos-ai.git
 All tools follow the `zen_dojotools_<function>` naming.
 Legacy `_crud` tools are deprecated.
 
-### **Index Kit**
+### **Core Kit**
 
 | Tool / Script                     | Description                      |
 | --------------------------------- | -------------------------------- |
@@ -135,6 +135,8 @@ Legacy `_crud` tools are deprecated.
 | dojotools_zen_index_event_handler | Automation capturing index calls |
 | dojotools_zen_inspect             | Entity/state inspection          |
 | zen_dojotools_labels              | Label definitions & mapping      |
+| zen_dojoTools_event_emitter       | Event Bus emitter for Zen events |
+| zen_dojotools_identity            | Identity Services (LSA)          |
 
 Dependencies: install the complete kit.
 
@@ -148,7 +150,7 @@ Dependencies: install the complete kit.
 | zen_dojotools_manifest           | Drawer/volume manifest |
 | zen_dojotools_volume_redirector  | Dynamic volume routing |
 
-Requires Index Kit.
+Requires Core Kit.
 
 ---
 
@@ -160,6 +162,9 @@ Requires Index Kit.
 | zen_dojotools_supersummary     | Stage 2 Attention Summary |
 | zen_scheduler_automation       | Coming soon               |
 
+Requires Core Kit.
+Requires FileCabinet Kit
+
 ---
 
 ### **Personal Assistant Kit**
@@ -169,6 +174,8 @@ Requires Index Kit.
 | zen_dojotools_todo     | Task & shopping manager |
 | zen_dojotools_calendar | Multi-calendar tool     |
 
+Requires Core Kit
+
 ---
 
 ### **Media Management Kit**
@@ -177,6 +184,7 @@ Requires Index Kit.
 | -------------------------- | ---------------------- |
 | zen_dojotools_music_search | Music Assistant search |
 
+Requires Core Kit
 ---
 
 ### **Zen AdminTools**
@@ -186,6 +194,7 @@ Requires Index Kit.
 | zen_admintools_cabinetadmin  | Cabinet formatting/repair   |
 | zen_admintools_kungfu_writer | Writes subsystem components |
 
+Requires Core Kit
 ---
 
 ## ⚙️ Requirements
@@ -193,8 +202,8 @@ Requires Index Kit.
 Each module documents dependencies. Examples:
 
 * **zen_dojotools_index** → core dependency
-* **zen_dojotools_filecabinet** → index + manifest
-* **zen_dojotools_id** → metadata resolver (alpha)
+* **zen_dojotools_filecabinet** → index + manifest (core)
+* **zen_dojotools_id** → core dependency
 
 ---
 
