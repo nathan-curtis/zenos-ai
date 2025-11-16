@@ -2,7 +2,6 @@
 
 ### *(Ninja Summarizer Edition: Expanded Scope)*
 
-````markdown
 # ZenOS-AI Summarization Pipeline  
 ### From Dojo + Home Kung Fu → Kata → Zen Summary → Live Prompt
 
