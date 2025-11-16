@@ -342,8 +342,6 @@ Internal (optional) in-cabinet location:
 
 # **11. Related Documentation**
 
-Only linking to docs that are **already present** in your repo:
-
 | Topic                            | GitHub Path                     |
 | -------------------------------- | ------------------------------- |
 | **Cabinet System Overview**      | `docs/cabinets/readme.md`       |
@@ -357,7 +355,7 @@ This document is meant to complement — not replace — these.
 # **12. External References**
 
 **“Stuffing Elephants in Drawers — Representing Concepts Without Shoving the Whole Elephant Into Storage”**
-Your philosophical post on abstraction in Home Assistant:
+Friday's Party post on abstraction in Home Assistant:
 [https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120?u=nathancu](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120?u=nathancu)
 
 A perfect metaphor for the hypergraph model.
