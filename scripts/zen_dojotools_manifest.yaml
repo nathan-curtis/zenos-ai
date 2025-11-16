@@ -1,3 +1,16 @@
+alias: Zen DojoTools Manifest
+description: >
+  Zen DojoTools Manifest (3.8.0) Runtime-only health, zero persistent health
+  storage. Authoritative manifest scanner for AI_Cabinet volumes. Extracts
+  users, metadata, context, capacity, access flags, ACLs, drawers. Writes ONLY
+  the compiled manifest to the family cabinet. Nothing else.
+icon: mdi:home-map-marker
+fields:
+  show_hidden:
+    selector:
+      boolean: {}
+    name: show hidden
+    description: Include hidden/system volumes in results?
 sequence:
   - variables:
       zen_default_fam_cab: |-
@@ -16,163 +29,189 @@ sequence:
         - hidden_cabinet
         - read_only_cabinet
         - system_cabinet
+      exempt_labels:
+        - internal
+        - hidden
+        - system
       ignore_label_prefixes:
         - _
         - .
       always_hide_drawers:
         - AI_Cabinet_VolumeInfo
-      exempt_labels:
-        - internal
-        - hidden
-        - system
       max_chars: 131072
       warn_threshold: 0.8
       controller_schema: 1
       manifest: |-
+        {% macro compute_health(info, pct_chars, writeable, readable) %}
+          {%- set expected_guid = info.get('id') %}
+          {%- set actual_guid   = info.get('id') %}
+          {%- set guid_mismatch = (expected_guid != actual_guid) %}
+          {%- set storage_warning = (pct_chars >= (warn_threshold * 100)) %}
+
+          {%- set status = 'ready' %}
+          {%- if guid_mismatch %}
+            {%- set status = 'error' %}
+          {%- elif storage_warning %}
+            {%- set status = 'warning' %}
+          {%- endif %}
+
+          {
+            "status": "{{ status }}",
+            "guid_mismatch": {{ guid_mismatch | tojson }},
+            "storage_warning": {{ storage_warning | tojson }},
+            "writeable": {{ writeable | tojson }},
+            "readable": {{ readable | tojson }}
+          }
+        {% endmacro %}
 
         {% macro build_drawer_index(vars) %}
-          {%- if vars is mapping
+          {% if vars is mapping
                 and vars.get('_label_index') is mapping
                 and vars['_label_index'].get('value') is defined %}
             {{ vars['_label_index']['value'] | tojson }}
-          {%- else %}
+          {% else %}
             {{ {} | tojson }}
-          {%- endif %}
+          {% endif %}
         {% endmacro %}
 
         {% macro acls_by_category(info) %}
           {%- set raw_acls = info.get('acls', {}) %}
-          {%- set ns_acl = namespace(by_cat={}) %}
+          {%- set ns = namespace(by_cat={}) %}
+
           {%- for category, entries in raw_acls.items() if entries is sequence %}
-            {%- set direct = entries | selectattr('entity_guid', 'defined') | map(attribute='entity_guid') | list %}
-            {%- set family = entries | selectattr('family_guid', 'defined') | map(attribute='family_guid') | list %}
+            {%- set direct  = entries | selectattr('entity_guid','defined')  | map(attribute='entity_guid')  | list %}
+            {%- set family  = entries | selectattr('family_guid','defined')  | map(attribute='family_guid')  | list %}
+
             {%- set nested = [] %}
             {%- for entry in entries if entry is mapping %}
-              {%- for key, val in entry.items() if val is mapping %}
-                {%- if 'entity_guid' in val %}
-                  {%- set nested = nested + [val.entity_guid] %}
-                {%- endif %}
-                {%- if 'family_guid' in val %}
-                  {%- set nested = nested + [val.family_guid] %}
-                {%- endif %}
-                {%- if 'household_guid' in val %}
-                  {%- set nested = nested + [val.household_guid] %}
-                {%- endif %}
+              {%- for k,v in entry.items() if v is mapping %}
+                {%- if 'entity_guid' in v %}{%- set nested = nested + [v.entity_guid] %}{%- endif %}
+                {%- if 'family_guid' in v %}{%- set nested = nested + [v.family_guid] %}{%- endif %}
+                {%- if 'household_guid' in v %}{%- set nested = nested + [v.household_guid] %}{%- endif %}
               {%- endfor %}
             {%- endfor %}
-            {%- set all_guids = (direct + family + nested) | reject('none') | unique | list %}
-            {%- if all_guids | length > 0 %}
-              {%- set ns_acl.by_cat = ns_acl.by_cat | combine({ category: all_guids }) %}
+
+            {%- set merged = (direct + family + nested) | reject('none') | unique | list %}
+            {%- if merged | length > 0 %}
+              {%- set ns.by_cat = ns.by_cat | combine({ category: merged }) %}
             {%- endif %}
           {%- endfor %}
-          {{ ns_acl.by_cat | tojson }}
+
+          {{ ns.by_cat | tojson }}
         {% endmacro %}
 
+        {# MAIN MANIFEST OBJECT #}
         {%- set result = namespace(data={}) %}
+
         {%- for ent in states.sensor | map(attribute='entity_id') | list %}
           {%- set vars = state_attr(ent, 'variables') %}
+
           {%- if vars is mapping and (vars.get('AI_Cabinet_VolumeInfo') is not none) %}
             {%- set info = vars.AI_Cabinet_VolumeInfo.value %}
-            {%- set st = states[ent] if states[ent] is defined else none %}
+            {%- set st = states[ent] %}
             {%- set friendly = st.attributes.friendly_name | default(ent) %}
-            {%- set lc = st.last_changed.isoformat() if st else none %}
-            {%- set lu = st.last_updated.isoformat() if st else none %}
+            {%- set lc = st.last_changed.isoformat() %}
+            {%- set lu = st.last_updated.isoformat() %}
             {%- set volume_labels = labels(ent) | default([]) %}
-            {%- set skip_hidden = (not read_hidden)
-                                  and (hide_labels | select('in', volume_labels) | list | count > 0)
-                                  and (volume_labels | select('in', exempt_labels) | list | count == 0) %}
-                                  
+
+            {# FILTER HIDDEN (unless show_hidden true) #}
+            {%- set skip_hidden =
+              (not read_hidden)
+              and (hide_labels | select('in', volume_labels) | list | count > 0)
+              and (volume_labels | select('in', exempt_labels) | list | count == 0)
+            %}
             {%- if skip_hidden %}
               {%- continue %}
             {%- endif %}
-            
-            {%- set raw_drawers = vars.keys() | list | default([]) %}
-            {%- set filtered_drawers_ns = namespace(items=[]) %}
+
+            {# DRAWERS #}
+            {%- set raw_drawers = vars.keys() | list %}
+            {%- set drawers = [] %}
+
             {%- for d in raw_drawers %}
-              {%- if d not in always_hide_drawers and not d.startswith('_') and not d.startswith('.') %}
+              {%- if d not in always_hide_drawers
+                    and not d.startswith('_')
+                    and not d.startswith('.') %}
                 {%- set val = vars.get(d, {}) %}
                 {%- set val_value = val.get('value') if val is mapping else {} %}
                 {%- if val is mapping and val_value is mapping and val_value.get('mount_point', false) %}
-                  {%- set drawer_name = d ~ ' [mount:' ~
-                      (
-                        val_value.get('target_entity_id')
-                        if val_value.get('target_entity_id')
-                        else val_value.get('target_volume_id')
-                        if val_value.get('target_volume_id')
-                        else '?'
-                      )
-                  ~ ']' %}
+                  {%- set drawers = drawers + [
+                    d ~ ' [mount:' ~ (
+                      val_value.get('target_entity_id')
+                      if val_value.get('target_entity_id')
+                      else val_value.get('target_volume_id')
+                      if val_value.get('target_volume_id')
+                      else '?'
+                    ) ~ ']'
+                  ] %}
                 {%- else %}
-                  {%- set drawer_name = d %}
+                  {%- set drawers = drawers + [d] %}
                 {%- endif %}
-                {%- set filtered_drawers_ns.items = filtered_drawers_ns.items + [drawer_name] %}
               {%- endif %}
             {%- endfor %}
-            {%- set filtered_drawers = filtered_drawers_ns.items | sort %}
-            
+            {%- set drawers = drawers | sort %}
+
+            {# CAPACITY & ACCESS #}
             {%- set raw_json = vars | tojson %}
             {%- set char_count = raw_json | length %}
             {%- set pct_chars = (char_count / max_chars * 100) | round(1) %}
-            {%- set warning = pct_chars >= (warn_threshold * 100) %}
+            {%- set storage_warning = pct_chars >= (warn_threshold * 100) %}
+
             {%- set flags = info.get('flags', {}) %}
             {%- set writeable = (not flags.get('read_only', false))
                                 and (info.get('schema_version', 0) | float <= controller_schema)
-                                and not warning %}
-            {%- set readable = not warning %}
+                                and not storage_warning %}
+            {%- set readable = (not storage_warning) %}
 
-            {%- set drawer_index_json = build_drawer_index(vars) %}
-            {%- set drawer_index_obj = drawer_index_json | trim | from_json %} 
-            
+            {# LABEL INDEX & ACLS #}
+            {%- set drawer_index = build_drawer_index(vars) | trim | from_json %}
             {%- set acls_obj = acls_by_category(info) | from_json %}
 
+            {# HEALTH – RUNTIME ONLY #}
+            {%- set health_obj =
+              compute_health(info, pct_chars, writeable, readable) | from_json
+            %}
+
+            {# RECORD #}
             {%- set rec = {
-              'entity_id'      : ent,
-              'friendly_name'  : friendly,
-              'context'        : vars.get('_context', {}) | default([]),
-              'metadata'       : {
-                'id'             : info.get('id'),
-                'schema_version' : info.get('schema_version'),
-                'labels'         : volume_labels | sort | default([]),
-                'timestamps'     : { 'last_changed': lc, 'last_updated': lu }
+              'entity_id': ent,
+              'friendly_name': friendly,
+              'context': vars.get('_context', {}),
+              'metadata': {
+                'id': info.get('id'),
+                'schema_version': info.get('schema_version'),
+                'labels': volume_labels | sort,
+                'timestamps': { 'last_changed': lc, 'last_updated': lu }
               },
-              'stats'          : { 'drawer_count': filtered_drawers | count },
-              'capacity'       : {
-                'chars_used'   : char_count,
-                'chars_max'    : max_chars,
-                'percent_used' : pct_chars,
-                'warning'      : warning
+              'stats': { 'drawer_count': drawers | count },
+              'capacity': {
+                'chars_used': char_count,
+                'chars_max': max_chars,
+                'percent_used': pct_chars,
+                'warning': storage_warning
               },
-              'access'         : { 'writeable': writeable, 'readable': readable },
-              'drawers'        : filtered_drawers,
-              'drawer_index'   : drawer_index_obj,
-              'acls_by_category': acls_obj
+              'access': {
+                'writeable': writeable,
+                'readable': readable
+              },
+              'drawers': drawers,
+              'drawer_index': drawer_index,
+              'acls_by_category': acls_obj,
+              'health': health_obj
             } %}
-            {%- set result.data = result.data | combine({ (ent): rec }) %}
+
+            {%- set result.data = result.data | combine({ ent: rec }) %}
           {%- endif %}
         {%- endfor %}
+
         {{ result.data }}
-      final_response: "{{manifest}}"
   - event: set_variable_legacy
     event_data:
       key: "{{ manifest_key }}"
-      value: "{{ final_response }}"
-      set_timestamp: "{{ true }}"
+      value: "{{ manifest }}"
+      set_timestamp: true
       volume_entity: "{{ zen_default_fam_cab }}"
   - alias: Return Manifest Data
     stop: Pass variable to response
-    response_variable: final_response
-  - set_conversation_response: "{{final_response}}"
-alias: Zen DojoTools Manifest
-description: >
-  Zen DojoTools Manifest (3.0.0)  Ok Labels, F'real Tho! Authoritative manifest
-  scanner for AI_Cabinet volumes. Extracts users, metadata, context, capacity,
-  access flags, ACLs, and drawers. Designed to drive secure CRUD tools.
-  Theoretically Mount point aware Attempts to write a copy to the default house
-  manifest drawer on execution.
-fields:
-  show_hidden:
-    selector:
-      boolean: {}
-    name: show hidden
-    description: Include hidden/system volumes in results?
-icon: mdi:home-map-marker
+    response_variable: manifest
+  - set_conversation_response: "{{ manifest }}"
