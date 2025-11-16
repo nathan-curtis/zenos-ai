@@ -45,7 +45,7 @@ The ZenOS-AI roadmap defines the evolution of the system across four pillars:
 * CabinetIndexer + advanced Manifest engine
 
 ### **4. Zen Summarizer Pipeline**
-* Kata engine v2  
+* Kata engine v2 (tighter, richer, summaries)
 * Supersummary + Reflex caching  
 * Weight-based reflection loop  
 * Monastery integration for local reasoning
