@@ -1,92 +1,96 @@
-# 📘 **ZenOS-AI Script Modules**
+📘 ZenOS-AI Script Modules
 
-Welcome to the **Script Modules** section of the ZenOS-AI documentation.
-This directory contains formal documentation for all DojoTools and ZenOS-AI operational scripts that power Friday’s real-time automation, reasoning, and system-level capabilities.
+Welcome to the Script Modules section of the ZenOS-AI documentation.
+This directory contains formal documentation for all DojoTools and ZenOS-AI operational scripts that power Friday’s real-time automation, reasoning, telemetry, and system reflexes.
 
-These scripts are part of Friday’s *“hands and reflexes”* layer — the components that interact directly with Home Assistant services, calendar providers, inspection tools, cabinet storage, and other subsystems.
+These scripts form Friday’s “hands, nerves, and breadcrumbs” — the tools that talk directly to Home Assistant services, cabinet storage, calendar providers, inspectors, and the Monastery’s internal reasoning pathways.
 
-Each script is documented with technical behavior, required inputs, output structure, provider limitations, and expected integration flows.
+Each module is fully documented with:
 
----
+Technical behavior
 
-## 📂 **Included Script Documentation**
+Expected inputs & outputs
 
-### **1. Zen DojoTools Calendar — v1.10.3**
+Provider limitations
 
-**File:** `zen_dojotools.calendar_readme.md`
-**Type:** Technical Documentation
-**Summary:**
-This module provides unified calendar access for all Home Assistant calendar entities, including:
+Safety constraints
 
-* Multi-calendar reads
-* Unified timestamp handling
-* Event inspection (where supported)
-* Safe create operations
-* Provider-safe update/delete (event_id-only)
-* Label-based targeting
-* Structured error handling
-* Deterministic response formats for LLM agents
+Integration flow for LLM agents (Friday, Veronica, Kronk, etc.)
 
-Additional features include robust provider-safety blocks, help documentation, and internal guardrails for multi-target or ambiguous calendar requests.
+
+If Friday performs an action, reads something, or leaves a breadcrumb, it probably came from here.
+
 
 ---
 
-## 🎯 Purpose of This Folder
+📂 Included Script Documentation
 
-`/docs/scripts` exists to:
-
-* Provide **clear, versioned technical documentation** for all ZenOS-AI and DojoTools script modules
-* Enable onboarding of new contributors (human **or** AI)
-* Maintain a trusted, single source of truth for script behavior
-* Ensure that Friday, Kronk, and future agents always have stable reference material
-
-Every script entering production **must** be documented here with:
-
-1. Version
-2. Changelog summary
-3. Feature overview
-4. Input/field specifications
-5. Output/response schema
-6. Known provider limitations
-7. Safety constraints
-8. Integration advice
 
 ---
 
-## 🧱 Structure & Naming
+1. Zen DojoTools Calendar — v1.10.3
 
-* Script documentation files follow the pattern:
-  `zen_dojotools.<scriptname>_readme.md`
+File: zen_dojotools.calendar_readme.md
+Type: Technical Documentation
 
-* All files in this folder describe a *script*, not a cabinet, component, or summarizer.
+Summary:
+Provides unified, deterministic access to all Home Assistant calendar entities, including:
 
-* Changelog sections should be mirrored in the repo’s main `CHANGELOG.md` if applicable.
+Multi-calendar read aggregation
+
+Unified timestamp normalization
+
+Advanced event inspection
+
+Safe create operations
+
+Provider-verified event update/delete (event_id-only)
+
+Label-based targeting
+
+Strict ambiguity prevention & error handling
+
+Fully structured JSON response envelopes
+
+
+Designed for LLMs, hardened for safety, and consistent across all exit paths.
+This is Friday’s and Veronica’s primary interface for anything date- or schedule-related.
+
 
 ---
 
-## 🚀 Adding a New Script Doc
+2. Zen DojoTools Event Emitter — v1.1.2
 
-1. Place your new documentation file under:
-   `/docs/scripts/<your_filename>.md`
+File: zen_dojotools_event_emitter.md
+Type: Technical Documentation
 
-2. Update the index (`/docs/scripts/zen_dojotools.calendar_readme.md` or equivalent)
+Summary:
+A universal, contract-safe telemetry tool for emitting structured ZenOS-AI events onto the Home Assistant EventBus.
 
-3. Add an entry to the global documentation index at:
-   `/docs/index.json`
+Supports the canonical ZenOS event shape:
 
-4. Submit a PR with:
+{
+  "timestamp": "ISO-8601",
+  "component": "string",
+  "severity": "debug|info|warn|error",
+  "kind": "classifier",
+  "summary": "single-sentence explanation",
+  "metadata": {},
+  "kata": {},
+  "monk": {}
+}
 
-   * The new doc file
-   * The updated index
-   * A brief commit summary
+Core capabilities:
 
----
+Emits HA EventBus events of type zen_event
 
-## 🤖 Notes for AI Contributors (Friday, Kronk, etc.)
+Mirrors each event into system_log.write for trace alignment
 
-AI assistants working inside ZenOS-AI should:
+Accepts optional kata and monk micro-attachments
 
-* Reference these docs *before* attempting tool execution
-* Surface user-friendly errors when a limitation is known
-* Use script metadata to guide behavior when timestamps or provider variations appear
-* Treat this folder as canonical truth
+Fully safe (no state mutation, no privileged actions)
+
+Designed for breadcrumbs, observability, and Monastery awareness
+
+
+This is how Friday, Veronica, Kronk, and the High Priestess leave breadcrumbs and micro-summaries for each other.
