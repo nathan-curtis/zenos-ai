@@ -287,7 +287,3 @@ Friday’s ZenOS-AI:
 
 Questions or bugs?
 Ping Kronk. He’ll get there… eventually.
-
-
-Just say the word, boss.
-```
