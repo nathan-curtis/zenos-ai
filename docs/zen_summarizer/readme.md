@@ -268,4 +268,11 @@ The High Priestess will purify it.
 Veronica will sass it.
 Friday will thank you.
 
-```
+---
+
+Special thanks to Allen Porter
+(code owner for MCP in HA)
+
+When researching ideas for the summarizer I came across his room summary code which validated the idea.  His repo for it is now read only but I have to give credit for the inspiration... Thanks Allen!
+
+https://github.com/allenporter/home-assistant-summary-agent
