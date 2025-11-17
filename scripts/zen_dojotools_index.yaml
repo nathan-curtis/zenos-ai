@@ -1,0 +1,219 @@
+alias: Zen DojoTOOLS Index (RC1)
+description: >
+  The Zen Index (3.8.0 RC1). Fully guarded. Safe from_json everywhere. Returns
+  entities, labels, cabinet drawers, adjacent labels, and optional expansion via
+  Zen Inspect.
+fields:
+  index_command:
+    name: Zen Index Command
+    description: Structured query string. Overrides all other fields.
+    required: false
+    selector:
+      text: {}
+  entities_1:
+    name: Entities 1
+    required: false
+    selector:
+      entity:
+        multiple: true
+  label_1:
+    name: Label 1
+    required: false
+    selector:
+      text: {}
+  entities_2:
+    name: Entities 2
+    required: false
+    selector:
+      entity:
+        multiple: true
+  label_2:
+    name: Label 2
+    required: false
+    selector:
+      text: {}
+  operator:
+    name: Set Operator
+    required: true
+    default: AND
+    selector:
+      select:
+        options:
+          - AND
+          - OR
+          - NOT
+          - XOR
+  expand_entities:
+    name: Expand Results
+    required: false
+    default: false
+    selector:
+      boolean: {}
+  timeout:
+    name: Timeout
+    required: false
+    default: 2
+    selector:
+      number:
+        min: 0
+        max: 5
+        step: 0.25
+sequence:
+  - variables:
+      is_index_command: "{{ index_command is defined and (index_command | length > 0) }}"
+      correlation_id: |-
+        {% if index_command is defined and (index_command | length > 0) %}
+          {{ now().isoformat() ~ '-' ~ (range(1000) | random) }}
+        {% else %}
+          ''
+        {% endif %}
+      timeout_seconds: "{{ timeout | default(2) }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_index_command }}"
+        sequence:
+          - event: zen_indexer_request
+            event_data:
+              index_command: "{{ index_command }}"
+              correlation_id: "{{ correlation_id }}"
+          - wait_for_trigger:
+              - trigger: event
+                event_type: zen_index_response
+                event_data:
+                  correlation_id: "{{ correlation_id }}"
+            timeout:
+              seconds: "{{ timeout_seconds }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ wait.trigger is defined and wait.trigger is not none }}"
+                sequence:
+                  - variables:
+                      simple: >-
+                        {{ wait.trigger.event.data.response.result.simple |
+                        default([]) }}
+                      index_timeout: false
+              - conditions: []
+                sequence:
+                  - variables:
+                      simple: []
+                      index_timeout: true
+                      timeout_error_msg: Indexer call timeout {{ timeout_seconds }}s
+  - variables:
+      index_command: ""
+      op1: >-
+        {% set ents = simple if (simple is defined and simple) else [] %} {% if
+        ents | length == 0 %}
+          {% set ents = entities_1 | default([]) %}
+          {% if ents | length == 0 and label_1 %}
+            {{ label_entities(label_1) }}
+          {% else %}
+            {{ ents }}
+          {% endif %}
+        {% else %}
+          {{ ents }}
+        {% endif %}
+      op2: >-
+        {% set ents = entities_2 | default([]) %} {% if ents | length == 0 and
+        label_2 %}
+          {{ label_entities(label_2) }}
+        {% else %}
+          {{ ents }}
+        {% endif %}
+      op1_empty: "{{ op1 | length == 0 }}"
+      op2_empty: "{{ op2 | length == 0 }}"
+      setop: "{{ operator | default('AND') | upper }}"
+  - variables:
+      entities_base: |-
+        {% if not op1_empty and op2_empty %}
+          {{ op1 }}
+        {% elif not op2_empty and op1_empty %}
+          {{ op2 }}
+        {% elif not op1_empty and not op2_empty %}
+          {% if setop == 'AND' %}
+            {{ op1 | intersect(op2) }}
+          {% elif setop == 'OR' %}
+            {{ (op1 + op2) | unique | list }}
+          {% elif setop == 'NOT' %}
+            {{ op1 | difference(op2) }}
+          {% elif setop == 'XOR' %}
+            {{ op1 | symmetric_difference(op2) }}
+          {% else %}
+            {{ (op1 + op2) | unique | list }}
+          {% endif %}
+        {% else %}
+          []
+        {% endif %}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ expand_entities }}"
+        sequence:
+          - action: script.dojotools_zen_inspect
+            data:
+              entity_id: "{{ entities_base }}"
+            response_variable: response
+          - variables:
+              expanded_entities: "{{ response.results | default([]) }}"
+      - conditions: []
+        sequence:
+          - variables:
+              expanded_entities: "{{ entities_base }}"
+  - variables:
+      adjacent_labels: |-
+        {%- set ns = namespace(labels=[]) -%} {%- for e in entities_base -%}
+          {%- set ns.labels = ns.labels + (labels(e) | list) -%}
+        {%- endfor -%} {{ ns.labels | unique | list | sort }}
+  - variables:
+      result_index: |-
+        {% if op1_empty and op2_empty %}
+          {{ labels() | list | sort }}
+        {% else %}
+          {% set ns = namespace(idx=[]) %}
+          {% for e in entities_base %}
+            {% set ns.idx = ns.idx + [[ e, (labels(e) | list) ]] %}
+          {% endfor %}
+          {{ ns.idx }}
+        {% endif %}
+  - variables:
+      drawers_raw: "{{ matched_drawers | default('[]') }}"
+      parsed_drawers: "{{ drawers_raw | string | from_json | default([]) }}"
+  - variables:
+      drawer_results: |-
+        {% set ns = namespace(list=[]) %} {% for d in parsed_drawers %}
+          {% set ns.list = ns.list + [d] %}
+        {% endfor %} {{ ns.list }}
+      drawer_adjacent_labels: |-
+        {% set ns = namespace(labels=[]) %} {% for d in parsed_drawers %}
+          {% set lbls = d.labels | default([]) %}
+          {% for lbl in lbls %}
+            {% set ns.labels = ns.labels + [lbl] %}
+          {% endfor %}
+        {% endfor %} {{ ns.labels | unique | list | sort }}
+  - variables:
+      label_entity_logic_result_raw: |-
+        {
+          "result": {
+            "simple": {{ entities_base | tojson }},
+            "expanded": {{ expanded_entities | tojson }},
+            "adjacent_labels": {{ adjacent_labels | tojson }},
+            "index": {{ result_index | tojson }},
+            "drawers": {{ drawer_results | tojson }},
+            "drawer_adjacent_labels": {{ drawer_adjacent_labels | tojson }}
+          },
+          "operator": "{{ "*" if (op1_empty and op2_empty) else setop }}",
+          "inputs": {
+            "entities_1": {{ (entities_1 | default([])) | tojson }},
+            "label_1": {{ (label_1 | default('')) | tojson }},
+            "entities_2": {{ (entities_2 | default([])) | tojson }},
+            "label_2": {{ (label_2 | default('')) | tojson }},
+            "expand_entities": {{ expand_entities | tojson }}
+          },
+          "error": {{ (timeout_error_msg | default(none)) | tojson }}
+        }
+      label_entity_logic_result: "{{ label_entity_logic_result_raw | from_json | default({}) }}"
+  - stop: Zen Index Complete
+    response_variable: label_entity_logic_result
+mode: parallel
+max: 10
