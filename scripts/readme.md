@@ -1,151 +1,137 @@
-# ZenOS-AI Scripts Directory  
-Welcome to the **DojoTools** scripts directory — the operational heart of Friday’s ZenOS-AI.
+# **ZenOS-AI Scripts Directory**
 
-This folder contains all executable Home Assistant scripts that implement the modular toolkits described in the main project README. Each script here represents a self-contained “Dojo Tool,” following the naming convention:
+*Operational DojoTools powering Friday’s cognition, storage, and reflexes.*
 
-`zen_dojotools_<function>.yaml`
+Welcome to the **DojoTools scripts directory** — the execution layer of ZenOS-AI.
 
-Tools are grouped by capability and depend on the Zen Index, Cabinet, and Library systems to operate correctly.
+This folder contains all executable Home Assistant scripts that implement Friday’s internal toolkits.
+Each script follows the naming pattern:
 
----
+```
+zen_dojotools_<function>.yaml
+```
 
-## 🧱 Directory Overview
-
-### **Core DojoTools**
-Foundational tools required for entity indexing, inspection, observability, and cabinet routing.
-
-| Script | Purpose |
-|-------|---------|
-| `dojotools_zen_index.yaml` | Core label-aware entity index. Required by nearly every other tool. |
-| `dojotools_zen_inspect.yaml` | Inspection utility for reviewing entities, attributes, states, and label mappings. |
-| `zen_dojotools_manifest.yaml` | Drawer & Volume manifest used by the File Cabinet system. |
-| `zen_dojotools_labels.yaml` | Label definitions & mapping utilities (requires **Spook** for full label operations). |
-| `zen_dojotools_event_emitter.yaml` | Emits structured ZenOS-AI events for debugging, trace reconstruction, and breadcrumbs. |
+Heavy documentation lives in `/scripts_docs/`.
+This README gives a **light, navigable overview** of every tool in this directory.
 
 ---
 
-## 📦 Cabinet & Storage Tools
+# 🧱 **Core DojoTools (Ring-0)**
 
-| Script | Purpose |
-|-------|---------|
-| `zen_dojotools_filecabinet.yaml` | File Cabinet manager—create, edit, update drawers/volumes, manage metadata. |
-| `zen_admintools_cabinetadmin.yaml` | Cabinet repair & formatting utility. Requires a valid FES sensor for integrity checks. |
+**These tools are the foundation of ZenOS-AI.**
+Every other component — Friday, Veronica, Kronk, the Monastery, and all Katas — depends on these.
 
-**Dependencies:**  
-- Zen Index Kit  
-- Manifest  
-- Spook (optional but strongly recommended for label management)
+| Script                                 | Purpose                                                                                          |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **`zen_dojotools_index.yaml`**         | Entity + label index. Backbone of DojoTools. Required everywhere.                                |
+| **`zen_dojotools_inspect.yaml`**       | Safe entity inspection: attributes, cabinet headers, stat eligibility.                           |
+| **`zen_dojotools_manifest.yaml`**      | Master manifest for Cabinet volumes & drawers. Provides routing metadata.                        |
+| **`zen_dojotools_identity.yaml`**      | Identity resolver + Zen-ID generator. GUIDs, personas, module lookup.                            |
+| **`zen_dojotools_filecabinet.yaml`**   | File Cabinet manager — CRUD for drawers, volumes, metadata, integrity.                           |
+| **`zen_dojotools_event_emitter.yaml`** | Emits structured `zen_event` telemetry. Breadcrumbs, traces, observability.                      |
+| **`zen_dojotools_labels.yaml`**        | Label definitions + mapping utilities. Core routing feature. *(Spook only required for writes.)* |
 
----
+**Why all of these are Core:**
+They define how Friday *sees*, *labels*, *stores*, *retrieves*, *validates*, *classifies*, and *reports* information inside ZenOS-AI.
 
-## 🧠 Identity, Library, and Metadata Tools
-
-| Script | Purpose |
-|-------|---------|
-| `zen_dojotools_identity.yaml` | Identity resolver + prompt builder (RC). Handles GUID lookup, persona metadata, and Zen-ID struct output. |
-| `zen_dojotools_manifest.yaml` | Core manifest mapping for Cabinets & Volumes. |
-| *Upcoming Tools* | Extended Library 2.0, persona capsules, prompt loader macros. |
-
-**Status:**  
-These tools are in active development and may evolve as ZenOS-AI moves toward version **1.2+**.
+Without these, Friday is blind, mute, and unable to reason about the environment.
 
 ---
 
-## 📅 Personal Assistant Tools
+# 📦 **Cabinet & Storage Extensions**
 
-| Script | Purpose |
-|-------|---------|
-| `zen_dojotools_calendar.yaml` | Multi-domain calendar tool (HA native calendars, events, reminders, ICS parsing). |
-| `zen_dojotools_todo.yaml` | To-Do & Shopping manager. Works with HA Todo Lists and Grocy/Mealie bridges. |
+| Script                             | Purpose                                                               |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| `zen_admintools_cabinetadmin.yaml` | Deep integrity checking, repairs, and formatting for Cabinet volumes. |
 
-**Dependencies:**  
-- Zen Index Kit
-
----
-
-## 🎶 Media Tools
-
-| Script | Purpose |
-|-------|---------|
-| `zen_dojotools_music_search.yaml` | Music Assistant search tool supporting artist, album, and playlist matching. |
-
-**Dependencies:**  
-- Zen Index Kit  
-- Music Assistant Voice Tools (required)
+**Note:**
+This is **not Core** — it’s a heavy admin tool, not used in normal operation.
 
 ---
 
-## 🧹 Summarization Tools — The Kata System
+# 🧠 **Identity, Library & Metadata Extensions**
 
-| Script | Purpose |
-|-------|---------|
-| `zen_dojotools_ninja_summarizer.yaml` | Stage 1: Event-driven Kata summarization (fine-grained). |
-| `zen_dojotools_supersummary.yaml` | Stage 2: Higher-level attention-weighted summary. |
+| Script           | Purpose                                               |
+| ---------------- | ----------------------------------------------------- |
+| *Upcoming Tools* | Library 2.0, persona capsules, prompt loader systems. |
 
-**Dependencies:**  
-- Zen Index  
-- File Cabinet  
-- Monastery (local or cloud inference)
+Identity has already been moved into **Core** above.
 
 ---
 
-## 🛠 Admin & Maintenance Tools
+# 📅 **Personal Assistant Tools**
 
-| Script | Purpose |
-|-------|---------|
+| Script                        | Purpose                                                               |
+| ----------------------------- | --------------------------------------------------------------------- |
+| `zen_dojotools_calendar.yaml` | Multi-calendar engine. Unified read/create/update/delete with safety. |
+| `zen_dojotools_todo.yaml`     | To-Do & Shopping manager. Integrates HA Todo, Grocy, Mealie.          |
+
+---
+
+# 🎶 **Media Tools**
+
+| Script                            | Purpose                                              |
+| --------------------------------- | ---------------------------------------------------- |
+| `zen_dojotools_music_search.yaml` | Music Assistant search with entity + label matching. |
+
+---
+
+# 🧹 **Summarization Tools — The Kata System**
+
+| Script                                | Purpose                                                                |
+| ------------------------------------- | ---------------------------------------------------------------------- |
+| `zen_dojotools_ninja_summarizer.yaml` | Stage 1 summarizer — converts raw triggers to fine-grained Katas.      |
+| `zen_dojotools_supersummary.yaml`     | Stage 2 summarizer — higher-level narrative + attention-weighted meta. |
+
+---
+
+# 🛠 **Admin & Maintenance Tools**
+
+| Script                              | Purpose                                                    |
+| ----------------------------------- | ---------------------------------------------------------- |
 | `zen_admintools_kungfu_writer.yaml` | Loads initial Kung Fu component definitions into Cabinets. |
-| `zen_admintools_cabinetadmin.yaml` | Repairs, normalizes, and formats existing Cabinet volumes. |
+| `zen_admintools_cabinetadmin.yaml`  | Repairs Cabinets (formatting, normalization, validation).  |
 
 ---
 
 # 🔧 Installation Notes
 
-1. **Place all scripts in this directory unchanged.**  
-   Renaming files will require updates to the Dojo Index, Cabinet Manifest, and any referencing scripts.
+1. **Keep filenames exactly as-is.**
+   Renaming requires updates to Index, Manifest, Cabinet, and redirectors.
 
-2. **Reload Home Assistant scripts** after adding or modifying tools:  
-   `Settings → Developer Tools → YAML → Reload Scripts`
+2. Reload HA scripts after changes:
+   **Settings → Developer Tools → YAML → Reload Scripts**
 
-3. **Load Kits Together**  
-   Many tools are interdependent. Always install:  
-   - **Zen Index Kit** (Index, Inspect, Labels)  
-   - **File Cabinet Kit** (Manifest, Cabinet, Redirector Automation)  
-   - **Summarizer Kit** (Ninja + SuperSummary)  
-   - Optional Kits: Calendar, Todo, Media
+3. **Always install kits in groups:**
 
-4. **Spook is required** for label write operations.  
-   Without Spook, ZenOS-AI can read labels but cannot reliably manage them.
+   * **Core Kit** (Index, Inspect, Labels, Manifest, Identity, FileCabinet, EventEmitter)
+   * **Cabinet Kit** (Manifest, FileCabinet, Redirector Automation)
+   * **Summarizer Kit** (Ninja + SuperSummary)
+
+4. **Spook required for label writes.**
+   Reads work without it. Updates do not.
 
 ---
 
 # 🧩 Development Philosophy
 
-- Tools are **modular and additive**.  
-- No script should assume another tool exists unless declared as a dependency.  
-- All operations should be observable in HA logs.  
-- Friday, Kronk, and the High Priestess use these tools collaboratively for context, summarization, and memory.
+* Tools must be **modular**, **atomic**, and **additive**
+* No hidden dependencies — declare them explicitly
+* All operations should be observable
+* All scripts should be safe for LLMs to use
 
 If you’re contributing:
-- Start with the Index.
-- Follow the naming pattern.
-- Document your schema.
-- Kronk appreciates your service.
-
----
-
-# 🤝 Contributing
-
-Pull requests are welcome.  
-If you're unsure where your script fits or what dependencies it requires, open a Discussion—Friday (or Veronica) will guide you.
+Start with the Index, follow the naming pattern, and document every output structure.
 
 ---
 
 # ☯️ “Welcome to the Dojo”
 
-This directory is where ZenOS-AI learns to think, organize, remember, and act.  
-If the Cabinets are the memory shelves and the Monastery is the mind,  
+If the Cabinets are the memory shelves
+and the Monastery is the mind,
+
 **these scripts are the hands.**
 
-Be gentle.  
-Be curious.  
+Be precise.
 Be modular.
+Be kind to your future self.
