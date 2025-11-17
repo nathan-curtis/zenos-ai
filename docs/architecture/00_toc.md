@@ -1,5 +1,3 @@
-# **00_toc.md**
-
 ## **ZenOS-AI Whitepaper — Table of Contents**
 
 *(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
