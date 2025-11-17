@@ -2,108 +2,99 @@
 
 *(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
 
-<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/4b337f77-5c3e-4704-9d29-0749b5b7a187" />
+<img 
+  src="https://github.com/user-attachments/assets/4b337f77-5c3e-4704-9d29-0749b5b7a187"
+  width="512"
+  height="768"
+  alt="image"
+/>
+
+---
+
+## **ZenOS-AI Whitepaper "The Book of Friday" — Table of Contents**
+
+*(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
 
 ---
 
 ## **0. Preface & Release Notes**
-
-* **[README.md](./README.md)** — Executive overview, architectural intent, release scope.
+* **[readme.md](./readme.md)** — Executive overview, architectural intent, release scope.
+* **[00_toc.md](./00_toc.md)** — This document.
 
 ---
 
-## **1. System Model**
+## **1. The Monastery Core**
+* **[01_the_monastery_core.md](./01_the_monastery_core.md)**
 
-* **[01_system_model.md](./01_system_model.md)**
+## **2. Architectural Overview**
+* **[02_Architectural_Overview.md](./02_Architectural_Overview.md)**
 
-## **2. Cognitive Architecture**
+## **3. Cognitive Architecture Foundations**
+* **[03_Cognitive_Architecture_Foundations.md](./03_Cognitive_Architecture_Foundations.md)**
 
-* **[02_cognitive_architecture.md](./02_cognitive_architecture.md)**
+## **4. Cognitive Data Flow**
+* **[04_Cognitive_Data_Flow.md](./04_Cognitive_Data_Flow.md)**
 
-## **3. Zen DojoTools Framework**
+## **5. Reasoning and Kata Design**
+* **[05_Reasoning_and_Kata_Design.md](./05_Reasoning_and_Kata_Design.md)**
 
-* **[03_zen_dojotools_overview.md](./03_zen_dojotools_overview.md)**
+## **6. Scheduler and The Abbot**
+* **[06_Scheduler_and_The_Abbot.md](./06_Scheduler_and_The_Abbot.md)**
 
-## **4. Cognitive Data Flow (v1 Architecture)**
+## **7. Summarizer Pipelines**
+* **[07_Summarizer_Pipelines.md](./07_Summarizer_Pipelines.md)**
 
-* **[04_cognitive_data_flow.md](./04_cognitive_data_flow.md)**
+## **8. Kata Cabinet**
+* **[08_Kata_Cabinet.md](./08_Kata_Cabinet.md)**
 
-## **5. Hypergraph Indexing Layer**
+## **9. Identity Architecture**
+* **[09_Identity_Architecture.md](./09_Identity_Architecture.md)**
 
-* **[05_hypergraph_indexer.md](./05_hypergraph_indexer.md)**
+## **10. Event Substrate and Home Assistant Implementation**
+* **[10_Event_Substrate_and_HomeAssistant_Implementation.md](./10_Event_Substrate_and_HomeAssistant_Implementation.md)**
 
-## **6. Entity Inspection Subsystem**
+## **11. RoomState and Perception**
+* **[11_RoomState_and_Perception.md](./11_RoomState_and_Perception.md)**
 
-* **[06_entity_inspect.md](./06_entity_inspect.md)**
+## **12. LiveState: Authoritative Environment Model**
+* **[12_LiveState_Authoritative_Environment_Model.md](./12_LiveState_Authoritative_Environment_Model.md)**
 
-## **7. Identity Architecture**
+## **13. Cognitive Context Construction**
+* **[13_Cognitive_Context_Construction.md](./13_Cognitive_Context_Construction.md)**
 
-* **[07_identity_architecture.md](./07_identity_architecture.md)**
+## **14. Abbot Scheduler and Task Economy**
+* **[14_Abbot_Scheduler_And_Task_Economy.md](./14_Abbot_Scheduler_And_Task_Economy.md)**
 
-## **8. Cabinet Architecture**
+## **15. Identity Access Control: Person Capsules**
+* **[15_Identity_AccessControl_PersonCapsules.md](./15_Identity_AccessControl_PersonCapsules.md)**
 
-* **[08_cabinet_architecture.md](./08_cabinet_architecture.md)**
+## **16. Summarizer Engine: Kata Pipeline**
+* **[16_SummarizerEngine_KataPipeline.md](./16_SummarizerEngine_KataPipeline.md)**
 
-## **9. Drawer Model & Write Semantics**
+## **17. Katas: Structure, Semantics, Validity**
+* **[17_Katas_Structure_Semantics_Validity.md](./17_Katas_Structure_Semantics_Validity.md)**
 
-* **[09_drawer_model_and_write_semantics.md](./09_drawer_model_and_write_semantics.md)**
+## **18. Context Frame: Operational Cognitive Surface**
+* **[18_Context_Frame_Operational_Cognitive_Surface.md](./18_Context_Frame_Operational_Cognitive_Surface.md)**
 
-## **10. Zen Library Manifest**
+## **19. Resilience and Failure Modes**
+* **[19_Resilience_and_Failure_Modes.md](./19_Resilience_and_Failure_Modes.md)**
 
-* **[10_library_manifest.md](./10_library_manifest.md)**
-
-## **11. Perception & RoomState**
-
-* **[11_perception_roomstate.md](./11_perception_roomstate.md)**
-
-## **12. Node-RED Room Manager**
-
-* **[12_room_manager.md](./12_room_manager.md)**
-
-## **13. LiveContext Integration**
-
-* **[13_livecontext_integration.md](./13_livecontext_integration.md)**
-
-## **14. Summarizer Architecture**
-
-* **[14_summarizer_architecture.md](./14_summarizer_architecture.md)**
-
-## **15. MonkPath & Reasoning Loop**
-
-* **[15_monkpath_reasoning_loop.md](./15_monkpath_reasoning_loop.md)**
-
-## **16. Stability & Safety Architecture**
-
-* **[16_stability_and_safety.md](./16_stability_and_safety.md)**
-
-## **17. Katas & SuperSummaries**
-
-* **[17_katas_and_supersummaries.md](./17_katas_and_supersummaries.md)**
-
-## **18. Context Window Composition**
-
-* **[18_context_window_composition.md](./18_context_window_composition.md)**
-
-## **19. Voice Pipeline & Natural Language Intake**
-
-* **[19_voice_pipeline_and_intake.md](./19_voice_pipeline_and_intake.md)**
-
-## **20. Tool Invocation & Security Model**
-
+## **20. Tool Invocation and Security**
 * **[20_tool_invocation_and_security.md](./20_tool_invocation_and_security.md)**
 
 ---
 
-## **Appendices (Future Work: 21–30)**
+## **Appendices (Future Work: Sections 21–30)**
 
-Placeholders for:
+Reserved for:
 
-* Research notes
-* Schema references
-* Security proofs
-* Kata algebra
-* Distributed workers
-* SSE/MCP v2
-* Persona certificate system
-* etc.
-tree** version or an **mkdocs.yml** to drop into a documentation site, just say the word, boss.
+* SSE/MCP v2 architecture  
+* Persona certificates & identity proofs  
+* Kata algebra research  
+* Hypergraph engine v2  
+* External household federation  
+* Distributed Monastery workers  
+* Multimodal pipelines (vision/audio)  
+* Advanced safety model  
+* Formal proofs of invariants
