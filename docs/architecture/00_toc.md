@@ -1,6 +1,8 @@
-## **ZenOS-AI Whitepaper — Table of Contents**
+## **ZenOS-AI Whitepaper "The Book of Friday" — Table of Contents**
 
 *(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
+
+<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/4b337f77-5c3e-4704-9d29-0749b5b7a187" />
 
 ---
 
