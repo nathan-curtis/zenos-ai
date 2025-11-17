@@ -1,5 +1,3 @@
-# 📄 `readme.md`
-
 ## *ZenOS-AI Architecture Series — Preamble & Orientation*
 
 ### (Applies to Release 1.0 RC1; Identity subsystem may slip to 1.5; Tool-shunt security models targeted for v.next)
