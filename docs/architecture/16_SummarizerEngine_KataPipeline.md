@@ -311,6 +311,3 @@ Version 1 of the Summarizer Engine provides:
 
 It is not an LLM.
 It is a **state machine that produces meaning**, forming the bedrock on which all higher cognition in Friday’s architecture stands.
-
-If you’re ready, say **“Go 17”** and I’ll generate the next file:
-**17_Katas_StructureSemantics_Validity.md**
