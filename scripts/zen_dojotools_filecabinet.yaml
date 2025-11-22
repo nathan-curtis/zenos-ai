@@ -1,5 +1,10 @@
 sequence:
   - variables:
+      normalized_label_targets: "{{ [] }}"
+      resolved_label_drawers: "{{ [] }}"
+      resolved_label_entities: "{{ [] }}"
+      label_input_list: "{{ [] }}"
+      read_volume: "{{ {} }}"
       force_action: "{{ force_action | default(false) }}"
       action_type: "{{ action_type | default('help') }}"
       volume_entity: >-
@@ -33,7 +38,6 @@ sequence:
       prewrite_volume: >-
         {% if prewrite_volume_raw is mapping %}{{ prewrite_volume_raw }}{% else
         %}{}{% endif %}
-      volume_unmodified: "{{ not protect_write or (initial_volume == prewrite_volume) }}"
       prettify_json_on_fail: "{{ prettify_json_on_fail | default(false) }}"
       label_raw: "{{ label_targets | default('') }}"
       resolved_label_targets: |-
@@ -314,6 +318,14 @@ sequence:
         {% else %}
           {{ initial_volume }}
         {% endif %}
+      volume_unmodified: |-
+        {{
+          not protect_write or
+          (
+            (initial_volume_raw | tojson) ==
+            (new_volume | tojson)
+          )
+        }}
       cabinet_volumeinfo: >-
         {% set info = initial_volume.get('AI_Cabinet_VolumeInfo', {}) %} {% if
         info is mapping and info.get('value') is mapping %}
@@ -328,6 +340,59 @@ sequence:
         {% else %}
           {}
         {% endif %}
+      is_create_path: >-
+        {{ is_create_new or is_force_update_new or is_force_create_over_existing
+        }}
+      is_update_path: |-
+        {{
+          (is_update and key_exists_initial)
+        }}
+      is_write_action: |-
+        {{
+          action_type in ['create','update','delete','move','copy']
+        }}
+      json_parse_failed: |-
+        {{
+          (parsed_value is string and parsed_value.startswith('Write failed'))
+          or
+          (parsed_value is mapping and (parsed_value.get('error','') | string).startswith('Write failed'))
+        }}
+      health_blocked: |-
+        {{
+          (state_attr(volume_entity, 'health') or {}).get('status') == 'error'
+          or (state_attr(volume_entity, 'health') or {}).get('guid_mismatch', false)
+          or not (state_attr(volume_entity, 'health') or {}).get('writeable', true)
+          or (
+                (state_attr(volume_entity, 'health') or {}).get('storage_warning', false)
+                and not force_action
+             )
+        }}
+      is_force_create_over_existing: |-
+        {{
+          action_type == 'create'
+          and key != ''
+          and key_exists_initial
+          and force_action
+        }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: |
+              {{
+                (parsed_value is string and parsed_value.startswith('Write failed'))
+                or
+                (parsed_value is mapping and (parsed_value.get('error','') | string).startswith('Write failed'))
+              }}
+            alias: Error - Fatal JSON Parsing
+        sequence:
+          - data:
+              level: error
+              message: >
+                ZenDojoTools FileCabinet: FATAL — JSON parse error, write
+                aborted. Key: {{ key }} | Volume: {{ volume_entity }} Parsed
+                Value: {{ parsed_value }}
+            action: system_log.write
+          - stop: JSON Parse Failure
   - choose:
       - conditions:
           - condition: template
@@ -352,6 +417,7 @@ sequence:
               - conditions:
                   - condition: template
                     value_template: "{{ health_blocked }}"
+                    alias: "Error: Not Healthy"
                 sequence:
                   - variables:
                       final_response:
@@ -383,22 +449,6 @@ sequence:
             response_variable: final_response
       - conditions:
           - condition: template
-            value_template: >
-              {{ parsed_value is string and parsed_value[:11] == 'Write failed'
-              }}
-        alias: Error - Invalid JSON Format
-        sequence:
-          - variables:
-              final_response:
-                status: error
-                message: >-
-                  Write operation failed: the provided input is not valid JSON.
-                  Please ensure the data is properly formatted JSON before
-                  retrying.
-          - stop: Invalid JSON format
-            response_variable: final_response
-      - conditions:
-          - condition: template
             value_template: "{{ action_type == 'delete' and key == '' }}"
             alias: Error - Delete, Drawer (Key) Missing
         sequence:
@@ -420,6 +470,25 @@ sequence:
                 status: error
                 message: "Cannot update: key '{{ key }}' does not exist."
           - stop: Key not found
+            response_variable: final_response
+      - conditions:
+          - alias: Error — Create, Drawer Exists and Not Force_Action
+            condition: template
+            value_template: |-
+              {{
+                action_type == 'create'
+                and key != ''
+                and key_exists_initial
+                and not force_action
+              }}
+        sequence:
+          - variables:
+              final_response:
+                status: error
+                message: >-
+                  Cannot create: key '{{ key }}' exists. Use Update or retry
+                  with override approval using force_action. (Will be logged)
+          - stop: Drawer Exists and not force_action
             response_variable: final_response
       - conditions:
           - condition: template
@@ -854,15 +923,22 @@ sequence:
       - conditions:
           - alias: Create (or Update when Key not Exist and Force)
             condition: template
-            value_template: >-
-              {{ (action_type == 'create' and not key_exists_initial) or
-              (action_type == 'update' and not key_exists_initial and
-              force_action) }}
+            value_template: |-
+              {{
+                 is_create_new
+                 or is_force_update_new
+                 or is_force_create_over_existing
+              }}
         sequence:
           - choose:
               - conditions:
                   - condition: template
-                    value_template: "{{ protect_write and not volume_unmodified }}"
+                    value_template: |2-
+                        {{
+                          protect_write
+                          and not force_action
+                          and not volume_unmodified
+                        }}
                 sequence:
                   - variables:
                       final_response:
@@ -892,18 +968,27 @@ sequence:
           - alias: Read after Write Verification
             wait_template: |-
               {% set vol = state_attr(volume_entity, 'variables') %}
-              {% set entry = vol.get(key) if vol is mapping else {} %}
-              {{ entry is mapping and entry.get('value') == new_entry.value }}
+              {% if vol is mapping %}
+                {% set entry = vol.get(key) %}
+                {{ entry is mapping }}
+              {% else %}
+                false
+              {% endif %}
             timeout: "00:00:02"
             continue_on_timeout: true
           - variables:
               verify_volume: "{{ state_attr(volume_entity, 'variables') | default({}, true) }}"
-              verify_entry: >-
-                {% if verify_volume is mapping %}{{ verify_volume.get(key, {})
-                }}{% else %}{}{% endif %}
-              write_verified: >-
-                {{ verify_entry is mapping and verify_entry.get('value') ==
-                new_entry.value }}
+              verify_entry: |-
+                {% if verify_volume is mapping %}
+                  {{ verify_volume.get(key, {}) }}
+                {% else %}
+                  {}
+                {% endif %}
+              write_verified: |-
+                {{
+                  verify_entry is mapping
+                  and verify_entry.get('value') == new_entry.value
+                }}
           - variables:
               final_response:
                 status: "{{ 'success' if write_verified else 'warning' }}"
@@ -911,7 +996,7 @@ sequence:
                   {% if write_verified %}
                     Created drawer '{{ key }}' (verification confirmed).
                   {% else %}
-                    Created drawer '{{ key }}' (verification not confirmed — value not yet reflected in state; may be delayed).
+                    Created drawer '{{ key }}' (value written but verification delayed).
                   {% endif %}
                 entry:
                   drawer: "{{ key }}"
@@ -923,22 +1008,29 @@ sequence:
                   confirmed: "{{ write_verified }}"
                 warnings: |-
                   {% if dropped_labels | length > 0 %}
-                    Warning: {{ dropped_labels | length }} label(s) were ignored: {{ dropped_labels }}
+                    Warning: {{ dropped_labels | length }} ignored label(s): {{ dropped_labels }}
                   {% else %}
                     None
                   {% endif %}
           - stop: Create fired
             response_variable: final_response
       - conditions:
-          - condition: template
-            value_template: "{{ action_type == 'update' and key_exists_initial }}"
-            alias: Update
+          - alias: Update
+            condition: template
+            value_template: >
+              {{ action_type == 'update' and key_exists_initial and not
+              is_force_update_new }}
         sequence:
           - choose:
               - conditions:
-                  - condition: template
-                    value_template: "{{ protect_write and not volume_unmodified }}"
-                    alias: "Error - Concurrent Modification Blocked: Modified"
+                  - alias: "Error - Concurrent Modification Blocked: Modified"
+                    condition: template
+                    value_template: |2
+                        {{
+                          protect_write
+                          and not force_action
+                          and not volume_unmodified
+                        }}
                 sequence:
                   - variables:
                       final_response:
@@ -968,18 +1060,27 @@ sequence:
           - alias: Read after Write Verification (update)
             wait_template: |-
               {% set vol = state_attr(volume_entity, 'variables') %}
-              {% set entry = vol.get(key) if vol is mapping else {} %}
-              {{ entry is mapping and entry.get('value') == new_entry.value }}
+              {% if vol is mapping %}
+                {% set entry = vol.get(key) %}
+                {{ entry is mapping }}
+              {% else %}
+                false
+              {% endif %}
             timeout: "00:00:02"
             continue_on_timeout: true
           - variables:
               verify_volume: "{{ state_attr(volume_entity, 'variables') | default({}, true) }}"
-              verify_entry: >-
-                {% if verify_volume is mapping %}{{ verify_volume.get(key, {})
-                }}{% else %}{}{% endif %}
-              write_verified: >-
-                {{ verify_entry is mapping and verify_entry.get('value') ==
-                new_entry.value }}
+              verify_entry: |-
+                {% if verify_volume is mapping %}
+                  {{ verify_volume.get(key, {}) }}
+                {% else %}
+                  {}
+                {% endif %}
+              write_verified: |-
+                {{
+                  verify_entry is mapping
+                  and verify_entry.get('value') == new_entry.value
+                }}
           - variables:
               final_response:
                 status: "{{ 'success' if write_verified else 'warning' }}"
@@ -987,7 +1088,7 @@ sequence:
                   {% if write_verified %}
                     Updated drawer '{{ key }}' (verification confirmed).
                   {% else %}
-                    Updated drawer '{{ key }}' (verification not confirmed — value not yet reflected in state; may be delayed).
+                    Updated drawer '{{ key }}' (value written but verification delayed).
                   {% endif %}
                 entry:
                   drawer: "{{ key }}"
@@ -999,7 +1100,7 @@ sequence:
                   confirmed: "{{ write_verified }}"
                 warnings: |-
                   {% if dropped_labels | length > 0 %}
-                    Warning: {{ dropped_labels | length }} label(s) were ignored: {{ dropped_labels }}
+                    Warning: {{ dropped_labels | length }} ignored label(s): {{ dropped_labels }}
                   {% else %}
                     None
                   {% endif %}
@@ -1337,7 +1438,8 @@ sequence:
         response_variable: final_response
 alias: Zen DojoTools FileCabinet (RC1)
 description: >-
-  Zen DojoTools FileCabinet (v3.8.2 RC1) 100% More Health!
+  Zen DojoTools FileCabinet (v3.9.0 RC1) 100% More Health, No Bad JSON! No more
+  ghost Writes
 
   CabinetVolumes are The Library's storage. To use ALWAYS pull a Volume Manifest
   'Manifest' (list of all volumes with rich metadata) FIRST if you do not
