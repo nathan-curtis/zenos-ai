@@ -1,6 +1,6 @@
 {#
   ZenOS-AI Prompt Engine — Core Runtime Template
-  Version: 3.5.1 RC1
+  Version: 3.5.2 RC1
   File: zen_os_1rc.jinja
 
   This template defines the core prompt assembly pipeline for ZenOS-AI.
@@ -47,6 +47,346 @@
 
 {%- import 'command_interpreter.jinja' as command_interpreter %}
 
+{# ===============================================================
+   UNIVERSAL ID NORMALIZER (v1)
+   Accepts:
+     • shortname ("friday")
+     • entity_id ("person.friday")
+     • cabinet entity ("sensor.friday_s_cabinet_authkey1284")
+     • guid ("f34a8d2e....")
+   Returns:
+     • canonical shortname expected by identity_resolve_source()
+   =============================================================== #}
+
+
+  {#- ============================================================
+     2. CABINET TYPE CLASSIFICATION (normalized output)
+     ============================================================ -#}
+  {%- macro classify(labels) -%}
+    {%- set l = labels | default([]) -%}
+
+    {#- ---- User-Level Types ---- -#}
+    {%- if 'zen_ai_user_cabinet' in l -%}
+      ai_user
+    {%- elif 'zen_user_cabinet' in l -%}
+      user
+
+    {#- ---- Family / Household ---- -#}
+    {%- elif 'zen_default_family' in l -%}
+      default_family
+    {%- elif 'zen_default_household_cabinet' in l -%}
+      default_household
+    {%- elif 'zen_family_cabinet' in l -%}
+      family
+    {%- elif 'zen_household_cabinet' in l -%}
+      household
+
+    {# ---- Core System / Infrastructure ---- #}
+    {%- elif 'zen_system_cabinet' in l or 'zen_default_system' in l %}
+      system
+
+    {#- ---- Themed / Functional Types ---- -#}
+    {%- elif 'zen_dojo_cabinet' in l -%}
+      dojo
+    {%- elif 'zen_history_cabinet' in l -%}
+      history
+    {%- elif 'zen_kata_cabinet' in l -%}
+      kata
+    {%- elif 'zen_scratchpad_cabinet' in l -%}
+      scratchpad
+
+    {#- ---- Pattern Prefix Types ---- -#}
+    {%- elif l | select('search', '^zen_prime_') | list | count > 0 -%}
+      prime
+    {%- elif l | select('search', '^zen_hoh_') | list | count > 0 -%}
+      head_of_household
+    {%- elif l | select('search', '^zen_root_') | list | count > 0 -%}
+      root
+
+    {#- ---- Final: unknown ---- -#}
+    {%- else -%}
+      unknown
+    {%- endif -%}
+  {%- endmacro -%}
+
+{%- macro zen_cabinets(ai_user=None, include_invalid=false) -%}
+
+  {#- ============================================================
+     Normalize empty string → None
+     ============================================================ -#}
+  {%- if ai_user is string and ai_user | trim == '' -%}
+    {%- set ai_user = none -%}
+  {%- endif -%}
+  
+  {#- ============================================================
+     Master namespace for ALL state
+     ============================================================ -#}
+  {%- set ns = namespace(
+      all = [],
+      valid = [],
+      result = None
+  ) -%}
+
+  {#- ============================================================
+     1. DISCOVER CABINETS LABELED "Zen Cabinet"
+     ============================================================ -#}
+  {%- set labeled = label_entities('Zen Cabinet') | default([]) -%}
+  {%- set sensor_cabs =
+        states.sensor
+        | map(attribute='entity_id')
+        | select('in', labeled)
+        | list
+  -%}
+
+  {#- ============================================================
+     3. BUILD ENTRY STRUCTS FOR EACH CABINET
+     ============================================================ -#}
+  {%- for cab in sensor_cabs -%}
+    {%- set vars = state_attr(cab, 'variables') or {} -%}
+    {%- set essence = vars.get('zenai_essence', {}) -%}
+    {%- set ident   = essence.get('identity', {}) -%}
+
+    {%- set guid = ident.get('guid') -%}
+    {%- set name = ident.get('name') -%}
+    {%- set labels = labels(cab) | default([]) -%}
+    {%- set ctype = classify(labels) | string | trim -%}
+
+    {#- VALIDITY = has name + guid -#}
+    {%- set is_valid =
+          (guid is string) and (guid | length > 6)
+          and (name is string) and (name | length > 0)
+    -%}
+
+    {%- set entry = {
+      "entity_id": cab,
+      "name": name,
+      "guid": guid,
+      "labels": labels,
+      "type": ctype,
+      "valid": is_valid
+    } -%}
+
+    {%- set ns.all   = ns.all + [entry] -%}
+    {%- if is_valid -%}
+      {%- set ns.valid = ns.valid + [entry] -%}
+    {%- endif -%}
+  {%- endfor -%}
+
+  {#- ============================================================
+     4. NO ai_user PROVIDED → output all or valid
+     ============================================================ -#}
+  {%- if ai_user is none -%}
+    {%- if include_invalid %}
+      {%- set ns.result = ns.all -%}
+    {%- else -%}
+      {%- set ns.result = ns.valid -%}
+    {%- endif -%}
+  {%- endif -%}
+
+  {#- ============================================================
+     5. Matching — only if ai_user was provided
+     ============================================================ -#}
+  {%- if ns.result is none and ai_user is not none -%}
+
+    {%- set key = ai_user | string | lower | replace(' ', '_') -%}
+
+    {#- MATCH POOL = valid OR all -#}
+    {%- if include_invalid -%}
+      {%- set pool = ns.all -%}
+    {%- else -%}
+      {%- set pool = ns.valid -%}
+    {%- endif -%}
+
+    {#- ---- Stage A: label exact match ---- -#}
+    {%- for cab in pool -%}
+      {%- if ns.result is none and (key in cab.labels) -%}
+        {%- set ns.result = cab -%}
+      {%- endif -%}
+    {%- endfor -%}
+
+    {#- ---- Stage B: partial name contains ---- -#}
+    {%- if ns.result is none -%}
+      {%- for cab in pool -%}
+        {%- set nm = cab.name | string | lower -%}
+        {%- if key in nm -%}
+          {%- set ns.result = cab -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+  
+  {%- endif -%}
+
+  {#- ============================================================
+     6. NO MATCH → not_found block
+     ============================================================ -#}
+  {%- if ns.result is none -%}
+    {%- set normalized =
+          (ai_user | string | lower | replace(' ', '_'))
+          if ai_user is not none
+          else none
+    -%}
+    {%- set ns.result = {
+      "error": "not_found",
+      "input_raw": ai_user,
+      "input_normalized": normalized,
+      "message": "No matching Zen cabinet found"
+    } -%}
+  {%- endif -%}
+  {#- ============================================================
+     7. FINAL OUTPUT
+     ============================================================ -#}
+  {{ ns.result | tojson }}
+
+{%- endmacro %}
+
+{%- macro identity_cab_to_id_card(cabinet) -%}
+
+  {# =============================================================
+     0. Initialize result holder
+     ============================================================= #}
+  {%- set ns = namespace(result=None) -%}
+
+  {# =============================================================
+     1. Normalize cabinet input (string → JSON → mapping)
+     ============================================================= #}
+  {%- set cab = cabinet -%}
+
+  {%- if cab is string -%}
+      {%- set trimmed = cab | trim -%}
+      {%- if trimmed.startswith('{') and trimmed.endswith('}') -%}
+          {%- set cab = trimmed | from_json -%}
+      {%- else -%}
+          {%- set ns.result = {
+              "error": "invalid_input",
+              "message": "Cabinet was a string but not JSON.",
+              "received": cabinet
+          } -%}
+      {%- endif -%}
+  {%- endif -%}
+
+  {%- if ns.result is none and not (cab is mapping) -%}
+      {%- set ns.result = {
+          "error": "invalid_input",
+          "message": "Cabinet must be a mapping after normalization.",
+          "received": cabinet
+      } -%}
+  {%- endif -%}
+
+  {# =============================================================
+     2. Cabinet validity check
+     ============================================================= #}
+  {%- if ns.result is none and cab.get('valid') != true -%}
+      {%- set ns.result = {
+          "error": "invalid_cabinet",
+          "message": "Cabinet structure is not marked valid.",
+          "cabinet": cab
+      } -%}
+  {%- endif -%}
+
+  {# =============================================================
+     3. Load ACL from cabinet entity
+     ============================================================= #}
+  {%- set vol_acls = {} -%}
+  {%- if ns.result is none -%}
+      {%- set cab_entity = cab.get('entity_id') -%}
+      {%- set volinfo_root = state_attr(cab_entity, 'variables') or {} -%}
+      {%- set vol_ACI = volinfo_root.get('AI_Cabinet_VolumeInfo', {}) -%}
+      {%- set vol_ACI_value = vol_ACI.get('value', {}) -%}
+      {%- set vol_acls = vol_ACI_value.get('acls', {}) -%}
+  {%- endif -%}
+
+  {# =============================================================
+     4. Resolve canonical owner identity (NO FALLBACK)
+     ============================================================= #}
+  {%- set ident_name = None -%}
+  {%- set ident_guid = None -%}
+  {%- set person_id = None -%}
+
+  {%- set owner_block = vol_acls.get('owner') -%}
+
+  {%- if owner_block is mapping -%}
+      {%- set ident_name = owner_block.get('name') -%}
+      {%- set ident_guid = owner_block.get('entity_guid') -%}
+      {%- set person_id = owner_block.get('entity_id') -%}
+
+  {%- elif owner_block is iterable and owner_block|length == 1 -%}
+      {%- set own = owner_block[0] -%}
+      {%- set ident_name = own.get('name') -%}
+      {%- set ident_guid = own.get('entity_guid') -%}
+      {%- set person_id = own.get('entity_id') -%}
+
+  {%- else -%}
+      {%- set ns.result = {
+          "error": "identity_unresolvable",
+          "message": "Owner ACL missing or invalid. Cannot resolve identity.",
+          "cabinet": cab
+      } -%}
+  {%- endif -%}
+
+  {# =============================================================
+     5. Persona identity + identity hash
+     ============================================================= #}
+  {%- set persona = cab.get('essence', {}) -%}
+  {%- set persona_identity = persona.get('identity', {}) -%}
+  {%- set persona_essence = persona -%}
+
+  {%- set identity_hash = persona.get('hashstamp', {}).get('hash') -%}
+
+  {# =============================================================
+     6. Canonical squirrel (boolean)
+     ============================================================= #}
+  {%- set squirrel_label = "Zen Squirrel" -%}
+  {%- set sq_entity = states['input_boolean']
+          | map(attribute='entity_id')
+          | select('in', label_entities(squirrel_label))
+          | list
+          | first
+          | default(None)
+  -%}
+
+  {%- set sq_raw = states(sq_entity) | default('off') -%}
+  {%- set squirrel_state = (sq_raw == 'on') -%}
+
+  {# =============================================================
+     7. Build final identity card (schema-aligned)
+     ============================================================= #}
+  {%- if ns.result is none -%}
+
+      {# Normalize labels: empty → None #}
+      {%- set lbls = cab.get('labels') -%}
+      {%- set normalized_labels = lbls if lbls and lbls|length > 0 else None -%}
+
+      {# Base identity from ACL (authoritative) #}
+      {%- set base_ident = {
+          "name": ident_name,
+          "entity_id": person_id,
+          "guid": ident_guid,
+          "cabinet": cab.get('entity_id'),
+          "status": "ok",
+          "type": "ai_persona",
+          "labels": normalized_labels,
+          "identity_hash": identity_hash
+      } -%}
+
+      {# Persona extends identity, ACL wins conflicts #}
+      {%- set effective_identity = base_ident -%}
+      {%- if persona_identity is mapping and persona_identity|length > 0 -%}
+          {%- set effective_identity = persona_identity | combine(base_ident, recursive=true) -%}
+      {%- endif -%}
+
+      {%- set ns.result = {
+          "identity": effective_identity,
+          "essence": persona_essence,
+          "acl": vol_acls,
+          "squirrel": squirrel_state
+      } -%}
+  {%- endif -%}
+
+  {{ ns.result | tojson }}
+
+{%- endmacro -%}
+
+{#- Resolve source -#}
 {%- macro identity_resolve_source(ai_user) -%}
 {%- set result = {
     "name": None,
@@ -249,9 +589,9 @@
            3. Drawer names (legacy constants, variable form)
            ---------------------------------------------------- #}
 
-        {%- set drawer_purpose    = "Purpose" -%}
-        {%- set drawer_directives = "Directives" -%}
-        {%- set drawer_cortex     = "Cortex" -%}
+        {%- set drawer_purpose    = "Friday's Purpose" -%}
+        {%- set drawer_directives = "Friday's Directives" -%}
+        {%- set drawer_cortex     = "SYSTEM_CORTEX" -%}
 
 
         {# ----------------------------------------------------
