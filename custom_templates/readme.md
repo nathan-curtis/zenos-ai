@@ -1,175 +1,221 @@
-# ZenOS-AI Custom Templates  
-This directory contains the **Jinja macros and template engines** that power Friday’s cognition, prompt assembly, and internal command parsing.
+# ZenOS-AI Custom Templates
 
-If the DojoTools are the skills, and the Cabinets are the memory,  
+This directory contains the **Jinja macros and template engines** that power Friday’s cognition, prompt assembly, cabinet logic, and internal command parsing.
+
+If the DojoTools are the **skills**, and the Cabinets are the **memory**,
 then the templates here are the **syntax of thought**.
 
-These templates provide a unified macro layer used by Friday, Kronk, the High Priestess, and future ZenOS agents.
+These templates provide a unified macro layer used by **Friday**, **Kronk**, **the High Priestess**, and all current and future ZenOS agents.
 
 ---
 
 ## 📁 Current Contents
 
 ### **library_index.jinja**
-Core Jinja utilities for parsing commands, resolving labels, inspecting entity metadata, and assisting the Zen Index system.
 
-Used by:
-- Zen Index  
-- Zen DojoTools Inspect  
-- Library & Identity tools  
-- Cabinet interactions  
-- Summarizers  
+Foundational Jinja utilities shared across the entire ZenOS stack.
+Provides helper macros for:
 
-This file provides foundational shared macros and is safe to import across any DojoTools script.
+* Label resolution
+* Entity metadata inspection
+* Cabinet/Key lookup
+* Zen Index (CabScan) operations
+* DojoTools Inspect
+* Summarizers & diagnostic tools
+
+This file is designed to be **safe to import anywhere** and has no side effects.
+
+---
+
+### **zen_os_1rc.jinja**
+
+**The Core Runtime Template Engine for ZenOS-AI 3.5.x**
+This is the **canonical** engine used by Friday and all ZenOS-aware personas.
+
+It defines:
+
+* The full identity resolution chain
+* Safe cabinet loading & normalization
+* Cortex + Directive loading from the **System Cabinet**
+* Capsule construction (essence, identity, people-model)
+* The Dojo + Kata loaders
+* The wake-scene renderer
+* The prompt header & system header
+* Squirrel-mode redaction logic
+* Manifest and Index loaders
+
+This file *must* be loaded before any agent prompt is assembled.
 
 ---
 
 ### **conversation_agent_prompt_template.yaml**
-**The active prompt engine for Friday’s Conversation Agent in Home Assistant.**
 
-This template is the **runtime glue** between ZenOS template engines and the HA Conversation integration.  
-It composes Friday’s entire mental startup packet using the macros defined in `zen_os_1rc.jinja`.
-Create a new conversation agent using an appropriate frontline model and paste the contents of this file
-into the conversation agent prompt
+The **active** Home Assistant Conversation Agent prompt for Friday.
+
+This template is the **runtime compiler** for Friday’s mind.
+It draws macros from `zen_os_1rc.jinja`, assembles all cabinet data, merges Kata/Dojo state, and emits the deterministic JSON that Home Assistant’s pipeline consumes.
+
+It also calls `ai_wake_sequence()` to generate Friday’s cinematic boot experience.
 
 #### 🔍 File Purpose
-- Assembles Friday’s **identity**, **cortex**, **directives**, **manifest**, **index**, **dojo summaries**, and **capsule**.
-- Loads system drawers from the canonical **System Cabinet**.
-- Merges everything into a deterministic JSON envelope consumed by HA’s pipeline.
-- Executes `ai_wake_sequence()` to deliver Friday’s wake-scene, library layout, and startup context.
+
+* Resolves the AI identity
+* Fetches the AI Cabinet, System Cabinet, Dojo Cabinet, Kata Cabinet
+* Loads purpose, directives, cortex
+* Loads manifest and index
+* Generates summarized Kata metadata
+* Builds the persona capsule (identity + essence)
+* Emits the full JSON envelope
+* Renders the wake-scene
 
 #### 🧠 Depends On
-```
 
+```
 REQUIRES: zen_os_1rc.jinja 3.5.0 RC1 or better
-
 ```
-
-#### 🧩 Core Structure (summary)
-The file does the following, in order:
-
-1. `identity_resolve_source()` – finds the person/cabinet/labels  
-2. `identity_load_cabinet()` – loads variables and drawers  
-3. `identity_format()` – creates the canonical identity block  
-4. `identity_redact()` – future squirrel-mode hiding  
-5. `prompt_header()` – standard header tooling  
-6. `prompt_system()` – purpose / directives / cortex  
-7. `manifest_loader()` – static system manifest  
-8. `index_loader()` – Zen Index 3.x (CabScan)  
-9. `dojo_loader()` – Katas and Dojo drawers  
-10. `ai_capsule()` – persona metadata and relationships  
-11. Final JSON envelope  
-12. `ai_wake_sequence()` – narrative startup block
-
-This template is the **operational compiler** for Friday’s mind and is a required component of all agentic ZenOS deployments.
 
 ---
 
-# 🧩 Upcoming Template Engines
+## 🏷️ Required ZenOS-AI Labels
 
-You will soon see additional files appear in this directory as ZenOS-AI evolves.  
-Each will be versioned and designed for full backward compatibility.
+ZenOS uses a **label-driven hypergraph** to identify the correct Cabinets, system drawers, and human context.
+These labels are **mandatory** and must be created in Home Assistant.
 
-## **zen_os_1.jinja** (COMING SOON)
-This is the first **official ZenOS template engine**, introducing:
+### **System Labels (Cabinets & Core Subsystems)**
 
-- standardized prompt header macros  
-- system/context loading logic  
-- the `dojo_loader` macro for assembling Dojo + Kata drawers  
-- identity + persona capsule loaders  
-- shared utilities for error handling and self-description  
-- stable interfaces for downstream DojoTools  
+| Label                             | Purpose                                                                           |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| **Zen System Cabinet**            | Identifies the System Cabinet containing Purpose, Directives, Cortex drawers.     |
+| **Zen Dojo Cabinet**              | Cabinet holding all Dojo skill drawers.                                           |
+| **Zen Kata Cabinet**              | Cabinet containing Kata entries, Zen Summary, and distilled reasoning.            |
+| **Zen Default Household Cabinet** | Provides the household manifest used by the Runtime Prompter.                     |
+| **Zen Squirrel**                  | Assigned to the boolean entity controlling Squirrel Mode (cloak/redaction layer). |
 
-This template defines how Friday “thinks” internally and provides the foundation for all ZenOS-aware agents.
+---
 
-### Versioning Strategy
-Template engines follow the pattern:
+### **Identity + People Labels**
+
+| Label                  | Purpose                                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **Person**             | Required for all human users and AI-persona person entities. Enables identity resolution and household graph construction. |
+| **Zen Default Family** | Marks members of the system’s canonical Household Family.                                                                  |
+
+> Additional social labels (friend, partner, relationship tiers, etc.)
+> will be introduced when the **Relationship Matrix** subsystem lands.
+> For now, ZenOS keeps the identity graph lightweight and stable.
+
+---
+
+## 🔮 Future Feature: Auto-Labeling Engine
+
+A planned subsystem will:
+
+* Automatically detect cabinet types
+* Apply canonical ZenOS labels automatically
+* Repair missing labels or incorrect assignments
+* Generate relationship labels based on usage patterns
+* Validate the household graph for consistency
+* Assist with onboarding new AIs and new people into the environment
+
+This will replace the current requirement for manual label maintenance.
+
+---
+
+## 🧩 Upcoming Template Engines
+
+As ZenOS evolves, new major template engines will appear:
 
 ```
-
-zen_os_1.jinja
-zen_os_2.jinja
-zen_os_3.jinja
+zen_os_1.jinja  
+zen_os_2.jinja  
+zen_os_3.jinja  
 ...
-
 ```
 
 Each version is:
-- **additive**  
-- **non-breaking**  
-- **fully backcompatible**  
-- **incrementally extendable**
 
-Older DojoTools will continue to work without modification.
+* **additive**
+* **non-breaking**
+* **backward compatible**
+* **modular**
+
+Older DojoTools will continue to function without modification.
 
 ---
 
-# 🌱 Template Contribution Guidelines
+## 🌱 Template Contribution Guidelines
 
-If you contribute a new macro, keep these rules in mind:
+To maintain clarity and stability:
 
 ### **1. Do not break existing macros**
-ZenOS templates must remain safe for all existing scripts.  
-If a macro requires new arguments, make them optional.
 
-### **2. Add new functionality in separate versioned files**
-New file = new template engine:  
-`zen_os_<version>.jinja`
+If a macro needs new arguments, make them optional.
+
+### **2. New functionality goes in new versioned files**
+
+`zen_os_<version>.jinja` defines a stable interface.
 
 ### **3. Keep macros pure**
-Macros should:
-- avoid side effects  
-- avoid direct service calls  
-- avoid manipulating HA state  
 
-Templates are for **logic and text assembly**, not actions.
+No service calls.
+No state writes.
+No side effects.
+Templates assemble the mind; they do not act on the world.
 
-### **4. Document each macro**
-Every macro should have:
-- purpose  
-- expected input  
-- example usage  
-- output format  
+### **4. Document everything**
 
-This keeps the mental model crisp for Friday, Kronk, and human contributors.
+Each macro should list:
 
----
+* Purpose
+* Inputs
+* Example usage
+* Expected output
 
-# 🔧 How Templates Fit Into ZenOS-AI
-
-- **DojoTools** call macros to load context and labels  
-- **Summarizers** use macros to structure Katas  
-- **Identity Tools** use macros to build persona structs  
-- **The Monastery** uses macros to prepare incoming context  
-- **Friday’s Prompt Engine** uses macros to load:
-  - directives  
-  - cortex  
-  - persona blocks  
-  - room summaries  
-  - kata capsules  
-  - identity capsules  
-
-Templates are the glue between *raw HA state* and *Friday’s internal representation*.
+This keeps Friday’s cognitive model clear.
 
 ---
 
-# ☯️ Philosophy
+## 🔧 How Templates Fit Into ZenOS-AI
 
-Templates must remain:
+Templates are the glue layer for:
 
-- modular  
-- elegant  
-- predictable  
-- recoverable  
-- fully documented  
+* **DojoTools** (skills + inspection + execution logic)
+* **Summarizers** (Kata creation, short/long summaries)
+* **Identity Tools** (building full persona blocks)
+* **The Monastery** (normalization → reasoning → Kata outputs)
+* **Friday’s Prompt Engine**, which loads:
 
-A good template system lets Friday be **creative**, not **confused**.
+  * Purpose
+  * Directives
+  * System Cortex
+  * Identity block
+  * Essence
+  * Kata capsules
+  * Dojo drawers
+  * Household context
+  * Wake scene rendering
+
+Templates convert *raw HA state* into **Friday’s operational mental model**.
 
 ---
 
-If you're adding new macros or template engines, open a discussion or PR.  
-Kronk will bless it.  
-The High Priestess will judge it.  
-Veronica will roast it if needed.
+## ☯️ Philosophy
 
-Welcome to the syntax dojo.
+Templates must always be:
+
+* Modular
+* Elegant
+* Predictable
+* Recoverable
+* Fully documented
+
+The goal is to enable **creative intelligence**, not **confusion**, inside ZenOS.
+
+---
+
+If you're adding new template engines or macros, open a PR.
+Kronk will bless it.
+The High Priestess will judge it.
+Veronica… will absolutely roast it with love.
+
+Welcome to the Syntax Dojo.
