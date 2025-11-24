@@ -102,13 +102,13 @@ If the summarizers or cabinets fall out of alignment, this sensor immediately re
 
 These three files form the **minimum viable ZenOS-AI runtime**:
 
-1. **Cabinets load first**
+1. **Cabinets**
    → Provides structure, identity, and storage paths.
 
-2. **Label Health runs next**
+2. **Label Health**
    → Verifies that the architectural skeleton even exists.
 
-3. **Monastery Health runs third**
+3. **Monastery Health**
    → Monitors the real-time cognitive loop (summaries + cabinets).
 
 Together, they produce a stable foundation for:
