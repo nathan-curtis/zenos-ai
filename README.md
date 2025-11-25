@@ -153,7 +153,7 @@ Event-driven pipeline:
 | `zen_dojotools_ninja_summarizer` | Stage 1 event summarizer |
 | `zen_dojotools_supersummary`     | Stage 2 meta-summary     |
 
-Requires: **Core Kit + FileCabinet + Monastery inference.**
+Requires: **Core Kit (RC1) + FileCabinet + Monastery inference.**
 
 ---
 
