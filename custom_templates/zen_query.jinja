@@ -1,0 +1,308 @@
+{# =====================================================================
+   ZenOS-AI - Zen Query Engine (ZQ-1)
+   Version: 3.9.3 RC1
+   Design:
+     - Input:
+         filter_json (str|dict)
+         entity_list (any - null, single entity, list, etc)
+     - Behavior:
+         - Normalize entity_list into pipe.ids (list of entity_id strings)
+         - If empty and domain is provided, auto-build from states[domain]
+         - Apply each filter step as:
+             - build new.list
+             - loop pipe.ids
+             - append ents that pass
+             - pipe.ids = new.list
+     - Output:
+         JSON string list of entity_ids
+   ===================================================================== #}
+
+{%- macro zen_filter(filter_json, entity_list) -%}
+
+  {# --- 0. Parse filter JSON safely ----------------------------------- #}
+  {%- set f = filter_json | from_json if filter_json is string else filter_json -%}
+
+  {%- set domain         = f.get('domain') %}
+  {%- set label          = f.get('label') %}
+  {%- set area           = f.get('area') %}
+  {%- set device_id      = f.get('device_id') %}
+  {%- set device_class   = f.get('device_class') %}
+  {%- set state_equals   = f.get('state_equals') %}
+  {%- set include_states = f.get('include_states', []) %}
+  {%- set exclude_states = f.get('exclude_states', []) %}
+  {%- set num_above      = f.get('numeric_above') %}
+  {%- set num_below      = f.get('numeric_below') %}
+  {%- set regex          = f.get('regex') %}
+  {%- set sort_spec      = f.get('sort', {}) %}
+
+  {# shortcuts may be dict, list, string, null - normalize to mapping #}
+  {%- set sc_raw = f.get('shortcuts') %}
+  {%- if sc_raw is mapping %}
+    {%- set sc = sc_raw %}
+  {%- else %}
+    {%- set sc = {} %}
+  {%- endif %}
+
+  {# --- 1. Normalize entity_list into pipe.ids (list of entity_ids) ---- #}
+  {%- set raw = entity_list | default([]) %}
+  {%- set pipe = namespace(ids=[]) %}
+
+  {%- if raw is string %}
+    {%- set pipe.ids = [raw] %}
+  {%- elif raw is iterable %}
+    {%- set pipe.ids = raw | list %}
+  {%- else %}
+    {%- set pipe.ids = [] %}
+  {%- endif %}
+
+  {# --- 2. Auto-build from domain if list is empty -------------------- #}
+  {%- if (pipe.ids | count == 0) and domain %}
+    {%- set pipe.ids = states[domain] | map(attribute='entity_id') | list %}
+  {%- endif %}
+
+  {# --- 3. Domain filter (if both domain and explicit list) ------------ #}
+  {%- if domain %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if ent is string and ent.startswith(domain ~ '.') %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 4. Label filter (intersection only) --------------------------- #}
+  {%- if label %}
+    {# slugify handles case, spaces, punctuation #}
+    {%- set normalized = label | slugify %}
+    {%- set labeled = label_entities(normalized) | list %}
+    {# intersect() is HA filter that returns common items #}
+    {%- set pipe.ids = pipe.ids | intersect(labeled) %}
+  {%- endif %}
+  
+  {# --- 4a. Area filter (intersection only) --------------------------- #}
+  {%- if area %}
+    {%- set normalized = area | slugify %}
+    {%- set aid = area_id(normalized) %}
+    {%- if aid %}
+      {%- set aread = area_entities(aid) | list %}
+      {%- set pipe.ids = pipe.ids | intersect(aread) %}
+    {%- endif %}
+  {%- endif %}
+
+  {# --- 4b. Device filter (intersection only) -------------------------- #}
+  {%- if device_id %}
+    {%- set normalized = device_id | slugify %}
+    {%- set did = device_id(normalized) %}
+    {%- if did %}
+      {%- set device_ents = device_entities(did) | list %}
+      {%- set pipe.ids = pipe.ids | intersect(device_ents) %}
+    {%- endif %}
+  {%- endif %}
+
+  {# --- 5. Device class filter ---------------------------------------- #}
+  {%- if device_class %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if state_attr(ent, 'device_class') == device_class %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 6. State equals filter ---------------------------------------- #}
+  {%- if state_equals %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if states(ent) == state_equals %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 7. Include states filter -------------------------------------- #}
+  {%- if include_states %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set s = states(ent) %}
+      {%- if s in include_states %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 8. Exclude states filter -------------------------------------- #}
+  {%- if exclude_states %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set s = states(ent) %}
+      {%- if s not in exclude_states %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 9. Numeric filters (above / below) ---------------------------- #}
+  {%- if num_above is not none or num_below is not none %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set sval = states(ent) %}
+      {%- set val = sval | float(none) %}
+      {%- if val is not none %}
+        {%- set ok = true %}
+        {%- if num_above is not none and val <= num_above %}
+          {%- set ok = false %}
+        {%- endif %}
+        {%- if num_below is not none and val >= num_below %}
+          {%- set ok = false %}
+        {%- endif %}
+        {%- if ok %}
+          {%- set new.list = new.list + [ent] %}
+        {%- endif %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 10. Regex on state -------------------------------------------- #}
+  {%- if regex %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set s = states(ent) %}
+      {%- if s is string and s is regex(regex) %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 11. Shortcuts -------------------------------------------------- #}
+
+  {# 11.1 numeric - only entities with numeric states ------------------ #}
+  {%- if sc is mapping and sc.get('numeric') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set val = states(ent) | float(none) %}
+      {%- if val is not none %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.2 stats - entities that have a state_class --------------------- #}
+  {%- if sc is mapping and sc.get('stats') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set sc_val = state_attr(ent, 'state_class') %}
+      {%- if sc_val is not none %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.3 temp - device_class = temperature ---------------------------- #}
+  {%- if sc is mapping and sc.get('temp') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if state_attr(ent, 'device_class') == 'temperature' %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.4 humidity - device_class = humidity --------------------------- #}
+  {%- if sc is mapping and sc.get('humidity') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if state_attr(ent, 'device_class') == 'humidity' %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.5 power - device_class = power --------------------------------- #}
+  {%- if sc is mapping and sc.get('power') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if state_attr(ent, 'device_class') == 'power' %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.6 energy - device_class = energy ------------------------------- #}
+  {%- if sc is mapping and sc.get('energy') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if state_attr(ent, 'device_class') == 'energy' %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.7 water - device_class = moisture ------------------------------ #}
+  {%- if sc is mapping and sc.get('water') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if state_attr(ent, 'device_class') == 'moisture' %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.8 binary - entity_id starts with binary_sensor. ---------------- #}
+  {%- if sc is mapping and sc.get('binary') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if ent is string and ent.startswith('binary_sensor.') %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# 11.9 stats_eligible - entity_id has state_class, unit_of_measurement, is numeric ---------------- #}
+  {%- if sc is mapping and sc.get('stats_eligible') %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set sc_val = state_attr(ent,'state_class') %}
+      {%- set uom = state_attr(ent,'unit_of_measurement') %}
+      {%- set val = states(ent) | float(none) %}
+      {%- if sc_val != none and uom != none and val is not none
+            and state_attr(ent,'disabled_by') == none %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endif %}
+
+  {# --- 12. Sorting ---------------------------------------------------- #}
+  {%- set sort_by    = sort_spec.get('by') %}
+  {%- set sort_order = sort_spec.get('order', 'asc') %}
+
+  {%- if sort_by == 'entity_id' %}
+    {%- set pipe.ids = pipe.ids | sort(reverse=(sort_order == 'desc')) %}
+  {%- elif sort_by == 'state' %}
+    {%- set objs = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- set objs.list = objs.list + [{'eid': ent, 'st': states(ent)}] %}
+    {%- endfor %}
+    {%- set sorted = objs.list | sort(attribute='st', reverse=(sort_order == 'desc')) %}
+    {%- set pipe.ids = sorted | map(attribute='eid') | list %}
+  {%- endif %}
+
+  {# --- 13. Return JSON list always ----------------------------------- #}
+  {{ pipe.ids | tojson }}
+
+{%- endmacro -%}
