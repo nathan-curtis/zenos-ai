@@ -1,4 +1,4 @@
-# ZenOS-AI — Custom Templates Directory
+# ZenOS-AI: Custom Templates Directory
 
 The core Jinja & YAML template primitives powering Friday, Kronk, and the Monastery.
 
