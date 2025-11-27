@@ -1,4 +1,4 @@
-# Zen HyperIndex:Unified Selection, Filtering, and Composition Engine
+# Zen HyperIndex: Unified Selection, Filtering, and Composition Engine
 
 The core structural reasoning substrate of ZenOS-AI.
 
