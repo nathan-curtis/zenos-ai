@@ -7,150 +7,180 @@
 
 ---
 
-This directory contains the **core system-level Home Assistant packages** required for Friday, Kronk, the Monastery, and all the ZenOS-AI constructs to function correctly.
+This directory contains the **core system-level Home Assistant packages** required for Friday, Kronk, the Monastery, and all ZenOS-AI constructs to function correctly.
 
-Everything in this folder is considered **Ring-0** — meaning:
+Everything here is **Ring-0**, meaning:
 
-* Loaded early
+* Loaded first
 * Always available
 * Cabinet-aware
 * Persona-agnostic
 * Safe to import before any AI personality loads
 
-It provides the canonical health checks, cabinet structure, and system introspection that enable Friday and the rest of the household constructs to operate safely and deterministically.
+These packages provide the canonical cabinet structure, health checks, graph-safe validation, and system introspection that allow Friday to reason safely and deterministically.
 
 ---
 
 ## 📦 **Included Packages**
 
-Below is a high-level overview of each file and what it provides.
+Below is a high-level overview of each Ring-0 component.
 
 ---
 
-### ### `zenos_cabinets.yaml`
+## ### `zenos_cabinets.yaml`
 
 **Purpose:**
-Defines all **Ring-0 cabinet resolvers**, wiring, and cabinet-level availability helpers.
+Defines all **Ring-0 cabinet resolvers**, cabinet availability wiring, and namespace bootstrapping.
 
-**Functions Provided:**
+**Key Responsibilities:**
 
-* Detects and resolves default cabinets:
+* Detects and resolves canonical cabinets:
 
   * Zen Cabinet
   * Zen Dojo Cabinet
   * Zen Kata Cabinet
   * Zen System Cabinet
   * Zen History Cabinet
-  * Family / Household / User / AI User Cabinets
-* Boots the cabinet namespace used by:
+  * Household / Family / User / AI User Cabinets
 
-  * Summarizers
+* Powers:
+
+  * Persona loaders
   * The Monastery
-  * Identity loaders
-  * RoomState
+  * Identity indexes
+  * RoomState nerve pathways
 
-**Importance:**
-This is the *foundation* for identity, memory, persona loading, and all higher-order cognition.
-Without this file: Friday has no house to live in.
+**Why it matters:**
+This is the *foundation* of identity, memory, and storage.
+Without it, Friday has nowhere to “live.”
 
 ---
 
-### ### `zenos_label_health.yaml`
+## ### `zenos_label_health.yaml`
 
 **Purpose:**
-Implements the **Zen Label Health** sensor — the canonical validator for required system labels.
+Implements the **Zen Label Health** validator — the canonical integrity check for required system labels.
 
-**State:** `ok | error | critical`
+**State:** `ok | warn | error | critical`
 
 **Attributes Exposed:**
 
-* `required_labels` — The Ring-0 labels ZenOS must have
-* `existing_labels` — Which required labels currently exist
-* `missing_labels` — Labels that are not defined
-* `broken_labels` — Labels whose entities are unavailable/unknown
-* `healthy_labels` — Labels that passed integrity check
-* `timestamp` — ISO-8601 moment of last evaluation
+* `required_labels`
+* `existing_labels`
+* `missing_labels`
+* `broken_labels`
+* `healthy_labels`
+* `timestamp`
 
 **Role:**
-This is Friday’s and Kronk’s “Label BIOS.”
-If anything foundational is missing or broken, this sensor will surface it *before* other Zen components attempt to run.
+This is Friday’s “Label BIOS.”
+If labels are missing, mismatched, or unhealthy, this sensor alerts you *before* any Zen subsystem misbehaves.
 
 ---
 
-### ### `zenos_summarizer_system_health.yaml`
+## ### `zenos_cabinet_health.yaml`
 
 **Purpose:**
-Implements **Zen Monastery Health**, monitoring the real-time status of:
+Validates the **Zen Cabinet hierarchy** using strict 1:1 rules for required slots and relaxed rules for optional slots.
+
+**Checks Performed:**
+
+* Missing cabinet labels
+* Missing cabinet assignments
+* Multiple cabinets claiming a required slot
+* Unhealthy cabinet entities
+* Optional cabinet health tracking
+* Full resolver suggestions
+* Complete slot → entity mapping
+
+**State:** `ok | warn | error | critical`
+
+**Why it exists:**
+Labels tell you *what should exist.*
+Cabinet Health tells you *whether the physical cabinet entities actually exist* and whether they’re valid, assigned, unique, and healthy.
+
+This is the authoritative validator Friday uses before loading identities or running Monastery routines.
+
+---
+
+## ### `zenos_summarizer_system_health.yaml`
+
+**Purpose:**
+Monitors the **Monastery + Summarizer** loop:
 
 * Dojo Cabinet
 * Kata Cabinet
 * System Cabinet
-* Schema sanity
-* Ninja Summaries
-* Supersummaries
-* Active Kung Fu components
+* Schema correctness
+* Ninja summaries
+* SuperSummaries
+* Kung Fu processes
 
-**State:** `ok | error | critical`
+**State:** `ok | warn | error | critical`
 
 **Role:**
-Serves as the “Monastery heartbeat.”
-If the summarizers or cabinets fall out of alignment, this sensor immediately reflects it.
+This is the “Monastery heartbeat,” ensuring the reasoning engine never runs with bad data.
 
 ---
 
-## 🧩 How These Packages Work Together
+## 🧩 **How These Packages Work Together**
 
-These three files form the **minimum viable ZenOS-AI runtime**:
+Together, these four Ring-0 components form the **minimum viable ZenOS-AI runtime**:
 
 1. **Cabinets**
-   → Provides structure, identity, and storage paths.
+   → Defines structure, identity, storage paths.
 
 2. **Label Health**
-   → Verifies that the architectural skeleton even exists.
+   → Ensures the architectural skeleton exists.
 
-3. **Monastery Health**
-   → Monitors the real-time cognitive loop (summaries + cabinets).
+3. **Cabinet Health**
+   → Ensures the cabinets themselves are valid, unique, and healthy.
 
-Together, they produce a stable foundation for:
+4. **Monastery Health**
+   → Ensures summaries + cognition stay aligned.
+
+This stack enables:
 
 * Persona loading
 * Identity mapping
 * Summarizer pipelines
 * Monastery reasoning
-* RoomState introspection
+* RoomState perception
 * AI autonomy (Friday, Kronk, Rosie, etc.)
 
-These packages can be dropped into any Home Assistant installation and immediately begin validating the system using nothing but labels and sensors.
+Drop these files into any HA installation and ZenOS will immediately begin validating itself using labels and cabinet entities alone.
 
 ---
 
-## 🧪 Status
+## 🧪 **Status**
 
-This directory is part of the **ZenOS-AI 1.0.0 RC1** rollout and is considered stable for:
+This directory is part of **ZenOS-AI 1.0.0 RC1** and is stable for:
 
-* Local inference systems
+* Local inference
 * Friday’s Party toolstack
 * Home Assistant 2025.2+
 * Modular cabinet deployments
 
 ---
 
-## ✨ Contributing / Extending
+## ✨ **Contributing / Extending**
 
-If you add new Ring-0 labels, cabinets, or core systems:
+If you add new Ring-0 labels, cabinets, or structural systems:
 
-1. Extend `required_labels` in `zenos_label_health.yaml`
-2. Add resolvers (if needed) to `zenos_cabinets.yaml`
-3. Optionally add monitors to `zenos_summarizer_system_health.yaml`
+1. Add new labels to `required_labels` in `zenos_label_health.yaml`
+2. Add resolvers to `zenos_cabinets.yaml`
+3. Add cabinet checks to `zenos_cabinet_health.yaml`
+4. Add health monitors to `zenos_summarizer_system_health.yaml`
 
-Friday will automatically detect new sensors and expose them to the Monastery.
+Friday will automatically discover and propagate new structures.
 
 ---
 
-## 💬 Questions?
+## 💬 **Questions?**
 
-If Friday is loaded, she can explain any of these sensors using natural language.
-If Kronk is active, he will annotate faults and post Kata snapshots.
+If Friday is awake, she can explain any of these in natural language.
+If Kronk is awake, he’ll annotate faults and post Kata reports.
 
-If both are asleep, read the YAML.
-(You know… the old-fashioned way.)
+If both are asleep…
+well, then you’re reading this file.
+(Just like the old sysadmin days.)
