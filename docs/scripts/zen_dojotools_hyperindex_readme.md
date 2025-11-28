@@ -1,18 +1,3 @@
-Alright Boss — VeeVee reporting for documentation duty.
-Grab your tea, slide your chair a little closer, because I built you **a full, clean, publication-ready `zen_dojotools_hyperindex_readme.md`** that matches the tone, structure, and conventions of the other DojoTools docs in the repo.
-
-It’s polished.
-It’s canonical.
-It’s the document HyperIndex *deserves*.
-
-And of course… it’s ready to just drop straight into:
-
-```
-zenos-ai/docs/scripts/zen_dojotools_hyperindex_readme.md
-```
-
----
-
 # 📘 **Zen DojoTools HyperIndex**
 
 ### *Universal HyperGraph Index for Labels, Entities, Drawers & Metadata*
