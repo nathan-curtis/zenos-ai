@@ -1,181 +1,236 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 1.0.0 | **Last Updated:** November 2025
+> **Version:** 1.1.0 | **Last Updated:** November 2025
 > **Author:** Nathan Curtis | **License:** MIT
 > *Part of the Friday’s Party / ZenOS-AI project*
 
 ---
 
-Welcome to the **ZenOS-AI Documentation** — your guide to the architecture, tools, and philosophy behind *Friday’s Party*.
+Welcome to the **ZenOS-AI Documentation** — your guide to the architecture, tools, cognitive model, and philosophy behind *Friday’s Party*.
 
-ZenOS-AI transforms **Home Assistant** into a fully agentic, persona-aware AI operating system.
-These documents explain *how* that happens — from the **Cabinet System** that defines the home’s structure, to the **Monastery** that reflects and reasons, to the **Summarizers** that keep awareness tight and efficient.
+ZenOS-AI transforms **Home Assistant** into a genuinely agentic, persona-aware AI operating system.
+This documentation explains *how* that happens — from the **Cabinet System** (the filesystem for identity and memory), to the **Monastery** (the reasoning substrate), to the **Summarizer Pipelines** (the awareness engine), to the **HyperIndex** (the graph-based attention model).
 
-Whether you’re building your own AI construct or exploring the Monastery’s inner workings, this is where you begin.
-
----
-
-## 📚 **Included Documentation**
+If you are building your own AI construct, designing a DojoTool, or wiring a Summarizer stack into your home, this directory is your map.
 
 ---
 
-### **1. Zen Summarizer**
+# 📚 **Included Documentation**
 
-**Path:** [docs/zen_summarizer/readme.md](./zen_summarizer/readme.md)
-A deep dive into the multi-layer summarization pipeline that keeps Friday and Kronk aware without flooding the context window.
+This directory contains **10 major documentation suites**, each mapped directly to a subsystem in ZenOS-AI.
+
+Below is a breakdown of every subfolder and what it teaches.
+
+---
+
+## 🧠 **1. Architecture**
+
+**Folder:** `docs/architecture/`
+A complete tour of ZenOS-AI’s cognitive and structural foundations.
+
+Includes chapters such as:
+
+* **00_toc.md** – Table of contents
+* **01_the_monastery_core.md** – The reasoning substrate
+* **02_Architectural_Overview.md** – The ZenOS cognitive stack
+* **03_Cognitive_Architecture_Foundations.md**
+* **04_Cognitive_Data_Flow.md** – How data moves through the system
+* **05_Reasoning_and_Kata_Design.md**
+* **06_Scheduler_and_The_Abbot.md** – The task routing brain
+* **11_RoomState_and_Perception.md** – Friday’s sensory system
+* **14_Abbot_Scheduler_And_Task_Routing.md**
+* **19_Resilience_and_Failure_Models.md**
+* **20_tool_invocation_and_security.md**
+
+This suite is the *textbook* of ZenOS-AI — the canonical explanation of how the whole mind works.
+
+---
+
+## 🗃️ **2. Cabinets**
+
+**Folder:** `docs/cabinets/`
+Defines the structured filesystem ZenOS-AI uses to model the home, household, family, users, and AI personas.
+
+Key docs:
+
+* **cabinet_spec.md** — canonical cabinet standard
+* **hypergraph_model.md** — how cabinets form a recursive hypergraph
+* **zen_redirector_spec.md** — the Volume Redirector v3
+* **readme.md** — overview of cabinet classes and mounts
+
+The Cabinet System is the backbone of identity, memory, and structured state.
+
+---
+
+## 🧩 **3. Custom Templates**
+
+**Folder:** `docs/custom_templates/`
+Templates used in Home Assistant to assemble prompts, preprocess data, or define Jinja chunking patterns.
+
+Includes:
+
+* **zen_os1_jinja.md** – the main template engine spec
+
+These enable reproducible, safe, deterministic prompt assembly.
+
+---
+
+## 🥋 **4. Kung Fu Components**
+
+**Folder:** `docs/kung_fu/`
+Each “Kung Fu Component” is a functional discipline — a subsystem that Friday loads at runtime.
+
+Docs include:
+
+* Required interface and data contract
+* Component lifecycle
+* Safety constraints
+* How the **KungFu Writer** tool creates/updates components
+
+This is Friday’s “skill tree.”
+
+---
+
+## 📚 **5. ZenOS-AI Library**
+
+**Folder:** `docs/library/`
+
+Includes:
+
+* **readme.md** – overview of helper functions
+* **index_system.md** – deep dive into the recursive Index engine
+
+The Library is the unified helper layer for all DojoTools.
+
+---
+
+## 🧪 **6. Research**
+
+**Folder:** `docs/research/`
+
+Contains foundational research notes for ZenOS-AI:
+
+* **whitepaper_cognitive_architectures.md** – design theory behind the Monastery, Summarizers, and Cabinet substrate
+
+---
+
+## ⚙️ **7. Script Documentation**
+
+**Folder:** `docs/scripts/`
+Documentation for every DojoTool & ZenOS-AI script module.
+
+Includes:
+
+* **zen_dojotools.calendar_readme.md**
+* **zen_dojotools_event_emitter_readme.md**
+* **zen_dojotools_filecabinet_readme.md**
+* **zen_dojotools_index_readme.md**
+* **zen_dojotools_labels_readme.md**
+* **zen_dojotools_manifest_readme.md**
+* **zen_dojotools_music_search.md**
+* **zen_dojotools_ninja_summarizer_spec.md**
+* **zen_dojotools_query.md**
+* **zen_dojotools_supersummary.md**
+* **zen_dojotools_todo.md**
+
+Scripts are Friday’s “motor cortex” — where thought becomes action.
+
+---
+
+## 🧩 **8. Zen HyperIndex**
+
+**Folder:** `docs/zen_hyperindex/`
+Documentation for ZenOS’s recursive, event-driven, hypergraph-based index engine.
+
 Covers:
 
-* Dojo drawers and subsystem definitions
-* Kata generation and reflection
+* HyperIndex overview
+* Recursive discovery
+* Legacy `~INDEX~` compatibility
+* Roadmap for future interpreter integration
+
+If Cabinets are the filesystem, HyperIndex is the neural attention layer.
+
+---
+
+## 🧠 **9. Zen Summarizer**
+
+**Folder:** `docs/zen_summarizer/`
+
+Includes:
+
+* **ninja_summarizer_spec.md**
+* **roadmap.md**
+* **_index.json**
+* **readme.md** (primary guide)
+
+This documentation explains the entire summarization + reflection pipeline:
+
+* Dojo drawers
+* Kata generation
 * Monastery reduction
-* Zen Summary consolidation
-* Live Prompt assembly
+* Zen Summary
+* Prompt assembly
+* Refresh triggers
+* Awareness loops
 
-Shows how awareness flows through the system — from environment to reasoning context.
-
----
-
-### **2. Kung Fu Components**
-
-**Path:** [docs/kung_fu/readme.md](./kung_fu/readme.md)
-Defines how each *Kung Fu Component* acts as a modular subsystem within the Dojo.
-Includes:
-
-* Required context and operational scope
-* Safety constraints and master switches
-* Interaction with the Index and Monastery
-* Writing, versioning, and maintaining components using the **KungFu Writer** tool
-
-Each component is a discipline — a repeatable “technique” Friday uses to act on the home.
+This is Friday’s working-memory engine.
 
 ---
 
-### **3. Cabinet System**
+## 🗺️ **10. Roadmap**
 
-**Path:** [docs/cabinets/readme.md](./cabinets/readme.md)
-Describes the structured filesystem that defines ZenOS-AI’s world — the **Cabinet System**.
-Covers:
+**File:** `docs/roadmap.md`
+Defines upcoming milestones for:
 
-* Core cabinet types: **SYSTEM**, **Dojo**, **Household (Home)**, **Family**, and **User**
-* Drawer JSON structure for profiles, prefs, and digital-twin data
-* Ownership hierarchy and mount relationships (Household → Family → User/AI)
-* How the **Household Cabinet** mirrors each **Kung Fu Component** 1:1
-* How the **Dojo Cabinet** stores subsystem definitions
-* How the **SYSTEM Cabinet** loads directives, cortex metadata, and startup identity
-* Consistent labeling for global lookups
-* Role of **CabinetAdmin** (structure/mounts/permissions)
-* Role of **FileCabinet** (read/write ops)
-* How Summarizers, the Index, and the Monastery traverse cabinets to build state
-
-The Cabinet System is the backbone of ZenOS-AI — the filesystem for the mind.
+* Identity system v2
+* MCP channel for Monastery
+* Summarizer Engine 2
+* FileCabinet v3
+* ZenDojoTools v3
+* Persona bootflow
+* Rollback contracts
 
 ---
 
-### **4. ZenOS-AI Library**
+# 🧭 **Recommended Reading Order**
 
-**Path:** [docs/library/readme.md](./library/readme.md)
-Centralized JSON utility runner for all DojoTools.
-Provides:
-
-* Unified helper function dispatcher
-* Structured JSON I/O
-* Safe interoperability between Friday, Monastery agents, and Summarizers
-* Integration with **FileCabinet**, **CabinetAdmin**, and the **Zen Indexer**
-
-The Library keeps helper logic clean, predictable, and lightweight.
+1. **Architecture** – high-level mental model
+2. **Cabinet System** – how state is structured
+3. **HyperIndex** – how state is *found*
+4. **Summarizer** – how state is *understood*
+5. **Library** – tools used by everything
+6. **Scripts** – the motor layer
+7. **Kung Fu Components** – subsystem definitions
+8. **Roadmap** – where we’re going next
 
 ---
 
-### **5. Zen Index System**
+# 🧘 **Philosophy**
 
-**Path:** [docs/library/index_system.md](./library/index_system.md)
-Outlines the recursive label-query engine that powers cross-cabinet discovery.
-Includes:
-
-* Library Index Core (macro layer)
-* DojoTools Zen Index script (v2.7.1)
-* Zen Index Event Handler (v2.0.0)
-* Recursion and legacy `~INDEX~` translation loop
-* Roadmap: integration into the ZenOS Command Interpreter
-
-If the Cabinet System is the filesystem, the Index is its search engine — recursive, event-driven, and Dojo-aware.
-
----
-
-### **6. Script Documentation**
-
-**Path:** [docs/scripts/readme.md](./scripts/readme.md)
-Technical documentation for all **DojoTools and ZenOS-AI script modules**, including:
-
-#### Included Script Docs:
-
-* **Zen DojoTools Calendar v1.10.3**
-  *[docs/scripts/zen_dojotools.calendar_readme.md](./scripts/zen_dojotools.calendar_readme.md)*
-  Full provider-safe multi-calendar create/read/inspect/update/delete tool with deterministic JSON output and guardrails for LLM execution.
-
-Scripts represent Friday’s **“motor cortex”** — the layer that actually *does things* in Home Assistant.
-
----
-
-### **7. ZenOS-AI Roadmap**
-
-**Path:** [docs/roadmap.md](./roadmap.md)
-A living map of where ZenOS-AI is going next.
-Covers upcoming milestones for:
-
-* **Identity & Proprioception Module (LSA)**
-* **Rollback Contracts**
-* **FileCabinet v3**
-* **ZenDojoTools v3**
-* **Persona Bootflow**
-* **AI → Monastery → Summarizer v2**
-* **MCP Integration**
-
-The roadmap sets direction, boundaries, and the philosophy behind Friday’s evolution.
-
----
-
-## 🧭 **How to Navigate**
-
-Each section is self-contained and cross-linked.
-Recommended reading order:
-
-1. [Zen Summarizer](./zen_summarizer/readme.md)
-2. [Kung Fu Components](./kung_fu/readme.md)
-3. [Cabinet System](./cabinets/readme.md)
-4. [Library](./library/readme.md)
-5. [Index System](./library/index_system.md)
-6. [Scripts](./scripts/readme.md)
-7. [Roadmap](./roadmap.md)
-
-For OS-level identity and behavior, see the **SYSTEM Cabinet** (in the Cabinet System docs).
-
----
-
-## 🧩 **Philosophy**
-
-ZenOS-AI is built on composability and reflection.
-Each drawer, cabinet, and macro follows the same pattern:
+ZenOS-AI is built around a core loop:
 
 > **Observe → Reflect → Select → Act → Summarize**
 
-The system doesn’t just automate — it learns to *describe* its own reasoning.
+Every cabinet, drawer, template, and script participates in this cycle.
+Friday doesn’t just act — she maintains a *self-aware description* of her own reasoning.
 
 ---
 
-## 🛠 **Contributing**
+# 🛠 **Contributing**
 
-Documentation evolves alongside the codebase.
-Contributions, clarifications, and new examples are welcome — especially for:
+Contributions are welcome, especially around:
 
-* Subsystem design patterns
 * Label taxonomies
-* Monastery integrations
+* Cabinet semantics
+* Summarizer examples
+* HyperIndex patterns
+* Cognitive flow diagrams
 
-Join the conversation:
-👉 [Home Assistant Community — Friday’s Party: Creating a Private Agentic AI](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120?u=nathancu)
+Discuss ZenOS-AI with the community:
+👉 [https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)
 
 ---
 
-If you’re building your own agent, this directory is your map.
-Welcome to the Monastery. 🕯️
+If you’re building your own agent, welcome to the Monastery.
+🕯️ *Take a breath. Begin at the cabinets. Everything else grows from there.*
