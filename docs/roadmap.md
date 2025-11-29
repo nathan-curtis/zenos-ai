@@ -165,12 +165,16 @@ Enhanced persona loading sequence:
 
 ## 🛠 **Flynn Onboarding & Failback Agent**
 
+Welcome to the grid. Yes... THAT Flynn. 
+
 Flynn is a deterministic system agent responsible for:
 
 * First-run onboarding
 * Cabinet and label validation
 * Failback handling when core structures are incomplete
 * Safety enforcement during persona initialization
+
+He will be designed to load if you only have one cabinet that can load - the system cabinet. Basically, if you can successfully get 'system' mounted Flynn should be able to help with the rest.
 
 Flynn is *not* 'exactly' a persona; Flynn is an infrastructure-level component standing in as 'the system'
 ensuring core components are available before attempting to load an agent, ensuring ZenOS-AI boots correctly and safely.
