@@ -10,8 +10,28 @@ This roadmap describes the **1.0 Release Candidate**, the **1.0 GA goals**, and 
 # **1.0 Release Candidate — Current Capabilities**
 
 The RC establishes the foundational identity, reasoning, storage, and introspection layers of the ZenOS-AI system.
-These components form the minimum stable substrate required for persona activation.
+These components form the minimum stable substrate required for persona activation. At this point I'm working on locking in the featureset.
+I am not currently working on deployment. As such some of this will be hard and klunky. But get it in there and it works. Part of RC1 will be exploring 
+the good bad and ugly on getting the components out and finalizing core.
 
+Currently I expect to deliver something similar to...
+
+/packages/zenos-ai/
+  ./zenos_library_cabinets.yaml  < Core default cabinets preconfigured for a default new system.
+  ./zenos_core_zenos1.yaml       < All the default scripts, automations, and required support sensors as templates
+    scripts:
+      zen_dojotools_(foo)        < (foo) script
+    automations:
+      zen_volume_redirector
+      zen_(foo)                  < (foo) automations
+    template:
+      sensor:                    < (foo) template sensor
+  ./zenos_flynn.yaml             < Scripts and support sensors for 'flynn' onboarding and recovery.  Yes, THAT Flynn...
+/custom_templates/
+  ./zen_os_1(release).jinja      < Prompt Loader and core support macros
+  ./zen_index.jinja              < Index core macros, import as 'zen'
+  ./zen_(foo).jinja              < (foo) component support macros, import as 'zen' when possible to accommidate move to core.
+  
 ---
 
 ## ✅ **Core Foundations**
