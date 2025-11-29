@@ -16,6 +16,7 @@ the good bad and ugly on getting the components out and finalizing core.
 
 Currently I expect to deliver something similar to...
 
+```
 /packages/zenos-ai/
   ./zenos_library_cabinets.yaml  < Core default cabinets preconfigured for a default new system.
   ./zenos_core_zenos1.yaml       < All the default scripts, automations, and required support sensors as templates
@@ -31,7 +32,8 @@ Currently I expect to deliver something similar to...
   ./zen_os_1(release).jinja      < Prompt Loader and core support macros
   ./zen_index.jinja              < Index core macros, import as 'zen'
   ./zen_(foo).jinja              < (foo) component support macros, import as 'zen' when possible to accommidate move to core.
-  
+```
+
 ---
 
 ## ✅ **Core Foundations**
