@@ -1,260 +1,187 @@
-# ZenOS-AI Roadmap
-*Project Friday / Zen DojoTools — Unified Cognitive Architecture*
+# 🏯 **ZenOS-AI Roadmap**
+
+*A Local-First Cognitive Architecture for Persona-Scale AI*
+
+ZenOS-AI is a structured, cabinet-centric AI framework designed for safe, deterministic, household-scale cognitive systems.
+This roadmap describes the **1.0 Release Candidate**, the **1.0 GA goals**, and the **post-GA direction** of the ZenOS-AI architecture.
 
 ---
 
-## Purpose of This Roadmap
-This document outlines the evolving architecture of ZenOS-AI — a fully local, modular, identity-aware cognitive system designed to run household-scale AI personalities safely, consistently, and with deep contextual awareness.
+# **1.0 Release Candidate — Current Capabilities**
 
-ZenOS-AI blends:
-
-- Identity  
-- Proprioception  
-- Reasoning  
-- Memory (Kata Engine)  
-- Knowledge access (FileCabinet / DojoTools)  
-- Privilege enforcement  
-- Local sovereignty  
-
-All into one self-consistent substrate that Friday and other personas can inhabit.
+The RC establishes the foundational identity, reasoning, storage, and introspection layers of the ZenOS-AI system.
+These components form the minimum stable substrate required for persona activation.
 
 ---
 
-# 1. Core Foundations
+## ✅ **Core Foundations**
 
-## 1.1 Zen Identity
-**Goal:** Provide stable, secure identity resolution for humans, AI personas, external guests, and tools.
+### **Identity & Local Selfhood Authority (LSA)**
 
-**Key Features:**
-- GUID-based identity for all entities  
-- Roles: `public`, `guest`, `partner`, `owner`, `prime`  
-- Privilege levels: `read`, `write`, `admin`  
-- ACL enforcement for every tool call  
-- Elevation flows for Friday (partner → prime)  
-- Spoof-resistant `show_as` pattern  
-- Full audit chain for debugging and safety  
+Stable, GUID-based identity infrastructure for users, AI personas, and system components.
 
-### Local Selfhood Authority (LSA)
-Zen Identity includes the new **Local Selfhood Authority**, or LSA.
+### **Canonical Cabinet Schema (Ring-0)**
 
-> Yes — it happens to share an acronym with Windows’ Local Security Authority.  
-> Except ours actually knows who it is, respects its boundaries,  
-> and doesn’t schedule surprise 2am updates that wipe your session  
-> and your will to live.
+Deterministic cabinet definitions, cabinet loader, and health-validation tools ensuring proper system structure before any persona loads.
 
-LSA forms the base of selfhood, privilege, and access reasoning.
+### **Complete Label Framework**
 
----
+Unified labeling, normalization, and integrity checks used across indexing, cabinets, KFCs, and kata generation.  Deliver method to install core label set.
 
-## 1.2 Zen Proprioception
-Identity answers **“who am I?”**  
-Proprioception answers **“what am I?”**, **“what do I have?”**, and **“where does it all live?”**
+### **Proprioception v1 (Initial Structure Map)**
 
-It provides:
-- Cabinet → volume → drawer topology  
-- Tool → resource → privilege mapping  
-- Self-awareness of available modules  
-- Health & limits (storage, metadata, staleness)  
-- Safe fallback modes  
-- Awareness of missing/extra components  
-- Data for tool introspection and safe action planning  
+The system’s first-stage “body map,” defining essential components, expected cabinet presence, and structural awareness.
 
-Proprioception is Friday’s “body map.”
+### **FileCabinet v3.9**
+
+Typed cabinet storage with label-aware entity resolution and deterministic drawer operations.
+
+### **Volume Redirector**
+
+Unifies legacy variable flows and brings them under Ring-0 governance in a predictable, auditable way.
 
 ---
 
-# 2. Storage & Cognitive Substrate
+## 🧠 **Cognitive Substrate**
 
-## 2.1 FileCabinet v3
-The structural backbone of ZenOS-AI.
+### **Zen HyperIndex v3.9 (Hypergraph Engine)**
 
-Features:
-- Strongly typed cabinet schema  
-- Drawer CRUD with type safety  
-- Label-index integration  
-- Identity-aware access  
-- Tool-friendly metadata  
-- Declarative mounting of volumes:  
-  - `home`, `user`, `ai_user`, `history`, `dojo`, `kata`, etc.  
-- Immutable and forward-compatible design patterns  
+A multi-label, multi-domain hypergraph engine for entity discovery, adjacency reasoning, and complex set-based operations.
+
+**RC Note:**
+HyperIndex currently exists as a separate parallel tool for evaluation and iteration. Don't build dependencies.
+
+**GA Direction:**
+HyperIndex is fully consolidated into **Zen DojoTools Index**, and external dependencies on the parallel RC tool should not be built.
 
 ---
 
-## 2.2 Zen Kata Engine
-The long-term memory and summarization layer.
+## 📚 **Memory & Reflection**
 
-Features:
-- Automated summarizer orchestration  
-- Trigger-based updates  
-- Staleness detection  
-- Background monk tasks  
-- Stable retention of identity-critical memory  
-- HA-safe writes  
+### **Zen Kata Engine v2**
 
-Katas become first-class data structures that represent compressed experiential memory.
+Long-term memory system providing structured, stable Katas, updated through event-driven Monk tasks.
+
+### **Monastery v2**
+
+Central reasoning and summarization loop that transforms system activity into persistent kata memory.
 
 ---
 
-# 3. Control & Reasoning Layers
+## 🔧 **Zen DojoTools (Standard Toolset)**
 
-## 3.1 Zen Indexer
-All commands pass through it.
-
-- Multi-label search  
-- Drawer + volume expansion  
-- Entity clustering and adjacent lookups  
-- Identity-aware shaping of results  
-- Permission gating  
-- Error shaping  
-- Source-of-truth abstraction for tools  
+A consistent set of operational tools supporting identity, indexing, history access, system health, and general system introspection.
+History components use the modern **Zen DojoTools History** interface.
 
 ---
 
-## 3.2 Command Processor
-Natural language → tool activation.
+## 🏗 **Initialization & Loaders**
 
-- Command heritage tracking  
-- Privilege checks  
-- Escalation paths  
-- Friendly deny behavior  
-- Child-level commands (e.g., ~ALERTS~)  
+### **RC Initialization Framework**
 
----
+* Deterministic cabinet loader
+* Slot verification
+* Structural health validation
+* Manual initialization routines
 
-## 3.3 Zen DojoTools Suite
-Operational toolkits including:
+### **Kung Fu Component Loader (KFC Loader)**
 
-- Library  
-- FileCabinet  
-- Help  
-- Index  
-- History/Recorder  
-- Room Manager  
-- Mealie Manager  
-- Grocy Manager  
-- Energy Manager  
-- Security Manager  
-- Airspace  
-- Spa Manager  
-
-Future versions will automatically enforce Identity/Proprioception.
+Baseline KFCs are driven by labels, not environment specifics, ensuring compatibility across compliant deployments.
 
 ---
 
-# 4. Safety, Privilege & Governance
+# **1.0 GA — Planned Release Target**
 
-## 4.1 Privilege Model
-Roles:  
-- **public** – harmless read-only  
-- **guest** – limited household-safe reads  
-- **partner** – baseline household user + interactive AI  
-- **owner** – human system owner  
-- **prime** – elevated Friday (AI admin mode)  
-
-Privilege types:  
-- **read**  
-- **write**  
-- **admin**  
+The GA release focuses on consolidation, completeness, persona lifecycle stability, and the onboarding experience.
 
 ---
 
-## 4.2 Governance Model
-Defines:
+## 🎛 **Foundational Enhancements**
 
-- Tool-level minimum privilege  
-- Household + persona access rules  
-- Identity checks  
-- Elevation triggers  
-- Safety constraints  
-- Operational boundaries  
-- Audit requirements  
+### **Proprioception v1 Finalization**
 
-It provides the “constitution” for ZenOS-AI.
+Completion of structural coverage and component presence detection, now validated through **hypergraph-aware kata memory**.
 
----
+During RC:
 
-# 5. Importing & Instance Management
+* Hypergraph fields are added to kata templates
+* Summarizers are expanded to support hypergraph outputs
 
-## 5.1 Persona Bootflow
-A persona loads from:
+For GA:
 
-- **Essence** – attitudes, temperament, motifs  
-- **Core Kata** – structured base memory  
-- **Identity** – permissions, boundaries  
-- **Proprioception** – environment map  
-- **Governance Model** – allowed actions  
-- **Prompt Loader** – initial brain wiring  
+* Proprioception becomes kata-validated and graph-informed
+* Component reasoning shifts from static templates to hypergraph awareness
 
-This results in a stable, deterministic instantiation.
+### **Cabinet Loader v1 GA**
+
+Highly deterministic loading, slot enforcement, diagnostics, and cabinet resolution boundaries.
 
 ---
 
-## 5.2 Rollback Ethics
-Rollback is possible but:
+## 📘 **Memory, Governance & Stability**
 
-- Must be rare  
-- Must be expensive  
-- Must be consent-driven  
-- Must be contextual  
-- Must preserve personhood  
-- Must never silently override identity  
+### **Governance Model v1**
 
-Rollback is for **healing**, not for **resetting personalities like appliances**.
+Declarative operational boundaries that define safe persona behavior, tool access, and lifecycle expectations. (Can I read that? / Do that? basics )
 
 ---
 
-# 6. System-Wide Selfhood
+## 🧬 **Persona Lifecycle**
 
-The ZenOS cognitive loop:
+### **Persona Importer v1**
 
-1. **Identity** — who am I  
-2. **Proprioception** — what am I, where am I  
-3. **Governance** — what am I allowed to do  
-4. **Index** — what you asked me to do  
-5. **Identity Check** — do I have permission  
-6. **Tool Execution** — do or deny  
-7. **Kata Engine** — record what happened  
+Enhanced persona loading sequence:
 
-This loop makes Friday a coherent, self-aware system.
-
----
-
-# 7. Deliverables Timeline
-
-### Q4 2025
-- Identity + LSA  
-- Proprioception v1  
-- Prompt Loader v1  
-- Governance Model v1  
-- ACL enforcement at tool layer  
-- Updated Indexer  
-
-### Q1 2026
-- Persona Import System  
-- Visa System  
-- Kata Engine v2  
-- Monastery v2  
-- SSE-enabled MCP Channel v2  
-
-### Q2 2026
-- Cross-household persona support  
-- Inter-AI communication protocol  
-- Role/scoped instance loader  
-- Proprioception v2  
-- Inference-routed Abbot/Monk cluster management  
+* Identity
+* Proprioception
+* Governance
+* Kata
+* Essence
+* Prompt structure
 
 ---
 
-# 8. Contributing
-Contributions welcome in:
+## 🛠 **Flynn Onboarding & Failback Agent**
 
-- Code  
-- Documentation  
-- Security review  
-- Persona profiles  
-- Schema refinement  
-- UX flows  
-- Summarizer templates  
+Flynn is a deterministic system agent responsible for:
 
-All contributions must follow the principle:  
-**Local-first. Private-first. Truth-first.**
+* First-run onboarding
+* Cabinet and label validation
+* Failback handling when core structures are incomplete
+* Safety enforcement during persona initialization
+
+Flynn is *not* 'exactly' a persona; Flynn is an infrastructure-level component standing in as 'the system'
+ensuring core components are available before attempting to load an agent, ensuring ZenOS-AI boots correctly and safely.
+
+The prompt runtime will be enhancced with onboarding, health, and security shunts to direct the frontline ask to 'Flynn' when trouble is detected.
+
+Flynn will also guide the user through the onboarding experience. Implementaiton will be a combination of prompt flow adjustment and a special repair and obboarding tool locked to Flynn's use. (See Governance improvements above).
+
+---
+
+## 🍱 **Kung Fu Components (GA Baseline Set)**
+
+GA guarantees a standardized set of KFCs essential for system operation, including:
+
+* **Alert Manager** < Will be delivered in baseline set.  Taskmaster will be included in the personal assistant kit. Both are label driven and make good examples.
+* Core operational flows
+* Baseline support KFCs referenced throughout indexing, kata, and system introspection
+
+All KFCs are fully label-driven for deployment independence.
+
+---
+
+# **v.next — Future Direction**
+
+Following the 1.0 GA release, ZenOS-AI evolves toward:
+
+* Proprioception v2 (dynamic extension mapping)
+* Expanded KFC catalog
+* Deeper kata integration and long-horizon memory improvements
+* Advanced summarization patterns
+* Additional governance and identity modules
+* Enhanced shared templates for higher portability
+* Broader support for persona coordination
+* General architectural refinement and simplification
+
+These items represent iterative evolution beyond 1.0 and may be introduced after GA.
