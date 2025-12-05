@@ -210,7 +210,18 @@ Every mutation flows through this strict pipeline.
 
 ## **10.8 Scheduling: The Abbot**
 
-The Abbot is the deterministic cognitive scheduler.
+"The Abbot" is the deterministic cognitive scheduler.
+
+Note: This section describes a future version of the Zen Scheduler for architecture direction purposes... (I've had a couple ok how are you gonna?)
+Future versions of tools will ALL include event consumption and emission mechanisms, combined with session token validaiton so tools and security context can be tied to a single conversation context. It also will provide the single target for inference job requests.  You want inference - ok this is how you get it.  Ultimately the goal is to have a single, structured intellegent queue for all incoming inference/cognitive job types and filter based on users preferences, costs, permisison models, power, availability, etc. I'll be working to have all tool communications event driven so if a tool exposes an event pipeline, prefer it. The main event relay - The Abbot will be the listener for the OS core and responsible for driving the inference pipeline.
+
+So basically,
+  Abbot:
+    Oh, dear - don't send anything tagged 'freaky stuff' to Claude, he clutches pearls.
+      ...uh THAT stays on-premise with GPT-OSS:20b, who's available? Yeah there... ...Low priority
+    Next? Code reviews?
+      Send that to Veronica with Codex
+    Next?
 
 ### **10.8.1 Responsibilities**
 
@@ -286,6 +297,7 @@ Identity data is always sourced through:
 ```
 script.zen_dojotools_identity
 ```
+...and related system macros.
 
 This prevents constructs or external agents from forging identity packets.
 
