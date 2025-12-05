@@ -65,7 +65,7 @@ Origin metadata must be immutable and separate from the mutable essence capsule.
 
 Each principal is represented by an Identity Capsule.
 
-The fields below are mandatory unless indicated otherwise.
+The fields below are mandatory unless indicated otherwise.  Some dictionaries may be omitted from structure based on calling context to save token space. Computed from call based on authoritative source.
 
 ```json
 {
@@ -86,13 +86,13 @@ The fields below are mandatory unless indicated otherwise.
     "households": ["uuid4-string"],
     "families": ["uuid4-string"]
   },
-  "roles": {
+  "roles": {                          # << Computed
     "owner_of": ["cabinet-id"],
     "partner_of": ["cabinet-id"],
     "member_of": ["family-id"]
   },
   "cabinet": "entity_id-of-associated-cabinet",
-  "acl": {
+  "acl": {                            # << Authoritative for object being referenced.
     "allow": [],
     "deny": [],
     "role_bindings": []
@@ -435,11 +435,11 @@ Filtered tags:
 * Adult
 * Unrated
 * Sensitive
-* {User-Defined]
+* { User-Defined } ( mechanism pending pushed to v.2.x )
 
-Only after these filters is graph expansion allowed.
-These filters will be discussed in thier own docs.
-THESE ARE CURRENTLY NOT IMPLEMENTED plumbed and non blocking in the index pipeline.  (Planned for post RC1.)
+Only after these filters apply is graph expansion allowed.
+These filters will be detailed in thier own docs.
+THESE ARE CURRENTLY NOT IMPLEMENTED in v.1.x but plumbed and non blocking in the indexer pipeline v.4.x+.  (Planned for post RC1.)
 
 ---
 
@@ -448,7 +448,7 @@ THESE ARE CURRENTLY NOT IMPLEMENTED plumbed and non blocking in the index pipeli
 Identity expansion rules:
 
 * maximum recursion depth: 2
-* loops must be detected and suppressed
+* loops MUST be detected and suppressed
 * duplicates must be removed
 * provenance must be preserved
 * expansions may not cross households unless explicitly allowed
@@ -481,7 +481,7 @@ Tokens may not be shared across constructs.
 
 ---
 
-# **9.12 Visas (v1.5)**
+# **9.12 Visas (v2.0)**
 
 Visas define temporary access for new constructs or external agents.
 
@@ -503,6 +503,8 @@ Visas must be evaluated with ACLs before hypergraph access is granted.
 ---
 
 # **9.13 Boot and Health Rules**
+
+"Flynn" (Yes, THAT Flynn.)
 
 Before constructs load:
 
@@ -553,5 +555,3 @@ Adds:
 * Capability profiles
 * Cross-household identity mesh
 * Multi-construct collaboration
-
-Which one do you want next, boss?
