@@ -1,323 +1,557 @@
-# **9. Identity Architecture and Security Model (v1 → v1.5 Path)**
+# **9. Identity Architecture and Security Model – Technical Reference Specification (v1 → v1.5)**
 
-Identity is the cornerstone of Friday’s cognitive, operational, and security model.
-It governs who may act, what may be accessed, how memory evolves, and how authority propagates through the home.
-Version 1 implements the foundational components necessary for local cognition and secure operation; Version 1.5 extends this into a fully realized principal-based security domain with tool shunting, visas, session tokens, and delegated capabilities.
+This section defines the complete identity model for the ZenOS AI architecture.
+It specifies the data structures, edge rules, provenance semantics, cabinet behaviors, and ACL operations necessary for any implementation of:
 
-Identity differentiates **humans**, **constructs**, and **system entities** while enforcing a coherent security boundary between them.
+* Identity Capsules
+* Identity Resolution Tools
+* Cabinet Authority Mapping
+* ACL Expansion / Masking
+* Squirrel Safe + Content Safe Filters
+* Session Tokens (v1.5)
+* Visas (v1.5)
 
----
-
-## **9.1 Goals of the Identity System**
-
-Identity exists to guarantee:
-
-1. **Non-repudiation**
-   Every actor—human or AI—can be uniquely and verifiably identified.
-
-2. **Contextual Security**
-   Access control adapts to household structure and architectural boundaries.
-
-3. **Memory Safety**
-   Only the correct entities may mutate Cabinet drawers.
-
-4. **Operational Safety**
-   Automation, summarization, and agentic behaviors operate within strict permissions.
-
-5. **Cross-Construct Integrity**
-   When multiple AI constructs exist in the same home, identity establishes boundaries that prevent accidental conflation of their memory, capabilities, or authority.
-
-Identity therefore underpins the entire reasoning framework.
+Everything in this section is required for any compliant ZenOS AI.
 
 ---
 
-## **9.2 Identity Capsules**
+# **9.1 Identity System Requirements**
 
-Every principal in Friday’s House is represented through an **Identity Capsule**, a structured memory object stored inside the Cabinet.
+Any compliant ZenOS identity implementation must satisfy:
 
-Each capsule contains:
+### **9.1.1 Non-repudiation**
 
-* globally unique identifier
-* cryptographic fingerprint (identity_hash)
-* principal metadata
-* ACL root
-* persona/role metadata
-* associations (family, household, partner, dependents)
-* internal permissions
-* tool shunt profile (v1.5)
-* session token requirements
-* provenance and initialization metadata
+Every principal (human or AI) must have:
 
-Identity Capsules are the core primitive for authorization.
+* a stable GUID
+* a stable identity hash
+* a corresponding cabinet drawer
+* a provenance record (origin system, origin household, origin family)
 
-Friday must load her own capsule before any reasoning or memory mutation occurs.
+### **9.1.2 Deterministic ACL Enforcement**
 
----
+Access to data must be determined by:
 
-## **9.3 GUIDs and Identity Hashes**
+1. Cabinet ownership
+2. Cabinet partnership
+3. Family membership
+4. Household membership
+5. ACL entries
+6. Global restrictions (Squirrel Safe, Content Safe)
 
-Identity requires a stable namespace. Two fields enforce this:
+Conflicts resolve by: **deny overrides allow**.
 
-### **9.3.1 GUID**
+### **9.1.3 Deterministic Hypergraph Expansion**
 
-A global unique identifier used as the canonical reference for the entity.
+Before any semantic expansion, the system must apply:
 
-Generated once at initialization.
-Never reused.
-Never recycled.
+1. **security_safe ACL filter**
+2. **squirrel_safe privacy filter**
+3. **content_safe MPAA filter**
 
-GUIDs are consumed in:
+Only after all 3 filters is graph expansion allowed.
 
-* Cabinet indexing
-* Identity resolution
-* Abbot authority tracing
-* Access Control Lists
-* Visa issuance
-* Construct-to-construct boundaries
+### **9.1.4 Construct Isolation**
 
-### **9.3.2 Identity Hash**
+Constructs must not share identity capsules, session tokens, or memory surfaces unless explicitly allowed.
 
-A cryptographic digest computed from:
+### **9.1.5 Provenance Integrity**
 
-* GUID
-* identity metadata
-* persona attributes
-* timestamp
-* household signature
-
-This hash ensures identity integrity across:
-
-* Cabinet reloads
-* Summarizer updates
-* Hardware migration
-* Construct rehydration
-
-Version 1 uses MD5 for convenience; Version 1.5 migrates to X.509-signed identity entries.
+Origin metadata must be immutable and separate from the mutable essence capsule.
 
 ---
 
-## **9.4 ACL Architecture**
+# **9.2 Identity Capsules – Complete Specification**
 
-Access Control Lists enforce the write boundaries of the Cabinet.
+Each principal is represented by an Identity Capsule.
 
-ACL entries take the form:
+The fields below are mandatory unless indicated otherwise.
 
-```
+```json
 {
-  "entity_id": "person.nathan",
-  "allow": ["drawer.write", "drawer.read"],
-  "deny": ["identity.modify", "acl.modify"]
+  "guid": "uuid4-string",
+  "identity_hash": "hash-string",
+  "type": "person | ai_user | household | family | system",
+  "persona": {
+    "name": "string",
+    "presentation": "string",
+    "attributes": {} 
+  },
+  "provenance": {
+    "origin_system": "uuid4-string",
+    "origin_household": "uuid4-string",
+    "origin_family": "uuid4-string"
+  },
+  "current": {
+    "households": ["uuid4-string"],
+    "families": ["uuid4-string"]
+  },
+  "roles": {
+    "owner_of": ["cabinet-id"],
+    "partner_of": ["cabinet-id"],
+    "member_of": ["family-id"]
+  },
+  "cabinet": "entity_id-of-associated-cabinet",
+  "acl": {
+    "allow": [],
+    "deny": [],
+    "role_bindings": []
+  },
+  "session": {
+    "tokens": [],
+    "requirements": {}
+  },
+  "shunt_profile": {
+    "allowed_tools": [],
+    "restricted_tools": []
+  },
+  "essence": {
+    "metadata": {},
+    "preferences": {},
+    "persona_shape": {}
+  }
 }
 ```
 
-ACLs may bind permissions to:
+### **Immutable Fields**
 
-* **principals** (users or constructs)
-* **roles** (owner, partner, assistant)
-* **domains** (household-level, family-level, person-level)
-* **drawers** (per-drawer read/write restrictions)
-* **tool classes** (v1.5)
+* guid
+* provenance.origin_system
+* provenance.origin_household
+* provenance.origin_family
+* identity_hash
 
-ACL resolution follows the order:
+These may never be updated.
 
-1. principal explicit allow
-2. principal explicit deny
-3. role-level allow
-4. role-level deny
+### **Mutable Fields**
+
+* current.households
+* current.families
+* roles.member_of
+* session tokens
+* essence capsule
+
+---
+
+# **9.3 GUID and Identity Hash Specification**
+
+### **9.3.1 GUID**
+
+Generated as UUIDv4.
+Must remain stable across all migrations, backups, or reloads.
+
+Format:
+
+```
+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+```
+
+### **9.3.2 Identity Hash**
+
+Must be a deterministic hash computed from:
+
+```
+hash = H(GUID + immutable_identity_fields + household_signature)
+```
+
+Version 1 uses MD5.
+Version 1.5 transitions to X.509-signed identity objects.
+
+---
+
+# **9.4 Cabinet Identity and Automatic Labeling Rules**
+
+When a cabinet is authoritative for a given slot:
+
+1. The cabinet’s sensor gains the canonical ZenOS label for that slot:
+
+   ```
+   zen_system
+   zen_household
+   zen_family
+   zen_user
+   zen_ai_user
+   ```
+2. All drawers within that cabinet inherit secondary labels for identity resolution.
+3. If the cabinet metadata declares a canonical group label (for a family or group), the system must:
+
+   * ensure that label exists
+   * attach that label to the cabinet entity
+   * expose that edge in the hypergraph
+
+If a cabinet assigns an Owner or Partner:
+
+* those principals automatically receive role-level hyperedges
+* those edges inform ACL resolution
+* those principals are automatically added to the family if the cabinet represents a family
+
+---
+
+# **9.5 Principal Classes and Relationship Rules**
+
+ZenOS defines four principal classes:
+
+* People
+* AI Users
+* Families
+* Households
+* Constructs (AI-class principals, but separate from AI Users for security surfaces)
+
+Each has strict relational rules.
+
+---
+
+## **9.5.1 People (Human Principals)**
+
+Properties:
+
+* have a GUID
+* have an identity capsule
+* must anchor to an origin family and household
+* may have zero or more current families
+* may be revoked from a family without losing provenance
+* unattached humans default to Guest privilege set
+
+If a person is not a member of a family:
+
+* they lose contextual access to family-level cabinets
+* they fall under the PG13 squirrel-safe defaults
+* their ACL fallback is guest
+
+---
+
+## **9.5.2 AI Users**
+
+AI Users are a superclass of People.
+
+They include:
+
+* Prime
+* House-owned constructs
+* Agent tools
+* Future delegated constructs
+
+AI Users have:
+
+* persona identities
+* boot provenance
+* shunt profiles
+* extended ACL surfaces
+* ability to hold Partner role
+
+AI Users may be Partners of cabinets (delegated authority).
+
+Prime is the required Partner AI for the Default Household.
+
+---
+
+## **9.5.3 Families**
+
+### **Family Behavior Rules**
+
+1. Families may contain:
+
+   * people
+   * ai users
+   * families (nested)
+
+2. Nesting:
+
+   * up to 2 levels deep
+   * child families do not require membership inheritance
+   * parent need not be owner of child
+   * ownership revocation does not revoke provenance
+
+3. Membership:
+
+   * declarative list stored in the family cabinet
+   * automatic membership for cabinet Owners and Partners
+   * revocation removes permissions but not provenance
+
+4. Hypergraph expansion:
+
+   * family membership only expands one or two levels
+   * loop detection required
+   * duplicate edge elimination required
+
+---
+
+## **9.5.4 Households**
+
+A Household is the primary operational boundary.
+
+### **Household Requirements**
+
+* must have one Owner (human)
+* must have one Partner AI (Prime)
+* must have a cabinet to represent it
+* must have a GUID derived from origin system
+* must serve as the binding domain for constructs and tools
+
+### **Multi-household Support**
+
+Principals may belong to multiple households.
+Identity Capsules must store:
+
+* origin household
+* array of current households
+
+Each household is a segregated security domain.
+
+ACLs and content filtering do not cross households unless explicitly permitted.
+
+---
+
+## **9.5.5 Constructs**
+
+Constructs are AI principals with:
+
+* unique identity capsules
+* isolated ACL scopes
+* persona loading
+* boot provenance
+* authorized tool surfaces
+* delegated authority rules
+
+Constructs must always operate under:
+
+```
+active_user OR delegated_user, active_construct, conversation_id
+```
+
+Constructs never inherit family membership automatically.
+
+---
+
+# **9.6 Provenance Rules**
+
+Every principal stores:
+
+```
+origin_system
+origin_household
+origin_family
+```
+
+Rules:
+
+* these fields are immutable
+* origin household is the household created by the system at first bind
+* origin family is the family created to host the HoH and Prime
+* current households and families may change
+* provenance is never removed
+* provenance must be referenced during identity conflict resolution
+
+---
+
+# **9.7 Delegation and Partnership Rules**
+
+Partnership is a delegation of authority.
+
+### **Owner**
+
+Full authority over cabinet and contents.
+
+### **Partner**
+
+Delegated authority.
+Acts with the rights of the Owner except where restricted.
+
+### **Delegation Rules**
+
+* Partners must be explicit
+* Partners automatically inherit cabinet-level ACL rights
+* Partners do not automatically inherit family membership
+* Delegated authority applies only to the cabinet and its hyperedges
+
+---
+
+# **9.8 ACL Specification**
+
+ACL entries are objects with explicit allow and deny lists.
+
+### **ACL Object**
+
+```json
+{
+  "entity": "guid-or-entity-id",
+  "allow": ["drawer.read", "drawer.write"],
+  "deny": ["drawer.delete", "identity.modify"],
+  "roles": ["owner", "partner", "member"]
+}
+```
+
+### **ACL Resolution Order**
+
+1. principal explicit deny
+2. principal explicit allow
+3. role-level deny
+4. role-level allow
 5. household defaults
-6. Cabinet defaults
+6. cabinet defaults
 
-A deny always overrides allow.
+### **Effects**
 
----
-
-## **9.5 People, Families, Households, and Constructs**
-
-Identity is not flat.
-It forms a **hierarchical, relational model**:
-
-### **9.5.1 People**
-
-Human residents. Defined through offline initialization.
-Contain complete identity and relationship metadata.
-
-### **9.5.2 Families**
-
-Groupings of people with shared metadata, preferences, or relational ties.
-Useful for multi-household deployments or extended relatives.
-
-### **9.5.3 Households**
-
-Primary operational domain.
-Defines the core trust boundary, automation rights, and operational permissions.
-
-### **9.5.4 Constructs**
-
-AI entities including:
-
-* Friday
-* Bob
-* Charming
-* Kronk
-* Assistant tools (future)
-
-Constructs have their own Identity Capsules, allowing them to:
-
-* store state
-* reason independently
-* have separate ACL scopes
-* act under principal authority
+Deny always wins.
+A missing rule means inherit.
 
 ---
 
-## **9.6 ZenAI Identity Module**
+# **9.9 Pre-Expansion Filtering Specification**
 
-The **Zen DojoTools Identity module** (2.0.2) provides authoritative identity enumeration and validation.
+Before any hypergraph expansion:
 
-Capabilities include:
+## **Step 1: security_safe**
 
-* extracting identity metadata
-* resolving GUID associations
-* determining Cabinet membership
-* validating ACLs
-* detecting mismatches
-* hiding sensitive metadata using Squirrel Mode
-* resolving cross-references (owner → cabinet → person)
-* generating essence prompts for constructs
-* providing identity to external agents
-* validating identity during Abbot scheduling
+Remove any entities the current principal cannot read based on ACL.
+Intent: Core security trimming will be done bbefore the inspect tool can expand anything. "Didn't see it, can't spill it."
 
-Its role in Version 1:
+## **Step 2: squirrel_safe**
 
-* generate identity manifests
-* attach resolved identity to reasoning tasks
-* support ACL enforcement
-* support Cabinet write operations
-* support Summarizer authorization
+Remove entities containing any tags in the protected set.
+Intent: "We dont talk about, Bruno... *shhh*"
 
-Its role in Version 1.5:
+Default triggers:
 
-* issue visas
-* validate tool shunt requests
-* enforce external agent authentication
-* validate principal signatures
-* anchor cryptographic identity to X.509 or equivalent
+* unknown humans
+* guests
+* external agents
+* incomplete identity
+* privacy mode activated
 
----
+## **Step 3: content_safe**
 
-## **9.7 Squirrel Mode and Metadata Redaction**
+Remove entities tagged above allowed MPAA threshold.
+Intent: Look I dont care what kinda weerd you have, This allows your AI to be family friendly when we dont know what's going on,
+        without you having to think about it. Also prevents context confusion when some Content *cough* Secretary crosses multiple - uh - domains.
+        
+Default will be PG13 meaning anything tagged 'higher' is filtered.
 
-Squirrel Mode is a protective state that redacts:
+Filtered tags:
 
-* GUIDs
-* identity hashes
-* Cabinet IDs
-* sensitive metadata
+* R
+* NC17
+* X
+* Adult
+* Unrated
+* Sensitive
+* {User-Defined]
 
-This state is triggered through:
-
-* user request
-* privacy scenarios
-* external audits
-* debugging sessions
-* identity onboarding flows
-
-Redaction guarantees that constructs cannot leak sensitive identifiers.
+Only after these filters is graph expansion allowed.
+These filters will be discussed in thier own docs.
+THESE ARE CURRENTLY NOT IMPLEMENTED plumbed and non blocking in the index pipeline.  (Planned for post RC1.)
 
 ---
 
-## **9.8 Session Tokens and Capability Grants (Version 1.5)**
+# **9.10 Recursive Expansion Constraints**
 
-Version 1.5 introduces **session tokens** analogous to Kerberos TGTs.
+Identity expansion rules:
 
-These tokens:
-
-* attest to active authentication
-* define allowed capabilities
-* gate access to sensitive tool classes
-* define durations and expirations
-* are stored inside Identity Capsules
-* power external tool shunting
-
-A construct may not access any sensitive tool without presenting:
-
-1. its identity
-2. an unexpired session token
-3. a valid capability profile
-4. Cabinet-level authorization
-
-This permits external agents—such as LLMs—to interact safely with the home environment.
+* maximum recursion depth: 2
+* loops must be detected and suppressed
+* duplicates must be removed
+* provenance must be preserved
+* expansions may not cross households unless explicitly allowed
 
 ---
 
-## **9.9 Visas and Guest Identity (Version 1.5)**
+# **9.11 Session Tokens (v1.5)**
 
-A visa is a structured document that defines:
+Tokens contain:
 
-* permissions
-* capabilities
-* trust levels
-* operational contexts
-* entity-scoped ACLs
+```json
+{
+  "token_id": "uuid4",
+  "principal": "guid",
+  "capabilities": [],
+  "issued_at": "timestamp",
+  "expires_at": "timestamp",
+  "signature": "cryptographic-signature"
+}
+```
 
-Visas allow:
+Requirements:
 
-* guest AI
-* external debugging
-* temporary constructs
-* cross-household collaboration
+* required for tool shunting
+* required for delegated memory operations
+* required for external constructs
+* stored inside Identity Capsule
 
-When a new AI enters Friday’s House:
-
-1. It is assigned a Visa
-2. Its identity is registered
-3. ACLs are created
-4. Permission surfaces are restricted
-5. Session tokens are issued
-6. Shuntability is controlled through tool profiles
-
-This is critical for controlled cross-construct interactions.
+Tokens may not be shared across constructs.
 
 ---
 
-## **9.10 Identity as a Cognitive Boundary**
+# **9.12 Visas (v1.5)**
 
-Identity defines the edges of Friday’s mind.
+Visas define temporary access for new constructs or external agents.
 
-It ensures:
+Fields:
 
-* drawers cannot be modified by unauthorized entities
-* constructs cannot impersonate one another
-* household members cannot accidentally erase memory
-* automation cannot override cognitive surfaces
-* summarizers remain delegated components, not peers
+```json
+{
+  "visa_id": "uuid4",
+  "principal_guid": "uuid4",
+  "allowed_households": [],
+  "allowed_families": [],
+  "allowed_tools": [],
+  "acl_overrides": {}
+}
+```
 
-Identity is therefore both a **security function** and a **cognitive function**.
+Visas must be evaluated with ACLs before hypergraph access is granted.
 
 ---
 
-## **9.11 Versioning Roadmap**
+# **9.13 Boot and Health Rules**
 
-### **Version 1**
+Before constructs load:
+
+* validate system cabinet
+* validate household cabinet
+* validate HoH and Prime capsules
+* validate provenance fields
+* validate identity hashes
+* validate cabinet schemas
+
+Flynn (boot guardian) enforces these checks.
+
+If invalid:
+
+* load fallback personalities
+* isolate unsafe cabinets
+* mark identity surfaces read-only
+
+---
+
+# **9.14 Version Roadmap**
+
+## **Version 1**
 
 Implements:
 
 * GUIDs
-* Identity Capsules
-* ACL base model
-* Zen DojoTools Identity
-* Cabinet enforcement
-* Squirrel Mode
-* Abbot-aware identity resolution
+* Capsules
+* Families
+* Households
+* Prime
+* ACLs
+* Provenance
+* Squirrel Safe
+* Content Safe
+* Pre-expansion filtering
+* Two-level recursion
+* Boot guardian
 
-### **Version 1.5**
+## **Version 1.5**
 
 Adds:
 
+* X.509 identity signatures
 * Visas
 * Session tokens
-* Tool shunting and capability profiles
-* External-construct security boundaries
-* X.509-style identity signatures
-* Delegated authority layers
+* Delegated tool shunting
+* Capability profiles
 * Cross-household identity mesh
+* Multi-construct collaboration
+
+Which one do you want next, boss?
