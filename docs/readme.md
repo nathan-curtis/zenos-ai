@@ -180,7 +180,31 @@ This is Friday’s working memory engine.
 
 ---
 
-## 🗺️ **10. Roadmap**
+## 🔐 **10. Identity & Security Model**
+
+**Folder:** `docs/architecture/09_Identity_Architecture.md`
+
+The Identity subsystem defines:
+
+ * who a construct is allowed to be
+ * what it may see
+ * where its authority begins and ends
+ 
+It formalizes:
+
+ * GUIDs, identity hashes, provenance chains
+ * Essence Capsules and persona metadata
+ * People, Families, Households, Constructs
+ * ACL roots, owner/partner authority
+ * SecuritySafe, ContentSafe, and SquirrelSafe redaction
+ * Cognitive boundaries and hypergraph gating
+ * Session tokens, visas, and delegated capability (v1.5)
+
+This is Friday’s trust spine — the system that decides which parts of the world are even visible before reasoning begins.
+
+---
+
+## 🗺️ **11. Roadmap**
 
 **File:** `docs/roadmap.md`
 
