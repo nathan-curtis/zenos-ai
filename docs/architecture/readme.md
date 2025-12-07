@@ -1,148 +1,187 @@
-## *ZenOS-AI Architecture Series — Preamble & Orientation*
+# **ZenOS-AI Architecture Series — Preamble & Orientation**
 
-### (Applies to Release 1.0 RC1; Identity subsystem may slip to 1.5; Tool-shunt security models targeted for v.next)
+### *(Applies to Release 1.0 RC1; Identity subsystem may slip to 1.5; Tool-shunt security models targeted for v.next)*
 
 ---
 
 ## **Purpose of This Series**
 
-This directory contains the formal, academically structured architectural documentation for **ZenOS-AI**, the autonomous smart-home cognitive system powering **Friday**, **Veronica**, **Kronk**, and the broader household agent ecosystem.
+This directory contains the formal architectural documentation for **ZenOS-AI**, the cognitive home-automation system powering **Friday**, **Veronica**, **Kronk**, and the broader household construct ecosystem.
 
-Each file in this directory isolates a single architectural domain, explains its rational design, presents the underlying computational and behavioral logic, and connects each element back to **actual Home Assistant YAML, Jinja patterns, sensor semantics, and event-driven system behavior**.
+Each file isolates a specific architectural domain, explains its rationale, presents the underlying computational model, and shows how each concept maps directly onto **Home Assistant state, Jinja, YAML, event-driven behavior, and structured memory**.
 
-The objective is not merely to describe *what* the system does, but *why* it operates that way — enabling readers to trace system behavior from first principles through to live code.
+This series is designed to support:
 
-This series is structured to support:
-
-1. **Researchers** seeking a reproducible cognitive architecture implemented in commodity hardware.
+1. **Researchers** seeking a reproducible cognitive architecture implemented on commodity hardware.
 2. **Engineers** integrating agentic reasoning into event-based IoT systems.
-3. **Designers and developers** of autonomous assistants requiring safety, introspection, and secure decision pathways.
-4. **Advanced users** working with Home Assistant who want deeper understanding of agentic automation and structured memory.
+3. **Developers and designers** of autonomous assistants requiring safety, introspection, and explicit decision boundaries.
+4. **Advanced Home Assistant users** who want to understand how an agentic system can live inside an event-driven automation platform.
+
+The goal is not simply to describe the system — but to make its reasoning and constraints fully traceable from first principles to live code.
 
 ---
 
 ## **Scope and Release Notes**
 
-This documentation describes the intended architecture for **ZenOS-AI Release 1.0 (RC1)**.
-Two major components have release caveats:
+This series documents **ZenOS-AI Release 1.0 RC1**.
+
+Two subsystems have explicit release caveats:
 
 ### **Identity System (ZenAI-ID)**
 
-* Identity resolution, essence capsules, GUID mapping, ACL extraction, and persona security models are described in full detail.
-* Implementation complexity may require the complete subsystem to ship in **v1.5**, depending on stability, edge cases, and performance across large cabinet graphs.
+The identity framework is fully specified, including:
+
+* GUIDs and provenance chains
+* Identity Capsules and persona metadata
+* Families, households, and relational mapping
+* ACL roots, capabilities, and owner/partner authority
+* Redaction layers (Squirrel Mode)
+* Cognitive boundaries and access gating
+
+Due to implementation complexity across large Cabinet graphs, **full identity enforcement may ship in v1.5**, but the architecture is documented here for completeness.
 
 ### **Secure Tool-Shunt Model**
 
-* Session-token–gated tool execution and secure intent routing will **not** be available in 1.0.
-* These mechanisms require deep validation, privilege separation, and a formal audit of agent-accessible attack surfaces.
-* Targeted for **v.next** as part of the hardened security model.
+Token-gated tool execution and shunted capability routing require deeper privilege separation and interface hardening.
+These components will not ship in 1.0 and are targeted for **v.next**.
 
-All other architectural components—including RoomState, the Monastery/Kata pipeline, Cabinet/Drawer memory, Abbot scheduling, and the Interactive Friday load sequence—are considered **core**, **stable**, and intended for 1.0.
+All other architectural systems — RoomState, the Monastery/Kata pipeline, Cabinet/Drawer memory, the Summarizer, Abbot scheduling, and the Interactive Friday load path — are stable and intended for the 1.0 release.
 
 ---
 
 ## **What This Series Covers**
 
-The following files expand the full architecture:
+This directory contains the complete conceptual and operational model for ZenOS-AI. Sections include:
 
-### **Foundational Model**
+---
 
-* Cognitive philosophy
-* Agentic constraints
-* Why everything is represented as structured state, not arbitrary memory
-* Safety principles and deterministic fallback behavior
+### **Foundational Cognitive Model**
 
-### **Perception Pipeline**
+* Why ZenOS uses structured state instead of free-form memory
+* Cognitive constraints, determinism, and safe fallback behavior
+* Friday’s operational contract and reasoning envelope
+
+---
+
+### **Perception Pipeline (Sensorium)**
 
 * RoomState as autonomic substrate
-* Sensor hypergraph design
-* Real-time event-driven representation of the environment
-* Information admissibility and safety filters
+* Hypergraph representation of sensors and states
+* Environmental admissibility filters and safety gates
+* Real-time perception through event-driven updates
+
+---
 
 ### **Memory Architecture**
 
-* Cabinets (structural memory containers)
-* Drawers (typed, versioned memory objects)
-* Volumes (atomic memory packets)
-* Summaries, Katas, and structured compression
+* Cabinets as hierarchical memory containers
+* Drawers as typed, versioned objects
+* Volumes as atomic memory packets
+* Summarizer and Kata compression pipeline
+* How Friday integrates updated memory into consciousness
+
+---
 
 ### **Reasoning Layer (The Monastery)**
 
 * The Monastery as an externalized frontal cortex
 * Kronk’s role as Curator
-* Kata generation pipeline
-* Updating Friday’s active consciousness
-* The Abbot’s inference engine and scheduling model
-
-### **Identity & Security Model**
-
-* GUIDs, essence capsules, persona metadata
-* Identity resolution heuristics
-* Relationships, families, households
-* Future ticket-granting-token (TGT) model
-* Session-token gated tool execution
-* Zero-trust inspiration and household-level ACL design
-
-### **Action Layer**
-
-* Intent routing
-* Control-plane vs data-plane separation
-* Safe action preconditions
-* Why Friday requires deterministic environmental checks before acting
-* Pattern for tool shunts and future auth models
-
-### **Trace Examples**
-
-* Environmental change → RoomState → Friday perception → Monastery reasoning → action
-* Sample cabinet scan and identity resolution
-* A full pipeline walkthrough from user narrative to automated reasoning
-
-### **Appendices**
-
-* Glossary
-* Schemas
-* Jinja/YAML reusable patterns
-* References to HCI, AI planning, cognitive architecture literature
+* Kata generation and reconciliation
+* The Abbot as inference scheduler
+* Consciousness updates and reasoning cycles
 
 ---
 
-## **Philosophy Behind This Documentation**
+### **Identity & Security Model (Section 9)**
 
-This series is written with the expectation that the reader may:
+Identity is both a **security boundary** and a **cognitive boundary**, defining the edges of what a construct may know, do, or remember.
 
-* inspect YAML
-* follow state transitions
-* evaluate Jinja expressions
-* interpret event-driven IoT patterns
-* understand cognitive model analogies
-* want to reconstruct or extend the architecture independently
+The architecture includes:
 
-The documentation is meant to stand on its own as a **coherent cognitive systems manual**, not merely an annotation of configuration files.
+* **Identity Capsules** (GUIDs, identity hashes, provenance, persona metadata)
+* **Humans, AI-users, families, and households** as first-class identity structures
+* **ACL roots** and cabinet-level authority
+* **Owner/Partner relationships** and delegated capability surfaces
+* **Cognitive gating** and redaction (SekretSquirrel safe filters)
+* **SecuritySafe, ContentSafe, and SquirrelSafe passes** applied before any expansion or reasoning
+* **Guest Mode** and PG-13 defaults when identity is ambiguous
+* **Construct boot requirements** (Prime AI, HoH, Cabinet integrity)
+* **Version 1.5 extensions**: session tokens, visas, cross-household federation
+* **Identity as part of consciousness** — preventing impersonation, leakage, or unauthorized drawer mutation
 
-Each chapter forms a layer of the onion—composable, inspectable, and traceable.
+Identity determines **which parts of the hypergraph exist** for a principal. Redaction removes forbidden structure entirely, not just from the answer, but from the agent’s *world model* for that request.
+
+---
+
+### **Action Layer**
+
+* Separation of control-plane and data-plane behaviors
+* Safe action preconditions and environmental validation
+* Deterministic tool invocation
+* Future tool-shunt capability with token gating and persona authority
+
+---
+
+### **Trace Examples**
+
+* State change → RoomState → perception → Monastery reasoning → action
+* Cabinet scan + identity resolution
+* Narrative instruction → summarizer → memory mutation
+* Full reasoning cycle walkthroughs
+
+---
+
+### **Appendices**
+
+* Canonical schemas
+* Glossary
+* Reusable Jinja/YAML patterns
+* Cognitive architecture references
+
+---
+
+## **Philosophy of This Documentation**
+
+This series assumes the reader may:
+
+* inspect YAML and identify intent
+* trace Jinja expressions
+* follow event-driven IoT patterns
+* understand cognitive architecture analogies
+* want to rebuild or adapt the system using the same principles
+
+Every section is written to be **reconstructable**, **traceable**, and **operational**.
+
+The architecture is intentionally layered:
+**Perception → Memory → Cognition → Identity → Action**.
+Each layer you understand strengthens understanding of the next.
 
 ---
 
 ## **Reading Path**
 
-Readers may follow the natural linear progression:
+The recommended order:
 
-1. **Foundations → Sensorium → Memory → Cognition → Identity → Action**,
-   or they may jump directly to the domain of interest.
+1. Foundations
+2. Sensorium
+3. Memory
+4. Cognition
+5. Identity (Section 9)
+6. Action
 
-Each file is self-contained and cross-referenced where appropriate.
+But each chapter is self-contained and cross-referenced.
 
 ---
 
 ## **Contribution and Versioning**
 
-All drafts, updates, and corrections are welcomed through the GitHub repository’s standard contribution path.
-Version markers are embedded in the headers of formal modules.
-All code examples map directly to production Home Assistant deployments.
+Pull requests, additions, and corrections are welcome.
+All code examples map directly to production ZenOS-AI and Home Assistant deployments.
+Version markers appear in each module header.
 
 ---
 
 ## **Next File**
 
 **Next chapter:** `01_foundations_overview.md`
-*(The Core Cognitive Model and Why ZenOS-AI Works the Way It Does)*
+*The Core Cognitive Model and Why ZenOS-AI Works the Way It Does*
