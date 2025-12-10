@@ -1,10 +1,10 @@
 alias: Zen AdminTools CabinetAdmin
 description: >
-  v3.7 RC1 — Unified Factory, Inspector & Modular Repair tool for Cabinet
-  sensors. Mutation-free edition. Modes: inspect | initialize | repair. No
-  Pythonic mutations, no .append, no .update, no dict(...) merges. Includes
-  hardened variable templates, pseudo-UUID generator, safe ACL logic, schema
-  versioning, and deterministic behavior.
+  v3.8.5 RC1 — Unified Factory, Inspector & Modular Repair tool for Cabinet
+  sensors. Mutation-free edition. Modes: inspect | inspect_full | initialize |
+  repair. Adds enhanced NEEDS/PROPOSED diff block. Includes hardened variable
+  templates, pseudo-UUID generator, safe ACL logic, schema versioning, and
+  deterministic behavior.
 sequence:
   - variables:
       mode: "{{ (mode | default('inspect')) | lower }}"
@@ -200,27 +200,16 @@ sequence:
           or (desired_flags_from_profile.secure_mode | default(false)) != (current_flags.secure_mode | default(false))
         }}
       need_flags_full: "{{ desired_flags_json != current_flags_json }}"
-      need_flags_extended: >
-        {% if desired_flags_from_profile is mapping and current_flags is mapping
-        %}
-          {% set desired_keys = desired_flags_from_profile.keys() | list %}
-          {% set current_keys = current_flags.keys() | list %}
-          {% set extra = current_keys | difference(desired_keys) %}
-          {% set missing = desired_keys | difference(current_keys) %}
-          {{ (extra | length > 0) or (missing | length > 0) }}
-        {% else %}true{% endif %}
       new_flags_profile: |
         {{
-          current_flags
-          | combine({
-              'read_only': desired_flags_from_profile.read_only | default(false),
-              'hidden': desired_flags_from_profile.hidden | default(false),
-              'secure_mode': desired_flags_from_profile.secure_mode | default(false)
+          current_flags | combine({
+            'read_only': desired_flags_from_profile.read_only | default(false),
+            'hidden': desired_flags_from_profile.hidden | default(false),
+            'secure_mode': desired_flags_from_profile.secure_mode | default(false)
           })
         }}
       fb: "{{ flags_override if flags_override is mapping else {} }}"
-      new_flags_bits: |
-        {{ current_flags | combine(fb) }}
+      new_flags_bits: "{{ current_flags | combine(fb) }}"
       plan_guid: >
         {% if repair_guid is none %}{{ need_guid }}{% else %}{{ repair_guid }}{%
         endif %}
@@ -256,6 +245,48 @@ sequence:
         affect_relationships %}{% set ns.L = ns.L + ['_zen_relationships'] %}{%
         endif %} {% if affect_labelindex %}{% set ns.L = ns.L + ['_label_index']
         %}{% endif %} {{ ns.L }}
+      needs_struct: |
+        {{
+          {
+            "guid": {
+              "required": need_guid,
+              "proposed": cabinet_guid_out
+            },
+            "volumeinfo": {
+              "required": need_volumeinfo,
+              "proposed": (volumeinfo_template if need_volumeinfo else "no-change")
+            },
+            "acls": {
+              "required": need_acls,
+              "proposed":
+                {
+                  "owner": owner_acl,
+                  "partner": partner_acl,
+                  "family": acl_family
+                } if need_acls else "no-change"
+            },
+            "flags_profile": {
+              "required": need_flags_profile,
+              "proposed": (new_flags_profile if need_flags_profile else "no-change")
+            },
+            "flags_full": {
+              "required": need_flags_full,
+              "proposed": (desired_flags_from_profile if need_flags_full else "no-change")
+            },
+            "flags_bits": {
+              "required": plan_flags_bits,
+              "proposed": (new_flags_bits if plan_flags_bits else "no-change")
+            },
+            "mounts": {
+              "required": need_mounts,
+              "proposed": (relationships_template if need_mounts else "no-change")
+            },
+            "labels": {
+              "required": need_labels,
+              "proposed": (labelindex_template if need_labels else "no-change")
+            }
+          }
+        }}
   - choose:
       - conditions:
           - condition: template
@@ -272,6 +303,85 @@ sequence:
   - choose:
       - conditions:
           - condition: template
+            value_template: "{{ mode == 'inspect_full' }}"
+        alias: Inspect Full
+        sequence:
+          - variables:
+              zen_cabs: |-
+                {{ expand(label_entities('Zen Cabinet'))
+                   | selectattr('domain','equalto','sensor')
+                   | map(attribute='entity_id')
+                   | list }}
+              vars_list: |-
+                {{ zen_cabs
+                   | map('state_attr','variables')
+                   | map('default',{})
+                   | list }}
+              label_list: |-
+                {{ zen_cabs
+                   | map('state_attr','labels')
+                   | map('default',[])
+                   | list }}
+              state_list: |-
+                {{ zen_cabs
+                   | map('states')
+                   | list }}
+              illegal_cabs: >-
+                {% set out = namespace(list=[]) %} {% for i in
+                range(zen_cabs|count) %}
+                  {% if 'slot' in vars_list[i] %}
+                    {% set out.list = out.list + [ zen_cabs[i] ] %}
+                  {% endif %}
+                {% endfor %} {{ out.list | tojson }}
+              deep_dump: |-
+                {% set deep = namespace(list=[]) %}
+                {% for i in range(zen_cabs | count) %}
+
+                  {% set vars = vars_list[i] %}
+                  {% set has_illegal = 'slot' in vars %}
+
+                  {# Build the proposed variable cleanup #}
+                  {% if has_illegal %}
+                    {% set cleaned = namespace(obj={}) %}
+                    {% for k, v in vars.items() %}
+                      {% if k != 'slot' %}
+                        {% set cleaned.obj = cleaned.obj | merge({ k: v }) %}
+                      {% endif %}
+                    {% endfor %}
+                    {% set proposed = cleaned.obj %}
+                  {% else %}
+                    {% set proposed = 'no-change' %}
+                  {% endif %}
+
+                  {% set item = {
+                    "entity_id": zen_cabs[i],
+                    "state": state_list[i],
+                    "labels": label_list[i],
+                    "variables": vars,
+                    "has_illegal_keys": has_illegal,
+                    "needs": {
+                      "illegal_key_removal": {
+                        "required": has_illegal,
+                        "proposed": proposed
+                      }
+                    }
+                  } %}
+
+                  {% set deep.list = deep.list + [ item ] %}
+
+                {% endfor %}
+                {{ deep.list | tojson }}
+              response:
+                status: success
+                message: Deep inspection complete.
+                data:
+                  cabinet_count: "{{ zen_cabs | count }}"
+                  illegal_key_cabinets: "{{ illegal_cabs }}"
+                  cabinets: "{{ deep_dump }}"
+          - stop: Deep inspection done
+            response_variable: response
+      - conditions:
+          - condition: template
             value_template: "{{ mode == 'inspect' }}"
         alias: Inspect Mode
         sequence:
@@ -286,14 +396,7 @@ sequence:
                   guid_existing: "{{ existing_guid }}"
                   guid_proposed: "{{ cabinet_guid_out }}"
                   mounts_out: "{{ mounts_out | length }}"
-                  needs:
-                    guid: "{{ need_guid }}"
-                    volumeinfo: "{{ need_volumeinfo }}"
-                    acls: "{{ need_acls }}"
-                    flags_profile: "{{ need_flags_profile }}"
-                    flags_full: "{{ need_flags_full }}"
-                    mounts: "{{ need_mounts }}"
-                    labels: "{{ need_labels }}"
+                  needs: "{{ needs_struct }}"
                   plan:
                     guid: "{{ plan_guid }}"
                     volumeinfo: "{{ plan_volumeinfo }}"
@@ -343,7 +446,7 @@ sequence:
           - variables:
               response:
                 status: success
-                message: >
+                message: >-
                   Initialized '{{ cabinet_entity }}' with GUID {{
                   cabinet_guid_out }} (profile '{{ flag_profile }}').
           - stop: Init done
@@ -399,7 +502,7 @@ sequence:
                               "friendly_name": cabinet_friendly,
                               "type": cabinet_type,
                               "schema_version": schema_version,
-                              "created": now_iso,
+                              "created": volumeinfo_val.get('created', now_iso),
                               "updated": now_iso,
                               "flags": current_flags,
                               "acls": volumeinfo_val.get('acls',{}),
@@ -430,7 +533,7 @@ sequence:
                               "friendly_name": cabinet_friendly,
                               "type": cabinet_type,
                               "schema_version": schema_version,
-                              "created": now_iso,
+                              "created": volumeinfo_val.get('created', now_iso),
                               "updated": now_iso,
                               "flags": current_flags,
                               "acls": {
@@ -467,7 +570,7 @@ sequence:
                               "friendly_name": cabinet_friendly,
                               "type": cabinet_type,
                               "schema_version": schema_version,
-                              "created": now_iso,
+                              "created": volumeinfo_val.get('created', now_iso),
                               "updated": now_iso,
                               "flags": new_flags_profile,
                               "acls": volumeinfo_val.get('acls',{}),
@@ -500,14 +603,11 @@ sequence:
                               "friendly_name": cabinet_friendly,
                               "type": cabinet_type,
                               "schema_version": schema_version,
-                              "created": now_iso,
+                              "created": volumeinfo_val.get('created', now_iso),
                               "updated": now_iso,
                               "flags": new_flags_bits,
                               "acls": volumeinfo_val.get('acls',{}),
-                              "entity_labels":
-                                (["chat","history","secure","context","transcript","cabinet"]
-                                 if type_lc == 'chat history cabinet'
-                                 else ["system","cabinet","volumeinfo"])
+                              "entity_labels": volumeinfo_val.get('entity_labels', ["system","cabinet","volumeinfo"])
                             }
                           } | tojson
                         }}
@@ -555,7 +655,7 @@ sequence:
           - variables:
               response:
                 status: success
-                message: >
+                message: >-
                   Repaired '{{ cabinet_entity }}' (profile '{{ flag_profile
                   }}').
                 executed:
@@ -574,7 +674,9 @@ sequence:
       - variables:
           response:
             status: error
-            message: "Unknown mode '{{ mode }}'. Use: inspect | initialize | repair."
+            message: >-
+              Unknown mode '{{ mode }}'. Use: inspect | inspect_full |
+              initialize | repair.
       - stop: Mode error
         response_variable: response
   - set_conversation_response: "{{ response }}"
@@ -585,6 +687,7 @@ fields:
       select:
         options:
           - inspect
+          - inspect_full
           - initialize
           - repair
     default: inspect
@@ -651,7 +754,7 @@ fields:
     selector:
       boolean: {}
   repair_volumeinfo:
-    name: Repair VolumeInfo
+    name: Repair Volumeinfo
     selector:
       boolean: {}
   repair_acls:
