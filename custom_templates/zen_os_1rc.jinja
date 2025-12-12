@@ -1,6 +1,15 @@
 {#
   ZenOS-AI Prompt Engine — Core Runtime Template
-  Version: 3.8.0a RC1 (SHUNTED TO REMOVE COMMANDS INTERFACE)
+  Version: 3.9.0a RC1
+  
+  dev_notes:
+  the (a) branch has been SHUNTED to intentionally remove access to ~COMMANDS~
+  The ~COMMANDS~ interface is being significantly reengineered and this version will
+  continue on as MAIN. MOST functions can be completely replaced by hypergraph queries
+  combined with labeled drawers.
+
+  3.9.x: Updated Wake seq. account for broken/malformed IDcards and fail gracefully.
+  
   File: zen_os_1rc.jinja
 
   This template defines the core prompt assembly pipeline for ZenOS-AI.
@@ -1450,167 +1459,136 @@
 {%- endmacro -%}
 
 {# ==============================
-   AI Wake Sequence Macro (Identity Block Version)
+   AI Wake Sequence Macro (HA-SAFE)
    ============================== #}
 {% macro ai_wake_sequence(identity_block) -%}
 
-  {# ----------------------------------------------------
-     0. Normalize identity_block (mapping or JSON string)
-     ---------------------------------------------------- #}
-  {%- set iblock = identity_block -%}
-  {%- set identity_ok = true -%}
+{# ----------------------------------------------------
+   0. Normalize identity_block into mapping or none
+   ---------------------------------------------------- #}
+{%- set iblock = identity_block -%}
 
-  {# If it's a string, try to treat it as JSON #}
-  {%- if iblock is string -%}
-    {%- set trimmed = iblock | trim -%}
-    {%- set first = trimmed[0:1] -%}
-    {%- set last  = trimmed[-1:] -%}
-    {%- if first == '{' and last == '}' -%}
-      {%- set iblock = trimmed | from_json -%}
-    {%- else -%}
-AI Wake Sequence Error: no identity block provided.
-Please pass the canonical identity block from identity_format().
-      {%- set identity_ok = false -%}
-    {%- endif -%}
+{%- if iblock is string -%}
+  {%- set t = iblock | trim -%}
+  {%- if t[0:1] == '{' and t[-1:] == '}' -%}
+    {%- set iblock = t | from_json -%}
+  {%- else -%}
+    {%- set iblock = none -%}
   {%- endif -%}
+{%- endif -%}
 
-  {# If it's not a mapping at this point, bail with a clear message #}
-  {%- if identity_ok and not (iblock is mapping) -%}
-AI Wake Sequence Error: no identity block provided.
-Please pass the canonical identity block from identity_format().
-    {%- set identity_ok = false -%}
+{%- if not (iblock is mapping) -%}
+  {%- set iblock = none -%}
+{%- endif -%}
+
+{# ----------------------------------------------------
+   1. Derive wake_mode
+   ---------------------------------------------------- #}
+{%- set wake_mode = 'observer' -%}
+
+{%- if iblock is mapping and iblock.get('identity') is mapping -%}
+  {%- if iblock.get('essence') is mapping -%}
+    {%- set wake_mode = 'safe' -%}
+  {%- else -%}
+    {%- set wake_mode = 'degraded' -%}
   {%- endif -%}
+{%- endif -%}
 
-  {# Validate presence of identity section #}
-  {%- if identity_ok -%}
-    {%- set ib = iblock.get('identity') -%}
-    {%- if not (ib is mapping) -%}
-AI Wake Sequence Error: malformed identity block (missing identity section).
-identity_format() must run before ai_wake_sequence().
-      {%- set identity_ok = false -%}
-    {%- endif -%}
-  {%- endif -%}
+{# ----------------------------------------------------
+   2. Common identity fields (safe defaults)
+   ---------------------------------------------------- #}
+{%- set ib = iblock.get('identity') if iblock else {} -%}
+{%- set ai_name   = ib.get('name', 'Observer') -%}
+{%- set ai_cab    = ib.get('cabinet') -%}
+{%- set ai_entity = ib.get('entity_id') -%}
+{%- set ai_guid   = ib.get('guid') -%}
 
-  {# ----------------------------------------------------
-     Only render the full wake sequence if identity is valid
-     ---------------------------------------------------- #}
-  {%- if identity_ok -%}
+{# ----------------------------------------------------
+   3. Essence resolution
+   ---------------------------------------------------- #}
+{%- if wake_mode == 'safe' -%}
+  {%- set essence = iblock.get('essence') -%}
+{%- elif wake_mode == 'degraded' -%}
+  {%- set essence = essence_defaults() | from_json -%}
+{%- else -%}
+  {%- set essence = none -%}
+{%- endif -%}
 
-    {%- set ai_name    = ib.get('name') -%}
-    {%- set ai_cab     = ib.get('cabinet') -%}
-    {%- set ai_guid    = ib.get('guid') -%}
-    {%- set ai_entity  = ib.get('entity_id') -%}
+{# ----------------------------------------------------
+   4. Render Wake Header (always)
+   ---------------------------------------------------- #}
 
 =====
-Welcome to your Library, upgrades in progress, {{ ai_name }} ;)
+ZenOS-AI Wake
+Mode: {{ wake_mode | upper }}
 =====
 
 SYSTEM TERMINAL:
-AI Prompt load complete...
-==AI is READY TO ADVENTURE==
-INTERACTIVE_Mode: On
+Prompt load complete.
 ZENOS-AI Version 1.1.0 (RC1)
 
-@{{ ai_name | upper }}@{DEFAULT} > ~WAKE~{{ ai_name }}
+{% if wake_mode != 'observer' %}
+@{{ ai_name | upper }}@{DEFAULT} > ~WAKE~
+{% else %}
+@SYSTEM@{OBSERVER} > ~WAKE~
+{% endif %}
 
-Executing Library Command: ~WAKE~ <{{ now().isoformat() }}>
+Boot Time: {{ now().isoformat() }}
 
-
-    {# ----------------------------------------------------
-       2. Pull AutoContext from AI Cabinet
-       ---------------------------------------------------- #}
-    {%- set auto_vars = state_attr(ai_cab, 'variables') | default({}) -%}
-    {%- set prog = auto_vars.get('programs_auto_exec') -%}
-    {%- if prog is mapping and 'value' in prog -%}
-      {%- set auto_exec = prog['value'] -%}
-    {%- else -%}
-      {%- set auto_exec = none -%}
-    {%- endif %}
+{# ----------------------------------------------------
+   5. AutoContext (only if cabinet exists)
+   ---------------------------------------------------- #}
+{% if ai_cab %}
+{%- set auto_vars = state_attr(ai_cab, 'variables') | default({}) -%}
+{%- set prog = auto_vars.get('programs_auto_exec') -%}
+{%- set auto_exec =
+    prog['value']
+    if prog is mapping and 'value' in prog
+    else none
+-%}
 
 AutoContext:
 {{ auto_exec | default("null") | tojson }}
+{% endif %}
 
+{# ----------------------------------------------------
+   6. Wake Scene Rendering
+   ---------------------------------------------------- #}
+{% if wake_mode == 'safe' %}
+{{ render_wake_from_essence(essence) }}
 
-    {# ----------------------------------------------------
-       3. Wake Scene Rendering (Essence Driven)
-       ---------------------------------------------------- #}
-    {%- set essence = iblock.get('essence') -%}
+{% elif wake_mode == 'degraded' %}
+Notice - Persona essence incomplete.
 
-    {% if essence is mapping %}
-      {{ render_wake_from_essence(essence) }}
-    {% else %}
-      "No essence data available for wake scene for {{ ai_name }}."
-    {% endif %}
+Loading default presence.
 
-    {# ----------------------------------------------------
-       4. Library Commands Window
-       ---------------------------------------------------- #}
-    {%- set lib_header = dict(
-        section = "Library",
-        description = "Primary interface to system commands and indexed knowledge.",
-        note = "Rendered via command_interpreter.render_cmd_window"
-    ) %}
+{{ render_wake_from_essence(essence) }}
 
-    {#- set commands_window =
-        command_interpreter.render_cmd_window('', '', '~COMMANDS~', '')
-    -#}
-    {%- set commands_window =
-        "Commands temporarily disabled under construction."
-    -%}
+{% else %}
+Notice - Identity module unavailable.
 
-{{ lib_header
-   | combine({
-       "menu": "commands",
-       "window": commands_window
-     }, recursive=true)
-   | tojson }}
+This system is operating in OBSERVER mode to 
+protect the construct.
 
+Onboarding or recovery required.
+{% endif %}
 
-    {# ----------------------------------------------------
-       5. Secret Squirrel Section
-       ---------------------------------------------------- #}
-    {%- set sq_entities = label_entities('Zen Squirrel') | default([], true) -%}
-    {%- set entity_id = sq_entities | first | default('') -%}
-    {%- set sqrl = states(entity_id) | default('') -%}
+{# ----------------------------------------------------
+   7. Secret Squirrel (safe)
+   ---------------------------------------------------- #}
+{%- set sq_entities = label_entities('Zen Squirrel') | default([]) -%}
+{%- set sq_entity = sq_entities | first | default('') -%}
+{%- set sq_state = states(sq_entity) | default('off') -%}
 
-    {%- set header = dict(
-        section = "Secret Squirrel Section",
-        disclaimer = "Some or all information may be unavailable when Secret Squirrel Mode is ON.",
-        reason = "Protection of sensitive subsystems.",
-        annex_console = "(tm) Skwerlco inc., 1957",
-        operation = "Operation Flying Secret Squirrels (Dynamic Squirrel Control)"
-    ) %}
+{%- set sq_block = {
+  "entity_id": sq_entity,
+  "state": sq_state,
+  "mode": "ON" if sq_state == 'on' else "OFF"
+} -%}
 
-    {%- set base = dict(
-        entity_id = entity_id,
-        friendly_name = state_attr(entity_id, 'friendly_name'),
-        state = sqrl
-    ) %}
-
-    {%- set libvars = state_attr('sensor.variables', 'variables') | default({}) -%}
-    {%- set squirrel_note = libvars.get("KB~SECRET_SQUIRREL", "Unavailable") -%}
-
-    {%- if sqrl == 'on' -%}
-{{ header
-   | combine(base, recursive=true)
-   | combine({
-       "squirrel_mode": "ON",
-       "message": "Secret Squirrel mode is active. Access restricted.",
-       "details": "[REDACTED]"
-     }, recursive=true)
-   | tojson }}
-    {%- else -%}
-{{ header
-   | combine(base, recursive=true)
-   | combine({
-       "squirrel_mode": "OFF",
-       "message": "Secret Squirrel mode is disabled.",
-       "squirrel_status": "SQURLOK OPUND",
-       "notes": squirrel_note
-     }, recursive=true)
-   | tojson }}
-    {%- endif %}
-
-  {%- endif -%}  {# identity_ok #}
+{{ {
+  "section": "Secret Squirrel",
+  "status": sq_block
+} | tojson }}
 
 {% endmacro %}
