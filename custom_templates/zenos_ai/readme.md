@@ -219,7 +219,7 @@ It is forbidden to fabricate.”
 
 When writing new tools:
 
-{% import 'zen_os_1rc.jinja' as zen %}
+{% import 'zenos_ai/zen_os_1rc.jinja' as zen %}
 
 
 ---

@@ -1,0 +1,292 @@
+script:
+  zen_dojotools_todo:
+    alias: Zen DojoTools ToDo
+    description: >-
+      Zen DojoTools ToDo 1.6.3 — unified CRUD controller for Home Assistant's
+      `todo.*` domain. Supports create, read, update, and delete actions for any
+      to-do list entity. Automatically detects wildcard (`*`) or blank list names to
+      return all lists with labels and friendly names. Allows single-item edits and
+      safe bulk status updates (e.g., mark multiple tasks completed). Returns
+      structured JSON responses suitable for automations or AI workflows, and
+      integrates directly with `todo.add_item`, `todo.update_item`, and
+      `todo.remove_item` services. Default action_type is `read`.
+    sequence:
+      - variables:
+          action_type: "{{ action_type | default('read') }}"
+          items: |-
+            {%- if items is defined and items is iterable and items|length > 0 -%}
+              {{ items }}
+            {%- else -%}
+              ['']
+            {%- endif -%}
+          due_date: "{{ due_date | default('') }}"
+          description: "{{ description | default('') }}"
+          list_name: "{{ list_name | default('') }}"
+          status: "{{ status | default('needs_action') }}"
+          todo_lists: "{{ states.todo | map(attribute='entity_id') | list }}"
+          valid_todo_entities: "{{ states.todo | map(attribute='entity_id') | map('lower') | list }}"
+          todo_list_entity: |-
+            {%- if list_name[0:5] == 'todo.' -%}
+              {{ list_name | lower | replace(' ', '_') }}
+            {%- else -%}
+              todo.{{ list_name | lower | replace(' ', '_') }}
+            {%- endif -%}
+          todo_list_entity_exists: "{{ todo_list_entity in valid_todo_entities }}"
+          label_targets: |-
+            {{
+              (
+                label_targets
+                if label_targets is iterable and label_targets is not string
+                else label_targets.splitlines() if '\n' in label_targets
+                else label_targets.split(',')
+              )
+              | map('trim') | map('lower') | select('string') | list
+            }}
+          label_entities: |-
+            {{
+              label_targets | map('label_entities') | sum(start=[])
+              | select('match', '^todo\\.') | unique | list
+            }}
+          target_lists: >-
+            {{ label_entities if label_entities | length > 0 else [todo_list_entity]
+            }}
+          is_list_wildcard: "{{ list_name in ['', None, '*'] }}"
+          is_items_wildcard: >-
+            {{ items is not defined or items|length == 0 or (items|length == 1 and
+            items[0] in ['', None, '*']) }}
+          list_query: >-
+            {{ is_list_wildcard or action_type not in
+            ['create','read','update','delete'] }}
+          todo_lists_data: |-
+            [
+            {%- for l in states.todo -%}
+              {
+                "entity_id": "{{ l.entity_id }}",
+                "friendly_name": "{{ l.attributes.friendly_name }}",
+                "labels": [
+                  {%- for lid in labels(l.entity_id) -%}
+                    "{{ label_name(lid) }}"{% if not loop.last %}, {% endif %}
+                  {%- endfor -%}
+                ]
+              }{% if not loop.last %}, {% endif %}
+            {%- endfor -%}
+            ] | tojson | fromjson
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ is_list_wildcard and action_type in ['read','list'] }}"
+            sequence:
+              - variables:
+                  final_response: |-
+                    {{
+                      {
+                        "status": "info",
+                        "message": "All available to-do lists with labels.",
+                        "lists": todo_lists_data
+                      } | tojson
+                    }}
+              - stop: Pass response variables back to LLM
+                response_variable: final_response
+              - set_conversation_response: "{{ final_response }}"
+            alias: show all lists and labels on wildcard
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ action_type == 'help' or action_type not in
+                  ['create','read','update','delete'] }}
+            sequence:
+              - variables:
+                  help_data: |-
+                    {{
+                      {
+                        "status": "info",
+                        "version": "1.6.3",
+                        "message": "Zen DojoTools ToDo Help",
+                        "actions": {
+                          "read": "Read items from one or more lists or list all with wildcard.",
+                          "create": "Create new item(s) in an existing list.",
+                          "update": "Update item(s); supports bulk mark-complete.",
+                          "delete": "Delete item(s) from a list.",
+                          "help": "Show this help."
+                        },
+                        "notes": [
+                          "Wildcard read and bulk update supported.",
+                          "Complex multi-item edits remain restricted to status changes."
+                        ]
+                      } | tojson
+                    }}
+              - stop: Pass response variables back to LLM
+                response_variable: help_data
+              - set_conversation_response: "{{ help_data }}"
+            alias: return help
+          - conditions:
+              - condition: template
+                value_template: "{{ action_type == 'update' and todo_list_entity_exists }}"
+            sequence:
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: |-
+                          {{
+                            items | length > 1 and
+                            (items | selectattr('status','defined') | list | count == items | count)
+                          }}
+                    sequence:
+                      - repeat:
+                          for_each: "{{ items }}"
+                          sequence:
+                            - variables:
+                                bulk_update_data: |-
+                                  {% set itm = repeat.item %} {{ {
+                                    'entity_id': todo_list_entity,
+                                    'item': itm.get('item', itm) if itm is mapping else itm,
+                                    'status': itm.get('status', 'completed')
+                                  } }}
+                            - data: "{{ bulk_update_data }}"
+                              action: todo.update_item
+                      - variables:
+                          final_response: |-
+                            {{
+                              {
+                                "status": "success",
+                                "message": "Updated status for " ~ (items | length) ~ " item(s) in list '" ~ list_name ~ "'.",
+                                "list_name": list_name,
+                                "items": items
+                              } | tojson
+                            }}
+                      - stop: Pass response variables back to LLM
+                        response_variable: final_response
+                      - set_conversation_response: "{{ final_response }}"
+                  - conditions:
+                      - condition: template
+                        value_template: |-
+                          {{
+                            items | length > 1 and not
+                            (items | selectattr('status','defined') | list | count == items | count)
+                          }}
+                    sequence:
+                      - variables:
+                          final_response: |-
+                            {{
+                              {
+                                "status": "error",
+                                "message": "Multiple complex updates not supported. Only bulk status updates allowed.",
+                                "list_name": list_name
+                              } | tojson
+                            }}
+                      - stop: Pass response variables back to LLM
+                        response_variable: final_response
+                      - set_conversation_response: "{{ final_response }}"
+                default:
+                  - variables:
+                      update_data: |-
+                        {% set ns = namespace(obj={}) %}
+                        {% set itm = items[0] if items|length > 0 else {} %}
+                        {% if itm is mapping %}
+                          {% set ns.obj = dict(ns.obj, item=itm.get('item',''), list_id=list_name) %}
+                          {% if itm.get('status') %}{% set ns.obj = dict(ns.obj, status=itm.status) %}{% elif status %}{% set ns.obj = dict(ns.obj, status=status) %}{% endif %}
+                        {% else %}
+                          {% set ns.obj = dict(ns.obj, item=itm, list_id=list_name) %}
+                          {% if status %}{% set ns.obj = dict(ns.obj, status=status) %}{% endif %}
+                        {% endif %}
+                        {{ ns.obj if ns.obj is mapping else dict() }}
+                  - data: >-
+                      {{ {'entity_id': todo_list_entity, 'item':
+                      update_data.get('item',''), 'status':
+                      update_data.get('status',status)} }}
+                    action: todo.update_item
+                  - variables:
+                      final_response: |-
+                        {{
+                          {
+                            "status": "success",
+                            "message": "Updated item '" ~ update_data.get('item','') ~ "' in list '" ~ list_name ~ "'.",
+                            "item": update_data,
+                            "list_name": list_name
+                          } | tojson
+                        }}
+                  - stop: Pass response variables back to LLM
+                    response_variable: final_response
+                  - set_conversation_response: "{{ final_response }}"
+            alias: update (list exists)
+          - conditions:
+              - condition: template
+                value_template: |
+                  {{ action_type == 'read'
+                     and todo_list_entity_exists
+                     and is_items_wildcard
+                     and not is_list_wildcard }}
+            sequence:
+              - action: todo.get_items
+                data:
+                  entity_id: "{{ todo_list_entity }}"
+                response_variable: list_items
+              - variables:
+                  _all_items: "{{ list_items.get(todo_list_entity, {}).get('items', []) }}"
+                  items_only: |-
+                    {% if status in ['needs_action','completed'] %}
+                      {{ _all_items | selectattr('status','equalto', status) | list }}
+                    {% else %}
+                      {{ _all_items }}
+                    {% endif %}
+                  final_response: |
+                    {{ {
+                      "status": "success",
+                      "message": "All items for list '" ~ list_name ~ "'",
+                      "list_name": list_name,
+                      "count": items_only | length,
+                      "items": items_only
+                    } | tojson }}
+              - stop: Pass items back to LLM
+                response_variable: final_response
+              - set_conversation_response: "{{ final_response }}"
+            alias: Read List
+      - variables:
+          final_response: |-
+            {{
+              final_response
+              | default(
+                {
+                  "status": "noop",
+                  "message": "No matching branch produced a response."
+                } | tojson
+              )
+            }}
+      - stop: Pass context
+        response_variable: final_response
+      - set_conversation_response: "{{ final_response }}"
+    fields:
+      action_type:
+        description: "'create', 'read', 'update', 'delete', 'help' (Default: read)"
+        selector:
+          select:
+            options:
+              - create
+              - read
+              - update
+              - delete
+              - help
+        default: read
+      list_name:
+        description: To-do list name (default '' or '*' = all lists)
+        selector:
+          text: null
+      items:
+        description: >-
+          Tasks as strings or objects (`item`, `status`, etc.). Supports bulk
+          mark-complete.
+        selector:
+          text:
+            multiple: true
+      status:
+        selector:
+          select:
+            options:
+              - needs_action
+              - completed
+        default: needs_action
+      label_targets:
+        selector:
+          text:
+            multiple: true
+    icon: mdi:clipboard-check-multiple

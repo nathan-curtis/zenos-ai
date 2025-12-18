@@ -3,7 +3,7 @@
 **Path:** `docs/library/index_system.md`
 **Implements:**
 
-* `custom_templates/library_index.jinja`
+* `custom_templates/zenos_ai/library_index.jinja`
 * `scripts/dojotools_zen_index.yaml`
 * `automations/dojotools_zen_index_event_handler.yaml`
 
@@ -197,7 +197,7 @@ This forms the backbone of multi-pass, event-safe recursion across entities, dra
 
 ## **4. Technical Specifications**
 
-### **A — `custom_templates/library_index.jinja`**
+### **A — `custom_templates/zenos_ai/library_index.jinja`**
 
 | Element                   | Function                        |
 | ------------------------- | ------------------------------- |
