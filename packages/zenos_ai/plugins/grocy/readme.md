@@ -1,4 +1,4 @@
-# ZenOS-AI Grocy Integration
+# ZenOS-AI Grocy ERP Plugin
 
 **Version:** 2.12.1
 **Status:** UAT PASS (2026-03-02)
