@@ -228,9 +228,10 @@ zen_dojotools_<function>.yaml
 ```
 
 Heavy documentation:
-📁 `/docs/scripts/`
+📁 `/docs/packages/`
 
 Light documentation:
+📁 `/packages/*`
 📁 `/scripts/`
 
 DojoTools are contract-bound skill modules.  
