@@ -1,0 +1,906 @@
+###############################################################################
+# ZenOS-AI DojoTools: SystemTools Package
+# Version: 1.3.0
+#
+# Consolidated from: dojotools_ha_api.yaml + dojotools_system.yaml
+# Contains: zen_log_* shell_commands, ha_api rest_commands,
+#           zen_dojotools_ha_api (internal), zen_dojotools_systemtools (MCP),
+#           zen_dojotools_ha_log_viewer (MCP), zen_dojotools_event_emitter (MCP)
+#
+# SETUP:
+#   1. Add to secrets.yaml:
+#        ha_bearer: "Bearer <your-long-lived-token>"
+#      (generate at http://homeassistant.local:8123/profile/security)
+#   2. Drop this file into packages/. No other configuration needed.
+#   3. Expose zen_dojotools_systemtools, zen_dojotools_ha_log_viewer,
+#      zen_dojotools_event_emitter to your conversation agent via
+#      Settings → Voice Assistants → Expose.
+#      DO NOT expose zen_dojotools_ha_api — it is an internal primitive.
+#
+# SECURITY MODEL:
+#   - All HA API calls use 127.0.0.1:8123 (localhost only, no IP config needed)
+#   - Auth token is read-once from secrets.yaml; never passed at call time
+#   - ha_api_get paths are whitelisted — arbitrary /api/... GET is blocked
+#   - All write operations (restart, install, skip) require confirm=true
+#   - No access to /states, /templates, cabinet sensors, or room control
+#
+# JOURNAL MODE GUARD (HA 2025.11+):
+#   home-assistant.log was removed in HA 2025.11. zen_dojotools_ha_log_viewer
+#   detects this automatically via zen_log_check + HA version check. Missing log
+#   file returns a structured journal_mode response (not an error) with guidance
+#   including the Petro31 HACS file-logger restoration link.
+#
+# === UAT PASS — 2026-03-03 ===
+# Auditor: Caitlin (Anthropic, Sonnet 4.6) + Veronica (OAI, editorial)
+# HALMark: 0.9.10-draft — PASS Level 3 (Steward Safe) — 23/25 PASS, 2/25 N/A
+# UAT Cases: 20/20 PASS
+#
+# zen_dojotools_ha_api:
+#   help, check_config, error_log, supervisor_logs, events, services,
+#   config, health, supervisor, get (whitelisted), get (blocked), unknown → all PASS
+# zen_dojotools_systemtools:
+#   ha_restart (no confirm), ha_config_check, ha_restart (config pass),
+#   ha_restart (config fail), ha_update_install (no entity_id),
+#   ha_update_install, ha_update_skip, ha_update_clear_skipped, unknown → all PASS
+# zen_dojotools_ha_log_viewer:
+#   file exists, missing+modern HA (journal_mode), missing+legacy HA,
+#   tail, search (pattern), search (no pattern), full, summary, page → all PASS
+# zen_dojotools_event_emitter:
+#   emit, help → PASS
+#
+# Live verified (session 2026-03-03):
+#   ha_config_check → {result: go} ✓
+#   ha_restart (clean config) → {config_check: passed, result: success} ✓
+#   ha_restart (canary YAML injected) → {result: nogo, restart: blocked} ✓
+#   log viewer tail → {status: success} ✓
+#   log viewer journal_mode (log renamed) → {status: journal_mode, expected_behavior: true} ✓
+# ==============================
+#
+# KNOWN BEHAVIORS:
+#   - Log output is truncated at 240KB in script logic (shell_commands cap at 200KB)
+#   - ha_api_post responses: if HA returns non-JSON, check_response silently becomes {}
+#     (safe fallback, but API error details may be lost — check HA logs if nogo fires)
+#
+# === SYSTEMTOOLS CHARTER ===
+# This package is the ZenOS-AI system kernel. All additions must pass these gates:
+#   1. PLATFORM-LEVEL only — system hygiene, safety, observability, or lifecycle.
+#      Not household automation, domain work, or user workflows.
+#   2. PRIMITIVE — small, deterministic, single-purpose. Not convenience wrappers.
+#   3. GUARDED — every write op requires confirm=true or a whitelist. No raw passthrough.
+#
+# ALLOWED: config validation, restart gates, log/health reads, API broker, updates/backups
+# NOT ALLOWED: /states access, cabinet sensors, room control, arbitrary service writes
+# ===========================
+###############################################################################
+
+shell_command:
+
+  # Log file existence check — supports log viewer journal_mode guard
+  zen_log_check: >
+    sh -c "[ -f /config/home-assistant.log ] && echo exists || echo missing"
+
+  zen_log_tail: >
+    sh -c "tail -n {{ lines }} /config/home-assistant.log | head -c 200000"
+
+  # Full log (truncated at 200k chars by script)
+  zen_log_full: >
+    sh -c "cat /config/home-assistant.log | head -c 200000"
+
+  zen_log_page: >
+    sh -c "tail -n +{{ start }} /config/home-assistant.log | head -n {{ count }} | head -c 200000"
+
+  zen_log_search: >
+    sh -c "grep -En '{{ pattern }}' /config/home-assistant.log | head -c 200000 || true"
+
+  zen_log_summary: >
+    sh -c "head -n {{ count }} /config/home-assistant.log | tail -n +{{ start }} | head -c 200000"
+
+rest_command:
+
+  ha_api_get:
+    url: "http://127.0.0.1:8123/api/{{ path }}"
+    method: GET
+    headers:
+      authorization: !secret ha_bearer
+      content-type: 'application/json'
+
+  ha_api_post:
+    url: "http://127.0.0.1:8123/api/{{ path }}"
+    method: POST
+    headers:
+      authorization: !secret ha_bearer
+      content-type: 'application/json'
+
+script:
+
+  zen_dojotools_ha_api:
+    alias: Zen DojoTools HA API
+    description: >-
+      Home Assistant system-level API wrapper. Tokenless at call-time —
+      auth handled inside rest_command. Provides config check (go/nogo),
+      core logs, supervisor logs, events, services, system health, and
+      whitelisted GET. No /states, no cabinet sensors, no templates.
+      Use action_type=check_config for pre-restart YAML validation.
+    mode: parallel
+    icon: mdi:api
+    fields:
+      action_type:
+        selector:
+          select:
+            options:
+            - help
+            - check_config
+            - error_log
+            - supervisor_logs
+            - events
+            - services
+            - config
+            - health
+            - supervisor
+            - get
+        default: help
+      path:
+        name: API Path (whitelisted only)
+        description: Path for the 'get' action. Must be in allowed_paths list.
+        selector:
+          text:
+    sequence:
+    - variables:
+        op: '{{ action_type }}'
+        requested_path: '{{ path | default('''') }}'
+        allowed_paths:
+        - error_log
+        - events
+        - services
+        - config
+        - system_health/info
+        - hassio/info
+        - hassio/logs
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''help'' }}'
+        sequence:
+        - variables:
+            final:
+              status: info
+              message: Zen DojoTools HA API — System Endpoints
+              actions:
+                check_config: POST /api/config/core/check_config — go/nogo YAML validation
+                core_logs: GET /api/error_log
+                supervisor_logs: GET /api/hassio/logs
+                events: GET /api/events
+                services: GET /api/services
+                config: GET /api/config
+                health: GET /api/system_health/info
+                supervisor: GET /api/hassio/info
+                get: GET /api/<path> (whitelisted only)
+              notes:
+              - Token handled entirely in rest_command. Uses 127.0.0.1:8123.
+              - No access to /states, /templates, or cabinet endpoints.
+        - stop: help_shown
+          response_variable: final
+
+      - conditions:
+        - alias: Config Check
+          condition: template
+          value_template: '{{ op == ''check_config'' }}'
+        sequence:
+        - action: rest_command.ha_api_post
+          data:
+            path: config/core/check_config
+          response_variable: r
+        - variables:
+            check_response: "{{ r.content if r.content is mapping else {} }}"
+        - variables:
+            check_valid: "{{ check_response.get('result', 'invalid') == 'valid' }}"
+        - variables:
+            final:
+              result: "{{ 'go' if check_valid else 'nogo' }}"
+              valid: "{{ check_valid }}"
+              errors: "{{ check_response.get('errors', none) }}"
+              message: "{{ 'Config check passed — safe to restart.' if check_valid
+                else 'Config check FAILED — do not restart. Errors: '
+                  ~ (check_response.get('errors', 'unknown error') | string) }}"
+        - stop: check_config_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''error_log'' }}'
+        sequence:
+        - data:
+            path: error_log
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: Core Home Assistant log retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: error_log_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''supervisor_logs'' }}'
+        sequence:
+        - data:
+            path: hassio/logs
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: Supervisor logs retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: supervisor_logs_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''events'' }}'
+        sequence:
+        - data:
+            path: events
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: Event schema retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: events_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''services'' }}'
+        sequence:
+        - data:
+            path: services
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: Service registry retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: services_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''config'' }}'
+        sequence:
+        - data:
+            path: config
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: System config retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: config_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''health'' }}'
+        sequence:
+        - data:
+            path: system_health/info
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: System health retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: health_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''supervisor'' }}'
+        sequence:
+        - data:
+            path: hassio/info
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: Supervisor info retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: supervisor_done
+          response_variable: final
+
+      - conditions:
+        - condition: template
+          value_template: '{{ op == ''get'' }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ requested_path not in allowed_paths }}'
+            sequence:
+            - variables:
+                final:
+                  status: error
+                  message: Path not allowed.
+                  attempted: '{{ requested_path }}'
+                  allowed: '{{ allowed_paths }}'
+            - stop: denied
+              response_variable: final
+        - data:
+            path: '{{ requested_path }}'
+          action: rest_command.ha_api_get
+          response_variable: r
+        - variables:
+            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
+              \ }}\n{% endif %}\n"
+            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
+              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
+              \ %}\n  {{ txt }}\n{% endif %}\n"
+        - variables:
+            final:
+              status: success
+              message: GET /api/{{ requested_path }} retrieved.
+              truncated: '{{ (raw | length) > 220000 }}'
+              result: '{{ safe }}'
+        - stop: get_done
+          response_variable: final
+
+    - variables:
+        final:
+          status: error
+          message: Unknown or invalid action.
+    - stop: failure
+      response_variable: final
+
+  zen_dojotools_systemtools:
+    sequence:
+    - variables:
+        tool: '{{ tool | default('''') }}'
+        confirm: '{{ confirm_action | default(false) }}'
+    - choose:
+      - conditions:
+        - alias: 'Error: Action Not Confirmed'
+          condition: template
+          value_template: '{{tool == ''ha_restart'' and not confirm}}'
+        sequence:
+        - variables:
+            response: "{{\n  {\n    \"tool\": tool | default('N/A'),\n    \"confirm\":
+              confirm | default(false),\n    \"result\": \"error\",\n    \"message\":
+              \"This function REQUIRES user confirmation Ask for confirmation and if
+              granted retry with confirm_action=true.\"\n  }\n}}"
+      - conditions:
+        - alias: 'Error: Entity ID required for Action'
+          condition: template
+          value_template: "{{ (tool in ['ha_update_install','ha_update_skip']) and (not entity_id or entity_id == '') }}"
+        sequence:
+        - variables:
+            response: "{{\n  {\n    \"tool\": tool | default('N/A'),\n    \"confirm\":
+              confirm | default(false),\n    \"result\": \"error\",\n    \"message\":
+              \"entity_id is required for ha_update_install and ha_update_skip. Provide a valid entity_id and retry.\"\n  }\n}}"
+      - conditions:
+        - alias: Config Check
+          condition: template
+          value_template: '{{ tool == ''ha_config_check'' }}'
+        sequence:
+        - action: script.zen_dojotools_ha_api
+          data:
+            action_type: check_config
+          response_variable: check_result
+        - variables:
+            response: "{{
+              {
+                'tool': tool,
+                'result': check_result.result,
+                'valid': check_result.valid,
+                'errors': check_result.errors,
+                'message': check_result.message
+              }
+            }}"
+      - conditions:
+        - condition: template
+          value_template: '{{tool == ''ha_restart'' and confirm}}'
+          alias: HA Restart
+        sequence:
+        - action: script.zen_dojotools_ha_api
+          data:
+            action_type: check_config
+          response_variable: check_result
+        - choose:
+          - conditions:
+            - alias: Config check failed — block restart
+              condition: template
+              value_template: '{{ check_result.result != ''go'' }}'
+            sequence:
+            - variables:
+                response: "{{
+                  {
+                    'tool': tool,
+                    'result': 'nogo',
+                    'errors': check_result.errors,
+                    'message': 'Restart BLOCKED — config check failed. Fix errors before restarting.'
+                  }
+                }}"
+          default:
+          - action: homeassistant.restart
+            metadata: {}
+            data: {}
+          - variables:
+              response: "{{
+                {
+                  'tool': tool,
+                  'confirm': confirm,
+                  'result': 'success',
+                  'config_check': 'passed',
+                  'message': 'Config check passed. HA Restart Initiated. See you on the other side, agent.'
+                }
+              }}"
+      - conditions:
+        - alias: Install Update
+          condition: template
+          value_template: '{{tool == ''ha_update_install'' and confirm}}'
+        sequence:
+        - action: update.install
+          data:
+            backup: '{{do_backup | default(false)}}'
+          target:
+            entity_id: '{{entity_id}}'
+        - variables:
+            response: "{{\n  {\n    \"tool\": tool | default(''),\n    \"entity_id\":
+              entity_id | default(''),\n    \"do_backup\": do_backup | default(false),\n
+              \   \"confirm\": confirm | default(false),\n    \"result\": \"success\",\n
+              \   \"message\": \"Update install initiated.\"\n  }\n}}"
+      - conditions:
+        - alias: Skip Update
+          condition: template
+          value_template: '{{tool == ''ha_update_skip'' and confirm}}'
+        sequence:
+        - action: update.skip
+          target:
+            entity_id: '{{entity_id}}'
+          data: {}
+        - variables:
+            response: "{{\n  {\n    \"tool\": tool | default(''),\n    \"entity_id\":
+              entity_id | default(''),\n    \"confirm\": confirm | default(false),\n
+              \   \"result\": \"success\",\n    \"message\": \"Update Skipped\"\n  }\n}}"
+      - conditions:
+        - alias: Clear Skipped Update
+          condition: template
+          value_template: '{{tool == ''ha_update_clear_skipped'' and confirm}}'
+        sequence:
+        - action: update.clear_skipped
+          target:
+            entity_id: '{{entity_id}}'
+          data: {}
+        - variables:
+            response: "{{\n  {\n    \"tool\": tool | default(''),\n    \"entity_id\":
+              entity_id | default(''),\n    \"confirm\": confirm | default(false),\n
+              \   \"result\": \"success\",\n    \"message\": \"Update Un-Skipped\"\n
+              \ }\n}}"
+      default:
+      - variables:
+          response: "{{\n  {\n    \"tool\": tool | default('N/A'),\n    \"confirm\":
+            confirm | default(false),\n    \"result\": \"error\",\n    \"message\":
+            \"No tool selected.\"\n  }\n}}"
+    - stop: return
+      response_variable: response
+    alias: Zen DojoTools SystemTools
+    description: "Zen DojoTools SystemTools (1.3.0)\nCollection of tools and utilities
+      for Home Assistant\n  ha_config_check - run YAML config check; returns go/nogo
+      + output. No confirmation needed.\n  ha_restart - restarts HA (requires confirm).
+      Config check runs automatically first; restart is blocked if check fails.\n  ha_update_install
+      - requires an 'update.' entity_id to update\n  ha_update_skip - requires an 'update.'
+      entity_id to skip update\n  ha_update_clear_skipped - requires an 'update.' entity_id
+      to clear a skipped update"
+    fields:
+      tool:
+        selector:
+          select:
+            options:
+            - ha_restart
+            - ha_config_check
+            - ha_update_install
+            - ha_update_skip
+            - ha_update_clear_skipped
+      confirm_action:
+        selector:
+          boolean:
+        name: confirm_action
+        description: User has confirmed action (for protected and confirmation required)
+      entity_id:
+        selector:
+          text:
+        description: Entity ID to target - REQUIRED for 'Update' actions
+      do_backup:
+        selector:
+          text:
+        name: Backup before Install
+        description: Flag backup before install or change, Default off - ask the end
+          user.
+
+  zen_dojotools_ha_log_viewer:
+    alias: Zen DojoTools HA Log Viewer
+    description: "Zen DojoTools HA Log Viewer PRO (1.1.0)\nLLM Instructions (general-purpose):\n\
+      Retrieves Home Assistant core logs using safe, pre-approved shell commands.\n\
+      Log file guard detects HA 2025.11+ journal mode automatically — missing log\n\
+      file returns structured journal_mode guidance instead of an error.\n\nModes:\n\
+      \  - tail:    last N lines (uses \"lines\")\n  - search:  grep-matching lines\
+      \ (requires \"pattern\")\n  - full:    entire log (auto-truncated)\n  - summary:\
+      \ first N lines (uses \"lines\")\n  - page:    return a specific window of the\
+      \ log using \"start\" + \"count\"\n\nInputs:\n  - \"pattern\" (search mode only)\n\
+      \  - \"lines\"   (tail + summary)\n  - \"start\"  (page mode)\n  - \"count\"\
+      \   (page mode)\n\nOutput is a structured JSON object with:\n  status, mode,\
+      \ pattern, lines_requested, truncated, line_count,\n  message, result (log text)\n\
+      \nDo not request file writes, deletes, or privileged ops.\n"
+    mode: parallel
+    fields:
+      mode:
+        selector:
+          select:
+            options:
+            - tail
+            - search
+            - full
+            - summary
+            - page
+        default: tail
+      pattern:
+        selector:
+          text:
+        default: ''
+      lines:
+        selector:
+          number:
+            min: 50
+            max: 20000
+        default: 5000
+      start:
+        selector:
+          number:
+            min: 1
+            max: 500000
+        default: 1
+      count:
+        selector:
+          number:
+            min: 10
+            max: 20000
+        default: 500
+    sequence:
+    - variables:
+        m: '{{ mode }}'
+        p: '{{ pattern | default('''') }}'
+        n: '{{ lines }}'
+        s: '{{ start | default(1) }}'
+        c: '{{ count | default(500) }}'
+        limit: 240000
+    # ===== LOG GUARD (Veronica/ZenOS-AI spec, HA 2025.11+ journal behavior) =====
+    - action: shell_command.zen_log_check
+      response_variable: log_check
+    - variables:
+        log_file_exists: "{{ 'exists' in (log_check.stdout | default('')) }}"
+    - choose:
+      - conditions:
+        - alias: Log file missing — evaluate version
+          condition: template
+          value_template: '{{ not log_file_exists }}'
+        sequence:
+        - variables:
+            ha_ver_raw: "{{ state_attr('update.home_assistant_core_update',
+              'installed_version') | default('0.0') }}"
+        - variables:
+            is_modern_ha: >-
+              {% set parts = ha_ver_raw.split('.') %}
+              {% set major = parts[0] | int %}
+              {% set minor = parts[1] | int if parts | length > 1 else 0 %}
+              {{ (major > 2025) or (major == 2025 and minor >= 11) }}
+        - choose:
+          - conditions:
+            - alias: journal_mode — expected on HA 2025.11+
+              condition: template
+              value_template: '{{ is_modern_ha }}'
+            sequence:
+            - variables:
+                final:
+                  status: journal_mode
+                  log_file_present: false
+                  expected_behavior: true
+                  root_cause: core_logging_changed_to_journal
+                  ha_version: '{{ ha_ver_raw }}'
+                  user_guidance:
+                    explain:
+                    - Persistent home-assistant.log removed in HA 2025.11
+                    - Logs now stored in system journal
+                    recommended_actions:
+                    - Use Settings → System → Logs (live + raw log access)
+                    - Use journalctl for system-level access
+                    - "Install HACS file-logger to restore persistent log file:\
+                      \ https://github.com/Petro31/a-file-logger"
+                    do_not:
+                    - Do not reinstall Home Assistant
+                    - Do not assume corruption or startup failure
+                    - Do not treat missing log file as an error
+            - stop: journal_mode
+              response_variable: final
+          default:
+          - variables:
+              final:
+                status: unexpected_missing_log
+                severity: warning
+                log_file_present: false
+                ha_version: '{{ ha_ver_raw }}'
+                possible_causes:
+                - startup_failure
+                - filesystem_issue
+                - logging_misconfiguration
+                recommended_actions:
+                - Use Settings → System → Logs for recent entries
+                - Run ha_config_check via zen_dojotools_systemtools
+                - Review supervisor logs via zen_dojotools_ha_api
+                - Verify /config mount integrity
+          - stop: legacy_missing_error
+            response_variable: final
+    # ===== END GUARD — file exists, proceed with mode dispatch =====
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ m == ''tail'' }}'
+        sequence:
+        - action: shell_command.zen_log_tail
+          data:
+            lines: '{{ n }}'
+          response_variable: raw
+      - conditions:
+        - condition: template
+          value_template: '{{ m == ''search'' }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not p }}'
+            sequence:
+            - variables:
+                final:
+                  status: error
+                  message: Search mode requires a non-empty pattern.
+                  mode: '{{ m }}'
+                  pattern: '{{ p }}'
+                  truncated: false
+                  line_count: 0
+                  lines_requested: '{{ n }}'
+                  result: ''
+            - stop: invalid_search
+              response_variable: final
+        - action: shell_command.zen_log_search
+          data:
+            pattern: '{{ p }}'
+          response_variable: raw
+      - conditions:
+        - condition: template
+          value_template: '{{ m == ''full'' }}'
+        sequence:
+        - action: shell_command.zen_log_full
+          response_variable: raw
+      - conditions:
+        - condition: template
+          value_template: '{{ m == ''summary'' }}'
+        sequence:
+        - action: shell_command.zen_log_summary
+          data:
+            count: '{{ n }}'
+            start: 1
+          response_variable: raw
+      - conditions:
+        - condition: template
+          value_template: '{{ m == ''page'' }}'
+        sequence:
+        - action: shell_command.zen_log_page
+          data:
+            start: '{{ s }}'
+            count: '{{ c }}'
+          response_variable: raw
+    - variables:
+        stdout: '{{ raw.stdout | default('''') }}'
+        stderr: '{{ raw.stderr | default('''') }}'
+        combined: "{{ (stdout ~ '\n' ~ stderr) | trim }}"
+    - variables:
+        safe: "{% set txt = combined | string %}\n{% if txt | length > limit %}\n  {{
+          txt[:limit] ~ '\\n... [truncated for safety]' }}\n{% else %}\n  {{ txt }}\n{%
+          endif %}\n"
+        truncated: '{{ (combined | length) > limit }}'
+        count: "{{ safe.split('\n') | length }}"
+        final:
+          status: success
+          mode: '{{ m }}'
+          pattern: '{{ p }}'
+          lines_requested: '{{ n }}'
+          truncated: '{{ truncated }}'
+          line_count: '{{ count }}'
+          message: HA logs returned ({{ m }} mode)
+          result: '{{ safe }}'
+    - stop: done
+      response_variable: final
+    icon: mdi:file-find-outline
+
+  zen_dojotools_event_emitter:
+    alias: Zen DojoTools Event Emitter
+    description: "Zen DojoTools Event Emitter (v1.2.0 RC1). Advanced mode for Zen!\nEmits
+      structured ZenOS-AI events or returns a dictionary of canonical event shapes.
+      Used for breadcrumbs, observability, and trace reconstruction by Zen Connstructs
+      and the Monastery.\nModes:\n  emit → send a zen_event to the HA EventBus\n  help
+      → return well-known event templates (Zen Event Lexicon)\n\nFields:\n  timestamp,
+      component, severity, kind, summary, metadata, kata, monk.\n\nPayloads must remain
+      small; avoid logs or large arrays. This tool never alters system state—only emits
+      events or returns definitions.\n"
+    fields:
+      mode:
+        selector:
+          select:
+            options:
+            - emit
+            - help
+        default: emit
+        description: 'Operation mode. emit = send event. help = return canonical event
+          shapes.
+
+          '
+      component:
+        selector:
+          text:
+        required: true
+        description: 'REQUIRED. Subsystem generating the event. Example: "friday", "monastery",
+          "filecabinet", "room_manager", "warden".
+
+          '
+      severity:
+        selector:
+          select:
+            options:
+            - debug
+            - info
+            - warn
+            - error
+        default: info
+        description: 'Severity of this event.
+
+          '
+      kind:
+        selector:
+          text:
+        required: true
+        description: 'REQUIRED. Event classifier. Examples: "summary", "summary_force",
+          "kata_emit", "heartbeat".
+
+          '
+      summary:
+        selector:
+          text:
+        required: true
+        description: 'REQUIRED. Human-readable summary (1–2 sentences).
+
+          '
+      metadata:
+        selector:
+          object:
+        default: {}
+        description: 'OPTIONAL. Small structured details (no logs or large arrays).
+
+          '
+      kata:
+        selector:
+          object:
+        default: {}
+        description: 'OPTIONAL. Tiny kata snapshot.
+
+          '
+      monk:
+        selector:
+          object:
+        default: {}
+        description: 'OPTIONAL. Miniature reasoning breadcrumb.
+
+          '
+    mode: parallel
+    sequence:
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode == ''help'' }}'
+        sequence:
+        - variables:
+            well_known_events:
+              summary_force:
+                component: any
+                kind: summary_force
+                severity: info
+                summary: Forcing immediate Zen summary of (Kung fu component id)
+                metadata:
+                  force: summary
+                kata: {}
+                monk: {}
+        - stop: done
+          response_variable: well_known_events
+    - variables:
+        ts: '{{ now().isoformat() }}'
+        evt:
+          timestamp: '{{ ts }}'
+          component: '{{ component }}'
+          severity: '{{ severity }}'
+          kind: '{{ kind }}'
+          summary: '{{ summary }}'
+          metadata: '{{ metadata | default({}) }}'
+          kata: '{{ kata | default({}) }}'
+          monk: '{{ monk | default({}) }}'
+    - event: zen_event
+      event_data:
+        event: '{{ evt }}'
+    - data:
+        message: 'zen_event {{ evt.component }} | {{ evt.kind }} | {{ evt.severity }}
+          | summary="{{ evt.summary }}" | meta={{ evt.metadata | tojson }}
+
+          '
+        level: '{{ severity }}'
+      action: system_log.write
+    - variables:
+        final:
+          status: success
+          message: Zen event emitted
+          event: '{{ evt }}'
+    - stop: done
+      response_variable: final
