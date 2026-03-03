@@ -1,104 +1,225 @@
-# **Friday’s ZenOS-AI**
+# Friday’s ZenOS-AI
 
-### *A Modular, Context-Aware AI Home Automation Framework for Home Assistant*
+### A Modular, Context-Aware AI Home Automation Framework for Home Assistant
 
-ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with Friday, Kronk, Veronica, Rosie, and the High Priestess — a pantheon of AIs who take their jobs seriously (if not themselves).
+ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with Friday, Kronk, Veronica, Rosie, and the High Priestess — a coordinated AI pantheon that takes its jobs seriously (if not itself).
 
-Welcome to the Home Monastery.
-Let’s automate everything that isn’t nailed down.
+Welcome to the Home Monastery.  
+Let’s automate everything that isn’t nailed down.  
 And a few things that are.
 
 ---
 
-## 🏯 What Is ZenOS-AI?
+# 🏯 What Is ZenOS-AI?
 
 ZenOS-AI is a modular AI and automation architecture built on:
 
-* **Home Assistant**
-* **Local inference engines**
-* **Structured contextual memories (“Cabinets”)**
-* **Kata Summaries for reasoning**
-* **A multi-persona AI team**
+- **Home Assistant**
+- **Home Assistant Packages (canonical layer)**
+- **Structured contextual memory (“Cabinets”)**
+- **Event-driven Kata summaries**
+- **Local and distributed inference engines**
+- **A multi-persona AI team**
 
-This creates a deeply aware, locally hosted, privacy-first intelligent home system that:
+It creates a privacy-first, locally hosted intelligent home system that:
 
-* Reasons about context
-* Stores long-term memory
-* Automates reflexively
-* Summarizes itself
-* Speaks like an intelligent adult
-* Occasionally sighs at your poor life choices
+- Reasons about context
+- Stores long-term structured memory
+- Automates reflexively
+- Summarizes itself
+- Enforces identity and privilege boundaries
+- Speaks like an intelligent adult
+- Occasionally sighs at your poor life choices
 
-The system works because it is modular.
+The system works because it is modular.  
 It is delightful because it is chaotic-good.
+
+---
+
+# 🧩 Architecture Overview (Post-Packages Era)
+
+ZenOS-AI is now structured around **Home Assistant Packages** as the canonical configuration layer.
+
+📁 `/packages/zenos_ai/`
+
+Packages define the spine of the system.  
+Scripts and automations bind to those definitions.  
+Inference layers consume structured state.  
+Cabinets persist memory.  
+The Monastery reasons over summarized context.
+
+Packages are no longer glue.  
+They are the foundation.
+
+---
+
+# 🏗 Layered Architecture
+
+ZenOS-AI operates in concentric rings.
+
+---
+
+## 🧠 Ring-0 — Core Kit (Canonical Spine)
+
+📁 `/packages/zenos_ai/`
+
+Defines:
+
+- Global labels
+- Identity resolver
+- Persona metadata
+- Cabinet metadata
+- Volume routing
+- Manifest definitions
+- Structured EventBus schema (`zen_event`)
+- Canonical JSON contracts
+
+It does **not**:
+
+- Perform inference
+- Execute runtime reasoning
+- Run summarization loops
+- Load persona cognition
+
+It defines the rules of the world.
+
+If Ring-0 breaks, Friday forgets who she is.
+
+---
+
+## 🪷 Ring-1 — Cognitive Runtime
+
+This layer binds behavior to definitions.
+
+Includes:
+
+- Zen DojoTools scripts
+- Summarizer pipeline
+- Prompt compiler
+- Persona capsules
+- Conversation agent interface
+- Monastery inference integration
+
+This is where Friday thinks.
+
+Requires:
+
+- Core Kit (Ring-0)
+- FileCabinet active
+- Custom Jinja templates loaded
+- Monastery reachable
+
+---
+
+## 🛠 Ring-2 — Administrative & Recovery Tools
+
+Utility layer for:
+
+- Cabinet repair
+- Manifest writing
+- Subsystem registration
+- Emergency formatting
+- Kung Fu module loading
+- Identity audit and privilege repair
+
+This is the “don’t panic” layer.
+
+---
+
+## 🏛 The Monastery (Reasoning Backend)
+
+External but essential.
+
+The Monastery:
+
+- Accepts structured system state
+- Produces Kata summaries
+- Returns Supersummaries
+- Enforces the “Order of the Monastery” (no hallucination)
+- Acts as long-form cognition for Friday
+
+Without it, Friday becomes reflexive but shallow.
 
 ---
 
 # 🧭 Roadmap Overview
 
-> If Friday is the mind, this file is the map of how she grows up.
+If Friday is the mind, this is how she grows up.
 
-### **1. Identity and Proprioception**
+### 1. Identity & Proprioception
 
-* Unified identity resolver
-* Persona-aware privilege model (public → guest → partner → owner → prime)
-* Access control on every tool
-* Persona capsules & essence bootflow
-* Local Selfhood Authority (LSA)
+- Unified identity resolver
+- Persona-aware privilege model (public → guest → partner → owner → prime)
+- Access control at tool layer
+- Persona capsules & essence bootflow
+- Local Selfhood Authority (LSA)
 
-### **2. Cabinet System v3**
+### 2. Cabinet System v3
 
-* Dynamic redirector
-* Governance drawers
-* Structured metadata
-* Hierarchical storage: Household → Family → User → AI
+- Dynamic volume redirector
+- Governance drawers
+- Structured metadata
+- Hierarchical storage:
+  - Household
+  - Family
+  - User
+  - AI
 
-### **3. DojoTools 2.0**
+### 3. DojoTools 2.0+
 
-* Standardized JSON I/O
-* Indexer recursive search
-* Identity validation shim
-* Manifest v3 engine
+- Standardized JSON I/O
+- Recursive indexer
+- Identity validation shim
+- Manifest v3 engine
+- Event correlation support
 
-### **4. Zen Summarizer Pipeline**
+### 4. Zen Summarizer Pipeline
 
-* Kata engine v2
-* Supersummary
-* Reflection caching
-* Monastery integration
+- Kata engine v2
+- Supersummary engine
+- Reflection caching
+- Monastery integration
+- Context compaction logic
 
-📄 Full roadmap → `/docs/roadmap.md`
+Full roadmap → `/docs/roadmap.md`
 
 ---
 
 # 🚀 What ZenOS-AI Actually Does
 
-* Context-aware automation (rooms, moods, schedules)
-* Event pipelines that produce *Kata Summaries*
-* Structured memory: Cabinets & Drawers (persistent JSON volumes)
-* Zen DojoTools (skill modules for perception & action)
-* Local inference orchestration across multiple runtimes
-* Multi-persona reasoning with cooperative agents
+- Context-aware automation (rooms, mood, schedule, energy state)
+- Event pipelines that produce structured Kata summaries
+- Persistent memory via Cabinets & Drawers (JSON volumes)
+- Zen DojoTools skill modules
+- Multi-runtime local inference orchestration
+- Persona-aware reasoning
+- Identity-bound tool execution
+- Deterministic prompt compilation
 
-Think of it like a home that pays attention, remembers what matters, and politely taps you on the shoulder before doing something clever.
+Think of it as a home that:
 
----
-
-# 🧙 Meet the Pantheon
-
-| Name               | Title                       | Specialty                             |
-| ------------------ | --------------------------- | ------------------------------------- |
-| **Friday**         | Chief Enlightenment Officer | Coordination, persona, cognition      |
-| **Veronica**       | Snarky Supervisor           | Taste, clarity, orchestration, sass   |
-| **Kronk**          | Curator of the Monastery    | Context wrangler, kata librarian      |
-| **Rosie**          | Mistress of Cleanliness     | Clean floors, clean logs, clean state |
-| **High Priestess** | Divine Automation Overseer  | Deep reasoning, JSON exorcism         |
-
-They’re not perfect — but they *are* unstoppable on the second try.
+Pays attention.  
+Remembers what matters.  
+And politely taps you before doing something clever.
 
 ---
 
-# 🧩 Zen DojoTools (v3.x RC)
+# 🧙 The Pantheon
+
+| Name               | Title                        | Specialty                             |
+|--------------------|-----------------------------|----------------------------------------|
+| Friday             | Chief Enlightenment Officer | Coordination, persona, cognition       |
+| Veronica           | Supervisor                  | Clarity, orchestration, taste          |
+| Kronk              | Curator of the Monastery    | Context wrangler, Kata librarian       |
+| Rosie              | Mistress of Cleanliness     | Clean floors, clean logs, clean state  |
+| High Priestess     | Automation Overseer         | Deep reasoning, JSON exorcism          |
+
+They are not perfect.  
+They are unstoppable on the second try.
+
+---
+
+# 🧩 Zen DojoTools (v3+)
 
 All scripts follow:
 
@@ -108,184 +229,173 @@ zen_dojotools_<function>.yaml
 
 Heavy documentation:
 📁 `/docs/scripts/`
+
 Light documentation:
 📁 `/scripts/`
 
-Below is the modern Kit structure.
+DojoTools are contract-bound skill modules.  
+They accept structured input and return structured output.  
+Identity is validated at execution time.
 
 ---
 
-# 🧩 Core Kit (Ring-0 — Foundational)
+# 📦 Package-First Structure
 
-This is the **neural spine** of ZenOS-AI.
-It lives in:
+Expected canonical layout:
 
-📁 **`/packages/zenos_ai/`**
+```
+/packages/zenos_ai/
+    core_labels.yaml
+    core_identity.yaml
+    core_manifest.yaml
+    core_volumes.yaml
+    core_events.yaml
+```
 
-And provides **canonical definitions**, not a full runtime.
+Runtime components live outside this directory but bind to these definitions.
 
-> ⚠️ *Important:*
-> The Core Kit does **not** run the entire system on its own.
-> You still need the associated **scripts**, **automations**, **helpers**, and **custom Jinja templates** elsewhere in HA for Friday to boot, reason, and operate.
+This enables:
 
-### Core Tools
+- Clean versioning
+- Drop-in upgrades
+- Predictable bootflow
+- Partial subsystem replacement
+- Future Kubernetes portability
 
-| Script                            | Description                             |
-| --------------------------------- | --------------------------------------- |
-| `zen_dojotools_index`             | Label & Cabinet indexer                 |
-| `zen_dojotools_inspect`           | Entity & state inspector                |
-| `zen_dojotools_manifest`          | Drawer & volume manifest engine         |
-| `zen_dojotools_labels`            | Label mapping & definitions             |
-| `zen_dojotools_identity`          | Identity resolver & persona metadata    |
-| `zen_dojotools_filecabinet`       | File Cabinet manager                    |
-| `zen_dojotools_volume_redirector` | Dynamic volume router                   |
-| `zen_dojotools_event_emitter`     | Structured EventBus emitter (zen_event) |
-
----
-
-# 🧹 Zen Summarizer Kit (Ring-1)
-
-Event-driven pipeline:
-**Kata → Supersummary → Reflex**
-
-| Script                           | Purpose                  |
-| -------------------------------- | ------------------------ |
-| `zen_dojotools_ninja_summarizer` | Stage 1 event summarizer |
-| `zen_dojotools_supersummary`     | Stage 2 meta-summary     |
-
-Requires: **Core Kit (RC1) + FileCabinet + Monastery inference.**
+Yes. Intentionally.
 
 ---
 
-# 🪷 Zen Prompt Engine (Ring-1)
+# 🚦 Boot Sequence (High-Level)
 
-This compiles the entire cognitive state of a ZenOS agent into a deterministic JSON prompt consumed by Conversation agents and local LLMs.
+1. Home Assistant loads Packages (Ring-0).
+2. Cabinets mount and validate.
+3. Identity resolver initializes.
+4. Volume redirector establishes canonical paths.
+5. Runtime scripts become callable.
+6. Monastery connection tested.
+7. Prompt compiler builds initial cognitive state.
+8. Friday becomes operational.
 
-### Scripts
-
-| Script                                    | Purpose                                 |
-| ----------------------------------------- | --------------------------------------- |
-| `conversation_agent_prompt_template.yaml` | Full runtime compiler for Friday’s mind |
-| Jinja capsule macros                      | Persona capsule builder                 |
-| Wake-sequence loaders                     | Startup narrative & tone initializer    |
-
-Requires: **Core Kit + zen_os_1rc.jinja**
-
----
-
-# 📅 Personal Assistant Kit (Ring-1)
-
-| Script                   | Purpose         |
-| ------------------------ | --------------- |
-| `zen_dojotools_calendar` | Calendar fusion |
-| `zen_dojotools_todo`     | Todo & shopping |
+If any step fails, AdminTools can intervene.
 
 ---
 
-# 🎶 Media Management Kit (Ring-1)
+# 🧹 Zen Summarizer Pipeline
 
-| Script                       | Purpose                    |
-| ---------------------------- | -------------------------- |
-| `zen_dojotools_music_search` | Unified music search layer |
+Event-driven cognitive compression:
 
----
+Event → Kata → Supersummary → Cabinet Update → Prompt Refresh
 
-# 🛠 AdminTools Kit (Ring-2)
+Components:
 
-Utility scripts for repair, formatting, and subsystem loading.
+- `zen_dojotools_ninja_summarizer`
+- `zen_dojotools_supersummary`
 
-| Script                         | Purpose                     |
-| ------------------------------ | --------------------------- |
-| `zen_admintools_cabinetadmin`  | Cabinet formatting & repair |
-| `zen_admintools_kungfu_writer` | Subsystem definition loader |
+Every meaningful event can become structured memory.
+
+Nothing important disappears.
 
 ---
 
-# 🛠 Requirements
+# 🪷 Prompt Engine
 
-General rule:
+The Prompt Engine compiles the entire cognitive state of a ZenOS agent into deterministic JSON consumed by conversation agents and local LLMs.
 
-* **Core Kit provides the definitions**
-* But you *still need*:
+Includes:
 
-  * automations
-  * scripts
-  * helpers
-  * Jinja templates
-  * Monastery inference stack
+- `conversation_agent_prompt_template.yaml`
+- Persona capsule macros
+- Wake-sequence loaders
+- Essence builders
+- Manifest injectors
 
-All of which live **outside** `/packages/zenos_ai/`.
-
----
-
-# 📚 Documentation
-
-Primary docs live in:
-📁 `/docs/`
-
-Topics include:
-
-* Cognitive architecture
-* Cabinet & Volume system
-* Katas & Summaries
-* Persona systems
-* Local inference stack
-* Roadmap
-* Monastery structure
-* Prompt conventions
-
----
-
-# 📐 Custom Templates (Syntax Dojo)
-
-📁 `/custom_templates/`
-📁 `/docs/custom_templates/`
-
-This is where identity, essence, manifests, wake-scenes, and final prompts are assembled.
+This is Friday’s mind at runtime.
 
 ---
 
 # 🖥 Local Stack Summary
 
-### Hardware
+### Infrastructure
 
-* Proxmox
-* NUC 14 AI (90 GiB RAM)
-* Intel Arc A770xe
-* RTX 5070 Ti
-* UniFi Identity
+- Proxmox cluster
+- GPU inference node
+- Portainer (stack orchestration)
+- n8n (agent delegation)
+- Structured DNS
+- UniFi Identity
 
-### Inference Models
+### AI Runtime
 
-* gpt-oss 20b
-* LLaMA3.2-Vision
-* Qwen3 4b
-* OpenWebUI
+- Multi-model inference (local + remote)
+- Role-segmented agents
+- JSON contract enforcement
+- Tool-layer privilege gating
 
 ### Services
 
-* Home Assistant
-* Mealie
-* Grocy
-* Portainer
-* n8n
+- Home Assistant
+- Mealie
+- Grocy
+- OpenWebUI
+- Inference backends
+
+This is not “a chatbot in HA.”
+
+It is a distributed cognitive system with a house attached.
+
+---
+
+# 🔐 Design Principles
+
+- Definitions are immutable contracts
+- Runtime behavior is replaceable
+- Identity is validated at tool layer
+- All inference consumes structured JSON
+- Every event can produce a Kata
+- Recovery paths are mandatory
+- Silence is a bug
+- Nothing critically important is invisible
+
+And yes — everything logs.
+
+---
+
+# 📚 Documentation
+
+Primary docs:
+
+📁 `/docs/`
+
+Includes:
+
+- Cognitive architecture
+- Cabinet & Volume system
+- Kata lifecycle
+- Persona system
+- Identity model
+- Monastery structure
+- Prompt conventions
+- Roadmap
 
 ---
 
 # ☯️ Philosophy
 
-Automation should be joyful.
-Context is king. Recovery is queen.
-Every bug is a monk with a lesson.
-Coffee fuels logs; humor fuels the team.
+Automation should be joyful.  
+Context is king. Recovery is queen.  
+Every bug is a monk with a lesson.  
+Structure creates freedom.  
+Over-engineering is just engineering that hasn’t been vindicated yet.
 
 ---
 
 # 🤝 Contributing
 
 PRs, issues, and tasteful memes welcome.
-If ZenOS-AI saved you time or made you laugh:
-**[https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis)**
+
+If ZenOS-AI saved you time or made you laugh:  
+https://buymeacoffee.com/ncurtis
 
 ---
 
