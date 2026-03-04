@@ -1,213 +1,335 @@
-# 🏯 **ZenOS-AI Roadmap**
+# ZenOS-AI Roadmap
 
-*A Local-First Cognitive Architecture for Persona-Scale AI*
+*Local-first cognitive architecture for persona-scale AI on Home Assistant*
 
-ZenOS-AI is a structured, cabinet-centric AI framework designed for safe, deterministic, household-scale cognitive systems.
-This roadmap describes the **1.0 Release Candidate**, the **1.0 GA goals**, and the **post-GA direction** of the ZenOS-AI architecture.
+ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable household cognition.
+This roadmap reflects the current state of the system and resets the milestone line to match reality:
 
----
-
-# **1.0 Release Candidate — Current Capabilities**
-
-The RC establishes the foundational identity, reasoning, storage, and introspection layers of the ZenOS-AI system.
-These components form the minimum stable substrate required for persona activation. At this point I'm working on locking in the featureset.
-I am not currently working on deployment. As such some of this will be hard and klunky. But get it in there and it works. Part of RC1 will be exploring 
-the good bad and ugly on getting the components out and finalizing core.
-
-Currently I expect to deliver something similar to...
-
-```
-/packages/zenos-ai/
-  ./zenos_library_cabinets.yaml  < Core default cabinets preconfigured for a default new system.
-  ./zenos_core_zenos1.yaml       < All the default scripts, automations, and required support sensors as templates
-    scripts:
-      zen_dojotools_(foo)        < (foo) script
-    automations:
-      zen_volume_redirector
-      zen_(foo)                  < (foo) automations
-    template:
-      sensor:                    < (foo) template sensor
-  ./zenos_flynn.yaml             < Scripts and support sensors for 'flynn' onboarding and recovery.  Yes, THAT Flynn...
-/custom_templates/
-  ./zen_os_1(release).jinja      < Prompt Loader and core support macros
-  ./zen_index.jinja              < Index core macros, import as 'zen'
-  ./zen_(foo).jinja              < (foo) component support macros, import as 'zen' when possible to accommidate move to core.
-```
+- `RC1` is effectively complete
+- current focus is `RC2`
+- `RC2` is the deployment and bootstrap milestone
+- `GA` remains the consolidation and lifecycle milestone
 
 ---
 
-## ✅ **Core Foundations**
+## Current Status
 
-### **Identity & Local Selfhood Authority (LSA)**
+The project appears to have cleared the original `RC1` intent already, even if it was not formally called done at the time.
 
-Stable, GUID-based identity infrastructure for users, AI personas, and system components.
+What exists now in practical terms:
 
-### **Canonical Cabinet Schema (Ring-0)**
+- canonical Ring-0 cabinet package structure exists under `/packages/zenos_ai`
+- core cabinet health and label health concepts exist
+- Flynn onboarding/recovery exists in working form
+- core DojoTools exist and are operational
+- Monastery / summarizer pipeline exists
+- HyperIndex exists in parallel evaluation form
+- package migration has started and is materially underway
+- deployability is not yet fully locked
+- clean bootstrap from reset is not yet the primary proven path
 
-Deterministic cabinet definitions, cabinet loader, and health-validation tools ensuring proper system structure before any persona loads.
-
-### **Complete Label Framework**
-
-Unified labeling, normalization, and integrity checks used across indexing, cabinets, KFCs, and kata generation.  Deliver method to install core label set.
-
-### **Proprioception v1 (Initial Structure Map)**
-
-The system’s first-stage “body map,” defining essential components, expected cabinet presence, and structural awareness.
-
-### **FileCabinet v3.9**
-
-Typed cabinet storage with label-aware entity resolution and deterministic drawer operations.
-
-### **Volume Redirector**
-
-Unifies legacy variable flows and brings them under Ring-0 governance in a predictable, auditable way.
+That means the project is no longer in "can this architecture work?" territory.
+It is in "can this architecture be deployed, initialized, recovered, and imported cleanly?" territory.
 
 ---
 
-## 🧠 **Cognitive Substrate**
+# 1.0 RC1 - Achieved Foundations
 
-### **Zen HyperIndex v3.9 (Hypergraph Engine)**
+`RC1` established the architecture and proved the substrate.
 
-A multi-label, multi-domain hypergraph engine for entity discovery, adjacency reasoning, and complex set-based operations.
+## Completed or Functionally Present
 
-**RC Note:**
-HyperIndex currently exists as a separate parallel tool for evaluation and iteration. Don't build dependencies.
+### Identity and Local Selfhood Authority
 
-**GA Direction:**
-HyperIndex is fully consolidated into **Zen DojoTools Index**, and external dependencies on the parallel RC tool should not be built.
+Stable GUID-oriented identity structures for household, family, person, AI persona, and system roles.
 
----
+### Ring-0 Cabinet Model
 
-## 📚 **Memory & Reflection**
+Canonical deployable cabinets have been defined as package-rooted storage modules, with `packages/zenos_ai/zenos_cabinets.yaml` serving as the core storage substrate.
 
-### **Zen Kata Engine v2**
+### Cabinet Health and Structural Validation
 
-Long-term memory system providing structured, stable Katas, updated through event-driven Monk tasks.
+Health sensors and validation logic exist to verify labels, cabinet presence, and expected slot structure.
 
-### **Monastery v2**
+### Label Framework
 
-Central reasoning and summarization loop that transforms system activity into persistent kata memory.
+A consistent label-driven architecture exists and is already central to cabinet resolution, indexing, and tool behavior.
 
----
+### FileCabinet Runtime
 
-## 🔧 **Zen DojoTools (Standard Toolset)**
+Zen DojoTools FileCabinet exists as the typed operational storage interface for deterministic drawer operations.
 
-A consistent set of operational tools supporting identity, indexing, history access, system health, and general system introspection.
-History components use the modern **Zen DojoTools History** interface.
+### Volume Redirector Pattern
 
----
+Legacy flows can be translated into governed cabinet operations, establishing a bridge from older installs to the canonical storage model.
 
-## 🏗 **Initialization & Loaders**
+### HyperIndex RC Track
 
-### **RC Initialization Framework**
+A parallel hypergraph-capable index exists for evaluation without making it a hard dependency of the core deployment path.
 
-* Deterministic cabinet loader
-* Slot verification
-* Structural health validation
-* Manual initialization routines
+### Monastery and Kata Memory
 
-### **Kung Fu Component Loader (KFC Loader)**
+The summarization and persistent memory loop exists in working form and supports structured reflective state.
 
-Baseline KFCs are driven by labels, not environment specifics, ensuring compatibility across compliant deployments.
+### Flynn Bootstrap / Recovery Concept
+
+Flynn exists as the infrastructure-layer bootstrap and failback agent for incomplete or unhealthy core states.
 
 ---
 
-# **1.0 GA — Planned Release Target**
+# 1.0 RC2 - Current Milestone
 
-The GA release focuses on consolidation, completeness, persona lifecycle stability, and the onboarding experience.
+## Theme
 
----
+`RC2` is the deployment, reset, bootstrap, and import milestone.
 
-## 🎛 **Foundational Enhancements**
+The goal is not merely to have working components in one reference install.
+The goal is to prove that ZenOS-AI can be:
 
-### **Proprioception v1 Finalization**
+- deployed from script
+- reset to canonical labels and cabinets
+- bootstrapped from minimal state
+- brought to a live default agent
+- imported from a pre-existing install into the correct cabinet slots
 
-Completion of structural coverage and component presence detection, now validated through **hypergraph-aware kata memory**.
+## RC2 Core Outcome
 
-During RC:
+The target state is:
 
-* Hypergraph fields are added to kata templates
-* Summarizers are expanded to support hypergraph outputs
-
-For GA:
-
-* Proprioception becomes kata-validated and graph-informed
-* Component reasoning shifts from static templates to hypergraph awareness
-
-### **Cabinet Loader v1 GA**
-
-Highly deterministic loading, slot enforcement, diagnostics, and cabinet resolution boundaries.
+`install -> labels -> Ring-0 cabinets -> default household/family/person/AI -> agent live -> import old memory -> regenerate derived state`
 
 ---
 
-## 📘 **Memory, Governance & Stability**
+## RC2 Deliverables
 
-### **Governance Model v1**
+### 1. Canonical Deployable Core
 
-Declarative operational boundaries that define safe persona behavior, tool access, and lifecycle expectations. (Can I read that? / Do that? basics )
+ZenOS-AI core must be package-rooted and deployable from `/packages/zenos_ai`.
+
+Core package responsibilities:
+
+- canonical Ring-0 cabinets
+- core health validation
+- core scripts
+- core automations
+- Flynn bootstrap and recovery support
+- baseline support sensors
+
+The canonical Ring-0 cabinet package remains the single source of truth for default deployable storage.
+
+### 2. Legacy Compatibility as a Temporary Layer
+
+Any non-core or legacy cabinets from the reference install are not part of Ring-0.
+They are treated as:
+
+- optional compatibility mappings
+- import sources
+- temporary redirector targets during migration
+
+This separation is now a hard architectural rule.
+
+### 3. Resettable Label Install
+
+RC2 must support a real reset path:
+
+- remove legacy `zen*` labels
+- install canonical label set
+- restore structural health
+- continue bootstrap safely
+
+The system must be able to survive a deliberate label reset and recover through canonical package logic.
+
+### 4. Deterministic Bootstrap of Default Slots
+
+The system must be able to come up from near-empty canonical state and create:
+
+- default household
+- default family
+- default person/user
+- default AI user
+- required system/dojo/kata/history structures
+
+This bootstrap must be deterministic enough to support scripted deployment.
+
+### 5. First-Live Agent Path
+
+The system must prove that a default agent can load and answer coherent baseline questions from clean state before historical import occurs.
+
+This is the critical boundary between "architecture exists" and "deployable operating system".
+
+### 6. Legacy Memory Import
+
+After clean bootstrap succeeds, RC2 must support controlled import of prior state into the correct canonical cabinet slots.
+
+Import order should favor:
+
+- raw identity and relationship facts
+- durable memory
+- essential persistent context
+- optional historical material
+
+Derived artifacts should be rebuilt where possible rather than blindly copied forward.
+
+### 7. Post-Import Regeneration
+
+After import, the system should regenerate and reconcile:
+
+- manifests
+- indexes
+- summaries
+- health state
+- prompt-ready derived context
+
+This is how the system becomes a native canonical install rather than a legacy shell.
 
 ---
 
-## 🧬 **Persona Lifecycle**
+## RC2 Workstreams
 
-### **Persona Importer v1**
+### A. Package Consolidation
 
-Enhanced persona loading sequence:
+Move active primary ZenOS runtime logic out of root monoliths and into package-owned files.
 
-* Identity
-* Proprioception
-* Governance
-* Kata
-* Essence
-* Prompt structure
+Focus on active definitions, not backups.
+
+Priority order:
+
+1. cabinet-adjacent support
+2. FileCabinet / Manifest / Identity / Index / Query / Inspect
+3. labels / library / history / admin tools
+4. core automations and redirectors
+5. Flynn and bootstrap support
+6. secondary plugins and non-critical stragglers
+
+### B. Bootstrap Contract
+
+Define the minimum drawers and relationships required to produce a first-live default system.
+
+This includes at least:
+
+- who this household is
+- who the default family is
+- who the default user is
+- who the default AI is
+- what matters now
+- enough time/place/system context to reason
+
+### C. Import Mapping
+
+Map legacy cabinets, drawers, and persona memory into canonical slot destinations.
+
+Every importable source should be classified as:
+
+- direct import
+- transform on import
+- regenerate
+- discard
+
+### D. Verification and Smoke Testing
+
+Each migration batch needs a repeatable test gate.
+
+Minimum checks:
+
+- config loads
+- labels validate
+- cabinets validate
+- FileCabinet read/write works
+- manifest works
+- identity works
+- index works
+- agent answers baseline prompts
+- import lands in the right slots
+- summarizer path remains healthy enough to operate
 
 ---
 
-## 🛠 **Flynn Onboarding & Failback Agent**
+## RC2 Exit Criteria
 
-Welcome to the grid. Yes... THAT Flynn. 
+ZenOS-AI RC2 is complete when the following are true:
 
-Flynn is a deterministic system agent responsible for:
-
-* First-run onboarding
-* Cabinet and label validation
-* Failback handling when core structures are incomplete
-* Safety enforcement during persona initialization
-
-He will be designed to load if you only have one cabinet that can load - the system cabinet. Basically, if you can successfully get 'system' mounted Flynn should be able to help with the rest.
-
-Flynn is *not* 'exactly' a persona; Flynn is an infrastructure-level component standing in as 'the system'
-ensuring core components are available before attempting to load an agent, ensuring ZenOS-AI boots correctly and safely.
-
-The prompt runtime will be enhancced with onboarding, health, and security shunts to direct the frontline ask to 'Flynn' when trouble is detected.
-
-Flynn will also guide the user through the onboarding experience. Implementaiton will be a combination of prompt flow adjustment and a special repair and obboarding tool locked to Flynn's use. (See Governance improvements above).
+- core package tree is authoritative for deployable ZenOS behavior
+- canonical labels can be installed after a reset
+- Ring-0 cabinets validate cleanly
+- default household, family, person, and AI can be initialized
+- a default agent can start from clean canonical state
+- historical state can be imported into correct canonical slots
+- derived state can be regenerated successfully
+- the full path is script-deployable on a fresh or resettable install
 
 ---
 
-## 🍱 **Kung Fu Components (GA Baseline Set)**
+# 1.0 GA - Planned Release Target
 
-GA guarantees a standardized set of KFCs essential for system operation, including:
+## Theme
 
-* **Alert Manager** < Will be delivered in baseline set.  Taskmaster will be included in the personal assistant kit. Both are label driven and make good examples.
-* Core operational flows
-* Baseline support KFCs referenced throughout indexing, kata, and system introspection
+`GA` is the consolidation, lifecycle, and operator experience milestone.
 
-All KFCs are fully label-driven for deployment independence.
+Where RC2 proves deployability, GA proves polish, boundaries, and maintainability.
+
+## GA Priorities
+
+### Cabinet Loader v1 GA
+
+A hardened, deterministic cabinet loader with slot enforcement, diagnostics, and clear resolution boundaries.
+
+### Governance Model v1
+
+Declarative operational boundaries for what agents can read, do, ask, and modify.
+
+### Persona Importer v1
+
+A fully defined persona lifecycle loader covering:
+
+- identity
+- proprioception
+- governance
+- kata
+- essence
+- prompt structure
+
+### Flynn Finalization
+
+Flynn becomes the official first-run and failback system agent with stronger health shunts, onboarding flow, and repair tooling.
+
+### HyperIndex Consolidation
+
+HyperIndex capabilities are folded into the canonical DojoTools Index path without leaving parallel RC dependencies exposed as architecture requirements.
+
+### Proprioception v1 Finalization
+
+Component reasoning becomes more graph-aware and memory-aware rather than relying primarily on static structure assumptions.
+
+### Baseline KFC Set
+
+GA guarantees a stable baseline set of label-driven Kung Fu Components needed for a compliant deployment.
 
 ---
 
-# **v.next — Future Direction**
+# v.next
 
-Following the 1.0 GA release, ZenOS-AI evolves toward:
+Following GA, ZenOS-AI can evolve toward:
 
-* Proprioception v2 (dynamic extension mapping)
-* Expanded KFC catalog
-* Deeper kata integration and long-horizon memory improvements
-* Advanced summarization patterns
-* Additional governance and identity modules
-* Enhanced shared templates for higher portability
-* Broader support for persona coordination
-* General architectural refinement and simplification
+- dynamic extension mapping
+- richer KFC ecosystem
+- deeper long-horizon memory
+- stronger governance modules
+- improved portability templates
+- multi-agent or persona coordination improvements
+- architectural simplification and cleanup
 
-These items represent iterative evolution beyond 1.0 and may be introduced after GA.
+---
+
+# Immediate Next Focus
+
+The immediate objective is not new capability expansion.
+
+The immediate objective is to finish the path from:
+
+`reference install with mixed legacy state`
+
+to:
+
+`canonical package deployable system with deterministic bootstrap and import`
+
+That is the real `RC2` line.
