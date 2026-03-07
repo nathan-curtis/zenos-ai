@@ -1,0 +1,598 @@
+###############################################################################
+# ZenOS-AI DojoTools: Summarizers Package
+# Version: 4.0.0 RC2
+#
+# Migrated from scripts.yaml. Fixes applied (v1.0.0):
+#   - supersummary: active_components namespace() fix (Jinja2 scoping — was always {})
+#   - supersummary: ZEN_SUMMARY → zen_summary key case in prompt_context
+#   - supersummary: event: → action: for event emitter
+#   - ninja summarizer: library_console → library_command_result
+#   - ninja summarizer: kata_template reads kata_cabinet var (not hardcoded entity)
+#   - ninja summarizer: label_input tuple syntax → clean comma string
+#   - ninja summarizer: event: → action: for event emitter
+#   - both: selector {} deprecation
+#
+# Fixes applied (v1.1.0):
+#   - supersummary: hardcoded cabinet entities → label_entities() (consistent w/ ninja)
+#   - supersummary: post_to_kata_cabinet == true → | bool (type-safe gate)
+#   - supersummary: last_summary removed from review_data (duplicate of prompt_context)
+#   - supersummary: event emitter kata/monk paths → monk.data.* (was monk.* — always {})
+#   - ninja summarizer: post_to_kata_cabinet == true → | bool
+#   - ninja summarizer: label_input guard for empty index_command (no leading comma)
+#   - ninja summarizer: event emitter kata/monk paths → monk.data.*
+#
+# Scripts:
+#   zen_dojotools_supersummary     — Whole-home synthesizer (v4.0.0 RC2)
+#   zen_dojotools_ninja_summarizer — Per-component kata writer (v4.0.0 RC2)
+#
+# PIPELINE:
+#   Ninja Summarizer → kata cabinet (per component) → SuperSummary → zen_summary → Friday
+#
+# USED BY:
+#   automation.zen_dojotools_scheduler
+#     every_10_minutes   → supersummary
+#     quarter_hour       → ninja_summarizer (per component, per scheduler branch)
+#     force_summary      → both
+#
+# MCP EXPOSURE:
+#   zen_dojotools_supersummary     — expose (on-demand whole-home summary)
+#   zen_dojotools_ninja_summarizer — expose (on-demand per-component kata)
+#
+# === UAT PASS — 2026-03-03 ===
+# Auditor: Claude (Anthropic, Sonnet 4.6)
+# HALMark: 0.9.10-draft — PASS Level 3 (Steward Safe) — Full pipeline verified
+#
+# zen_dojotools_supersummary (v4.0.0 RC2 → v1.1.0):
+#   namespace() fix — active_component_ids now populates (was always []) ✓
+#   zen_summary key — prompt_context last_summary now loads (was always {}) ✓
+#   active components gate — KF System Switch ON + kata drawer required ✓
+#   live test — active_component_ids returned 10 components ✓
+#     [hot_tub_manager, taskmaster, security_manager, alert_manager, energy_manager,
+#      trash_trakker, water_manager, autovac, media_manager, room_manager]
+#   rich per-component zen_summary produced; confidence: 0.95 ✓
+#   post=false path (no cabinet write) → correct behavior ✓
+#   post=true path — zen_summary written to kata cabinet, verification confirmed ✓
+#   label_entities() cabinet resolution — 10 components flowing ✓
+#   post_to_kata_cabinet | bool gate — type-safe, passes correctly ✓
+#   config check → go; restart → clean ✓
+#
+# zen_dojotools_ninja_summarizer (v4.0.0 RC2 → v1.1.0):
+#   library_command_result fix — monk receives library output (~MEDIA~ exercised) ✓
+#   kata_cabinet var — kata_template reads dynamic entity (not hardcoded) ✓
+#   label_input CSV — "Media Manager, Ninja Summary" — no leading comma ✓
+#   post_to_kata_cabinet | bool gate — type-safe, passes correctly ✓
+#   full kata write — media_manager drawer created, verification confirmed ✓
+#   monk output: clean (no stale Plex data), urgency: 1, confidence: 0.9 ✓
+#   config check → go; restart → clean ✓
+#
+# KNOWN BEHAVIOR:
+#   event_emitter kata/monk excerpt fields depend on LLM returning kata_excerpt /
+#   event_excerpt keys — paths are now correct (monk.data.*), field presence is
+#   LLM-dependent. Not blocking.
+###############################################################################
+
+script:
+
+  # ============================================================================
+  zen_dojotools_supersummary:
+    alias: Zen DojoTools SuperSummary
+    description: >-
+      SuperSummary (4.0.0 RC2). Whole-home synthesizer. Reads active component kata
+      drawers gated by Kung Fu System Switch state. Builds zen_summary — the
+      canonical home state that loads Friday's prompt context. (v4.0.0 RC2)
+    icon: mdi:home-circle
+    mode: queued
+    max: 3
+    fields:
+      query:
+        name: Override Query
+        description: Override the default summarization query.
+        selector:
+          text:
+      post_to_kata_cabinet:
+        name: Post to Kata Cabinet
+        description: Post to the Kata Cabinet after summarization? (default false).
+        selector:
+          boolean:
+      supplemental_prompt:
+        name: Supplemental Prompt
+        description: Extra instructions appended at the end of the summarization prompt.
+        selector:
+          text:
+
+    sequence:
+
+      # ── 1. Resolve cabinets ───────────────────────────────────────────────
+      - alias: Resolve cabinets
+        variables:
+          dojo_cabinet: "{{ label_entities('Zen Dojo Cabinet') | first | default('sensor.zen_dojo_cabinet') }}"
+          kata_cabinet: "{{ label_entities('Zen Kata Cabinet') | first | default('sensor.zen_kata_storage_cabinet') }}"
+          monk_response: {}
+          filecabinet_response: {}
+
+      # ── 2. Load schema ────────────────────────────────────────────────────
+      - alias: Load zen_template schema
+        variables:
+          zen_template: >-
+            {{
+              (
+                (state_attr(kata_cabinet, 'variables') or {})
+                .get('zen_template', {})
+                .get('value', {})
+                .get('structure', {})
+              )
+              | to_json
+            }}
+
+      # ── 3. Build prompt context ───────────────────────────────────────────
+      - alias: Build prompt context
+        variables:
+          prompt_context: >-
+            {%- import 'zen_os_1rc.jinja' as zen -%}
+            {%- set cab_result = zen.zen_cabinets('Friday') -%}
+            {%- set idcard_raw = zen.identity_cab_to_id_card(cab_result) | from_json -%}
+            {%- set manifest   = zen.manifest_loader() | from_json -%}
+            {%- set capsule    = zen.ai_capsule(idcard_raw) | from_json -%}
+            {%- set overview   = states['sensor.home_overview'].attributes | default({}) -%}
+            {%- set kata_vars  = state_attr(kata_cabinet, 'variables') or {} -%}
+            {%- set last_sum   = kata_vars.get('zen_summary', {}) -%}
+            {{
+              {
+                "identity":     idcard_raw,
+                "manifest":     manifest,
+                "capsule":      capsule,
+                "overview":     overview,
+                "last_summary": last_sum
+              }
+              | to_json
+            }}
+
+      # ── 4. Load last summary ──────────────────────────────────────────────
+      - alias: Load last summary
+        variables:
+          last_summary: >-
+            {{
+              (state_attr(kata_cabinet, 'variables') or {}).get('zen_summary', {}) | to_json
+            }}
+
+      # ── 5. Collect active components ──────────────────────────────────────
+      # FIX: was {% set active = {} %} inside for loop — Jinja2 scoping bug,
+      #      always returned {}. Fixed with namespace().
+      - alias: Collect active components from KF System Switch
+        variables:
+          active_components: >-
+            {%- set kata = state_attr(kata_cabinet, 'variables') or {} -%}
+            {%- set ns = namespace(active={}) -%}
+            {%- for sw in expand(label_entities('Kung Fu System Switch'))
+                  | selectattr('domain', 'eq', 'input_boolean')
+                  | selectattr('state', 'eq', 'on')
+                  | map(attribute='entity_id')
+                  | list -%}
+              {%- set key = sw
+                | replace('input_boolean.', '')
+                | replace('_master_switch', '') -%}
+              {%- if key in kata -%}
+                {%- set drawer = kata[key] -%}
+                {%- set value  = drawer.get('value', {}) if drawer is mapping else {} -%}
+                {%- set ns.active = ns.active | combine({ key: value }) -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.active }}
+
+      - alias: Extract active component IDs
+        variables:
+          active_component_ids: "{{ active_components.keys() | list }}"
+
+      # ── 6. Collect component kata values ─────────────────────────────────
+      - alias: Init component data
+        variables:
+          component_data: {}
+
+      - repeat:
+          for_each: "{{ active_component_ids }}"
+          sequence:
+            - variables:
+                comp_raw: >-
+                  {{
+                    (state_attr(kata_cabinet, 'variables') or {}).get(repeat.item, {})
+                  }}
+            - variables:
+                comp_drawer: >-
+                  {%- if comp_raw is string -%}
+                    {{ comp_raw | from_json }}
+                  {%- else -%}
+                    {{ comp_raw }}
+                  {%- endif -%}
+            - variables:
+                component_data: >-
+                  {{
+                    dict(
+                      component_data,
+                      **{ repeat.item: comp_drawer.get('value', {}) }
+                    )
+                  }}
+
+      # ── 7. Build prompt ───────────────────────────────────────────────────
+      - alias: Build summarization prompt
+        variables:
+          default_query: >-
+            Given the attached context, fill out the ZEN_SUMMARY schema.
+            Return ONLY valid JSON matching the schema in zen_template. No markdown.
+            No extra prose. Normalize all fields. If missing, return null or {}.
+            Include ONLY active components. Provide Cliff's Notes for important
+            events, anomalies, and near-term focus.
+          query: "{{ query | default(default_query) }}"
+          review_data: >-
+            {{
+              {
+                "kata_cabinet":   kata_cabinet,
+                "prompt_context": prompt_context | default({}),
+                "components":     component_data | default({})
+              }
+            }}
+          example_data: >-
+            {{
+              (state_attr(kata_cabinet, 'variables') or {})
+              .get('zen_template', {})
+              .get('value', {})
+              .get('example', {})
+            }}
+          prompt: >-
+            {{
+              {
+                "query":                     query,
+                "structure":                 zen_template,
+                "example_data":              example_data,
+                "review_data":               review_data,
+                "supplemental_instructions": supplemental_prompt | default({})
+              }
+              | to_json
+            }}
+
+      # ── 8. Run monk ───────────────────────────────────────────────────────
+      - alias: Monk Runner
+        action: ai_task.generate_data
+        data:
+          task_name: SuperSummary Monk
+          instructions: "{{ prompt }}"
+          entity_id: ai_task.gpt_oss_20b_local_ai_task
+        response_variable: monk_response
+
+      - alias: Extract zen summary from monk response
+        variables:
+          zen_summary: "{{ monk_response.data | default({}) }}"
+
+      # ── 9. Post to kata cabinet ───────────────────────────────────────────
+      - alias: Post zen_summary to kata cabinet
+        if:
+          - condition: template
+            value_template: "{{ zen_summary and (post_to_kata_cabinet | bool) }}"
+        then:
+          - delay:
+              milliseconds: 250
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              set_timestamp: true
+              show_hidden_volumes: false
+              force_action: true
+              volume_entity_id:
+                - "{{ kata_cabinet }}"
+              key: ZEN_SUMMARY
+              value: "{{ zen_summary }}"
+              label_input: Zen Summary
+            response_variable: filecabinet_response
+
+      # ── 10. Build response + emit ─────────────────────────────────────────
+      - alias: Build final response
+        variables:
+          component: super_summary
+          final_response: >-
+            {{
+              {
+                "active_component_ids": active_component_ids | default([]),
+                "monk":                 monk_response | default({}),
+                "post":                 post_to_kata_cabinet | default(false),
+                "filecabinet_write":    filecabinet_response | default({})
+              }
+            }}
+
+      - alias: Emit event
+        action: script.zen_dojotools_event_emitter
+        data:
+          component: "{{ component }}"
+          severity: >-
+            {%- if final_response.filecabinet_write
+                and final_response.filecabinet_write.status == 'error' -%}
+              error
+            {%- else -%}
+              info
+            {%- endif -%}
+          kind: kata_emit
+          summary: >-
+            Script '{{ component }}' completed.
+            Post-to-kata={{ final_response.post }},
+            filecabinet={{ final_response.filecabinet_write.status | default('unknown') }}.
+          metadata:
+            active_components: "{{ final_response.active_component_ids }}"
+            post_to_kata: "{{ final_response.post }}"
+            filecabinet_status: "{{ final_response.filecabinet_write.status | default('unknown') }}"
+            filecabinet_message: "{{ final_response.filecabinet_write.message | default('') }}"
+          kata: >-
+            {{
+              final_response.monk.data.kata_excerpt
+              if final_response.monk is defined
+              and final_response.monk.data is defined
+              and final_response.monk.data.kata_excerpt is defined
+              else {}
+            }}
+          monk: >-
+            {{
+              final_response.monk.data.event_excerpt
+              if final_response.monk is defined
+              and final_response.monk.data is defined
+              and final_response.monk.data.event_excerpt is defined
+              else {}
+            }}
+
+      - stop: Return Response
+        response_variable: final_response
+
+
+  # ============================================================================
+  zen_dojotools_ninja_summarizer:
+    alias: Zen DojoTools Ninja Summarizer
+    description: >-
+      Ninja Summarizer (4.0.0 RC2). Hyper(graph)-aware per-component kata writer.
+      Collects context defined by a Kung Fu component in the Dojo cabinet and
+      submits it to a trusted LLM monk. Writes result to kata cabinet drawer.
+      Queues up to 2 concurrent runs. ~15s warm, ~60s cold. (v4.0.0 RC2)
+    icon: mdi:karate
+    mode: queued
+    max: 2
+    fields:
+      kung_fu_component_id:
+        name: Kung Fu Component ID
+        description: Valid Kung Fu Component ID to summarize to Kata Cabinet (will be slugified).
+        default: kung_fu
+        selector:
+          text:
+      query:
+        name: Override Query
+        description: OVERRIDES default query if provided. Use with caution.
+        selector:
+          text:
+      post_to_kata_cabinet:
+        name: Post to Kata Cabinet
+        description: Post to the kata cabinet after successful summarization? (Default false)
+        selector:
+          boolean:
+      supplemental_prompt:
+        name: Supplemental Prompt
+        description: Additional data or instructions appended to the prompt.
+        selector:
+          text:
+
+    sequence:
+
+      # ── 1. Resolve cabinets + slug ────────────────────────────────────────
+      - alias: Resolve cabinets and component slug
+        variables:
+          dojo_cabinet: "{{ label_entities('Zen Dojo Cabinet') | first | default('') }}"
+          kata_cabinet: "{{ label_entities('Zen Kata Cabinet') | first | default('') }}"
+          household_cabinet: "{{ label_entities('Zen Default Household Cabinet') | first | default('') }}"
+          monk_response: {}
+          filecabinet_response: {}
+          component_slug: "{{ kung_fu_component_id | slugify | default('kung_fu') }}"
+
+      # ── 2. Read dojo + household drawers ──────────────────────────────────
+      - alias: Read dojo drawer
+        variables:
+          dojo_drawer: >-
+            {{ (state_attr(dojo_cabinet, 'variables') or {}).get(component_slug, {}) }}
+          household_drawer: >-
+            {{ (state_attr(household_cabinet, 'variables') or {}).get(component_slug, {}) }}
+
+      - alias: Unpack drawer values
+        variables:
+          dojo_drawer_value: "{{ dojo_drawer.value | default({}) }}"
+          household_drawer_value: "{{ household_drawer.value | default({}) }}"
+
+      # ── 3. Extract component metadata ─────────────────────────────────────
+      - alias: Extract component metadata from dojo drawer
+        variables:
+          version: "{{ (dojo_drawer.version | default('')) or (dojo_drawer_value.version | default('')) }}"
+          friendly_name: "{{ (dojo_drawer.friendly_name | default('')) or (dojo_drawer_value.friendly_name | default('')) }}"
+          master_switch: "{{ (dojo_drawer.master_switch | default('')) or (dojo_drawer_value.master_switch | default('')) }}"
+          index_command: "{{ (dojo_drawer.label | default('')) or (dojo_drawer_value.label | default('')) }}"
+          library_command: "{{ (dojo_drawer.command | default('')) or (dojo_drawer_value.command | default('')) }}"
+          component_summary: "{{ (dojo_drawer.component_summary | default('')) or (dojo_drawer_value.component_summary | default('')) }}"
+          tool: "{{ (dojo_drawer.tool | default('')) or (dojo_drawer_value.tool | default('')) }}"
+
+      # ── 4. Run HyperIndex ─────────────────────────────────────────────────
+      - alias: Run HyperIndex if label exists
+        if:
+          - alias: If label exists and not empty
+            condition: template
+            value_template: "{{ index_command != '' }}"
+        then:
+          - action: script.zen_dojotools_index
+            data:
+              operator: AND
+              expand_entities: true
+              timeout: 2
+              label_1: "{{ index_command }}"
+              mode: hypergraph
+            response_variable: zen_index_result
+
+      - alias: Capture index result
+        variables:
+          index_result: >-
+            {{
+              {
+                "command": index_command | default(''),
+                "result":  zen_index_result | default({})
+              }
+            }}
+
+      # ── 5. Run library command ────────────────────────────────────────────
+      - alias: Call library command if defined
+        if:
+          - condition: template
+            value_template: "{{ library_command and library_command != '' }}"
+        then:
+          - alias: Call a Library ~COMMAND~
+            variables:
+              library_command_output: >-
+                {%- import 'command_interpreter.jinja' as command_interpreter -%}
+                {{ command_interpreter.interpreter(library_command) | default('') }}
+
+      - alias: Capture library command result
+        variables:
+          library_command_result: >-
+            {{
+              {
+                "command": library_command | default(''),
+                "result":  library_command_output | default('')
+              }
+            }}
+
+      # ── 6. Build monk prompt ──────────────────────────────────────────────
+      - alias: Build monk prompt
+        variables:
+          default_query: >-
+            Given attached context, complete the fields defined in the structure.
+            Return ONLY a valid JSON object with exactly those fields, no extra
+            text, no markdown. If no data is available return null or none for
+            that element. Your output must strictly match the structure. Do not
+            report on Kung Fu internal operations (master switches etc) — those
+            are monitored by external watchdog. (Who watches the watchmen?)
+            Your data includes the component purpose, available tools and their
+            output (command_result), and an index of the component's entities.
+            Use all available data to infer current status, near-term events,
+            anomalies, and suggested actions. Author "Cliff's Notes" for the
+            component: what's important, what to look at, where to dig deeper.
+            Stretch a little if needed — adjust confidence accordingly.
+            The frontline AI will have all Zen Kata summaries super-summarized
+            within ~15 minutes. If missing info, use the error field to request
+            it for future runs.
+          query: "{{ query | default(default_query) }}"
+          # FIX: was state_attr('sensor.zen_kata_storage_cabinet'...) hardcoded
+          kata_template: >-
+            {{
+              (state_attr(kata_cabinet, 'variables') or {})
+              .get('kata_template', {})
+              .get('structure', {})
+            }}
+          # FIX: was library_console (undefined) — correct var is library_command_result
+          review_data: >-
+            {{
+              {
+                "kung_fu_component_id": component_slug | default(''),
+                "library_data": {
+                  "dojo_cabinet":    dojo_cabinet | default(''),
+                  "kata_cabinet":    kata_cabinet | default(''),
+                  "drawer":          dojo_drawer | default({}),
+                  "household_prefs": household_drawer | default({}),
+                  "index":           index_result | default({}),
+                  "library_console": library_command_result | default({})
+                },
+                "tool": tool | default('')
+              }
+            }}
+          example_data: >-
+            {"subjective":null,"general_inference":"Kung Fu component v3.0.0
+            manages dojo and kata cabinet status, prioritizes production
+            components, and updates the Kata Wall.","attention":"Monitor dojo
+            and kata cabinet sensors and the Kung Fu master switch for status
+            changes within the next hour.","objective":"Reports on/off state
+            of dojo and kata cabinets via sensors, ensuring production
+            components are prioritized over beta modules, and triggers Kata
+            Wall updates on status changes.","events":[{"trigger":
+            "is_everyone_kung_fu_fighting","timestamp":
+            "2025-09-19T12:51:20+00:00"}],"watchlist":["sensor.zen_dojo_cabinet",
+            "sensor.zen_kata_storage_cabinet",
+            "input_boolean.kung_fu._master_switch"],"error":null,"post":true,
+            "urgency":2,"confidence":0.9}
+          supplemental_instructions: "{{ supplemental_prompt | default('') }}"
+          prompt: >-
+            {{
+              {
+                "query":                     query | default({}),
+                "structure":                 kata_template | default({}),
+                "example_data":              example_data | default({}),
+                "review_data":               review_data | default({}),
+                "supplemental_instructions": supplemental_instructions | default({})
+              }
+              | to_json
+            }}
+
+      # ── 7. Run monk ───────────────────────────────────────────────────────
+      - alias: Monk Runner — Perform ai_task
+        action: ai_task.generate_data
+        data:
+          task_name: "{{ kung_fu_component_id | title }} Monk"
+          instructions: "{{ prompt }}"
+          entity_id: ai_task.gpt_oss_20b_local_ai_task
+        response_variable: monk_response
+
+      - alias: Extract kata summary from monk response
+        variables:
+          kata_summary: "{{ monk_response.data | default({}) }}"
+
+      # ── 8. Post to kata cabinet ───────────────────────────────────────────
+      - alias: Post kata summary to cabinet
+        if:
+          - alias: If post set to true with valid data
+            condition: template
+            value_template: "{{ monk_response.data and (post_to_kata_cabinet | bool) }}"
+        then:
+          - delay:
+              milliseconds: 250
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              set_timestamp: true
+              show_hidden_volumes: false
+              force_action: true
+              volume_entity_id:
+                - "{{ kata_cabinet }}"
+              key: "{{ component_slug }}"
+              value: "{{ kata_summary }}"
+              # FIX: was {{ index_command, 'Ninja Summary' }} — tuple syntax, fixed to clean CSV
+              # Guard: if index_command empty, omit leading comma
+              label_input: "{{ (index_command + ', ') if index_command else '' }}Ninja Summary"
+            response_variable: filecabinet_response
+
+      # ── 9. Build response + emit ──────────────────────────────────────────
+      - alias: Build final response
+        variables:
+          component: ninja_summary
+          final_response: >-
+            {{
+              {
+                "status":            "success",
+                "monk":              monk_response | default({}),
+                "post":              post_to_kata_cabinet | default(false),
+                "dojo_drawer":       dojo_drawer | default(''),
+                "filecabinet_write": filecabinet_response | default({})
+              }
+            }}
+
+      - alias: Emit event
+        action: script.zen_dojotools_event_emitter
+        data:
+          component: "{{ component | default('unknown_component') }}"
+          severity: "{{ 'error' if final_response.status != 'success' else 'info' }}"
+          kind: kata_emit
+          summary: "Script '{{ component | default('unknown_component') }}' completed with status '{{ final_response.status }}'."
+          metadata:
+            status: "{{ final_response.status }}"
+            post_to_kata: "{{ final_response.post }}"
+            dojo_drawer: "{{ final_response.dojo_drawer }}"
+            filecabinet_write: "{{ final_response.filecabinet_write }}"
+          kata: "{{ final_response.monk.data.kata_excerpt | default({}) }}"
+          monk: "{{ final_response.monk.data.event_excerpt | default({}) }}"
+
+      - stop: Return Response to Caller
+        response_variable: final_response

@@ -1,0 +1,362 @@
+###############################################################################
+# ZenOS-AI — Agent Health
+# Version 4.0.0 RC2
+#
+# Ops dashboard sensors for go/no-go agent readiness.
+#
+# sensor.zen_flynn_health
+#   Flynn infrastructure rollup. Compresses label_health + cabinet_health +
+#   monastery_health into a single clean state.
+#   State: critical | error | warn | ok
+#
+# sensor.zen_agent_health
+#   Top-level RAG rollup + per-agent bootability roster.
+#   State: critical | error | warn | ok
+#     ok       = Flynn infra ok AND at least 1 bootable agent ok
+#     error    = Flynn ok but 0 agents bootable
+#     warn     = Flynn warn
+#     critical = Flynn infra in critical/error state
+#
+# Agent bootability gates (per agent in roster attribute):
+#   infra              — Flynn infra ok
+#   conversation_agent — zenos_conversation_agent set and entity available
+#   default_persona    — this cabinet is the zen_default_ai_user_cabinet
+#   system_purpose     — system cabinet has purpose drawer
+#   system_directives  — system cabinet has directives drawer
+#   dojo_loaded        — dojo cabinet has kung_fu key
+#   kata_summary       — kata cabinet has zen_summary key
+# Optional gates (informational only):
+#   system_cortex      — system cabinet has cortex drawer
+#   manifest           — household cabinet has zen_library_manifest
+#
+# Agents tracked:
+#   Dynamically enumerated from label_entities('zen_ai_user_cabinet').
+#   Each cabinet's zenai_essence.identity.name is used as the agent name.
+#   Flynn — infra only, not in agent boot roster.
+###############################################################################
+
+template:
+
+  ###########################################################################
+  # 1. FLYNN HEALTH — infrastructure rollup
+  ###########################################################################
+  - sensor:
+      - name: Zen Flynn Health
+        unique_id: zen_flynn_health
+        device_class: enum
+        availability: "true"
+
+        #######################################################################
+        # STATE — worst of the three gate sensors
+        # Priority: critical > error > warn > ok
+        #######################################################################
+        state: >-
+          {%- set label_st = states('sensor.zen_label_health') %}
+          {%- set cab_st   = states('sensor.zen_cabinet_health') %}
+          {%- set mon_st   = states('sensor.zen_monastery_health') %}
+
+          {%- set all = [label_st, cab_st, mon_st] %}
+
+          {%- if 'critical' in all %}
+            critical
+          {%- elif 'error' in all %}
+            error
+          {%- elif 'warn' in all %}
+            warn
+          {%- else %}
+            ok
+          {%- endif %}
+
+        #######################################################################
+        # ATTRIBUTES
+        #######################################################################
+        attributes:
+
+          system_ready: >-
+            {{ states('binary_sensor.flynn_system_ready') }}
+
+          labels: >-
+            {{ states('sensor.zen_label_health') }}
+
+          cabinets: >-
+            {{ states('sensor.zen_cabinet_health') }}
+
+          monastery: >-
+            {{ states('sensor.zen_monastery_health') }}
+
+          blocking: >-
+            {%- set label_st = states('sensor.zen_label_health') %}
+            {%- set cab_st   = states('sensor.zen_cabinet_health') %}
+            {%- set mon_st   = states('sensor.zen_monastery_health') %}
+            {%- set ns = namespace(b=[]) %}
+            {%- if label_st != 'ok' %}
+              {%- set ns.b = ns.b + ['labels:' ~ label_st] %}
+            {%- endif %}
+            {%- if cab_st != 'ok' %}
+              {%- set ns.b = ns.b + ['cabinets:' ~ cab_st] %}
+            {%- endif %}
+            {%- if mon_st != 'ok' %}
+              {%- set ns.b = ns.b + ['monastery:' ~ mon_st] %}
+            {%- endif %}
+            {{ ns.b | join(', ') if ns.b else 'none' }}
+
+          timestamp: "{{ now().isoformat() }}"
+
+
+  ###########################################################################
+  # 2. AGENT HEALTH — top-level RAG rollup + roster
+  ###########################################################################
+  - sensor:
+      - name: Zen Agent Health
+        unique_id: zen_agent_health
+        device_class: enum
+        availability: "true"
+
+        #######################################################################
+        # STATE
+        # Passes through Flynn state unless Flynn is ok, then:
+        #   error = 0 agents bootable (no default AI cabinet + conv available)
+        #   ok    = ≥1 agent bootable
+        #######################################################################
+        state: >-
+          {%- set flynn_st = states('sensor.zen_flynn_health') %}
+
+          {%- if flynn_st in ['critical', 'error', 'warn'] %}
+            {{ flynn_st }}
+          {%- else %}
+
+            {#--- Flynn ok: check agent bootability ---#}
+            {%- set conv_eid = states('input_text.zenos_conversation_agent') | trim %}
+            {%- set conv_avail =
+                  conv_eid != ''
+                  and conv_eid not in ['unknown','unavailable','none']
+                  and states(conv_eid) not in ['unknown','unavailable'] %}
+
+            {%- set all_ai_cabs = label_entities('zen_ai_user_cabinet')
+                                  | select('match', 'sensor\\.') | list %}
+            {%- set ns = namespace(ok_count=0) %}
+            {%- for ag_cab in all_ai_cabs %}
+              {%- if states(ag_cab) not in ['unknown','unavailable'] %}
+                {%- if conv_avail and ag_cab in label_entities('zen_default_ai_user_cabinet') %}
+                  {%- set ns.ok_count = ns.ok_count + 1 %}
+                {%- endif %}
+              {%- endif %}
+            {%- endfor %}
+
+            {%- if ns.ok_count > 0 %}
+              ok
+            {%- else %}
+              error
+            {%- endif %}
+          {%- endif %}
+
+        #######################################################################
+        # ATTRIBUTES
+        #######################################################################
+        attributes:
+
+          ##################################################################
+          # FLYNN SUMMARY (infra, not in agent count)
+          ##################################################################
+          flynn_health: >-
+            {{ states('sensor.zen_flynn_health') }}
+
+          flynn_gates: >-
+            {{
+              {
+                'labels':    states('sensor.zen_label_health'),
+                'cabinets':  states('sensor.zen_cabinet_health'),
+                'monastery': states('sensor.zen_monastery_health')
+              } | tojson
+            }}
+
+          ##################################################################
+          # AGENT ROSTER
+          # Dynamically built from zen_ai_user_cabinet-labeled sensors.
+          # Per-agent readiness against all wake sequence gates.
+          # Required gates (affect status): infra, conversation_agent,
+          #   default_persona, system_purpose, system_directives,
+          #   dojo_loaded, kata_summary
+          # Optional gates (informational): system_cortex, manifest
+          ##################################################################
+          roster: >-
+            {%- set label_st = states('sensor.zen_label_health') %}
+            {%- set cab_st   = states('sensor.zen_cabinet_health') %}
+            {%- set mon_st   = states('sensor.zen_monastery_health') %}
+            {%- set flynn_ok = (label_st == 'ok' and cab_st == 'ok' and mon_st == 'ok') %}
+            {%- set infra_gate = 'ok' if flynn_ok else
+                'critical' if (label_st in ['critical','error'] or cab_st in ['critical','error'])
+                else 'warn' %}
+
+            {#--- conversation agent ---#}
+            {%- set conv_eid = states('input_text.zenos_conversation_agent') | trim %}
+            {%- set conv_set = conv_eid != '' and conv_eid not in ['unknown','unavailable','none'] %}
+            {%- set conv_avail = conv_set and states(conv_eid) not in ['unknown','unavailable'] %}
+            {%- set conv_gate = 'ok' if conv_avail else 'warn' if conv_set else 'critical' %}
+
+            {#--- system cabinet prompt drawers ---#}
+            {%- set sys_cab = states('sensor.zen_system_cabinet_resolved') %}
+            {%- set sys_cab_ok = sys_cab not in ['unknown','unavailable','none',''] %}
+            {%- set sys_vars = state_attr(sys_cab, 'variables') | default({}, true) if sys_cab_ok else {} %}
+            {%- macro has_drawer(d, key) %}
+              {%- set raw = d.get(key, {}) %}
+              {%- set val = raw.get('value', raw) if raw is mapping else raw %}
+              {{ val is not none and val | string | trim != '' }}
+            {%- endmacro %}
+            {%- set purpose_ok    = has_drawer(sys_vars, 'purpose')    | trim == 'True' %}
+            {%- set directives_ok = has_drawer(sys_vars, 'directives') | trim == 'True' %}
+            {%- set cortex_ok     = has_drawer(sys_vars, 'cortex')     | trim == 'True' %}
+
+            {#--- dojo cabinet: needs kung_fu key ---#}
+            {%- set dojo_cab = states('sensor.zen_dojo_cabinet_resolved') %}
+            {%- set dojo_ok = dojo_cab not in ['unknown','unavailable','none',''] %}
+            {%- set dojo_vars = state_attr(dojo_cab, 'variables') | default({}, true) if dojo_ok else {} %}
+            {%- set dojo_loaded = dojo_ok and dojo_vars.get('kung_fu') is not none
+                                  and dojo_vars.get('kung_fu') | string | trim != '' %}
+
+            {#--- kata cabinet: needs zen_summary key ---#}
+            {%- set kata_cab = states('sensor.zen_kata_cabinet_resolved') %}
+            {%- set kata_ok = kata_cab not in ['unknown','unavailable','none',''] %}
+            {%- set kata_vars = state_attr(kata_cab, 'variables') | default({}, true) if kata_ok else {} %}
+            {%- set kata_summary = kata_ok and kata_vars.get('zen_summary') is not none
+                                   and kata_vars.get('zen_summary') != {} %}
+
+            {#--- household cabinet: zen_library_manifest (optional) ---#}
+            {%- set hh_cab = label_entities('zen_default_household_cabinet')
+                             | select('match', 'sensor\\.') | list | first | default('') %}
+            {%- set hh_ok = hh_cab != '' and states(hh_cab) not in ['unknown','unavailable'] %}
+            {%- set hh_vars = state_attr(hh_cab, 'variables') | default({}, true) if hh_ok else {} %}
+            {%- set manifest_ok = hh_ok and hh_vars.get('zen_library_manifest') is not none
+                                  and hh_vars.get('zen_library_manifest') | string | trim != '' %}
+
+            {#--- who is the currently active default persona? ---#}
+            {%- set def_ai_cabs = label_entities('zen_default_ai_user_cabinet')
+                                  | select('match', 'sensor\\.') | list %}
+            {%- set def_ns = namespace(loaded_name='') %}
+            {%- set def_cab = def_ai_cabs | first | default('') %}
+            {%- if def_cab != '' and states(def_cab) not in ['unknown','unavailable'] %}
+              {%- set def_vars = state_attr(def_cab, 'variables') | default({}, true) %}
+              {%- set def_essence = def_vars.get('zenai_essence', {}) %}
+              {%- set def_ev = def_essence.get('value', def_essence) if def_essence is mapping else {} %}
+              {%- set def_ns.loaded_name = (def_ev.get('identity', {}).get('name', '')
+                                            if def_ev is mapping else '') | lower | trim %}
+            {%- endif %}
+
+            {#--- enumerate agent cabinets dynamically ---#}
+            {%- set all_ai_cabs = label_entities('zen_ai_user_cabinet')
+                                  | select('match', 'sensor\\.') | list %}
+            {%- set ns = namespace(rows=[]) %}
+            {%- for ag_cab in all_ai_cabs %}
+              {%- if states(ag_cab) not in ['unknown','unavailable'] %}
+
+                {#--- resolve agent name from essence ---#}
+                {%- set ag_vars = state_attr(ag_cab, 'variables') | default({}, true) %}
+                {%- set ag_essence = ag_vars.get('zenai_essence', {}) %}
+                {%- set ag_ev = ag_essence.get('value', ag_essence) if ag_essence is mapping else {} %}
+                {%- set ag_identity = ag_ev.get('identity', {}) if ag_ev is mapping else {} %}
+                {%- set ag_name = (ag_identity.get('name', ag_cab) | string | trim)
+                                  if ag_identity is mapping else ag_cab %}
+
+                {%- set ag_is_default = ag_cab in def_ai_cabs %}
+
+                {#--- required agent gates ---#}
+                {%- set agent = {
+                  'infra':              infra_gate,
+                  'conversation_agent': conv_gate,
+                  'default_persona':    'ok' if ag_is_default else 'warn',
+                  'system_purpose':     'ok' if purpose_ok    else 'warn',
+                  'system_directives':  'ok' if directives_ok else 'warn',
+                  'dojo_loaded':        'ok' if dojo_loaded   else 'warn',
+                  'kata_summary':       'ok' if kata_summary  else 'warn',
+                  'system_cortex':      'ok' if cortex_ok     else 'warn',
+                  'manifest':           'ok' if manifest_ok   else 'warn'
+                } %}
+
+                {#--- required keys only drive status ---#}
+                {%- set req = [
+                  agent.infra, agent.conversation_agent, agent.default_persona,
+                  agent.system_purpose, agent.system_directives,
+                  agent.dojo_loaded, agent.kata_summary
+                ] %}
+                {%- set status =
+                  'critical' if 'critical' in req else
+                  'warn'     if 'warn'     in req else
+                  'ok' %}
+
+                {#--- note: first blocking required gate ---#}
+                {%- if not flynn_ok %}
+                  {%- set note = 'blocked_by_infra' %}
+                {%- elif not conv_avail %}
+                  {%- set note = 'conv_agent_unavailable' if conv_set else 'conv_agent_not_configured' %}
+                {%- elif not ag_is_default %}
+                  {%- set note = 'no_persona' if def_ns.loaded_name == ''
+                                 else 'persona_is_' ~ def_ns.loaded_name %}
+                {%- elif not purpose_ok %}
+                  {%- set note = 'system_purpose_missing' %}
+                {%- elif not directives_ok %}
+                  {%- set note = 'system_directives_missing' %}
+                {%- elif not dojo_loaded %}
+                  {%- set note = 'dojo_not_loaded' %}
+                {%- elif not kata_summary %}
+                  {%- set note = 'kata_summary_missing' %}
+                {%- else %}
+                  {%- set note = 'ready' %}
+                {%- endif %}
+
+                {%- set row = {
+                  'name':   ag_name,
+                  'cab':    ag_cab,
+                  'status': status,
+                  'agent':  agent,
+                  'note':   note
+                } %}
+                {%- set ns.rows = ns.rows + [row] %}
+              {%- endif %}
+            {%- endfor %}
+            {{ ns.rows | tojson }}
+
+          ##################################################################
+          # SUMMARY COUNTS
+          ##################################################################
+          agents_ok: >-
+            {%- set flynn_ok = states('sensor.zen_flynn_health') == 'ok' %}
+            {%- set conv_eid = states('input_text.zenos_conversation_agent') | trim %}
+            {%- set conv_avail =
+                  conv_eid != '' and conv_eid not in ['unknown','unavailable','none']
+                  and states(conv_eid) not in ['unknown','unavailable'] %}
+            {%- set all_ai_cabs = label_entities('zen_ai_user_cabinet')
+                                  | select('match', 'sensor\\.') | list %}
+            {%- set def_ai_cabs = label_entities('zen_default_ai_user_cabinet') | list %}
+            {%- set ns = namespace(ok=0) %}
+            {%- for ag_cab in all_ai_cabs %}
+              {%- if states(ag_cab) not in ['unknown','unavailable'] %}
+                {%- if flynn_ok and conv_avail and ag_cab in def_ai_cabs %}
+                  {%- set ns.ok = ns.ok + 1 %}
+                {%- endif %}
+              {%- endif %}
+            {%- endfor %}
+            {{ ns.ok }}
+
+          agents_total: >-
+            {{ label_entities('zen_ai_user_cabinet') | select('match', 'sensor\\.') | list | count }}
+
+          ##################################################################
+          # ACTIVE PERSONA (who is currently the default)
+          ##################################################################
+          active_persona: >-
+            {%- set def_cab = label_entities('zen_default_ai_user_cabinet')
+                              | select('match', 'sensor\\.') | list | first | default('') %}
+            {%- if def_cab == '' or states(def_cab) in ['unknown','unavailable'] %}
+              none
+            {%- else %}
+              {%- set essence = (state_attr(def_cab, 'variables') | default({}, true))
+                                .get('zenai_essence', {}) %}
+              {%- set essence_val = essence.get('value', essence) if essence is mapping else {} %}
+              {{- (essence_val.get('identity', {}).get('name', 'none')
+                   if essence_val is mapping else 'none') }}
+            {%- endif %}
+
+          conversation_entity: >-
+            {{ states('input_text.zenos_conversation_agent') | trim | default('none') }}
+
+          timestamp: "{{ now().isoformat() }}"

@@ -1,0 +1,212 @@
+###############################################################################
+# ZenOS-AI Plugin: Mealie <> Grocy Sync Orchestrator
+# Version: 4.0.0 RC2
+###############################################################################
+
+script:
+  mealie_grocy_sync_orchestrator:
+    alias: Mealie Grocy Sync Orchestrator
+    description: 'Governed one-way sync between Mealie Foods and Grocy Products. One
+      direction per run. Preview or apply. Bounded by limit.
+  
+      '
+    mode: single
+    icon: mdi:sync
+    fields:
+      direction:
+        selector:
+          select:
+            options:
+            - mealie_to_grocy
+            - grocy_to_mealie
+        default: mealie_to_grocy
+      mode:
+        selector:
+          select:
+            options:
+            - preview
+            - apply
+        default: preview
+      limit:
+        selector:
+          number:
+            min: 1
+            max: 100
+        default: 10
+      confirmation:
+        selector:
+          boolean:
+        default: false
+      default_location:
+        selector:
+          text:
+        default: Pantry
+      default_unit:
+        selector:
+          text:
+        default: each
+      per_page:
+        selector:
+          number:
+            min: 1
+            max: 100
+        default: 50
+      max_pages:
+        selector:
+          number:
+            min: 1
+            max: 200
+        default: 50
+    sequence:
+    - variables:
+        tool_name: Zen DojoTools Food Sync Orchestrator
+        tool_version: 4.0.0 RC2
+        direction_norm: '{{ direction }}'
+        mode_norm: '{{ mode }}'
+        limit_in: '{{ limit | int }}'
+        apply_allowed: '{{ mode_norm == ''apply'' and confirmation }}'
+        mealie_foods: []
+        mealie_done: false
+        mealie_pages: 0
+        seen: 0
+        matched_exact: []
+        matched_ambiguous: []
+        would_create: []
+        created: []
+        errors: []
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == ''apply'' and not apply_allowed }}'
+        sequence:
+        - stop: return
+    - repeat:
+        count: '{{ max_pages }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not mealie_done }}'
+            sequence:
+            - variables:
+                page_i: '{{ repeat.index }}'
+            - action: script.zen_dojotools_mealie_helper
+              response_variable: mealie_page
+              data:
+                mode: run
+                case: foods_list
+                page: '{{ page_i }}'
+                perPage: '{{ per_page }}'
+            - variables:
+                items: "{{\n  mealie_page.raw.api.result.content.get('items', [])\n
+                  \ if mealie_page.raw.api.result.content is mapping\n  else []\n}}"
+            - variables:
+                mealie_foods: '{{ mealie_foods + items }}'
+                mealie_pages: '{{ page_i }}'
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ items | length < per_page }}'
+                sequence:
+                - variables:
+                    mealie_done: true
+    - repeat:
+        for_each: '{{ mealie_foods }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ seen < limit_in }}'
+            sequence:
+            - variables:
+                food_name: '{{ (repeat.item.get(''name'','''') ~ '''') | trim }}'
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ food_name == '''' }}'
+                sequence:
+                - variables:
+                    seen: '{{ seen + 1 }}'
+                    errors: '{{ errors + [''empty name''] }}'
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ food_name != '''' }}'
+                sequence:
+                - action: script.zen_dojotools_grocy_helper
+                  response_variable: find_resp
+                  data:
+                    mode: run
+                    case: catalog_find_product
+                    item: '{{ food_name }}'
+                    report_inventory: false
+                - variables:
+                    find_status: '{{ find_resp.status | default(''error'') }}'
+                    find_message: '{{ find_resp.message | default('''') }}'
+                    find_results: '{{ find_resp.result | default([]) }}'
+                    cand_matches: '{{ find_resp.details.matches if find_resp.details
+                      is mapping else [] }}'
+                    exact_in_results: "{{\n  find_results\n  | selectattr('name', 'defined')\n
+                      \ | map(attribute='name')\n  | select('equalto', food_name)\n
+                      \ | list | length > 0\n}}"
+                    exact_in_candidates: "{{\n  cand_matches\n  | selectattr('name',
+                      'defined')\n  | map(attribute='name')\n  | select('equalto', food_name)\n
+                      \ | list | length > 0\n}}"
+                    is_multiple: '{{ ''Multiple possible matches'' in (find_message
+                      ~ '''') }}'
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: "{{\n  (find_status == 'success' and exact_in_results)\n
+                    \ or\n  (find_status == 'error' and is_multiple and exact_in_candidates)\n}}"
+                sequence:
+                - variables:
+                    matched_exact: '{{ matched_exact + [food_name] }}'
+              - conditions:
+                - condition: template
+                  value_template: "{{\n  find_status == 'error'\n  and is_multiple\n
+                    \ and not exact_in_candidates\n}}"
+                sequence:
+                - variables:
+                    matched_ambiguous: '{{ matched_ambiguous + [food_name] }}'
+              - conditions:
+                - condition: template
+                  value_template: "{{\n  find_status == 'success'\n  and (find_results
+                    | length) == 0\n}}"
+                sequence:
+                - choose:
+                  - conditions:
+                    - condition: template
+                      value_template: '{{ not apply_allowed }}'
+                    sequence:
+                    - variables:
+                        would_create: '{{ would_create + [food_name] }}'
+                  - conditions:
+                    - condition: template
+                      value_template: '{{ apply_allowed }}'
+                    sequence:
+                    - action: script.zen_dojotools_grocy_advanced
+                      response_variable: create_resp
+                      data:
+                        action_type: post
+                        endpoint: /objects/products
+                        payload:
+                          name: '{{ food_name }}'
+                          location_id: '{{ default_location_id | int }}'
+                          qu_id_stock: '{{ default_unit_id | int }}'
+                          qu_id_purchase: '{{ default_unit_id | int }}'
+                          description: Created from Mealie sync
+    - variables:
+        final_response:
+          status: success
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          summary:
+            evaluated: '{{ seen }}'
+            matched_exact: '{{ matched_exact | length }}'
+            matched_ambiguous: '{{ matched_ambiguous | length }}'
+            would_create: '{{ would_create | length }}'
+            created: '{{ created | length }}'
+            errors: '{{ errors | length }}'
+    - stop: return
+      response_variable: final_response

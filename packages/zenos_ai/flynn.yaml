@@ -1,0 +1,1000 @@
+###############################################################################
+# FLYNN — UNIFIED ENGINE (v4.0.0 RC2)
+# Canon-safe, no nested Jinja in service calls, fully HA-legal.
+#
+# Includes:
+#   - RC1 Config (input_text helpers)
+#   - Flynn Unified Engine (onboarding Q&A)
+#   - Flynn Stepgate Sentinel (boot guard / installer / diagnostic)
+#   - Flynn helper scripts (assign_labels, initialize_cabinets, bootstrap_content)
+###############################################################################
+
+
+###############################################################################
+# RC1 CONFIG — 4 fields, settable via Settings > Helpers
+# New users: fill these in after install, then restart HA.
+# Flynn reads them at Gate 3 (bootstrap).
+###############################################################################
+input_text:
+  zenos_conversation_agent:
+    name: "ZenOS: Conversation Agent"
+    icon: mdi:robot
+    max: 255
+    initial: "conversation.openai_friday_zen1_rc1"
+
+  zenos_household_name:
+    name: "ZenOS: Household Name"
+    icon: mdi:home
+    max: 255
+    initial: "Curtis"
+
+  zenos_primary_user:
+    name: "ZenOS: Primary User"
+    icon: mdi:account
+    max: 255
+    initial: "person.nathan_curtis"
+
+  zenos_persona_name:
+    name: "ZenOS: Persona Name"
+    icon: mdi:account-star
+    max: 255
+    initial: "Friday"
+
+
+###############################################################################
+# STEPGATE SENTINEL
+# Triggers on HA start + all 3 health sensor changes.
+# Walks gates top-down, stops at first non-green, takes corrective action.
+# Idempotent. Re-engages on health regression.
+###############################################################################
+automation:
+  - alias: "Flynn: Stepgate Sentinel"
+    id: flynn_stepgate_sentinel
+    mode: single
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id: sensor.zen_label_health
+      - trigger: state
+        entity_id: sensor.zen_cabinet_health
+      - trigger: state
+        entity_id: sensor.zen_monastery_health
+    conditions: []
+    actions:
+      # Capture green state BEFORE delay for transition detection
+      - variables:
+          was_green: "{{ is_state('binary_sensor.flynn_system_ready', 'on') }}"
+      # Early exit: attribute-only refreshes on health sensors fire this trigger
+      # every minute even when state is unchanged. Skip the delay and all gates
+      # when there is nothing to do.
+      - if: >
+          {{ was_green
+             and states('sensor.zen_label_health')    == 'ok'
+             and states('sensor.zen_cabinet_health')  == 'ok'
+             and states('sensor.zen_monastery_health') == 'ok' }}
+        then:
+          - stop: "No-op: all gates already green"
+      - delay: "00:00:10"
+      - variables:
+          label_health: "{{ states('sensor.zen_label_health') }}"
+          cabinet_health: "{{ states('sensor.zen_cabinet_health') }}"
+          monastery_health: "{{ states('sensor.zen_monastery_health') }}"
+
+      #####################################################################
+      # GATE 0: Labels missing — create them
+      #####################################################################
+      - choose:
+          - conditions: "{{ label_health == 'critical' }}"
+            sequence:
+              - variables:
+                  raw_labels: "{{ state_attr('sensor.zen_label_health', 'required_labels') }}"
+                  label_list: >-
+                    {% if raw_labels is string %}
+                      {{ raw_labels.split(', ') | map('trim') | list }}
+                    {% elif raw_labels is iterable %}
+                      {{ raw_labels | list }}
+                    {% else %}
+                      []
+                    {% endif %}
+              - alias: "Flynn: Create missing labels via DojoTools"
+                action: script.zen_dojotools_labels
+                data:
+                  action_type: create
+                  label_list: "{{ label_list }}"
+                  confirm: true
+              - action: persistent_notification.create
+                data:
+                  title: "ZenOS-AI: Labels Created — Restart Required"
+                  message: >
+                    Flynn here. I just created the Zen label set.
+                    Restart Home Assistant for labels to fully propagate.
+                    After that, I'll wire everything up.
+                  notification_id: flynn_labels_created
+              - stop: "Gate 0: Labels created, restart needed"
+
+      #####################################################################
+      # GATE 1: Labels exist but unassigned
+      #####################################################################
+      - choose:
+          - conditions: "{{ label_health == 'warn' }}"
+            sequence:
+              - alias: "Flynn: Assign labels to cabinet entities"
+                action: script.flynn_assign_labels
+                data: {}
+              - stop: "Gate 1: Labels assigned, waiting for health update"
+
+      # Clear label notification if we got past gates 0-1
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: flynn_labels_created
+
+      #####################################################################
+      # GATE 2: Cabinets not ok
+      #####################################################################
+      - choose:
+          - conditions: "{{ cabinet_health != 'ok' }}"
+            sequence:
+              - alias: "Flynn: Initialize required cabinets"
+                action: script.flynn_initialize_cabinets
+                data: {}
+              - stop: "Gate 2: Cabinets initializing"
+
+      #####################################################################
+      # GATE 3: Monastery not ok — read RC1 config from input_text helpers
+      #####################################################################
+      - choose:
+          - conditions: "{{ monastery_health != 'ok' }}"
+            sequence:
+              - alias: "Flynn: Bootstrap content"
+                action: script.flynn_bootstrap_content
+                data:
+                  conversation_agent_entity: "{{ states('input_text.zenos_conversation_agent') }}"
+                  household_name: "{{ states('input_text.zenos_household_name') }}"
+                  primary_user: "{{ states('input_text.zenos_primary_user') }}"
+                  persona_name: "{{ states('input_text.zenos_persona_name') }}"
+              - stop: "Gate 3: Bootstrap in progress"
+
+      #####################################################################
+      # GATE 4: All green — notify on transition only
+      #####################################################################
+      - choose:
+          - conditions: "{{ not was_green }}"
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "ZenOS-AI: System Ready"
+                  message: >
+                    Everything's looking good. All gates green.
+                    System is ready. Handing off to the real talent.
+                  notification_id: flynn_system_ready
+
+
+###############################################################################
+# HELPER SCRIPTS
+###############################################################################
+script:
+
+  #############################################################################
+  # FLYNN: ASSIGN LABELS
+  # Reads slot_to_label and slot_to_default_entity from cabinet health sensor.
+  # Single source of truth — no independent mapping tables.
+  # Assigns parent 'Zen Cabinet' + slot-specific label to each entity.
+  # Also assigns broad labels (Zen Default Household, etc.) to cabinet entities.
+  #############################################################################
+  flynn_assign_labels:
+    alias: "Flynn: Assign Labels to Cabinet Entities"
+    mode: single
+    sequence:
+      - variables:
+          slot_to_label_raw: "{{ state_attr('sensor.zen_cabinet_health', 'slot_to_label') }}"
+          slot_to_label: "{{ slot_to_label_raw if slot_to_label_raw is mapping else (slot_to_label_raw | from_json if slot_to_label_raw is string else {}) }}"
+          slot_to_entity_raw: "{{ state_attr('sensor.zen_cabinet_health', 'slot_to_default_entity') }}"
+          slot_to_entity: "{{ slot_to_entity_raw if slot_to_entity_raw is mapping else (slot_to_entity_raw | from_json if slot_to_entity_raw is string else {}) }}"
+          parent_label: "Zen Cabinet"
+          # Broad labels → default cabinet entity
+          broad_labels:
+            - label: "Zen Default Household"
+              entity: "sensor.zenos_default_household_cabinet"
+            - label: "Zen Default Family"
+              entity: "sensor.zenos_default_family_cabinet"
+
+      # Step 1: Assign parent 'Zen Cabinet' label to all default entities
+      - repeat:
+          for_each: "{{ slot_to_entity.values() | list }}"
+          sequence:
+            - action: homeassistant.add_label_to_entity
+              data:
+                label_id: "{{ parent_label | slugify }}"
+                entity_id: "{{ repeat.item }}"
+
+      # Step 2: Assign slot-specific labels to their entities
+      - repeat:
+          for_each: "{{ slot_to_entity.keys() | list }}"
+          sequence:
+            - variables:
+                slot: "{{ repeat.item }}"
+                label_name: "{{ slot_to_label[slot] | default('') }}"
+                entity_id: "{{ slot_to_entity[slot] }}"
+            - choose:
+                - conditions: "{{ label_name != '' }}"
+                  sequence:
+                    - action: homeassistant.add_label_to_entity
+                      data:
+                        label_id: "{{ label_name | slugify }}"
+                        entity_id: "{{ entity_id }}"
+
+      # Step 3: Assign broad labels to their default cabinet entities
+      - repeat:
+          for_each: "{{ broad_labels }}"
+          sequence:
+            - action: homeassistant.add_label_to_entity
+              data:
+                label_id: "{{ repeat.item.label | slugify }}"
+                entity_id: "{{ repeat.item.entity }}"
+
+      - event: flynn_stepgate_event
+        event_data:
+          gate: 1
+          action: labels_assigned
+          timestamp: "{{ now().isoformat() }}"
+
+  #############################################################################
+  # FLYNN: INITIALIZE CABINETS
+  # Reads missing_cabinets from cabinet health sensor.
+  # For each missing required slot, calls CabinetAdmin initialize.
+  #############################################################################
+  flynn_initialize_cabinets:
+    alias: "Flynn: Initialize Required Cabinets"
+    mode: single
+    sequence:
+      - variables:
+          raw_missing: "{{ state_attr('sensor.zen_cabinet_health', 'missing_cabinets') }}"
+          missing_list: >-
+            {% if raw_missing is string and raw_missing != 'none' %}
+              {{ raw_missing.split(', ') | map('trim') | list }}
+            {% elif raw_missing is iterable and raw_missing is not string %}
+              {{ raw_missing | list }}
+            {% else %}
+              []
+            {% endif %}
+          slot_to_entity_raw: "{{ state_attr('sensor.zen_cabinet_health', 'slot_to_default_entity') }}"
+          slot_to_entity: "{{ slot_to_entity_raw if slot_to_entity_raw is mapping else (slot_to_entity_raw | from_json if slot_to_entity_raw is string else {}) }}"
+          # Slot → CabinetAdmin cabinet_type mapping
+          slot_to_type:
+            system: "System Cabinet"
+            dojo: "Dojo Cabinet"
+            kata: "Kata Cabinet"
+            default_household: "Household Cabinet"
+            default_family: "Family Cabinet"
+            default_user: "User Cabinet"
+            default_ai_user: "AI User Cabinet"
+            history: "History Cabinet"
+            index: "Index Cabinet"
+
+      - repeat:
+          for_each: "{{ missing_list }}"
+          sequence:
+            - variables:
+                slot: "{{ repeat.item | trim }}"
+                entity_id: "{{ slot_to_entity.get(slot, '') }}"
+                cabinet_type: "{{ slot_to_type.get(slot, 'AI Data Storage Cabinet') }}"
+            - choose:
+                - conditions: "{{ entity_id != '' }}"
+                  sequence:
+                    - action: script.zen_admintools_cabinetadmin
+                      data:
+                        mode: initialize
+                        confirm_action: true
+                        cabinet_entity: "{{ entity_id }}"
+                        cabinet_type: "{{ cabinet_type }}"
+                        skip_auto_init: true
+
+      - event: flynn_stepgate_event
+        event_data:
+          gate: 2
+          action: cabinets_initialized
+          missing: "{{ missing_list }}"
+          timestamp: "{{ now().isoformat() }}"
+
+  #############################################################################
+  # FLYNN: BOOTSTRAP CONTENT
+  # Validates conversation agent FIRST — no partial bootstrap.
+  # Stamps config values, triggers prompt loader, writes _onboarding flag.
+  #############################################################################
+  flynn_bootstrap_content:
+    alias: "Flynn: Bootstrap Content"
+    mode: single
+    fields:
+      conversation_agent_entity:
+        name: Conversation Agent Entity
+        description: "Entity ID of the conversation agent (e.g., conversation.xxx)"
+        default: ""
+        selector:
+          entity:
+            domain: conversation
+      household_name:
+        name: Household Name
+        default: ""
+        selector:
+          text:
+      primary_user:
+        name: Primary User
+        default: ""
+        selector:
+          entity:
+            domain: person
+      persona_name:
+        name: Persona Name
+        default: ""
+        selector:
+          text:
+    sequence:
+      - variables:
+          agent: "{{ conversation_agent_entity | default('') }}"
+
+      # VALIDATE CONVERSATION AGENT FIRST
+      - choose:
+          - conditions: "{{ agent == '' or states(agent) in ['unavailable', 'unknown'] or states[agent] is none }}"
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "ZenOS-AI: Conversation Agent Required"
+                  message: >
+                    Flynn here. I need a working conversation agent to finish
+                    bootstrap. Go to Settings > Devices & Services > Helpers
+                    and set the 'ZenOS: Conversation Agent' helper to your
+                    conversation agent entity ID (e.g., conversation.your_agent).
+                    The other 3 ZenOS helpers (Household Name, Primary User,
+                    Persona Name) should be filled in too. Then restart HA.
+                  notification_id: flynn_agent_required
+              - stop: "Gate 3: Conversation agent invalid or missing"
+
+      # Agent valid — dismiss any prior warning
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: flynn_agent_required
+
+      # Stamp config values into cabinets via FileCabinet
+      - choose:
+          - conditions: "{{ household_name | default('') != '' }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ label_entities('zen_default_household_cabinet') | select('match', 'sensor.') | first | default('') }}"
+                  key: "_household_name"
+                  value: "{{ household_name }}"
+
+      - choose:
+          - conditions: "{{ persona_name | default('') != '' }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ label_entities('zen_default_ai_user_cabinet') | select('match', 'sensor.') | first | default('') }}"
+                  key: "zenai_essence"
+                  value: >-
+                    {% import 'zen_os_1rc.jinja' as zen %}
+                    {% set defaults = zen.essence_defaults() | from_json %}
+                    {{ defaults | combine({'identity': defaults.get('identity',{}) | combine({'name': persona_name})}) | tojson }}
+
+      # Trigger prompt loader to stamp purpose/directives/cortex
+      - action: script.zen_admintools_zenos_prompt_loader
+        data: {}
+
+      # Write _onboarding flag
+      - action: script.flynn_unified_engine
+        data:
+          action_type: flag_complete
+
+      - event: flynn_stepgate_event
+        event_data:
+          gate: 3
+          action: bootstrap_complete
+          timestamp: "{{ now().isoformat() }}"
+
+
+###############################################################################
+# UNIFIED ENGINE (ONBOARDING Q&A)
+###############################################################################
+  flynn_unified_engine:
+    alias: "Flynn: Unified Engine"
+    mode: parallel
+    max: 20
+
+    fields:
+      action_type:
+        name: Flynn Action
+        selector:
+          select:
+            options:
+              - schema_new
+              - schema_load
+              - flag_complete
+              - flag_reset
+              - answer_store
+              - answer_clear
+              - drawer_set
+              - drawer_get
+        default: schema_load
+
+      drawer:
+        name: Drawer
+        default: ""
+      key:
+        name: Key
+        default: ""
+      value:
+        name: Value
+        default: ""
+
+    sequence:
+
+      #########################################################################
+      # 1 — STANDARD VARIABLE LOADING
+      #########################################################################
+      - variables:
+          act: "{{ action_type }}"
+          sys_cab: "{{ states('sensor.zen_default_user_cabinet') }}"
+          onboarding_root: "{{ state_attr('sensor.flynn_onboarding','value') or {} }}"
+          drawers: "{{ onboarding_root.get('drawers',{}) }}"
+          now_ts: "{{ now().isoformat() }}"
+          effective_drawer: "{{ drawer | default('global') }}"
+          effective_key: "{{ key | default('value') }}"
+          safe_value: "{{ value }}"
+
+      #########################################################################
+      # 2 — SCHEMA_NEW
+      #########################################################################
+      - choose:
+          - conditions: "{{ act == 'schema_new' }}"
+            sequence:
+              - variables:
+                  new_schema_json: >-
+                    {{
+                      {
+                        "meta":{
+                          "created": now_ts,
+                          "version": 1
+                        },
+                        "tree": {
+                          "intro": {
+                            "required": true,
+                            "next": "name"
+                          },
+                          "name": {
+                            "required": true,
+                            "next": "complete"
+                          },
+                          "complete": {
+                            "required": false
+                          }
+                        }
+                      } | tojson
+                    }}
+
+              - service: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  force_action: true
+                  volume_entity_id:
+                    - "{{ sys_cab }}"
+                  key: "_onboarding_schema"
+                  value: "{{ new_schema_json }}"
+                  label_input: "Flynn Onboarding Schema"
+
+              - event: flynn_onboarding_updated
+                event_data:
+                  type: schema_new
+                  timestamp: "{{ now_ts }}"
+
+              - stop: "Schema created"
+
+      #########################################################################
+      # 3 — SCHEMA_LOAD
+      #########################################################################
+          - conditions: "{{ act == 'schema_load' }}"
+            sequence:
+
+              - variables:
+                  schema: "{{ state_attr('sensor.flynn_onboarding_schema','value') or {} }}"
+                  schema_json: >-
+                    {{
+                      dict(meta=schema.get('meta', {}))
+                        | combine(schema.get('tree', {}), recursive=true)
+                        | tojson
+                    }}
+
+              - choose:
+                  - conditions: "{{ schema is mapping }}"
+                    sequence:
+                      - service: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: create
+                          set_timestamp: true
+                          show_hidden_volumes: false
+                          force_action: true
+                          volume_entity_id:
+                            - "{{ sys_cab }}"
+                          key: "_onboarding"
+                          value: "{{ schema_json }}"
+                          label_input: "Flynn Onboarding"
+
+              - stop: "Schema loaded"
+
+      #########################################################################
+      # 4 — FLAG_COMPLETE
+      #########################################################################
+          - conditions: "{{ act == 'flag_complete' }}"
+            sequence:
+
+              - variables:
+                  updated: >-
+                    {{
+                      onboarding_root
+                      | combine({"complete": now_ts}, recursive=True)
+                      | tojson
+                    }}
+
+              - service: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ sys_cab }}"
+                  key: "_onboarding"
+                  value: "{{ updated }}"
+                  label_input: "Flynn Onboarding"
+
+              - event: flynn_onboarding_updated
+                event_data:
+                  type: flag_complete
+                  timestamp: "{{ now_ts }}"
+
+              - stop: "Flagged complete"
+
+      #########################################################################
+      # 5 — FLAG_RESET
+      #########################################################################
+          - conditions: "{{ act == 'flag_reset' }}"
+            sequence:
+
+              - variables:
+                  reset_payload: "{{ {'complete': None, 'drawers':{}} | tojson }}"
+
+              - service: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  set_timestamp: true
+                  force_action: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ sys_cab }}"
+                  key: "_onboarding"
+                  value: "{{ reset_payload }}"
+                  label_input: "Flynn Onboarding"
+
+              - event: flynn_onboarding_updated
+                event_data:
+                  type: flag_reset
+                  timestamp: "{{ now_ts }}"
+
+              - stop: "Onboarding reset"
+
+      #########################################################################
+      # 6 — ANSWER_STORE
+      #########################################################################
+          - conditions: "{{ act == 'answer_store' }}"
+            sequence:
+
+              - variables:
+                  updated_json: >-
+                    {{
+                      onboarding_root
+                      | combine({
+                          "drawers":{
+                            effective_drawer:{
+                              effective_key: safe_value
+                            }
+                          }
+                        }, recursive=True)
+                      | tojson
+                    }}
+
+              - service: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  force_action: true
+                  show_hidden_volumes: false
+                  set_timestamp: true
+                  volume_entity_id:
+                    - "{{ sys_cab }}"
+                  key: "_onboarding"
+                  value: "{{ updated_json }}"
+                  label_input: "Flynn Onboarding"
+
+              - event: flynn_onboarding_updated
+                event_data:
+                  type: answer_store
+                  drawer: "{{ effective_drawer }}"
+                  key: "{{ effective_key }}"
+                  timestamp: "{{ now_ts }}"
+
+              - stop: "Answer stored"
+
+      #########################################################################
+      # 7 — ANSWER_CLEAR
+      #########################################################################
+          - conditions: "{{ act == 'answer_clear' }}"
+            sequence:
+
+              - variables:
+                  cleared: >-
+                    {{
+                      onboarding_root
+                      | combine({
+                          "drawers":{
+                            effective_drawer:{}
+                          }
+                        }, recursive=True)
+                      | tojson
+                    }}
+
+              - service: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  force_action: true
+                  volume_entity_id:
+                    - "{{ sys_cab }}"
+                  key: "_onboarding"
+                  value: "{{ cleared }}"
+                  label_input: "Flynn Onboarding"
+
+              - event: flynn_onboarding_updated
+                event_data:
+                  type: answer_clear
+                  drawer: "{{ effective_drawer }}"
+                  timestamp: "{{ now_ts }}"
+
+              - stop: "Answer cleared"
+
+      #########################################################################
+      # 8 — DRAWER_SET
+      #########################################################################
+          - conditions: "{{ act == 'drawer_set' }}"
+            sequence:
+
+              - variables:
+                  updated_json: >-
+                    {{
+                      onboarding_root
+                      | combine({
+                          "drawers":{
+                            effective_drawer:{
+                              effective_key: safe_value
+                            }
+                          }
+                        }, recursive=True)
+                      | tojson
+                    }}
+
+              - service: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  force_action: true
+                  volume_entity_id:
+                    - "{{ sys_cab }}"
+                  key: "_onboarding"
+                  value: "{{ updated_json }}"
+                  label_input: "Flynn Onboarding"
+
+              - event: flynn_onboarding_updated
+                event_data:
+                  type: drawer_set
+                  drawer: "{{ effective_drawer }}"
+                  key: "{{ effective_key }}"
+                  timestamp: "{{ now_ts }}"
+
+              - stop: "Drawer updated"
+
+      #########################################################################
+      # 9 — DRAWER_GET (NOP — just return vars)
+      #########################################################################
+          - conditions: "{{ act == 'drawer_get' }}"
+            sequence:
+              - stop: "Drawer get complete"
+
+      #########################################################################
+      # DEFAULT / FALLBACK
+      #########################################################################
+      - stop: "Flynn: No matching action"
+
+
+###############################################################################
+# AGENT BUILDER — DojoTool pattern, semaphore-gated help
+# Guides Flynn through initial household/agent configuration.
+# First call always shows help (stamps _flynn_builder_ack) so it auto-fires
+# exactly once. All writes are non-destructive: skip if already set.
+###############################################################################
+  flynn_build_agent:
+    alias: "Flynn: Agent Builder"
+    description: >
+      Flynn Agent Builder (1.0.0). Configure household name, primary user, agent
+      name, and family members into the AI user and household cabinets.
+      First call always shows help with Flynn's user conversation script
+      pre-filled with current state. All writes non-destructive.
+    mode: queued
+    max: 2
+
+    fields:
+      mode:
+        name: Mode
+        description: "help = setup instructions (auto on first call). build = write fields. status = show current state."
+        default: help
+        selector:
+          select:
+            options:
+              - help
+              - build
+              - status
+
+      household_name:
+        name: Household Name
+        description: "Your household name (e.g. 'The Curtis House'). Non-destructive."
+        default: ""
+        selector:
+          text:
+
+      persona_name:
+        name: Agent Name
+        description: "Your AI assistant's name. Written to essence identity.name. Non-destructive."
+        default: ""
+        selector:
+          text:
+
+      primary_user:
+        name: Primary User
+        description: "Primary household member display name. Written to essence identity.primary_user. Non-destructive."
+        default: ""
+        selector:
+          text:
+
+      family_members:
+        name: Family Members (JSON)
+        description: "JSON list e.g. [{\"name\": \"Kim\", \"role\": \"partner\"}]. Written to zenai_family. Skipped if key already exists."
+        default: "[]"
+        selector:
+          text:
+
+    sequence:
+
+      #########################################################################
+      # 1 — LOAD CURRENT STATE
+      #########################################################################
+      - variables:
+          ai_cab: >-
+            {{ label_entities('zen_default_ai_user_cabinet')
+               | select('match', 'sensor.') | list | first | default('') }}
+          hh_cab: >-
+            {{ label_entities('zen_default_household_cabinet')
+               | select('match', 'sensor.') | list | first | default('') }}
+          ai_cab_vars: >-
+            {{ state_attr(ai_cab, 'variables') | default({}, true)
+               if ai_cab != '' else {} }}
+          hh_cab_vars: >-
+            {{ state_attr(hh_cab, 'variables') | default({}, true)
+               if hh_cab != '' else {} }}
+          essence_raw: "{{ ai_cab_vars.get('zenai_essence', {}) }}"
+          essence_val: >-
+            {{ essence_raw.get('value', essence_raw)
+               if essence_raw is mapping else {} }}
+          identity: "{{ essence_val.get('identity', {}) }}"
+          has_ack: "{{ '_flynn_builder_ack' in ai_cab_vars }}"
+          effective_mode: "{{ 'help' if not has_ack else mode | default('help') }}"
+          cur_persona: "{{ identity.get('name', '') | trim }}"
+          cur_hh_raw: "{{ hh_cab_vars.get('_household_name', '') }}"
+          cur_household: >-
+            {{ cur_hh_raw.get('value', cur_hh_raw) | trim
+               if cur_hh_raw is mapping else cur_hh_raw | trim }}
+          cur_primary_user: "{{ identity.get('primary_user', '') | trim }}"
+
+      #########################################################################
+      # 2 — DISPATCH
+      #########################################################################
+      - choose:
+
+          #####################################################################
+          # HELP — auto-fires on first call; stamps ack so it only fires once
+          #####################################################################
+          - conditions: "{{ effective_mode == 'help' }}"
+            sequence:
+
+              # Stamp the ack on first call so help doesn't auto-fire again.
+              # Instructions for clearing this gate are ONLY in this help output.
+              - choose:
+                  - conditions: "{{ not has_ack }}"
+                    sequence:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: create
+                          force_action: true
+                          set_timestamp: true
+                          show_hidden_volumes: false
+                          volume_entity_id:
+                            - "{{ ai_cab }}"
+                          key: "_flynn_builder_ack"
+                          value: "seen"
+
+              - variables:
+                  help_json: >-
+                    {{
+                      {
+                        "status": "info",
+                        "tool": "flynn_build_agent",
+                        "version": "1.0.0",
+                        "message": "Flynn Agent Builder. I've logged that you've read this briefing — it won't auto-fire again. Use mode: build to configure.",
+                        "current_state": {
+                          "persona_name": cur_persona if cur_persona != '' else "(not set)",
+                          "household_name": cur_household if cur_household != '' else "(not set)",
+                          "primary_user": cur_primary_user if cur_primary_user != '' else "(not set)"
+                        },
+                        "fields": {
+                          "household_name": "Household name. Skipped if already set.",
+                          "persona_name": "Agent name (essence identity.name). Skipped if already set.",
+                          "primary_user": "Primary user name (essence identity.primary_user). Skipped if already set.",
+                          "family_members": "JSON list [{\"name\": \"Kim\", \"role\": \"partner\"}]. Skipped if zenai_family key exists."
+                        },
+                        "user_script": {
+                          "role": "You are Flynn. Walk the user through these questions, then call mode: build with their answers.",
+                          "questions": [
+                            "What would you like to call your home? (e.g. 'The Curtis House', 'Casa Garcia')",
+                            "What's your name? You're the main person I'll be working with.",
+                            "What do you want to name your AI assistant?",
+                            "Who else lives here? Give me names and how they're connected — partner, kids, housemates, whatever applies."
+                          ],
+                          "when_done": "Call this tool with mode: build and the field values filled in. I'll only write what's missing and confirm what was set."
+                        }
+                      } | tojson
+                    }}
+
+              - stop: Return help
+                response_variable: help_json
+
+          #####################################################################
+          # STATUS — read-only, no writes
+          #####################################################################
+          - conditions: "{{ effective_mode == 'status' }}"
+            sequence:
+              - variables:
+                  status_json: >-
+                    {{
+                      {
+                        "status": "ok",
+                        "tool": "flynn_build_agent",
+                        "current_state": {
+                          "persona_name": cur_persona if cur_persona != '' else "(not set)",
+                          "household_name": cur_household if cur_household != '' else "(not set)",
+                          "primary_user": cur_primary_user if cur_primary_user != '' else "(not set)"
+                        },
+                        "ready": cur_persona != '' and cur_household != '' and cur_primary_user != ''
+                      } | tojson
+                    }}
+              - stop: Return status
+                response_variable: status_json
+
+          #####################################################################
+          # BUILD — non-destructive field writes
+          #####################################################################
+          - conditions: "{{ effective_mode == 'build' }}"
+            sequence:
+
+              - variables:
+                  in_hn: "{{ household_name | default('') | trim }}"
+                  in_pn: "{{ persona_name | default('') | trim }}"
+                  in_pu: "{{ primary_user | default('') | trim }}"
+                  in_fam: "{{ family_members | default('[]') | trim }}"
+                  do_household: "{{ in_hn != '' and cur_household == '' }}"
+                  do_persona: "{{ in_pn != '' and cur_persona == '' }}"
+                  do_primary_user: "{{ in_pu != '' and cur_primary_user == '' }}"
+                  do_family: >-
+                    {{ in_fam not in ['[]', '', 'null']
+                       and 'zenai_family' not in ai_cab_vars }}
+                  # Build merged identity and essence in one pass to avoid double-write
+                  new_identity: >-
+                    {{
+                      identity
+                      | combine({'name': in_pn} if (in_pn != '' and cur_persona == '') else {})
+                      | combine({'primary_user': in_pu} if (in_pu != '' and cur_primary_user == '') else {})
+                    }}
+                  new_essence_json: >-
+                    {{
+                      (essence_val | combine({'identity': new_identity}) | tojson)
+                      if (in_pn != '' and cur_persona == '') or (in_pu != '' and cur_primary_user == '')
+                      else ''
+                    }}
+
+              # Household name → household cabinet
+              - choose:
+                  - conditions: "{{ do_household }}"
+                    sequence:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: create
+                          force_action: true
+                          set_timestamp: true
+                          show_hidden_volumes: false
+                          volume_entity_id:
+                            - "{{ hh_cab }}"
+                          key: "_household_name"
+                          value: "{{ in_hn }}"
+
+              # Persona name + primary user → AI user cabinet essence (one write, both fields)
+              - choose:
+                  - conditions: "{{ new_essence_json != '' }}"
+                    sequence:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: create
+                          force_action: true
+                          set_timestamp: true
+                          show_hidden_volumes: false
+                          volume_entity_id:
+                            - "{{ ai_cab }}"
+                          key: "zenai_essence"
+                          value: "{{ new_essence_json }}"
+
+              # Family members → AI user cabinet (only if zenai_family key absent)
+              - choose:
+                  - conditions: "{{ do_family }}"
+                    sequence:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: create
+                          force_action: true
+                          set_timestamp: true
+                          show_hidden_volumes: false
+                          volume_entity_id:
+                            - "{{ ai_cab }}"
+                          key: "zenai_family"
+                          value: "{{ in_fam | from_json | tojson }}"
+
+              - variables:
+                  build_result: >-
+                    {{
+                      {
+                        "status": "ok",
+                        "tool": "flynn_build_agent",
+                        "wrote": {
+                          "household_name": do_household,
+                          "persona_name": do_persona,
+                          "primary_user": do_primary_user,
+                          "family": do_family
+                        },
+                        "note": "Fields with wrote: false were already set or not provided."
+                      } | tojson
+                    }}
+
+              - stop: Build complete
+                response_variable: build_result
+
+      #########################################################################
+      # DEFAULT FALLBACK
+      #########################################################################
+      - stop: "Flynn Build Agent: no matching mode"
