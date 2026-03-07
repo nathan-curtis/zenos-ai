@@ -197,7 +197,6 @@ packages/zenos_ai/
     dojotools_summarizers.yaml — Kata and Supersummary engines
     dojotools_systemtools.yaml — System tools and event emitter
     dojotools_utilities.yaml   — General utilities
-    dojotools_spa_manager.yaml — SPA / single-page-app manager
     dojotools_office.yaml      — Office integrations (Teams, mail, todo, calendar)
 
   sensors/
@@ -212,6 +211,7 @@ packages/zenos_ai/
     grocy/grocy.yaml           — Grocy product and inventory operations
     mealie/mealie.yaml         — Mealie recipe and food operations
     kitchen_sync/kitchen_sync.yaml — Mealie <> Grocy food sync
+    calderaspas/calderaspas_spa_manager.yaml — Caldera Utopia Florence hot tub manager
 
   room_manager/room_manager.yaml
   zen_image_generator.yaml
@@ -340,10 +340,10 @@ Every tool documents its cases via `case: help`.
 | `admintools` | repair, format, write-kfc, audit |
 | `systemtools` | system state, event emit |
 | `utilities` | general helpers |
-| `spa_manager` | SPA session management |
 | `office` | Teams, mail, todo, calendar |
 | `grocy_helper` | product lookup, inventory |
 | `mealie_helper` | foods, recipes |
+| `calderaspas_spa_manager` | Caldera Utopia Florence — chemistry, status, chloramine detection |
 
 Documentation: `case: help` on any tool returns its full case list and field schema.
 
