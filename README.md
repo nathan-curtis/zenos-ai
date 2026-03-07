@@ -212,8 +212,6 @@ packages/zenos_ai/
     grocy/grocy.yaml           — Grocy product and inventory operations
     mealie/mealie.yaml         — Mealie recipe and food operations
     kitchen_sync/kitchen_sync.yaml — Mealie <> Grocy food sync
-    firefly_iii/firefly_iii.yaml
-    wiki_js/wiki_js_rest_commands.yaml
 
   room_manager/room_manager.yaml
   zen_image_generator.yaml
@@ -473,7 +471,7 @@ And yes — everything logs.
 
 # Documentation
 
-`/docs/` — Architecture, cabinet system, Kata lifecycle, persona model, identity model, Monastery structure, prompt conventions, roadmap
+`zenos_ai/docs/` — Architecture, cabinet system, Kata lifecycle, persona model, identity model, Monastery structure, prompt conventions, roadmap
 
 ---
 
