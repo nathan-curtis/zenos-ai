@@ -2,10 +2,12 @@
 
 ### A Modular, Context-Aware AI Home Automation Framework for Home Assistant
 
-ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with Friday, Kronk, Veronica, Rosie, and the High Priestess — a coordinated AI pantheon that takes its jobs seriously (if not itself).
+ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with **Friday, Kronk, Veronica, Rosie, and the High Priestess** — a coordinated AI pantheon that takes its jobs seriously (even if it doesn't always take itself seriously).
 
-Welcome to the Home Monastery.
+Welcome to the **Home Monastery**.
+
 Let's automate everything that isn't nailed down.
+
 And a few things that are.
 
 **Current version: 4.0.0 RC2**
@@ -17,162 +19,243 @@ And a few things that are.
 ZenOS-AI is a modular AI and automation architecture built on:
 
 - **Home Assistant**
-- **Home Assistant Packages (canonical configuration layer)**
-- **Structured contextual memory ("Cabinets" and "Drawers")**
+- **Home Assistant Packages** (canonical configuration layer)
+- **Structured contextual memory** (“Cabinets” and “Drawers”)
 - **Event-driven Kata summaries**
 - **Local and distributed inference engines**
 - **A multi-persona AI team**
 
-It creates a privacy-first, locally hosted intelligent home system that:
+Together these components create a **privacy-first, locally hosted intelligent home system** that can:
 
-- Reasons about context
-- Stores long-term structured memory
-- Automates reflexively
-- Summarizes itself
-- Enforces identity and privilege boundaries
-- Speaks like an intelligent adult
-- Occasionally sighs at your poor life choices
+• reason about context  
+• store structured long-term memory  
+• automate reflexively  
+• summarize system activity  
+• enforce identity and privilege boundaries  
+• communicate clearly  
+• occasionally sigh at your poor life choices
 
-The system works because it is modular.
-It is delightful because it is chaotic-good.
+The system works because it is **modular**.
+
+It is delightful because it is **chaotic-good**.
 
 ---
 
 # Architecture Overview
 
-ZenOS-AI is structured entirely around **Home Assistant Packages** as the canonical configuration layer.
+ZenOS-AI is structured around **Home Assistant Packages**, which form the canonical configuration layer.
 
 Everything lives under:
 
 ```
+
 packages/zenos_ai/
+
 ```
 
-Packages define the spine of the system.
-DojoTools scripts provide the runtime behavior.
-Cabinets persist memory.
-The Monastery reasons over summarized context.
+Packages define the **spine of the system**.
+
+DojoTools scripts provide runtime behavior.  
+Cabinets persist memory.  
+The Monastery performs reasoning.  
 Flynn keeps the lights on.
 
 ---
 
 # Layered Architecture
 
-ZenOS-AI operates in concentric rings.
+ZenOS-AI operates in **concentric rings**, separating definition, runtime cognition, and administrative tooling.
 
 ---
 
 ## Ring-0 — Core Kit (Canonical Spine)
 
-`packages/zenos_ai/`
+Location:
 
-Defines:
+```
 
-- Global labels
-- Identity resolver
-- Persona metadata
-- Cabinet metadata and volume routing
-- Manifest definitions
-- Structured EventBus schema (`zen_event`)
-- Canonical JSON contracts
-- Health sensors
+packages/zenos_ai/
 
-It does **not**:
+```
 
-- Perform inference
-- Execute runtime reasoning
-- Run summarization loops
-- Load persona cognition
+This layer defines the **rules of the world**.
 
-It defines the rules of the world.
+It establishes:
 
-If Ring-0 breaks, Friday forgets who she is.
+• global labels  
+• identity resolver schema  
+• persona metadata  
+• cabinet metadata and volume routing  
+• manifest definitions  
+• structured EventBus schema (`zen_event`)  
+• canonical JSON contracts  
+• health sensors
+
+Ring-0 **does not perform runtime behavior**.
+
+It does not:
+
+• run inference  
+• execute reasoning  
+• perform summarization  
+• load persona cognition
+
+It defines the **structure and contracts** that the rest of the system depends on.
+
+If Ring-0 breaks, **Friday forgets who she is**.
 
 ---
 
 ## Ring-1 — Cognitive Runtime
 
-This layer binds behavior to definitions.
+This layer binds **behavior to the definitions** established by Ring-0.
 
-Includes:
+Components include:
 
-- Zen DojoTools scripts
-- Summarizer pipeline
-- Prompt compiler
-- Persona capsules
-- Conversation agent interface
-- Monastery inference integration
+• Zen DojoTools scripts  
+• the summarizer pipeline  
+• prompt compilation  
+• persona capsules  
+• the conversation agent interface  
+• Monastery inference integration
 
-This is where Friday thinks.
+This is where **Friday thinks**.
 
-Requires:
+Requirements:
 
-- Core Kit (Ring-0)
-- FileCabinet active
-- Custom Jinja templates loaded
-- Monastery reachable
+• Ring-0 Core Kit  
+• FileCabinet active  
+• custom Jinja templates loaded  
+• Monastery reachable
 
 ---
 
 ## Ring-2 — Administrative & Recovery Tools
 
-Utility layer for:
+The administrative layer exists for **maintenance, repair, and recovery**.
 
-- Cabinet repair
-- Manifest writing
-- Subsystem registration
-- Emergency formatting
-- Kung Fu module loading
-- Identity audit and privilege repair
+Functions include:
 
-This is the "don't panic" layer.
+• cabinet repair  
+• manifest writing  
+• subsystem registration  
+• emergency formatting  
+• Kung Fu module loading  
+• identity audit and privilege repair
+
+This is the **“don’t panic” layer**.
+
+When something goes wrong, Ring-2 is how the system fixes itself.
 
 ---
 
 ## The Monastery (Reasoning Backend)
 
-External but essential.
+The Monastery is external to Home Assistant but essential to the system.
+
+It provides **long-form reasoning** and reflective cognition.
 
 The Monastery:
 
-- Accepts structured system state
-- Produces Kata summaries
-- Returns Supersummaries
-- Enforces the "Order of the Monastery" (no hallucination)
-- Acts as long-form cognition for Friday
+• accepts structured system state  
+• produces **Kata summaries**  
+• generates **Supersummaries**  
+• enforces the *Order of the Monastery* (no hallucination)  
+• acts as Friday’s extended cognition
 
-Without it, Friday becomes reflexive but shallow.
+Without the Monastery, Friday remains functional — but **reflexive and shallow**.
 
 ---
 
 # Installation
 
-ZenOS-AI is a drop-in Home Assistant package collection.
+ZenOS-AI installs as a **Home Assistant package collection**.
+
+---
 
 ## Requirements
 
-- Home Assistant (2024.x+)
-- `homeassistant.customize` support
-- Custom Jinja templates (place contents of `custom_templates/` into your HA config)
-- A conversation agent configured and reachable
+• Home Assistant (2024.x+)  
+• `homeassistant.customize` enabled  
+• custom Jinja templates (included)  
+• a configured conversation agent
 
-## Steps
+---
 
-1. Copy `packages/zenos_ai/` into your Home Assistant config directory under `packages/`
-2. Copy `custom_templates/` contents into your HA `custom_templates/` directory
-3. Add to your `configuration.yaml`:
+## Installation Steps
+
+1. Copy
+
+```
+
+packages/zenos_ai/
+
+```
+
+into your Home Assistant configuration directory under:
+
+```
+
+packages/
+
+```
+
+2. Copy the contents of:
+
+```
+
+custom_templates/
+
+```
+
+into your Home Assistant:
+
+```
+
+custom_templates/
+
+````
+
+directory.
+
+3. Add the following to `configuration.yaml`:
 
 ```yaml
 homeassistant:
   packages: !include_dir_named packages
+````
+
+4. Restart Home Assistant.
+
+5. Run the bootstrap script:
+
+```
+script.zen_flynn
 ```
 
-4. Restart Home Assistant
-5. Run `script.zen_flynn` to initialize labels, cabinets, and health state
-6. Configure `input_text.zenos_conversation_agent` to point to your conversation agent entity
-7. Check `sensor.zen_agent_health` — it should reach `ok`
+6. Configure:
 
-Plugins under `packages/zenos_ai/plugins/` are optional. Drop in what you need.
+```
+input_text.zenos_conversation_agent
+```
+
+to point to your conversation agent entity.
+
+7. Verify system health:
+
+```
+sensor.zen_agent_health
+```
+
+The sensor should report `ok`.
+
+Plugins located under:
+
+```
+packages/zenos_ai/plugins/
+```
+
+are optional. Install only the integrations you need.
 
 ---
 
@@ -185,7 +268,7 @@ packages/zenos_ai/
 
   dojotools/
     dojotools_filecabinet.yaml — FileCabinet v4 — typed drawer I/O
-    dojotools_core.yaml        — Core ops + FileCabinet GC
+    dojotools_core.yaml        — Core operations + FileCabinet GC
     dojotools_scheduler.yaml   — Scheduled automation triggers
     dojotools_admintools.yaml  — Cabinet repair, manifest write, KFC loader
     dojotools_manifest.yaml    — Manifest engine
@@ -200,32 +283,33 @@ packages/zenos_ai/
     dojotools_office.yaml      — Office integrations (Teams, mail, todo, calendar)
 
   sensors/
-    zenos_agent_health.yaml    — Agent bootability roster and RAG rollup
-    zenos_system_health.yaml   — System subsystem health sensors
-    zenos_cabinet_health.yaml  — Cabinet validation and slot health
-    zenos_label_health.yaml    — Label set validation
+    zenos_agent_health.yaml
+    zenos_system_health.yaml
+    zenos_cabinet_health.yaml
+    zenos_label_health.yaml
     zenos_summarizer_system_health.yaml
     sensor_helpers.yaml
 
   plugins/
-    grocy/grocy.yaml           — Grocy product and inventory operations
-    mealie/mealie.yaml         — Mealie recipe and food operations
-    kitchen_sync/kitchen_sync.yaml — Mealie <> Grocy food sync
-    calderaspas/calderaspas_spa_manager.yaml — Caldera Utopia Florence hot tub manager
+    grocy/grocy.yaml
+    mealie/mealie.yaml
+    kitchen_sync/kitchen_sync.yaml
+    calderaspas/calderaspas_spa_manager.yaml
 
   room_manager/room_manager.yaml
   zen_image_generator.yaml
 
 custom_templates/
-  library_index.jinja          — Cabinet index resolution macros
-  (additional macro libraries)
+  library_index.jinja
 ```
 
 ---
 
 # FileCabinet v4
 
-FileCabinet is the core structured storage interface. Every AI-accessible memory slot is a **Drawer** inside a **Cabinet**.
+FileCabinet provides the **structured storage interface** for ZenOS-AI.
+
+Every memory slot accessible to AI agents is stored as a **Drawer** within a **Cabinet**.
 
 ## Drawer Structure
 
@@ -244,132 +328,44 @@ FileCabinet is the core structured storage interface. Every AI-accessible memory
 }
 ```
 
-All `meta` fields are optional. Only fields with meaningful values are stored.
+All `meta` fields are optional.
 
-## Key Behaviors
+Only fields containing meaningful values are persisted.
 
-**Write** — stores value with optional metadata:
-
-```yaml
-action: script.zen_dojotools_filecabinet
-data:
-  mode: run
-  case: write
-  entity_id: sensor.my_cabinet
-  key: my_drawer
-  value: "some content"
-  description: "What this is for"
-  expires_after: "2026-06-01T00:00:00"
-```
-
-**Read (direct)** — returns full drawer content if described; truncates to 64 chars if not:
-
-```yaml
-case: read
-entity_id: sensor.my_cabinet
-key: my_drawer
-```
-
-Drawers without descriptions return truncated values. Add descriptions. This is intentional.
-
-**Read (label-mode)** — returns blurbs map across all drawers in a cabinet. Token-efficient scan view.
-
-**Inspect** — returns drawer inventory with metadata.
+---
 
 ## Drawer Lifecycle
 
 Drawers follow a Unix-style visibility model:
 
-| State | Key pattern | Meaning |
-|-------|-------------|---------|
-| Active | `foo` | Normal readable drawer |
-| Hidden | `.foo` | Archived, not visible in label reads |
-| System | `_foo` | Protected, never touched by GC |
+| State  | Key Pattern | Meaning                |
+| ------ | ----------- | ---------------------- |
+| Active | `foo`       | Normal readable drawer |
+| Hidden | `.foo`      | Archived drawer        |
+| System | `_foo`      | Protected drawer       |
 
-`AI_Cabinet_VolumeInfo` is always protected in all GC paths.
-
-## Expiry and GC
-
-Set `expires_after` on any drawer to time-bomb it. The FileCabinet GC runs every 15 minutes and implements the full lifecycle:
-
-- **Expire** → visible `foo` with past `expires_after` → renamed to `.foo` (hidden)
-- **Delete** → hidden `.foo` with past `expires_after` → deleted
-- **Recycle** → manual; hides drawer and sets expiry to now+24h
-- **Unhide** → manual; restores `.foo` to `foo`
-
-Drawers with `no_autoexpire: true` are skipped by the GC expiry path.
-Drawers with `no_autorecycle: true` are skipped by the recycle path.
-System drawers (`_` prefix) are never touched.
-
-Manual GC trigger:
-
-```yaml
-event_type: zen_event
-event_data:
-  event:
-    kind: gc_force
-```
+System drawers are never touched by garbage collection.
 
 ---
 
-# Zen DojoTools
+## Expiry and Garbage Collection
 
-All DojoTools scripts follow the contract:
+The FileCabinet garbage collector runs every **15 minutes**.
 
-```
-zen_dojotools_<module>
-```
+Lifecycle rules:
 
-They accept structured input and return structured JSON output.
-Identity is validated at execution time.
-Every tool documents its cases via `case: help`.
+• Expired active drawers → hidden
+• Hidden expired drawers → deleted
+• Manual recycle → hide + expire in 24 hours
+• Unhide → restore drawer visibility
 
-## Tool Inventory
-
-| Tool | Cases / Purpose |
-|------|----------------|
-| `filecabinet` | read, write, inspect, delete, list, label-read |
-| `filecabinet_gc` | gc, recycle, hide, unhide — drawer lifecycle |
-| `manifest` | read, write, inspect |
-| `index` | query, list, inspect cabinets |
-| `identity` | resolve, validate, audit |
-| `labels` | list, inspect, health |
-| `library` | load, query, resolve |
-| `history` | read, write, trim |
-| `summarizers` | kata, supersummary, ninja |
-| `admintools` | repair, format, write-kfc, audit |
-| `systemtools` | system state, event emit |
-| `utilities` | general helpers |
-| `office` | Teams, mail, todo, calendar |
-| `grocy_helper` | product lookup, inventory |
-| `mealie_helper` | foods, recipes |
-| `calderaspas_spa_manager` | Caldera Utopia Florence — chemistry, status, chloramine detection |
-
-Documentation: `case: help` on any tool returns its full case list and field schema.
-
----
-
-# Boot Sequence
-
-1. Home Assistant loads Packages (Ring-0)
-2. Cabinets mount and validate
-3. Identity resolver initializes
-4. Volume redirector establishes canonical paths
-5. Runtime scripts become callable
-6. Monastery connection tested
-7. Prompt compiler builds initial cognitive state
-8. Friday becomes operational
-
-Check `sensor.zen_agent_health` for live bootability status.
-If any gate fails, the roster attribute shows which gate is blocking and why.
-
-If any step fails, AdminTools can intervene.
+Protected drawers (`_prefix`) are never modified automatically.
 
 ---
 
 # Summarizer Pipeline
 
-Event-driven cognitive compression:
+ZenOS-AI compresses system activity through an event-driven summarization pipeline.
 
 ```
 Event → Kata → Supersummary → Cabinet Update → Prompt Refresh
@@ -377,47 +373,49 @@ Event → Kata → Supersummary → Cabinet Update → Prompt Refresh
 
 Components:
 
-- `zen_dojotools_ninja_summarizer` — lightweight event-to-kata
-- `zen_dojotools_supersummary` — kata-to-supersummary consolidation
+• `zen_dojotools_ninja_summarizer` — event → kata
+• `zen_dojotools_supersummary` — kata → supersummary
 
-Every meaningful event can become structured memory.
-
-The scheduler drives periodic summarization. The Monastery drives reflection.
-
-Nothing important disappears.
+This allows the system to preserve context while maintaining token efficiency.
 
 ---
 
 # Health System
 
-ZenOS-AI has a tiered health rollup:
+ZenOS-AI includes a layered health monitoring system.
 
-| Sensor | What it measures |
-|--------|-----------------|
-| `sensor.zen_label_health` | Required labels present and valid |
-| `sensor.zen_cabinet_health` | Cabinet entities exist and readable |
-| `sensor.zen_monastery_health` | Monastery reachability |
-| `sensor.zen_flynn_health` | Rollup of all infra gates |
-| `sensor.zen_agent_health` | Agent bootability roster + top-level RAG |
+| Sensor                        | Purpose                   |
+| ----------------------------- | ------------------------- |
+| `sensor.zen_label_health`     | label validation          |
+| `sensor.zen_cabinet_health`   | cabinet entity validation |
+| `sensor.zen_monastery_health` | Monastery connectivity    |
+| `sensor.zen_flynn_health`     | infrastructure rollup     |
+| `sensor.zen_agent_health`     | agent bootability roster  |
 
-States: `ok` / `warn` / `error` / `critical`
+States:
 
-`sensor.zen_agent_health.attributes.roster` — per-agent gate-by-gate bootability detail.
+```
+ok
+warn
+error
+critical
+```
 
 ---
 
 # The Pantheon
 
-| Name | Title | Specialty |
-|------|-------|-----------|
-| Friday | Chief Enlightenment Officer | Coordination, persona, cognition |
-| Veronica | Supervisor | Clarity, orchestration, taste |
-| Kronk | Curator of the Monastery | Context wrangler, Kata librarian |
-| Rosie | Mistress of Cleanliness | Clean floors, clean logs, clean state |
-| High Priestess | Automation Overseer | Deep reasoning, JSON exorcism |
+| Name           | Title                       | Specialty                  |
+| -------------- | --------------------------- | -------------------------- |
+| Friday         | Chief Enlightenment Officer | Coordination and cognition |
+| Veronica       | Supervisor                  | Clarity and orchestration  |
+| Kronk          | Curator of the Monastery    | Context wrangler           |
+| Rosie          | Mistress of Cleanliness     | Logs and state hygiene     |
+| High Priestess | Automation Overseer         | Deep reasoning             |
 
 They are not perfect.
-They are unstoppable on the second try.
+
+They are **unstoppable on the second try**.
 
 ---
 
@@ -425,75 +423,61 @@ They are unstoppable on the second try.
 
 ### Infrastructure
 
-- Proxmox cluster
-- GPU inference node
-- Portainer (stack orchestration)
-- n8n (agent delegation)
-- Structured DNS
-- UniFi Identity
+• Proxmox cluster
+• GPU inference node
+• Portainer
+• n8n agent orchestration
+• Structured DNS
+• UniFi Identity
 
 ### AI Runtime
 
-- Multi-model inference (local + remote)
-- Role-segmented agents
-- JSON contract enforcement
-- Tool-layer privilege gating
+• multi-model inference
+• role-segmented agents
+• JSON contract enforcement
+• tool-layer privilege gating
 
 ### Services
 
-- Home Assistant
-- Mealie
-- Grocy
-- OpenWebUI
-- Inference backends
+• Home Assistant
+• Mealie
+• Grocy
+• OpenWebUI
+• inference backends
 
-This is not "a chatbot in HA."
+This is not **a chatbot inside Home Assistant**.
 
-It is a distributed cognitive system with a house attached.
+It is **a distributed cognitive system with a house attached**.
 
 ---
 
 # Design Principles
 
-- Definitions are immutable contracts
-- Runtime behavior is replaceable
-- Identity is validated at tool layer
-- All inference consumes structured JSON
-- Every event can produce a Kata
-- Described drawers get full access; undescribed drawers get truncated access
-- Recovery paths are mandatory
-- Silence is a bug
-- Nothing critically important is invisible
+Definitions are immutable contracts.
+Runtime behavior is replaceable.
+Identity is validated at the tool layer.
+All inference consumes structured JSON.
+Every event can produce a Kata.
+Described drawers receive full access; undescribed drawers are truncated.
+Recovery paths are mandatory.
+Silence is a bug.
+Nothing critically important is invisible.
 
-And yes — everything logs.
-
----
-
-# Documentation
-
-`zenos_ai/docs/` — Architecture, cabinet system, Kata lifecycle, persona model, identity model, Monastery structure, prompt conventions, roadmap
-
----
-
-# Philosophy
-
-Automation should be joyful.
-Context is king. Recovery is queen.
-Every bug is a monk with a lesson.
-Structure creates freedom.
-Over-engineering is just engineering that hasn't been vindicated yet.
+Over-engineering is just engineering that has not yet been vindicated.
 
 ---
 
 # Contributing
 
-PRs, issues, and tasteful memes welcome.
+Pull requests, issues, and tasteful memes welcome.
 
 If ZenOS-AI saved you time or made you laugh:
-https://buymeacoffee.com/ncurtis
+
+[https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis)
 
 ---
 
 # License
 
 MIT — blessed by Friday and her very opinionated coworkers.
+
