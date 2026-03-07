@@ -225,7 +225,7 @@ Component Summary
 Layer	File	Role
 
 Selection Layer	Built into HyperIndex	Large-scale selection using Library Index + set algebra
-Filtering Layer	custom_templates/zen_query.jinja	ZQ-1 safe filtering engine
+Filtering Layer	custom_templates/zenos_ai/zen_query.jinja	ZQ-1 safe filtering engine
 Composition Layer	scripts/zen_dojotools_inspect.yaml	Metadata extraction and drawer-based composition
 Pipeline Orchestrator	scripts/zen_dojotools_hyperIndex.yaml	Executes SELECT → FILTER → COMPOSE
 

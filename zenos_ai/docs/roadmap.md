@@ -73,7 +73,7 @@ Renamed from `kata_gc` to `filecabinet_gc`. Upgraded from single-cabinet stamp-b
 
 - Full hide/delete/recycle/unhide state machine
 - Hits all registered `AI Data Storage Cabinet` entities in series
-- Resolves cabinet list from `library_index.jinja` at runtime
+- Resolves cabinet list from `zenos_ai/library_index.jinja` at runtime
 - Single `volume_entity_id` override to target one cabinet
 - `AI_Cabinet_VolumeInfo` always protected in all paths
 - System drawers (`_` prefix) always protected
