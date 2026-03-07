@@ -301,6 +301,8 @@ packages/zenos_ai/
 
 custom_templates/
   library_index.jinja
+  zen_os_1rc.jinja
+  zen_query_jinja
 ```
 
 ---
