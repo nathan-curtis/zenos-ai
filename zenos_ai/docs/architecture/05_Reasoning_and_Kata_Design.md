@@ -207,6 +207,8 @@ The AI worker is then instructed to **fill the `structure`** in a manner consist
 
 An `ai_task` such as `ai_task.gpt_oss_20b_local_ai_task` is invoked with this prompt object. The Home Assistant AI Task integration ensures that:
 
+*(This `ai_task` is a user defined task defined by input_text.zenos_reasoning_task)*
+
 * the prompt is serialized as JSON,
 * the response is treated as JSON-first (data-only),
 * the response is captured as `monk_response.data` within Home Assistant.

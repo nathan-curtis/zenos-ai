@@ -396,6 +396,8 @@ For a given Kung Fu component, Ninja Summarizer:
 
 5. Invokes an `ai_task.generate_data` entity (e.g., `ai_task.gpt_oss_20b_local_ai_task`) with that prompt.
 
+   *This `ai_task` is a user defined task defined by input_text.zenos_reasoning_task* 
+
 6. Receives a strictly JSON result in `monk_response.data`.
 
 7. Optionally writes the result as a new drawer under `sensor.zen_kata_storage_cabinet`, keyed by the component slug.
