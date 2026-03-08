@@ -299,10 +299,10 @@ packages/zenos_ai/
   room_manager/room_manager.yaml
   zen_image_generator.yaml
 
-custom_templates/
+custom_templates/zenos_ai/
   library_index.jinja
   zen_os_1rc.jinja
-  zen_query_jinja
+  zen_query.jinja
 ```
 
 ---

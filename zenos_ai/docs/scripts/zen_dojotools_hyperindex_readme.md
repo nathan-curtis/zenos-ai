@@ -398,7 +398,7 @@ Unknown fields are silently ignored.
 
 # 🧩 ZQ-1 Filter Schema (What HyperIndex Accepts)
 
-This is the **true schema** implemented in `zen_query.jinja`, guaranteed correct in 3.9.x RC.
+This is the **true schema** implemented in `zenos_ai/zen_query.jinja`, guaranteed correct in 3.9.x RC.
 
 ### 🧪 **Every field below is optional.**
 
