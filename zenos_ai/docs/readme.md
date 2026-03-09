@@ -16,7 +16,19 @@ If you're building an AI construct, designing a DojoTool, wiring a Summarizer pi
 
 # 📚 **Included Documentation**
 
-This directory contains **10 documentation suites**, each aligned with a major subsystem in ZenOS-AI.
+This directory contains **11 documentation suites**, each aligned with a major subsystem in ZenOS-AI.
+
+---
+
+## 🚀 **0. Getting Started**
+
+**Folder:** `docs/getting_started/`
+
+New to ZenOS-AI? Start here.
+
+* `first_run.md` — First boot walkthrough, OOBE conversation, persona selector, editing profiles, troubleshooting
+
+If you just installed ZenOS-AI and want to know what to do next, this is your guide.
 
 ---
 
@@ -222,14 +234,15 @@ Tracks development goals for:
 
 # 🧭 **Recommended Reading Order**
 
-1. Architecture
-2. Cabinet System
-3. HyperIndex
-4. Summarizer
-5. Library
-6. Scripts
-7. Kung Fu Components
-8. Roadmap
+1. Getting Started (new install? start here)
+2. Architecture
+3. Cabinet System
+4. HyperIndex
+5. Summarizer
+6. Library
+7. Scripts
+8. Kung Fu Components
+9. Roadmap
 
 This flow mirrors the structure of Friday’s cognitive stack.
 
