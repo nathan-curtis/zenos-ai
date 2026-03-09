@@ -1,0 +1,201 @@
+###############################################################################
+# ZENOS-AI FLYNN: OOBE PROTOCOL (v4.0.0 RC2)
+#
+# Script: zen_flynn_oobe
+#   Out-of-Box Experience driver for new ZenOS installs.
+#   mode: run      — returns the full onboarding protocol for the AI to follow
+#   mode: status   — returns current OOBE state (pending / complete)
+#   mode: complete — writes _oobe_complete flag to the default AI user cabinet
+#
+# Flynn namespace: system/onboarding tooling — not directly exposed to AI
+# as a general-purpose dojotool. Surfaced via Gate 3.5 notification and
+# Flynn Agent Builder (mode: oobe).
+###############################################################################
+
+script:
+
+  zen_flynn_oobe:
+    alias: "Flynn: OOBE Protocol"
+    description: >
+      OOBE driver for new ZenOS installs. mode: run returns the onboarding
+      protocol. mode: complete writes the _oobe_complete flag. mode: status
+      checks current state. Called by the AI when a user begins first-run setup.
+    mode: queued
+    max: 3
+
+    fields:
+
+      mode:
+        name: Mode
+        description: "run = get protocol. complete = mark done. status = check state."
+        default: run
+        selector:
+          select:
+            options: [run, complete, status]
+
+    sequence:
+
+      ###########################################################################
+      # RESOLVE DEFAULT AI USER CABINET (all modes need it)
+      ###########################################################################
+      - variables:
+          _ai_cab: >-
+            {{ label_entities('zen_default_ai_user_cabinet')
+               | select('match', 'sensor.') | list | first | default('') }}
+          _ai_vars: >-
+            {{ state_attr(_ai_cab, 'variables') | default({}, true)
+               if _ai_cab != '' else {} }}
+          _oobe_done: "{{ '_oobe_complete' in _ai_vars }}"
+          _essence_raw: "{{ _ai_vars.get('zenai_essence', {}) }}"
+          _essence_val: >-
+            {{ _essence_raw.get('value', _essence_raw)
+               if _essence_raw is mapping else {} }}
+          _persona_name: >-
+            {{ (_essence_val.get('identity', {}).get('name', '') | trim)
+               if _essence_val is mapping else '' }}
+
+      ###########################################################################
+      # STATUS
+      ###########################################################################
+      - choose:
+          - conditions: "{{ mode | default('run') == 'status' }}"
+            sequence:
+              - variables:
+                  final_response:
+                    status: ok
+                    mode: status
+                    oobe_complete: "{{ _oobe_done }}"
+                    oobe_pending: "{{ not _oobe_done and _persona_name in ['', 'your AI'] }}"
+                    persona_name: "{{ _persona_name }}"
+                    ai_cabinet: "{{ _ai_cab }}"
+              - stop: OOBE status returned
+                response_variable: final_response
+
+      ###########################################################################
+      # COMPLETE — write _oobe_complete flag
+      ###########################################################################
+      - choose:
+          - conditions: "{{ mode | default('run') == 'complete' }}"
+            sequence:
+              - if: "{{ _ai_cab == '' }}"
+                then:
+                  - variables:
+                      final_response:
+                        status: error
+                        message: "No default AI user cabinet found. Cannot write _oobe_complete."
+                  - stop: No cabinet
+                    response_variable: final_response
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ _ai_cab }}"
+                  key: _oobe_complete
+                  value: >-
+                    {{ {"completed": true, "ts": now().isoformat()} | tojson }}
+              - variables:
+                  final_response:
+                    status: ok
+                    mode: complete
+                    message: "OOBE complete flag written."
+                    ai_cabinet: "{{ _ai_cab }}"
+              - stop: OOBE complete flag written
+                response_variable: final_response
+
+      ###########################################################################
+      # RUN — return onboarding protocol
+      ###########################################################################
+      - choose:
+          - conditions: "{{ mode | default('run') == 'run' }}"
+            sequence:
+              - variables:
+                  final_response: >-
+                    {{
+                      {
+                        "tool": "zen_flynn_oobe",
+                        "version": "4.0.0 RC2",
+                        "protocol": "ZenOS Home Onboarding",
+                        "hard_rules": [
+                          "Never ask more than 2 questions at a time.",
+                          "Write and label as you go — do not batch at the end.",
+                          "Read before asking. HA already knows areas and entities. Discover first, only ask what you cannot infer.",
+                          "Never silently guess entity placement. If unsure, show the name and ask.",
+                          "If the user says skip or later, move on. Nothing is blocking.",
+                          "Keep responses short. No markdown in spoken answers.",
+                          "If a write or label call errors, log it and continue — do not halt the whole flow."
+                        ],
+                        "steps": {
+                          "1_household": {
+                            "title": "Household Profile",
+                            "tool": "zen_dojotools_profile_editor",
+                            "params": {"mode": "write", "target_type": "household"},
+                            "collect": ["household_name", "address", "city", "state", "zip", "country"],
+                            "note": "Timezone is auto-detected — do not ask."
+                          },
+                          "2_rooms": {
+                            "title": "Rooms",
+                            "instructions": [
+                              "Read HA areas from zen_dojotools_index or GetLiveContext.",
+                              "Present the list: I can see these rooms. Does that look right? Anything missing?",
+                              "For each confirmed room ask: What rooms connect to [room] directly? Anything notable about it?",
+                              "Ensure a HA label exists for each area before writing. If a label is missing, create it via zen_dojotools_labels. Use the label name as-is — do not generate slugs.",
+                              "Write a drawer per confirmed room to the household cabinet via zen_dojotools_filecabinet.",
+                              "Drawer schema: {area_label, adjacent: [], features: [], notes: ''}",
+                              "If the user groups rooms into suites, write a suite drawer as well."
+                            ]
+                          },
+                          "3_people": {
+                            "title": "People",
+                            "instructions": [
+                              "Ask: Who lives in the home? Collect name and role for each person.",
+                              "Check for matching HA person entities via zen_dojotools_identity.",
+                              "Write each household member via zen_dojotools_profile_editor mode: write target_type: user.",
+                              "Ask about family who don't live there but matter (parents, siblings, etc.).",
+                              "Write those via zen_dojotools_profile_editor mode: write target_type: family."
+                            ],
+                            "roles": ["head_of_household", "partner", "child", "guest"]
+                          },
+                          "4_integrations": {
+                            "title": "Integration Mapping",
+                            "note": "Confirm placement with user before labeling. Never label without confirmation.",
+                            "categories": {
+                              "cameras": "domain: camera — per entity ask Is [name] your [room] camera? On confirm tag with room label + camera label.",
+                              "vacuums": "domain: vacuum — ask Which rooms does [name] clean and in what order? Tag with autovac label.",
+                              "locks": "domain: lock — ask Is [name] the front door back door or somewhere else? Tag with security label + room label.",
+                              "presence": "device_class: presence — map to people from step 3, tag with person name label."
+                            }
+                          },
+                          "5_components": {
+                            "title": "Component Activation",
+                            "instructions": [
+                              "Present as a simple opt-in. Skip any that clearly don't apply (no vacuum found — don't offer vacuum scheduling).",
+                              "Ask: Which of these are relevant to your home?",
+                              "Options (show only if relevant integration found): security alerts, vacuum scheduler, hot tub or spa manager, trash day reminders, energy monitoring."
+                            ]
+                          },
+                          "6_close": {
+                            "title": "Close Out",
+                            "steps": [
+                              "Rebuild compact index: zen_dojotools_index mode: build_compact_index.",
+                              "Write OOBE complete flag: zen_flynn_oobe mode: complete.",
+                              "Tell the user the system is ready. One sentence. No list of what was done."
+                            ]
+                          }
+                        }
+                      } | tojson
+                    }}
+              - stop: OOBE protocol returned
+                response_variable: final_response
+
+      ###########################################################################
+      # FALLTHROUGH
+      ###########################################################################
+      - variables:
+          final_response:
+            status: error
+            message: "Unknown mode '{{ mode | default('') }}'. Use run, complete, or status."
+      - stop: Unknown mode
+        response_variable: final_response
