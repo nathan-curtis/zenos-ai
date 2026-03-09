@@ -26,9 +26,10 @@ This directory contains **11 documentation suites**, each aligned with a major s
 
 New to ZenOS-AI? Start here.
 
+* `install.md` — File copy, configuration.yaml setup, conversation agent prompt, helper configuration, health verification
 * `first_run.md` — First boot walkthrough, OOBE conversation, persona selector, editing profiles, troubleshooting
 
-If you just installed ZenOS-AI and want to know what to do next, this is your guide.
+If you just installed ZenOS-AI and want to know what to do next, start here.
 
 ---
 

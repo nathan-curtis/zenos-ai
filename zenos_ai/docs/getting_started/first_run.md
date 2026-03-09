@@ -12,7 +12,7 @@ You'll need:
 - A conversation agent configured in HA and pointed at a compatible AI model (tool-calling support required; models smaller than ~8B parameters or with short context windows are not recommended)
 - The conversation agent prompt template loaded from `custom_templates/zenos_ai/conversation_agent_prompt_template.yaml`
 
-If you haven't done those steps yet, check the install guide before continuing.
+If you haven't done those steps yet, see the **[Install Guide](install.md)** first.
 
 ---
 
