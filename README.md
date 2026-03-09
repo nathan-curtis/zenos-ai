@@ -14,6 +14,14 @@ And a few things that are.
 
 ---
 
+## Getting Started
+
+New install? → **[Install Guide](zenos_ai/docs/getting_started/install.md)**
+First boot? → **[First Run & OOBE](zenos_ai/docs/getting_started/first_run.md)**
+Full docs → **[Documentation Hub](zenos_ai/docs/readme.md)**
+
+---
+
 # What Is ZenOS-AI?
 
 ZenOS-AI is a modular AI and automation architecture built on:
@@ -175,87 +183,31 @@ ZenOS-AI installs as a **Home Assistant package collection**.
 
 ## Requirements
 
-• Home Assistant (2024.x+)  
-• `homeassistant.customize` enabled  
-• custom Jinja templates (included)  
-• a configured conversation agent
+• Home Assistant 2024.x+
+• A conversation agent with tool-calling support (models under ~8B parameters or with short context windows are not recommended)
+• `custom_templates:` enabled in `configuration.yaml`
 
 ---
 
 ## Installation Steps
 
-1. Copy
-
-```
-
-packages/zenos_ai/
-
-```
-
-into your Home Assistant configuration directory under:
-
-```
-
-packages/
-
-```
-
-2. Copy the contents of:
-
-```
-
-custom_templates/
-
-```
-
-into your Home Assistant:
-
-```
-
-custom_templates/
-
-````
-
-directory.
-
-3. Add the following to `configuration.yaml`:
+1. Copy `packages/zenos_ai/` into your HA config under `packages/`
+2. Copy `custom_templates/zenos_ai/` into your HA config under `custom_templates/`
+3. Add to `configuration.yaml`:
 
 ```yaml
 homeassistant:
   packages: !include_dir_named packages
-````
-
-4. Restart Home Assistant.
-
-5. Run the bootstrap script:
-
-```
-script.zen_flynn
 ```
 
-6. Configure:
+4. Paste the conversation agent prompt template (from `custom_templates/zenos_ai/conversation_agent_prompt_template.yaml`) into your conversation agent's system prompt in HA
+5. Restart Home Assistant — Flynn initializes automatically on first boot
+6. Set `input_text.zenos_conversation_agent` (Settings → Helpers) to your conversation agent entity ID
+7. Check `sensor.zen_agent_health` — should report `ok`
 
-```
-input_text.zenos_conversation_agent
-```
+For the full walkthrough including helper configuration and troubleshooting, see the **[Install Guide](zenos_ai/docs/getting_started/install.md)**.
 
-to point to your conversation agent entity.
-
-7. Verify system health:
-
-```
-sensor.zen_agent_health
-```
-
-The sensor should report `ok`.
-
-Plugins located under:
-
-```
-packages/zenos_ai/plugins/
-```
-
-are optional. Install only the integrations you need.
+Plugins under `packages/zenos_ai/plugins/` are optional — install only what you need.
 
 ---
 
@@ -264,7 +216,8 @@ are optional. Install only the integrations you need.
 ```
 packages/zenos_ai/
   zenos_cabinets.yaml          — Cabinet definitions and volume routing
-  flynn.yaml                   — Flynn bootstrap and recovery engine
+  flynn.yaml                   — Flynn Stepgate Sentinel + bootstrap engine
+  flynn_oobe.yaml              — OOBE protocol driver (run / complete / status)
 
   dojotools/
     dojotools_filecabinet.yaml — FileCabinet v4 — typed drawer I/O
@@ -277,6 +230,7 @@ packages/zenos_ai/
     dojotools_labels.yaml      — Label inspection and management
     dojotools_library.yaml     — Library tools
     dojotools_history.yaml     — History management
+    dojotools_profile.yaml     — Profile editor (ai_user / household / user / family)
     dojotools_summarizers.yaml — Kata and Supersummary engines
     dojotools_systemtools.yaml — System tools and event emitter
     dojotools_utilities.yaml   — General utilities
@@ -300,9 +254,10 @@ packages/zenos_ai/
   zen_image_generator.yaml
 
 custom_templates/zenos_ai/
-  library_index.jinja
-  zen_os_1rc.jinja
-  zen_query.jinja
+  zen_os_1rc.jinja             — Prompt engine and macro library
+  zen_query.jinja              — ZenQuery filter engine
+  library_index.jinja          — Library index
+  conversation_agent_prompt_template.yaml — Paste into conversation agent system prompt
 ```
 
 ---
