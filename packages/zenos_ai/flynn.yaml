@@ -68,17 +68,32 @@ automation:
         entity_id: sensor.zen_monastery_health
     conditions: []
     actions:
-      # Capture green state BEFORE delay for transition detection
+      # Capture green state + OOBE state BEFORE delay
       - variables:
           was_green: "{{ is_state('binary_sensor.flynn_system_ready', 'on') }}"
-      # Early exit: attribute-only refreshes on health sensors fire this trigger
-      # every minute even when state is unchanged. Skip the delay and all gates
-      # when there is nothing to do.
+          _oobe_ai_cab: >-
+            {{ label_entities('zen_default_ai_user_cabinet')
+               | select('match', 'sensor.') | list | first | default('') }}
+          _oobe_cab_vars: >-
+            {{ state_attr(_oobe_ai_cab, 'variables') | default({}, true)
+               if _oobe_ai_cab != '' else {} }}
+          _oobe_complete: "{{ '_oobe_complete' in _oobe_cab_vars }}"
+          _oobe_essence_raw: "{{ _oobe_cab_vars.get('zenai_essence', {}) }}"
+          _oobe_essence_val: >-
+            {{ _oobe_essence_raw.get('value', _oobe_essence_raw)
+               if _oobe_essence_raw is mapping else {} }}
+          _oobe_name: >-
+            {{ (_oobe_essence_val.get('identity', {}).get('name', '') | trim)
+               if _oobe_essence_val is mapping else '' }}
+          _oobe_pending: "{{ not _oobe_complete and (_oobe_name in ['', 'your AI']) }}"
+      # Early exit: skip when all gates green AND oobe done.
+      # If oobe is pending we must walk through to Gate 3.5 even on green systems.
       - if: >
           {{ was_green
              and states('sensor.zen_label_health')    == 'ok'
              and states('sensor.zen_cabinet_health')  == 'ok'
-             and states('sensor.zen_monastery_health') == 'ok' }}
+             and states('sensor.zen_monastery_health') == 'ok'
+             and not _oobe_pending }}
         then:
           - stop: "No-op: all gates already green"
       - delay: "00:00:10"
@@ -160,6 +175,29 @@ automation:
                   primary_user: "{{ states('input_text.zenos_primary_user') }}"
                   persona_name: "{{ states('input_text.zenos_persona_name') }}"
               - stop: "Gate 3: Bootstrap in progress"
+
+      #####################################################################
+      # GATE 3.5: OOBE — system ready but persona not yet configured
+      # _oobe_pending computed at top of action list (before early exit).
+      # Fires on HA start and health sensor changes — same cadence as all gates.
+      # Dismisses once _oobe_complete flag exists in AI user cab.
+      #####################################################################
+      - choose:
+          - conditions: "{{ _oobe_pending }}"
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "ZenOS-AI: Welcome — Let's name your AI"
+                  message: >
+                    Flynn here. Your system is ready but your AI doesn't have a
+                    name yet. Start a conversation with your AI and ask it to set
+                    up your profile — or run the Flynn Agent Builder
+                    (mode: oobe) to walk through setup.
+                  notification_id: flynn_oobe_pending
+          - default:
+              - action: persistent_notification.dismiss
+                data:
+                  notification_id: flynn_oobe_pending
 
       #####################################################################
       # GATE 4: All green — notify on transition only
@@ -394,6 +432,38 @@ script:
                     {% import 'zenos_ai/zen_os_1rc.jinja' as zen %}
                     {% set defaults = zen.essence_defaults() | from_json %}
                     {{ defaults | combine({'identity': defaults.get('identity',{}) | combine({'name': persona_name})}) | tojson }}
+
+      # Write default essence seed if AI user cab has no persona name yet.
+      # Uses essence_defaults() — name stays 'your AI' so Gate 3.5 OOBE fires.
+      - variables:
+          _seed_ai_cab: >-
+            {{ label_entities('zen_default_ai_user_cabinet')
+               | select('match', 'sensor.') | list | first | default('') }}
+          _seed_cab_vars: >-
+            {{ state_attr(_seed_ai_cab, 'variables') | default({}, true)
+               if _seed_ai_cab != '' else {} }}
+          _seed_essence_raw: "{{ _seed_cab_vars.get('zenai_essence', {}) }}"
+          _seed_essence_val: >-
+            {{ _seed_essence_raw.get('value', _seed_essence_raw)
+               if _seed_essence_raw is mapping else {} }}
+          _seed_name: >-
+            {{ (_seed_essence_val.get('identity', {}).get('name', '') | trim)
+               if _seed_essence_val is mapping else '' }}
+      - choose:
+          - conditions: "{{ _seed_ai_cab != '' and _seed_name == '' }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: false
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ _seed_ai_cab }}"
+                  key: zenai_essence
+                  value: >-
+                    {% import 'zenos_ai/zen_os_1rc.jinja' as zen %}
+                    {{ zen.essence_defaults() }}
 
       # Trigger prompt loader to stamp purpose/directives/cortex
       - action: script.zen_admintools_zenos_prompt_loader
