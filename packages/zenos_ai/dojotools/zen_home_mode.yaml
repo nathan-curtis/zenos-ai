@@ -1,0 +1,449 @@
+###############################################################################
+# ZenOS-AI — Home Mode
+# Version 4.0.0 RC2
+#
+# Defines the home mode state machine and all dependent constructs.
+# Replaces externally-defined legacy helpers on migration.
+#
+# Helpers:
+#   input_select.zen_home_mode       — 8-state home mode selector
+#   input_boolean.zen_guest_mode     — guest presence flag
+#   input_boolean.zen_entertaining   — entertaining/hosting flag
+#   input_datetime.zen_*_start       — 6 schedule anchors + 4 quiet/work bounds
+#
+# Sensors:
+#   sensor.zen_home_mode             — mirror with per-state icons
+#   binary_sensor.zen_quiet_hours    — time-range, midnight-wrap safe, fail-open
+#   binary_sensor.zen_work_hours     — time-range, no wrap, fail-open
+#
+# Scripts:
+#   zen_hm_evaluate_window           — single source of truth for window logic
+#   zen_home_mode_resume             — exits Away → correct scheduled state
+#   zen_home_mode_unpause            — exits Paused → correct scheduled state
+#
+# Automations:
+#   zen_hm_wake/morning/daytime/evening/night/late_night — time transitions
+#   zen_hm_away                      — zone.home → 0 triggers Away
+#   zen_hm_presence_return           — zone.home > 0 from Away triggers resume
+#   zen_hm_init                      — HA start/restart evaluates window
+#
+# Migration: ships parallel to legacy helpers. Legacy retirement is manual
+# on the live install after cutover sweep (PR 2).
+#
+# Labels:
+#   zen_vacation_mode — apply to your calendar entity; resolved by label,
+#                       not hardcoded.
+###############################################################################
+
+
+###############################################################################
+# HELPERS
+###############################################################################
+
+input_select:
+
+  zen_home_mode:
+    name: "Zen Home Mode"
+    icon: mdi:home-assistant
+    options:
+      - Home-Wake
+      - Home-Morning
+      - Home
+      - Home-Evening
+      - Night
+      - Night-Late
+      - Away
+      - Paused
+    initial: Home
+
+
+input_boolean:
+
+  zen_guest_mode:
+    name: "Zen Guest Mode"
+    icon: mdi:account-circle-outline
+
+  zen_entertaining:
+    name: "Zen Entertaining"
+    icon: mdi:glass-cocktail
+
+
+input_datetime:
+
+  ###########################################################################
+  # SCHEDULE ANCHORS — drive the 6 time-based mode transitions
+  ###########################################################################
+  zen_am_start:
+    name: "Zen Wake Start"
+    icon: mdi:weather-sunset-up
+    has_time: true
+    has_date: false
+    initial: "06:00:00"
+
+  zen_morning_start:
+    name: "Zen Morning Start"
+    icon: mdi:coffee-outline
+    has_time: true
+    has_date: false
+    initial: "08:00:00"
+
+  zen_daytime_start:
+    name: "Zen Daytime Start"
+    icon: mdi:weather-sunny
+    has_time: true
+    has_date: false
+    initial: "10:00:00"
+
+  zen_evening_start:
+    name: "Zen Evening Start"
+    icon: mdi:weather-sunset-down
+    has_time: true
+    has_date: false
+    initial: "17:00:00"
+
+  zen_night_start:
+    name: "Zen Night Start"
+    icon: mdi:weather-night
+    has_time: true
+    has_date: false
+    initial: "21:00:00"
+
+  zen_late_night_start:
+    name: "Zen Night-Late Start"
+    icon: mdi:power-sleep
+    has_time: true
+    has_date: false
+    initial: "23:00:00"
+
+  ###########################################################################
+  # QUIET / WORK PERIOD BOUNDARIES
+  # Defaults: quiet 23:00-06:00 (midnight wrap), work 09:00-17:00 (no wrap)
+  ###########################################################################
+  zen_quiet_hours_start:
+    name: "Zen Quiet Hours Start"
+    icon: mdi:home-clock-outline
+    has_time: true
+    has_date: false
+    initial: "23:00:00"
+
+  zen_quiet_hours_end:
+    name: "Zen Quiet Hours End"
+    icon: mdi:home-clock-outline
+    has_time: true
+    has_date: false
+    initial: "06:00:00"
+
+  zen_work_hours_start:
+    name: "Zen Work Hours Start"
+    icon: mdi:briefcase
+    has_time: true
+    has_date: false
+    initial: "09:00:00"
+
+  zen_work_hours_end:
+    name: "Zen Work Hours End"
+    icon: mdi:briefcase
+    has_time: true
+    has_date: false
+    initial: "17:00:00"
+
+
+###############################################################################
+# TEMPLATE SENSORS
+###############################################################################
+
+template:
+
+  ###########################################################################
+  # HOME MODE MIRROR — state + per-state icon
+  ###########################################################################
+  - sensor:
+      - name: "Zen Home Mode"
+        unique_id: zen_home_mode_sensor
+        state: "{{ states('input_select.zen_home_mode') }}"
+        icon: >-
+          {%- set m = states('input_select.zen_home_mode') %}
+          {%- if m == 'Home-Wake' %}    mdi:theme-light-dark
+          {%- elif m == 'Home-Morning' %}mdi:weather-sunset-up
+          {%- elif m == 'Home' %}        mdi:home
+          {%- elif m == 'Home-Evening' %}mdi:weather-sunset-down
+          {%- elif m == 'Night' %}       mdi:weather-night
+          {%- elif m == 'Night-Late' %}  mdi:power-sleep
+          {%- elif m == 'Away' %}        mdi:home-export-outline
+          {%- elif m == 'Paused' %}      mdi:pause-circle-outline
+          {%- else %}                    mdi:home-assistant
+          {%- endif %}
+
+  ###########################################################################
+  # QUIET HOURS
+  # Defaults: 23:00 – 06:00 (crosses midnight).
+  # Fail-open: resolves false if either anchor is unavailable/unset.
+  # Midnight wrap: when end < start the active window spans midnight,
+  #   so the sensor is ON if now >= start OR now < end.
+  ###########################################################################
+  - binary_sensor:
+      - name: "Zen Quiet Hours"
+        unique_id: zen_quiet_hours
+        state: >-
+          {%- set start = states('input_datetime.zen_quiet_hours_start') %}
+          {%- set end   = states('input_datetime.zen_quiet_hours_end') %}
+          {%- if start in ['unknown','unavailable',''] or end in ['unknown','unavailable',''] %}
+            false
+          {%- else %}
+            {%- set now_t = now().strftime('%H:%M:%S') %}
+            {# Midnight wrap: end < start means range crosses midnight.        #}
+            {# e.g. 23:00–06:00 → active when now >= 23:00 OR now < 06:00.    #}
+            {%- if end < start %}
+              {{ now_t >= start or now_t < end }}
+            {%- else %}
+              {{ now_t >= start and now_t < end }}
+            {%- endif %}
+          {%- endif %}
+        icon: "{{ 'mdi:sleep' if this.state == 'on' else 'mdi:sleep-off' }}"
+
+      ###########################################################################
+      # WORK HOURS
+      # Defaults: 09:00 – 17:00 (no midnight wrap).
+      # Fail-open: resolves false if either anchor is unavailable/unset.
+      ###########################################################################
+      - name: "Zen Work Hours"
+        unique_id: zen_work_hours
+        state: >-
+          {%- set start = states('input_datetime.zen_work_hours_start') %}
+          {%- set end   = states('input_datetime.zen_work_hours_end') %}
+          {%- if start in ['unknown','unavailable',''] or end in ['unknown','unavailable',''] %}
+            false
+          {%- else %}
+            {%- set now_t = now().strftime('%H:%M:%S') %}
+            {# No midnight wrap for work hours (end > start by design).        #}
+            {# If someone configures a wrap here it will behave unexpectedly — #}
+            {# use zen_quiet_hours pattern if a wrap is ever needed.           #}
+            {{ now_t >= start and now_t < end }}
+          {%- endif %}
+        icon: "{{ 'mdi:briefcase' if this.state == 'on' else 'mdi:briefcase-outline' }}"
+
+
+###############################################################################
+# SCRIPTS
+###############################################################################
+
+script:
+
+  ###########################################################################
+  # ZEN HM EVALUATE WINDOW
+  # Single source of truth for time-window → mode mapping.
+  # Called by: zen_hm_init, zen_home_mode_resume, zen_home_mode_unpause.
+  # Do NOT duplicate this logic elsewhere.
+  ###########################################################################
+  zen_hm_evaluate_window:
+    alias: "Zen Home Mode: Evaluate Window"
+    mode: single
+    sequence:
+      - variables:
+          target_mode: >-
+            {%- set now_t      = now().strftime('%H:%M:%S') %}
+            {%- set am         = states('input_datetime.zen_am_start') %}
+            {%- set morning    = states('input_datetime.zen_morning_start') %}
+            {%- set daytime    = states('input_datetime.zen_daytime_start') %}
+            {%- set evening    = states('input_datetime.zen_evening_start') %}
+            {%- set night      = states('input_datetime.zen_night_start') %}
+            {%- set late_night = states('input_datetime.zen_late_night_start') %}
+            {%- if now_t < am %}
+              Night-Late
+            {%- elif now_t < morning %}
+              Home-Wake
+            {%- elif now_t < daytime %}
+              Home-Morning
+            {%- elif now_t < evening %}
+              Home
+            {%- elif now_t < night %}
+              Home-Evening
+            {%- elif now_t < late_night %}
+              Night
+            {%- else %}
+              Night-Late
+            {%- endif %}
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: "{{ target_mode | trim }}"
+
+  ###########################################################################
+  # ZEN HOME MODE RESUME — exit Away
+  ###########################################################################
+  zen_home_mode_resume:
+    alias: "Zen Home Mode: Resume from Away"
+    mode: single
+    sequence:
+      - condition: template
+        value_template: "{{ is_state('input_select.zen_home_mode', 'Away') }}"
+      - action: script.zen_hm_evaluate_window
+        data: {}
+
+  ###########################################################################
+  # ZEN HOME MODE UNPAUSE — exit Paused
+  ###########################################################################
+  zen_home_mode_unpause:
+    alias: "Zen Home Mode: Unpause"
+    mode: single
+    sequence:
+      - condition: template
+        value_template: "{{ is_state('input_select.zen_home_mode', 'Paused') }}"
+      - action: script.zen_hm_evaluate_window
+        data: {}
+
+
+###############################################################################
+# AUTOMATIONS
+###############################################################################
+
+automation:
+
+  ###########################################################################
+  # TIME-BASED TRANSITIONS (6)
+  # Each fires at its respective input_datetime anchor.
+  # Guarded: will not fire if Away or Paused.
+  ###########################################################################
+  - id: zen_hm_wake
+    alias: "Zen Home Mode: Wake"
+    trigger:
+      - platform: time
+        at: input_datetime.zen_am_start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: Home-Wake
+
+  - id: zen_hm_morning
+    alias: "Zen Home Mode: Morning"
+    trigger:
+      - platform: time
+        at: input_datetime.zen_morning_start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: Home-Morning
+
+  - id: zen_hm_daytime
+    alias: "Zen Home Mode: Daytime"
+    trigger:
+      - platform: time
+        at: input_datetime.zen_daytime_start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: Home
+
+  - id: zen_hm_evening
+    alias: "Zen Home Mode: Evening"
+    trigger:
+      - platform: time
+        at: input_datetime.zen_evening_start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: Home-Evening
+
+  - id: zen_hm_night
+    alias: "Zen Home Mode: Night"
+    trigger:
+      - platform: time
+        at: input_datetime.zen_night_start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: Night
+
+  - id: zen_hm_late_night
+    alias: "Zen Home Mode: Night-Late"
+    trigger:
+      - platform: time
+        at: input_datetime.zen_late_night_start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: Night-Late
+
+  ###########################################################################
+  # AWAY — zone.home drops to 0
+  ###########################################################################
+  - id: zen_hm_away
+    alias: "Zen Home Mode: Away"
+    trigger:
+      - platform: numeric_state
+        entity_id: zone.home
+        below: 1
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.zen_home_mode
+        data:
+          option: Away
+
+  ###########################################################################
+  # PRESENCE RETURN — zone.home rises above 0 while Away
+  ###########################################################################
+  - id: zen_hm_presence_return
+    alias: "Zen Home Mode: Presence Return"
+    trigger:
+      - platform: numeric_state
+        entity_id: zone.home
+        above: 0
+    condition:
+      - condition: state
+        entity_id: input_select.zen_home_mode
+        state: Away
+    action:
+      - action: script.zen_home_mode_resume
+        data: {}
+
+  ###########################################################################
+  # HA INIT — evaluate window on start/restart
+  # Restores correct scheduled state after reboot.
+  # Guarded: will not overwrite Away or Paused.
+  ###########################################################################
+  - id: zen_hm_init
+    alias: "Zen Home Mode: Init on HA Start"
+    trigger:
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_select.zen_home_mode') not in ['Away', 'Paused'] }}"
+    action:
+      - action: script.zen_hm_evaluate_window
+        data: {}
