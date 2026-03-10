@@ -12,6 +12,8 @@ And a few things that are.
 
 **Current version: 4.0.0 RC2**
 
+Version note: we are currently in a dev sprint separating Zen from a live system. There will be MANY commits. Once we have cleared deploy blockers we will mark all RC2 files as v.4.1 and lock main to develop on the next RC or GA branch.
+
 ---
 
 ## Getting Started
