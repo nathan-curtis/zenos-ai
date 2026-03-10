@@ -424,6 +424,12 @@ Over-engineering is just engineering that has not yet been vindicated.
 
 ---
 
+# Known Limitations
+
+**Conversation agent liveness check** — Flynn validates that the configured conversation agent entity exists and is not unavailable, but does not perform a live inference test at boot. A misconfigured or offline model passes the gate and fails at runtime. Tracked for GA. See [roadmap](zenos_ai/docs/roadmap.md) for detail.
+
+---
+
 # Contributing
 
 Pull requests, issues, and tasteful memes welcome.

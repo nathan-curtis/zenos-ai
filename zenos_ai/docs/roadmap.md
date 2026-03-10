@@ -200,6 +200,26 @@ GA is complete when:
 
 ---
 
+# Known Limitations
+
+These are documented gaps that are intentional non-fixes for the current release. Each is tracked for a future milestone.
+
+---
+
+### Conversation Agent Liveness Check (post-MVP)
+
+**Scope:** `flynn_bootstrap_content` Gate 3
+
+Flynn validates that the configured conversation agent entity exists and is not in an `unavailable` or `unknown` state. It does **not** perform an actual inference round-trip to confirm the model responds.
+
+A misconfigured, offline, or rate-limited model will pass the boot gate silently. The failure will surface at runtime when a summarizer or OOBE call hits the `ai_task.generate_data` step — the script will error cleanly but the root cause may not be obvious.
+
+**Acceptable for MVP because:** runtime failure is clean (script error, not state corruption). A full liveness ping at boot would require an inference round-trip which is too expensive for a gate that fires on every HA restart.
+
+**Target:** GA — add a low-cost test call in `flynn_bootstrap_content` after entity validation, with a clear notification if the model doesn't respond.
+
+---
+
 # v.next
 
 Following GA, ZenOS-AI can evolve toward:

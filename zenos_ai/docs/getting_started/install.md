@@ -97,6 +97,8 @@ conversation.claude
 
 After setting this, trigger a restart or wait — Flynn re-runs on any health sensor change and will complete bootstrap on its next pass.
 
+> **Note:** Flynn confirms the entity exists and is reachable but does not perform a live inference test at boot. If your model is misconfigured or offline it will pass this gate — the failure surfaces at runtime when the summarizer first calls it.
+
 **Optional pre-seeds** (can also be set conversationally via OOBE):
 
 | Helper | Entity | Purpose |
