@@ -7,6 +7,7 @@
 ## Prerequisites
 
 - **Home Assistant** 2024.x or newer
+- **Spook Integration** Installable through HACS. [Spook Install instructions](https://spook.boo/installation/)
 - **A conversation agent** configured in HA with a tool-calling capable model. Models smaller than ~8B parameters or with short context windows are not recommended — ZenOS-AI prompts are large and tool use is required.
 - `custom_templates:` enabled in your HA configuration
 - SSH or filesystem access to your HA config directory
