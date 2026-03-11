@@ -371,6 +371,8 @@ critical
 | Kronk          | Curator of the Monastery    | Context wrangler           |
 | Rosie          | Mistress of Cleanliness     | Logs and state hygiene     |
 | High Priestess | Automation Overseer         | Deep reasoning             |
+| Cait           | Lead Developer              | Strategy to shipping       |
+| Nyx            | Lead Test                   | Live install, zero mercy   |
 
 They are not perfect.
 
