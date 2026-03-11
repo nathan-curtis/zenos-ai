@@ -2,7 +2,7 @@
 
 ### A Modular, Context-Aware AI Home Automation Framework for Home Assistant
 
-ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with **Friday, Kronk, Veronica, Rosie, and the High Priestess** — a coordinated AI pantheon that takes its jobs seriously (even if it doesn't always take itself seriously).
+ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with **Friday, Kronk, Veronica, Rosie, the High Priestess, Cait, and Nyx** — a coordinated AI pantheon that takes its jobs seriously (even if it doesn't always take itself seriously).
 
 Welcome to the **Home Monastery**.
 
@@ -10,9 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current version: 4.0.0 RC2**
-
-Version note: we are currently in a dev sprint separating Zen from a live system. There will be MANY commits. Once we have cleared deploy blockers we will mark all RC2 files as v.4.1 and lock main to develop on the next RC or GA branch.
+**Current version: 4.1.0 RC2**
 
 ---
 
@@ -20,6 +18,7 @@ Version note: we are currently in a dev sprint separating Zen from a live system
 
 New install? → **[Install Guide](zenos_ai/docs/getting_started/install.md)**
 First boot? → **[First Run & OOBE](zenos_ai/docs/getting_started/first_run.md)**
+Adding a component? → **[Understanding KF4](zenos_ai/docs/kung_fu/understanding_kf4.md)**
 Full docs → **[Documentation Hub](zenos_ai/docs/readme.md)**
 
 ---
@@ -322,18 +321,38 @@ Protected drawers (`_prefix`) are never modified automatically.
 
 ---
 
+# Kung Fu Components (KF4)
+
+ZenOS-AI 4.1.0 ships a fully self-describing component architecture.
+
+Every home subsystem — security, water, energy, hot tub — is defined as a **Kung Fu Component (KFC)**: a drawer in the Dojo Cabinet that tells the Scheduler when to run, tells the Summarizer what to look at, and tells the AI how to interpret what it finds.
+
+**The three invariants:**
+
+- **Drawer IS the spec** — one source of truth per component
+- **Label IS the scope** — tag entities in HA, the index finds them automatically
+- **HyperIndex IS the data layer** — no hardcoded entity lists, ever
+
+Adding a new component requires no code changes and no Scheduler edits. Write a drawer, create a label, tag entities, dry-run, go live.
+
+→ **[Understanding KF4](zenos_ai/docs/kung_fu/understanding_kf4.md)**
+
+---
+
 # Summarizer Pipeline
 
-ZenOS-AI compresses system activity through an event-driven summarization pipeline.
+ZenOS-AI compresses system activity through a Dojo-driven summarization pipeline.
 
 ```
-Event → Kata → Supersummary → Cabinet Update → Prompt Refresh
+Trigger → Scheduler reads Dojo → Ninja Summarizer per KFC → Kata → SuperSummary → Friday
 ```
 
 Components:
 
-• `zen_dojotools_ninja_summarizer` — event → kata
-• `zen_dojotools_supersummary` — kata → supersummary
+• `zen_dojotools_ninja_summarizer` — reads KFC drawer + HyperIndex → writes Kata
+• `zen_dojotools_supersummary` — synthesizes all Katas → zen_summary → Friday
+
+The Scheduler auto-discovers which components to run based on their `trigger_subscriptions` in the Dojo. No hardcoded dispatch. No choose branches.
 
 This allows the system to preserve context while maintaining token efficiency.
 
