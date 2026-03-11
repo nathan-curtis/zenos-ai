@@ -8,9 +8,13 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 ## Current Status
 
-**4.0.0 RC2 — Complete**
+**4.1.0 RC2 — Complete**
 
-RC2 has been achieved. The system is deployed, package-rooted, version-rationalized, and operationally stable. The drawer lifecycle, FileCabinet v4, and the GC system are all live. The next milestone is GA.
+KF4 RC2 has shipped. The Kung Fu Component architecture is fully Dojo-driven — drawer IS the spec, label IS the scope, HyperIndex IS the data layer. The Scheduler is data-driven; no hardcoded branches. 12 components stamped and running. UAT passed on live install 2026-03-11. The next milestone is GA.
+
+Pulled forward from GA deliverable §7 (Baseline KFC Set). The 4.0.0 Scheduler was not freely editable — each new component required a hardcoded choose branch, creating a shipping conflict on every update. KF4's Dojo-driven dispatch made that constraint moot entirely, so we elected to pull it forward rather than carry the architectural debt to GA.
+
+See: [#56 feat: Kung Fu Components KF4 RC2](https://github.com/nathan-curtis/zenos-ai/issues/56)
 
 ---
 
