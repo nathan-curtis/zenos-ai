@@ -99,12 +99,10 @@ This suite defines how Friday constructs her thoughts.
 
 Each Kung Fu component is a discipline: a subsystem Friday loads at runtime.
 
-Documents cover:
+Documents:
 
-* Interfaces
-* Required signals
-* Safety guarantees
-* Component lifecycle
+* `understanding_kf4.md` — **Start here.** Plain-language guide to the Dojo, Kung Fu Components, and the Summarizer pipeline. How to add a new component in five steps, no code required.
+* `readme.md` — Technical spec: drawer schema, trigger ID reference, command strip migration notes.
 
 This is Friday’s skill tree.
 
