@@ -220,22 +220,66 @@ automation:
 
       #####################################################################
       # GATE 3.5: OOBE — system ready but persona not yet configured
-      # _oobe_pending computed at top of action list (before early exit).
-      # Fires on HA start and health sensor changes — same cadence as all gates.
-      # Dismisses once _oobe_complete flag exists in AI user cab.
+      # NOTE: _oobe_pending (top of action list) is stale here — computed
+      # before the 10s delay and before gate actions ran. Re-read the cabinet
+      # fresh so we catch names written by Gate 3 bootstrap in this same run.
       #####################################################################
-      - if: "{{ _oobe_pending }}"
-        then:
-          - action: persistent_notification.create
-            data:
-              title: "ZenOS-AI: Welcome — Let's name your AI"
-              message: >
-                Flynn here. Your system is ready but your AI doesn't have a
-                name yet. Start a conversation with your AI and ask it to set
-                up your profile — or run the Flynn Agent Builder
-                (mode: oobe) to walk through setup.
-              notification_id: flynn_oobe_pending
-        else:
+      - variables:
+          _g35_ai_cab: >-
+            {{ label_entities('zen_default_ai_user_cabinet')
+               | select('match', 'sensor.') | list | first | default('') }}
+          _g35_cab_vars: >-
+            {{ state_attr(_g35_ai_cab, 'variables') | default({}, true)
+               if _g35_ai_cab != '' else {} }}
+          _g35_complete: "{{ '_oobe_complete' in _g35_cab_vars }}"
+          _g35_essence_raw: "{{ _g35_cab_vars.get('zenai_essence', {}) }}"
+          _g35_essence_val: >-
+            {{ _g35_essence_raw.get('value', _g35_essence_raw)
+               if _g35_essence_raw is mapping else {} }}
+          _g35_name: >-
+            {{ (_g35_essence_val.get('identity', {}).get('name', '') | trim)
+               if _g35_essence_val is mapping else '' }}
+          _g35_input_name: "{{ states('input_text.zenos_persona_name') | trim }}"
+      - choose:
+          # Case 1: placeholder in cabinet but input_text has a name → write it and dismiss
+          - conditions: >-
+              {{ not _g35_complete
+                 and _g35_name in ['', 'your AI']
+                 and _g35_input_name != '' }}
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ _g35_ai_cab }}"
+                  key: "zenai_essence"
+                  value: >-
+                    {% import 'zenos_ai/zen_os_1rc.jinja' as zen %}
+                    {% set defaults = zen.essence_defaults() | from_json %}
+                    {{ defaults | combine({'identity': defaults.get('identity',{}) | combine({'name': _g35_input_name})}) | tojson }}
+              - action: persistent_notification.dismiss
+                data:
+                  notification_id: flynn_oobe_pending
+          # Case 2: placeholder in cabinet and input_text empty → genuine OOBE, notify
+          - conditions: >-
+              {{ not _g35_complete
+                 and _g35_name in ['', 'your AI']
+                 and _g35_input_name == '' }}
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "ZenOS-AI: Welcome — Let's name your AI"
+                  message: >
+                    Flynn here. Your system is ready but your AI doesn't have a
+                    name yet. Start a conversation with your AI and ask it to set
+                    up your profile — or run the Flynn Agent Builder
+                    (mode: oobe) to walk through setup.
+                  notification_id: flynn_oobe_pending
+        # Case 3: cabinet has a real name or _oobe_complete → dismiss
+        default:
           - action: persistent_notification.dismiss
             data:
               notification_id: flynn_oobe_pending
@@ -559,25 +603,8 @@ script:
                   key: "_household_name"
                   value: "{{ household_name }}"
 
-      - choose:
-          - conditions: "{{ persona_name | default('') != '' }}"
-            sequence:
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: create
-                  force_action: false
-                  set_timestamp: true
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ label_entities('zen_default_ai_user_cabinet') | select('match', 'sensor.') | first | default('') }}"
-                  key: "zenai_essence"
-                  value: >-
-                    {% import 'zenos_ai/zen_os_1rc.jinja' as zen %}
-                    {% set defaults = zen.essence_defaults() | from_json %}
-                    {{ defaults | combine({'identity': defaults.get('identity',{}) | combine({'name': persona_name})}) | tojson }}
-
-      # Write default essence seed if AI user cab has no persona name yet.
-      # Uses essence_defaults() — name stays 'your AI' so Gate 3.5 OOBE fires.
+      # Read current AI cab name before writing — needed to guard both the
+      # persona_name write (below) and the default seed write.
       - variables:
           _seed_ai_cab: >-
             {{ label_entities('zen_default_ai_user_cabinet')
@@ -592,6 +619,29 @@ script:
           _seed_name: >-
             {{ (_seed_essence_val.get('identity', {}).get('name', '') | trim)
                if _seed_essence_val is mapping else '' }}
+
+      # Write persona name into essence only when input_text has a name AND the
+      # cabinet still holds the placeholder. force_action: true required to
+      # overwrite the placeholder that bootstrap already wrote.
+      - choose:
+          - conditions: "{{ persona_name | default('') != '' and _seed_name in ['', 'your AI'] }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ label_entities('zen_default_ai_user_cabinet') | select('match', 'sensor.') | first | default('') }}"
+                  key: "zenai_essence"
+                  value: >-
+                    {% import 'zenos_ai/zen_os_1rc.jinja' as zen %}
+                    {% set defaults = zen.essence_defaults() | from_json %}
+                    {{ defaults | combine({'identity': defaults.get('identity',{}) | combine({'name': persona_name})}) | tojson }}
+
+      # Write default essence seed if AI user cab has no persona name yet.
+      # Uses essence_defaults() — name stays 'your AI' so Gate 3.5 OOBE fires.
       - choose:
           - conditions: "{{ _seed_ai_cab != '' and _seed_name == '' }}"
             sequence:
