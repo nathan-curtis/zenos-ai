@@ -52,7 +52,25 @@ KungFu Writer is the only AI-accessible tool here. All others are admin-only and
 
 ---
 
-## **2. Zen DojoTools Profile Editor — 4.2.0**
+## **2. Flynn — Stepgate Sentinel & Bootstrap Engine — 4.2.0**
+
+**File:** `zen_flynn_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+ZenOS-AI's boot guard, initializer, and OOBE driver.
+
+* Gates 0–4: labels, cabinet init, schema seed, content bootstrap, system ready
+* Early exit when system is clean and stable
+* OOBE flow: names the AI, seeds household profile, flags completion
+* Agent Builder (MCP-exposed): interactive config through conversation
+* Auto-resolves reasoning task and AI task entity at bootstrap
+
+If the system isn't coming up clean, Flynn is why — and where to look first.
+
+---
+
+## **3. Zen DojoTools Profile Editor — 4.2.0**
 
 **File:** `zen_dojotools_profile_readme.md`
 **Type:** Technical Documentation
