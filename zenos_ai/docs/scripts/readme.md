@@ -86,7 +86,25 @@ Expose this to your conversation agent — Friday can then help you configure yo
 
 ---
 
-## **3. Zen DojoTools Office — 4.2.0**
+## **3. Zen DojoTools SystemTools & Home Mode — 4.2.0**
+
+**File:** `zen_dojotools_systemtools_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+HA lifecycle management, log reading, event emission, and the home mode engine.
+
+* `zen_dojotools_systemtools` — Config check, safe restart (auto-validates before restarting), update install/skip
+* `zen_dojotools_ha_log_viewer` — Five log modes + HA 2025.11+ journal detection
+* `zen_dojotools_event_emitter` — Structured zen_event emission (see also dedicated emitter readme)
+* `zen_dojotools_ha_api` — Internal API wrapper (do NOT expose)
+* Home Mode — 8-state time-scheduled mode lifecycle + presence detection, configurable anchors
+
+Requires a long-lived HA token in `secrets.yaml` (ha_bearer).
+
+---
+
+## **4. Zen DojoTools Office — 4.2.0**
 
 **File:** `zen_dojotools_office_readme.md`
 **Type:** Technical Documentation
