@@ -212,6 +212,26 @@ Plugins under `packages/zenos_ai/plugins/` are optional — install only what yo
 
 ---
 
+# What to Expose to Your Conversation Agent
+
+Not everything in your HA install should be visible to Friday. ZenOS-AI uses a three-tier model:
+
+| Tier | Rule | How |
+|---|---|---|
+| **Actionable** | Friday needs to control it or read it immediately | Expose directly to the conversation agent |
+| **Contextable** | Friday should know about it | Tag with labels — HyperIndex finds it automatically |
+| **Invisible** | Friday never needs it | Neither exposed nor labeled |
+
+**Always expose:** All `script.zen_dojotools_*` tools. These are Friday's hands. Keep everything else minimal.
+
+**Never expose:** AdminTools scripts (except `zen_dojotools_kungfu_writer`), cabinet sensors, health sensors, raw telemetry, or anything containing credentials.
+
+**Index everything else:** If it feeds a KFC component's Kata, it belongs behind a label — not in the tool list. One label on 50 sensors produces a rich, token-efficient context block. 50 individual direct reads does not.
+
+→ **[Full entity exposure guide](zenos_ai/docs/getting_started/entity_exposure.md)**
+
+---
+
 # Package Structure
 
 ```

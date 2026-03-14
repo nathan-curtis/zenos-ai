@@ -33,7 +33,26 @@ Below is the official documentation index for all ZenOS-AI DojoTools modules.
 
 ---
 
-## **1. Zen DojoTools Office — 4.2.0**
+## **1. Zen DojoTools AdminTools — 4.2.0**
+
+**File:** `zen_dojotools_admintools_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+Ring-2 administrative tools for component registration, cabinet repair, template management, and AI identity loading.
+
+* `zen_dojotools_kungfu_writer` — MCP-exposed. Register or update Kung Fu Components in the Dojo
+* `zen_admintools_reset_template` — Press zen_template and kfc_template into cabinets (Flynn gate-3)
+* `zen_admintools_cabinetadmin` — Inspect, restore, reset, or hammer Ring-0 cabinets
+* `zen_admintools_cabinetadmin_backup` — Factory-stamp or repair a cabinet's VolumeInfo header
+* `zen_admintools_kfc_migration_press` — One-time migration: seed KF4 scheduling fields into existing drawers
+* `zen_admintools_zenos_prompt_loader` — Load Cortex, Directives, and Purpose into the AI identity substrate
+
+KungFu Writer is the only AI-accessible tool here. All others are admin-only and should not be exposed to the conversation agent.
+
+---
+
+## **3. Zen DojoTools Office — 4.2.0**
 
 **File:** `zen_dojotools_office_readme.md`
 **Type:** Technical Documentation
@@ -54,7 +73,7 @@ This is Friday’s and Veronica’s primary tool for anything date-, event-, or 
 
 ---
 
-## **2. Zen DojoTools Event Emitter — v1.1.2**
+## **4. Zen DojoTools Event Emitter — 4.2.0**
 
 **File:** `zen_dojotools_event_emitter_readme.md`
 **Type:** Technical Documentation
@@ -81,7 +100,7 @@ This is how Friday, Veronica, Kronk, and the High Priestess leave traceable brea
 
 ---
 
-## **3. Zen DojoTools FileCabinet — 4.2.0**
+## **5. Zen DojoTools FileCabinet — 4.2.0**
 
 **File:** `script.zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
@@ -105,7 +124,7 @@ If any drawer changes anywhere in ZenOS-AI, it happened through FileCabinet.
 
 ---
 
-## **4. Zen DojoTools Manifest — 4.2.0**
+## **6. Zen DojoTools Manifest — 4.2.0**
 
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
@@ -129,7 +148,7 @@ If Friday trusts a Cabinet, it’s because the Manifest told her it's safe.
 
 ---
 
-## **5. Zen DojoTools Index — 4.2.0**
+## **7. Zen DojoTools Index — 4.2.0**
 
 **File:** `zen_dojotools_index_readme.md`
 **Type:** Technical Documentation
@@ -151,7 +170,7 @@ The Zen Index is Friday’s “graph engine,” letting her understand relations
 
 ---
 
-## **6. Zen DojoTools Inspect — 4.2.0**
+## **8. Zen DojoTools Inspect — 4.2.0**
 
 **File:** `zen_dojotools_inspect_readme.md`
 **Type:** Technical Documentation
