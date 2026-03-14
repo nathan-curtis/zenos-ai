@@ -321,7 +321,7 @@ it's because Inspect told her what it is — safely.
 
 ## Summary
 
-The Zen DojoTools Inspect RC1 provides:
+The Zen DojoTools Inspect 4.2.0 provides:
 
 - multi-entity snapshot  
 - fully sanitized attributes  

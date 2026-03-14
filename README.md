@@ -252,7 +252,6 @@ packages/zenos_ai/
     calderaspas/calderaspas_spa_manager.yaml
 
   room_manager/room_manager.yaml
-  zen_image_generator.yaml
 
 custom_templates/zenos_ai/
   zen_os_1rc.jinja             — Prompt engine and macro library
