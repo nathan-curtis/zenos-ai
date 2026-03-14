@@ -46,6 +46,7 @@ script:
         is_read: '{{ action_type == ''read'' }}'
         is_delete: '{{ action_type == ''delete'' }}'
         is_help: '{{ action_type == ''help'' }}'
+        is_clone: '{{ action_type == ''clone'' }}'
         initial_volume_raw: '{{ state_attr(volume_entity, ''variables'') | default({},
           true) }}'
         initial_volume: '{% if initial_volume_raw is mapping %}{{ initial_volume_raw
@@ -209,7 +210,7 @@ script:
         - alias: Error - Fatal JSON Parsing
           condition: template
           value_template: "{{\n  (action_type not in ['manifest', 'read', 'delete',
-            'move', 'copy', 'set_mount', 'remove_mount', 'help' ])\n  and (\n        (parsed_value
+            'move', 'copy', 'clone', 'set_mount', 'remove_mount', 'help' ])\n  and (\n        (parsed_value
             is string and\n          parsed_value.startswith('Write failed'))\n        or\n
             \       (parsed_value is mapping and (parsed_value.get('error','') | string)\n
             \           .startswith('Write failed'))\n      )\n}}\n\n\n"
@@ -1008,6 +1009,171 @@ script:
           response_variable: final_response
       - conditions:
         - condition: template
+          value_template: '{{ action_type == ''clone'' }}'
+          alias: Clone Cabinet (Highlander mode)
+        sequence:
+        - variables:
+            dest_cabinet: '{{ destination_cabinet | default('''') }}'
+            transfer_guid: '{{ transfer_guid | default(false) }}'
+            src_health: '{{ state_attr(volume_entity, ''health'') or {} }}'
+            dest_health: '{{ state_attr(destination_cabinet | default(''''), ''health'') or {} }}'
+            src_health_ok: >-
+              {{- src_health.get('status', '') != 'error'
+                  and not src_health.get('guid_mismatch', false) -}}
+            dest_health_ok: >-
+              {{- dest_health.get('status', '') != 'error'
+                  and not dest_health.get('guid_mismatch', false)
+                  and dest_health.get('writeable', true) -}}
+            src_mount_keys: >-
+              {%- set ns = namespace(mounts=[]) -%}
+              {%- for k, v in initial_volume.items() -%}
+                {%- set val = v.get('value', v) if v is mapping else v -%}
+                {%- if val is mapping and val.get('mount_point', false) == true -%}
+                  {%- set ns.mounts = ns.mounts + [k] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.mounts }}
+            has_mount_points: '{{ src_mount_keys | length > 0 }}'
+            drawers_to_clone: >-
+              {%- set skip = [] if transfer_guid else ['AI_Cabinet_VolumeInfo'] -%}
+              {%- set ns = namespace(drawers=[]) -%}
+              {%- for k in initial_volume.keys() -%}
+                {%- if k not in skip -%}
+                  {%- set ns.drawers = ns.drawers + [k] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.drawers }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ dest_cabinet == '''' }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  message: clone requires destination_cabinet.
+            - stop: Missing destination_cabinet
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ dest_cabinet == volume_entity }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  message: Cannot clone a cabinet to itself.
+            - stop: Clone to self blocked
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ has_mount_points }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  message: 'Source cabinet contains mount point drawer(s): {{ src_mount_keys
+                    | join('', '') }}. Resolve mounts before cloning.'
+            - stop: Mount point block
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ transfer_guid and not force_action }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  message: GUID transfer is destructive and irreversible. Set force_action
+                    true to confirm.
+            - stop: GUID transfer requires force_action
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ not src_health_ok }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  message: clone blocked — source cabinet not healthy.
+                  health: '{{ src_health }}'
+            - stop: Source health blocked
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ not dest_health_ok }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  message: clone blocked — destination cabinet not healthy or not writeable.
+                  health: '{{ dest_health }}'
+            - stop: Dest health blocked
+              response_variable: final_response
+        - repeat:
+            for_each: '{{ drawers_to_clone }}'
+            sequence:
+            - event: set_variable_legacy
+              event_data:
+                key: '{{ repeat.item }}'
+                value: >-
+                  {%- set src = initial_volume.get(repeat.item) -%}
+                  {%- set ns = namespace(d=src) -%}
+                  {%- if ns.d is string and (ns.d | trim)[:1] in ['{', '['] -%}
+                    {%- set _parsed = ns.d | from_json -%}
+                    {%- if _parsed is not string -%}
+                      {%- set ns.d = _parsed -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {{ ns.d.get('value', ns.d) if ns.d is mapping else ns.d }}
+                set_timestamp: true
+                volume_entity: '{{ dest_cabinet }}'
+        - wait_template: >-
+            {{ (state_attr(dest_cabinet, 'variables') or {}) | length >= drawers_to_clone | length }}
+          timeout: '00:00:05'
+          continue_on_timeout: true
+        - variables:
+            clone_verified: >-
+              {{ (state_attr(dest_cabinet, 'variables') or {}) | length >= drawers_to_clone | length }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ transfer_guid }}'
+              alias: GUID Transfer — clear source and mark for restamp
+            sequence:
+            - repeat:
+                for_each: '{{ drawers_to_clone }}'
+                sequence:
+                - event: remove_variable_legacy
+                  event_data:
+                    key: '{{ repeat.item }}'
+                    volume_entity: '{{ volume_entity }}'
+            - event: set_variable_legacy
+              event_data:
+                key: AI_Cabinet_VolumeInfo
+                value:
+                  id: pending_{{ now().timestamp() | int }}
+                  needs_restamp: true
+                  note: GUID transferred to {{ dest_cabinet }} on {{ now_iso }}
+                set_timestamp: true
+                volume_entity: '{{ volume_entity }}'
+        - variables:
+            src_guid: >-
+              {%- set vi = initial_volume.get('AI_Cabinet_VolumeInfo', {}) -%}
+              {%- set v = vi.get('value', vi) if vi is mapping else {} -%}
+              {{ v.get('id', '') if v is mapping else '' }}
+            final_response:
+              status: '{{ ''success'' if clone_verified else ''warning'' }}'
+              action: clone
+              transfer_guid: '{{ transfer_guid }}'
+              source: '{{ volume_entity }}'
+              destination: '{{ dest_cabinet }}'
+              drawers_cloned: '{{ drawers_to_clone | length }}'
+              source_guid: '{{ src_guid }}'
+              verification:
+                confirmed: '{{ clone_verified }}'
+        - stop: Clone complete
+          response_variable: final_response
+      - conditions:
+        - condition: template
           value_template: '{{ action_type == ''set_mount'' }}'
           alias: Set Mount Point
         sequence:
@@ -1169,11 +1335,11 @@ script:
       (yes, a list) to scan drawers for subjects. STRONG recommendation to HELP() and
       pull a manifest - READ() immediately.\nIMPORTANT: Read By Label is currently limited
       to ONE cabinet at a time.\nMOUNT OPS: set_mount links a drawer in this volume to another cabinet by GUID (requires key +
-      target_guid). remove_mount unlinks it. Both verify the write and return previous_guid for undo."
+      target_guid). remove_mount unlinks it. Both verify the write and return previous_guid for undo.\nCLONE: clone copies all cabinet drawers to destination_cabinet. Default: destination gets a new GUID (source untouched). With transfer_guid+force_action: GUID travels to destination, source is cleared and marked needs_restamp (Highlander mode — one cabinet owns a GUID)."
     fields:
       action_type:
         description: '''manifest'', ''create'', ''read'', ''update'', ''delete'', ''move'',
-          ''copy'', ''set_mount'', ''remove_mount'', ''help'' (default: help)'
+          ''copy'', ''clone'', ''set_mount'', ''remove_mount'', ''help'' (default: help)'
         required: true
         selector:
           select:
@@ -1185,6 +1351,7 @@ script:
             - delete
             - move
             - copy
+            - clone
             - set_mount
             - remove_mount
             - help
@@ -1331,14 +1498,23 @@ script:
         selector:
           entity:
         name: Destination Cabinet
-        description: Target Cabinet, REQUIRED for Move / Copy Actions. Must be valid
-          cabinet.
+        description: Target Cabinet, REQUIRED for Move / Copy / Clone Actions. Must
+          be valid cabinet.
       destination_drawer:
         selector:
           text:
         name: Destination Drawer
         description: 'Target Drawer, REQUIRED for Move / Copy Actions. Drawer name will
           be slugified - ''My Partner'' == ''my_partner'' '
+      transfer_guid:
+        selector:
+          boolean:
+        name: Transfer GUID
+        description: 'Clone only. When true: GUID travels with content to destination,
+          source is cleared and marked for restamp. Destructive and irreversible —
+          requires force_action: true.'
+        default: false
+        required: false
       target_guid:
         selector:
           text:
