@@ -119,7 +119,41 @@ Current scope is resolution only. Privilege enforcement, session tokens, and sec
 
 ---
 
-## **5. Zen DojoTools Core (FileCabinet GC) — 4.2.0**
+## **5. Zen DojoTools History — 4.2.0**
+
+**File:** `zen_dojotools_history_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+Recorder statistics query engine. Time-bucketed historical data for sensors with a valid state_class.
+
+* `read` — query by entity, time range, period (5min/hour/day/week/month), and stat type
+* Stat types: change (cumulative), mean/min/max, state, sum, last_reset
+* Sensors must have statistics enabled in HA Recorder
+* Never creates, updates, or deletes history (intentional, permanent)
+
+---
+
+## **6. Zen DojoTools Utilities — 4.2.0**
+
+**File:** `zen_dojotools_utilities_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+General-purpose utility collection.
+
+* `calculator` — arithmetic, trig, conversions, GUID generation
+* `dice_roller` — D&D dice notation, coin flip, random integer/float
+* `announce` — TTS router to HA areas (label-resolved)
+* `music_search` — Music Assistant library + internet search
+* `notification_router` — multi-target notify with quiet hours and breakthrough override
+* `help` — live system overview and script inventory
+* `wait` — timed delay (1–120s)
+* `volume_auditor` — cabinet accessibility scanner
+
+---
+
+## **7. Zen DojoTools Core (FileCabinet GC) — 4.2.0**
 
 **File:** `zen_dojotools_core_readme.md`
 **Type:** Technical Documentation

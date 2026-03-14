@@ -27,6 +27,7 @@ New to ZenOS-AI? Start here.
 * `install.md` — File copy, configuration.yaml setup, conversation agent prompt, helper configuration, health verification
 * `first_run.md` — First boot walkthrough, OOBE conversation, persona selector, editing profiles, troubleshooting
 * `entity_exposure.md` — What to expose to your conversation agent: actionable vs contextable vs invisible, the three-tier model
+* `oobe.md` — OOBE walkthrough: the six-step first-boot configuration protocol to your conversation agent: actionable vs contextable vs invisible, the three-tier model
 
 If you just installed ZenOS-AI and want to know what to do next, start here.
 
@@ -158,7 +159,17 @@ Scripts are the motor cortex. They turn reasoning into action.
 
 ---
 
-## 🧩 **8. Zen HyperIndex**
+## ⚕️ **8. Health Sensors**
+
+**Folder:** `docs/sensors/`
+
+Layered health monitoring stack — labels, cabinets, cognition pipeline, agent bootability.
+
+* `readme.md` — full reference: all 8 sensors, states, conditions, attributes, troubleshooting quick-reference
+
+---
+
+## 🧩 **9. Zen HyperIndex**
 
 **Folder:** `docs/zen_hyperindex/`
 
@@ -170,7 +181,7 @@ If Cabinets are the filesystem, HyperIndex is the search engine plus attention m
 
 ---
 
-## 🧠 **9. Zen Summarizer**
+## 🧠 **10. Zen Summarizer**
 
 **Folder:** `docs/zen_summarizer/`
 
@@ -192,7 +203,7 @@ This is Friday’s working memory engine.
 
 ---
 
-## 🔐 **10. Identity & Security Model**
+## 🔐 **11. Identity & Security Model**
 
 **Folder:** `docs/architecture/09_Identity_Architecture.md`
 
@@ -216,7 +227,7 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 ---
 
-## 🗺️ **11. Roadmap**
+## 🗺️ **12. Roadmap**
 
 **File:** `docs/roadmap.md`
 
