@@ -131,7 +131,7 @@ If Friday trusts a Cabinet, it’s because the Manifest told her it's safe.
 
 ## **5. Zen DojoTools Zen Index — v3.8.0 RC1**
 
-**File:** `zen_dojotools_zen_index_readme.md`
+**File:** `zen_dojotools_index_readme.md`
 **Type:** Technical Documentation
 
 **Summary:**

@@ -1,6 +1,6 @@
 # ZenOS-AI: First Run Guide
 
-> **Version:** 4.0.0 RC2 | **Last Updated:** March 2026
+> **Version:** 4.2.0 | **Last Updated:** March 2026
 
 ---
 
