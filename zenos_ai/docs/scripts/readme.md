@@ -33,9 +33,9 @@ Below is the official documentation index for all ZenOS-AI DojoTools modules.
 
 ---
 
-## **1. Zen DojoTools Calendar — v1.10.3**
+## **1. Zen DojoTools Office — 4.2.0**
 
-**File:** `zen_dojotools.calendar_readme.md`
+**File:** `zen_dojotools_office_readme.md`
 **Type:** Technical Documentation
 
 **Summary:**
@@ -81,7 +81,7 @@ This is how Friday, Veronica, Kronk, and the High Priestess leave traceable brea
 
 ---
 
-## **3. Zen DojoTools FileCabinet — v3.8.2 RC1**
+## **3. Zen DojoTools FileCabinet — 4.2.0**
 
 **File:** `script.zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
@@ -105,7 +105,7 @@ If any drawer changes anywhere in ZenOS-AI, it happened through FileCabinet.
 
 ---
 
-## **4. Zen DojoTools Manifest — v3.8.0 RC1**
+## **4. Zen DojoTools Manifest — 4.2.0**
 
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
@@ -129,7 +129,7 @@ If Friday trusts a Cabinet, it’s because the Manifest told her it's safe.
 
 ---
 
-## **5. Zen DojoTools Zen Index — v3.8.0 RC1**
+## **5. Zen DojoTools Index — 4.2.0**
 
 **File:** `zen_dojotools_index_readme.md`
 **Type:** Technical Documentation
@@ -151,7 +151,7 @@ The Zen Index is Friday’s “graph engine,” letting her understand relations
 
 ---
 
-## **6. Zen DojoTools Inspect — v3.8.0 RC1**
+## **6. Zen DojoTools Inspect — 4.2.0**
 
 **File:** `zen_dojotools_inspect_readme.md`
 **Type:** Technical Documentation

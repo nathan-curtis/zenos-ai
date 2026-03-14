@@ -1,5 +1,5 @@
 ZenOS-AI Template Engine: Zen Query Engine (ZQ-1) Technical Specification  
-Version: 1.3.4 RC1 (Paging + Numeric Sort)  
+Version: 4.2.0  
 Status: Stable and required for all Zen DojoTools Query flows  
 
 ---

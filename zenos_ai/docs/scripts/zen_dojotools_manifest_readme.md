@@ -1,4 +1,4 @@
-# 📘 Zen DojoTools Manifest — v3.8.0 RC1
+# Zen DojoTools Manifest — 4.2.0
 **File:** `zen_dojotools_manifest_readme.md`  
 **Type:** Technical Documentation  
 

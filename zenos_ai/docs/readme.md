@@ -1,8 +1,6 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 1.2.0 | **Last Updated:** December 2025
-> **Author:** Nathan Curtis | **License:** MIT
-> *Part of the Friday’s Party / ZenOS-AI project*
+> **Version:** 4.2.0 | **Last Updated:** March 2026 | **License:** MIT
 
 ---
 
@@ -143,14 +141,15 @@ Documentation for every Zen DojoTool and script module.
 
 Includes:
 
-* `script.zen_dojotools_filecabinet_readme.md`
-* `zen_dojotools.calendar_readme.md`
-* `zen_dojotools_event_emitter_readme.md`
-* `zen_dojotools_hyperindex_readme.md`
-* `zen_dojotools_index_readme.md`
-* `zen_dojotools_inspect_readme.md`
+* `zen_dojotools_scheduler_readme.md` — Scheduler architecture, trigger IDs, component subscription, hardware trigger pattern
+* `script.zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`
+* `zen_dojotools_inspect_readme.md`
+* `zen_dojotools_index_readme.md`
+* `zen_dojotools_hyperindex_readme.md`
 * `zen_dojotools_query_readme.md`
+* `zen_dojotools_office_readme.md`
+* `zen_dojotools_event_emitter_readme.md`
 * `readme.md` – Overview
 
 Scripts are the motor cortex. They turn reasoning into action.

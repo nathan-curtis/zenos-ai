@@ -1,6 +1,6 @@
-# **Zen DojoTools Calendar — Version 1.10.3**
+# Zen DojoTools Office — 4.2.0
 
-*Modular Calendar Management Tool for Home Assistant*
+*Calendar and scheduling tools for Home Assistant*
 
 ---
 

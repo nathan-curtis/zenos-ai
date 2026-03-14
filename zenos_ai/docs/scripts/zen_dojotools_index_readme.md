@@ -1,4 +1,4 @@
-# 📘 Zen DojoTools Zen Index — v3.8.0 RC1
+# Zen DojoTools Index — 4.2.0
 **File:** `zen_dojotools_zen_index_readme.md`  
 **Type:** Technical Documentation  
 
