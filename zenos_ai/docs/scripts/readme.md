@@ -204,7 +204,7 @@ This is how Friday, Veronica, Kronk, and the High Priestess leave traceable brea
 
 ## **5. Zen DojoTools FileCabinet — 4.2.0**
 
-**File:** `script.zen_dojotools_filecabinet_readme.md`
+**File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 
 **Summary:**

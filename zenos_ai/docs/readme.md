@@ -144,7 +144,7 @@ Includes:
 
 * `zen_dojotools_admintools_readme.md` — AdminTools: KungFu Writer, cabinet repair, template press, prompt loader
 * `zen_dojotools_scheduler_readme.md` — Scheduler architecture, trigger IDs, component subscription, hardware trigger pattern
-* `script.zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
+* `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`
 * `zen_dojotools_inspect_readme.md`
 * `zen_dojotools_index_readme.md`
