@@ -1,4 +1,4 @@
-# 📘 Zen DojoTools FileCabinet — v3.8.2 RC1
+# Zen DojoTools FileCabinet — 4.2.0
 **File:** `zen_dojotools_filecabinet_readme.md`  
 **Type:** Technical Documentation  
 
@@ -21,18 +21,18 @@ The FileCabinet script is the only sanctioned way for an LLM agent
 
 It coordinates:
 
-- drawer creation and updates  
-- drawer deletion  
-- cross-cabinet moves & copies  
-- label assignment + label-index maintenance  
-- directory listings  
-- label-based reads  
-- full volume reads  
-- manifest pass-through  
-- JSON parsing and coercion  
-- write verification  
-- concurrent-write protection  
-- health validation  
+- drawer creation and updates
+- drawer deletion
+- cross-cabinet moves, copies, and clones
+- label assignment + label-index maintenance
+- directory listings
+- label-based reads
+- full volume reads
+- manifest pass-through
+- JSON parsing and coercion
+- write verification
+- concurrent-write protection
+- health validation
 
 If it writes, moves, or deletes a drawer, it came from here.
 
@@ -183,10 +183,25 @@ Multiple modes:
 - Verifies index pruning  
 
 ### `move` / `copy`
-- Requires destination cabinet + drawer  
-- Moves or copies drawer value  
-- Updates target label index  
-- For “move” deletes source + prunes source index  
+- Requires destination cabinet + drawer
+- Moves or copies drawer value
+- Updates target label index
+- For `move`: deletes source drawer + prunes source index
+
+### `clone`
+Copies the full content of one cabinet into another. Operates in **Highlander mode** — one cabinet owns a GUID and that identity is immutable unless explicitly transferred.
+
+- Copies all non-system drawers from source to destination
+- Mount point drawers are copied through (noted in response as `mounts_copied`)
+- Health checks run on both source and destination before any write
+- Blocked if source and destination are the same cabinet
+
+**GUID transfer** (optional, requires `transfer_guid: true` + `force_action: true`):
+- Moves GUID ownership from source to destination
+- Clears source drawers after transfer
+- Marks source VolumeInfo with `needs_restamp: true` so the stamper assigns a new identity on next pass
+
+> **Known limitation:** Large cabinets (10+ drawers) may exceed script timeout during a GUID transfer pass. The write chain is too long for a single execution. If Highlander returns `{}` or times out, use a standard clone to move the data, then manually stamp the destination to assign a new GUID. Data gets there intact — you lose single-step atomicity.
 
 ---
 
@@ -273,14 +288,29 @@ labels: "preferences, profile"
 
 ### Move drawer
 ```
-
 action_type: move
 volume_entity: sensor.source_cabinet
 key: settings
 destination_cabinet: sensor.dest_cabinet
 destination_drawer: settings_moved
 force_action: true
+```
 
+### Clone cabinet (content copy)
+```
+action_type: clone
+volume_entity: sensor.source_cabinet
+destination_cabinet: sensor.dest_cabinet
+```
+
+### Clone with GUID transfer (Highlander mode)
+Moves identity ownership. Source is cleared and marked for restamping.
+```
+action_type: clone
+volume_entity: sensor.source_cabinet
+destination_cabinet: sensor.dest_cabinet
+transfer_guid: true
+force_action: true
 ```
 
 ---
@@ -314,21 +344,34 @@ This is the **authoritative, hardened interface** that lets Friday mutate state
 
 ---
 
+## Troubleshooting
+
+### Cabinet data disappeared after restart
+Data written to a cabinet is gone after an HA restart. This is most likely a recorder timing issue — new entities may not have completed a write cycle before the restart. Don’t write anything critical to a cabinet in the same session it was created. Let the install settle first.
+
+### Cabinet appears unavailable / health sensors show errors that don’t match
+Check for a `_2` duplicate in Settings → Entities. This happens when the canonical entity name was already in the registry from a previous install. Your package is wired to `sensor.zenos_dojo_cabinet` but HA is serving `sensor.zenos_dojo_cabinet_2`. You’ll spin forever with no obvious error.
+
+Fix: confirm you have a backup, then Settings → Entities → find the `_2` entity → delete or reset via UI. Restart HA. The cabinet re-attaches to the correct entity ID and state restores from recorder.
+
+> Back up before touching the entity registry. No backup, no recovery path.
+
+---
+
 ## Summary
 
-The Zen DojoTools FileCabinet RC1 provides:
+The Zen DojoTools FileCabinet provides:
 
-- A unified read/write abstraction for Cabinet volumes  
-- Zero-trust health gating  
-- Strict JSON handling  
-- Drawer labeling + index management  
-- Volume directory + label search tools  
-- Cross-volume mutation operations  
-- Write verification + state consistency  
-- Manifest integration  
-- Full protection against concurrency, schema mismatches, and unhealthy volumes  
+- A unified read/write abstraction for Cabinet volumes
+- Zero-trust health gating
+- Strict JSON handling
+- Drawer labeling + index management
+- Volume directory + label search tools
+- Cross-volume mutation operations including clone with Highlander GUID transfer
+- Write verification + state consistency
+- Manifest integration
+- Full protection against concurrency, schema mismatches, and unhealthy volumes
 
 If it reads like a filesystem, feels like a KV store, smells like a structured persistence layer, and behaves like a transactional controller?
 
-Yeah.  
-That’s FileCabinet.
+Yeah. That’s FileCabinet.

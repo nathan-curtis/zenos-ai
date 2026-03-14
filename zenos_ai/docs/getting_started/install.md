@@ -106,6 +106,19 @@ After setting this, trigger a restart or wait — Flynn re-runs on any health se
 
 > **Note:** Flynn confirms the entity exists and is reachable but does not perform a live inference test at boot. If your model is misconfigured or offline it will pass this gate — the failure surfaces at runtime when the summarizer first calls it.
 
+> **⚠️ WARNING — Background Summarization Costs:**
+> ZenOS-AI runs two AI agents in the background on a continuous schedule: the Ninja Summarizer (fires multiple times per hour) and the SuperSummary (minimum 4 times per hour). The entity set in `input_text.zenos_ai_task_entity` — which Flynn auto-configures from your conversation agent — is what drives these background jobs.
+>
+> **Do NOT point your AI task entity at a paid inference API** (OpenAI, Anthropic, Google, etc.) unless you have explicitly budgeted for continuous automated inference. The token volume will generate a significant bill.
+>
+> Use a **locally-hosted model** (e.g. Ollama, LocalAI, llama.cpp via the HA Local AI integration) for background summarization. Your frontline conversation agent — the one you chat with — operates on demand only and does not carry this risk.
+>
+> **Model selection guidance for background summarization:**
+> - The summarizer does **not** require a tool-calling capable model — it needs strong summarization and JSON authoring skills
+> - Models under ~4B parameters do not perform reliably here
+> - **Context window is critical.** Each summarizer run ingests a supplemental prompt, the component's prior Kata drawers, and a full entity state snapshot. Your inference server must have enough context headroom to hold all of this in a single pass. If your model is silently truncating or your inference server is throwing context errors, your summaries will degrade or fail — check your inference server logs for context length warnings
+> - Better instrumentation for context size diagnostics is planned for a future build
+
 **Optional pre-seeds** (can also be set conversationally via OOBE):
 
 | Helper | Entity | Purpose |
