@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current version: 4.1.0 RC2**
+**Current version: 4.2.0**
 
 ---
 
@@ -186,7 +186,7 @@ ZenOS-AI installs as a **Home Assistant package collection**.
 
 • Home Assistant 2024.x+
 • A conversation agent with tool-calling support (models under ~8B parameters or with short context windows are not recommended)
-• `custom_templates:` enabled in `configuration.yaml`
+• Spook integration (installable via HACS)
 
 ---
 
@@ -362,13 +362,13 @@ This allows the system to preserve context while maintaining token efficiency.
 
 ZenOS-AI includes a layered health monitoring system.
 
-| Sensor                        | Purpose                   |
-| ----------------------------- | ------------------------- |
-| `sensor.zen_label_health`     | label validation          |
-| `sensor.zen_cabinet_health`   | cabinet entity validation |
-| `sensor.zen_monastery_health` | Monastery connectivity    |
-| `sensor.zen_flynn_health`     | infrastructure rollup     |
-| `sensor.zen_agent_health`     | agent bootability roster  |
+| Sensor                        | Purpose                              |
+| ----------------------------- | ------------------------------------ |
+| `sensor.zen_label_health`     | label validation                     |
+| `sensor.zen_cabinet_health`   | cabinet entity validation            |
+| `sensor.zen_monastery_health` | cognition pipeline rollup            |
+| `sensor.zen_agent_health`     | agent bootability roster + Flynn     |
+| `sensor.zen_summarizer_health`| scheduler heartbeat + AI task status |
 
 States:
 
@@ -399,31 +399,32 @@ They are **unstoppable on the second try**.
 
 ---
 
-# Local Stack Summary
+# Reference Stack
+
+ZenOS-AI is designed to run on a modest homelab. The reference deployment uses:
 
 ### Infrastructure
 
-• Proxmox cluster
-• GPU inference node
-• Portainer
-• n8n agent orchestration
-• Structured DNS
-• UniFi Identity
+• Hypervisor cluster (e.g. Proxmox) for VM/container isolation
+• Dedicated GPU inference node for local model hosting
+• Container management (e.g. Portainer)
+• Structured local DNS
+• Network identity and access management (e.g. UniFi)
 
 ### AI Runtime
 
-• multi-model inference
-• role-segmented agents
-• JSON contract enforcement
-• tool-layer privilege gating
+• Local multi-model inference (e.g. Ollama, llama.cpp, vLLM)
+• Role-segmented agents — each persona targets a different model or endpoint
+• JSON contract enforcement at the tool layer
+• Privilege gating by identity
 
 ### Services
 
-• Home Assistant
-• Mealie
-• Grocy
-• OpenWebUI
-• inference backends
+• Home Assistant (required)
+• OpenWebUI or equivalent for direct model access
+• Optional: Mealie, Grocy, calendar integrations (plugin-based)
+
+You do not need all of this to run ZenOS-AI. HA + a local inference server is enough to get started. The above reflects what a full deployment looks like.
 
 This is not **a chatbot inside Home Assistant**.
 
@@ -444,6 +445,21 @@ Silence is a bug.
 Nothing critically important is invisible.
 
 Over-engineering is just engineering that has not yet been vindicated.
+
+---
+
+# ⚠️ Inference Cost Warning
+
+The Ninja Summarizer and SuperSummary run continuously in the background — multiple times per hour. The model configured as your **AI task entity** (`input_text.zenos_ai_task_entity`) handles all background summarization.
+
+**Do not point this at a paid inference API.** The token volume will generate a significant and continuous bill.
+
+Use a locally-hosted model for background work. Your frontline conversation agent (the one you chat with) operates on demand only and does not carry this risk.
+
+Model guidance for background summarization:
+- Does **not** need tool-calling capability — needs strong summarization and JSON authoring
+- Models under ~4B parameters do not perform reliably
+- Context window must be large enough to hold the summarizer prompt, prior Kata content, and entity state snapshot in a single pass — watch your inference server logs for context length errors
 
 ---
 
