@@ -86,7 +86,57 @@ Expose this to your conversation agent — Friday can then help you configure yo
 
 ---
 
-## **3. Zen DojoTools SystemTools & Home Mode — 4.2.0**
+## **3. Zen DojoTools Labels — 4.2.0**
+
+**File:** `zen_dojotools_labels_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+Core primitive for label CRUD and entity tagging. Backbone of the label index that powers HyperIndex, KFC components, and cabinet resolution.
+
+* `create` / `delete` — manage labels (confirm required)
+* `read` — full index or filtered by label/entity
+* `tag` / `untag` — assign or remove labels from entities
+
+Includes label design guidance: cross-entity labels outperform single-use labels; layer broad domain labels with specific sub-labels for richer HyperIndex traversal.
+
+---
+
+## **4. Zen DojoTools Identity — 4.2.0**
+
+**File:** `zen_dojotools_identity_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+Identity resolver for ZenOS-AI household members and AI constructs. Stateless, read-only, MCP-exposed.
+
+* No target → full redacted roster
+* Target (label, person entity, cabinet entity, or GUID) → single identity record
+* Normalizes and validates all input forms before lookup
+* Delegates resolution to `zen_cabinets()` macro in zen_os_1rc.jinja
+
+Current scope is resolution only. Privilege enforcement, session tokens, and security masking are planned post-GA.
+
+---
+
+## **5. Zen DojoTools Core (FileCabinet GC) — 4.2.0**
+
+**File:** `zen_dojotools_core_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+FileCabinet garbage collector — enforces the drawer hide/delete/recycle lifecycle across all AI Data Storage cabinets.
+
+* `gc` — full daily scan (scheduled at midnight via Scheduler)
+* `recycle` — hide a drawer + set 24h expiry
+* `hide` / `unhide` — manual visibility control
+* `dry_run` — preview what would be evicted
+
+Protected drawers (`_prefix`, VolumeInfo, schema keys) are never touched. Post-eviction SuperSummary trigger built in.
+
+---
+
+## **6. Zen DojoTools SystemTools & Home Mode — 4.2.0**
 
 **File:** `zen_dojotools_systemtools_readme.md`
 **Type:** Technical Documentation
