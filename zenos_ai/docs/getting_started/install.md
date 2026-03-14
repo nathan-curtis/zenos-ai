@@ -9,7 +9,6 @@
 - **Home Assistant** 2024.x or newer
 - **Spook Integration** Installable through HACS. [Spook Install instructions](https://spook.boo/installation/)
 - **A conversation agent** configured in HA with a tool-calling capable model. Models smaller than ~8B parameters or with short context windows are not recommended — ZenOS-AI prompts are large and tool use is required.
-- `custom_templates:` enabled in your HA configuration
 - SSH or filesystem access to your HA config directory
 
 ---
@@ -47,15 +46,22 @@ If you already have a packages block, merge this in — don't add a second `home
 
 ---
 
-## Step 3 — Enable Custom Templates
+## Step 3 — Add Required Secrets
 
-Add this to `configuration.yaml` if it isn't already there:
+ZenOS-AI requires a HA long-lived access token for its system tools. Add this to your `secrets.yaml`:
 
 ```yaml
-custom_templates:
+ha_bearer: "Bearer <your-long-lived-token>"
 ```
 
-No further configuration needed — HA will automatically pick up templates from `custom_templates/`.
+Generate a token at **Profile → Security → Long-Lived Access Tokens** in your HA UI.
+
+> **Plugin secrets:** If you install the Mealie or Grocy plugins, add these too:
+> ```yaml
+> mealie_bearer: "Bearer <mealie-api-token>"
+> grocy_api_key: "<grocy-api-key>"
+> ```
+> Leave them out entirely if you're not using those plugins.
 
 ---
 
