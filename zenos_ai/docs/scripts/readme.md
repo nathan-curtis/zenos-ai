@@ -52,6 +52,22 @@ KungFu Writer is the only AI-accessible tool here. All others are admin-only and
 
 ---
 
+## **2. Zen DojoTools Profile Editor — 4.2.0**
+
+**File:** `zen_dojotools_profile_readme.md`
+**Type:** Technical Documentation
+
+**Summary:**
+Universal read/write interface for ZenOS-AI identity profiles.
+
+* `mode: read` — inspect current ai_user, household, user, or family profile
+* `mode: write` — patch fields non-destructively (skips existing values unless `force: true`)
+* `mode: help` — full field reference with examples
+
+Expose this to your conversation agent — Friday can then help you configure your household, update persona details, and fill in profile fields conversationally. Four cabinet types: `ai_user` (persona essence), `household` (location/contact), `user` (household members), `family` (extended family).
+
+---
+
 ## **3. Zen DojoTools Office — 4.2.0**
 
 **File:** `zen_dojotools_office_readme.md`
