@@ -10,12 +10,14 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current version: 4.5.6**
+**Current version: 2026.3.1**
 
-4.5.5 'Ready Player Two' shipped 2026-03-26 — identity and lifecycle release, 21/21 UAT green on live H:\ install.
-Patch 4.5.6 in UAT — identity graph wiring, home mode timer seeding, alertmanager persistence, name resolution fix.
+> **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-Full notes: [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md) | [Patch 4.5.6](zenos_ai/docs/releases/patch_4_5_6.md)
+2026.3.0 'Ready Player Two' shipped 2026-03-26 — identity and lifecycle release, 21/21 UAT green on live H:\ install.
+2026.3.1 — identity graph wiring, home mode timer seeding, alertmanager persistence, name resolution fix.
+
+Full notes: [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md) | [2026.3.1 Patch Notes](zenos_ai/docs/releases/patch_4_5_6.md)
 
 ---
 

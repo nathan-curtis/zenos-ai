@@ -61,7 +61,9 @@ Generate a token at **Profile → Security → Long-Lived Access Tokens** in you
 > mealie_bearer: "Bearer <mealie-api-token>"
 > grocy_api_key: "<grocy-api-key>"
 > ```
-> Leave them out entirely if you're not using those plugins.
+> **Not using Mealie or Grocy?** Add dummy values anyway — HA will fail to load if the secret keys are referenced but missing from `secrets.yaml`. A placeholder like `"unused"` is fine and harmless.
+>
+> *(Doc bug credit: [lucianoj](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/481) — caught `Secret mealie_bearer not defined` on a fresh install.)*
 
 ---
 

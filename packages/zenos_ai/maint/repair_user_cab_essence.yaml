@@ -1,0 +1,368 @@
+###############################################################################
+# ZenOS-AI — One-shot repair: seed zenai_essence on user-type cabinets
+#
+# Problem:
+#   User-type cabinets provisioned before this fix have no zenai_essence drawer.
+#   zen_cabinets() marks them invalid (no GUID/name extractable from essence),
+#   so they are excluded from identity_roster() and zen_identity_manifest.
+#   The HoH appears in the household tree (from ACLs) but not in the flat
+#   roster — split-brain manifest. Affects all pre-fix user-type cabs including
+#   installs where the HoH is a user cab (Phil's reported case).
+#
+# What this script does:
+#   1. Reads VolumeInfo → GUID
+#   2. Reads _user_profile → name (falls back to VolumeInfo friendly_name,
+#      then to person entity friendly_name if person_entity is on the profile)
+#   3. Validates GUID is present — aborts if missing (run stamp_cab_guid first)
+#   4. If zenai_essence already valid (core.id matches VolumeInfo id AND
+#      jacket.name is non-empty) → skips (idempotent, safe to re-run)
+#   5. Writes minimal zenai_essence: core.id + core.person_id + jacket.name
+#   6. Verifies the write
+#   7. Fires identity_manifest_rebuild event
+#
+# Safety:
+#   - confirm_action: true required (script exits without changes otherwise)
+#   - dry_run: true logs all planned writes without executing them
+#   - Validates GUID before any write — aborts if missing
+#   - Idempotent — skips if essence already valid
+#   - FG-38 safe: two-round normalization on all cabinet reads
+#
+# Usage:
+#   1. Add this file to your packages directory temporarily
+#   2. Reload scripts (or full reload)
+#   3. Run zen_repair_user_cab_essence from Developer Tools > Actions
+#      with dry_run: true first, then confirm_action: true for live run
+#   4. Run once per affected user cabinet
+#   5. Remove this file after all repairs are confirmed
+#
+# Target: sensor.zen_default_user_cabinet_resolved (default)
+#   Override with cabinet_entity field for non-default user cabs.
+#
+# Note: If jacket.name resolves to empty (no person_entity, no VolumeInfo
+#   friendly_name), the cabinet will still be invalid in the roster after
+#   repair. The dry_run output shows name_source — check it first.
+###############################################################################
+
+script:
+  zen_repair_user_cab_essence:
+    alias: "ZenOS Repair: Seed zenai_essence on User Cabinet"
+    description: >-
+      One-shot repair for user-type cabinets missing zenai_essence. Reads GUID
+      from VolumeInfo and name from _user_profile (with fallbacks), writes a
+      minimal essence (core.id + jacket.name) so the cabinet is valid in the
+      roster. Idempotent — skips if essence already valid. Requires
+      confirm_action: true. Do not expose to LLM or AI tools.
+    icon: mdi:account-wrench
+    mode: single
+    fields:
+      confirm_action:
+        name: Confirm Action
+        description: "Must be true — script exits without making any changes otherwise."
+        required: true
+        default: false
+        selector:
+          boolean:
+      dry_run:
+        name: Dry Run
+        description: "If true, logs all planned writes but does NOT execute them. Run dry first."
+        required: false
+        default: true
+        selector:
+          boolean:
+      cabinet_entity:
+        name: Cabinet Entity
+        description: >-
+          Target user cabinet sensor entity_id. Defaults to
+          sensor.zen_default_user_cabinet_resolved. Override for non-default
+          user cabinets.
+        required: false
+        selector:
+          entity:
+            domain: sensor
+    sequence:
+
+    # ── Guard: confirmation required ─────────────────────────────────────────
+    - variables:
+        confirm_action: "{{ confirm_action | default(false) | bool }}"
+        dry_run: "{{ dry_run | default(true) | bool }}"
+    - if: "{{ not confirm_action }}"
+      then:
+        - variables:
+            _abort:
+              status: aborted
+              reason: "confirm_action not set. Set confirm_action: true to proceed. Use dry_run: true first."
+        - stop: Confirmation required
+          response_variable: _abort
+
+    # ── Resolve cabinet entity ────────────────────────────────────────────────
+    - variables:
+        _target_cab: >-
+          {%- set _ce = cabinet_entity | default('') | trim -%}
+          {%- if _ce != '' -%}
+            {{ _ce }}
+          {%- else -%}
+            {{ states('sensor.zen_default_user_cabinet_resolved') }}
+          {%- endif -%}
+
+    - if: "{{ _target_cab in ['', 'unknown', 'unavailable'] }}"
+      then:
+        - variables:
+            _abort:
+              status: aborted
+              reason: "Could not resolve user cabinet entity. Pass cabinet_entity explicitly."
+              resolved: "{{ _target_cab }}"
+        - stop: Cabinet not resolved
+          response_variable: _abort
+
+    # ── Read all cabinet variables once ──────────────────────────────────────
+    - variables:
+        _cab_vars_raw: "{{ state_attr(_target_cab, 'variables') | default({}, true) }}"
+        _cab_vars: "{{ _cab_vars_raw if _cab_vars_raw is mapping else {} }}"
+
+    # ── Read VolumeInfo → GUID + friendly_name ────────────────────────────────
+    # FG-38 safe: two-round normalization
+    - variables:
+        _vi_info: >-
+          {%- set _e = _cab_vars.get('AI_Cabinet_VolumeInfo', {}) -%}
+          {%- set _e = _e if _e is mapping else (_e | from_json if _e is string else {}) -%}
+          {%- set _vi = _e.get('value', _e) -%}
+          {%- set _vi = _vi if _vi is mapping else (_vi | from_json if _vi is string else {}) -%}
+          {{ {
+            'guid': _vi.get('id', '') | trim,
+            'friendly_name': _vi.get('friendly_name', _vi.get('name', '')) | trim
+          } | tojson }}
+
+    - variables:
+        _guid: >-
+          {%- set _v = _vi_info | from_json if _vi_info is string else (_vi_info if _vi_info is mapping else {}) -%}
+          {{ _v.get('guid', '') }}
+        _vi_friendly_name: >-
+          {%- set _v = _vi_info | from_json if _vi_info is string else (_vi_info if _vi_info is mapping else {}) -%}
+          {{ _v.get('friendly_name', '') }}
+
+    # Guard: GUID must be present before writing anything
+    - if: "{{ _guid == '' }}"
+      then:
+        - variables:
+            _abort:
+              status: aborted
+              reason: >-
+                VolumeInfo.id is empty on '{{ _target_cab }}'. Cabinet needs
+                stamping before essence can be seeded. Run
+                zen_maint_4_5_6_stamp_cab_guid first, then re-run this script.
+              cabinet: "{{ _target_cab }}"
+        - stop: No GUID in VolumeInfo
+          response_variable: _abort
+
+    # ── Read _user_profile → name + person_entity ─────────────────────────────
+    # FG-38 safe: two-round normalization on profile
+    - variables:
+        _profile_info: >-
+          {%- set _p = _cab_vars.get('_user_profile', {}) -%}
+          {%- set _p = _p if _p is mapping else (_p | from_json if _p is string else {}) -%}
+          {%- set _p = _p.get('value', _p) if _p is mapping else {} -%}
+          {%- set _p = _p if _p is mapping else (_p | from_json if _p is string else {}) -%}
+          {{ {
+            'name': _p.get('name', '') | trim,
+            'person_entity': _p.get('person_entity', '') | trim
+          } | tojson }}
+
+    - variables:
+        _profile_name: >-
+          {%- set _p = _profile_info | from_json if _profile_info is string else (_profile_info if _profile_info is mapping else {}) -%}
+          {{ _p.get('name', '') }}
+        _person_entity: >-
+          {%- set _p = _profile_info | from_json if _profile_info is string else (_profile_info if _profile_info is mapping else {}) -%}
+          {{ _p.get('person_entity', '') }}
+
+    # Fallback: try person entity friendly_name if profile name is empty
+    - variables:
+        _person_friendly_name: >-
+          {%- if _person_entity != '' -%}
+            {{ state_attr(_person_entity, 'friendly_name') | default('', true) | trim }}
+          {%- else -%}
+            {{ '' }}
+          {%- endif -%}
+
+    # Resolve final name: profile > VolumeInfo friendly_name > person entity
+    - variables:
+        _name: >-
+          {%- if _profile_name != '' -%}
+            {{ _profile_name }}
+          {%- elif _vi_friendly_name != '' -%}
+            {{ _vi_friendly_name }}
+          {%- elif _person_friendly_name != '' -%}
+            {{ _person_friendly_name }}
+          {%- else -%}
+            {{ '' }}
+          {%- endif -%}
+        _name_source: >-
+          {%- if _profile_name != '' -%}profile
+          {%- elif _vi_friendly_name != '' -%}volumeinfo
+          {%- elif _person_friendly_name != '' -%}person_entity
+          {%- else -%}none
+          {%- endif -%}
+
+    # ── Check existing zenai_essence ──────────────────────────────────────────
+    # FG-38 safe: two-round normalization
+    - variables:
+        _essence_check: >-
+          {%- set _raw = _cab_vars.get('zenai_essence', {}) -%}
+          {%- set _e = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
+          {%- set _e = _e.get('value', _e) if _e is mapping else {} -%}
+          {%- set _e = _e if _e is mapping else (_e | from_json if _e is string else {}) -%}
+          {%- set _core = _e.get('core', {}) if _e is mapping else {} -%}
+          {%- set _jacket = _e.get('jacket', {}) if _e is mapping else {} -%}
+          {%- set _existing_id = (_core.get('id', '') | trim) if _core is mapping else '' -%}
+          {%- set _existing_name = (_jacket.get('name', '') | trim) if _jacket is mapping else '' -%}
+          {{ {
+            'existing_id': _existing_id,
+            'existing_name': _existing_name,
+            'is_valid': (_existing_id == _guid) and (_existing_name | length > 0)
+          } | tojson }}
+
+    - variables:
+        _essence_already_valid: >-
+          {%- set _s = _essence_check | from_json if _essence_check is string else (_essence_check if _essence_check is mapping else {}) -%}
+          {{ _s.get('is_valid', false) | bool }}
+        _existing_essence_id: >-
+          {%- set _s = _essence_check | from_json if _essence_check is string else (_essence_check if _essence_check is mapping else {}) -%}
+          {{ _s.get('existing_id', '') }}
+        _existing_essence_name: >-
+          {%- set _s = _essence_check | from_json if _essence_check is string else (_essence_check if _essence_check is mapping else {}) -%}
+          {{ _s.get('existing_name', '') }}
+
+    # ── Log planned operations ────────────────────────────────────────────────
+    - action: system_log.write
+      data:
+        level: warning
+        message: >-
+          zen_repair_user_cab_essence: {{ 'DRY RUN — no writes' if dry_run else 'LIVE RUN' }}.
+          Target: {{ _target_cab }}.
+          GUID: {{ _guid }}.
+          Name resolved: '{{ _name }}' (source: {{ _name_source }}).
+          Existing essence — id: '{{ _existing_essence_id }}', name: '{{ _existing_essence_name }}', valid: {{ _essence_already_valid }}.
+          {{ 'Action: SKIP — essence already valid.' if _essence_already_valid else 'Action: WRITE new zenai_essence.' }}
+          {{ 'WARNING: name is empty — cabinet will remain invalid in roster after write.' if _name == '' and not _essence_already_valid else '' }}
+
+    # ── Short-circuit: essence already valid ──────────────────────────────────
+    - if: "{{ _essence_already_valid }}"
+      then:
+        - variables:
+            _skip_result:
+              status: skipped
+              message: "zenai_essence already present and valid — no action taken."
+              cabinet: "{{ _target_cab }}"
+              guid: "{{ _guid }}"
+              existing_name: "{{ _existing_essence_name }}"
+        - stop: Already valid
+          response_variable: _skip_result
+
+    # ── DRY RUN exit ─────────────────────────────────────────────────────────
+    - if: "{{ dry_run }}"
+      then:
+        - variables:
+            _dry_result:
+              status: dry_run
+              message: "Dry run complete — no writes made. Check system log for planned operations."
+              target_cabinet: "{{ _target_cab }}"
+              guid: "{{ _guid }}"
+              name_to_write: "{{ _name }}"
+              name_source: "{{ _name_source }}"
+              name_empty_warning: >-
+                {{ 'WARNING: name is empty. Cabinet will still be invalid in roster after write. Set jacket.name in zenai_essence manually.' if _name == '' else '' }}
+              essence_currently_valid: "{{ _essence_already_valid }}"
+        - stop: Dry run complete
+          response_variable: _dry_result
+
+    # ── WRITE: zenai_essence ──────────────────────────────────────────────────
+    - action: script.zen_dojotools_filecabinet
+      data:
+        action_type: create
+        force_action: true
+        set_timestamp: true
+        volume_entity_id:
+          - "{{ _target_cab }}"
+        key: zenai_essence
+        value: >-
+          {{ {
+            'core': {
+              'id': _guid,
+              'person_id': _person_entity,
+              'minted_at': now().isoformat()
+            },
+            'jacket': {
+              'name': _name
+            }
+          } | tojson }}
+      response_variable: _write_result
+
+    # ── Verify ────────────────────────────────────────────────────────────────
+    - delay: "00:00:01"
+    - variables:
+        _post_vars_raw: "{{ state_attr(_target_cab, 'variables') | default({}, true) }}"
+        _post_vars: "{{ _post_vars_raw if _post_vars_raw is mapping else {} }}"
+        _post_verify: >-
+          {%- set _raw = _post_vars.get('zenai_essence', {}) -%}
+          {%- set _e = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
+          {%- set _e = _e.get('value', _e) if _e is mapping else {} -%}
+          {%- set _e = _e if _e is mapping else (_e | from_json if _e is string else {}) -%}
+          {%- set _core = _e.get('core', {}) if _e is mapping else {} -%}
+          {{ (_core.get('id', '') | trim) if _core is mapping else '' }}
+
+    - variables:
+        _verify_ok: "{{ _post_verify == _guid }}"
+
+    - if: "{{ not _verify_ok }}"
+      then:
+        - variables:
+            _abort:
+              status: error
+              reason: >-
+                zenai_essence write did not verify. Expected core.id={{ _guid }},
+                got '{{ _post_verify }}'. Cabinet may be in inconsistent state —
+                check system log and inspect the cabinet manually.
+              expected_id: "{{ _guid }}"
+              got_id: "{{ _post_verify }}"
+              cabinet: "{{ _target_cab }}"
+        - action: system_log.write
+          data:
+            level: error
+            message: >-
+              zen_repair_user_cab_essence: FAILED verification on {{ _target_cab }}.
+              Expected id={{ _guid }}, got='{{ _post_verify }}'.
+        - stop: Verification failed
+          response_variable: _abort
+
+    - action: system_log.write
+      data:
+        level: info
+        message: >-
+          zen_repair_user_cab_essence: OK — zenai_essence written and verified
+          on {{ _target_cab }}. core.id={{ _guid }}, jacket.name='{{ _name }}'.
+
+    # ── Trigger manifest rebuild ──────────────────────────────────────────────
+    - event: zen_event
+      event_data:
+        event:
+          kind: identity_manifest_rebuild
+          component: zen_repair_user_cab_essence
+          severity: info
+          summary: "User cab essence repair complete — rebuilding identity manifest for {{ _target_cab }}."
+
+    # ── Final response ────────────────────────────────────────────────────────
+    - variables:
+        _final:
+          status: success
+          message: "zenai_essence seeded on user cabinet. Cabinet is now valid in identity roster."
+          cabinet: "{{ _target_cab }}"
+          guid: "{{ _guid }}"
+          name: "{{ _name }}"
+          name_source: "{{ _name_source }}"
+          name_empty_warning: >-
+            {{ 'WARNING: name is empty — cabinet will be invalid in roster despite repair. Set jacket.name in zenai_essence manually.' if _name == '' else '' }}
+          next_step: >-
+            Verify cabinet appears in identity roster via zen_dojotools_identity
+            (mode: build_identity_manifest). Check zen_identity_manifest drawer.
+    - stop: Repair complete
+      response_variable: _final

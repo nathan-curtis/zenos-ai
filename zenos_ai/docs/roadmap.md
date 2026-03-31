@@ -8,7 +8,9 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 ## Current Status
 
-**4.5.6 — Shipped (2026-03-27)**
+> **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
+
+**2026.3.1 — Shipped (2026-03-27)**
 
 Identity graph, alertmanager, and GUID correctness batch. `unlink_partners` variable name fix (ACL
 removal now persists). Cold bootstrap wires default family into household graph. Identity tree
@@ -17,13 +19,15 @@ name resolution extended (friendly_name → name → entity_id). GUID id-prefere
 helpers ship without `initial:`; Flynn seeds defaults on first boot. AlertManager deduplication
 fixed. `run_repair` moved from SystemTools to AdminTools behind confirm gate; two new maint scripts
 (`stamp_cab_guid`, `roster_guid_repair`) for pre-provisioner installs. Family cabinet VolumeInfo
-rogue key repair script added (`maint/repair_fam_cab_volumeinfo.yaml`).
+rogue key repair script added (`maint/repair_fam_cab_volumeinfo.yaml`). User cabinet essence
+seeding gap fixed — provisioner now seeds `zenai_essence` for `user` type at provision time;
+repair script added for existing installs (`maint/repair_user_cab_essence.yaml`).
 
-See: [Patch 4.5.6 Release Notes](releases/patch_4_5_6.md)
+See: [2026.3.1 Patch Notes](releases/patch_4_5_6.md)
 
 ---
 
-**4.5.5 'Ready Player Two' — Shipped (2026-03-26)**
+**2026.3.0 'Ready Player Two' — Shipped (2026-03-26)**
 
 Identity and lifecycle release. Cabinet provisioning system (mount-aware state machine,
 RP2 provisioner, expansion slots, scroll ceremony). Warmup as first-class sensor state.

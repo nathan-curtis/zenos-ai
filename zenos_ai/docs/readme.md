@@ -1,6 +1,8 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 4.5.5 'Ready Player Two' | **Last Updated:** March 2026 | **License:** MIT
+> **Version:** 2026.3.1 | **Last Updated:** March 2026 | **License:** MIT
+>
+> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.3.0` was the March GA, `2026.3.1` is the current patch. A new month resets to `.0`.*
 
 → [Project Overview & Install](../../README.md)
 
@@ -242,7 +244,11 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 **File:** `docs/roadmap.md`
 
-**4.5.5 'Ready Player Two' — Shipped (2026-03-26)**
+**2026.3.1 — Shipped (2026-03-27)**
+
+* Identity graph, alertmanager, GUID correctness, user cabinet essence seeding fix (Phil's edge case)
+
+**2026.3.0 'Ready Player Two' — Shipped (2026-03-26)**
 
 * Identity and lifecycle release — cabinet provisioning, warmup state machine, full household/family group management
 * Profile editor, zenai_essence, provisioner — all FG-38/FG-40 hardened and GA-ready
