@@ -1,0 +1,610 @@
+###############################################################################
+# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v1.2.1)
+#
+# Script: zen_dojotools_plant
+#
+# mode: overview | electric | water | gas | mechanical | circuits | help
+#
+# Discovery: label-based with graceful fallbacks.
+# All sections surface available: false if no entities found or unavailable.
+#
+# Electric: whole-home live power (label:utility_main or main_panel) +
+#           utility billing (label:utility_meter or integration labels) +
+#           grid carbon (label:energy_management).
+# Water:    flow sensor (label:water_usage or droplet) + billing rate.
+# Gas:      live sensor if zen_plant_gas labeled, else graceful N/A.
+# Circuits: label:consumed_energy (Wh, sort=energy default) or
+#           label:main_panel/sub_panel *_current sensors (sort=current).
+# Utilities: RM household cabinet utility_index injected into every response.
+# Discovery: zen_plant_* label overrides take first priority in all waterfalls.
+###############################################################################
+
+script:
+
+  zen_dojotools_plant:
+    alias: "Zen DojoTools Plant v1.2.1"
+    description: >
+      Physical plant + energy manager. Electric: whole-home live watts, utility
+      billing, grid carbon, circuit breakdown. Water: usage + billing rate.
+      Gas: live sensor if labeled, else graceful N/A. Utility registry from RM cabinet.
+      mode=overview: top-line all utilities. mode=electric: full electrical.
+      mode=water: usage + billing. mode=gas: sensor or graceful N/A + contact.
+      mode=mechanical: water heater status (mode, temps, hot water %, live W, daily kWh) + sump pump.
+      mode=circuits: circuit breakdown (circuit_limit, sort_by energy|current).
+      mode=validate: slot resolution report — see what's wired, what needs a label.
+      Discovery: zen_plant_* labels first, then integration labels, then generic.
+      mode=help for full reference.
+    mode: queued
+    max: 3
+
+    fields:
+
+      mode:
+        name: Mode
+        description: "overview (default), electric, water, gas, mechanical, circuits, help"
+        default: overview
+        selector:
+          select:
+            options: [overview, electric, hvac, water, gas, mechanical, circuits, validate, help]
+
+      circuit_limit:
+        name: Circuit Limit
+        description: "Max circuits to return in circuits mode. Default 10."
+        default: 10
+        selector:
+          number:
+            min: 1
+            max: 50
+            mode: box
+
+      sort_by:
+        name: Sort By
+        description: "circuits: energy (lifetime Wh, default) or current (live amps)"
+        default: energy
+        selector:
+          select:
+            options: [energy, current]
+
+      caller_token:
+        name: Caller Token
+        description: "Opaque token echoed in response for correlation."
+        selector:
+          text:
+
+    sequence:
+
+      # ── SETUP ─────────────────────────────────────────────────────────────
+      - variables:
+          _mode: "{{ mode | default('overview') | lower | trim }}"
+          _caller_token: "{{ caller_token | default('') }}"
+          _hh_cabinet: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+
+      # ── HELP ──────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'help' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: help
+                tool: zen_dojotools_plant
+                version: "1.2.1"
+                modes:
+                  overview: "Top-line snapshot: electric, hvac, water, gas, mechanical, utility registry"
+                  electric: "Live whole-home power + billing + grid carbon + panel status"
+                  hvac: "Climate units: mode, setpoint, current temp. Gas utility contact."
+                  water: "Water usage sensor + billing rate"
+                  gas: "zen_plant_gas sensor if tagged, else graceful N/A + utility contact surfaced"
+                  mechanical: "Water heater status + sump pump. Discovery: label:water_heater, label:sump_pump"
+                  circuits: "Circuit breakdown. Params: circuit_limit (default 10), sort_by (energy|current)"
+                  validate: "Resolution report — every slot: entity_id, pinned, raw_state, ok. Run to see what needs labeling."
+                  help: "This reference"
+                discovery:
+                  override_labels: "zen_plant_* labels take priority — tag any sensor to pin it"
+                  electric_live: "zen_plant_site_power → label:utility_main → label:main_panel *site_power"
+                  electric_billing: "zen_plant_billing_daily/weekly/monthly → label:cps_energy → label:utility_meter"
+                  electric_tariff: "zen_plant_tariff (unit: USD/Wh) → label:cps_energy *tariff|rate|price"
+                  electric_grid_carbon: "zen_plant_grid_carbon → label:energy_management *fossil*"
+                  water: "zen_plant_water → label:water_usage → label:droplet (non-fee sensors)"
+                  water_rate: "zen_plant_water_rate → label:water_usage *fee|rate|cost → input_number.saws_water_usage_fee_per_1000_gallons"
+                  gas: "zen_plant_gas (therms) → graceful N/A if unset"
+                  water_heater: "label:water_heater → water_heater.* + sensor.*available* + binary_sensor.*running* + sensor.*power*"
+                  sump_pump: "label:sump_pump → binary_sensor.* running status"
+                  ignore: "zen_plant_ignore → entity suppressed from all waterfalls"
+                  circuits_energy: "label:consumed_energy → sensor.* sorted desc by lifetime Wh"
+                  circuits_current: "label:main_panel+sub_panel → sensor.*_current* (excludes panel-level bus sensors)"
+                fallback: "All sections return available=false when entities are missing or unavailable"
+                utility_registry: "Injected from RM household cabinet utility_index on every response"
+          - stop: help
+            response_variable: _result
+
+      # ── UTILITY REGISTRY ──────────────────────────────────────────────────
+      - variables:
+          _util_raw: >-
+            {%- if _hh_cabinet == '' -%}{{ {} }}
+            {%- else -%}
+              {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('utility_index',none) -%}
+              {%- if _r is none -%}{{ {} }}
+              {%- elif _r is mapping -%}{{ _r.get('value',_r) if 'value' in _r else _r }}
+              {%- elif _r is string and _r|trim not in ['None','none','','null'] -%}
+                {%- set _rd=_r|from_json -%}
+                {{ _rd.get('value',_rd) if _rd is mapping and 'value' in _rd else _rd }}
+              {%- else -%}{{ {} }}
+              {%- endif -%}
+            {%- endif -%}
+
+      # ── IGNORE LIST ───────────────────────────────────────────────────────
+      # Tag any entity with zen_plant_ignore to suppress from all waterfalls.
+      - variables:
+          _zp_ignored: "{{ label_entities('zen_plant_ignore') | list }}"
+
+      # ── ENTITY DISCOVERY ─────────────────────────────────────────────────
+      # Waterfall: standard semantic labels first, integration-specific fallback.
+      # Standard labels any install should apply:
+      #   utility_main  — whole-home power/consumption meter
+      #   utility_meter — HA utility meter virtual sensors (daily/monthly)
+      #   consumed_energy — circuit/load level cumulative energy
+      #   water_usage   — whole-home water consumption sensor
+      # Integration-specific labels (SPAN, CPS Energy, Droplet, etc.) used
+      # as secondary when standard labels return nothing.
+      - variables:
+          _utility_main_sensors: "{{ label_entities('utility_main') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _utility_meter_sensors: "{{ label_entities('utility_meter') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _main_panel_sensors: "{{ label_entities('main_panel') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _cps_sensors: "{{ label_entities('cps_energy') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _cps_binary: "{{ label_entities('cps_energy') | select('match', 'binary_sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _energy_mgmt_sensors: "{{ label_entities('energy_management') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _water_usage_sensors: "{{ label_entities('water_usage') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _droplet_sensors: "{{ label_entities('droplet') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _consumed_energy_sensors: "{{ label_entities('consumed_energy') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _sub_panel_sensors: "{{ label_entities('sub_panel') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+
+      # ── ZEN_PLANT LABEL OVERRIDES ─────────────────────────────────────────
+      # Tag any sensor with a zen_plant_* label to pin it directly.
+      # Overrides take first priority in every waterfall below.
+      # zen_plant_tariff unit convention: USD/Wh (same as CPS integration sensors).
+      # zen_plant_ignore — suppress any entity from all discovery waterfalls.
+      - variables:
+          _zp_site_power: "{{ label_entities('zen_plant_site_power') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_tariff: "{{ label_entities('zen_plant_tariff') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_billing_daily: "{{ label_entities('zen_plant_billing_daily') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_billing_weekly: "{{ label_entities('zen_plant_billing_weekly') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_billing_monthly: "{{ label_entities('zen_plant_billing_monthly') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_grid_carbon: "{{ label_entities('zen_plant_grid_carbon') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_water: "{{ label_entities('zen_plant_water') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_water_rate: "{{ label_entities('zen_plant_water_rate') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_gas: "{{ label_entities('zen_plant_gas') | select('match', 'sensor\\.') | list | first | default('') }}"
+
+      # ── RESOLVE SPECIFIC ENTITY IDS (zen_plant_* → generic → integration) ─
+      - variables:
+          _site_power_eid: >-
+            {%- if _zp_site_power != '' -%}{{ _zp_site_power }}
+            {%- else -%}
+              {%- set _um = _utility_main_sensors | select('search', 'power|watt') | reject('search', 'produced|reactive|pv') | list | first | default('') -%}
+              {%- set _mp = _main_panel_sensors | select('search', 'site_power') | list | first | default('') -%}
+              {{ _um if _um != '' else _mp }}
+            {%- endif -%}
+          _l1_voltage_eid: "{{ _main_panel_sensors | select('search', 'l1_voltage') | list | first | default('') }}"
+          _l2_voltage_eid: "{{ _main_panel_sensors | select('search', 'l2_voltage') | list | first | default('') }}"
+          _breaker_rating_eid: "{{ _main_panel_sensors | select('search', 'main_breaker_rating') | list | first | default('') }}"
+          _billing_daily_eid: >-
+            {%- if _zp_billing_daily != '' -%}{{ _zp_billing_daily }}
+            {%- else -%}
+              {%- set _c = _cps_sensors | select('search', 'daily') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'daily') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_monthly_eid: >-
+            {%- if _zp_billing_monthly != '' -%}{{ _zp_billing_monthly }}
+            {%- else -%}
+              {%- set _c = _cps_sensors | select('search', 'monthly') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'monthly') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_weekly_eid: >-
+            {%- if _zp_billing_weekly != '' -%}{{ _zp_billing_weekly }}
+            {%- else -%}
+              {%- set _c = _cps_sensors | select('search', 'weekly') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'weekly') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_tariff_eid: >-
+            {%- if _zp_tariff != '' -%}{{ _zp_tariff }}
+            {%- else -%}
+              {%- set _c = _cps_sensors | select('search', 'tariff|rate|price') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'tariff|rate|price') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_peak_eid: "{{ _cps_binary | list | first | default('') }}"
+          _grid_fossil_eid: >-
+            {%- if _zp_grid_carbon != '' -%}{{ _zp_grid_carbon }}
+            {%- else -%}
+              {{ _energy_mgmt_sensors | select('search', 'fossil') | list | first | default('') }}
+            {%- endif -%}
+          _water_eid: >-
+            {%- if _zp_water != '' -%}{{ _zp_water }}
+            {%- else -%}
+              {%- set _wu = _water_usage_sensors | reject('search', 'fee|rate|cost') | list | first | default('') -%}
+              {%- set _dr = _droplet_sensors | reject('search', 'fee|rate|cost') | list | first | default('') -%}
+              {{ _wu if _wu != '' else _dr }}
+            {%- endif -%}
+          _water_rate_eid: >-
+            {%- if _zp_water_rate != '' -%}{{ _zp_water_rate }}
+            {%- else -%}
+              {{ _water_usage_sensors | select('search', 'fee|rate|cost') | list | first | default('') }}
+            {%- endif -%}
+          _circuit_current_eids: >-
+            {{ (_main_panel_sensors + _sub_panel_sensors)
+               | unique | list
+               | select('search', '_current$')
+               | reject('search', 'upstream|downstream|l1_current|l2_current|breaker_rating')
+               | list }}
+
+      # ── HVAC DISCOVERY ────────────────────────────────────────────────────
+      - variables:
+          _thermostat_sensors: "{{ label_entities('main_thermostat') | select('match', 'climate\\.') | reject('in', _zp_ignored) | list }}"
+          _hvac_sensors: "{{ label_entities('hvac') | select('match', 'climate\\.') | reject('in', _zp_ignored) | list }}"
+
+      - variables:
+          _thermostat_eids: >-
+            {%- set _mt = _thermostat_sensors -%}
+            {%- set _hv = _hvac_sensors -%}
+            {{ (_mt if _mt | count > 0 else _hv) | list }}
+
+      # ── MECHANICAL DISCOVERY ──────────────────────────────────────────────
+      - variables:
+          _wh_entities: "{{ label_entities('water_heater') | reject('in', _zp_ignored) | list }}"
+          _sump_entities: "{{ label_entities('sump_pump') | reject('in', _zp_ignored) | list }}"
+
+      - variables:
+          _wh_eid: "{{ _wh_entities | select('match', 'water_heater\\.') | list | first | default('') }}"
+          _wh_avail_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'available') | list | first | default('') }}"
+          _wh_running_eid: "{{ _wh_entities | select('match', 'binary_sensor\\.') | select('search', 'running') | list | first | default('') }}"
+          _wh_power_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'power') | reject('search', 'today|daily') | list | first | default('') }}"
+          _wh_daily_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'power_usage_today|daily') | list | first | default('') }}"
+          _sump_eid: "{{ _sump_entities | select('match', 'binary_sensor\\.') | list | first | default('') }}"
+
+      # ── READ SENSOR STATES ────────────────────────────────────────────────
+      - variables:
+          _site_power_w: >-
+            {%- set _s = states(_site_power_eid) if _site_power_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _l1_v: >-
+            {%- set _s = states(_l1_voltage_eid) if _l1_voltage_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _l2_v: >-
+            {%- set _s = states(_l2_voltage_eid) if _l2_voltage_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _breaker_a: >-
+            {%- set _s = states(_breaker_rating_eid) if _breaker_rating_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_daily_wh: >-
+            {%- set _s = states(_billing_daily_eid) if _billing_daily_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_monthly_wh: >-
+            {%- set _s = states(_billing_monthly_eid) if _billing_monthly_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_weekly_wh: >-
+            {%- set _s = states(_billing_weekly_eid) if _billing_weekly_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_tariff_usd_wh: >-
+            {%- set _s = states(_billing_tariff_eid) if _billing_tariff_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_peak: >-
+            {%- set _s = states(_billing_peak_eid) if _billing_peak_eid != '' else 'unavailable' -%}
+            {{ (_s == 'on') if _s not in ['unavailable','unknown',''] else none }}
+          _grid_fossil_pct: >-
+            {%- set _s = states(_grid_fossil_eid) if _grid_fossil_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _water_usage_gal: >-
+            {%- set _s = states(_water_eid) if _water_eid != '' else 'unavailable' -%}
+            {%- set _f = _s | float(none) if _s not in ['unavailable','unknown',''] else none -%}
+            {{ _f | round(3) if _f is not none else none }}
+          _water_rate_usd: >-
+            {%- if _water_rate_eid != '' -%}
+              {%- set _s = states(_water_rate_eid) -%}
+              {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+            {%- else -%}
+              {%- set _s = states('input_number.saws_water_usage_fee_per_1000_gallons') -%}
+              {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+            {%- endif -%}
+          _gas_therms: >-
+            {%- if _zp_gas != '' -%}
+              {%- set _s = states(_zp_gas) -%}
+              {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _wh_mode: >-
+            {%- set _s = states(_wh_eid) if _wh_eid != '' else 'unavailable' -%}
+            {{ _s if _s not in ['unavailable','unknown',''] else none }}
+          _wh_current_temp: >-
+            {%- set _v = state_attr(_wh_eid, 'current_temperature') if _wh_eid != '' else none -%}
+            {{ _v | float(none) if _v is not none else none }}
+          _wh_setpoint: >-
+            {%- set _v = state_attr(_wh_eid, 'temperature') if _wh_eid != '' else none -%}
+            {{ _v | float(none) if _v is not none else none }}
+          _wh_avail_pct: >-
+            {%- set _s = states(_wh_avail_eid) if _wh_avail_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _wh_running: >-
+            {%- set _s = states(_wh_running_eid) if _wh_running_eid != '' else 'unavailable' -%}
+            {{ (_s == 'on') if _s not in ['unavailable','unknown',''] else none }}
+          _wh_power_w: >-
+            {%- set _s = states(_wh_power_eid) if _wh_power_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _wh_daily_kwh: >-
+            {%- set _s = states(_wh_daily_eid) if _wh_daily_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _sump_active: >-
+            {%- set _s = states(_sump_eid) if _sump_eid != '' else 'unavailable' -%}
+            {{ (_s == 'on') if _s not in ['unavailable','unknown',''] else none }}
+
+      # ── VALIDATE ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'validate' }}"
+        then:
+          - variables:
+              _val_hvac_eid: "{{ _thermostat_eids | first | default('') }}"
+          - variables:
+              _val_slots: >-
+                {{
+                  {
+                    'site_power':     {'entity_id': _site_power_eid,     'pinned': _zp_site_power != '',     'raw_state': states(_site_power_eid) if _site_power_eid != '' else none,          'ok': _site_power_w is not none},
+                    'tariff':         {'entity_id': _billing_tariff_eid,  'pinned': _zp_tariff != '',          'raw_state': states(_billing_tariff_eid) if _billing_tariff_eid != '' else none,   'ok': _billing_tariff_usd_wh is not none},
+                    'billing_daily':  {'entity_id': _billing_daily_eid,   'pinned': _zp_billing_daily != '',   'raw_state': states(_billing_daily_eid) if _billing_daily_eid != '' else none,     'ok': _billing_daily_wh is not none},
+                    'billing_weekly': {'entity_id': _billing_weekly_eid,  'pinned': _zp_billing_weekly != '',  'raw_state': states(_billing_weekly_eid) if _billing_weekly_eid != '' else none,    'ok': _billing_weekly_wh is not none},
+                    'billing_monthly':{'entity_id': _billing_monthly_eid, 'pinned': _zp_billing_monthly != '', 'raw_state': states(_billing_monthly_eid) if _billing_monthly_eid != '' else none,  'ok': _billing_monthly_wh is not none},
+                    'grid_carbon':    {'entity_id': _grid_fossil_eid,     'pinned': _zp_grid_carbon != '',     'raw_state': states(_grid_fossil_eid) if _grid_fossil_eid != '' else none,          'ok': _grid_fossil_pct is not none},
+                    'water':          {'entity_id': _water_eid,           'pinned': _zp_water != '',           'raw_state': states(_water_eid) if _water_eid != '' else none,                      'ok': _water_usage_gal is not none},
+                    'water_rate':     {'entity_id': _water_rate_eid,      'pinned': _zp_water_rate != '',      'raw_state': states(_water_rate_eid) if _water_rate_eid != '' else none,            'ok': _water_rate_usd is not none},
+                    'gas':            {'entity_id': _zp_gas,              'pinned': _zp_gas != '',             'raw_state': states(_zp_gas) if _zp_gas != '' else none,                            'ok': _gas_therms is not none},
+                    'l1_voltage':     {'entity_id': _l1_voltage_eid,      'pinned': false,                     'raw_state': states(_l1_voltage_eid) if _l1_voltage_eid != '' else none,            'ok': _l1_v is not none},
+                    'l2_voltage':     {'entity_id': _l2_voltage_eid,      'pinned': false,                     'raw_state': states(_l2_voltage_eid) if _l2_voltage_eid != '' else none,            'ok': _l2_v is not none},
+                    'breaker_rating': {'entity_id': _breaker_rating_eid,  'pinned': false,                     'raw_state': states(_breaker_rating_eid) if _breaker_rating_eid != '' else none,    'ok': _breaker_a is not none},
+                    'hvac':           {'entity_id': _val_hvac_eid,        'pinned': false,                     'raw_state': states(_val_hvac_eid) if _val_hvac_eid != '' else none,                'ok': _val_hvac_eid != ''},
+                    'water_heater':   {'entity_id': _wh_eid,              'pinned': false,                     'raw_state': states(_wh_eid) if _wh_eid != '' else none,                             'ok': _wh_eid != ''},
+                    'sump_pump':      {'entity_id': _sump_eid,            'pinned': false,                     'raw_state': states(_sump_eid) if _sump_eid != '' else none,                          'ok': _sump_eid != ''},
+                  }
+                }}
+          - variables:
+              _val_unresolved: >-
+                {%- set ns = namespace(m=[]) -%}
+                {%- for k, v in _val_slots.items() -%}
+                  {%- if not v.ok -%}{%- set ns.m = ns.m + [k] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.m }}
+              _val_ok_count: "{{ _val_slots.values() | selectattr('ok') | list | count }}"
+          - variables:
+              _result:
+                status: ok
+                mode: validate
+                slots: "{{ _val_slots }}"
+                summary:
+                  resolved: "{{ _val_ok_count }}"
+                  unresolved: "{{ _val_unresolved | count }}"
+                  total: "{{ _val_slots | count }}"
+                  unresolved_slots: "{{ _val_unresolved }}"
+                tip: "Tag any sensor with zen_plant_<slot> label to pin it"
+                caller_token: "{{ _caller_token }}"
+          - stop: validate
+            response_variable: _result
+
+      # ── HVAC BLOCK ────────────────────────────────────────────────────────
+      - variables:
+          _hvac_block: >-
+            {%- set ns = namespace(units=[]) -%}
+            {%- for eid in _thermostat_eids -%}
+              {%- set _st = states(eid) -%}
+              {%- if _st not in ['unavailable','unknown',''] -%}
+                {%- set _sp = state_attr(eid,'temperature') -%}
+                {%- set _ct = state_attr(eid,'current_temperature') -%}
+                {%- set _name = state_attr(eid,'friendly_name') | default(eid,true) -%}
+                {%- set ns.units = ns.units + [{'entity_id':eid,'name':_name,'hvac_mode':_st,'setpoint':_sp,'current_temp':_ct}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'available': ns.units | count > 0, 'units': ns.units, 'count': ns.units | count} }}
+
+      # ── SHARED BLOCKS ─────────────────────────────────────────────────────
+      - variables:
+          _elec_block: >-
+            {%- set _avail = _site_power_w is not none or _billing_daily_wh is not none -%}
+            {{
+              {
+                'available': _avail,
+                'live_power_w': _site_power_w,
+                'live_power_kw': (_site_power_w / 1000) | round(2) if _site_power_w is not none else none,
+                'daily_kwh': (_billing_daily_wh / 1000) | round(2) if _billing_daily_wh is not none else none,
+                'weekly_kwh': (_billing_weekly_wh / 1000) | round(3) if _billing_weekly_wh is not none else none,
+                'monthly_kwh': (_billing_monthly_wh / 1000) | round(2) if _billing_monthly_wh is not none else none,
+                'tariff_usd_kwh': (_billing_tariff_usd_wh | float(0) * 1000) | round(5) if _billing_tariff_usd_wh is not none else none,
+                'peak_billing_month': _billing_peak,
+                'grid_fossil_pct': _grid_fossil_pct,
+                'l1_voltage': _l1_v,
+                'l2_voltage': _l2_v,
+                'main_breaker_amps': _breaker_a,
+                'source': _site_power_eid
+              }
+            }}
+          _water_block: >-
+            {{
+              {
+                'available': _water_eid != '',
+                'usage_gal': _water_usage_gal,
+                'rate_per_1000gal_usd': _water_rate_usd,
+                'source': _water_eid if _water_eid != '' else 'none'
+              }
+            }}
+          _gas_block: >-
+            {%- if _zp_gas != '' -%}
+              {{ {'available': _gas_therms is not none, 'live_consumption_therms': _gas_therms, 'note': none, 'source': _zp_gas} }}
+            {%- else -%}
+              {{ {'available': false, 'live_consumption_therms': none, 'note': 'No live HA gas sensor — metered by utility only', 'source': 'none'} }}
+            {%- endif -%}
+          _mechanical_block: >-
+            {{
+              {
+                'available': _wh_eid != '',
+                'water_heater': {
+                  'entity_id': _wh_eid,
+                  'mode': _wh_mode,
+                  'current_temp_f': _wh_current_temp,
+                  'setpoint_f': _wh_setpoint,
+                  'available_hot_water_pct': _wh_avail_pct,
+                  'running': _wh_running,
+                  'live_power_w': _wh_power_w,
+                  'daily_kwh': _wh_daily_kwh
+                } if _wh_eid != '' else none,
+                'sump_pump': {
+                  'entity_id': _sump_eid,
+                  'active': _sump_active
+                } if _sump_eid != '' else none
+              }
+            }}
+
+      # ── OVERVIEW ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'overview' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: overview
+                electric: "{{ _elec_block }}"
+                hvac: "{{ _hvac_block }}"
+                water: "{{ _water_block }}"
+                gas: "{{ _gas_block }}"
+                mechanical: "{{ _mechanical_block }}"
+                utilities: "{{ _util_raw }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: overview
+            response_variable: _result
+
+      # ── ELECTRIC ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'electric' }}"
+        then:
+          - variables:
+              _panel_status: >-
+                {%- set _dsm = _main_panel_sensors | select('search', 'dsm_state$') | list | first | default('') -%}
+                {%- set _relay = _main_panel_sensors | select('search', 'main_relay_state') | list | first | default('') -%}
+                {{
+                  {
+                    'dsm_state': states(_dsm) if _dsm != '' else none,
+                    'relay_state': states(_relay) if _relay != '' else none
+                  }
+                }}
+          - variables:
+              _result:
+                status: ok
+                mode: electric
+                summary: "{{ _elec_block }}"
+                panel_status: "{{ _panel_status }}"
+                utility: "{{ _util_raw.get('electric', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: electric
+            response_variable: _result
+
+      # ── HVAC ──────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'hvac' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: hvac
+                summary: "{{ _hvac_block }}"
+                utility: "{{ _util_raw.get('gas', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: hvac
+            response_variable: _result
+
+      # ── WATER ─────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'water' }}"
+        then:
+          - variables:
+              _droplet_reset: >-
+                {%- if _water_eid != '' -%}
+                  {{ state_attr(_water_eid, 'last_reset') | default(none, true) }}
+                {%- else -%}{{ none }}{%- endif -%}
+          - variables:
+              _result:
+                status: ok
+                mode: water
+                summary: "{{ _water_block }}"
+                usage_since: "{{ _droplet_reset }}"
+                utility: "{{ _util_raw.get('water', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: water
+            response_variable: _result
+
+      # ── GAS ───────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'gas' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: gas
+                summary: "{{ _gas_block }}"
+                utility: "{{ _util_raw.get('gas', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: gas
+            response_variable: _result
+
+      # ── MECHANICAL ────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'mechanical' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: mechanical
+                summary: "{{ _mechanical_block }}"
+                utility: "{{ _util_raw.get('water', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: mechanical
+            response_variable: _result
+
+      # ── CIRCUITS ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'circuits' }}"
+        then:
+          - variables:
+              _circ_limit: "{{ circuit_limit | default(10) | int(10) }}"
+              _circ_sort: "{{ sort_by | default('energy') | lower }}"
+          - variables:
+              _circuits: >-
+                {%- if _circ_sort == 'current' -%}
+                  {%- set ns = namespace(rows=[]) -%}
+                  {%- for eid in _circuit_current_eids -%}
+                    {%- set _a = states(eid) | float(-1) -%}
+                    {%- if _a >= 0 -%}
+                      {%- set _v = state_attr(eid, 'voltage') | default(120, true) | int(120) -%}
+                      {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+                      {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'current_a': _a, 'voltage': _v, 'est_power_w': (_a * _v) | round(0)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.rows | sort(attribute='current_a', reverse=true) | list }}
+                {%- else -%}
+                  {%- set ns = namespace(rows=[]) -%}
+                  {%- for eid in _consumed_energy_sensors -%}
+                    {%- set _wh = states(eid) | float(-1) -%}
+                    {%- if _wh >= 0 -%}
+                      {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+                      {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'lifetime_wh': _wh, 'lifetime_kwh': (_wh / 1000) | round(2)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.rows | sort(attribute='lifetime_wh', reverse=true) | list }}
+                {%- endif -%}
+          - variables:
+              _result:
+                status: ok
+                mode: circuits
+                sort_by: "{{ _circ_sort }}"
+                limit: "{{ _circ_limit }}"
+                total_circuits: "{{ _circuit_current_eids | count if _circ_sort == 'current' else _consumed_energy_sensors | count }}"
+                circuits: "{{ _circuits[:_circ_limit] }}"
+                whole_home_w: "{{ _site_power_w }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: circuits
+            response_variable: _result
+
+      # ── FALLTHROUGH ───────────────────────────────────────────────────────
+      - variables:
+          _result:
+            status: error
+            message: "Unknown mode '{{ _mode }}'. Use overview, electric, hvac, water, gas, mechanical, circuits, validate, help."
+            caller_token: "{{ _caller_token }}"
+      - stop: unknown mode
+        response_variable: _result
