@@ -1,0 +1,1571 @@
+###############################################################################
+# zen_dojotools_media_manager v0.7.2 (codename: NyxMau5)
+# Version: 0.7.2
+# Room-aware AV intent resolver with memory + label-driven topology
+#
+# ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
+#
+# Two-plane labeling system. Every media_player gets a room label + role label.
+# Intent + priority labels are optional but unlock intent-aware resolution.
+#
+# HARDWARE ROLE — zen_mm_* (tool-owned, smash-rebuild via mode=setup)
+#   zen_mm_universal      — primary command surface. Top of resolution chain.
+#                           One per room. Receives all commands when no role specified.
+#   zen_mm_television     — TV / display. Source list = streaming app names when on.
+#   zen_mm_av_tuner       — AV receiver. Volume, sound mode, physical inputs.
+#   zen_mm_audio_output   — Dedicated audio zone. Amp, zone player, audio-only.
+#   zen_mm_video_output   — Streaming device. Chromecast, Fire Stick, Apple TV.
+#   zen_mm_speaker        — In-room standalone speaker. Individual, not grouped.
+#   zen_mm_speaker_group  — Grouped speaker entity. group_size > 1.
+#   zen_mm_music_assistant — Music Assistant proxy. MA queue + music playback.
+#   zen_mm_voice_assistant — Voice interface (Alexa, Google). Companion only.
+#
+# INTENT / CAPABILITY — generic bare words (multi-tool, stable)
+#   watch    — Designated for video/streaming content. Your agent's video intent target.
+#   listen   — Designated for music/audio playback. Your agent's audio intent target.
+#   announce — Designated for announcements + TTS. Postman and media both use this.
+#   video    — Entity provides video display or output capability.
+#   voice    — Entity is a voice interface or voice-capable device.
+#
+# ZENOS SYSTEM
+#   zen_tts  — ZenOS TTS output for a room. Used by announce, postman, media.
+#              One preferred per room.
+#
+# PRIORITY
+#   primary  — Highest-priority entity within its group. Wins tiebreaks.
+#
+# Reading an entity cold:
+#   zen_mm_television + watch + living_room + primary
+#   → Primary TV in living room. NyxMau5's first pick for "watch Disney+."
+#
+#   zen_mm_av_tuner + living_room
+#   → Living room AVR. Volume + sound mode commands land here.
+#
+#   zen_mm_speaker_group + listen + whole_home
+#   → Whole-home speaker group. Music intent across the full house.
+#
+#   zen_tts + announce + living_room + primary
+#   → Primary announcement device. Postman and agent announce here.
+#
+# ── SETUP FLOW ──────────────────────────────────────────────────────────────
+#   1. mode=setup     — creates all zen_mm_* + zen_tts label definitions in HA
+#   2. mode=discover  — maps every room, flags unlabeled entities + setup_advisory
+#   3. Play content   — identify which entity is actually which device
+#   4. mode=label_suggest room=X — proposes zen_mm_* label assignments
+#   5. Review + confirm, apply via zen_dojotools_labels
+#   6. mode=discover  — verify all slots resolve
+#
+# ── MODES ───────────────────────────────────────────────────────────────────
+#   discover          — full room AV map (setup_advisory if labels not initialized)
+#   setup             — create all NyxMau5 label definitions in HA
+#   label_suggest     — propose zen_mm_* label assignments for room entities
+#   resolve_debug     — trace full selection chain for a room + intent
+#   source_get/set    — read/switch source
+#   sound_mode_get/set — read/set sound mode
+#   state_get         — full device snapshot
+#   prefs_get/set/apply — per-room context preferences
+#   room_default_get/set — stored room default role
+#   help              — full reference including label taxonomy
+###############################################################################
+
+script:
+  zen_dojotools_media_manager:
+    alias: Zen DojoTools MediaManager v0.7.2
+    description: >-
+      Call with nothing and get a whole-home AV map — every room, every
+      device, live state. Pass room= to drill into a room. This tool turns
+      "put on Disney in the LR for the kids" into a done deal: label each
+      device once with its room + role (TV, AVR, speakers), then use
+      source_set or prefs_apply forever — no entity IDs, no guessing.
+      prefs_set teaches a context once ("kids = Disney+ vol 35") and
+      prefs_apply reads the current home mode and re-resolves the right
+      physical device every time. room_default_set stores a room's preferred
+      default role (e.g. zen_mm_television) so future calls without target_role
+      hit the right device automatically. target_role= picks a specific slot:
+      zen_mm_video_output for streaming apps, zen_mm_av_tuner for the AVR,
+      zen_mm_audio_output for dedicated audio zones. mode=help for full
+      reference and setup flow.
+    icon: mdi:television-play
+    mode: queued
+    max: 3
+    fields:
+      mode:
+        name: Mode
+        description: >-
+          Omit for a whole-home AV overview (same as discover with no room).
+          discover with room= drills into one room. setup creates all NyxMau5
+          label definitions — run once before labeling devices. label_suggest
+          proposes zen_mm_* labels for room entities. resolve_debug traces the
+          full selection chain. prefs_set teaches a context once — prefs_apply
+          uses it forever. help for full reference + label taxonomy.
+        selector:
+          select:
+            options:
+              - discover
+              - setup
+              - label_suggest
+              - resolve_debug
+              - source_get
+              - source_set
+              - sound_mode_get
+              - sound_mode_set
+              - state_get
+              - prefs_get
+              - prefs_set
+              - prefs_apply
+              - room_default_get
+              - room_default_set
+              - help
+      entity_id:
+        name: Entity ID
+        description: >-
+          Explicit entity override. Omit when room= is provided — resolved
+          automatically via role labels.
+        selector:
+          entity:
+            domain: media_player
+      room:
+        name: Room
+        description: >-
+          Room name ("Living Room" or "living_room" — both work). No entity
+          ID needed. Omit on discover for a whole-home overview of every
+          area with media players. Required for prefs modes.
+        selector:
+          text:
+      target_role:
+        name: Target Role
+        description: >-
+          Which device role to target. zen_mm_television or zen_mm_video_output
+          for streaming apps (Disney+, Netflix). zen_mm_av_tuner or
+          zen_mm_audio_output for volume/sound mode. zen_mm_speaker for
+          speakers. Omit to hit the room's default command surface
+          (zen_mm_universal first).
+        selector:
+          text:
+      intent:
+        name: Intent
+        description: >-
+          Playback intent. watch = video/streaming (targets room entities labeled
+          watch, typically zen_mm_television or zen_mm_video_output). listen =
+          music/audio (targets listen-labeled, typically zen_mm_music_assistant
+          or zen_mm_speaker). announce = TTS (targets announce-labeled, typically
+          zen_tts). primary label wins tiebreak. Omit for role-based resolution.
+        selector:
+          select:
+            options:
+              - watch
+              - listen
+              - announce
+      source:
+        name: Source
+        description: >-
+          Input source name. Must match exactly — use discover or source_get
+          first to see source_list. Required for source_set and prefs_set.
+        selector:
+          text:
+      sound_mode:
+        name: Sound Mode
+        description: >-
+          Sound mode name (e.g. Movie, Music, Night, Auto). Must match
+          exactly — call sound_mode_get first to see sound_mode_list.
+          Required for sound_mode_set.
+        selector:
+          text:
+      home_context:
+        name: Home Context
+        description: >-
+          Which home mode this pref applies to: kids, evening, morning,
+          party, away, etc. Required for prefs_set. Omit on prefs_apply —
+          it reads input_select.zen_home_mode and picks the right preset
+          automatically.
+        selector:
+          text:
+      volume:
+        name: Volume
+        description: >-
+          Volume 0-100. Optional for prefs_set and prefs_apply.
+          Omit for no volume change.
+        selector:
+          number:
+            min: 0
+            max: 100
+      dry_run:
+        name: Dry Run
+        description: >-
+          Preview prefs_apply without executing. Returns would_set_source
+          and would_set_volume without calling any media_player services.
+        default: false
+        selector:
+          boolean:
+      caller_token:
+        name: Caller Token
+        description: "Opaque audit token echoed in all responses for correlation."
+        selector:
+          text:
+
+    sequence:
+
+      # ── 0. Resolve inputs ─────────────────────────────────────────────────
+      - variables:
+          _mode:         "{{ mode | default('discover') | string | trim | lower }}"
+          _entity_id:    "{{ entity_id | default('', true) | string | trim }}"
+          _room_raw:     "{{ room | default('', true) | string | trim }}"
+          _room_slug:    "{{ _room_raw | lower | replace(' ', '_') }}"
+          _target_role:  "{{ target_role | default('', true) | string | trim | lower }}"
+          _intent:       "{{ intent | default('', true) | string | trim | lower }}"
+          _source:       "{{ source | default('', true) | string | trim }}"
+          _sound_mode:   "{{ sound_mode | default('', true) | string | trim }}"
+          _context_raw:  "{{ home_context | default('', true) | string | trim }}"
+          _volume:       "{{ volume | default(-1) | int(-1) }}"
+          _dry_run:      "{{ dry_run | default(false) | bool }}"
+          _caller_token: "{{ caller_token | default('') | string | trim }}"
+
+      # ── 0b. Cabinet + room entity list ────────────────────────────────────
+      - variables:
+          _hh_cabinet: >-
+            {{ states('sensor.zen_default_household_cabinet_resolved') | default('', true) | string | trim }}
+          _room_ents: >-
+            {{ label_entities(_room_slug) | select('match', 'media_player\\.') | list
+               if _room_slug != '' else [] }}
+
+      # ── 0b2. Stored room default role (cabinet read, guarded) ─────────────
+      - variables:
+          _room_default_role: ""
+
+      - if: >-
+          {{ _room_slug != '' and _entity_id == '' and _target_role == ''
+             and _mode not in ['help', 'prefs_get', 'prefs_set', 'prefs_apply',
+                                'room_default_get', 'room_default_set']
+             and _hh_cabinet not in ['', 'unavailable', 'unknown'] }}
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "media_default_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_rdef_raw
+          - variables:
+              _room_default_role: >-
+                {%- set r = _fc_rdef_raw.get('result', {}) if _fc_rdef_raw is mapping else {} -%}
+                {%- set key = 'media_default_' + _room_slug -%}
+                {%- set d = r.get(key, {}) if r is mapping else {} -%}
+                {%- set v = (d.get('value', d)) if d is mapping else {} -%}
+                {%- set role = v.get('target_role', '') if v is mapping else '' -%}
+                {{ '' if role == 'auto' else role }}
+
+      # ── 0c. Auto-resolution role intersections ────────────────────────────
+      # Checks zen_mm_* labels first, falls back to legacy labels.
+      # Both are supported during migration — prefer Nyx labels.
+      - variables:
+          _r_stored_default: >-
+            {{ _room_ents | select('in', label_entities(_room_default_role)) | list | first | default('')
+               if _room_default_role != '' else '' }}
+          _r_universal: >-
+            {%- set c = (label_entities('zen_mm_universal') | list) + (label_entities('universal_media_player') | list) -%}
+            {{ _room_ents | select('in', c) | list | first | default('') }}
+          _r_user_player: >-
+            {{ _room_ents | select('in', label_entities('user_player')) | list | first | default('') }}
+          _r_television: >-
+            {%- set c = (label_entities('zen_mm_television') | list) + (label_entities('television') | list) -%}
+            {{ _room_ents | select('in', c) | list | first | default('') }}
+          _r_ec: >-
+            {{ _room_ents | select('in', label_entities('entertainment_center')) | list | first | default('') }}
+
+      # ── 0d. Resolve target entity ─────────────────────────────────────────
+      - variables:
+          _auto_resolved: >-
+            {{ _r_stored_default if _r_stored_default != ''
+               else (_r_universal if _r_universal != ''
+               else (_r_user_player if _r_user_player != ''
+               else (_r_television if _r_television != ''
+               else (_r_ec if _r_ec != ''
+               else (_room_ents | list | first | default(''))))))}}
+
+      - variables:
+          _role_resolved: >-
+            {%- if _target_role == '' -%}
+              {{ _auto_resolved }}
+            {%- else -%}
+              {%- set c = (label_entities(_target_role) | list) -%}
+              {{ _room_ents | select('in', c) | list | first | default(_auto_resolved) }}
+            {%- endif -%}
+
+      - variables:
+          _intent_resolved: >-
+            {%- if _intent != '' -%}
+              {%- set c = _room_ents | select('in', label_entities(_intent)) | list -%}
+              {%- set p = c | select('in', label_entities('primary')) | list | first | default('') -%}
+              {{ p if p != '' else c | first | default('') }}
+            {%- else -%}{{ '' }}{%- endif -%}
+
+      - variables:
+          _resolved_entity: >-
+            {{ _entity_id if _entity_id != ''
+               else (_intent_resolved if _intent_resolved != ''
+               else _role_resolved) }}
+
+      # ── 0e. Global setup advisory (defined once, available in all modes) ────
+      - variables:
+          _setup_advisory: >-
+            {%- if (label_entities('zen_mm_universal') | list | length) + (label_entities('zen_mm_television') | list | length) + (label_entities('zen_mm_av_tuner') | list | length) + (label_entities('zen_mm_audio_output') | list | length) == 0 -%}
+              {{ {'status': 'no_nyx_labeled_entities', 'message': 'NyxMau5 label definitions may exist, but no media_player entities currently use core zen_mm_* labels. Run mode=setup to create label definitions, then tag your devices.', 'next_steps': ['mode=setup', 'mode=help']} }}
+            {%- else -%}null{%- endif -%}
+
+      # ── 1. Help ───────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'help' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                tool: zen_dojotools_media_manager
+                codename: NyxMau5
+                version: "0.7.0"
+                what_friday_can_do: >-
+                  Say 'put on Disney in the LR for the kids' and this tool handles
+                  it — discover the room layout once, teach a pref, apply it forever.
+                  No entity IDs. No guessing which device is the TV vs the AVR.
+                  Room label + role label + intent label does all the resolution.
+                resolution: >-
+                  Intent path: intent=watch|listen|announce intersects room entities
+                  with intent label → primary wins tiebreak. Role path: target_role=
+                  matches role label in room. Auto chain: stored_room_default →
+                  zen_mm_universal → user_player → zen_mm_television → entertainment_center
+                  → first_in_room. entity_id is direct override + fallback/debug only —
+                  prefs store role. prefs_apply re-resolves live — entity IDs can change.
+                label_taxonomy:
+                  hardware_role:
+                    zen_mm_universal: "Primary command surface. Top of chain. One per room."
+                    zen_mm_television: "TV/display. Source list = streaming app names when on."
+                    zen_mm_av_tuner: "AV receiver. Volume, sound mode, physical inputs."
+                    zen_mm_audio_output: "Dedicated audio zone. Amp, zone player, audio-only."
+                    zen_mm_video_output: "Streaming device. Chromecast, Fire Stick, Apple TV."
+                    zen_mm_speaker: "Standalone room speaker. Individual, not grouped."
+                    zen_mm_speaker_group: "Grouped speaker entity. group_size > 1."
+                    zen_mm_music_assistant: "Music Assistant proxy. MA queue + music playback."
+                    zen_mm_voice_assistant: "Voice interface (Alexa, Google). Companion only."
+                  intent_capability:
+                    watch: "Designated for video/streaming content. Agent video intent target."
+                    listen: "Designated for music/audio playback. Agent audio intent target."
+                    announce: "Designated for announcements + TTS. Postman and media route here."
+                    video: "Entity provides video display or output capability."
+                    voice: "Entity is a voice interface or voice-capable device."
+                  system:
+                    zen_tts: "ZenOS TTS output for a room. One preferred per room. Used by announce, postman, media."
+                  priority:
+                    primary: "Highest-priority in its group. Wins tiebreaks when multiple candidates match."
+                reading_labels:
+                  - "zen_mm_television + watch + living_room + primary → Primary TV in living room. First pick for intent=watch."
+                  - "zen_mm_av_tuner + living_room → Living room AVR. Volume + sound mode land here."
+                  - "zen_mm_speaker_group + listen + whole_home → Whole-home music group."
+                  - "zen_tts + announce + living_room + primary → Primary announcement device. Friday speaks here."
+                setup_flow:
+                  - "1. mode=setup — creates all zen_mm_* + zen_tts + intent label definitions in HA"
+                  - "2. mode=discover — maps rooms, shows unlabeled entities + setup_advisory if not initialized"
+                  - "3. Play content — identify which entity is which device by watching what responds"
+                  - "4. mode=label_suggest room=X — get proposed zen_mm_* label assignments based on entity names"
+                  - "5. Review + confirm, apply via zen_dojotools_labels"
+                  - "6. mode=discover — verify all slots resolve and setup_advisory is gone"
+                  - "7. mode=resolve_debug room=X intent=watch — trace why a specific entity was selected"
+                modes:
+                  discover: "No room = whole-home overview (area-driven). Room = full role map with state + source lists (label-driven). Shows setup_advisory if zen_mm_* labels not initialized."
+                  setup: "Creates all NyxMau5 label definitions (zen_mm_*, zen_tts, watch, listen, announce, video, voice, primary) in HA. Run once before labeling. Safe to re-run."
+                  label_suggest: "Analyzes room entities by name + integration and proposes zen_mm_* label assignments. Returns suggestions for review — does NOT apply labels."
+                  resolve_debug: "Traces the full entity selection chain for a room + optional intent/role/source. Returns selection_chain, selected entity, reason, and warnings. Read-only."
+                  source_get: "See what's playing + full source_list for a device. Good before source_set."
+                  source_set: "Switch input source + confirms. target_role=zen_mm_television for streaming apps."
+                  sound_mode_get: "Current sound_mode + full sound_mode_list."
+                  sound_mode_set: "Set AVR/TV sound mode + confirms. target_role=zen_mm_av_tuner for the AVR."
+                  state_get: "Full device snapshot — source, sound_mode, volume, mute, media title."
+                  prefs_get: "Read all stored prefs for a room — see every context and what it maps to."
+                  prefs_set: "Teach a preference: room + home_context + source (+ optional volume + target_role). Stores role as the resolver — entity_id is fallback/debug only."
+                  prefs_apply: "Apply stored pref for room. Reads input_select.zen_home_mode automatically if no context given. Re-resolves device from stored role label live — entity IDs can change."
+                  room_default_get: "Read the stored default role for a room + what it resolves to + what the auto chain would pick. Good for auditing."
+                  room_default_set: "Store a target_role as this room's default resolver. Future calls without target_role hit this role first. Pass target_role=auto to clear back to auto chain."
+                example_flows:
+                  whole_home_overview: "discover (no room) → every area with media players, default entity per room, roles found"
+                  discover_a_room: "discover room='Living Room' → roles, source lists, unlabeled. source_list values = exact strings for source_set."
+                  put_on_disney: "source_set room='Living Room' target_role=zen_mm_television source='Disney+'"
+                  teach_kids_mode: "prefs_set room='Living Room' home_context=kids target_role=zen_mm_television source='Disney+' volume=35"
+                  apply_kids_mode: "prefs_apply room='Living Room' home_context=kids — or omit home_context and it reads the room"
+                  confirm_first: "prefs_apply room='Living Room' dry_run=true — preview before touching hardware"
+                tips:
+                  - "discover first — always. It shows what's labeled, what the default resolves to, and what's missing."
+                  - "Multiple contexts per room: kids=Disney+, evening=Plex, morning=news. All stored, all auto-apply."
+                  - "prefs_set stores target_role as the resolver. entity_id in prefs is fallback/debug only — role is what matters."
+                  - "dry_run=true on prefs_apply shows would_set_source + would_set_volume before committing."
+                  - "source_set and sound_mode_set both return confirmed: true/false — Friday knows if it took."
+                media_library_tools:
+                  about: >-
+                    ZenOS media library scripts — labeled zen_mm_music_assistant + listen.
+                    Area-agnostic: pass area= to scope playback to a room.
+                    Surfaced automatically in discover (media_library_tools) and resolve_debug
+                    (media_library_tools) when intent=listen.
+                  tools_installed: >-
+                    {{ label_entities('zen_mm_music_assistant')
+                       | select('in', label_entities('listen'))
+                       | select('match', 'script\\.')
+                       | list }}
+                  roles:
+                    search: "zen_dojotools_music_search — search MA media library. Params: query, artist, album, media_type. Returns playable URIs."
+                    play: "music_assistant_start_playback — play to a room. Params: media_type, media_id, area, shuffle."
+                    queue: "music_assistant_get_queue_for_room — read MA queue for a room. Param: area. Read-only."
+                  usage: >-
+                    Typical flow: search for content → pick a URI → start_playback with area=.
+                    For ambient: play a named playlist, radio, or artist directly (no search needed).
+                    These are HA scripts — call via script.zen_dojotools_music_search etc.,
+                    not media_player services. intent=listen in resolve_debug surfaces them via media_library_tools.
+                caller_token: "{{ _caller_token }}"
+          - stop: help
+            response_variable: _result
+
+      # ── 2. discover ───────────────────────────────────────────────────────
+      # Room: trolls all canonical AV role labels, returns filled slots,
+      # default resolver, unlabeled entities. source_list values are exact
+      # strings to pass to source_set.
+      # No room: whole-home overview — every HA area with media players.
+      - if: "{{ _mode == 'discover' }}"
+        then:
+          # setup_advisory: check if any zen_mm_* role labels have been applied.
+          # Zero entities across sentinels = label set not initialized.
+          - variables:
+              _mm_sentinel_count: >-
+                {%- set s = ['zen_mm_universal','zen_mm_television','zen_mm_av_tuner','zen_mm_audio_output'] -%}
+                {%- set ns = namespace(n=0) -%}
+                {%- for l in s -%}{%- set ns.n = ns.n + (label_entities(l) | list | length) -%}{%- endfor -%}
+                {{ ns.n }}
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _home_map: >-
+                    {%- set role_check = [
+                      'zen_mm_universal','zen_mm_television','zen_mm_av_tuner','zen_mm_audio_output',
+                      'zen_mm_video_output','zen_mm_speaker','zen_mm_speaker_group',
+                      'zen_mm_music_assistant','zen_mm_voice_assistant',
+                      'universal_media_player','user_player','television',
+                      'entertainment_center','audio_output','video_output','room_speaker',
+                      'tts_output','music_assistant','speaker_group','av_tuner','media_manager'] -%}
+                    {%- set ns = namespace(rooms=[]) -%}
+                    {%- for aid in areas() -%}
+                      {%- set a_ents = area_entities(aid) | select('match', 'media_player\\.') | list -%}
+                      {%- if a_ents | length > 0 -%}
+                        {%- set r_u = a_ents | select('in', ((label_entities('zen_mm_universal') | list) + (label_entities('universal_media_player') | list))) | list | first | default('') -%}
+                        {%- set r_p = a_ents | select('in', label_entities('user_player')) | list | first | default('') -%}
+                        {%- set r_t = a_ents | select('in', ((label_entities('zen_mm_television') | list) + (label_entities('television') | list))) | list | first | default('') -%}
+                        {%- set r_av = a_ents | select('in', ((label_entities('zen_mm_av_tuner') | list) + (label_entities('av_tuner') | list))) | list | first | default('') -%}
+                        {%- set r_audio = a_ents | select('in', ((label_entities('zen_mm_audio_output') | list) + (label_entities('audio_output') | list))) | list | first | default('') -%}
+                        {%- set r_e = a_ents | select('in', label_entities('entertainment_center')) | list | first | default('') -%}
+                        {%- set def_ent = r_u if r_u != '' else (r_p if r_p != '' else (r_t if r_t != '' else (r_av if r_av != '' else (r_audio if r_audio != '' else (r_e if r_e != '' else (a_ents | first | default(''))))))) -%}
+                        {%- set def_via = 'zen_mm_universal/universal' if r_u != '' else ('user_player' if r_p != '' else ('zen_mm_television/television' if r_t != '' else ('zen_mm_av_tuner/av_tuner' if r_av != '' else ('zen_mm_audio_output/audio_output' if r_audio != '' else ('entertainment_center' if r_e != '' else 'first_in_room'))))) -%}
+                        {%- set ns2 = namespace(roles=[], matched=[]) -%}
+                        {%- for rl in role_check -%}
+                          {%- set m = a_ents | select('in', label_entities(rl)) | list | first | default('') -%}
+                          {%- if m != '' -%}
+                            {%- set ns2.roles = ns2.roles + [rl] -%}
+                            {%- if m not in ns2.matched -%}{%- set ns2.matched = ns2.matched + [m] -%}{%- endif -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {%- set room_entry = {
+                          'area_id': aid,
+                          'area_name': area_name(aid),
+                          'default_entity': def_ent,
+                          'default_entity_name': state_attr(def_ent, 'friendly_name') | default(def_ent, true) if def_ent != '' else none,
+                          'default_via': def_via,
+                          'roles': ns2.roles,
+                          'media_player_count': a_ents | length,
+                          'unlabeled_count': a_ents | reject('in', ns2.matched) | list | length
+                        } -%}
+                        {%- set ns.rooms = ns.rooms + [room_entry] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.rooms }}
+              - variables:
+                  _result:
+                    status: ok
+                    scope: whole_home
+                    hint: "Pass room= to discover for full role detail + source lists for a specific room."
+                    rooms: "{{ _home_map }}"
+                    setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: whole-home discover complete
+                response_variable: _result
+          - variables:
+              _role_map: >-
+                {%- set role_labels = [
+                  'zen_mm_universal', 'zen_mm_television', 'zen_mm_av_tuner',
+                  'zen_mm_audio_output', 'zen_mm_video_output', 'zen_mm_speaker',
+                  'zen_mm_speaker_group', 'zen_mm_music_assistant', 'zen_mm_voice_assistant',
+                  'zen_tts',
+                  'universal_media_player', 'user_player', 'television',
+                  'entertainment_center', 'audio_output', 'video_output',
+                  'room_speaker', 'tts_output', 'tts', 'music_assistant',
+                  'music', 'speaker_group', 'av_tuner', 'media_manager',
+                  'watch', 'listen', 'announce', 'video', 'voice', 'primary'
+                ] -%}
+                {%- set ns = namespace(roles=[], matched=[]) -%}
+                {%- for rl in role_labels -%}
+                  {%- set match = _room_ents | select('in', label_entities(rl)) | list | first | default('') -%}
+                  {%- if match != '' -%}
+                    {%- set _m_src = state_attr(match, 'source_list') | default([], true) -%}
+                    {%- set _m_snd = state_attr(match, 'sound_mode_list') | default([], true) -%}
+                    {%- set _m_vol = state_attr(match, 'volume_level') -%}
+                    {%- set _m_gm = state_attr(match, 'group_members') | default([], true) -%}
+                    {%- set entry = {
+                      'role': rl,
+                      'entity_id': match,
+                      'friendly_name': state_attr(match, 'friendly_name') | default(none, true),
+                      'state': states(match),
+                      'source': state_attr(match, 'source') | default(none, true),
+                      'source_list': _m_src,
+                      'sound_mode': state_attr(match, 'sound_mode') | default(none, true),
+                      'volume_pct': ((_m_vol | float(0)) * 100) | round(0) | int if _m_vol is not none else none,
+                      'actionable': _m_src | length > 0 or _m_snd | length > 0 or _m_vol is not none,
+                      'group_size': _m_gm | length,
+                      'is_group_master': _m_gm | length > 1 and _m_gm | first == match
+                    } -%}
+                    {%- set ns.roles = ns.roles + [entry] -%}
+                    {%- if match not in ns.matched -%}
+                      {%- set ns.matched = ns.matched + [match] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'roles': ns.roles, 'matched': ns.matched} }}
+          - variables:
+              _unlabeled: >-
+                {{ _room_ents | reject('in', (_role_map.matched | default([]))) | list }}
+          - variables:
+              _result:
+                status: ok
+                room: "{{ _room_slug }}"
+                default_entity: "{{ _auto_resolved }}"
+                default_via: >-
+                  {%- if _r_stored_default != '' -%}stored_room_default({{ _room_default_role }})
+                  {%- elif _r_universal != '' -%}universal_media_player
+                  {%- elif _r_user_player != '' -%}user_player
+                  {%- elif _r_television != '' -%}television
+                  {%- elif _r_ec != '' -%}entertainment_center
+                  {%- elif _room_ents | list | length > 0 -%}first_in_room
+                  {%- else -%}none{%- endif -%}
+                stored_room_default: "{{ _room_default_role if _room_default_role != '' else none }}"
+                roles: "{{ _role_map.roles | default([]) }}"
+                unlabeled: "{{ _unlabeled }}"
+                all_media_players: "{{ _room_ents | list }}"
+                media_library_tools: >-
+                  {{ label_entities('zen_mm_music_assistant')
+                     | select('in', label_entities('listen'))
+                     | select('match', 'script\\.')
+                     | list }}
+                setup_hint: >-
+                  {%- if _unlabeled | length > 0 -%}
+                    {{ _unlabeled | length }} unlabeled media_player(s) found.
+                    Run mode=label_suggest room={{ _room_slug }} to get proposed zen_mm_* assignments.
+                  {%- else -%}
+                    All media_players in this room have role labels.
+                  {%- endif -%}
+                setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: discover complete
+            response_variable: _result
+
+      # ── 3. state_get ──────────────────────────────────────────────────────
+      - if: "{{ _mode == 'state_get' }}"
+        then:
+          - if: "{{ _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "entity_id or room (with role-labeled entity) required for state_get"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing entity
+                response_variable: _err
+
+          # Pre-fetch attrs used by both capabilities and situation
+          - variables:
+              _sg_src_list:   "{{ state_attr(_resolved_entity, 'source_list') | default([], true) }}"
+              _sg_snd_list:   "{{ state_attr(_resolved_entity, 'sound_mode_list') | default([], true) }}"
+              _sg_vol:        "{{ state_attr(_resolved_entity, 'volume_level') }}"
+              _sg_mute_attr:  "{{ state_attr(_resolved_entity, 'is_volume_muted') }}"
+              _sg_group_mems: "{{ state_attr(_resolved_entity, 'group_members') | default([], true) }}"
+              _sg_title:      "{{ state_attr(_resolved_entity, 'media_title') | default(none, true) }}"
+              _sg_cid:        "{{ state_attr(_resolved_entity, 'media_content_id') | default(none, true) }}"
+
+          # Capabilities: what can Friday actually DO with this entity?
+          - variables:
+              _capabilities: >-
+                {%- set sc = _sg_src_list | length -%}
+                {%- set sm = _sg_snd_list | length -%}
+                {%- set hv = _sg_vol is not none -%}
+                {%- set actionable = sc > 0 or sm > 0 or hv -%}
+                {%- set parts = [] -%}
+                {%- if sc > 0 -%}{%- set parts = parts + [sc | string + ' inputs'] -%}{%- endif -%}
+                {%- if sm > 0 -%}{%- set parts = parts + [sm | string + ' sound modes'] -%}{%- endif -%}
+                {%- if hv -%}{%- set parts = parts + ['volume'] -%}{%- endif -%}
+                {{ {
+                  'source_switch': sc > 0,
+                  'source_count': sc,
+                  'sound_mode': sm > 0,
+                  'sound_mode_count': sm,
+                  'volume_control': hv,
+                  'mute': _sg_mute_attr is not none,
+                  'actionable': actionable,
+                  'hint': ('Full AV control: ' + (parts | join(', ')) + '.') if actionable
+                           else 'No inputs, sound modes, or volume exposed — power-only via this integration.'
+                } }}
+
+          # Situation: group membership, co-playing detection, rooms in sync, role labels
+          - variables:
+              _situation: >-
+                {%- set gm = _sg_group_mems -%}
+                {%- set is_master = gm | length > 1 and gm | first == _resolved_entity -%}
+                {%- set is_member = gm | length > 1 and gm | first != _resolved_entity -%}
+                {%- set role_labels = [
+                    'zen_mm_universal','zen_mm_television','zen_mm_av_tuner',
+                    'zen_mm_audio_output','zen_mm_video_output','zen_mm_speaker',
+                    'zen_mm_speaker_group','zen_mm_music_assistant','zen_mm_voice_assistant',
+                    'zen_tts','universal_media_player','user_player','television',
+                    'entertainment_center','audio_output','video_output','room_speaker',
+                    'tts_output','music_assistant','speaker_group','av_tuner','media_manager',
+                    'watch','listen','announce','video','voice','primary'] -%}
+                {%- set ns = namespace(co=[], my_roles=[], shared_roles=[]) -%}
+                {# Find other playing entities sharing same media title or content id #}
+                {%- set _mp_pool = label_entities('media_player') | select('match','media_player\\.') | list -%}
+                {%- set _mp_pool = _mp_pool if _mp_pool | length > 0 else (states.media_player | map(attribute='entity_id') | list) -%}
+                {%- for p in _mp_pool -%}
+                  {%- if p != _resolved_entity and states(p) in ['playing', 'on'] -%}
+                    {%- if (_sg_title is not none and state_attr(p, 'media_title') == _sg_title) or
+                           (_sg_cid is not none and state_attr(p, 'media_content_id') == _sg_cid) -%}
+                      {%- set ns.co = ns.co + [{'entity_id': p,
+                          'friendly_name': state_attr(p, 'friendly_name') | default(p, true),
+                          'in_declared_group': p in gm}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {# Rooms in sync: union of group_members + co_playing, resolved to area names #}
+                {%- set related = (gm + (ns.co | map(attribute='entity_id') | list)) | unique | list -%}
+                {%- set ns2 = namespace(rooms=[]) -%}
+                {%- for p in related -%}
+                  {%- if p != _resolved_entity -%}
+                    {%- set aid = area_id(p) -%}
+                    {%- set aname = area_name(aid) if aid else none -%}
+                    {%- if aname and aname not in ns2.rooms -%}{%- set ns2.rooms = ns2.rooms + [aname] -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {# Role labels on this entity #}
+                {%- for rl in role_labels -%}
+                  {%- if _resolved_entity in label_entities(rl) -%}{%- set ns.my_roles = ns.my_roles + [rl] -%}{%- endif -%}
+                {%- endfor -%}
+                {# Shared role labels across declared group members #}
+                {%- if gm | length > 1 -%}
+                  {%- for rl in role_labels -%}
+                    {%- if gm | select('in', label_entities(rl)) | list | length > 0 -%}
+                      {%- set ns.shared_roles = ns.shared_roles + [rl] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- set who = 'Group master of ' + (gm | length | string) + '-player group' if is_master
+                               else ('Group member (master: ' + (gm | first | default('unknown')) + ')' if is_member
+                               else 'Standalone player') -%}
+                {%- set room_str = ', ' + (ns2.rooms | length | string) + ' room(s) in sync: ' + (ns2.rooms | join(', ')) if ns2.rooms else '' -%}
+                {%- set co_str = ', ' + (ns.co | length | string) + ' other player(s) on same media' if ns.co else '' -%}
+                {{ {
+                  'is_group_master': is_master,
+                  'is_group_member': is_member,
+                  'group_members': gm,
+                  'group_size': gm | length,
+                  'co_playing_same_media': ns.co,
+                  'rooms_in_sync': ns2.rooms,
+                  'my_roles': ns.my_roles,
+                  'shared_group_labels': ns.shared_roles,
+                  'summary': who + room_str + co_str
+                } }}
+
+          - variables:
+              _mm_topo: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ topo.get(_room_slug, none) if _room_slug != '' else none }}
+              _mm_acoustic_zone: >-
+                {%- set _sp=_mm_topo if _mm_topo is mapping else {} -%}
+                {%- set ns=namespace(z=[]) -%}
+                {%- for p in (_sp.get('portals',[])|list) -%}
+                  {%- if p is mapping and p.get('to',none) is not none and p.get('sound_tx',0.0)|float(0.0) >= 0.65 -%}
+                    {%- set ns.z=ns.z+[{'to':p.get('to'),'sound_tx':p.get('sound_tx',0.0)|float(0.0),'type':p.get('type',''),'normally':p.get('normally','')}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.z | sort(attribute='sound_tx', reverse=true) }}
+              _mm_sound_context: >-
+                {%- set _sp=_mm_topo if _mm_topo is mapping else {} -%}
+                {%- set ns=namespace(adj=[]) -%}
+                {%- for p in (_sp.get('portals',[])|list) -%}
+                  {%- if p is mapping and p.get('to',none) is not none and p.get('sound_tx',0.0)|float(0.0) >= 0.15 -%}
+                    {%- set _to=p.get('to') -%}
+                    {%- set _stx=p.get('sound_tx',0.0)|float(0.0) -%}
+                    {%- set _rm_ent=label_entities('room_manager')|select('in',label_entities(_to)|list)|select('match','input_select\\.')|list|first|default('') -%}
+                    {%- set _rm_st=states(_rm_ent)|lower if _rm_ent != '' else '' -%}
+                    {%- set _guarded=_rm_st in ['hold','pause','paused','sleep','sleeping'] -%}
+                    {%- set ns.adj=ns.adj+[{'to':_to,'sound_tx':_stx,'via':'portal','rm_state':_rm_st if _rm_ent != '' else none,'guarded':_guarded}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for bl in (_sp.get('boundary_links',[])|list) -%}
+                  {%- if bl is mapping and bl.get('to',none) is not none and bl.get('sound_tx',0.0)|float(0.0) >= 0.15 -%}
+                    {%- set _to=bl.get('to') -%}
+                    {%- set _stx=bl.get('sound_tx',0.0)|float(0.0) -%}
+                    {%- set _rm_ent=label_entities('room_manager')|select('in',label_entities(_to)|list)|select('match','input_select\\.')|list|first|default('') -%}
+                    {%- set _rm_st=states(_rm_ent)|lower if _rm_ent != '' else '' -%}
+                    {%- set _guarded=_rm_st in ['hold','pause','paused','sleep','sleeping'] -%}
+                    {%- set ns.adj=ns.adj+[{'to':_to,'sound_tx':_stx,'via':'boundary_link','rm_state':_rm_st if _rm_ent != '' else none,'guarded':_guarded,'note':bl.get('note','')}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set _gr=ns.adj|selectattr('guarded','eq',true)|list -%}
+                {{ {
+                  'adjacent_with_sound': ns.adj | sort(attribute='sound_tx', reverse=true),
+                  'guarded_rooms': _gr,
+                  'advisory': ('CAUTION: ' + (_gr|map(attribute='to')|join(', ')) + ' is held/sleeping with sound_tx=' + (_gr|map(attribute='sound_tx')|list|first|float|string) + '. Consider lowering volume or routing to an isolated zone.') if _gr | length > 0 else none
+                } }}
+
+          # Adjacent room media state — RM +media inline
+          - variables:
+              _mm_adjacent_media: >-
+                {%- set ns = namespace(rooms=[]) -%}
+                {%- for zone in (_mm_acoustic_zone if _mm_acoustic_zone is iterable else []) -%}
+                  {%- set _to = zone.get('to', '') if zone is mapping else '' -%}
+                  {%- if _to != '' -%}
+                    {%- set _active = namespace(p=none) -%}
+                    {%- for p in area_entities(_to) | select('match', 'media_player\\.') -%}
+                      {%- if states(p) in ['playing', 'paused'] and _active.p is none -%}
+                        {%- set _active.p = p -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- if _active.p is not none -%}
+                      {%- set ns.rooms = ns.rooms + [{'area': _to, 'entity_id': _active.p, 'state': states(_active.p), 'media_title': state_attr(_active.p, 'media_title') | default(none, true), 'volume': state_attr(_active.p, 'volume_level') | default(none, true)}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.rooms }}
+
+          - variables:
+              _result:
+                status: ok
+                entity_id: "{{ _resolved_entity }}"
+                target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                friendly_name: "{{ state_attr(_resolved_entity, 'friendly_name') | default(none, true) }}"
+                state: "{{ states(_resolved_entity) }}"
+                source: "{{ state_attr(_resolved_entity, 'source') | default(none, true) }}"
+                source_list: "{{ _sg_src_list }}"
+                sound_mode: "{{ state_attr(_resolved_entity, 'sound_mode') | default(none, true) }}"
+                sound_mode_list: "{{ _sg_snd_list }}"
+                volume_pct: >-
+                  {{ (_sg_vol | float(0) * 100) | round(0) | int if _sg_vol is not none else none }}
+                is_volume_muted: "{{ _sg_mute_attr | default(false, true) }}"
+                media_title: "{{ _sg_title }}"
+                media_content_type: "{{ state_attr(_resolved_entity, 'media_content_type') | default(none, true) }}"
+                capabilities: "{{ _capabilities }}"
+                situation: "{{ _situation }}"
+                acoustic_zone: "{{ _mm_acoustic_zone }}"
+                sound_context: "{{ _mm_sound_context }}"
+                adjacent_media: "{{ _mm_adjacent_media }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: state_get complete
+            response_variable: _result
+
+      # ── 4. source_get ─────────────────────────────────────────────────────
+      - if: "{{ _mode == 'source_get' }}"
+        then:
+          - if: "{{ _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "entity_id or room (with role-labeled entity) required for source_get"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing entity
+                response_variable: _err
+          - variables:
+              _result:
+                status: ok
+                entity_id: "{{ _resolved_entity }}"
+                target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                friendly_name: "{{ state_attr(_resolved_entity, 'friendly_name') | default(none, true) }}"
+                current_source: "{{ state_attr(_resolved_entity, 'source') | default(none, true) }}"
+                source_list: "{{ state_attr(_resolved_entity, 'source_list') | default([], true) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: source_get complete
+            response_variable: _result
+
+      # ── 5. source_set ─────────────────────────────────────────────────────
+      - if: "{{ _mode == 'source_set' }}"
+        then:
+          - if: "{{ _resolved_entity == '' or _source == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "entity_id (or room + role label) and source required for source_set"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing fields
+                response_variable: _err
+          - action: media_player.select_source
+            target:
+              entity_id: "{{ _resolved_entity }}"
+            data:
+              source: "{{ _source }}"
+          - delay:
+              milliseconds: 800
+          - variables:
+              _result:
+                status: ok
+                entity_id: "{{ _resolved_entity }}"
+                target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                source_requested: "{{ _source }}"
+                active_source: "{{ state_attr(_resolved_entity, 'source') | default(none, true) }}"
+                confirmed: "{{ state_attr(_resolved_entity, 'source') == _source }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: source_set complete
+            response_variable: _result
+
+      # ── 6. sound_mode_get ─────────────────────────────────────────────────
+      - if: "{{ _mode == 'sound_mode_get' }}"
+        then:
+          - if: "{{ _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "entity_id or room (with role-labeled entity) required for sound_mode_get"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing entity
+                response_variable: _err
+          - variables:
+              _result:
+                status: ok
+                entity_id: "{{ _resolved_entity }}"
+                target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                friendly_name: "{{ state_attr(_resolved_entity, 'friendly_name') | default(none, true) }}"
+                sound_mode: "{{ state_attr(_resolved_entity, 'sound_mode') | default(none, true) }}"
+                sound_mode_list: "{{ state_attr(_resolved_entity, 'sound_mode_list') | default([], true) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: sound_mode_get complete
+            response_variable: _result
+
+      # ── 7. sound_mode_set ─────────────────────────────────────────────────
+      - if: "{{ _mode == 'sound_mode_set' }}"
+        then:
+          - if: "{{ _resolved_entity == '' or _sound_mode == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "entity_id (or room + role label) and sound_mode required for sound_mode_set"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing fields
+                response_variable: _err
+          - action: media_player.select_sound_mode
+            target:
+              entity_id: "{{ _resolved_entity }}"
+            data:
+              sound_mode: "{{ _sound_mode }}"
+          - delay:
+              milliseconds: 800
+          - variables:
+              _result:
+                status: ok
+                entity_id: "{{ _resolved_entity }}"
+                target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                sound_mode_requested: "{{ _sound_mode }}"
+                active_sound_mode: "{{ state_attr(_resolved_entity, 'sound_mode') | default(none, true) }}"
+                confirmed: "{{ state_attr(_resolved_entity, 'sound_mode') == _sound_mode }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: sound_mode_set complete
+            response_variable: _result
+
+      # ── 8. prefs_get ──────────────────────────────────────────────────────
+      - if: "{{ _mode == 'prefs_get' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room required for prefs_get"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing room
+                response_variable: _err
+          - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "Household cabinet unavailable"
+                    caller_token: "{{ _caller_token }}"
+              - stop: cabinet unavailable
+                response_variable: _err
+          - variables:
+              _pref_key: "media_prefs_{{ _room_slug }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "{{ _pref_key }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_read
+          - variables:
+              _fc_result: >-
+                {%- set r = _fc_read.get('result', {}) -%}
+                {{ r if r is mapping else (r | from_json({}) if r is string else {}) }}
+          - variables:
+              _drawer: >-
+                {%- set d = _fc_result.get(_pref_key, {}) if _fc_result is mapping else {} -%}
+                {{ d if d is mapping else (d | from_json({}) if d is string else {}) }}
+          - variables:
+              _pref_value: "{{ (_drawer.get('value', _drawer)) if _drawer is mapping else {} }}"
+          - variables:
+              _result:
+                status: ok
+                room: "{{ _room_slug }}"
+                cabinet_key: "{{ _pref_key }}"
+                resolved_entity: "{{ _resolved_entity }}"
+                prefs: "{{ _pref_value }}"
+                found: "{{ _pref_value != {} }}"
+                contexts: "{{ (_pref_value.get('contexts', {}).keys() | list) if _pref_value is mapping else [] }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: prefs_get complete
+            response_variable: _result
+
+      # ── 9. prefs_set ──────────────────────────────────────────────────────
+      - if: "{{ _mode == 'prefs_set' }}"
+        then:
+          - if: "{{ _room_slug == '' or _context_raw == '' or _source == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room, home_context, and source all required for prefs_set"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing fields
+                response_variable: _err
+          - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "Household cabinet unavailable"
+                    caller_token: "{{ _caller_token }}"
+              - stop: cabinet unavailable
+                response_variable: _err
+          - variables:
+              _pref_key: "media_prefs_{{ _room_slug }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "{{ _pref_key }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_existing
+          - variables:
+              _fc_ex_result: >-
+                {%- set r = _fc_existing.get('result', {}) -%}
+                {{ r if r is mapping else (r | from_json({}) if r is string else {}) }}
+          - variables:
+              _ex_drawer: >-
+                {%- set d = _fc_ex_result.get(_pref_key, {}) if _fc_ex_result is mapping else {} -%}
+                {{ d if d is mapping else (d | from_json({}) if d is string else {}) }}
+          - variables:
+              _ex_value:    "{{ (_ex_drawer.get('value', _ex_drawer)) if _ex_drawer is mapping else {} }}"
+              _ex_contexts: "{{ (_ex_value.get('contexts', {})) if _ex_value is mapping else {} }}"
+              _ex_entity:   "{{ _ex_value.get('entity_id', _resolved_entity) if _ex_value is mapping else _resolved_entity }}"
+              _ex_default:  "{{ _ex_value.get('default', _context_raw) if _ex_value is mapping else _context_raw }}"
+          - variables:
+              _new_ctx_entry: >-
+                {%- set d = {'source': _source} -%}
+                {%- if _volume >= 0 -%}{%- set d = dict(d, volume=_volume) -%}{%- endif -%}
+                {{ d }}
+          - variables:
+              _new_contexts: "{{ dict(_ex_contexts, **{_context_raw: _new_ctx_entry}) }}"
+              _new_entity:   "{{ _resolved_entity if _resolved_entity != '' else _ex_entity }}"
+          - variables:
+              _new_prefs:
+                entity_id:   "{{ _new_entity }}"
+                target_role: "{{ _target_role }}"
+                intent:      "{{ _intent }}"
+                contexts:    "{{ _new_contexts }}"
+                default:     "{{ _ex_default }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: create
+              key: "{{ _pref_key }}"
+              value: "{{ _new_prefs | tojson }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              force_action: true
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_write
+          - delay:
+              milliseconds: 600
+          - variables:
+              _result:
+                status: ok
+                room: "{{ _room_slug }}"
+                home_context: "{{ _context_raw }}"
+                saved:
+                  entity_id: "{{ _new_entity }}"
+                  target_role: "{{ _target_role if _target_role != '' else none }}"
+                  intent: "{{ _intent if _intent != '' else none }}"
+                  source: "{{ _source }}"
+                  volume: "{{ _volume if _volume >= 0 else 'unchanged' }}"
+                full_prefs: "{{ _new_prefs }}"
+                cabinet_status: "{{ _fc_write.get('status', 'unknown') if _fc_write.get('status', 'unknown') != 'warning' else 'written' }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: prefs_set complete
+            response_variable: _result
+
+      # ── 10. prefs_apply ───────────────────────────────────────────────────
+      - if: "{{ _mode == 'prefs_apply' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room required for prefs_apply"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing room
+                response_variable: _err
+          - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "Household cabinet unavailable"
+                    caller_token: "{{ _caller_token }}"
+              - stop: cabinet unavailable
+                response_variable: _err
+          - variables:
+              _pref_key:  "media_prefs_{{ _room_slug }}"
+              _home_mode: "{{ states('input_select.zen_home_mode') | default('', true) | lower | trim }}"
+              _ctx:       "{{ _context_raw if _context_raw != '' else _home_mode }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "{{ _pref_key }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_apply
+          - variables:
+              _fc_ap_result: >-
+                {%- set r = _fc_apply.get('result', {}) -%}
+                {{ r if r is mapping else (r | from_json({}) if r is string else {}) }}
+          - variables:
+              _ap_drawer: >-
+                {%- set d = _fc_ap_result.get(_pref_key, {}) if _fc_ap_result is mapping else {} -%}
+                {{ d if d is mapping else (d | from_json({}) if d is string else {}) }}
+          - variables:
+              _pref_value:    "{{ (_ap_drawer.get('value', _ap_drawer)) if _ap_drawer is mapping else {} }}"
+              _contexts:      "{{ (_pref_value.get('contexts', {})) if _pref_value is mapping else {} }}"
+              _default_ctx:   "{{ _pref_value.get('default', '') if _pref_value is mapping else '' }}"
+              _stored_entity: "{{ _pref_value.get('entity_id', '') if _pref_value is mapping else '' }}"
+              _stored_role:   "{{ _pref_value.get('target_role', '') if _pref_value is mapping else '' }}"
+              _stored_intent: "{{ _pref_value.get('intent', '') if _pref_value is mapping else '' }}"
+          - variables:
+              _target_entity: >-
+                {%- if _entity_id != '' -%}
+                  {{ _entity_id }}
+                {%- elif _target_role != '' -%}
+                  {{ _role_resolved }}
+                {%- elif _stored_role != '' -%}
+                  {{ _room_ents | select('in', label_entities(_stored_role)) | list | first | default(_stored_entity) }}
+                {%- elif _stored_intent != '' -%}
+                  {%- set c = _room_ents | select('in', label_entities(_stored_intent)) | list -%}
+                  {%- set p = c | select('in', label_entities('primary')) | list | first | default('') -%}
+                  {{ p if p != '' else (c | first | default(_resolved_entity if _resolved_entity != '' else _stored_entity)) }}
+                {%- else -%}
+                  {{ _resolved_entity if _resolved_entity != '' else _stored_entity }}
+                {%- endif -%}
+          - variables:
+              _matched_ctx: >-
+                {%- if _contexts is mapping and _contexts.get(_ctx) is not none -%}
+                  {{ _ctx }}
+                {%- elif _contexts is mapping and _default_ctx != '' and _contexts.get(_default_ctx) is not none -%}
+                  {{ _default_ctx }}
+                {%- else -%}
+                  none
+                {%- endif -%}
+          - if: "{{ _matched_ctx == 'none' or _pref_value == {} }}"
+            then:
+              - variables:
+                  _err:
+                    status: no_pref
+                    room: "{{ _room_slug }}"
+                    context_tried: "{{ _ctx }}"
+                    message: >-
+                      No stored preference for {{ _room_slug }}/{{ _ctx }}.
+                      Use prefs_set to create one.
+                    available_contexts: "{{ _contexts.keys() | list if _contexts is mapping else [] }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: no pref found
+                response_variable: _err
+          - variables:
+              _apply_entry:  "{{ _contexts.get(_matched_ctx, {}) }}"
+              _apply_source: "{{ _apply_entry.get('source', '') if _apply_entry is mapping else '' }}"
+              _apply_volume: "{{ _apply_entry.get('volume', -1) | int(-1) if _apply_entry is mapping else -1 }}"
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    room: "{{ _room_slug }}"
+                    entity_id: "{{ _target_entity }}"
+                    target_role: "{{ _stored_role if _stored_role != '' else none }}"
+                    intent_resolver: "{{ _stored_intent if _stored_intent != '' else none }}"
+                    context_matched: "{{ _matched_ctx }}"
+                    would_set_source: "{{ _apply_source }}"
+                    would_set_volume: "{{ _apply_volume if _apply_volume >= 0 else 'no change' }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: dry_run complete
+                response_variable: _result
+          - if: "{{ _target_entity == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: >-
+                      No entity resolved for {{ _room_slug }}. Tag a media_player
+                      with the {{ _room_slug }} room label + a role label, or pass
+                      entity_id directly.
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing entity
+                response_variable: _err
+          - if: "{{ _apply_source != '' }}"
+            then:
+              - action: media_player.select_source
+                target:
+                  entity_id: "{{ _target_entity }}"
+                data:
+                  source: "{{ _apply_source }}"
+          - if: "{{ _apply_volume >= 0 }}"
+            then:
+              - action: media_player.volume_set
+                target:
+                  entity_id: "{{ _target_entity }}"
+                data:
+                  volume_level: "{{ _apply_volume / 100 }}"
+          - delay:
+              milliseconds: 800
+          - variables:
+              _result:
+                status: ok
+                room: "{{ _room_slug }}"
+                entity_id: "{{ _target_entity }}"
+                target_role: "{{ _stored_role if _stored_role != '' else none }}"
+                intent_resolver: "{{ _stored_intent if _stored_intent != '' else none }}"
+                context_matched: "{{ _matched_ctx }}"
+                source_applied: "{{ _apply_source }}"
+                volume_applied: "{{ _apply_volume if _apply_volume >= 0 else 'unchanged' }}"
+                active_source: "{{ state_attr(_target_entity, 'source') | default(none, true) }}"
+                confirmed: "{{ state_attr(_target_entity, 'source') == _apply_source if _apply_source != '' else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: prefs_apply complete
+            response_variable: _result
+
+      # ── 11. room_default_get ──────────────────────────────────────────────
+      - if: "{{ _mode == 'room_default_get' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room required for room_default_get"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing room
+                response_variable: _err
+          - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "Household cabinet unavailable"
+                    caller_token: "{{ _caller_token }}"
+              - stop: cabinet unavailable
+                response_variable: _err
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "media_default_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_rdg_raw
+          - variables:
+              _rdg_role: >-
+                {%- set r = _fc_rdg_raw.get('result', {}) if _fc_rdg_raw is mapping else {} -%}
+                {%- set key = 'media_default_' + _room_slug -%}
+                {%- set d = r.get(key, {}) if r is mapping else {} -%}
+                {%- set v = (d.get('value', d)) if d is mapping else {} -%}
+                {{ v.get('target_role', '') if v is mapping else '' }}
+          - variables:
+              _rdg_resolved: >-
+                {{ _room_ents | select('in', label_entities(_rdg_role)) | list | first | default('')
+                   if _rdg_role != '' and _rdg_role != 'auto' else '' }}
+          - variables:
+              _result:
+                status: ok
+                room: "{{ _room_slug }}"
+                stored_default_role: "{{ _rdg_role if _rdg_role != '' and _rdg_role != 'auto' else none }}"
+                resolved_entity: "{{ _rdg_resolved if _rdg_resolved != '' else none }}"
+                resolved_entity_name: >-
+                  {{ state_attr(_rdg_resolved, 'friendly_name') | default(none, true)
+                     if _rdg_resolved != '' else none }}
+                auto_chain_default: "{{ _r_universal if _r_universal != '' else (_r_user_player if _r_user_player != '' else (_r_television if _r_television != '' else (_r_ec if _r_ec != '' else (_room_ents | list | first | default(none, true))))) }}"
+                auto_chain_via: >-
+                  {%- if _r_universal != '' -%}universal_media_player
+                  {%- elif _r_user_player != '' -%}user_player
+                  {%- elif _r_television != '' -%}television
+                  {%- elif _r_ec != '' -%}entertainment_center
+                  {%- elif _room_ents | list | length > 0 -%}first_in_room
+                  {%- else -%}none{%- endif -%}
+                hint: >-
+                  {%- if _rdg_role != '' and _rdg_role != 'auto' -%}
+                    Stored default active — calls without target_role resolve to {{ _rdg_role }}.
+                    Pass target_role=auto to room_default_set to clear.
+                  {%- else -%}
+                    No stored default. Calls resolve via auto chain. Use room_default_set
+                    with target_role= to pin a preferred role for this room.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: room_default_get complete
+            response_variable: _result
+
+      # ── 12. room_default_set ──────────────────────────────────────────────
+      - if: "{{ _mode == 'room_default_set' }}"
+        then:
+          - if: "{{ _room_slug == '' or _target_role == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room and target_role required for room_default_set. Pass target_role=auto to clear."
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing fields
+                response_variable: _err
+          - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "Household cabinet unavailable"
+                    caller_token: "{{ _caller_token }}"
+              - stop: cabinet unavailable
+                response_variable: _err
+          # auto writes a sentinel {target_role: auto} rather than deleting the drawer.
+          # The read path (line 215) maps 'auto' → '' immediately — runtime behavior
+          # is identical to no drawer. Sentinel preserved intentionally for audit trail.
+          - variables:
+              _rds_value:
+                target_role: "{{ _target_role }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: create
+              key: "media_default_{{ _room_slug }}"
+              value: "{{ _rds_value | tojson }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              force_action: true
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_rds_write
+          - variables:
+              _rds_resolved: >-
+                {{ _room_ents | select('in', label_entities(_target_role)) | list | first | default('')
+                   if _target_role != 'auto' else '' }}
+          - variables:
+              _result:
+                status: ok
+                room: "{{ _room_slug }}"
+                stored_default_role: "{{ _target_role if _target_role != 'auto' else none }}"
+                cleared: "{{ _target_role == 'auto' }}"
+                resolved_entity: "{{ _rds_resolved if _rds_resolved != '' else none }}"
+                resolved_entity_name: >-
+                  {{ state_attr(_rds_resolved, 'friendly_name') | default(none, true)
+                     if _rds_resolved != '' else none }}
+                cabinet_status: "{{ _fc_rds_write.get('status', 'unknown') }}"
+                hint: >-
+                  {%- if _target_role == 'auto' -%}
+                    Room default cleared. Calls without target_role will use the auto chain again.
+                  {%- elif _rds_resolved != '' -%}
+                    Default set. Future calls to this room without target_role resolve to {{ _target_role }}.
+                  {%- else -%}
+                    Stored, but no {{ _target_role }}-labeled entity found in {{ _room_slug }} yet.
+                    Tag one with zen_dojotools_labels and this will auto-apply.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: room_default_set complete
+            response_variable: _result
+
+      # ── 13. setup ─────────────────────────────────────────────────────────
+      # Creates all NyxMau5-owned label definitions in HA if they don't exist.
+      # Does NOT apply labels to entities — definitions only.
+      - if: "{{ _mode == 'setup' }}"
+        then:
+          - variables:
+              _label_defs: >-
+                {{ [
+                  {'label_id': 'zen_mm_universal',       'description': 'NyxMau5 primary command surface. Top of resolution chain. Receives all play/source/volume commands when no role specified. One per room.', 'color': 'blue',   'icon': 'mdi:remote'},
+                  {'label_id': 'zen_mm_television',      'description': 'NyxMau5 role: TV or display. Source list contains streaming app names when on. Target for watch intent.', 'color': 'blue', 'icon': 'mdi:television'},
+                  {'label_id': 'zen_mm_av_tuner',        'description': 'NyxMau5 role: AV receiver or tuner. Volume, sound mode, physical input switching. Source list contains inputs (HDMI, optical, etc).', 'color': 'blue', 'icon': 'mdi:amplifier'},
+                  {'label_id': 'zen_mm_audio_output',    'description': 'NyxMau5 role: dedicated audio output zone. Amp, zone player, or audio-only device.', 'color': 'blue', 'icon': 'mdi:speaker'},
+                  {'label_id': 'zen_mm_video_output',    'description': 'NyxMau5 role: streaming device or display. Chromecast, Fire Stick, Apple TV. App source switching.', 'color': 'blue', 'icon': 'mdi:cast'},
+                  {'label_id': 'zen_mm_speaker',         'description': 'NyxMau5 role: in-room standalone speaker. Individual, not grouped.', 'color': 'blue', 'icon': 'mdi:speaker-wireless'},
+                  {'label_id': 'zen_mm_speaker_group',   'description': 'NyxMau5 role: grouped speaker entity. Controls multiple speakers simultaneously. group_size > 1.', 'color': 'blue', 'icon': 'mdi:speaker-multiple'},
+                  {'label_id': 'zen_mm_music_assistant', 'description': 'NyxMau5 role: Music Assistant proxy entity. MA queue control and music playback.', 'color': 'blue', 'icon': 'mdi:music-box'},
+                  {'label_id': 'zen_mm_voice_assistant', 'description': 'NyxMau5 role: voice interface device (Alexa, Google). Companion input only — not a primary media target.', 'color': 'blue', 'icon': 'mdi:microphone'},
+                  {'label_id': 'zen_tts',                'description': 'ZenOS TTS output device for a room. Used by announce, postman, and media systems for spoken output. One preferred per room.', 'color': 'purple', 'icon': 'mdi:text-to-speech'},
+                  {'label_id': 'watch',                  'description': 'Designated for video and streaming content playback. Friday uses this as the video intent target.', 'color': 'green', 'icon': 'mdi:play-circle'},
+                  {'label_id': 'listen',                 'description': 'Designated for music and audio playback. Friday uses this as the audio/music intent target.', 'color': 'green', 'icon': 'mdi:music'},
+                  {'label_id': 'announce',               'description': 'Designated for household announcements and TTS delivery. Postman and media systems route here.', 'color': 'green', 'icon': 'mdi:bullhorn'},
+                  {'label_id': 'video',                  'description': 'Entity provides video display or output capability.', 'color': 'green', 'icon': 'mdi:video'},
+                  {'label_id': 'voice',                  'description': 'Entity is a voice interface or voice-capable device.', 'color': 'green', 'icon': 'mdi:account-voice'},
+                  {'label_id': 'primary',                'description': 'Highest-priority entity within its labeled group. When multiple candidates match, primary wins.', 'color': 'orange', 'icon': 'mdi:star'}
+                ] }}
+              _setup_results: []
+          - repeat:
+              for_each: "{{ _label_defs }}"
+              sequence:
+                - action: script.zen_dojotools_labels
+                  data:
+                    action_type: create
+                    label_list:
+                      - "{{ repeat.item.label_id }}"
+                    new_description: "{{ repeat.item.description }}"
+                    new_color: "{{ repeat.item.color }}"
+                    new_icon: "{{ repeat.item.icon }}"
+                    confirm: true
+                    caller_token: "{{ _caller_token }}"
+                  response_variable: _lbl_r
+                - variables:
+                    _setup_results: >-
+                      {%- set r = _lbl_r if _lbl_r is mapping else {} -%}
+                      {%- set ok = r.get('status', '') in ['ok', 'created', 'success'] -%}
+                      {%- set body = r | string | lower -%}
+                      {%- set already = 'already' in body or ('exist' in body and not ok) -%}
+                      {%- set entry = {'label': repeat.item.label_id,
+                         'status': 'ensured' if ok and not already else ('existed' if already else 'error')} -%}
+                      {%- set entry = dict(entry, detail=body[:120]) if (not ok and not already) else entry -%}
+                      {{ _setup_results + [entry] }}
+          - variables:
+              _result:
+                status: ok
+                mode: setup
+                ensured: "{{ _setup_results | selectattr('status', 'eq', 'ensured') | map(attribute='label') | list }}"
+                existed: "{{ _setup_results | selectattr('status', 'eq', 'existed') | map(attribute='label') | list }}"
+                errors: "{{ _setup_results | selectattr('status', 'eq', 'error') | list }}"
+                total: "{{ _label_defs | length }}"
+                next_step: "Run mode=discover to map your rooms, then mode=label_suggest room=X to get proposed assignments."
+                caller_token: "{{ _caller_token }}"
+          - stop: setup complete
+            response_variable: _result
+
+      # ── 14. label_suggest ─────────────────────────────────────────────────
+      # Analyzes room entities by name + integration and proposes zen_mm_* labels.
+      # Does NOT apply labels — returns suggestions for review.
+      - if: "{{ _mode == 'label_suggest' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room required for label_suggest"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing room
+                response_variable: _err
+          - variables:
+              _suggestions: >-
+                {%- set ns = namespace(s=[]) -%}
+                {%- for eid in _room_ents -%}
+                  {%- set n = (state_attr(eid, 'friendly_name') | default(eid, true) | lower) -%}
+                  {%- set cur = device_attr(eid, 'integration') | default('', true) | lower -%}
+                  {%- set role = namespace(r='', intent=[], notes='') -%}
+                  {%- if 'universal' in n or 'command' in n -%}
+                    {%- set role.r = 'zen_mm_universal' -%}
+                  {%- elif 'echo' in n or 'alexa' in n or 'voice assistant' in n or 'google home' in n -%}
+                    {%- set role.r = 'zen_mm_voice_assistant' -%}
+                    {%- set role.intent = ['voice', 'announce'] -%}
+                    {%- set role.notes = 'Review: may also serve as zen_tts if preferred TTS target for this room' -%}
+                  {%- elif 'tv' in n or 'television' in n or 'lg' in n or 'samsung' in n or 'webos' in n or 'android tv' in n or 'bravia' in n -%}
+                    {%- set role.r = 'zen_mm_television' -%}
+                    {%- set role.intent = ['watch', 'video'] -%}
+                  {%- elif 'avr' in n or 'denon' in n or 'yamaha' in n or 'receiver' in n or 'tuner' in n or 'marantz' in n or 'onkyo' in n -%}
+                    {%- set role.r = 'zen_mm_av_tuner' -%}
+                  {%- elif 'chromecast' in n or 'cast' in n or 'fire' in n or 'apple tv' in n or 'roku' in n -%}
+                    {%- set role.r = 'zen_mm_video_output' -%}
+                    {%- set role.intent = ['watch', 'video'] -%}
+                  {%- elif 'group' in n or 'all' in n or 'players' in n -%}
+                    {%- set role.r = 'zen_mm_speaker_group' -%}
+                    {%- set role.intent = ['listen'] -%}
+                  {%- elif 'heos' in n or 'music assistant' in n or 'ma ' in n -%}
+                    {%- set role.r = 'zen_mm_music_assistant' -%}
+                    {%- set role.intent = ['listen'] -%}
+                  {%- elif 'speaker' in n or 'sonos' in n or 'nest' in n or 'home mini' in n or 'home max' in n -%}
+                    {%- set role.r = 'zen_mm_speaker' -%}
+                    {%- set role.intent = ['listen', 'announce'] -%}
+                  {%- elif 'zone' in n -%}
+                    {%- set role.r = 'zen_mm_audio_output' -%}
+                    {%- set role.intent = ['listen'] -%}
+                  {%- endif -%}
+                  {%- set suggestion = {
+                    'entity_id': eid,
+                    'friendly_name': state_attr(eid, 'friendly_name') | default(eid, true),
+                    'state': states(eid),
+                    'suggested_role': role.r if role.r != '' else 'REVIEW_NEEDED',
+                    'suggested_intent': role.intent,
+                    'suggested_labels': ([role.r] if role.r != '' else []) + role.intent + [_room_slug],
+                    'notes': role.notes if role.notes != '' else none,
+                    'confidence': 'high' if role.r != '' else 'low'
+                  } -%}
+                  {%- set ns.s = ns.s + [suggestion] -%}
+                {%- endfor -%}
+                {{ ns.s }}
+          - variables:
+              _result:
+                status: ok
+                mode: label_suggest
+                room: "{{ _room_slug }}"
+                suggestions: "{{ _suggestions }}"
+                count: "{{ _suggestions | length }}"
+                review_needed: "{{ _suggestions | selectattr('confidence', 'eq', 'low') | list | length }}"
+                hint: "Review suggestions, then apply via zen_dojotools_labels. Run mode=discover after labeling to verify."
+                caller_token: "{{ _caller_token }}"
+          - stop: label_suggest complete
+            response_variable: _result
+
+      # ── 15. resolve_debug ─────────────────────────────────────────────────
+      # Traces the full selection chain for a room + optional intent/role.
+      # Read-only diagnostic — no hardware actions.
+      - if: "{{ _mode == 'resolve_debug' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room required for resolve_debug"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing room
+                response_variable: _err
+          - variables:
+              _dbg_intent_candidates: >-
+                {%- if _intent != '' -%}
+                  {{ _room_ents | select('in', label_entities(_intent)) | list }}
+                {%- else -%}{{ [] }}{%- endif -%}
+              _dbg_role_candidates: >-
+                {%- if _target_role != '' -%}
+                  {{ _room_ents | select('in', label_entities(_target_role)) | list }}
+                {%- else -%}{{ [] }}{%- endif -%}
+          - variables:
+              _dbg_chain: >-
+                {%- set ns = namespace(chain=[], selected='', selected_via='', selected_reason='') -%}
+                {%- if _entity_id != '' -%}
+                  {%- set ns.chain = ns.chain + [{'step': 'explicit_entity', 'result': _entity_id, 'reason': 'Direct override provided'}] -%}
+                  {%- set ns.selected = _entity_id -%}{%- set ns.selected_via = 'explicit_entity' -%}
+                {%- elif _intent != '' and _dbg_intent_candidates | length > 0 -%}
+                  {%- set ic = _dbg_intent_candidates -%}
+                  {%- set pref = ic | select('in', label_entities('primary')) | list | first | default('') -%}
+                  {%- set hit = pref if pref != '' else ic | first -%}
+                  {%- set ns.chain = ns.chain + [{'step': 'intent_label', 'intent': _intent, 'candidates': ic, 'preferred': pref if pref != '' else none, 'result': hit, 'reason': 'intent=' + _intent + ' label intersect' + (', primary wins' if pref != '' else ', first candidate')}] -%}
+                  {%- set ns.selected = hit -%}{%- set ns.selected_via = 'intent_label' -%}
+                {%- elif _target_role != '' and _dbg_role_candidates | length > 0 -%}
+                  {%- set hit = _dbg_role_candidates | first -%}
+                  {%- set ns.chain = ns.chain + [{'step': 'target_role', 'role': _target_role, 'candidates': _dbg_role_candidates, 'result': hit, 'reason': 'Matched requested role label', 'actionable': states(hit) not in ['off', 'unavailable', 'unknown']}] -%}
+                  {%- set ns.selected = hit -%}{%- set ns.selected_via = 'target_role' -%}
+                {%- else -%}
+                  {%- set ns.chain = ns.chain + [{'step': 'explicit_entity', 'result': none, 'reason': 'No entity_id provided'}] -%}
+                  {%- if _intent != '' -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'intent_label', 'intent': _intent, 'candidates': [], 'result': none, 'reason': 'No entities in room carry label: ' + _intent}] -%}
+                  {%- endif -%}
+                  {%- if _target_role != '' -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'target_role', 'role': _target_role, 'candidates': [], 'result': none, 'reason': 'No entities in room carry role label: ' + _target_role}] -%}
+                  {%- endif -%}
+                  {%- if _r_stored_default != '' -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'stored_room_default', 'role': _room_default_role, 'result': _r_stored_default, 'reason': 'Stored room default from household cabinet'}] -%}
+                    {%- set ns.selected = _r_stored_default -%}{%- set ns.selected_via = 'stored_room_default' -%}
+                  {%- elif _r_universal != '' -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'auto_chain', 'role': 'zen_mm_universal / universal_media_player', 'result': _r_universal, 'reason': 'Top of auto chain'}] -%}
+                    {%- set ns.selected = _r_universal -%}{%- set ns.selected_via = 'zen_mm_universal' -%}
+                  {%- elif _r_user_player != '' -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'auto_chain', 'role': 'user_player', 'result': _r_user_player, 'reason': 'Auto fallback #2'}] -%}
+                    {%- set ns.selected = _r_user_player -%}{%- set ns.selected_via = 'user_player' -%}
+                  {%- elif _r_television != '' -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'auto_chain', 'role': 'zen_mm_television / television', 'result': _r_television, 'reason': 'Auto fallback #3'}] -%}
+                    {%- set ns.selected = _r_television -%}{%- set ns.selected_via = 'television' -%}
+                  {%- elif _r_ec != '' -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'auto_chain', 'role': 'entertainment_center', 'result': _r_ec, 'reason': 'Auto fallback #4'}] -%}
+                    {%- set ns.selected = _r_ec -%}{%- set ns.selected_via = 'entertainment_center' -%}
+                  {%- elif _room_ents | list | length > 0 -%}
+                    {%- set hit = _room_ents | list | first -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'first_in_room', 'result': hit, 'reason': 'No role labels found — first media_player in room'}] -%}
+                    {%- set ns.selected = hit -%}{%- set ns.selected_via = 'first_in_room' -%}
+                  {%- else -%}
+                    {%- set ns.chain = ns.chain + [{'step': 'no_candidates', 'result': none, 'reason': 'No media_player entities found in room ' + _room_slug}] -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- set sel = ns.selected -%}
+                {%- set sel_state = states(sel) if sel != '' else none -%}
+                {%- set sel_src_list = state_attr(sel, 'source_list') | default([], true) if sel != '' else [] -%}
+                {%- set warnings = namespace(w=[]) -%}
+                {%- if sel != '' and sel_state in ['off', 'unavailable'] -%}
+                  {%- set warnings.w = warnings.w + [sel_state | title + ': entity is ' + sel_state + ' — source_list may be empty'] -%}
+                {%- endif -%}
+                {%- if _source != '' and sel_src_list | length > 0 and _source not in sel_src_list -%}
+                  {%- set warnings.w = warnings.w + ['source "' + _source + '" not in current source_list — may require device-on or alias'] -%}
+                {%- endif -%}
+                {%- if _intent != '' and _dbg_intent_candidates | length == 0 -%}
+                  {%- set warnings.w = warnings.w + ['intent=' + _intent + ' found no entities in room — run mode=setup then apply intent labels'] -%}
+                {%- endif -%}
+                {{ {
+                  'chain': ns.chain,
+                  'selected': sel if sel != '' else none,
+                  'selected_via': ns.selected_via if ns.selected_via != '' else none,
+                  'selected_friendly': state_attr(sel, 'friendly_name') | default(none, true) if sel != '' else none,
+                  'selected_state': sel_state,
+                  'selected_source_list': sel_src_list,
+                  'warnings': warnings.w
+                } }}
+          - variables:
+              _result:
+                status: ok
+                mode: resolve_debug
+                room: "{{ _room_slug }}"
+                requested:
+                  intent: "{{ _intent if _intent != '' else none }}"
+                  target_role: "{{ _target_role if _target_role != '' else none }}"
+                  source: "{{ _source if _source != '' else none }}"
+                  entity_id: "{{ _entity_id if _entity_id != '' else none }}"
+                room_resolution:
+                  room_slug: "{{ _room_slug }}"
+                  room_entities_count: "{{ _room_ents | list | length }}"
+                  room_source: "label_entities"
+                selection_chain: "{{ _dbg_chain.chain }}"
+                selected: "{{ _dbg_chain.selected }}"
+                selected_via: "{{ _dbg_chain.selected_via }}"
+                selected_friendly: "{{ _dbg_chain.selected_friendly }}"
+                selected_state: "{{ _dbg_chain.selected_state }}"
+                selected_source_list: "{{ _dbg_chain.selected_source_list }}"
+                warnings: "{{ _dbg_chain.warnings }}"
+                media_library_tools: >-
+                  {%- if _intent == 'listen' or (_dbg_chain.selected is not none and _dbg_chain.selected in label_entities('zen_mm_music_assistant')) -%}
+                    {{ label_entities('zen_mm_music_assistant') | select('in', label_entities('listen')) | select('match', 'script\\.') | list }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+                setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: resolve_debug complete
+            response_variable: _result
+
+      # ── 16. Fallback ──────────────────────────────────────────────────────
+      - variables:
+          _err:
+            status: error
+            message: >-
+              Unknown mode '{{ _mode }}'. Valid: discover, setup, label_suggest,
+              resolve_debug, source_get, source_set, sound_mode_get,
+              sound_mode_set, state_get, prefs_get, prefs_set, prefs_apply,
+              room_default_get, room_default_set, help
+            caller_token: "{{ _caller_token }}"
+      - stop: unknown mode
+        response_variable: _err

@@ -1,0 +1,2278 @@
+###############################################################################
+# zen_dojotools_room_manager v1.35.0 (codename: RoomReg)
+# Version: 1.35.0
+# Physical room definition registry — spatial topology, adjacency, portals
+#
+# ── TODO: VAC_SYNC v2 — RE-ENGINEER, DO NOT REMOVE ───────────────────────────
+# vac_sync was removed in v1.5.0 because the v1 implementation was fragile:
+#   - Hardcoded segment-ID→area_id dict that silently breaks when Rosie remaps
+#   - Overwrote adjacent[] (stomped hand-tuned portal/sound_tx/light_tx data)
+#   - autovac camera prereq never met; never UAT'd
+#
+# REQUIREMENTS for vac_sync v2:
+#
+# Data sources (pick the best available at runtime):
+#   A) roborock.get_maps action → returns segment IDs + room names dynamically.
+#      Use THIS to build the segment→area_id map at call time, not a hardcode.
+#      Docs: https://www.home-assistant.io/integrations/roborock/
+#   B) Xiaomi Cloud Map Extractor camera (autovac label) → camera entity attrs:
+#      rooms{}, room_numbers, cleaned_rooms, vacuum_room, vacuum_room_name,
+#      calibration_points. rooms{} may contain bbox coords {x0,x1,y0,y1} in
+#      map pixels — convert to mm using calibration_points if present.
+#      Repo: https://github.com/PiotrMachowski/Home-Assistant-custom-components-Xiaomi-Cloud-Map-Extractor
+#
+# What vac_sync v2 SHOULD write into room_topology (non-destructive merge only):
+#   rosie_id    — Roborock segment int (the stable per-map segment number)
+#   bbox_mm     — {x0,x1,y0,y1} bounding box in mm (from camera + calibration)
+#   dimensions_mm — {xlen,ylen} derived from bbox
+#   area_sqm    — float, derived from dimensions_mm (xlen/1000 * ylen/1000)
+#   adjacent[]  — ONLY if no adjacent[] exists yet (never overwrite manual links)
+#   description — ONLY if no description exists yet
+#
+# What it MUST NOT touch: portals[], windows[], walls, boundary_links[],
+#   occupants[], sound_tx/light_tx values — those are manual-only.
+#
+# Segment ID stability: Roborock segment IDs reset when user redraws the map.
+#   Store rosie_id but treat it as advisory. Build the mapping dynamically from
+#   get_maps each sync call — never cache it.
+#
+# Coordinate system: Xiaomi Map Extractor uses pixel coords tied to map image.
+#   calibration_points[] provides pixel→real-world (mm) transform.
+#   If calibration_points unavailable, store raw pixel bbox in bbox_px instead
+#   and skip area_sqm (don't guess the scale).
+#
+# Prototype path: build as a separate automation or script first (not inside
+#   zen_dojotools_room_manager). Gate: dry_run=true must pass UAT showing
+#   correct segment→area_id resolution and non-destructive merging before
+#   merging back into mode=vac_sync here.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
+# room_layout  — applied to HA AREA when physical layout is registered here.
+# room_manager — KFC: on entity=IS the RM. On area=area is RM-managed.
+#                Not written by this tool.
+#
+# ── STORAGE ──────────────────────────────────────────────────────────────────
+# Household cabinet, key: room_topology (JSON dict keyed by area_id)
+#
+# ── HA TEMPLATE RULES (learned the hard way) ─────────────────────────────────
+# - variables: steps use NativeEnvironment — {{ dict }} returns native Python dict.
+#   Do NOT use | tojson on variables: outputs — native env converts them back to
+#   dicts, making | from_json fail on the result.
+# - action: data fields use string rendering — | tojson stays as JSON string.
+#   Compute new topology inline in FileCabinet value: field.
+# - Inline cabinet read macro (FileCabinet stores payload directly in variables attr):
+#     {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+#     {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+###############################################################################
+
+script:
+  zen_dojotools_room_manager:
+    alias: Zen DojoTools Room Manager v1.35.0
+    description: >-
+      Room intelligence hub + household crisis authority (v1.29.0).
+      mode=get area=X: full room brief — topology, live state, inventory, chores,
+      tasks, calendar. context_slices=+inventory,+chores,+tasks,+calendar.
+      mode=emergency scenario=fire|burglar|weather|medical area=X: crisis snapshot
+      — guidance{action,advisory}, from_room{room_exits,adjacent_exits,nearest_shelter},
+      shelter{floor-tagged primary/secondary/avoid}, hazards[], safety_equipment[],
+      likely_occupied[], location{name,address,zip_code,gps}, rally_point.
+      mode=home_overview: whole-house signal + alerts.
+      mode=set: room topology + household profile (address=, rally_point=, zip_code=).
+      Domain tools (ZenLux, climate, inventory) read topology from RM — call RM first.
+      mode=help for full reference.
+    fields:
+      mode:
+        description: "get/set/list: room data. link/unlink/boundary_*: adjacency. home_overview/emergency: whole-home. area_create/update/delete: manage HA areas. setup/help."
+        selector:
+          select:
+            options: [get, set, list, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, area_create, area_update, area_delete, setup, help]
+      area:
+        description: "Area to operate on. Required for get, set, link, unlink, area_update, area_delete."
+        selector:
+          area:
+      area_b:
+        description: "Second area for link/unlink/boundary_link (adjacency target)."
+        selector:
+          area:
+      walls:
+        description: "Wall count. Used by set."
+        selector:
+          number:
+            min: 0
+            max: 20
+            mode: box
+      windows:
+        description: "One window to add/update. Pass as JSON: {name:string (upsert key — allows multiple per direction), direction:N|NE|E|SE|S|SW|W|NW, type:single|double|sliding|casement|fixed|skylight, exit:bool, emerg_exit:bool, drop_ft:num, exit_priority:primary|secondary|tertiary|bail_out, light_tx:0.0-1.0}. name beats direction as upsert key. Extra fields OK."
+        selector:
+          text:
+      portals:
+        description: "One portal to add/update. Pass as JSON: {name:string (upsert key — allows multiple portals to same area), type:door|archway|passage, normally:open|closed, exterior:bool, exit:bool, emerg_exit:bool, to:area_id|null, exit_priority:primary|secondary|tertiary|bail_out}. name beats to as upsert key. Extra fields OK."
+        selector:
+          text:
+      clear_portals:
+        description: "Clear all existing portals before writing. Default false."
+        selector:
+          boolean:
+      clear_windows:
+        description: "Clear all existing windows before writing. Default false."
+        selector:
+          boolean:
+      portal_type:
+        description: "Portal type for link: door, archway, passage. Default: door."
+        selector:
+          select:
+            options: [door, archway, passage]
+      portal_normally:
+        description: "Default state for link portal: open, closed. Default: closed."
+        selector:
+          select:
+            options: [open, closed]
+      description:
+        description: "Room description, max 255 chars. Used by set."
+        selector:
+          text:
+      occupant:
+        description: "Person who OWNS/RESIDES in this room (static, e.g. 'alice'). NOT runtime presence — presence is RM occupancy state. Appends; no duplicates. clear_occupants=true to reset."
+        selector:
+          text:
+      clear_occupants:
+        description: "Clear all occupants before writing. Default false."
+        selector:
+          boolean:
+      link_sound_tx:
+        description: "Sound transmission 0.0-1.0 stamped on both portals by link mode. 0=silent, 1=fully open. Ref: archway=0.85, door-closed=0.30, solid-core=0.15."
+        selector:
+          number:
+            min: 0
+            max: 1
+            step: 0.05
+            mode: box
+      link_light_tx:
+        description: "Light transmission 0.0-1.0 stamped on both portals by link mode. 0=opaque, 1=fully open. Ref: archway=0.80, door-closed=0.02, glass-door-closed=0.55."
+        selector:
+          number:
+            min: 0
+            max: 1
+            step: 0.05
+            mode: box
+      boundary_link_sound_tx:
+        description: "Acoustic transmission 0.0-1.0 for boundary_link (non-passable boundary). 0=soundproofed, 1=open air."
+        selector:
+          number:
+            min: 0
+            max: 1
+            step: 0.05
+            mode: box
+      boundary_link_light_tx:
+        description: "Optical transmission 0.0-1.0 for boundary_link. 0=opaque wall, 1=open air. Ref: glass-partition=0.65, sheer-curtain=0.40, drywall=0.0."
+        selector:
+          number:
+            min: 0
+            max: 1
+            step: 0.05
+            mode: box
+      boundary_link_note:
+        description: "Optional description of boundary type, e.g. 'soundproofed partition', 'glass wall', 'shared drywall'."
+        selector:
+          text:
+      clear_boundary_links:
+        description: "Clear all boundary_links before writing. Default false."
+        selector:
+          boolean:
+      safety:
+        description: "One safety item to add/update. Pass as JSON: {name:string (upsert key), type:fire_extinguisher|first_aid|aed|eyewash|spill_kit|other, location_note:string, rating:string, grocy_location_id:string}. Upserts by name. Extra fields OK."
+        selector:
+          text:
+      clear_safety:
+        description: "Clear all safety items before writing. Default false."
+        selector:
+          boolean:
+      rally_point:
+        description: "Household rally point (no area= required). Written to household_profile drawer. E.g. 'front yard, end of driveway at street'."
+        selector:
+          text:
+      zip_code:
+        description: "Household postal ZIP code (no area= required). Written to household_profile drawer."
+        selector:
+          text:
+      address:
+        description: "Household street address (no area= required). Full human-readable address. Written to household_profile drawer."
+        selector:
+          text:
+      scenario:
+        description: "Emergency scenario for mode=emergency. Shapes guidance.action + advisory. fire|burglar|weather|medical|general (default: general)."
+        selector:
+          select:
+            options: [fire, burglar, weather, medical, general]
+      grocy_location_id:
+        description: "Grocy location ID for this room. Join key: RM area ↔ Grocy location ↔ containers ↔ products."
+        selector:
+          text:
+      exterior:
+        description: "Mark area as exterior/outdoor (back yard, deck, porch, etc). Automatically excluded from shelter classification."
+        selector:
+          boolean:
+      shelter_eligible:
+        description: "Set false to exclude this room from emergency shelter classification. Overrides structural detection (no exterior portals + no windows = primary)."
+        selector:
+          boolean:
+      dry_run:
+        description: "Preview without writing. Default false."
+        selector:
+          boolean:
+      confirm_action:
+        description: "Required for mode=setup and area_delete. Omit or false returns preview without executing."
+        selector:
+          boolean:
+      area_name:
+        description: "New area display name. Required for area_create (area does not exist yet)."
+        selector:
+          text:
+      area_name_new:
+        description: "Rename target for area_update. Updates HA area display name."
+        selector:
+          text:
+      area_note:
+        description: "Human description of this space (what it is, feel, use). Compiled into HA area description on area_create/area_update. Stored in RM topology."
+        selector:
+          text:
+      floor_id_new:
+        description: "Floor ID slug for area_create or area_update floor reassignment. Use zen_dojotools_ectoplasm mode=help for floor IDs."
+        selector:
+          text:
+      icon:
+        description: "MDI icon for area_update. e.g. mdi:home, mdi:bed-outline, mdi:sofa."
+        selector:
+          text:
+      picture:
+        description: "Image URL for area_update. /local/ path or full URL. Sets the area picture in HA UI."
+        selector:
+          text:
+      caller_token:
+        description: "Opaque audit token echoed in response."
+        selector:
+          text:
+      context_slices:
+        description: "Opt-in live context for mode=get. Comma-separated: +topo, +light, +climate, +covers, +media, +inventory (+grocy alias), +chores, +tasks, +conductor, +calendar, +security. Omit for base topology only."
+        example: "+topo,+light,+climate"
+        selector:
+          text:
+    mode: queued
+    max: 2
+
+    sequence:
+
+      # ── 0. Normalize ─────────────────────────────────────────────────────
+      - variables:
+          _mode:         "{{ mode | default('help') | lower | trim }}"
+          _dry_run:      "{{ dry_run | default(false) | bool }}"
+          _caller_token: "{{ caller_token | default('') }}"
+          _area_input:   "{{ area | default('') | trim }}"
+          _area_b_input: "{{ area_b | default('') | trim }}"
+
+      # ── 0a. Coerce object fields — text: selector → native dict ─────────
+      - variables:
+          windows: "{{ windows | from_json if windows is defined and windows is string and windows | trim != '' else windows | default(none, true) }}"
+          portals: "{{ portals | from_json if portals is defined and portals is string and portals | trim != '' else portals | default(none, true) }}"
+          safety: "{{ safety | from_json if safety is defined and safety is string and safety | trim != '' else safety | default(none, true) }}"
+
+      # ── 0b. Household cabinet entity ────────────────────────────────────
+      - variables:
+          _hh_cabinet: >-
+            {{ label_entities('Zen Household Cabinet')
+               | select('match', 'sensor\\.') | list | first | default('') }}
+
+      # ── 0b. Area A resolution ────────────────────────────────────────────
+      - variables:
+          _area_id: >-
+            {%- if _area_input == '' -%}{{ '' }}{%- else -%}
+              {%- set d = area_id(_area_input) | default('', true) -%}
+              {%- set t = area_id(_area_input | title) | default('', true) -%}
+              {{ d if d else (t if t else _area_input | lower | replace(' ', '_')) }}
+            {%- endif -%}
+          _area_name: >-
+            {{ area_name(_area_id) | default('', true) if _area_input != '' else '' }}
+
+      # ── 0d. Area B resolution (link / unlink only) ───────────────────────
+      - variables:
+          _area_b_id: >-
+            {%- if _area_b_input == '' or _mode not in ['link','unlink','boundary_link','boundary_unlink'] -%}{{ '' }}{%- else -%}
+              {%- set d = area_id(_area_b_input) | default('', true) -%}
+              {%- set t = area_id(_area_b_input | title) | default('', true) -%}
+              {{ d if d else (t if t else _area_b_input | lower | replace(' ', '_')) }}
+            {%- endif -%}
+          _area_b_name: >-
+            {{ area_name(_area_b_id) | default('', true) if _area_b_input != '' else '' }}
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 1. LIST
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'list' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: list
+                defined_count: >-
+                  {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                  {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                  {{ topo | length }}
+                rooms: >-
+                  {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                  {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                  {%- set ns=namespace(rooms=[]) -%}
+                  {%- for aid,data in topo.items() -%}
+                    {%- set d=data if data is mapping else {} -%}
+                    {%- set al=(labels(aid) or [])|list -%}
+                    {%- set e={'area_id':aid,'display_name':area_name(aid)|default(d.get('display_name',aid),true),'floor_id':floor_id(area_name(aid))|default(none,true),'walls':d.get('walls',none),'adjacent_count':d.get('adjacent',[])|length,'portal_count':d.get('portals',[])|length,'window_count':d.get('windows',[])|length,'rm_managed':'room_manager' in al,'layout_labeled':'room_layout' in al} -%}
+                    {%- set ns.rooms=ns.rooms+[e] -%}
+                  {%- endfor -%}
+                  {{ ns.rooms }}
+                caller_token: "{{ _caller_token }}"
+          - stop: list
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 2. GET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'get' }}"
+        then:
+          - if: "{{ _area_id == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: get, message: "area= required.", caller_token: "{{ _caller_token }}"}
+              - stop: get error
+                response_variable: _result
+          - variables:
+              _get_labels:    "{{ (labels(_area_id) or []) | list }}"
+              _get_floor:     "{{ floor_id(area_name(_area_id)) | default(none, true) }}"
+              _get_ent_count: "{{ area_entities(_area_id) | list | length }}"
+              _get_dev_count: "{{ area_devices(_area_id) | list | length }}"
+              _get_spatial: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ topo.get(_area_id, none) }}
+              _get_features: >-
+                {%- set _area_ents=area_entities(_area_id)|list -%}
+                {%- set _feat_ents=label_entities('room_feature')|select('in',_area_ents)|list -%}
+                {%- set _strip=['room_feature','appliance','alerts','alert_manager','alert_when_on','alert_when_off','alert_when_not_off','critical','information','insight'] -%}
+                {%- set ns=namespace(f=[]) -%}
+                {%- for eid in _feat_ents -%}
+                  {%- set _el=(labels(eid) or [])|list -%}
+                  {%- set ns_n=namespace(n=[]) -%}
+                  {%- for lbl in _el -%}
+                    {%- if lbl not in _strip and lbl != _area_id -%}{%- set ns_n.n=ns_n.n+[lbl] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {%- set ns.f=ns.f+[{'entity':eid,'state':states(eid),'domain':eid.split('.')[0],'feature_labels':ns_n.n}] -%}
+                {%- endfor -%}
+                {{ ns.f }}
+          - variables:
+              _get_exits: >-
+                {%- set _sp=_get_spatial if _get_spatial is mapping else {} -%}
+                {%- set _rk={'primary':0,'secondary':1,'tertiary':2,'bail_out':3} -%}
+                {%- set ns=namespace(e=[]) -%}
+                {%- for p in (_sp.get('portals',[])|list) -%}
+                  {%- if p is mapping and (p.get('exit',false) or p.get('emerg_exit',false)) -%}
+                    {%- set _pri=p.get('exit_priority','') -%}
+                    {%- set _sk=_rk.get(_pri,9)*2+(0 if p.get('emerg_exit',false) else 1) -%}
+                    {%- set ns.e=ns.e+[{'_k':_sk,'source':'portal','to':p.get('to',none),'type':p.get('type',''),'exit_priority':_pri,'exit':p.get('exit',false),'emerg_exit':p.get('emerg_exit',false),'normally':p.get('normally',''),'note':p.get('note','')}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for w in (_sp.get('windows',[])|list) -%}
+                  {%- if w is mapping and (w.get('exit',false) or w.get('emerg_exit',false)) -%}
+                    {%- set _pri=w.get('exit_priority','') -%}
+                    {%- set _sk=_rk.get(_pri,9)*2+(0 if w.get('emerg_exit',false) else 1) -%}
+                    {%- set ns.e=ns.e+[{'_k':_sk,'source':'window','direction':w.get('direction',''),'count':w.get('count',1),'exit_priority':_pri,'exit':w.get('exit',false),'emerg_exit':w.get('emerg_exit',false),'drop_ft':w.get('drop_ft',none),'note':w.get('note','')}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set _sorted=ns.e|sort(attribute='_k') -%}
+                {%- set ns2=namespace(r=[]) -%}
+                {%- for item in _sorted -%}
+                  {%- set ns3=namespace(d={}) -%}
+                  {%- for k,v in item.items() -%}
+                    {%- if k != '_k' -%}{%- set ns3.d=ns3.d|combine({k:v}) -%}{%- endif -%}
+                  {%- endfor -%}
+                  {%- set ns2.r=ns2.r+[ns3.d] -%}
+                {%- endfor -%}
+                {{ ns2.r }}
+          - variables:
+              _spa_in_area: >-
+                {{ label_entities('spa_climate')
+                   | select('in', area_entities(_area_id) | list) | list | length > 0 }}
+
+          # ── context_slices: flag parse ────────────────────────────────────
+          - variables:
+              _cs:          "{{ context_slices | default('') }}"
+              _show_topo:   "{{ '+topo'    in (context_slices | default('')) }}"
+              _show_light:  "{{ '+light'   in (context_slices | default('')) }}"
+              _show_clim:   "{{ '+climate' in (context_slices | default('')) }}"
+              _show_covers: "{{ '+covers'  in (context_slices | default('')) }}"
+              _show_media:  "{{ '+media'   in (context_slices | default('')) }}"
+              _show_grocy:  "{{ '+grocy' in (context_slices | default('')) or '+inventory' in (context_slices | default('')) }}"
+              _grocy_ctx:   "{{ none }}"
+              _show_chores:     "{{ '+chores'    in (context_slices | default('')) }}"
+              _chores_ctx:      "{{ none }}"
+              _show_tasks:      "{{ '+tasks'     in (context_slices | default('')) }}"
+              _tasks_ctx:       "{{ none }}"
+              _show_conductor:  "{{ '+conductor' in (context_slices | default('')) }}"
+              _conductor_ctx:   "{{ none }}"
+              _show_calendar:   "{{ '+calendar'  in (context_slices | default('')) }}"
+              _calendar_ctx:    "{{ none }}"
+              _show_security:   "{{ '+security'  in (context_slices | default('')) }}"
+              _security_ctx:    "{{ none }}"
+
+          # ── context_slices: inline state reads ───────────────────────────
+          - variables:
+              _topo_ctx: >-
+                {%- if _show_topo -%}
+                  {%- set _bs = area_entities(_area_id) | select('match', 'binary_sensor\\.') | list -%}
+                  {%- set ns = namespace(open=[]) -%}
+                  {%- for eid in _bs -%}
+                    {%- if states(eid) == 'on' -%}{%- set ns.open = ns.open + [eid] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ {"open_count": ns.open | count, "total_count": _bs | count, "open": ns.open} }}
+                {%- else -%}{{ none }}{%- endif -%}
+              _light_ctx: >-
+                {%- if _show_light -%}
+                  {%- set _lights = area_entities(_area_id) | select('match', 'light\\.') | list -%}
+                  {%- set ns = namespace(on=[], bvals=[]) -%}
+                  {%- for eid in _lights -%}
+                    {%- if states(eid) == 'on' -%}
+                      {%- set ns.on = ns.on + [eid] -%}
+                      {%- set _b = state_attr(eid, 'brightness') -%}
+                      {%- if _b is number -%}{%- set ns.bvals = ns.bvals + [_b] -%}{%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set _avg = (ns.bvals | sum / (ns.bvals | count) / 255 * 100) | round(0) if ns.bvals else 0 -%}
+                  {{ {"lights_total": _lights | count, "lights_on": ns.on, "avg_brightness_pct": _avg} }}
+                {%- else -%}{{ none }}{%- endif -%}
+              _clim_ctx: >-
+                {%- if _show_clim -%}
+                  {%- set _climates = area_entities(_area_id) | select('match', 'climate\\.') | list -%}
+                  {%- set _first = _climates | first | default('') -%}
+                  {%- if _first -%}
+                    {{ {"entity_id": _first, "hvac_mode": states(_first), "setpoint": state_attr(_first, 'temperature'), "current_temp": state_attr(_first, 'current_temperature')} }}
+                  {%- else -%}{{ none }}{%- endif -%}
+                {%- else -%}{{ none }}{%- endif -%}
+              _covers_ctx: >-
+                {%- if _show_covers -%}
+                  {%- set _covers = area_entities(_area_id) | select('match', 'cover\\.') | list -%}
+                  {%- set ns = namespace(open=[], pos=[]) -%}
+                  {%- for eid in _covers -%}
+                    {%- if states(eid) == 'open' -%}{%- set ns.open = ns.open + [eid] -%}{%- endif -%}
+                    {%- set _p = state_attr(eid, 'current_position') -%}
+                    {%- if _p is number -%}{%- set ns.pos = ns.pos + [_p] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {%- set _avg = (ns.pos | sum / (ns.pos | count)) | round(0) if ns.pos else none -%}
+                  {{ {"covers": _covers, "open": ns.open, "avg_position": _avg} }}
+                {%- else -%}{{ none }}{%- endif -%}
+              _media_ctx: >-
+                {%- if _show_media -%}
+                  {%- set _players = area_entities(_area_id) | select('match', 'media_player\\.') | list -%}
+                  {%- set ns = namespace(first='') -%}
+                  {%- for eid in _players -%}
+                    {%- if states(eid) in ['playing', 'paused'] and ns.first == '' -%}
+                      {%- set ns.first = eid -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if ns.first -%}
+                    {{ {"entity_id": ns.first, "state": states(ns.first), "media_title": state_attr(ns.first, 'media_title'), "volume": state_attr(ns.first, 'volume_level')} }}
+                  {%- else -%}{{ {"active_count": 0} }}{%- endif -%}
+                {%- else -%}{{ none }}{%- endif -%}
+              _security_ctx: >-
+                {%- if not _show_security -%}{{ none }}{%- else -%}
+                {%- set _cams=label_entities('security_camera')|select('in',area_entities(_area_id)|list)|list -%}
+                {%- set pns=namespace(eid='') -%}
+                {%- for e in label_entities('alarm_panel') -%}
+                  {%- if pns.eid=='' and e.startswith('alarm_control_panel.') -%}
+                    {%- set pns.eid=e -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if pns.eid=='' -%}
+                  {{ {'available': false, 'cameras': _cams} }}
+                {%- else -%}
+                  {%- set _pdid=device_id(pns.eid) -%}
+                  {%- set _zdc=['door','window','motion','opening','vibration','gas','heat','smoke','moisture','presence'] -%}
+                  {%- set zns=namespace(zones=[]) -%}
+                  {%- for eid in area_entities(_area_id) -%}
+                    {%- if eid.startswith('binary_sensor.') and not eid.endswith('_fault') -%}
+                      {%- if device_id(eid)==_pdid -%}
+                        {%- set _dc=state_attr(eid,'device_class')|default('',true) -%}
+                        {%- set _s=states(eid) -%}
+                        {%- set _base=eid.split('.')[1] -%}
+                        {%- set _fe='binary_sensor.'~_base~'_fault' -%}
+                        {%- set _be='switch.'~_base~'_bypass' -%}
+                        {%- set zns.zones=zns.zones+[{'entity_id':eid,'name':state_attr(eid,'friendly_name')|default(_base|replace('_',' ')|title,true),'type':_dc,'state':_s,'open':_s=='on','fault':states(_fe)=='on' if states(_fe) not in ['unknown','unavailable'] else false,'bypassed':states(_be)=='on' if states(_be) not in ['unknown','unavailable'] else false}] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ {'available': true, 'panel': pns.eid, 'zone_count': zns.zones|count, 'open_count': zns.zones|selectattr('open')|list|count, 'zones': zns.zones, 'cameras': _cams} }}
+                {%- endif -%}
+                {%- endif -%}
+
+          # ── context_slices: grocy inventory (action call, non-blocking) ──────
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: >-
+                  {{ _show_grocy
+                     and states('script.zen_dojotools_inventory') not in ['unavailable', 'unknown'] }}
+              sequence:
+              - action: script.zen_dojotools_inventory
+                response_variable: _grocy_raw
+                continue_on_error: true
+                data:
+                  mode: stock_area_summary
+                  homeassistant_area_id: "{{ _area_id }}"
+              - variables:
+                  _grocy_ctx: >-
+                    {%- if _grocy_raw is defined and _grocy_raw is mapping
+                           and _grocy_raw.get('status') == 'success' -%}
+                      {{ _grocy_raw }}
+                    {%- else -%}{{ none }}{%- endif -%}
+
+          # ── context_slices: chores by area (action call, non-blocking) ─────
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: >-
+                  {{ _show_chores
+                     and states('script.zen_dojotools_inventory') not in ['unavailable', 'unknown'] }}
+              sequence:
+              - action: script.zen_dojotools_inventory
+                response_variable: _chores_raw
+                continue_on_error: true
+                data:
+                  mode: chores_by_area
+                  homeassistant_area_id: "{{ _area_id }}"
+              - variables:
+                  _chores_ctx: >-
+                    {%- if _chores_raw is defined and _chores_raw is mapping
+                           and _chores_raw.get('status') == 'success' -%}
+                      {{ _chores_raw }}
+                    {%- else -%}{{ none }}{%- endif -%}
+
+          # ── context_slices: tasks by area (HA todo entities, label-tagged) ───
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: "{{ _show_tasks }}"
+              sequence:
+              - variables:
+                  _task_lists: >-
+                    {%- set ns = namespace(lists=[]) -%}
+                    {%- for lid in labels(_area_id) -%}
+                      {%- set ns.lists = ns.lists + (label_entities(label_name(lid)) | select('match', '^todo\\.') | list) -%}
+                    {%- endfor -%}
+                    {{ ns.lists | unique | list }}
+              - variables:
+                  _tasks_agg: "{{ [] }}"
+              - repeat:
+                  for_each: "{{ _task_lists }}"
+                  sequence:
+                  - action: todo.get_items
+                    target:
+                      entity_id: "{{ repeat.item }}"
+                    response_variable: _t_raw
+                    continue_on_error: true
+                  - variables:
+                      _tasks_agg: >-
+                        {{ _tasks_agg + [{
+                          'list': repeat.item,
+                          'friendly_name': state_attr(repeat.item, 'friendly_name') | default(repeat.item, true),
+                          'items': _t_raw.get(repeat.item, {}).get('items', [])
+                        }] }}
+              - variables:
+                  _tasks_ctx: >-
+                    {%- if _tasks_agg | length > 0 -%}
+                      {{ {'lists': _tasks_agg,
+                           'total_lists': _tasks_agg | length,
+                           'total_items': _tasks_agg | map(attribute='items') | sum(start=[]) | length} }}
+                    {%- else -%}{{ none }}{%- endif -%}
+
+          # ── context_slices: conductor list (label: schedule) ───────
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: "{{ _show_conductor }}"
+              sequence:
+              - variables:
+                  _cond_lists: >-
+                    {{ label_entities('schedule')
+                       | select('match', '^todo\\.')
+                       | list }}
+              - variables:
+                  _cond_agg: "{{ [] }}"
+              - repeat:
+                  for_each: "{{ _cond_lists }}"
+                  sequence:
+                  - action: todo.get_items
+                    target:
+                      entity_id: "{{ repeat.item }}"
+                    response_variable: _c_raw
+                    continue_on_error: true
+                  - variables:
+                      _cond_agg: >-
+                        {{ _cond_agg + [{
+                          'list': repeat.item,
+                          'friendly_name': state_attr(repeat.item, 'friendly_name') | default(repeat.item, true),
+                          'items': _c_raw.get(repeat.item, {}).get('items', [])
+                        }] }}
+              - variables:
+                  _conductor_ctx: >-
+                    {%- if _cond_agg | length > 0 -%}
+                      {{ {'lists': _cond_agg,
+                           'total_lists': _cond_agg | length,
+                           'total_items': _cond_agg | map(attribute='items') | sum(start=[]) | length} }}
+                    {%- else -%}{{ none }}{%- endif -%}
+
+          # ── context_slices: calendar by area (label-tagged calendar entities) ───
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: "{{ _show_calendar }}"
+              sequence:
+              - variables:
+                  _cal_entities: >-
+                    {%- set ns = namespace(cals=[]) -%}
+                    {%- for lid in labels(_area_id) -%}
+                      {%- set ns.cals = ns.cals + (label_entities(label_name(lid)) | select('match', '^calendar\\.') | list) -%}
+                    {%- endfor -%}
+                    {{ ns.cals | unique | list }}
+              - variables:
+                  _cal_agg: "{{ [] }}"
+              - repeat:
+                  for_each: "{{ _cal_entities }}"
+                  sequence:
+                  - action: calendar.get_events
+                    target:
+                      entity_id: "{{ repeat.item }}"
+                    data:
+                      start_date_time: "{{ now().isoformat() }}"
+                      end_date_time: "{{ (now() + timedelta(days=7)).isoformat() }}"
+                    response_variable: _ev_raw
+                    continue_on_error: true
+                  - variables:
+                      _cal_agg: >-
+                        {{ _cal_agg + [{
+                          'calendar': repeat.item,
+                          'friendly_name': state_attr(repeat.item, 'friendly_name') | default(repeat.item, true),
+                          'events': _ev_raw.get(repeat.item, {}).get('events', [])
+                        }] }}
+              - variables:
+                  _calendar_ctx: >-
+                    {%- if _cal_agg | length > 0 -%}
+                      {{ {'calendars': _cal_agg,
+                           'total_calendars': _cal_agg | length,
+                           'total_events': _cal_agg | map(attribute='events') | sum(start=[]) | length,
+                           'window_days': 7} }}
+                    {%- else -%}{{ none }}{%- endif -%}
+
+          # ── context_slices: assemble non-null slices into context dict ────
+          - variables:
+              _context_block: >-
+                {%- set b = {} -%}
+                {%- if _topo_ctx   is not none -%}{%- set b = b | combine({'topo':    _topo_ctx})   -%}{%- endif -%}
+                {%- if _light_ctx  is not none -%}{%- set b = b | combine({'light':   _light_ctx})  -%}{%- endif -%}
+                {%- if _clim_ctx   is not none -%}{%- set b = b | combine({'climate': _clim_ctx})   -%}{%- endif -%}
+                {%- if _covers_ctx is not none -%}{%- set b = b | combine({'covers':  _covers_ctx}) -%}{%- endif -%}
+                {%- if _media_ctx  is not none -%}{%- set b = b | combine({'media':   _media_ctx})  -%}{%- endif -%}
+                {%- if _grocy_ctx     is not none -%}{%- set b = b | combine({'inventory':  _grocy_ctx})     -%}{%- endif -%}
+                {%- if _chores_ctx   is not none -%}{%- set b = b | combine({'chores':     _chores_ctx})   -%}{%- endif -%}
+                {%- if _tasks_ctx     is not none -%}{%- set b = b | combine({'tasks':      _tasks_ctx})     -%}{%- endif -%}
+                {%- if _conductor_ctx is not none -%}{%- set b = b | combine({'conductor':  _conductor_ctx}) -%}{%- endif -%}
+                {%- if _calendar_ctx  is not none -%}{%- set b = b | combine({'calendar':   _calendar_ctx})  -%}{%- endif -%}
+                {%- if _security_ctx  is not none -%}{%- set b = b | combine({'security':   _security_ctx})  -%}{%- endif -%}
+                {{ b }}
+
+          - variables:
+              _dr_task_count: >-
+                {%- set ns=namespace(lists=[]) -%}
+                {%- for lid in labels(_area_id) -%}{%- set ns.lists=ns.lists+(label_entities(label_name(lid))|select('match','^todo\\.')|list) -%}{%- endfor -%}
+                {{ ns.lists|unique|list|count }}
+              _dr_cal_count: >-
+                {%- set ns=namespace(cals=[]) -%}
+                {%- for lid in labels(_area_id) -%}{%- set ns.cals=ns.cals+(label_entities(label_name(lid))|select('match','^calendar\\.')|list) -%}{%- endfor -%}
+                {{ ns.cals|unique|list|count }}
+          - variables:
+              _result:
+                status: ok
+                mode: get
+                area_id: "{{ _area_id }}"
+                area_name: "{{ _area_name }}"
+                floor_id: "{{ _get_floor }}"
+                ha_labels: "{{ _get_labels }}"
+                rm_managed: "{{ 'room_manager' in _get_labels }}"
+                layout_defined: "{{ 'room_layout' in _get_labels }}"
+                entity_count: "{{ _get_ent_count }}"
+                device_count: "{{ _get_dev_count }}"
+                spatial: "{{ _get_spatial }}"
+                features: "{{ _get_features }}"
+                exits: "{{ _get_exits }}"
+                advisory: >-
+                  {%- if _get_spatial is none -%}
+                  No spatial data for {{ _area_id }}.
+                  Seed steps: (1) mode=set area={{ _area_id }} walls=N description='...' to register (auto-applies room_layout);
+                  (2) mode=link area={{ _area_id }} area_b=NEIGHBOR per adjacent room.
+                  Unlocks: ZenLux adjacency scenes, egress routing, vacuum zone targeting.
+                  {%- else -%}{{ none }}{%- endif -%}
+                domain_routing:
+                  lighting: "zen_dojotools_lights — ZenLux. area={{ _area_id }}. Reads adjacent[] for bleed-aware scenes."
+                  media: "zen_dojotools_media_manager — NyxMau5. Room name or area_id for zone targeting."
+                  climate: "zen_dojotools_climate — area={{ _area_id }}. spatial.area_sqm for load context."
+                  spa: "{{ 'zen_dojotools_spamaster — SpaMaster. Canonical for all spa intents: chemistry, jets, cover, lights, audio, temperature. area=' ~ _area_id if _spa_in_area else none }}"
+                  egress: "No extra call. Filter portals+windows where exit=true or emerg_exit=true. windows.drop_ft=0=ground safe. emerg_exit=true=designated evacuation route."
+                  occupant_profile: "occupants[] names → zen_dojotools_profile_editor mode=get."
+                  grocy: "{{ ('zen_dojotools_inventory — anchor=' ~ _get_spatial.grocy_location_id ~ '. stock_list_by_location(location_id=' ~ _get_spatial.grocy_location_id ~ '): all stock in room. locations_find: containers under anchor. Place object: find/create container (locations_add), stock product (stock_buy_product). Find any item: stock_where_is_item(item=name).') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
+                  chores: "{{ ('context_slices=+chores — maintenance chores (product-stocked or area-tagged). anchor=' ~ _get_spatial.grocy_location_id ~ '. Returns is_due, next_execution, cadence.') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
+                  tasks: "{{ ('context_slices=+tasks — ' ~ _dr_task_count ~ ' todo list(s) tagged to area labels. Returns items by list.') if (_dr_task_count | int) > 0 else none }}"
+                  calendar: "{{ ('context_slices=+calendar — ' ~ _dr_cal_count ~ ' calendar(s) tagged to area labels. 7-day event window.') if (_dr_cal_count | int) > 0 else none }}"
+                  conductor: "context_slices=+conductor — AI schedule/task queue. Todo entities labeled schedule. Always area-agnostic."
+                  security: "context_slices=+security — alarm zones + cameras in this room. zen_dojotools_security_manager for arm/disarm/policy (security lens). zen_dojotools_camera for visual analysis per camera entity (camera lens)."
+                context: "{{ _context_block }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: get
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 3. SET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'set' }}"
+        then:
+          - variables:
+              _hh_write: >-
+                {{ (rally_point is defined and rally_point is not none and (rally_point|string)|trim != '')
+                   or (zip_code is defined and zip_code is not none and (zip_code|string)|trim != '')
+                   or (address is defined and address is not none and (address|string)|trim != '') }}
+
+          - if: "{{ _hh_cabinet == '' or (_area_id == '' and not _hh_write) }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: set, message: "area= required (or rally_point=/zip_code= for household-level write). Household cabinet must be reachable.", caller_token: "{{ _caller_token }}"}
+              - stop: set error
+                response_variable: _result
+
+          # Write household_profile fields if any provided (rally_point, zip_code — no area= needed)
+          - if: "{{ _hh_write }}"
+            then:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: >-
+                    {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                    {{ 'update' if _cv.get('household_profile',none) is not none else 'create' }}
+                  key: household_profile
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  value: >-
+                    {%- set _hp=(state_attr(_hh_cabinet,'variables')|default({},true)).get('household_profile',none) -%}
+                    {%- set _hpd=_hp if _hp is mapping else (_hp|from_json if _hp is string and _hp|trim not in ['None','none','','null'] else {}) -%}
+                    {%- set _hpu=_hpd if _hpd is mapping else {} -%}
+                    {%- if rally_point is defined and rally_point is not none and (rally_point|string)|trim != '' -%}
+                      {%- set _hpu=_hpu|combine({'rally_point':(rally_point|string)|trim}) -%}
+                    {%- endif -%}
+                    {%- if zip_code is defined and zip_code is not none and (zip_code|string)|trim != '' -%}
+                      {%- set _hpu=_hpu|combine({'zip_code':(zip_code|string)|trim}) -%}
+                    {%- endif -%}
+                    {%- if address is defined and address is not none and (address|string)|trim != '' -%}
+                      {%- set _hpu=_hpu|combine({'address':(address|string)|trim}) -%}
+                    {%- endif -%}
+                    {{ _hpu | tojson }}
+                response_variable: _rp_fc_result
+
+          # Household-level-only call (no area=) — return now
+          - if: "{{ _area_id == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    mode: set
+                    rally_point_written: "{{ (rally_point|string)|trim if (rally_point is defined and rally_point is not none and (rally_point|string)|trim != '') else none }}"
+                    zip_code_written: "{{ (zip_code|string)|trim if (zip_code is defined and zip_code is not none and (zip_code|string)|trim != '') else none }}"
+                    address_written: "{{ (address|string)|trim if (address is defined and address is not none and (address|string)|trim != '') else none }}"
+                    household_profile_status: "{{ _rp_fc_result.status | default('error') }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: set household profile
+                response_variable: _result
+
+          # Schema validation — one portal/window per call; required routing fields enforced
+          - variables:
+              _schema_errors: >-
+                {%- set _vpt=['door','archway','passage'] -%}
+                {%- set _vno=['open','closed'] -%}
+                {%- set _vwd=['N','NE','E','SE','S','SW','W','NW'] -%}
+                {%- set _vwt=['single','double','sliding','casement','fixed','skylight'] -%}
+                {%- set ns=namespace(e=[]) -%}
+                {%- if portals is defined and portals is not none -%}
+                  {%- if portals is not mapping -%}{%- set ns.e=ns.e+['portals: must be a single dict (one portal per call)'] -%}{%- else -%}
+                    {%- if portals.get('type','') not in _vpt -%}{%- set ns.e=ns.e+['portals: type required (door|archway|passage)'] -%}{%- endif -%}
+                    {%- if portals.get('normally','') not in _vno -%}{%- set ns.e=ns.e+['portals: normally required (open|closed)'] -%}{%- endif -%}
+                    {%- if 'exterior' not in portals -%}{%- set ns.e=ns.e+['portals: exterior (bool) required'] -%}{%- endif -%}
+                    {%- if 'exit' not in portals -%}{%- set ns.e=ns.e+['portals: exit (bool) required'] -%}{%- endif -%}
+                    {%- if 'emerg_exit' not in portals -%}{%- set ns.e=ns.e+['portals: emerg_exit (bool) required'] -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- if windows is defined and windows is not none -%}
+                  {%- if windows is not mapping -%}{%- set ns.e=ns.e+['windows: must be a single dict (one window per call)'] -%}{%- else -%}
+                    {%- if windows.get('direction','') not in _vwd -%}{%- set ns.e=ns.e+['windows: direction required (N|NE|E|SE|S|SW|W|NW)'] -%}{%- endif -%}
+                    {%- if windows.get('type','') not in _vwt -%}{%- set ns.e=ns.e+['windows: type required (single|double|sliding|casement|fixed|skylight)'] -%}{%- endif -%}
+                    {%- if 'exit' not in windows -%}{%- set ns.e=ns.e+['windows: exit (bool) required'] -%}{%- endif -%}
+                    {%- if 'emerg_exit' not in windows -%}{%- set ns.e=ns.e+['windows: emerg_exit (bool) required'] -%}{%- endif -%}
+                    {%- if 'drop_ft' not in windows -%}{%- set ns.e=ns.e+['windows: drop_ft (number, 0=ground) required'] -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {{ ns.e }}
+
+          - if: "{{ _schema_errors | length > 0 }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: set, message: "Schema validation failed.", errors: "{{ _schema_errors }}", area_id: "{{ _area_id }}", caller_token: "{{ _caller_token }}"}
+              - stop: set schema_error
+                response_variable: _result
+
+          # Build merged room entry as native dict; check is_new
+          # Both keys read cabinet independently (sibling keys can't cross-reference)
+          - variables:
+              _set_merged: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- set _existing=topo.get(_area_id,{}) -%}
+                {%- set _ex0=_existing if _existing is mapping else {} -%}
+                {%- set _skip=['display_name','floor_level'] -%}
+                {%- set ns=namespace(p={}) -%}
+                {%- for _k,_v in _ex0.items() -%}{%- if _k not in _skip -%}{%- set ns.p=ns.p|combine({_k:_v}) -%}{%- endif -%}{%- endfor -%}
+
+                {%- if walls is defined and walls is not none -%}{%- set ns.p=ns.p|combine({'walls':walls|int}) -%}{%- endif -%}
+
+                {%- if clear_portals is defined and clear_portals -%}{%- set ns.p=ns.p|combine({'portals':[]}) -%}{%- endif -%}
+                {%- if portals is defined and portals is not none and portals is mapping -%}
+                  {%- set _ep=ns.p.get('portals',[])|list -%}
+                  {%- set _pname=portals.get('name',none) -%}
+                  {%- set _pto=portals.get('to',none) -%}
+                  {%- if _pname is not none -%}
+                    {%- set _named=_ep|rejectattr('name','eq',_pname)|selectattr('name','defined')|list -%}{%- set _unnamed=_ep|rejectattr('name','defined')|rejectattr('to','eq',_pto)|list -%}{%- set ns.p=ns.p|combine({'portals':_named+_unnamed+[portals]}) -%}
+                  {%- elif _pto is not none -%}
+                    {%- set ns.p=ns.p|combine({'portals':(_ep|rejectattr('to','eq',_pto)|list)+[portals]}) -%}
+                  {%- else -%}
+                    {%- set ns.p=ns.p|combine({'portals':_ep+[portals]}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- set _padj=ns.p.get('portals',[])|selectattr('to','defined')|map(attribute='to')|list -%}{%- set ns.p=ns.p|combine({'adjacent':(ns.p.get('adjacent',[])|list+_padj)|unique|list}) -%}
+                {%- if clear_windows is defined and clear_windows -%}{%- set ns.p=ns.p|combine({'windows':[]}) -%}{%- endif -%}
+                {%- if windows is defined and windows is not none and windows is mapping -%}
+                  {%- set _ew=ns.p.get('windows',[])|list -%}
+                  {%- set _wname=windows.get('name',none) -%}
+                  {%- set _wdir=windows.get('direction',none) -%}
+                  {%- if _wname is not none -%}
+                    {%- set ns.p=ns.p|combine({'windows':(_ew|rejectattr('name','eq',_wname)|list)+[windows]}) -%}
+                  {%- elif _wdir is not none -%}
+                    {%- set ns.p=ns.p|combine({'windows':(_ew|rejectattr('direction','eq',_wdir)|list)+[windows]}) -%}
+                  {%- else -%}
+                    {%- set ns.p=ns.p|combine({'windows':_ew+[windows]}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- if clear_occupants is defined and clear_occupants -%}{%- set ns.p=ns.p|combine({'occupants':[]}) -%}{%- endif -%}
+                {%- if occupant is defined and occupant is not none and occupant|trim != '' -%}
+                  {%- set _eo=ns.p.get('occupants',[])|list -%}
+                  {%- if occupant|trim not in _eo -%}{%- set ns.p=ns.p|combine({'occupants':_eo+[occupant|trim]}) -%}{%- endif -%}
+                {%- endif -%}
+                {%- if clear_safety is defined and clear_safety -%}{%- set ns.p=ns.p|combine({'safety':[]}) -%}{%- endif -%}
+                {%- if safety is defined and safety is not none and safety is mapping -%}
+                  {%- set _es=ns.p.get('safety',[])|list -%}
+                  {%- set _sname=safety.get('name',none) -%}
+                  {%- if _sname is not none -%}
+                    {%- set ns.p=ns.p|combine({'safety':(_es|rejectattr('name','eq',_sname)|list)+[safety]}) -%}
+                  {%- else -%}
+                    {%- set ns.p=ns.p|combine({'safety':_es+[safety]}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- if description is defined and description is not none -%}{%- set ns.p=ns.p|combine({'description':description|string}) -%}{%- endif -%}
+                {%- if grocy_location_id is defined and grocy_location_id is not none and grocy_location_id|trim != '' -%}{%- set ns.p=ns.p|combine({'grocy_location_id':grocy_location_id|trim}) -%}{%- endif -%}
+                {%- if exterior is defined and exterior is not none -%}{%- set ns.p=ns.p|combine({'exterior':exterior}) -%}{%- endif -%}
+                {%- if shelter_eligible is defined and shelter_eligible is not none -%}{%- set ns.p=ns.p|combine({'shelter_eligible':shelter_eligible}) -%}{%- endif -%}
+                {%- if area_note is defined and area_note is not none -%}{%- set ns.p=ns.p|combine({'area_note':area_note|string}) -%}{%- endif -%}
+                {{ ns.p }}
+              _set_is_new: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ _area_id not in topo }}
+
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    mode: set
+                    area_id: "{{ _area_id }}"
+                    would_write: "{{ _set_merged }}"
+                    is_new_room: "{{ _set_is_new }}"
+                    rally_point_would_write: "{{ (rally_point|string)|trim if (rally_point is defined and rally_point is not none and (rally_point|string)|trim != '') else none }}"
+                    zip_code_would_write: "{{ (zip_code|string)|trim if (zip_code is defined and zip_code is not none and (zip_code|string)|trim != '') else none }}"
+                    address_would_write: "{{ (address|string)|trim if (address is defined and address is not none and (address|string)|trim != '') else none }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: set dry_run
+                response_variable: _result
+
+          # value: uses string rendering — merge replicated inline, no cross-context _set_merged ref
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: >-
+                {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                {{ 'update' if _cv.get('room_topology',none) is not none else 'create' }}
+              key: room_topology
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- set _ex0=topo.get(_area_id,{}) -%}
+                {%- set _ex=_ex0 if _ex0 is mapping else {} -%}
+                {%- set _skip=['display_name','floor_level'] -%}
+                {%- set ns=namespace(p={}) -%}
+                {%- for _k,_v in _ex.items() -%}{%- if _k not in _skip -%}{%- set ns.p=ns.p|combine({_k:_v}) -%}{%- endif -%}{%- endfor -%}
+
+                {%- if walls is defined and walls is not none -%}{%- set ns.p=ns.p|combine({'walls':walls|int}) -%}{%- endif -%}
+
+                {%- if clear_portals is defined and clear_portals -%}{%- set ns.p=ns.p|combine({'portals':[]}) -%}{%- endif -%}
+                {%- if portals is defined and portals is not none and portals is mapping -%}
+                  {%- set _ep=ns.p.get('portals',[])|list -%}
+                  {%- set _pname=portals.get('name',none) -%}
+                  {%- set _pto=portals.get('to',none) -%}
+                  {%- if _pname is not none -%}
+                    {%- set _named=_ep|rejectattr('name','eq',_pname)|selectattr('name','defined')|list -%}{%- set _unnamed=_ep|rejectattr('name','defined')|rejectattr('to','eq',_pto)|list -%}{%- set ns.p=ns.p|combine({'portals':_named+_unnamed+[portals]}) -%}
+                  {%- elif _pto is not none -%}
+                    {%- set ns.p=ns.p|combine({'portals':(_ep|rejectattr('to','eq',_pto)|list)+[portals]}) -%}
+                  {%- else -%}
+                    {%- set ns.p=ns.p|combine({'portals':_ep+[portals]}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- set _padj=ns.p.get('portals',[])|selectattr('to','defined')|map(attribute='to')|list -%}{%- set ns.p=ns.p|combine({'adjacent':(ns.p.get('adjacent',[])|list+_padj)|unique|list}) -%}
+                {%- if clear_windows is defined and clear_windows -%}{%- set ns.p=ns.p|combine({'windows':[]}) -%}{%- endif -%}
+                {%- if windows is defined and windows is not none and windows is mapping -%}
+                  {%- set _ew=ns.p.get('windows',[])|list -%}
+                  {%- set _wname=windows.get('name',none) -%}
+                  {%- set _wdir=windows.get('direction',none) -%}
+                  {%- if _wname is not none -%}
+                    {%- set ns.p=ns.p|combine({'windows':(_ew|rejectattr('name','eq',_wname)|list)+[windows]}) -%}
+                  {%- elif _wdir is not none -%}
+                    {%- set ns.p=ns.p|combine({'windows':(_ew|rejectattr('direction','eq',_wdir)|list)+[windows]}) -%}
+                  {%- else -%}
+                    {%- set ns.p=ns.p|combine({'windows':_ew+[windows]}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- if clear_occupants is defined and clear_occupants -%}{%- set ns.p=ns.p|combine({'occupants':[]}) -%}{%- endif -%}
+                {%- if occupant is defined and occupant is not none and occupant|trim != '' -%}
+                  {%- set _eo=ns.p.get('occupants',[])|list -%}
+                  {%- if occupant|trim not in _eo -%}{%- set ns.p=ns.p|combine({'occupants':_eo+[occupant|trim]}) -%}{%- endif -%}
+                {%- endif -%}
+                {%- if clear_safety is defined and clear_safety -%}{%- set ns.p=ns.p|combine({'safety':[]}) -%}{%- endif -%}
+                {%- if safety is defined and safety is not none and safety is mapping -%}
+                  {%- set _es=ns.p.get('safety',[])|list -%}
+                  {%- set _sname=safety.get('name',none) -%}
+                  {%- if _sname is not none -%}
+                    {%- set ns.p=ns.p|combine({'safety':(_es|rejectattr('name','eq',_sname)|list)+[safety]}) -%}
+                  {%- else -%}
+                    {%- set ns.p=ns.p|combine({'safety':_es+[safety]}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- if description is defined and description is not none -%}{%- set ns.p=ns.p|combine({'description':description|string}) -%}{%- endif -%}
+                {%- if grocy_location_id is defined and grocy_location_id is not none and grocy_location_id|trim != '' -%}{%- set ns.p=ns.p|combine({'grocy_location_id':grocy_location_id|trim}) -%}{%- endif -%}
+                {%- if exterior is defined and exterior is not none -%}{%- set ns.p=ns.p|combine({'exterior':exterior}) -%}{%- endif -%}
+                {%- if shelter_eligible is defined and shelter_eligible is not none -%}{%- set ns.p=ns.p|combine({'shelter_eligible':shelter_eligible}) -%}{%- endif -%}
+                {%- if area_note is defined and area_note is not none -%}{%- set ns.p=ns.p|combine({'area_note':area_note|string}) -%}{%- endif -%}
+                {{ (topo | combine({_area_id: ns.p})) | tojson }}
+            response_variable: _fc_result
+
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: tag
+              label_list:
+                - room_layout
+              target_areas:
+                - "{{ _area_id }}"
+              confirm: true
+            response_variable: _label_result
+
+          - variables:
+              _result:
+                status: ok
+                mode: set
+                area_id: "{{ _area_id }}"
+                written: "{{ _set_merged }}"
+                is_new_room: "{{ _set_is_new }}"
+                room_layout_tagged: "{{ (_label_result.status | default('error')) == 'ok' }}"
+                rally_point_written: "{{ (rally_point|string)|trim if (rally_point is defined and rally_point is not none and (rally_point|string)|trim != '') else none }}"
+                zip_code_written: "{{ (zip_code|string)|trim if (zip_code is defined and zip_code is not none and (zip_code|string)|trim != '') else none }}"
+                address_written: "{{ (address|string)|trim if (address is defined and address is not none and (address|string)|trim != '') else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: set
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 4. LINK
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'link' }}"
+        then:
+          - if: "{{ _area_id == '' or _area_b_id == '' or _hh_cabinet == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: link, message: "area= and area_b= both required.", caller_token: "{{ _caller_token }}"}
+              - stop: link error
+                response_variable: _result
+
+          - variables:
+              _pt: "{{ portal_type | default('door') }}"
+              _pn: "{{ portal_normally | default('closed') }}"
+
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    mode: link
+                    area_a: "{{ _area_id }}"
+                    area_b: "{{ _area_b_id }}"
+                    portal_type: "{{ _pt }}"
+                    portal_normally: "{{ _pn }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: link dry_run
+                response_variable: _result
+
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: >-
+                {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                {{ 'update' if _cv.get('room_topology',none) is not none else 'create' }}
+              key: room_topology
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- set _ba_raw=topo.get(_area_id,  {}) -%}
+                {%- set ba=_ba_raw if _ba_raw is mapping else {'adjacent':[],'portals':[]} -%}
+                {%- set _bb_raw=topo.get(_area_b_id,{}) -%}
+                {%- set bb=_bb_raw if _bb_raw is mapping else {'adjacent':[],'portals':[]} -%}
+                {%- set aa=ba.get('adjacent',[])|list -%}
+                {%- set pa=ba.get('portals', [])|list -%}
+                {%- set aa2=(aa+[_area_b_id])|unique|list if _area_b_id not in aa else aa -%}
+                {%- set _pa_base={'type':_pt,'to':_area_b_id,'normally':_pn,'exterior':false,'exit':false,'emerg_exit':false} -%}
+                {%- if link_sound_tx is defined and link_sound_tx is not none -%}{%- set _pa_base=_pa_base|combine({'sound_tx':link_sound_tx|float}) -%}{%- endif -%}
+                {%- if link_light_tx is defined and link_light_tx is not none -%}{%- set _pa_base=_pa_base|combine({'light_tx':link_light_tx|float}) -%}{%- endif -%}
+                {%- set pa2=pa if pa|selectattr('to','eq',_area_b_id)|list else pa+[_pa_base] -%}
+                {%- set ab=bb.get('adjacent',[])|list -%}
+                {%- set pb=bb.get('portals', [])|list -%}
+                {%- set ab2=(ab+[_area_id])|unique|list if _area_id not in ab else ab -%}
+                {%- set _pb_base={'type':_pt,'to':_area_id,'normally':_pn,'exterior':false,'exit':false,'emerg_exit':false} -%}
+                {%- if link_sound_tx is defined and link_sound_tx is not none -%}{%- set _pb_base=_pb_base|combine({'sound_tx':link_sound_tx|float}) -%}{%- endif -%}
+                {%- if link_light_tx is defined and link_light_tx is not none -%}{%- set _pb_base=_pb_base|combine({'light_tx':link_light_tx|float}) -%}{%- endif -%}
+                {%- set pb2=pb if pb|selectattr('to','eq',_area_id)|list else pb+[_pb_base] -%}
+                {%- set ma=ba|combine({'adjacent':aa2,'portals':pa2}) -%}
+                {%- set mb=bb|combine({'adjacent':ab2,'portals':pb2}) -%}
+                {{ (topo|combine({_area_id:ma,_area_b_id:mb}))|tojson }}
+            response_variable: _fc_result
+
+          - variables:
+              _result:
+                status: ok
+                mode: link
+                area_a: "{{ _area_id }}"
+                area_b: "{{ _area_b_id }}"
+                portal_type: "{{ _pt }}"
+                portal_normally: "{{ _pn }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: link
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 5. UNLINK
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'unlink' }}"
+        then:
+          - if: "{{ _area_id == '' or _area_b_id == '' or _hh_cabinet == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: unlink, message: "area= and area_b= both required.", caller_token: "{{ _caller_token }}"}
+              - stop: unlink error
+                response_variable: _result
+
+          - variables:
+              _unlink_a_found: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ _area_id in topo }}
+              _unlink_b_found: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ _area_b_id in topo }}
+
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    mode: unlink
+                    area_a: "{{ _area_id }}"
+                    area_b: "{{ _area_b_id }}"
+                    a_found: "{{ _unlink_a_found }}"
+                    b_found: "{{ _unlink_b_found }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: unlink dry_run
+                response_variable: _result
+
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              key: room_topology
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set t=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- if _area_id in t -%}
+                  {%- set _ba=t[_area_id] -%}
+                  {%- set ba=_ba if _ba is mapping else {} -%}
+                  {%- set t=t|combine({_area_id:ba|combine({'adjacent':ba.get('adjacent',[])|reject('eq',_area_b_id)|list,'portals':ba.get('portals',[])|rejectattr('to','eq',_area_b_id)|list})}) -%}
+                {%- endif -%}
+                {%- if _area_b_id in t -%}
+                  {%- set _bb=t[_area_b_id] -%}
+                  {%- set bb=_bb if _bb is mapping else {} -%}
+                  {%- set t=t|combine({_area_b_id:bb|combine({'adjacent':bb.get('adjacent',[])|reject('eq',_area_id)|list,'portals':bb.get('portals',[])|rejectattr('to','eq',_area_id)|list})}) -%}
+                {%- endif -%}
+                {{ t | tojson }}
+            response_variable: _fc_result
+
+          - variables:
+              _result:
+                status: ok
+                mode: unlink
+                area_a: "{{ _area_id }}"
+                area_b: "{{ _area_b_id }}"
+                a_not_found: "{{ not _unlink_a_found }}"
+                b_not_found: "{{ not _unlink_b_found }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: unlink
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 6. BOUNDARY_LINK — bidirectional acoustic + optical boundary (no portal)
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'boundary_link' }}"
+        then:
+          - if: "{{ _area_id == '' or _area_b_id == '' or _hh_cabinet == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: boundary_link, message: "area= and area_b= both required.", caller_token: "{{ _caller_token }}"}
+              - stop: boundary_link error
+                response_variable: _result
+
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    mode: boundary_link
+                    area_a: "{{ _area_id }}"
+                    area_b: "{{ _area_b_id }}"
+                    sound_tx: "{{ boundary_link_sound_tx | default(none) }}"
+                    light_tx: "{{ boundary_link_light_tx | default(none) }}"
+                    note: "{{ boundary_link_note | default('') }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: boundary_link dry_run
+                response_variable: _result
+
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: >-
+                {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                {{ 'update' if _cv.get('room_topology',none) is not none else 'create' }}
+              key: room_topology
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- set _ra_raw=topo.get(_area_id,{}) -%}{%- set ra=_ra_raw if _ra_raw is mapping else {} -%}
+                {%- set _rb_raw=topo.get(_area_b_id,{}) -%}{%- set rb=_rb_raw if _rb_raw is mapping else {} -%}
+                {%- set _bla=ra.get('boundary_links',[])|list -%}
+                {%- set _blb=rb.get('boundary_links',[])|list -%}
+                {%- set ns_a=namespace(ex={}) -%}
+                {%- for e in _bla -%}{%- if e is mapping and e.get('to','') == _area_b_id -%}{%- set ns_a.ex=e -%}{%- endif -%}{%- endfor -%}
+                {%- set ns_b=namespace(ex={}) -%}
+                {%- for e in _blb -%}{%- if e is mapping and e.get('to','') == _area_id -%}{%- set ns_b.ex=e -%}{%- endif -%}{%- endfor -%}
+                {%- set _la=ns_a.ex if (ns_a.ex is mapping and ns_a.ex|length > 0) else {'to':_area_b_id} -%}
+                {%- set _lb=ns_b.ex if (ns_b.ex is mapping and ns_b.ex|length > 0) else {'to':_area_id} -%}
+                {%- if boundary_link_sound_tx is defined and boundary_link_sound_tx is not none -%}{%- set _la=_la|combine({'sound_tx':boundary_link_sound_tx|float}) -%}{%- set _lb=_lb|combine({'sound_tx':boundary_link_sound_tx|float}) -%}{%- endif -%}
+                {%- if boundary_link_light_tx is defined and boundary_link_light_tx is not none -%}{%- set _la=_la|combine({'light_tx':boundary_link_light_tx|float}) -%}{%- set _lb=_lb|combine({'light_tx':boundary_link_light_tx|float}) -%}{%- endif -%}
+                {%- if boundary_link_note is defined and boundary_link_note|trim != '' -%}{%- set _la=_la|combine({'note':boundary_link_note|trim}) -%}{%- set _lb=_lb|combine({'note':boundary_link_note|trim}) -%}{%- endif -%}
+                {%- set _bla2=(_bla|rejectattr('to','eq',_area_b_id)|list)+[_la] -%}
+                {%- set _blb2=(_blb|rejectattr('to','eq',_area_id)|list)+[_lb] -%}
+                {%- set ma=ra|combine({'boundary_links':_bla2}) -%}
+                {%- set mb=rb|combine({'boundary_links':_blb2}) -%}
+                {{ (topo|combine({_area_id:ma,_area_b_id:mb}))|tojson }}
+            response_variable: _fc_result
+
+          - variables:
+              _result:
+                status: ok
+                mode: boundary_link
+                area_a: "{{ _area_id }}"
+                area_b: "{{ _area_b_id }}"
+                sound_tx: "{{ boundary_link_sound_tx | default(none) }}"
+                light_tx: "{{ boundary_link_light_tx | default(none) }}"
+                note: "{{ boundary_link_note | default('') }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: boundary_link
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 7. BOUNDARY_UNLINK — remove bidirectional acoustic + optical boundary
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'boundary_unlink' }}"
+        then:
+          - if: "{{ _area_id == '' or _area_b_id == '' or _hh_cabinet == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: boundary_unlink, message: "area= and area_b= both required.", caller_token: "{{ _caller_token }}"}
+              - stop: boundary_unlink error
+                response_variable: _result
+
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    mode: boundary_unlink
+                    area_a: "{{ _area_id }}"
+                    area_b: "{{ _area_b_id }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: boundary_unlink dry_run
+                response_variable: _result
+
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              key: room_topology
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set t=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- if _area_id in t -%}
+                  {%- set _ra=t[_area_id] -%}{%- set ra=_ra if _ra is mapping else {} -%}
+                  {%- set t=t|combine({_area_id:ra|combine({'boundary_links':ra.get('boundary_links',[])|rejectattr('to','eq',_area_b_id)|list})}) -%}
+                {%- endif -%}
+                {%- if _area_b_id in t -%}
+                  {%- set _rb=t[_area_b_id] -%}{%- set rb=_rb if _rb is mapping else {} -%}
+                  {%- set t=t|combine({_area_b_id:rb|combine({'boundary_links':rb.get('boundary_links',[])|rejectattr('to','eq',_area_id)|list})}) -%}
+                {%- endif -%}
+                {{ t | tojson }}
+            response_variable: _fc_result
+
+          - variables:
+              _result:
+                status: ok
+                mode: boundary_unlink
+                area_a: "{{ _area_id }}"
+                area_b: "{{ _area_b_id }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: boundary_unlink
+            response_variable: _result
+
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 9. HOME_OVERVIEW — whole-house topology + live context snapshot
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'home_overview' }}"
+        then:
+
+          # flat room list — iterate topo, run live slices inline + task/cal counts + grocy_anchor
+          - variables:
+              _ho_rooms: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- set ns=namespace(rooms=[]) -%}
+                {%- for aid in topo.keys() -%}
+                  {%- set _fn=area_name(aid)|default(aid,true) -%}
+                  {%- set _fid=floor_id(_fn)|default('unassigned',true)|string -%}
+                  {%- set _lts=area_entities(aid)|select('match','light\\.')|list -%}
+                  {%- set lns=namespace(on=[],bv=[]) -%}
+                  {%- for e in _lts -%}{%- if states(e)=='on' -%}{%- set lns.on=lns.on+[e] -%}{%- set _b=state_attr(e,'brightness') -%}{%- if _b is number -%}{%- set lns.bv=lns.bv+[_b] -%}{%- endif -%}{%- endif -%}{%- endfor -%}
+                  {%- set _lavg=(lns.bv|sum/(lns.bv|count)/255*100)|round(0) if lns.bv else 0 -%}
+                  {%- set _c1=area_entities(aid)|select('match','climate\\.')|list|first|default('') -%}
+                  {%- set _clim={'entity_id':_c1,'hvac_mode':states(_c1),'setpoint':state_attr(_c1,'temperature'),'current_temp':state_attr(_c1,'current_temperature')} if _c1 else none -%}
+                  {%- set _cvs=area_entities(aid)|select('match','cover\\.')|list -%}
+                  {%- set cvns=namespace(open=[],pos=[]) -%}
+                  {%- for e in _cvs -%}{%- if states(e)=='open' -%}{%- set cvns.open=cvns.open+[e] -%}{%- endif -%}{%- set _p=state_attr(e,'current_position') -%}{%- if _p is number -%}{%- set cvns.pos=cvns.pos+[_p] -%}{%- endif -%}{%- endfor -%}
+                  {%- set _cavg=(cvns.pos|sum/(cvns.pos|count))|round(0) if cvns.pos else none -%}
+                  {%- set mns=namespace(first='') -%}
+                  {%- for e in area_entities(aid)|select('match','media_player\\.')|list -%}{%- if states(e) in ['playing','paused'] and mns.first=='' -%}{%- set mns.first=e -%}{%- endif -%}{%- endfor -%}
+                  {%- set _bss=area_entities(aid)|select('match','binary_sensor\\.')|list -%}
+                  {%- set tns=namespace(open=[]) -%}
+                  {%- for e in _bss -%}{%- if states(e)=='on' -%}{%- set tns.open=tns.open+[e] -%}{%- endif -%}{%- endfor -%}
+                  {%- set _ctx={'topo':{'open_count':tns.open|count,'total_count':_bss|count,'open':tns.open},'light':{'lights_total':_lts|count,'lights_on':lns.on,'avg_brightness_pct':_lavg},'covers':{'covers':_cvs,'open':cvns.open,'avg_position':_cavg},'media':{'entity_id':mns.first,'state':states(mns.first),'media_title':state_attr(mns.first,'media_title'),'volume':state_attr(mns.first,'volume_level')} if mns.first else {'active_count':0}} -%}
+                  {%- if _clim is not none -%}{%- set _ctx=_ctx|combine({'climate':_clim}) -%}{%- endif -%}
+                  {%- set tlns=namespace(lists=[]) -%}
+                  {%- for lid in labels(aid) -%}{%- set tlns.lists=tlns.lists+(label_entities(label_name(lid))|select('match','^todo\\.')|list) -%}{%- endfor -%}
+                  {%- set clns=namespace(cals=[]) -%}
+                  {%- for lid in labels(aid) -%}{%- set clns.cals=clns.cals+(label_entities(label_name(lid))|select('match','^calendar\\.')|list) -%}{%- endfor -%}
+                  {%- set _ctx=_ctx|combine({'task_lists':tlns.lists|unique|list|count,'calendar_entities':clns.cals|unique|list|count}) -%}
+                  {%- set _glid=topo[aid].get('grocy_location_id','')|default('',true)|trim -%}
+                  {%- if _glid!='' -%}{%- set _ctx=_ctx|combine({'grocy_anchor':_glid}) -%}{%- endif -%}
+                  {%- set ns.rooms=ns.rooms+[{'area_id':aid,'display_name':_fn,'floor_id':_fid,'context':_ctx}] -%}
+                {%- endfor -%}
+                {{ ns.rooms }}
+
+          # group rooms by floor_id
+          - variables:
+              _ho_floors: >-
+                {%- set ns=namespace(floors={}) -%}
+                {%- for room in _ho_rooms -%}
+                  {%- set fid=room.get('floor_id','unassigned')|string -%}
+                  {%- set ns.floors=ns.floors|combine({fid:ns.floors.get(fid,[])+[room]}) -%}
+                {%- endfor -%}
+                {%- set ns2=namespace(r=[]) -%}
+                {%- for fid,rooms in ns.floors.items() -%}
+                  {%- set ns2.r=ns2.r+[{'floor_id':fid,'room_count':rooms|count,'rooms':rooms}] -%}
+                {%- endfor -%}
+                {{ ns2.r }}
+
+          # domain rollups from room context data
+          - variables:
+              _ho_summaries: >-
+                {%- set ns=namespace(lon=0,ltot=0,cpos=[],mact=0,temps=[]) -%}
+                {%- for room in _ho_rooms -%}
+                  {%- set ctx=room.get('context',{}) -%}
+                  {%- set lctx=ctx.get('light',{}) -%}
+                  {%- set ns.lon=ns.lon+(lctx.get('lights_on',[])|count) -%}
+                  {%- set ns.ltot=ns.ltot+lctx.get('lights_total',0) -%}
+                  {%- set _cavg=ctx.get('covers',{}).get('avg_position',none) -%}
+                  {%- if _cavg is number -%}{%- set ns.cpos=ns.cpos+[_cavg] -%}{%- endif -%}
+                  {%- if ctx.get('media',{}).get('entity_id','')!='' -%}{%- set ns.mact=ns.mact+1 -%}{%- endif -%}
+                  {%- set _clim=ctx.get('climate',none) -%}
+                  {%- if _clim is mapping -%}{%- set _t=_clim.get('current_temp',none) -%}{%- if _t is number -%}{%- set ns.temps=ns.temps+[_t] -%}{%- endif -%}{%- endif -%}
+                {%- endfor -%}
+                {{ {'lights':{'on_total':ns.lon,'total':ns.ltot},'covers':{'avg_position':(ns.cpos|sum/(ns.cpos|count))|round(0) if ns.cpos else none},'media':{'active_count':ns.mact},'climate':{'temp_min':ns.temps|min if ns.temps else none,'temp_max':ns.temps|max if ns.temps else none}} }}
+
+          # maintenance counts — batteries <20%, unavailable devices, active alerts
+          - variables:
+              _ho_maintenance: >-
+                {%- set _bt=20 -%}
+                {%- set ns=namespace(bat=0,unavail=0) -%}
+                {%- set _batt = label_entities('battery_sensor') | select('match','sensor\\.') | list -%}
+                {%- set _batt = _batt if _batt | length > 0 else (states.sensor | selectattr('attributes.device_class','eq','battery') | map(attribute='entity_id') | list) -%}
+                {%- for eid in _batt -%}
+                  {%- set _p=states(eid)|int(-1) -%}
+                  {%- if 0<=_p<_bt -%}{%- set ns.bat=ns.bat+1 -%}{%- endif -%}
+                {%- endfor -%}
+                {%- set _ac=states.alert|selectattr('state','ne','idle')|list|count -%}
+                {{ {'battery_count':ns.bat,'alert_count':_ac} }}
+
+          # security summary — panel state + open zone count for home_overview
+          - variables:
+              _ho_security: >-
+                {%- set ns=namespace(panel='') -%}
+                {%- for eid in label_entities('alarm_panel') -%}
+                  {%- if ns.panel=='' and eid.startswith('alarm_control_panel.') -%}
+                    {%- set ns.panel=eid -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if ns.panel=='' -%}
+                  {{ {'available': false} }}
+                {%- elif states(ns.panel) in ['unknown','unavailable'] -%}
+                  {{ {'available': false, 'panel': ns.panel, 'state': states(ns.panel)} }}
+                {%- else -%}
+                  {%- set _st=states(ns.panel) -%}
+                  {%- set _did=device_id(ns.panel) -%}
+                  {%- set _all=device_entities(_did)|list -%}
+                  {%- set _zdc=['door','window','motion','opening','vibration','gas','heat','smoke','moisture','presence'] -%}
+                  {%- set zns=namespace(open=[]) -%}
+                  {%- for eid in _all -%}
+                    {%- if eid.startswith('binary_sensor.') and not eid.endswith('_fault') -%}
+                      {%- set _dc=state_attr(eid,'device_class')|default('',true) -%}
+                      {%- if _dc in _zdc and states(eid)=='on' -%}
+                        {%- set zns.open=zns.open+[state_attr(eid,'friendly_name')|default(eid,true)] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ {'available': true, 'panel': ns.panel, 'state': _st, 'open_zones': zns.open, 'open_zone_count': zns.open|count} }}
+                {%- endif -%}
+
+          - variables:
+              _ho_alerts: >-
+                {%- set _pcs=states('sensor.zen_priority_context') -%}
+                {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                {%- set _cv=_cv if _cv is mapping else {} -%}
+                {%- set _raw=_cv.get('_zen_active_alerts',{}) -%}
+                {%- set _aa=_raw if _raw is mapping else (_raw|from_json if _raw is string else {}) -%}
+                {%- set ns=namespace(alerts=[]) -%}
+                {%- for k,v in _aa.items() if v is mapping -%}
+                  {%- set ns.alerts=ns.alerts+[{'key':k,'message':v.get('message',''),'severity':v.get('severity',''),'fired_at':v.get('fired_at','')}] -%}
+                {%- endfor -%}
+                {{ {'priority_context':_pcs,'priority_count':state_attr('sensor.zen_priority_context','count')|default(0,true)|int,'highest_urgency':state_attr('sensor.zen_priority_context','highest_urgency')|default('',true),'priority_providers':state_attr('sensor.zen_priority_context','providers')|default([],true),'oldest_since':state_attr('sensor.zen_priority_context','oldest_since')|default('',true),'active_alerts':ns.alerts,'active_alert_count':ns.alerts|length} }}
+          - variables:
+              _ho_signal: >-
+                {%- set _stale_s=14400 -%}
+                {%- set _aa=_ho_alerts.get('active_alerts',[]) -%}
+                {%- set ns=namespace(fresh=[],stale=[],active=[],open=[]) -%}
+                {%- for a in _aa -%}
+                  {%- set _fa=a.get('fired_at','') -%}
+                  {%- if _fa -%}
+                    {%- set _age=(now()-as_datetime(_fa)).total_seconds() -%}
+                    {%- if _age<_stale_s -%}
+                      {%- set ns.fresh=ns.fresh+[a|combine({'age_h':(_age/3600)|round(1)})] -%}
+                    {%- else -%}
+                      {%- set ns.stale=ns.stale+[a|combine({'age_h':(_age/3600)|round(1)})] -%}
+                    {%- endif -%}
+                  {%- else -%}
+                    {%- set ns.fresh=ns.fresh+[a] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for room in _ho_rooms -%}
+                  {%- set aid=room.get('area_id','') -%}
+                  {%- set ctx=room.get('context',{}) -%}
+                  {%- set _lon=ctx.get('light',{}).get('lights_on',[])|count -%}
+                  {%- set _med=ctx.get('media',{}).get('entity_id','') -%}
+                  {%- if _lon>0 or _med!='' -%}
+                    {%- set ns.active=ns.active+[{'area_id':aid,'display_name':room.get('display_name',''),'lights_on':_lon,'media':_med}] -%}
+                  {%- endif -%}
+                  {%- set pns=namespace(open=[]) -%}
+                  {%- for e in area_entities(aid)|select('match','binary_sensor\\.')|list -%}
+                    {%- set dc=state_attr(e,'device_class')|default('') -%}
+                    {%- if dc in ['door','window','garage_door','opening','lock'] and states(e)=='on' -%}
+                      {%- set pns.open=pns.open+[e] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if pns.open|count>0 -%}
+                    {%- set ns.open=ns.open+[{'area_id':aid,'display_name':room.get('display_name',''),'open_count':pns.open|count,'open':pns.open}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'attention':ns.fresh,'stale_alerts':ns.stale,'active_rooms':ns.active,'open_sensors':ns.open,'all_quiet':ns.fresh|count==0 and _ho_alerts.get('priority_context','clear')=='clear'} }}
+          - variables:
+              _result:
+                status: ok
+                mode: home_overview
+                generated: "{{ now().isoformat() }}"
+                registered_room_count: "{{ _ho_rooms | count }}"
+                floor_count: "{{ _ho_floors | count }}"
+                signal: "{{ _ho_signal }}"
+                alerts: "{{ _ho_alerts }}"
+                domain_summaries: "{{ _ho_summaries | combine({'maintenance': _ho_maintenance, 'security': _ho_security}) }}"
+                floors: "{{ _ho_floors }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: home_overview
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 10. EMERGENCY — "keep your people safe" crisis snapshot
+      #     RM is the sole authoritative source for egress, shelter, hazards
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'emergency' }}"
+        then:
+          - if: "{{ _hh_cabinet == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: emergency, message: "Household cabinet unreachable.", caller_token: "{{ _caller_token }}"}
+              - stop: emergency error
+                response_variable: _result
+
+          # Read topology + sort-rank dict + scenario
+          - variables:
+              _em_topo: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {{ _r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) }}
+              _em_rk: "{{ {'primary':0,'secondary':1,'tertiary':2,'bail_out':3} }}"
+              _em_scenario: "{{ scenario | default('general') | lower | trim }}"
+
+          # Build exits[], shelter{} (with floor), safety/hazard lists, likely_occupied[]
+          - variables:
+              _em_exits: >-
+                {%- set ns=namespace(e=[]) -%}
+                {%- for aid, sp in _em_topo.items() -%}
+                  {%- if sp is mapping -%}
+                    {%- set _an=area_name(aid)|default(aid,true) -%}
+                    {%- for p in (sp.get('portals',[])|list) -%}
+                      {%- if p is mapping and p.get('emerg_exit',false) -%}
+                        {%- set _pri=p.get('exit_priority','') -%}
+                        {%- set _sk=_em_rk.get(_pri,9)*2 -%}
+                        {%- set ns.e=ns.e+[{'priority_rank':_sk,'area_id':aid,'area_name':_an,'source':'portal','to':p.get('to',none),'type':p.get('type',''),'exit_priority':_pri,'normally':p.get('normally',''),'note':p.get('note',none)}] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for w in (sp.get('windows',[])|list) -%}
+                      {%- if w is mapping and w.get('emerg_exit',false) -%}
+                        {%- set _pri=w.get('exit_priority','') -%}
+                        {%- set _sk=_em_rk.get(_pri,9)*2+1 -%}
+                        {%- set ns.e=ns.e+[{'priority_rank':_sk,'area_id':aid,'area_name':_an,'source':'window','direction':w.get('direction',''),'type':w.get('type',''),'exit_priority':_pri,'drop_ft':w.get('drop_ft',none),'note':w.get('note',none)}] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.e | sort(attribute='priority_rank') }}
+              _em_shelter: >-
+                {%- set ns=namespace(primary=[],secondary=[],avoid=[]) -%}
+                {%- for aid, sp in _em_topo.items() -%}
+                  {%- if sp is mapping -%}
+                    {%- set _an=area_name(aid)|default(aid,true) -%}
+                    {%- set _fid=floor_id(_an)|default('unassigned',true)|string -%}
+                    {%- set _fln=floor_name(_fid)|default(_fid,true)|string -%}
+                    {%- set epns=namespace(c=0) -%}
+                    {%- for p in (sp.get('portals',[])|list) -%}
+                      {%- if p is mapping and p.get('exterior',false) -%}{%- set epns.c=epns.c+1 -%}{%- endif -%}
+                    {%- endfor -%}
+                    {%- set _wins=(sp.get('windows',[])|list)|count -%}
+                    {%- if sp.get('exterior',false) == true -%}
+                      {%- set ns.avoid=ns.avoid+[{'area_id':aid,'area_name':_an,'floor_id':_fid,'floor_name':_fln,'reason':'exterior_area'}] -%}
+                    {%- elif sp.get('shelter_eligible',true) == false -%}
+                      {%- set ns.avoid=ns.avoid+[{'area_id':aid,'area_name':_an,'floor_id':_fid,'floor_name':_fln,'reason':'shelter_ineligible'}] -%}
+                    {%- elif epns.c > 0 -%}
+                      {%- set ns.avoid=ns.avoid+[{'area_id':aid,'area_name':_an,'floor_id':_fid,'floor_name':_fln,'reason':'exterior_portal'}] -%}
+                    {%- elif _wins == 0 -%}
+                      {%- set ns.primary=ns.primary+[{'area_id':aid,'area_name':_an,'floor_id':_fid,'floor_name':_fln}] -%}
+                    {%- else -%}
+                      {%- set ns.secondary=ns.secondary+[{'area_id':aid,'area_name':_an,'floor_id':_fid,'floor_name':_fln,'window_count':_wins}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'primary':ns.primary,'secondary':ns.secondary,'avoid':ns.avoid} }}
+              _em_safety: >-
+                {%- set ns=namespace(equip=[],haz=[]) -%}
+                {%- for aid, sp in _em_topo.items() -%}
+                  {%- if sp is mapping -%}
+                    {%- set _an=area_name(aid)|default(aid,true) -%}
+                    {%- for s in (sp.get('safety',[])|list) -%}
+                      {%- if s is mapping -%}
+                        {%- set _s=s|combine({'area_id':aid,'area_name':_an}) -%}
+                        {%- if s.get('type','') in ['fire_extinguisher','first_aid','aed','eyewash','spill_kit'] -%}
+                          {%- set ns.equip=ns.equip+[_s] -%}
+                        {%- elif s.get('hazmat_class',none) is not none or s.get('rating','') == 'hazmat' -%}
+                          {%- set ns.haz=ns.haz+[_s] -%}
+                        {%- else -%}
+                          {%- set ns.equip=ns.equip+[_s] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'safety_equipment':ns.equip,'hazards':ns.haz} }}
+              _em_occupied: >-
+                {%- set ns=namespace(rooms=[]) -%}
+                {%- for aid, sp in _em_topo.items() -%}
+                  {%- if sp is mapping -%}
+                    {%- set _an=area_name(aid)|default(aid,true) -%}
+                    {%- set lns=namespace(on=false,mot=false) -%}
+                    {%- for e in area_entities(aid)|select('match','light\\.')|list -%}
+                      {%- if states(e)=='on' -%}{%- set lns.on=true -%}{%- endif -%}
+                    {%- endfor -%}
+                    {%- for e in area_entities(aid)|select('match','binary_sensor\\.')|list -%}
+                      {%- if state_attr(e,'device_class') in ['motion','occupancy','presence'] and states(e)=='on' -%}
+                        {%- set lns.mot=true -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- if lns.on or lns.mot -%}
+                      {%- set ns.rooms=ns.rooms+[{'area_id':aid,'area_name':_an,'lights_on':lns.on,'motion_active':lns.mot}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.rooms }}
+
+          # from_room — exits in this room + adjacent, nearest shelter (when area= provided)
+          - variables:
+              _em_from_room: >-
+                {%- if _area_id != '' and _em_topo.get(_area_id,none) is not none -%}
+                  {%- set _sp=_em_topo.get(_area_id,{}) -%}
+                  {%- set _an=area_name(_area_id)|default(_area_id,true) -%}
+                  {%- set ens=namespace(re=[],ae=[],ns=[]) -%}
+                  {%- set _prim_ids=_em_shelter.get('primary',[])|map(attribute='area_id')|list -%}
+                  {%- set _sec_ids=_em_shelter.get('secondary',[])|map(attribute='area_id')|list -%}
+                  {%- for p in (_sp.get('portals',[])|list) -%}
+                    {%- if p is mapping and p.get('emerg_exit',false) -%}
+                      {%- set _pri=p.get('exit_priority','') -%}
+                      {%- set ens.re=ens.re+[{'priority_rank':_em_rk.get(_pri,9)*2,'source':'portal','to':p.get('to',none),'type':p.get('type',''),'exit_priority':_pri,'normally':p.get('normally',''),'note':p.get('note',none)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- for w in (_sp.get('windows',[])|list) -%}
+                    {%- if w is mapping and w.get('emerg_exit',false) -%}
+                      {%- set _pri=w.get('exit_priority','') -%}
+                      {%- set ens.re=ens.re+[{'priority_rank':_em_rk.get(_pri,9)*2+1,'source':'window','direction':w.get('direction',''),'type':w.get('type',''),'exit_priority':_pri,'drop_ft':w.get('drop_ft',none),'note':w.get('note',none)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- for adj_id in (_sp.get('adjacent',[])|list) -%}
+                    {%- set _asp=_em_topo.get(adj_id,none) -%}
+                    {%- if _asp is mapping -%}
+                      {%- set _aajn=area_name(adj_id)|default(adj_id,true) -%}
+                      {%- for p in (_asp.get('portals',[])|list) -%}
+                        {%- if p is mapping and p.get('emerg_exit',false) -%}
+                          {%- set _pri=p.get('exit_priority','') -%}
+                          {%- set ens.ae=ens.ae+[{'priority_rank':_em_rk.get(_pri,9)*2,'via_area_id':adj_id,'via_area_name':_aajn,'source':'portal','to':p.get('to',none),'type':p.get('type',''),'exit_priority':_pri,'normally':p.get('normally',''),'note':p.get('note',none)}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for w in (_asp.get('windows',[])|list) -%}
+                        {%- if w is mapping and w.get('emerg_exit',false) -%}
+                          {%- set _pri=w.get('exit_priority','') -%}
+                          {%- set ens.ae=ens.ae+[{'priority_rank':_em_rk.get(_pri,9)*2+1,'via_area_id':adj_id,'via_area_name':_aajn,'source':'window','direction':w.get('direction',''),'type':w.get('type',''),'exit_priority':_pri,'drop_ft':w.get('drop_ft',none),'note':w.get('note',none)}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- if adj_id in _prim_ids -%}
+                        {%- set ens.ns=ens.ns+[{'area_id':adj_id,'area_name':_aajn,'tier':'primary'}] -%}
+                      {%- elif adj_id in _sec_ids -%}
+                        {%- set ens.ns=ens.ns+[{'area_id':adj_id,'area_name':_aajn,'tier':'secondary'}] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ {'area_id':_area_id,'area_name':_an,'room_exits':ens.re|sort(attribute='priority_rank'),'adjacent_exits':ens.ae|sort(attribute='priority_rank'),'nearest_shelter':ens.ns} }}
+                {%- else -%}{{ none }}{%- endif -%}
+
+          # household_profile — rally_point, address, zip_code
+          - variables:
+              _em_rally_data: >-
+                {%- set _hp=(state_attr(_hh_cabinet,'variables')|default({},true)).get('household_profile',none) -%}
+                {{ _hp if _hp is mapping else (_hp|from_json if _hp is string and _hp|trim not in ['None','none','','null'] else {}) }}
+              _em_rally: >-
+                {%- set _hp=(state_attr(_hh_cabinet,'variables')|default({},true)).get('household_profile',none) -%}
+                {%- set _hpd=_hp if _hp is mapping else (_hp|from_json if _hp is string and _hp|trim not in ['None','none','','null'] else {}) -%}
+                {{ _hpd.get('rally_point',none) if _hpd is mapping else none }}
+
+          # Scenario-specific action + advisory
+          - variables:
+              _em_guidance: >-
+                {%- set _rp=_em_rally|default('designated rally point',true)|string -%}
+                {%- if _em_scenario == 'fire' -%}
+                  {{ {'action':'EVACUATE','priority':'exits','advisory':'Use exits in priority order. Avoid hazard locations. Call 911. Rally at: ' ~ _rp} }}
+                {%- elif _em_scenario == 'burglar' -%}
+                  {{ {'action':'SHELTER','priority':'shelter','advisory':'Move to nearest primary shelter room. Lock interior doors. Call 911. Do not confront.'} }}
+                {%- elif _em_scenario == 'weather' -%}
+                  {{ {'action':'SHELTER','priority':'shelter','advisory':'Lowest-floor interior room. Away from windows and exterior walls. Stay until official all-clear.'} }}
+                {%- elif _em_scenario == 'medical' -%}
+                  {%- set _addr=_em_rally_data.get('address','unknown') if _em_rally_data is mapping else 'unknown' -%}
+                  {{ {'action':'CALL 911','priority':'location','advisory':'Address for dispatch: ' ~ _addr ~ '. Stay on line with 911. Send someone to front door to meet responders.'} }}
+                {%- else -%}
+                  {{ {'action':'ASSESS','priority':'general','advisory':'Review exits, shelter, and hazards for your situation. Call 911 if needed.'} }}
+                {%- endif -%}
+
+          - variables:
+              _result:
+                status: ok
+                mode: emergency
+                scenario: "{{ _em_scenario }}"
+                authority: "Room Manager is the sole authoritative source for all egress, shelter, hazard, and safety equipment data. Source: room_topology (household cabinet). Do not query secondary sources for spatial emergency data."
+                guidance: "{{ _em_guidance }}"
+                generated_at: "{{ now().isoformat() }}"
+                location:
+                  name: "{{ states('input_text.zenos_household_name') | default(none, true) }}"
+                  address: "{{ _em_rally_data.address | default(none) }}"
+                  zip_code: "{{ _em_rally_data.zip_code | default(none) }}"
+                  gps:
+                    lat: "{{ state_attr('zone.home', 'latitude') }}"
+                    lon: "{{ state_attr('zone.home', 'longitude') }}"
+                from_room: "{{ _em_from_room }}"
+                exits: "{{ _em_exits }}"
+                shelter: "{{ _em_shelter }}"
+                safety_equipment: "{{ _em_safety.safety_equipment }}"
+                hazards: "{{ _em_safety.hazards }}"
+                likely_occupied: "{{ _em_occupied }}"
+                rally_point: "{{ _em_rally }}"
+                exit_count: "{{ _em_exits | count }}"
+                room_count: "{{ _em_topo | count }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: emergency
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 11. AREA_CREATE — create HA area, assign floor, apply room_layout, init topology
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'area_create' }}"
+        then:
+          - variables:
+              _ac_name: "{{ area_name | default('') | trim }}"
+              _ac_floor: "{{ floor_id_new | default('') | trim }}"
+
+          - if: "{{ _ac_name == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: area_create, message: "area_name= required for area_create.", caller_token: "{{ _caller_token }}"}
+              - stop: area_create error
+                response_variable: _result
+
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    mode: area_create
+                    area_name: "{{ _ac_name }}"
+                    floor_id: "{{ _ac_floor if _ac_floor != '' else none }}"
+                    topology_init: "{{ walls is defined or description is defined or area_note is defined }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: area_create dry_run
+                response_variable: _result
+
+          # Step 1: Create HA area via ectoplasm (Spook)
+          - action: script.zen_dojotools_ectoplasm
+            data:
+              action_type: area_create
+              area_name: "{{ _ac_name }}"
+            response_variable: _ac_ecto_create
+            continue_on_error: true
+
+          # Wait for HA area registry to settle
+          - delay: "00:00:00.5"
+
+          # Step 2: Resolve new area_id by display name lookup
+          - variables:
+              _ac_area_id: >-
+                {{ area_id(_ac_name) | default(_ac_name | lower | replace(' ','_'), true) }}
+
+          # Step 3: Assign floor if provided
+          - choose:
+            - conditions: "{{ _ac_floor != '' }}"
+              sequence:
+              - action: script.zen_dojotools_ectoplasm
+                data:
+                  action_type: floor_assign_area
+                  area_id: "{{ _ac_area_id }}"
+                  floor_id: "{{ _ac_floor }}"
+                response_variable: _ac_ecto_floor
+                continue_on_error: true
+
+          # Step 4: Apply room_layout label
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: tag
+              label_list:
+                - room_layout
+              target_areas:
+                - "{{ _ac_area_id }}"
+              confirm: true
+            response_variable: _ac_label_result
+            continue_on_error: true
+
+          # Step 5: Init topology if topology params provided
+          - choose:
+            - conditions: >-
+                {{ (walls is defined and walls is not none)
+                   or (description is defined and description is not none)
+                   or (area_note is defined and area_note is not none)
+                   or (grocy_location_id is defined and grocy_location_id is not none)
+                   or (exterior is defined and exterior is not none)
+                   or (shelter_eligible is defined and shelter_eligible is not none) }}
+              sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: >-
+                    {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                    {{ 'update' if _cv.get('room_topology',none) is not none else 'create' }}
+                  key: room_topology
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  value: >-
+                    {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                    {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                    {%- set _ex0=topo.get(_ac_area_id,{}) -%}
+                    {%- set ns=namespace(p=_ex0 if _ex0 is mapping else {}) -%}
+                    {%- if walls is defined and walls is not none -%}{%- set ns.p=ns.p|combine({'walls':walls|int}) -%}{%- endif -%}
+                    {%- if description is defined and description is not none -%}{%- set ns.p=ns.p|combine({'description':description|string}) -%}{%- endif -%}
+                    {%- if area_note is defined and area_note is not none -%}{%- set ns.p=ns.p|combine({'area_note':area_note|string}) -%}{%- endif -%}
+                    {%- if grocy_location_id is defined and grocy_location_id is not none and grocy_location_id|trim != '' -%}{%- set ns.p=ns.p|combine({'grocy_location_id':grocy_location_id|trim}) -%}{%- endif -%}
+                    {%- if exterior is defined and exterior is not none -%}{%- set ns.p=ns.p|combine({'exterior':exterior}) -%}{%- endif -%}
+                    {%- if shelter_eligible is defined and shelter_eligible is not none -%}{%- set ns.p=ns.p|combine({'shelter_eligible':shelter_eligible}) -%}{%- endif -%}
+                    {{ (topo | combine({_ac_area_id: ns.p})) | tojson }}
+                response_variable: _ac_fc_result
+                continue_on_error: true
+
+          - variables:
+              _result:
+                status: ok
+                mode: area_create
+                area_name: "{{ _ac_name }}"
+                area_id: "{{ _ac_area_id }}"
+                floor_assigned: "{{ _ac_floor if _ac_floor != '' else none }}"
+                room_layout_tagged: "{{ (_ac_label_result.status | default('error')) == 'ok' }}"
+                topology_initialized: "{{ (walls is defined and walls is not none) or (description is defined and description is not none) or (area_note is defined and area_note is not none) }}"
+                ecto_status: "{{ _ac_ecto_create.status | default('unknown') }}"
+                advisory: >-
+                  Area '{{ _ac_name }}' created (area_id={{ _ac_area_id }}).
+                  Verify: zen_dojotools_inspect mode=area_list.
+                  Next: mode=link area={{ _ac_area_id }} area_b=NEIGHBOR per adjacent room.
+                  To sync HA area description: mode=area_update area={{ _ac_area_id }} area_note='...'.
+                caller_token: "{{ _caller_token }}"
+          - stop: area_create
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 12. AREA_UPDATE — update HA area metadata + compile spatial description
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'area_update' }}"
+        then:
+          - if: "{{ _area_id == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: area_update, message: "area= required for area_update.", caller_token: "{{ _caller_token }}"}
+              - stop: area_update error
+                response_variable: _result
+
+          # Resolve area_note: param takes priority, then stored topology value
+          - variables:
+              _au_note: >-
+                {%- set _n=area_note | default('', true) | string | trim -%}
+                {%- if _n != '' -%}{{ _n }}{%- else -%}
+                  {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                  {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                  {{ topo.get(_area_id,{}).get('area_note','') | default('',true) | trim }}
+                {%- endif -%}
+              _au_adj: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {%- set sp=topo.get(_area_id,{}) if _area_id != '' else {} -%}
+                {%- set ns=namespace(names=[]) -%}
+                {%- for adj_id in (sp.get('adjacent',[])|list)[:4] -%}
+                  {%- set ns.names=ns.names+[area_name(adj_id)|default(adj_id,true)] -%}
+                {%- endfor -%}
+                {{ ns.names }}
+
+          # Compile HA area description: floor + adjacency + area_note
+          - variables:
+              _au_compiled_desc: >-
+                {%- set _fid=floor_id(_area_name)|default('',true)|string -%}
+                {%- set _fln=floor_name(_fid)|default('',true)|trim if _fid not in ['','none','None'] else '' -%}
+                {%- set parts=namespace(p=[]) -%}
+                {%- if _fln != '' -%}{%- set parts.p=parts.p+[_fln ~ ' floor'] -%}{%- endif -%}
+                {%- if _au_adj|length > 0 -%}{%- set parts.p=parts.p+['Adj: ' ~ _au_adj|join(', ')] -%}{%- endif -%}
+                {%- if _au_note != '' -%}{%- set parts.p=parts.p+[_au_note] -%}{%- endif -%}
+                {{ (parts.p | join('. '))[:255] }}
+
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: dry_run
+                    mode: area_update
+                    area_id: "{{ _area_id }}"
+                    compiled_description: "{{ _au_compiled_desc }}"
+                    area_name_new: "{{ area_name_new | default(none, true) }}"
+                    floor_id_new: "{{ floor_id_new | default(none, true) }}"
+                    icon: "{{ icon | default(none, true) }}"
+                    picture: "{{ picture | default(none, true) }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: area_update dry_run
+                response_variable: _result
+
+          # Step 1: Update RM topology (area_note, description)
+          - choose:
+            - conditions: >-
+                {{ (area_note is defined and area_note is not none)
+                   or (description is defined and description is not none) }}
+              sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: >-
+                    {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                    {{ 'update' if _cv.get('room_topology',none) is not none else 'create' }}
+                  key: room_topology
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  value: >-
+                    {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                    {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                    {%- set _ex0=topo.get(_area_id,{}) -%}
+                    {%- set ns=namespace(p=_ex0 if _ex0 is mapping else {}) -%}
+                    {%- if area_note is defined and area_note is not none -%}{%- set ns.p=ns.p|combine({'area_note':area_note|string}) -%}{%- endif -%}
+                    {%- if description is defined and description is not none -%}{%- set ns.p=ns.p|combine({'description':description|string}) -%}{%- endif -%}
+                    {{ (topo | combine({_area_id: ns.p})) | tojson }}
+                response_variable: _au_fc_result
+                continue_on_error: true
+
+          # Step 2: Update HA area name + compiled description
+          - action: homeassistant.update_area
+            data:
+              area_id: "{{ _area_id }}"
+              name: "{{ (area_name_new|string)|trim if (area_name_new is defined and area_name_new is not none and (area_name_new|string)|trim != '') else _area_name }}"
+              description: "{{ _au_compiled_desc }}"
+            response_variable: _au_ha_result
+            continue_on_error: true
+
+          # Step 3: Update icon if provided (separate call — only fires when changing icon, won't clear picture)
+          - choose:
+            - conditions: "{{ icon is defined and icon is not none and (icon|string)|trim != '' }}"
+              sequence:
+              - action: homeassistant.update_area
+                data:
+                  area_id: "{{ _area_id }}"
+                  icon: "{{ (icon|string)|trim }}"
+                continue_on_error: true
+
+          # Step 3b: Update picture if provided (separate call — only fires when changing picture, won't clear icon)
+          - choose:
+            - conditions: "{{ picture is defined and picture is not none and (picture|string)|trim != '' }}"
+              sequence:
+              - action: homeassistant.update_area
+                data:
+                  area_id: "{{ _area_id }}"
+                  picture: "{{ (picture|string)|trim }}"
+                continue_on_error: true
+
+          # Step 4: Reassign floor if provided
+          - choose:
+            - conditions: "{{ floor_id_new is defined and floor_id_new is not none and (floor_id_new|string)|trim != '' }}"
+              sequence:
+              - action: script.zen_dojotools_ectoplasm
+                data:
+                  action_type: floor_assign_area
+                  area_id: "{{ _area_id }}"
+                  floor_id: "{{ (floor_id_new|string)|trim }}"
+                continue_on_error: true
+
+          - variables:
+              _result:
+                status: ok
+                mode: area_update
+                area_id: "{{ _area_id }}"
+                compiled_description: "{{ _au_compiled_desc }}"
+                area_name_new: "{{ area_name_new | default(none, true) }}"
+                floor_id_new: "{{ floor_id_new | default(none, true) }}"
+                icon_set: "{{ icon | default(none, true) }}"
+                picture_set: "{{ picture | default(none, true) }}"
+                ha_update_status: "{{ _au_ha_result.status | default('attempted') }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: area_update
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 13. AREA_DELETE — remove HA area + topology entry (confirm required)
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'area_delete' }}"
+        then:
+          - if: "{{ _area_id == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: area_delete, message: "area= required for area_delete.", caller_token: "{{ _caller_token }}"}
+              - stop: area_delete error
+                response_variable: _result
+
+          - if: "{{ not (confirm_action | default(false) | bool) }}"
+            then:
+              - variables:
+                  _result:
+                    status: preview
+                    mode: area_delete
+                    area_id: "{{ _area_id }}"
+                    area_name: "{{ _area_name }}"
+                    message: "Pass confirm_action: true to delete area '{{ _area_name }}' ({{ _area_id }}) and remove topology. IRREVERSIBLE."
+                    in_topology: >-
+                      {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                      {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                      {{ _area_id in topo }}
+                    caller_token: "{{ _caller_token }}"
+              - stop: area_delete preview
+                response_variable: _result
+
+          # Step 1: Delete HA area via ectoplasm (Spook)
+          - action: script.zen_dojotools_ectoplasm
+            data:
+              action_type: area_delete
+              area_id: "{{ _area_id }}"
+            response_variable: _ad_ecto_result
+            continue_on_error: true
+
+          # Step 2: Remove from RM topology
+          - choose:
+            - conditions: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ _area_id in topo and _hh_cabinet != '' }}
+              sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  key: room_topology
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  value: >-
+                    {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                    {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                    {%- set ns=namespace(t={}) -%}
+                    {%- for k,v in topo.items() -%}
+                      {%- if k != _area_id -%}{%- set ns.t=ns.t|combine({k:v}) -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.t | tojson }}
+                response_variable: _ad_fc_result
+                continue_on_error: true
+
+          - variables:
+              _result:
+                status: ok
+                mode: area_delete
+                area_id: "{{ _area_id }}"
+                area_name: "{{ _area_name }}"
+                ecto_status: "{{ _ad_ecto_result.status | default('unknown') }}"
+                topology_removed: "{{ _ad_fc_result is defined }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: area_delete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 14. SETUP — deploy RM KFC to dojo via rm_loader
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'setup' }}"
+        then:
+          - if: "{{ not (confirm_action | default(false) | bool) }}"
+            then:
+              - variables:
+                  _setup_preview:
+                    status: preview
+                    mode: setup
+                    message: "Pass confirm_action: true to deploy room_manager KFC to dojo. Will stamp component_instructions + trigger_subscriptions (ha_start, home_occupancy_change, home_mode_updates, force_summary) under key: room_manager."
+                    kfc_key: room_manager
+                    version: "1.0.0"
+                    trigger_subscriptions: [ha_start, home_occupancy_change, home_mode_updates, force_summary]
+                    caller_token: "{{ _caller_token }}"
+              - stop: setup_preview
+                response_variable: _setup_preview
+          - action: script.zen_dojotools_rm_loader
+            data:
+              caller_token: "{{ _caller_token }}"
+            response_variable: _setup_result
+          - stop: setup
+            response_variable: _setup_result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 15. HELP
+      # ═══════════════════════════════════════════════════════════════════════
+      - variables:
+          _result:
+            status: ok
+            mode: help
+            version: "1.35.0"
+            purpose: >-
+              Room intelligence hub. The FIRST call for any room-centric task.
+              mode=get returns a full room brief: spatial topology (portals, adjacency,
+              exits, transmission), live HA state, and up to 10 opt-in context slices.
+              Slices are label-intersection aware — any HA entity (todo, calendar)
+              tagged with any of the area's own labels is automatically surfaced.
+              One call with context_slices=+inventory,+chores,+tasks,+conductor,+calendar
+              returns: what's stocked here, what maintenance is due, what tasks are
+              assigned here, the conductor queue, and 7-day calendar events.
+              Domain tools (ZenLux, NyxMau5, climate, inventory) read topology from
+              here — never re-derive it. You are the assembler.
+              Whole-house snapshot: mode=home_overview.
+            when_to_call:
+              - "Full room brief (what's here, what's due, what's on the list) → mode=get area=X context_slices=+inventory,+chores,+tasks,+calendar"
+              - "Any room-context query → mode=get, always the first call"
+              - "Whole-house state ('how's the house?') → mode=home_overview"
+              - "Emergency crisis snapshot → mode=emergency scenario=fire|burglar|weather|medical. Add area=X for room-local context (from_room: room_exits, adjacent_exits, nearest_shelter). Returns guidance{action,advisory}, shelter{floor-tagged}, hazards[], safety_equipment[], likely_occupied[], location{address,gps}, rally_point."
+              - "Egress for a specific room only → mode=get area=X, check exits[], emerg_exit, drop_ft"
+              - "Lighting or ambience → mode=get +light, then zen_dojotools_lights with area + adjacent[]"
+              - "Media zone targeting → mode=get +media, then zen_dojotools_media_manager"
+              - "Occupant personalization → occupants[] → zen_dojotools_profile_editor"
+              - "Physical objects or inventory → mode=get +inventory (full product list) or domain_routing.grocy anchor for targeted ops"
+              - "Maintenance due in room → mode=get +chores (chores linked to products stocked here)"
+              - "Tasks assigned to room → mode=get +tasks (todo entities labeled with any area label)"
+              - "Calendar events for room → mode=get +calendar (calendar entities labeled with any area label, 7-day window)"
+              - "Conductor queue → mode=get +conductor (todo entities labeled 'schedule')"
+              - "New or unknown room → mode=set to register manually, or mode=area_create to create the HA area + register in one call"
+              - "Create HA area (doesn't exist yet) → mode=area_create area_name='...' floor_id_new=floor_slug"
+              - "Update HA area description/name/floor → mode=area_update area=X area_note='...' area_name_new='...' floor_id_new=floor_slug"
+              - "Delete HA area + topology → mode=area_delete area=X confirm_action=true"
+            seed_steps: >-
+              Three steps to register a room:
+              (0) zen_dojotools_inspect mode=area_list — enumerate all HA area IDs before any link
+              calls. Never guess slugs; area display names ≠ area_id. area_list is ground truth.
+              (1) mode=set area=X walls=N description='...' to register — auto-applies room_layout to the area.
+              (2) mode=link area=X area_b=Y for each adjacent room — adds bidirectional adjacency
+              and interior portals (type, normally). Use mode=set portals={...} for exterior doors.
+              Seeding unlocks ZenLux bleed-aware scenes, egress routing, and vacuum zone targeting.
+            domain_routing:
+              lighting: "zen_dojotools_lights — ZenLux. Pass area_id. Reads adjacent[] for bleed-aware scenes and occupants[] for persona prefs."
+              media: "zen_dojotools_media_manager — NyxMau5. Pass area name or area_id for zone targeting."
+              climate: "zen_dojotools_climate — pass area_id. spatial.area_sqm in response gives load context."
+              egress: "Single room: mode=get area=X exits[] (emerg_exit=true portals+windows, sorted). Whole-home crisis: mode=emergency scenario=fire|burglar|weather|medical — guidance{action,advisory}, exits[], shelter{primary/secondary/avoid with floor_id}, hazards[], safety_equipment[], likely_occupied[]. Add area=X for from_room{room_exits,adjacent_exits,nearest_shelter}."
+              occupant_profile: "occupants[] names → zen_dojotools_profile_editor mode=get to load persona and prefs."
+              inventory: "context_slices=+inventory — full denormalized room view: all containers + products + amounts in one call. Or use grocy_location_id anchor for targeted ops (stock_list_by_location, locations_find, stock_where_is_item)."
+              chores: "context_slices=+chores — maintenance chores linked to products stocked in this area. Returns is_due, next_execution, cadence, assignee."
+              tasks: "context_slices=+tasks — todo entities labeled with any area label. Label-intersection: area hot_tub_deck (labels: hot_tub, back_yard, …) surfaces any todo entity bearing hot_tub. Tag todo entity with area label to opt in."
+              conductor: "context_slices=+conductor — todo entities labeled 'schedule'. The AI conductor queue. Always unfiltered — full list regardless of area."
+              calendar: "context_slices=+calendar — calendar entities labeled with any area label, 7-day lookahead. Same label-intersection as tasks. Tag calendar entity with area label to opt in."
+            description: >-
+              Room intelligence hub. Spatial topology stored in household cabinet
+              (key: room_topology). Context slices aggregate live data from domain
+              tools on demand. Label-intersection discovery: entities (todo, calendar)
+              tagged with any area label are automatically surfaced in +tasks/+calendar.
+            modes:
+              get: "Room brief. HA area data + spatial topology + optional context slices. area= required. context_slices= comma list: +topo, +light, +climate, +covers, +media, +inventory, +chores, +tasks, +conductor, +calendar. Returns features[], exits[], spatial, domain_routing, context{}."
+              set: "Write/patch spatial data. area= required. dry_run=true previews."
+              list: "All registered rooms with rm_managed / layout_labeled flags."
+              link: "Bidirectional adjacency + portal between area= and area_b=. Optional: link_sound_tx, link_light_tx."
+              unlink: "Remove bidirectional adjacency between area= and area_b=."
+              boundary_link: "Bidirectional acoustic+optical boundary (no passage). area= + area_b= + sound_tx + light_tx + note. Writes both sides."
+              boundary_unlink: "Remove bidirectional boundary_link between area= and area_b=."
+              home_overview: "Whole-house snapshot. Returns signal{} first: attention[] (fresh alerts <6h + age_h), stale_alerts[] (>6h, informational), active_rooms[] (lights on or media playing), open_sensors[] (active binary_sensors), all_quiet bool. Also: alerts{} (priority_context + full active_alerts), domain_summaries{}, floors[] (per-room context: topo/light/climate/covers/media + task_lists, calendar_entities, grocy_anchor). No area= required."
+              emergency: "Crisis snapshot — RM is authoritative. scenario= (fire|burglar|weather|medical|general) shapes guidance{action,advisory,priority}. area= adds from_room{room_exits,adjacent_exits,nearest_shelter} context. Returns: location{name,address,zip_code,gps}, guidance{}, from_room (if area=), exits[] (whole-home emerg_exit portals+windows sorted by priority_rank), shelter{primary[]/secondary[]/avoid[]} (each entry has floor_id+floor_name; primary=no exterior portals+no windows; weather→prefer lowest floor primary), safety_equipment[], hazards[], likely_occupied[], rally_point. No area= required; area= adds room-local context."
+              area_create: "Create HA area + assign floor + apply room_layout + init topology. area_name= required (text, area does not exist). floor_id_new= optional. Topology params (walls, description, area_note, grocy_location_id) initialized if provided. Returns area_id, room_layout_tagged, advisory."
+              area_update: "Update HA area metadata + compile spatial description. area= required. Compiles description: floor+adjacency+area_note. Optional: area_name_new (rename), floor_id_new (reassign floor), icon (mdi string), picture (URL/local path). area_note + description stored in RM topology. Each field is patched independently — unset fields preserve existing HA values. dry_run=true previews compiled description."
+              area_delete: "Delete HA area + remove topology entry. area= required. confirm_action=true required — omit returns preview with in_topology flag. Step 1: ectoplasm area_delete. Step 2: topology removal. IRREVERSIBLE."
+              setup: "Deploy RM KFC to the dojo via Scribe. confirm_action: true required — omit returns preview. Stamps room_manager KFC artifact (component_instructions + trigger_subscriptions) into dojo cabinet. Safe to re-run; overwrites existing drawer."
+              help: "This output."
+            schema:
+              description: "str — operational/preplan notes ≤255 chars. set/area_create/area_update write it."
+              area_note: "str — human description of the space (what it is, feel, occupant). Compiled into HA area description by area_create and area_update. Stored in topology. set writes it."
+              walls: "int — wall count"
+              occupants: "list[str] — STATIC room assignment ('who owns/lives in this room'). e.g. ['alice']. Set via occupant= field. NOT runtime presence — presence is RM occupancy state (input_select.{room}_occupancy). Used for egress accountability, personalization, profile routing."
+              adjacent: "list[area_id] — managed by link/unlink modes"
+              portals: "One portal per set call. REQUIRED: type(door|archway|passage), normally(open|closed), exterior(bool), exit(bool), emerg_exit(bool). OPTIONAL: to(area_id|null), sound_tx(0.0-1.0), light_tx(0.0-1.0), exit_priority(primary|secondary|tertiary|bail_out). Extra fields OK. Upserts by to. clear_portals=true resets list. link mode auto-adds interior portals."
+              windows: "One window per set call. REQUIRED: direction(N|NE|E|SE|S|SW|W|NW), type(single|double|sliding|casement|fixed|skylight), exit(bool), emerg_exit(bool), drop_ft(number, 0=ground). OPTIONAL: exit_priority(primary|secondary|tertiary|bail_out), count(int). Extra fields OK. Upserts by direction. clear_windows=true resets list. Used by egress router."
+              exits: "COMPUTED — get response only. Sorted list of all egress-capable portals and windows (exit=true or emerg_exit=true). Sort key: exit_priority rank (primary=0, secondary=1, tertiary=2, bail_out=3, unranked=9) × 2 + (0 if emerg_exit else 1). Items include source, exit_priority, exit, emerg_exit. Portal items: to, type, normally. Window items: direction, count, drop_ft. Use exit_priority= field on set/link to rank. NFPA preplan: emerg_exit=true = designated evac route, drop_ft = jump height ft (0=ground safe)."
+              boundary_links: "list — non-passable boundaries with transmission properties. Schema: {to:area_id, sound_tx:0.0-1.0, light_tx:0.0-1.0, note:str}. Bidirectional: boundary_link mode writes both sides. Upserts by to. clear_boundary_links=true resets list. Use for: shared wall, soundproofed partition, glass wall, floor/ceiling adjacency."
+              sound_tx_ref: "Portal ref: archway=0.85, door(closed)=0.30, solid-core(closed)=0.15, soundproofed=0.05. Boundary ref: drywall=0.35, glass-partition=0.20, soundproofed=0.0."
+              light_tx_ref: "Portal ref: archway=0.80, door(open)=0.70, door(closed)=0.02, glass-door(closed)=0.55. Boundary ref: glass-partition=0.65, sheer-curtain=0.40, frosted-glass=0.20, drywall=0.0."
+              media_adjacent_calc: "Effective acoustic coupling A→B: max(portal A→B sound_tx, boundary_link A→B sound_tx, boundary_link B→A sound_tx). sound_tx=0.0 on all paths → exclude from bleed calc entirely."
+              light_spillover_calc: "Effective optical coupling A→B: max(portal A→B light_tx, boundary_link A→B light_tx). ZenLux uses this for bleed-aware scene setting, sleep-mode isolation, and intentional fill from adjacent zones."
+            context_slices: >-
+              Opt-in live data aggregated on mode=get. Pass as comma string.
+              +topo: open binary_sensors in area. +light: lights on + avg brightness.
+              +climate: first climate entity setpoint + current temp.
+              +covers: cover positions + open list. +media: active media_player.
+              +inventory (+grocy alias): full denormalized room view — all containers
+              with products and amounts (one API call, names resolved locally).
+              +chores: maintenance chores for products stocked in area — is_due,
+              next_execution, cadence, assignee.
+              +tasks: todo entities whose labels intersect the area's own HA labels.
+              Tag a todo entity with area label (e.g. hot_tub) to opt it in.
+              +conductor: todo entities labeled 'schedule' — the AI conductor queue.
+              +calendar: calendar entities whose labels intersect the area's labels,
+              7-day lookahead window. Same label-intersection as +tasks.
+              All slices are independent — request any combination.
+            concepts:
+              area: "HA grouping unit — any zone, space, or concept. Includes outdoor areas, virtual zones, AI suites, etc. Most areas are NOT rooms. zen_dojotools_inspect mode=area_list enumerates all."
+              room: "An area elevated to room status by room_manager. Has: a topology entry in the household cabinet (key=room_topology), physical data (portals, walls, windows), and ideally the room_layout label. The room_layout label is the registration marker — it is what distinguishes a room from a bare area."
+              elevation: "The act of registering an area as a room. mode=set performs the elevation, auto-applies the room_layout label to the HA area, and wires adjacency via mode=link."
+            safety: "list — safety equipment. Schema: {name:str (upsert key), type:fire_extinguisher|first_aid|aed|eyewash|spill_kit|other, location_note:str, rating:str (e.g. ABC), grocy_location_id:str}. mode=set writes one item per call. clear_safety=true resets list."
+            grocy_location_id: "string — Grocy location ID for this room. First-class join key: RM area ↔ Grocy location ↔ containers ↔ products. Surfaced in domain_routing.grocy on mode=get."
+            physical_object_model: >-
+              Every RM room has grocy_location_id pointing to its Grocy anchor.
+              Tree: Curtis Home (209) → Suites → Rooms (anchors) → Containers → Products.
+              Bidirectional: RM→Grocy via grocy_location_id; Grocy→RM via homeassistant_area userfield on each location.
+              Place object: (1) mode=get → domain_routing.grocy for anchor. (2) locations_find for containers.
+              (3) locations_add if container missing. (4) stock_buy_product or stock_inventory_adjust at container.
+              Find object: stock_where_is_item(item=name) across all locations.
+              safety[].grocy_location_id pins safety equipment to specific Grocy containers within a room.
+            presence_vs_occupants: "OCCUPANTS (stored here) = static assignment — who this room belongs to. PRESENCE (not stored here) = runtime RM state — who is detected in the room right now, read from input_select.{room_slug}_occupancy or via zen_dojotools_room_manager mode=get (ha_labels / rm_managed fields)."
+            label_notes:
+              room_layout: "Auto-applied to HA area by mode=set. room_layout_tagged in set response confirms success."
+              room_manager: "KFC: on entity=IS the RM. On area=area is RM-managed. Not managed by this tool."
+            drawer_hint: >-
+              Layout defined. Get: zen_dojotools_room_manager mode=get area={area_id}.
+              Fields: adjacent[], portals[], windows[], walls, occupants[].
+              Set: mode=set. Link rooms: mode=link area={a} area_b={b}.
+            caller_token: "{{ _caller_token }}"
+      - stop: help
+        response_variable: _result
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # INTERNAL: zen_dojotools_rm_loader
+  # Not MCP-exposed. Called by zen_dojotools_room_manager mode=setup.
+  # Deploys the room_manager KFC artifact to the dojo via Scribe.
+  # Pattern: copy of zen_admintools_kungfu_loader scoped to one component.
+  # ──────────────────────────────────────────────────────────────────────────
+  zen_dojotools_rm_loader:
+    alias: "Room Manager Loader — Deploy RM KFC"
+    description: >-
+      Internal. Deploys room_manager KFC to dojo via Scribe (new_thought →
+      formalize_scroll → publish_kfc). Not MCP-exposed. Called by mode=setup.
+    fields:
+      caller_token:
+        name: Caller Token
+        description: Opaque token for caller correlation. Not interpreted.
+        required: false
+        selector:
+          text:
+    sequence:
+
+      - variables:
+          _caller_token: "{{ caller_token | default('') }}"
+
+      - alias: 'Ship KFC: room_manager (Scribe — new_thought)'
+        action: script.zen_dojotools_scribe
+        data:
+          mode: new_thought
+          key: room_manager
+          friendly_name: Room Manager
+          label: room_manager
+          version_semantic: "1.0.0"
+          component_summary: >-
+            Spatial topology registry. Elevates HA areas into registered rooms with
+            portals, walls, windows, adjacency, and occupants. Stores room_topology in
+            the household cabinet. Provides live context slices (topo/light/climate/covers/media)
+            per room and a whole-house snapshot via mode=home_overview. ZenLux and NyxMau5
+            read topology from here for bleed-aware lighting and audio routing. The household
+            spatial map — consult before any room-centric domain task.
+          component_instructions: >-
+            SCOPE: Spatial topology and live room context for the household.
+              Room data: zen_dojotools_room_manager (household cabinet, key: room_topology).
+              Registered rooms have label room_layout on their HA area.
+
+            DATA ACCESS:
+              Primary: zen_dojotools_room_manager mode=home_overview — whole-house snapshot.
+                Returns: registered_room_count, floor_count, floors[]{floor_id, rooms[]{area_id,
+                display_name, context{topo,light,climate,covers,media}}}, domain_summaries,
+                domain_summaries.maintenance{battery_count,alert_count}.
+              Per-room: zen_dojotools_room_manager mode=get area={area_id} with context_slices=+topo,+light,+climate,+covers,+media.
+                Returns: spatial{portals[], windows[], walls, adjacent[], occupants[]}, features[], exits[].
+              Registered rooms: areas with label room_layout. Use inspect mode=area_list to enumerate.
+
+            WHAT TO SURFACE:
+              1. Rooms with active domains — lights on, climate running, media playing, covers open.
+                 Lead with what is running: "Kitchen: lights 72%, climate cooling 72°F. Office: lights on."
+              2. Floor-grouped summary when multiple floors are active.
+              3. Maintenance: if battery_count > 0 or alert_count > 0, surface the counts.
+              4. Exterior portals (exit=true) — note if open when mode is away or sleep.
+              5. Egress summary only if safety context (away mode, alarm active, force_summary).
+
+            TRIGGER CONTEXT:
+              ha_start — ambient topology snapshot. Flag any rooms with unexpected active states.
+              home_occupancy_change — re-derive active rooms. Surface context for the arriving or
+                departing person's rooms (cross-reference occupants[] from mode=get).
+              home_mode_updates — re-evaluate room relevance for new mode.
+                away: flag lights or media still running in any room.
+                sleep: flag non-bedroom lights on or covers open.
+                home: ambient context only.
+              force_summary — full home_overview across all floors and all active rooms.
+
+            NAVIGATION:
+              Registered rooms: label room_layout on HA area.
+              Room topology: zen_dojotools_room_manager mode=get area={slug}.
+              Domain routing per room: zen_dojotools_room_manager mode=help → domain_routing.
+              Adjacent rooms for bleed: spatial.adjacent[] in get response.
+              Whole-house snapshot: mode=home_overview (no area= needed).
+
+            OUTPUT FORMAT:
+              Active rooms: lead with floor, then room — one line per room with domain signals.
+              Nominal: "House nominal. N rooms across F floors. Maintenance: X batteries low, Y alerts."
+              Active: "[Floor]: [Room] — [domain signals]. [Room] — ..."
+              Keep per-room lines to one. Reserve detail for on-demand mode=get calls.
+
+            TONE: Spatial and ambient. This is the house map, not the alert surface.
+              Speak like a crew chief walking the building — concise, positional, factual.
+          trigger_subscriptions: "ha_start,home_occupancy_change,home_mode_updates,force_summary"
+          drift_threshold: 5
+          emission_cooldown_minutes: 30
+          delay_seconds: 0
+          caller_id: zen_dojotools_rm_loader
+
+      - alias: 'Ship KFC: room_manager (Scribe — formalize_scroll)'
+        action: script.zen_dojotools_scribe
+        data:
+          mode: formalize_scroll
+          key: room_manager
+          caller_id: zen_dojotools_rm_loader
+
+      - alias: 'Ship KFC: room_manager (Scribe — publish_kfc)'
+        action: script.zen_dojotools_scribe
+        data:
+          mode: publish_kfc
+          key: room_manager
+          publish_confirm: true
+          caller_id: zen_dojotools_rm_loader
+        response_variable: _rm_deploy_result
+
+      - variables:
+          _result:
+            status: success
+            mode: setup
+            kfc_key: room_manager
+            version: "1.0.0"
+            deployed: "{{ _rm_deploy_result }}"
+            caller_token: "{{ _caller_token }}"
+      - stop: rm_loader_complete
+        response_variable: _result
+
+    mode: single

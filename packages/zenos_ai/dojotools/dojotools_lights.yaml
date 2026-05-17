@@ -1,0 +1,1906 @@
+###############################################################################
+# zen_dojotools_lights v0.5.1 (codename: ZenLux)
+# Version: 0.5.1
+# Room-aware lighting intent resolver with memory + label-driven topology
+#
+# ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
+#
+# HARDWARE ROLE — zen_lm_* (tool-owned, smash-rebuild via mode=setup)
+#   zen_lm_main       — Primary ambient/overhead. Top of resolution chain.
+#   zen_lm_accent     — Accent/decorative: LED strips, bias lighting, uplights.
+#   zen_lm_task       — Task lighting: under-cabinet, desk lamp, reading.
+#   zen_lm_night      — Night/safety lighting. Low-level, always reachable.
+#   zen_lm_outdoor    — Exterior/perimeter: porch, pathway, security wash.
+#   zen_lm_dusk_dawn  — Photosensor/auto-managed. Tool warns before override.
+#   zen_lm_group      — Light group entity. Single command surface for a room.
+#   zen_lm_scene      — HA scene entity. Activating sets a whole-room look.
+#
+# LEGACY FALLBACK (Option B — resolved when zen_lm_* not present)
+#   lighting / main_lighting  → zen_lm_main
+#   accent_lighting           → zen_lm_accent
+#   lights_task               → zen_lm_task
+#   night                     → zen_lm_night
+#   lights_security           → zen_lm_outdoor
+#   light_group               → zen_lm_group
+#
+# CAPABILITY DISCOVERY (runtime — not labeled)
+#   supported_color_modes attr — 'rgb','hs','rgbw','rgbww','xy','color_temp'
+#   effect_list length > 20   — WLED heuristic (WLED ships 100+ effects)
+#
+# PRIORITY
+#   primary — Wins tiebreaks within a role slot. Tag the group entity or
+#             preferred individual with 'primary' to guarantee it resolves first.
+#
+# ── PREFS STORAGE ────────────────────────────────────────────────────────────
+#   Household cabinet. Key: light_prefs_{room_slug}
+#   Value: { context: { target_role, brightness, color_temp_k, rgb_color,
+#                       transition, scene_entity }, default_role: zen_lm_* }
+#
+# ── SETUP FLOW ───────────────────────────────────────────────────────────────
+#   1. mode=setup          — create all zen_lm_* label definitions in HA
+#   2. mode=discover       — map every room, flag unlabeled + setup_advisory
+#   3. mode=label_suggest room=X — propose zen_lm_* assignments
+#   4. Apply via zen_dojotools_labels
+#   5. mode=discover       — verify slots resolve, advisory gone
+#   6. Optional: prune legacy labels via zen_dojotools_labels
+###############################################################################
+
+script:
+  zen_dojotools_lights:
+    alias: Zen DojoTools Lights v0.5.1
+    description: >-
+      Act now: brightness_set/scene_set/rgb_set room=X work immediately — no
+      setup needed, legacy labels resolve the right entity automatically. Get
+      smarter: discover room=X maps every light, scene, and capability —
+      next_step always tells you what to explore next. scene_list search=room
+      surfaces all scenes including untagged, with entities_affected. Remember
+      it: prefs_set/prefs_apply give a room lighting memory (movie, work,
+      sleep). mode=help for the full map.
+    icon: mdi:lightbulb-group
+    mode: queued
+    max: 3
+
+    fields:
+      mode:
+        name: Mode
+        description: >-
+          Act now — brightness_set/scene_set/rgb_set/color_temp_set work
+          immediately, no setup needed. discover room=X maps a room; next_step
+          guides exploration. scene_list search=X finds scenes by name.
+          prefs_set/apply = lighting memory. setup+label_suggest assign
+          zen_lm_* roles. resolve_debug traces entity selection.
+        selector:
+          select:
+            options:
+              - discover
+              - setup
+              - label_suggest
+              - resolve_debug
+              - bleed_set
+              - scene_set
+              - brightness_set
+              - color_temp_set
+              - rgb_set
+              - prefs_get
+              - prefs_set
+              - prefs_apply
+              - room_default_get
+              - room_default_set
+              - scene_list
+              - auto_label
+              - help
+
+      entity_id:
+        name: Entity ID
+        description: "Explicit override. Omit when room= provided — auto-resolved."
+        selector:
+          entity:
+            domain: light
+
+      room:
+        name: Room
+        description: "Target area. Omit for whole-home discover."
+        selector:
+          area:
+
+      target_role:
+        name: Target Role
+        description: >-
+          zen_lm_main / zen_lm_accent / zen_lm_task / zen_lm_night /
+          zen_lm_outdoor / zen_lm_dusk_dawn / zen_lm_group. Omit for
+          auto-chain (group → main → legacy → first_in_room).
+        selector:
+          text:
+
+      intent:
+        name: Scene Intent
+        description: >-
+          Named scene context. movie=dim warm accent. sleep=near-off warm.
+          morning=cool white ramp. work=task cool white. away=off. party=rgb.
+          Maps to role + brightness + color_temp defaults; overridden by prefs.
+        selector:
+          select:
+            options:
+              - movie
+              - sleep
+              - morning
+              - work
+              - away
+              - party
+
+      brightness:
+        name: Brightness
+        description: "0–100 percent. Required for brightness_set. Optional for prefs_set."
+        selector:
+          number:
+            min: 0
+            max: 100
+
+      color_temp_k:
+        name: Color Temperature (Kelvin)
+        description: "2700=warm, 3000=soft white, 4000=neutral, 5000=daylight, 6500=cool."
+        selector:
+          number:
+            min: 2700
+            max: 6500
+
+      rgb_color:
+        name: RGB Color
+        description: "Comma-separated R,G,B (0-255). Example: '255,100,0'."
+        selector:
+          text:
+
+      scene:
+        name: Scene Entity
+        description: "scene entity_id to activate. Use scene_list search=room to discover options."
+        selector:
+          entity:
+            domain: scene
+
+      transition:
+        name: Transition (seconds)
+        description: "Light transition duration. Default 1."
+        default: 1
+        selector:
+          number:
+            min: 0
+            max: 30
+
+      home_context:
+        name: Home Context
+        description: >-
+          Mode this pref applies to: morning, work, evening, movie, sleep,
+          away, party, etc. Required for prefs_set. Omit on prefs_apply —
+          reads input_select.zen_home_mode automatically.
+        selector:
+          text:
+
+      bleed_threshold:
+        name: Bleed Threshold
+        description: "Min light_tx to include adjacent room in bleed_set propagation. Default 0.20. 0.65=open passages only, 0.20=includes glass doors, 0.10=all non-opaque."
+        selector:
+          number:
+            min: 0.05
+            max: 1.0
+            step: 0.05
+            mode: box
+
+      sync_shades:
+        name: Sync Shades
+        description: "bleed_set + intent: also calls ZenShade scene_set for the same room. movie/work/morning/sleep map directly; party→natural, away→sleep."
+        default: false
+        selector:
+          boolean:
+
+      dry_run:
+        name: Dry Run
+        description: "Preview without touching hardware. Returns would_set values."
+        default: false
+        selector:
+          boolean:
+
+      caller_token:
+        name: Caller Token
+        description: "Opaque audit token echoed in all responses."
+        selector:
+          text:
+
+      search:
+        name: Search
+        description: "Substring match on scene name or entity_id. Used with scene_list."
+        selector:
+          text:
+
+    sequence:
+
+      # ── 0a. Resolve inputs ────────────────────────────────────────────────
+      - variables:
+          _mode:         "{{ mode | default('discover') | string | trim | lower }}"
+          _entity_id:    "{{ entity_id | default('', true) | string | trim }}"
+          _room_raw:     "{{ room | default('', true) | string | trim }}"
+          _room_slug:    "{{ _room_raw | lower | replace(' ', '_') }}"
+          _target_role:  "{{ target_role | default('', true) | string | trim | lower }}"
+          _intent:       "{{ intent | default('', true) | string | trim | lower }}"
+          _brightness:   "{{ brightness | default(-1) | int(-1) }}"
+          _color_temp_k: "{{ color_temp_k | default(-1) | int(-1) }}"
+          _rgb_raw:      "{{ rgb_color | default('', true) | string | trim }}"
+          _scene:        "{{ scene | default('', true) | string | trim }}"
+          _transition:   "{{ transition | default(1) | int(1) }}"
+          _context_raw:  "{{ home_context | default('', true) | string | trim }}"
+          _dry_run:      "{{ dry_run | default(false) | bool }}"
+          _caller_token: "{{ caller_token | default('') | string | trim }}"
+          _search:       "{{ search | default('', true) | string | trim | lower }}"
+
+      # ── 0a2. Shade sync ───────────────────────────────────────────────────
+      - variables:
+          _sync_shades: "{{ sync_shades | default(false, true) | bool(false) }}"
+          _shade_scene: >-
+            {%- set m = {'movie': 'movie', 'work': 'work', 'morning': 'morning',
+                         'sleep': 'sleep', 'party': 'natural', 'away': 'sleep'} -%}
+            {{ m.get(_intent, '') }}
+
+      # ── 0b. Cabinet + area ID ─────────────────────────────────────────────
+      - variables:
+          _hh_cabinet: >-
+            {{ states('sensor.zen_default_household_cabinet_resolved')
+               | default('', true) | string | trim }}
+          _room_area_id: >-
+            {%- if _room_slug != '' -%}
+              {%- set ns = namespace(aid='') -%}
+              {%- for a in areas() -%}
+                {%- if area_name(a) | lower | replace(' ', '_') == _room_slug or a == _room_slug -%}
+                  {%- set ns.aid = a -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.aid }}
+            {%- else -%}{{ '' }}{%- endif -%}
+
+      # ── 0b2. Room entities — area-first, label fallback ───────────────────
+      - variables:
+          _room_ents: >-
+            {%- if _room_slug == '' -%}
+              {{ [] }}
+            {%- elif _room_area_id != '' -%}
+              {{ area_entities(_room_area_id) | select('match', 'light\\.') | list }}
+            {%- else -%}
+              {{ label_entities(_room_slug) | select('match', 'light\\.') | list }}
+            {%- endif -%}
+
+      # ── 0c. Stored room default role (guarded) ────────────────────────────
+      - variables:
+          _room_default_role: ""
+
+      - if: >-
+          {{ _room_slug != '' and _entity_id == '' and _target_role == ''
+             and _mode not in ['help','prefs_get','prefs_set','prefs_apply',
+                                'room_default_get','room_default_set','auto_label']
+             and _hh_cabinet not in ['','unavailable','unknown'] }}
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_rdef_raw
+          - variables:
+              _room_default_role: >-
+                {%- set r = _fc_rdef_raw.get('result', {}) if _fc_rdef_raw is mapping else {} -%}
+                {%- set d = r.get('light_prefs_' + _room_slug, {}) if r is mapping else {} -%}
+                {%- set v = d.get('value', d) if d is mapping else {} -%}
+                {%- set role = v.get('default_role', '') if v is mapping else '' -%}
+                {{ '' if role == 'auto' else role }}
+
+      # ── 0d. Role intersections — tiered: zen_lm_* beats named legacy beats broad ─
+      #       Within each tier, 'primary' label wins tiebreaks.
+      - variables:
+          _r_group: >-
+            {%- set t1 = _room_ents | select('in', label_entities('zen_lm_group') | list) | list -%}
+            {%- set t2 = _room_ents | select('in', label_entities('light_group') | list) | list -%}
+            {%- set cands = t1 if t1 else t2 -%}
+            {%- set prim = cands | select('in', label_entities('primary') | list) | list -%}
+            {{ (prim | first) if prim else (cands | first | default('')) }}
+          _r_main: >-
+            {%- set t1 = _room_ents | select('in', label_entities('zen_lm_main') | list) | list -%}
+            {%- set t2 = _room_ents | select('in', label_entities('main_lighting') | list) | list -%}
+            {%- set t3 = _room_ents | select('in', label_entities('lighting') | list) | list -%}
+            {%- set cands = t1 if t1 else (t2 if t2 else t3) -%}
+            {%- set prim = cands | select('in', label_entities('primary') | list) | list -%}
+            {{ (prim | first) if prim else (cands | first | default('')) }}
+          _r_accent: >-
+            {%- set t1 = _room_ents | select('in', label_entities('zen_lm_accent') | list) | list -%}
+            {%- set t2 = _room_ents | select('in', label_entities('accent_lighting') | list) | list -%}
+            {%- set cands = t1 if t1 else t2 -%}
+            {%- set prim = cands | select('in', label_entities('primary') | list) | list -%}
+            {{ (prim | first) if prim else (cands | first | default('')) }}
+          _r_task: >-
+            {%- set t1 = _room_ents | select('in', label_entities('zen_lm_task') | list) | list -%}
+            {%- set t2 = _room_ents | select('in', label_entities('lights_task') | list) | list -%}
+            {%- set cands = t1 if t1 else t2 -%}
+            {%- set prim = cands | select('in', label_entities('primary') | list) | list -%}
+            {{ (prim | first) if prim else (cands | first | default('')) }}
+          _r_night: >-
+            {%- set t1 = _room_ents | select('in', label_entities('zen_lm_night') | list) | list -%}
+            {%- set t2 = _room_ents | select('in', label_entities('night') | list) | list -%}
+            {%- set cands = t1 if t1 else t2 -%}
+            {%- set prim = cands | select('in', label_entities('primary') | list) | list -%}
+            {{ (prim | first) if prim else (cands | first | default('')) }}
+          _r_outdoor: >-
+            {%- set t1 = _room_ents | select('in', label_entities('zen_lm_outdoor') | list) | list -%}
+            {%- set t2 = _room_ents | select('in', label_entities('lights_security') | list) | list -%}
+            {%- set cands = t1 if t1 else t2 -%}
+            {%- set prim = cands | select('in', label_entities('primary') | list) | list -%}
+            {{ (prim | first) if prim else (cands | first | default('')) }}
+          _r_dusk_dawn: >-
+            {%- set cands = _room_ents | select('in', label_entities('zen_lm_dusk_dawn') | list) | list -%}
+            {%- set prim = cands | select('in', label_entities('primary') | list) | list -%}
+            {{ (prim | first) if prim else (cands | first | default('')) }}
+          _r_stored: >-
+            {{ _room_ents | select('in', label_entities(_room_default_role) | list) | list | first | default('')
+               if _room_default_role != '' else '' }}
+
+      # ── 0e. Auto-resolve default entity ───────────────────────────────────
+      - variables:
+          _auto_resolved: >-
+            {{ _r_stored if _r_stored != ''
+               else (_r_group if _r_group != ''
+               else (_r_main if _r_main != ''
+               else (_room_ents | list | first | default('')))) }}
+
+      # ── 0f. Role-targeted entity ──────────────────────────────────────────
+      - variables:
+          _role_resolved: >-
+            {%- if _target_role != '' -%}
+              {{ _room_ents | select('in', label_entities(_target_role)) | list | first | default(_auto_resolved) }}
+            {%- else -%}{{ _auto_resolved }}{%- endif -%}
+
+      # ── 0g. Intent → role + preset hints ─────────────────────────────────
+      - variables:
+          _intent_role: >-
+            {%- if _intent == 'movie' %}zen_lm_accent
+            {%- elif _intent == 'sleep' %}zen_lm_night
+            {%- elif _intent in ['morning','work'] %}zen_lm_task
+            {%- elif _intent == 'party' %}zen_lm_accent
+            {%- else %}zen_lm_main{%- endif %}
+          _intent_bri: >-
+            {%- if _intent == 'movie' %}15
+            {%- elif _intent == 'sleep' %}3
+            {%- elif _intent == 'morning' %}80
+            {%- elif _intent == 'work' %}90
+            {%- elif _intent == 'away' %}0
+            {%- elif _intent == 'party' %}80
+            {%- else %}-1{%- endif %}
+          _intent_ct_k: >-
+            {%- if _intent == 'movie' %}2700
+            {%- elif _intent == 'sleep' %}2200
+            {%- elif _intent == 'morning' %}5000
+            {%- elif _intent == 'work' %}5500
+            {%- else %}-1{%- endif %}
+
+      - variables:
+          _intent_entity: >-
+            {%- if _intent != '' -%}
+              {%- set ic = _room_ents | select('in', label_entities(_intent_role)) | list -%}
+              {%- set p = ic | select('in', label_entities('primary')) | list | first | default('') -%}
+              {{ p if p != '' else ic | first | default(_role_resolved) }}
+            {%- else %}{{ _role_resolved }}{%- endif %}
+
+      - variables:
+          _resolved_entity: >-
+            {{ _entity_id if _entity_id != '' else _intent_entity }}
+
+      # ── 0h. Capability snapshot ───────────────────────────────────────────
+      - variables:
+          _caps: >-
+            {{ state_attr(_resolved_entity, 'supported_color_modes') | default([], true) | list }}
+          _has_rgb: >-
+            {{ (_caps | select('in', ['rgb','hs','rgbw','rgbww','xy']) | list | length) > 0 }}
+          _has_ct:  "{{ 'color_temp' in _caps }}"
+          _has_dim: >-
+            {{ 'brightness' in _caps or _has_rgb or _has_ct }}
+          _effects:   >-
+            {{ state_attr(_resolved_entity, 'effect_list') | default([], true) | list }}
+          _is_wled:      "{{ _effects | length > 20 }}"
+          _is_dusk_dawn: >-
+            {{ _resolved_entity in (label_entities('zen_lm_dusk_dawn') | list) }}
+
+      # ── 0i. Setup advisory ────────────────────────────────────────────────
+      - variables:
+          _setup_advisory: >-
+            {%- set s = ['zen_lm_main','zen_lm_accent','zen_lm_task','zen_lm_group'] -%}
+            {%- set ns = namespace(n=0) -%}
+            {%- for l in s -%}{%- set ns.n = ns.n + (label_entities(l) | list | length) -%}{%- endfor -%}
+            {%- if ns.n == 0 -%}
+              {{ {'status': 'no_zenlux_labels', 'message': 'No light entities use zen_lm_* labels yet. Run mode=setup to create label definitions, then mode=label_suggest per room.', 'next_steps': ['mode=setup','mode=help']} }}
+            {%- else -%}null{%- endif -%}
+
+      # ── 0j. Room Manager — label-based discovery, pattern fallback, suggest ───
+      - variables:
+          _rm_entity: >-
+            {%- if _room_slug != '' -%}
+              {%- set by_label = label_entities('room_manager')
+                  | select('in', label_entities(_room_slug) | list)
+                  | select('match', 'input_select\\.') | list -%}
+              {%- if by_label -%}
+                {{ by_label | first }}
+              {%- else -%}
+                {%- set fallback = 'input_select.' + _room_slug + '_occupancy' -%}
+                {{ fallback if states(fallback) not in ['unknown','unavailable',''] else '' }}
+              {%- endif -%}
+            {%- else -%}{{ '' }}{%- endif -%}
+          _rm_suggest: >-
+            {%- if _room_slug != '' -%}
+              {%- set by_label = label_entities('room_manager')
+                  | select('in', label_entities(_room_slug) | list)
+                  | select('match', 'input_select\\.') | list -%}
+              {%- set fallback = 'input_select.' + _room_slug + '_occupancy' -%}
+              {%- set has_fallback = states(fallback) not in ['unknown','unavailable',''] -%}
+              {%- if not by_label and not has_fallback and _room_area_id != '' -%}
+                {{ area_entities(_room_area_id) | select('match', 'input_select\\.') | list }}
+              {%- else -%}{{ [] }}{%- endif -%}
+            {%- else -%}{{ [] }}{%- endif -%}
+          _rm_timer: >-
+            {%- if _room_slug != '' -%}
+              {%- set by_label = label_entities('occupancy')
+                  | select('in', label_entities(_room_slug) | list)
+                  | select('match', 'sensor\\.') | list -%}
+              {%- if by_label -%}
+                {{ by_label | first }}
+              {%- else -%}
+                {%- set fallback = 'sensor.' + _room_slug + '_occupancy_timer' -%}
+                {{ fallback if states(fallback) not in ['unknown','unavailable',''] else '' }}
+              {%- endif -%}
+            {%- else -%}{{ '' }}{%- endif -%}
+          _mc_entity: >-
+            {%- if _room_slug != '' -%}
+              {%- set by_label = label_entities('universal_media_player')
+                  | select('in', label_entities(_room_slug) | list) | list -%}
+              {%- if by_label -%}
+                {{ by_label | first }}
+              {%- else -%}
+                {%- set fallback = 'media_player.' + _room_slug + '_universal_media_player' -%}
+                {{ fallback if states(fallback) not in ['unknown','unavailable',''] else '' }}
+              {%- endif -%}
+            {%- else -%}{{ '' }}{%- endif -%}
+          _spa_entity: >-
+            {%- if _room_slug != '' -%}
+              {{ label_entities('spa_climate')
+                 | select('in', area_entities(_room_slug) | list) | list | first | default('') }}
+            {%- else -%}{{ '' }}{%- endif -%}
+
+      - variables:
+          _rm_state: >-
+            {{ states(_rm_entity) | default('', true) if _rm_entity != '' else '' }}
+          _rm_hold: >-
+            {{ states(_rm_entity) | default('', true) | lower in ['hold','pause','paused']
+               if _rm_entity != '' else false }}
+          _rm_timer_remain: >-
+            {{ state_attr(_rm_timer, 'timeremain') | default('', true)
+               if _rm_timer != '' else '' }}
+          _rm_timer_seconds: >-
+            {{ state_attr(_rm_timer, 'seconds') | default(0, true) | int(0)
+               if _rm_timer != '' else 0 }}
+
+      - variables:
+          _rm_active: >-
+            {{ _rm_state not in ['','unknown','unavailable','Vacant','vacant'] }}
+
+      # ── 0k. RM Hold gate — hard block all hardware writes ──────────────────
+      - if: >-
+          {{ _rm_hold and _room_slug != ''
+             and _mode in ['brightness_set','color_temp_set','rgb_set',
+                           'scene_set','prefs_apply'] }}
+        then:
+          - variables:
+              _result:
+                status: blocked
+                reason: rm_hold
+                rm_entity: "{{ _rm_entity }}"
+                rm_state: "{{ _rm_state }}"
+                message: >-
+                  Room Manager '{{ _rm_entity }}' is in '{{ _rm_state }}' —
+                  ZenLux will not override a held room. To proceed: set
+                  {{ _rm_entity }} to Engaged (unhold), then retry. Note:
+                  RM may disallow Hold→Engaged transitions. A de-escalation
+                  override will be available in RM v2.
+                caller_token: "{{ _caller_token }}"
+          - stop: rm_hold blocked
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 1. HELP
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'help' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                tool: zen_dojotools_lights
+                codename: ZenLux
+                version: "0.3.0"
+                summary: >-
+                  Say 'set the office to work mode' and this tool handles it.
+                  Discover room layout once, teach a pref, apply it forever.
+                  No entity IDs. zen_lm_* role label + room label does all
+                  resolution. Capabilities discovered at runtime from entity
+                  attributes — no capability labels needed.
+                resolution: >-
+                  Role path: target_role= intersects room entities with zen_lm_*
+                  label. Intent path: intent= maps to role → primary wins tiebreak.
+                  Auto chain: stored_default → zen_lm_group → zen_lm_main →
+                  legacy labels → first_in_room. entity_id = direct override only.
+                  prefs_apply re-resolves entity live — IDs can change.
+                label_taxonomy:
+                  hardware_role:
+                    zen_lm_main: "Primary ambient/overhead. Top of auto chain."
+                    zen_lm_accent: "Accent/decorative — LED strips, bias, uplights."
+                    zen_lm_task: "Task lighting — under-cabinet, desk, reading."
+                    zen_lm_night: "Night/safety — low-level, always reachable."
+                    zen_lm_outdoor: "Exterior/perimeter — porch, pathway, security wash."
+                    zen_lm_dusk_dawn: "Photosensor/auto-managed. Tool warns before override."
+                    zen_lm_group: "Light group entity. Top of auto chain. One per room."
+                    zen_lm_scene: "HA scene entity. Activating sets whole-room look."
+                  legacy_fallback:
+                    lighting: "→ zen_lm_main"
+                    main_lighting: "→ zen_lm_main"
+                    accent_lighting: "→ zen_lm_accent"
+                    lights_task: "→ zen_lm_task"
+                    night: "→ zen_lm_night"
+                    lights_security: "→ zen_lm_outdoor"
+                    light_group: "→ zen_lm_group"
+                  capability_discovery:
+                    note: "Read from entity attributes at runtime. No labeling needed."
+                    rgb: "supported_color_modes contains rgb/hs/rgbw/rgbww/xy"
+                    color_temp: "supported_color_modes contains color_temp"
+                    wled: "effect_list length > 20 (WLED ships 100+ effects)"
+                intent_presets:
+                  movie: "zen_lm_accent, 15%, 2700K warm"
+                  sleep: "zen_lm_night, 3%, 2200K ultra-warm"
+                  morning: "zen_lm_task, 80%, 5000K daylight"
+                  work: "zen_lm_task, 90%, 5500K cool white"
+                  away: "zen_lm_main, off"
+                  party: "zen_lm_accent, 80%, rgb if available"
+                prefs_storage: "Household cabinet. Key: light_prefs_{room_slug}."
+                setup_flow:
+                  - "1. mode=setup — create all zen_lm_* label definitions"
+                  - "2. mode=discover — map rooms, see unlabeled + advisory"
+                  - "3. mode=label_suggest room=X — get zen_lm_* proposals"
+                  - "4. Apply via zen_dojotools_labels"
+                  - "5. mode=discover — verify. Then prune legacy labels optionally."
+                modes:
+                  discover: "No room = whole-home map. Room = full role detail + capabilities."
+                  setup: "Creates all zen_lm_* label definitions. Run once. Safe to re-run."
+                  label_suggest: "Analyzes room entities, proposes zen_lm_* assignments."
+                  resolve_debug: "Traces full selection chain + capability snapshot. Read-only."
+                  scene_set: "Activate HA scene entity or apply named intent preset."
+                  brightness_set: "Set brightness 0-100. Resolves entity via room + role."
+                  color_temp_set: "Set color temp in Kelvin (2700-6500)."
+                  rgb_set: "Set RGB color 'r,g,b'. Resolves entity via room + role."
+                  prefs_get: "Read all stored prefs for a room."
+                  prefs_set: "Teach a context: room + home_context + bri/ct/role/scene."
+                  prefs_apply: "Apply stored pref. Reads zen_home_mode if no context. Re-resolves live."
+                  room_default_get: "Stored default role + current resolution."
+                  room_default_set: "Store zen_lm_* role as room default. auto clears it."
+                  scene_list: "List scenes. room= filters to room label. search= substring on name/entity_id. No filters = all scenes."
+                  auto_label: "Tag unlabeled area lights with the room= label. dry_run=true previews targets. Dispatches via zen_dojotools_labels — no manual label calls needed."
+                example_flows:
+                  whole_home: "discover → every area with lights, on/off count, roles found"
+                  drill_room: "discover room='Office' → all slots, capabilities, current state"
+                  movie_now: "brightness_set room='Living Room' intent=movie"
+                  teach_movie: "prefs_set room='Living Room' home_context=movie target_role=zen_lm_accent brightness=15 color_temp_k=2700"
+                  apply_movie: "prefs_apply room='Living Room' home_context=movie"
+                  dry_first: "prefs_apply room='Living Room' dry_run=true"
+                caller_token: "{{ _caller_token }}"
+          - stop: help
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 2. DISCOVER
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'discover' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              # Whole-home map
+              - variables:
+                  _home_map: >-
+                    {%- set role_check = ['zen_lm_group','zen_lm_main','zen_lm_accent','zen_lm_task',
+                                          'zen_lm_night','zen_lm_outdoor','zen_lm_dusk_dawn',
+                                          'lighting','main_lighting','accent_lighting','light_group',
+                                          'lights_task','night','lights_security'] -%}
+                    {%- set ns = namespace(rooms=[]) -%}
+                    {%- for aid in areas() -%}
+                      {%- set a_ents = area_entities(aid) | select('match', 'light\\.') | list -%}
+                      {%- if a_ents | length > 0 -%}
+                        {%- set on_list = expand(a_ents) | selectattr('state','eq','on') | map(attribute='entity_id') | list -%}
+                        {%- set unavail = expand(a_ents) | selectattr('state','eq','unavailable') | map(attribute='entity_id') | list -%}
+                        {%- set t1g = a_ents | select('in', label_entities('zen_lm_group') | list) | list -%}
+                        {%- set t2g = a_ents | select('in', label_entities('light_group') | list) | list -%}
+                        {%- set r_g = (t1g | first) if t1g else (t2g | first | default('')) -%}
+                        {%- set t1m = a_ents | select('in', label_entities('zen_lm_main') | list) | list -%}
+                        {%- set t2m = a_ents | select('in', label_entities('main_lighting') | list) | list -%}
+                        {%- set t3m = a_ents | select('in', label_entities('lighting') | list) | list -%}
+                        {%- set r_m = (t1m | first) if t1m else ((t2m | first) if t2m else (t3m | first | default(''))) -%}
+                        {%- set avail = a_ents | reject('in', unavail) | list -%}
+                        {%- set def_ent = r_g if r_g != '' else (r_m if r_m != '' else (avail | first | default(a_ents | first | default('')))) -%}
+                        {%- set def_via = 'zen_lm_group' if r_g != '' else ('zen_lm_main/legacy' if r_m != '' else 'first_in_room') -%}
+                        {%- set ns2 = namespace(roles=[], matched=[]) -%}
+                        {%- for rl in role_check -%}
+                          {%- set m = a_ents | select('in', label_entities(rl)) | list | first | default('') -%}
+                          {%- if m != '' -%}
+                            {%- set ns2.roles = ns2.roles + [rl] -%}
+                            {%- if m not in ns2.matched -%}{%- set ns2.matched = ns2.matched + [m] -%}{%- endif -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {%- set entry = {
+                          'area_id': aid,
+                          'area_name': area_name(aid),
+                          'default_entity': def_ent,
+                          'default_name': state_attr(def_ent,'friendly_name') | default(def_ent,true) if def_ent != '' else none,
+                          'default_via': def_via,
+                          'roles_found': ns2.roles,
+                          'light_count': a_ents | length,
+                          'on_count': a_ents | select('in', on_list) | list | length,
+                          'unlabeled_count': a_ents | reject('in', ns2.matched) | list | length
+                        } -%}
+                        {%- set ns.rooms = ns.rooms + [entry] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.rooms }}
+              - variables:
+                  _result:
+                    status: ok
+                    scope: whole_home
+                    rooms: "{{ _home_map }}"
+                    setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
+                    next_step: "Drill in: discover room='Room Name' — full role slots, live state, and scene inventory per room. Then scene_list search='room' to surface all scenes including untagged."
+                    caller_token: "{{ _caller_token }}"
+              - stop: whole-home discover
+                response_variable: _result
+
+          # Per-room discover
+          - variables:
+              _room_discover: >-
+                {%- set role_labels = ['zen_lm_group','zen_lm_main','zen_lm_accent','zen_lm_task',
+                                       'zen_lm_night','zen_lm_outdoor','zen_lm_dusk_dawn','zen_lm_scene',
+                                       'lighting','main_lighting','accent_lighting','light_group',
+                                       'lights_task','night','lights_security'] -%}
+                {%- set ns = namespace(roles={}, seen=[]) -%}
+                {%- for rl in role_labels -%}
+                  {%- set ents = _room_ents | select('in', label_entities(rl)) | list -%}
+                  {%- if ents | length > 0 -%}
+                    {%- set ns2 = namespace(slot=[]) -%}
+                    {%- for e in ents -%}
+                      {%- set caps = state_attr(e,'supported_color_modes') | default([],true) | list -%}
+                      {%- set effects = state_attr(e,'effect_list') | default([],true) | list -%}
+                      {%- set bri_raw = state_attr(e,'brightness') | default(0,true) | int(0) -%}
+                      {%- set ct_raw = state_attr(e,'color_temp') | default(0,true) | int(0) -%}
+                      {%- set einfo = {
+                        'entity_id': e,
+                        'name': state_attr(e,'friendly_name') | default(e,true),
+                        'state': states(e),
+                        'brightness_pct': (bri_raw / 2.55) | round(0) | int if states(e) == 'on' else none,
+                        'color_temp_k': (1000000 / ct_raw) | round(0) | int if ct_raw > 0 else none,
+                        'rgb_color': state_attr(e,'rgb_color') | default(none,true),
+                        'capabilities': {
+                          'dimmable': ('brightness' in caps or (caps | select('in',['rgb','hs','rgbw','rgbww','xy','color_temp']) | list | length > 0)),
+                          'color_temp': 'color_temp' in caps,
+                          'rgb': (caps | select('in',['rgb','hs','rgbw','rgbww','xy']) | list | length) > 0,
+                          'wled': effects | length > 20,
+                          'effect_count': effects | length
+                        },
+                        'primary': e in (label_entities('primary') | list),
+                        'dusk_dawn': e in (label_entities('zen_lm_dusk_dawn') | list)
+                      } -%}
+                      {%- set ns2.slot = ns2.slot + [einfo] -%}
+                      {%- if e not in ns.seen -%}{%- set ns.seen = ns.seen + [e] -%}{%- endif -%}
+                    {%- endfor -%}
+                    {%- set ns.roles = dict(ns.roles, **{rl: ns2.slot}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {
+                  'roles': ns.roles,
+                  'unlabeled': _room_ents | reject('in', ns.seen) | list,
+                  'default_entity': _auto_resolved,
+                  'default_via': 'zen_lm_group' if _r_group != '' else ('zen_lm_main/legacy' if _r_main != '' else 'first_in_room'),
+                  'light_count': _room_ents | length
+                } }}
+          - variables:
+              _room_scenes: >-
+                {%- set s_ents = label_entities(_room_slug) | select('match', 'scene\\.') | list -%}
+                {%- set ns = namespace(out=[]) -%}
+                {%- for s in s_ents -%}
+                  {%- set affected = state_attr(s, 'entity_id') | default([], true) | list -%}
+                  {%- set ns.out = ns.out + [{'entity_id': s, 'name': state_attr(s,'friendly_name') | default(s,true), 'entities_affected': affected, 'light_count': affected | select('match', 'light\\.') | list | length}] -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - variables:
+              _disc_topo: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ topo.get(_room_area_id, none) if _room_area_id != '' else none }}
+              _disc_bleed: >-
+                {%- set _sp=_disc_topo if _disc_topo is mapping else {} -%}
+                {%- set ns=namespace(b=[]) -%}
+                {%- for p in (_sp.get('portals',[])|list) -%}
+                  {%- if p is mapping and p.get('to',none) is not none -%}
+                    {%- set _ltx=p.get('light_tx',0.0)|float(0.0) -%}
+                    {%- set _stx=p.get('sound_tx',0.0)|float(0.0) -%}
+                    {%- if _ltx >= 0.1 or _stx >= 0.65 -%}
+                      {%- set ns.b=ns.b+[{'to':p.get('to'),'via':'portal','type':p.get('type',''),'normally':p.get('normally',''),'light_tx':_ltx,'sound_tx':_stx}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for bl in (_sp.get('boundary_links',[])|list) -%}
+                  {%- if bl is mapping -%}
+                    {%- set _ltx=bl.get('light_tx',0.0)|float(0.0) -%}
+                    {%- set _stx=bl.get('sound_tx',0.0)|float(0.0) -%}
+                    {%- if _ltx >= 0.1 or _stx >= 0.30 -%}
+                      {%- set ns.b=ns.b+[{'to':bl.get('to'),'via':'boundary_link','light_tx':_ltx,'sound_tx':_stx,'note':bl.get('note','')}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.b | sort(attribute='light_tx', reverse=true) }}
+              _disc_acoustic_zone: >-
+                {%- set _sp=_disc_topo if _disc_topo is mapping else {} -%}
+                {%- set ns=namespace(z=[]) -%}
+                {%- for p in (_sp.get('portals',[])|list) -%}
+                  {%- if p is mapping and p.get('to',none) is not none and p.get('sound_tx',0.0)|float(0.0) >= 0.65 -%}
+                    {%- set ns.z=ns.z+[p.get('to')] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.z }}
+
+          - variables:
+              _result:
+                status: ok
+                scope: room
+                room: "{{ _room_slug }}"
+                discovery: "{{ _room_discover }}"
+                scenes: "{{ _room_scenes }}"
+                room_manager: >-
+                  {%- if _rm_entity != '' -%}
+                    {%- set _timer = {'entity': _rm_timer,
+                                      'time_remaining': _rm_timer_remain,
+                                      'seconds_remaining': _rm_timer_seconds,
+                                      'holdswitch': state_attr(_rm_timer, 'holdswitch') | default(none, true),
+                                      'occupiedswitch': state_attr(_rm_timer, 'occupiedswitch') | default(none, true),
+                                      'engagedswitch': state_attr(_rm_timer, 'engagedswitch') | default(none, true),
+                                      'sleepswitch': state_attr(_rm_timer, 'sleepswitch') | default(none, true)}
+                         if _rm_timer != '' else none -%}
+                    {{ {'entity': _rm_entity, 'state': _rm_state, 'active': _rm_active,
+                        'hold': _rm_hold,
+                        'burnout_timer': _timer,
+                        'advisory': ('HOLD — ZenLux blocked. Release hold to allow lighting changes.'
+                                     if _rm_hold else
+                                     ('Room Manager active — RM may override on next occupancy event.'
+                                     if _rm_active else none))} }}
+                  {%- elif _rm_suggest | length > 0 -%}
+                    {{ {'entity': none, 'not_found': true,
+                        'suggest_candidates': _rm_suggest,
+                        'advisory': "No room_manager entity labeled for '" + _room_slug + "'. Tag one from suggest_candidates with labels 'room_manager' + '" + _room_slug + "' to enable RM-aware control."} }}
+                  {%- else -%}{{ none }}{%- endif -%}
+                media_controller: >-
+                  {%- if _mc_entity != '' -%}
+                    {{ {'entity': _mc_entity, 'state': states(_mc_entity),
+                        'note': 'NyxMau5 compatible — use zen_dojotools_media_manager for control'} }}
+                  {%- else -%}{{ none }}{%- endif -%}
+                spa_master: >-
+                  {%- if _spa_entity != '' -%}
+                    {{ {'entity': _spa_entity,
+                        'note': 'SpaMaster manages spa lights, jets, cover, chemistry, audio — use zen_dojotools_spamaster'} }}
+                  {%- else -%}{{ none }}{%- endif -%}
+                setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
+                topology: >-
+                  {%- if _disc_bleed | length > 0 or _disc_acoustic_zone | length > 0 -%}
+                    {{ {
+                      'bleed_exposure': _disc_bleed,
+                      'acoustic_zone': _disc_acoustic_zone,
+                      'advisory': 'bleed_exposure: optical/acoustic paths from this room (light_tx≥0.10 or sound_tx≥0.30). acoustic_zone: rooms in same open acoustic space (sound_tx≥0.65). Use bleed_set to propagate scenes across connected zones.'
+                    } }}
+                  {%- else -%}{{ none }}{%- endif -%}
+                next_step: >-
+                  {%- if _setup_advisory != 'null' -%}
+                    {{ _room_scenes | length }} labeled scene(s) found — run scene_list room={{ _room_slug }} search={{ _room_slug }} to surface all scenes + flag unlabeled lights. Then mode=setup + label_suggest room={{ _room_slug }} to assign zen_lm_* roles.
+                  {%- elif _room_scenes | length > 0 -%}
+                    {{ _room_scenes | length }} labeled scene(s) — run scene_list room={{ _room_slug }} search={{ _room_slug }} to find all scenes including untagged, with unlabeled_in_room check.
+                  {%- else -%}
+                    Run scene_list room={{ _room_slug }} search={{ _room_slug }} to find scenes by name. Then label_suggest room={{ _room_slug }} for zen_lm_* role proposals.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: room discover
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 3. SETUP — create all zen_lm_* label definitions
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'setup' }}"
+        then:
+          - variables:
+              _zen_lm_labels:
+                - id: zen_lm_main
+                  name: "ZenLux: Main"
+                  description: "Primary ambient/overhead. Top of ZenLux resolution chain."
+                  color: "#F5E642"
+                  icon: "mdi:ceiling-light"
+                - id: zen_lm_accent
+                  name: "ZenLux: Accent"
+                  description: "Accent/decorative — LED strips, bias lighting, uplights."
+                  color: "#FF8C00"
+                  icon: "mdi:led-strip-variant"
+                - id: zen_lm_task
+                  name: "ZenLux: Task"
+                  description: "Task lighting — under-cabinet, desk lamp, reading."
+                  color: "#42A5F5"
+                  icon: "mdi:desk-lamp"
+                - id: zen_lm_night
+                  name: "ZenLux: Night"
+                  description: "Night/safety lighting. Low-level, always reachable."
+                  color: "#7E57C2"
+                  icon: "mdi:weather-night"
+                - id: zen_lm_outdoor
+                  name: "ZenLux: Outdoor"
+                  description: "Exterior/perimeter — porch, pathway, security wash."
+                  color: "#66BB6A"
+                  icon: "mdi:outdoor-lamp"
+                - id: zen_lm_dusk_dawn
+                  name: "ZenLux: Dusk/Dawn"
+                  description: "Photosensor/auto-managed exterior. Tool warns before override."
+                  color: "#FF7043"
+                  icon: "mdi:weather-sunset"
+                - id: zen_lm_group
+                  name: "ZenLux: Group"
+                  description: "Light group entity. Single command surface for a room."
+                  color: "#ECEFF1"
+                  icon: "mdi:lightbulb-group"
+                - id: zen_lm_scene
+                  name: "ZenLux: Scene"
+                  description: "HA scene entity. Activating sets a whole-room look."
+                  color: "#EC407A"
+                  icon: "mdi:palette"
+
+          - repeat:
+              for_each: "{{ _zen_lm_labels }}"
+              sequence:
+                - action: script.zen_dojotools_labels
+                  data:
+                    action_type: create
+                    label_list:
+                      - "{{ repeat.item.id }}"
+                    new_description: "{{ repeat.item.description }}"
+                    new_color:      "{{ repeat.item.color }}"
+                    new_icon:       "{{ repeat.item.icon }}"
+                    confirm: true
+                  response_variable: _lbl_r
+
+          - variables:
+              _result:
+                status: ok
+                mode: setup
+                created: "{{ _zen_lm_labels | map(attribute='id') | list }}"
+                next_steps:
+                  - "mode=discover — see current room light map"
+                  - "mode=label_suggest room=X — get zen_lm_* proposals"
+                  - "Apply via zen_dojotools_labels, then mode=discover to verify"
+                caller_token: "{{ _caller_token }}"
+          - stop: setup complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 4. LABEL_SUGGEST
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'label_suggest' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "room required for label_suggest."
+                    caller_token: "{{ _caller_token }}"
+              - stop: label_suggest error
+                response_variable: _result
+          - variables:
+              _suggestions: >-
+                {%- set zen_all = (label_entities('zen_lm_main') | list)
+                                + (label_entities('zen_lm_accent') | list)
+                                + (label_entities('zen_lm_task') | list)
+                                + (label_entities('zen_lm_night') | list)
+                                + (label_entities('zen_lm_outdoor') | list)
+                                + (label_entities('zen_lm_dusk_dawn') | list)
+                                + (label_entities('zen_lm_group') | list)
+                                + (label_entities('zen_lm_scene') | list) -%}
+                {%- set ns = namespace(out=[]) -%}
+                {%- for e in _room_ents -%}
+                  {%- set n = state_attr(e,'friendly_name') | default(e,true) | lower -%}
+                  {%- set caps = state_attr(e,'supported_color_modes') | default([],true) | list -%}
+                  {%- set effects = state_attr(e,'effect_list') | default([],true) | list -%}
+                  {%- set role =
+                    'zen_lm_group'     if ('group' in n or 'all_' in e or e == 'light.' + _room_slug)
+                    else 'zen_lm_night'     if ('night' in n or 'safe' in n or 'step' in n)
+                    else 'zen_lm_task'      if ('task' in n or 'desk' in n or 'cabinet' in n or 'reading' in n or 'shelf' in n)
+                    else 'zen_lm_dusk_dawn' if ('dusk' in n or 'dawn' in n or 'photosensor' in n)
+                    else 'zen_lm_outdoor'   if ('porch' in n or 'exterior' in n or 'outdoor' in n or 'pathway' in n or 'yard' in n or 'garden' in n)
+                    else 'zen_lm_accent'    if ('accent' in n or 'strip' in n or 'bias' in n or 'led' in n or 'rgb' in n or 'color' in n or effects | length > 20)
+                    else 'zen_lm_main'
+                  -%}
+                  {%- set entry = {
+                    'entity_id': e,
+                    'name': state_attr(e,'friendly_name') | default(e,true),
+                    'suggested_role': role,
+                    'already_zen_labeled': e in zen_all,
+                    'has_rgb': (caps | select('in',['rgb','hs','rgbw','rgbww','xy']) | list | length) > 0,
+                    'has_ct': 'color_temp' in caps,
+                    'is_wled': effects | length > 20,
+                    'effect_count': effects | length,
+                    'confidence': 'high' if ('group' in n or 'night' in n or 'desk' in n or 'porch' in n or 'strip' in n or effects | length > 20) else 'medium'
+                  } -%}
+                  {%- set ns.out = ns.out + [entry] -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - variables:
+              _result:
+                status: ok
+                mode: label_suggest
+                room: "{{ _room_slug }}"
+                suggestions: "{{ _suggestions }}"
+                note: "Review before applying. Apply via zen_dojotools_labels mode=apply_entity."
+                next_step: "Apply each suggestion via zen_dojotools_labels mode=apply_entity. Then discover room={{ _room_slug }} to verify slots filled, followed by prefs_set to teach contexts (work, movie, sleep)."
+                caller_token: "{{ _caller_token }}"
+          - stop: label_suggest complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 5. RESOLVE_DEBUG
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'resolve_debug' }}"
+        then:
+          - variables:
+              _bri_raw: "{{ state_attr(_resolved_entity,'brightness') | default(0,true) | int(0) }}"
+              _ct_raw:  "{{ state_attr(_resolved_entity,'color_temp') | default(0,true) | int(0) }}"
+          - variables:
+              _result:
+                status: ok
+                mode: resolve_debug
+                debug:
+                  input:
+                    room: "{{ _room_slug }}"
+                    target_role: "{{ _target_role }}"
+                    intent: "{{ _intent }}"
+                    entity_id: "{{ _entity_id }}"
+                  chain:
+                    stored_default: "{{ _r_stored }}"
+                    zen_lm_group: "{{ _r_group }}"
+                    zen_lm_main: "{{ _r_main }}"
+                    zen_lm_accent: "{{ _r_accent }}"
+                    zen_lm_task: "{{ _r_task }}"
+                    zen_lm_night: "{{ _r_night }}"
+                    zen_lm_outdoor: "{{ _r_outdoor }}"
+                    zen_lm_dusk_dawn: "{{ _r_dusk_dawn }}"
+                    auto_resolved: "{{ _auto_resolved }}"
+                    role_resolved: "{{ _role_resolved }}"
+                    intent_entity: "{{ _intent_entity }}"
+                    final: "{{ _resolved_entity }}"
+                  intent_defaults:
+                    role: "{{ _intent_role }}"
+                    brightness_pct: "{{ _intent_bri }}"
+                    color_temp_k: "{{ _intent_ct_k }}"
+                  capabilities:
+                    entity: "{{ _resolved_entity }}"
+                    dimmable: "{{ _has_dim }}"
+                    color_temp: "{{ _has_ct }}"
+                    rgb: "{{ _has_rgb }}"
+                    wled: "{{ _is_wled }}"
+                    effect_count: "{{ _effects | length }}"
+                    is_dusk_dawn: "{{ _is_dusk_dawn }}"
+                  current_state:
+                    state: "{{ states(_resolved_entity) }}"
+                    brightness_pct: >-
+                      {{ (_bri_raw / 2.55) | round(0) | int if states(_resolved_entity) == 'on' else none }}
+                    color_temp_k: >-
+                      {{ (1000000 / _ct_raw) | round(0) | int if _ct_raw > 0 else none }}
+                    rgb_color: "{{ state_attr(_resolved_entity,'rgb_color') | default(none,true) }}"
+                  warnings: >-
+                    {%- set w = [] -%}
+                    {%- if _is_dusk_dawn -%}{%- set w = w + ['dusk_dawn entity — photosensor may fight command'] -%}{%- endif -%}
+                    {%- if _resolved_entity == '' -%}{%- set w = w + ['no entity resolved — check room label on light entities'] -%}{%- endif -%}
+                    {{ w }}
+                caller_token: "{{ _caller_token }}"
+          - stop: resolve_debug complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 6. BRIGHTNESS_SET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'brightness_set' }}"
+        then:
+          - variables:
+              _eff_bri: >-
+                {{ _brightness if _brightness >= 0
+                   else (_intent_bri | int(-1) if _intent != '' else -1) }}
+          - if: "{{ _eff_bri < 0 or _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "brightness (0-100) and room/entity required."
+                    caller_token: "{{ _caller_token }}"
+              - stop: brightness_set error
+                response_variable: _result
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    dry_run: true
+                    would_set_entity: "{{ _resolved_entity }}"
+                    would_set_brightness_pct: "{{ _eff_bri }}"
+                    dusk_dawn_warning: "{{ 'auto-managed entity' if _is_dusk_dawn else none }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: brightness_set dry_run
+                response_variable: _result
+          - if: "{{ _eff_bri == 0 }}"
+            then:
+              - action: light.turn_off
+                target:
+                  entity_id: "{{ _resolved_entity }}"
+                data:
+                  transition: "{{ _transition }}"
+            else:
+              - action: light.turn_on
+                target:
+                  entity_id: "{{ _resolved_entity }}"
+                data:
+                  brightness: "{{ (_eff_bri * 2.55) | round(0) | int }}"
+                  transition: "{{ _transition }}"
+          - variables:
+              _result:
+                status: ok
+                mode: brightness_set
+                entity: "{{ _resolved_entity }}"
+                brightness_pct: "{{ _eff_bri }}"
+                transition: "{{ _transition }}"
+                dusk_dawn_warning: "{{ 'auto-managed — verify photosensor not fighting command' if _is_dusk_dawn else none }}"
+                room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: brightness_set complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 7. COLOR_TEMP_SET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'color_temp_set' }}"
+        then:
+          - variables:
+              _eff_ct_k: >-
+                {{ _color_temp_k if _color_temp_k > 0
+                   else (_intent_ct_k | int(-1) if _intent != '' else -1) }}
+          - if: "{{ _eff_ct_k <= 0 or not _has_ct or _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: >-
+                      {{ 'color_temp_k required (2700-6500)' if _eff_ct_k <= 0
+                         else ('entity does not support color_temp' if not _has_ct
+                         else 'no entity resolved') }}
+                    caller_token: "{{ _caller_token }}"
+              - stop: color_temp_set error
+                response_variable: _result
+          - variables:
+              _ct_mired: "{{ (1000000 / _eff_ct_k) | round(0) | int }}"
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    dry_run: true
+                    would_set_entity: "{{ _resolved_entity }}"
+                    would_set_color_temp_k: "{{ _eff_ct_k }}"
+                    would_set_mired: "{{ _ct_mired }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: color_temp_set dry_run
+                response_variable: _result
+          - action: light.turn_on
+            target:
+              entity_id: "{{ _resolved_entity }}"
+            data:
+              color_temp_kelvin: "{{ _eff_ct_k }}"
+              transition: "{{ _transition }}"
+          - variables:
+              _result:
+                status: ok
+                mode: color_temp_set
+                entity: "{{ _resolved_entity }}"
+                color_temp_k: "{{ _eff_ct_k }}"
+                color_temp_mired: "{{ _ct_mired }}"
+                transition: "{{ _transition }}"
+                room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: color_temp_set complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 8. RGB_SET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'rgb_set' }}"
+        then:
+          - variables:
+              _rgb_parts: "{{ _rgb_raw.split(',') if ',' in _rgb_raw else [] }}"
+          - if: "{{ _rgb_parts | length != 3 or not _has_rgb or _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: >-
+                      {{ 'rgb_color must be r,g,b (e.g. 255,100,0)' if _rgb_parts | length != 3
+                         else ('entity does not support RGB' if not _has_rgb
+                         else 'no entity resolved') }}
+                    caller_token: "{{ _caller_token }}"
+              - stop: rgb_set error
+                response_variable: _result
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    dry_run: true
+                    would_set_entity: "{{ _resolved_entity }}"
+                    would_set_rgb: "{{ _rgb_raw }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: rgb_set dry_run
+                response_variable: _result
+          - action: light.turn_on
+            target:
+              entity_id: "{{ _resolved_entity }}"
+            data:
+              rgb_color:
+                - "{{ _rgb_parts[0] | int }}"
+                - "{{ _rgb_parts[1] | int }}"
+                - "{{ _rgb_parts[2] | int }}"
+              transition: "{{ _transition }}"
+          - variables:
+              _result:
+                status: ok
+                mode: rgb_set
+                entity: "{{ _resolved_entity }}"
+                rgb_color: "{{ _rgb_raw }}"
+                transition: "{{ _transition }}"
+                room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: rgb_set complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 9. SCENE_SET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'scene_set' }}"
+        then:
+          - if: "{{ _scene == '' and _intent == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "scene entity_id or intent required for scene_set."
+                    caller_token: "{{ _caller_token }}"
+              - stop: scene_set error
+                response_variable: _result
+
+          # HA scene entity path
+          - if: "{{ _scene != '' }}"
+            then:
+              - if: "{{ not _dry_run }}"
+                then:
+                  - action: scene.turn_on
+                    target:
+                      entity_id: "{{ _scene }}"
+                    data:
+                      transition: "{{ _transition }}"
+              - variables:
+                  _result:
+                    status: ok
+                    mode: scene_set
+                    dry_run: "{{ _dry_run }}"
+                    scene: "{{ _scene }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: scene_set scene complete
+                response_variable: _result
+
+          # Intent preset path
+          - if: "{{ not _dry_run and _resolved_entity != '' }}"
+            then:
+              - if: "{{ _intent_bri | int(0) == 0 }}"
+                then:
+                  - action: light.turn_off
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                    data:
+                      transition: "{{ _transition }}"
+                else:
+                  - action: light.turn_on
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                    data:
+                      brightness: "{{ (_intent_bri | int * 2.55) | round(0) | int }}"
+                      color_temp_kelvin: >-
+                        {{ _intent_ct_k | int
+                           if (_intent_ct_k | int(-1) > 0 and _has_ct) else omit }}
+                      transition: "{{ _transition }}"
+          - variables:
+              _result:
+                status: ok
+                mode: scene_set
+                dry_run: "{{ _dry_run }}"
+                intent: "{{ _intent }}"
+                entity: "{{ _resolved_entity }}"
+                applied:
+                  role: "{{ _intent_role }}"
+                  brightness_pct: "{{ _intent_bri }}"
+                  color_temp_k: "{{ _intent_ct_k if _intent_ct_k | int(-1) > 0 else none }}"
+                room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: scene_set intent complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 10. PREFS_GET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'prefs_get' }}"
+        then:
+          - if: "{{ _room_slug == '' or _hh_cabinet in ['','unavailable','unknown'] }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "room required. Household cabinet must be reachable."
+                    caller_token: "{{ _caller_token }}"
+              - stop: prefs_get error
+                response_variable: _result
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_pg
+          - variables:
+              _pg_data: >-
+                {%- set r = _fc_pg.get('result', {}) if _fc_pg is mapping else {} -%}
+                {%- set d = r.get('light_prefs_' + _room_slug, {}) if r is mapping else {} -%}
+                {{ d.get('value', d) if d is mapping else {} }}
+          - variables:
+              _result:
+                status: ok
+                mode: prefs_get
+                room: "{{ _room_slug }}"
+                prefs: "{{ _pg_data }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: prefs_get complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 11. PREFS_SET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'prefs_set' }}"
+        then:
+          - if: "{{ _room_slug == '' or _context_raw == '' or _hh_cabinet in ['','unavailable','unknown'] }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "room and home_context required. Household cabinet must be reachable."
+                    caller_token: "{{ _caller_token }}"
+              - stop: prefs_set error
+                response_variable: _result
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_ps_existing
+          - variables:
+              _ps_existing: >-
+                {%- set r = _fc_ps_existing.get('result', {}) if _fc_ps_existing is mapping else {} -%}
+                {%- set d = r.get('light_prefs_' + _room_slug, {}) if r is mapping else {} -%}
+                {{ d.get('value', d) if d is mapping and d else {} }}
+          - variables:
+              _new_entry: >-
+                {%- set e = {} -%}
+                {%- if _target_role != '' -%}{%- set e = dict(e, target_role=_target_role) -%}{%- endif -%}
+                {%- if _brightness >= 0 -%}{%- set e = dict(e, brightness=_brightness) -%}{%- endif -%}
+                {%- if _color_temp_k > 0 -%}{%- set e = dict(e, color_temp_k=_color_temp_k) -%}{%- endif -%}
+                {%- if _rgb_raw != '' -%}{%- set e = dict(e, rgb_color=_rgb_raw) -%}{%- endif -%}
+                {%- if _scene != '' -%}{%- set e = dict(e, scene_entity=_scene) -%}{%- endif -%}
+                {%- if _transition != 1 -%}{%- set e = dict(e, transition=_transition) -%}{%- endif -%}
+                {{ e }}
+          - variables:
+              _merged: >-
+                {{ dict((_ps_existing if _ps_existing is mapping else {}), **{_context_raw: _new_entry}) }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: "{{ 'update' if (_ps_existing is mapping and _ps_existing | length > 0) else 'create' }}"
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: "{{ _merged | tojson }}"
+              description: "ZenLux prefs — {{ _room_slug }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_ps_write
+          - variables:
+              _result:
+                status: ok
+                mode: prefs_set
+                room: "{{ _room_slug }}"
+                context: "{{ _context_raw }}"
+                stored: "{{ _new_entry }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: prefs_set complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 12. PREFS_APPLY
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'prefs_apply' }}"
+        then:
+          - if: "{{ _room_slug == '' or _hh_cabinet in ['','unavailable','unknown'] }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "room required. Household cabinet must be reachable."
+                    caller_token: "{{ _caller_token }}"
+              - stop: prefs_apply error
+                response_variable: _result
+          - variables:
+              _apply_ctx: >-
+                {{ _context_raw if _context_raw != ''
+                   else states('input_select.zen_home_mode') | lower | replace(' ','_') }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_pa
+          - variables:
+              _pa_all: >-
+                {%- set r = _fc_pa.get('result', {}) if _fc_pa is mapping else {} -%}
+                {%- set d = r.get('light_prefs_' + _room_slug, {}) if r is mapping else {} -%}
+                {{ d.get('value', d) if d is mapping else {} }}
+          - variables:
+              _pa_pref: >-
+                {{ _pa_all.get(_apply_ctx, {}) if _pa_all is mapping else {} }}
+          - if: "{{ not _pa_pref or not (_pa_pref is mapping) or _pa_pref | length == 0 }}"
+            then:
+              - variables:
+                  _result:
+                    status: not_found
+                    mode: prefs_apply
+                    room: "{{ _room_slug }}"
+                    context: "{{ _apply_ctx }}"
+                    message: "No pref stored for this room + context. Use prefs_set first."
+                    available_contexts: "{{ _pa_all.keys() | list if _pa_all is mapping else [] }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: prefs_apply not_found
+                response_variable: _result
+          - variables:
+              _pa_role:   "{{ _pa_pref.get('target_role', '') }}"
+              _pa_bri:    "{{ _pa_pref.get('brightness', -1) | int(-1) }}"
+              _pa_ct_k:   "{{ _pa_pref.get('color_temp_k', -1) | int(-1) }}"
+              _pa_rgb:    "{{ _pa_pref.get('rgb_color', '') }}"
+              _pa_scene:  "{{ _pa_pref.get('scene_entity', '') }}"
+              _pa_trans:  "{{ _pa_pref.get('transition', _transition) | int(1) }}"
+          - variables:
+              _pa_entity: >-
+                {%- if _pa_role != '' -%}
+                  {{ _room_ents | select('in', label_entities(_pa_role)) | list | first | default(_auto_resolved) }}
+                {%- else -%}{{ _auto_resolved }}{%- endif -%}
+          - if: "{{ _dry_run }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    dry_run: true
+                    mode: prefs_apply
+                    room: "{{ _room_slug }}"
+                    context: "{{ _apply_ctx }}"
+                    would_set_entity: "{{ _pa_entity }}"
+                    would_set_brightness_pct: "{{ _pa_bri if _pa_bri >= 0 else none }}"
+                    would_set_color_temp_k: "{{ _pa_ct_k if _pa_ct_k > 0 else none }}"
+                    would_set_rgb: "{{ _pa_rgb if _pa_rgb != '' else none }}"
+                    would_activate_scene: "{{ _pa_scene if _pa_scene != '' else none }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: prefs_apply dry_run
+                response_variable: _result
+          - if: "{{ _pa_scene != '' }}"
+            then:
+              - action: scene.turn_on
+                target:
+                  entity_id: "{{ _pa_scene }}"
+                data:
+                  transition: "{{ _pa_trans }}"
+          - if: "{{ _pa_bri >= 0 and _pa_entity != '' }}"
+            then:
+              - if: "{{ _pa_bri == 0 }}"
+                then:
+                  - action: light.turn_off
+                    target:
+                      entity_id: "{{ _pa_entity }}"
+                    data:
+                      transition: "{{ _pa_trans }}"
+                else:
+                  - action: light.turn_on
+                    target:
+                      entity_id: "{{ _pa_entity }}"
+                    data:
+                      brightness: "{{ (_pa_bri * 2.55) | round(0) | int }}"
+                      color_temp_kelvin: >-
+                        {{ _pa_ct_k | int
+                           if _pa_ct_k > 0 else omit }}
+                      transition: "{{ _pa_trans }}"
+          - variables:
+              _result:
+                status: ok
+                mode: prefs_apply
+                room: "{{ _room_slug }}"
+                context: "{{ _apply_ctx }}"
+                entity: "{{ _pa_entity }}"
+                applied:
+                  brightness_pct: "{{ _pa_bri if _pa_bri >= 0 else none }}"
+                  color_temp_k: "{{ _pa_ct_k if _pa_ct_k > 0 else none }}"
+                  rgb_color: "{{ _pa_rgb if _pa_rgb != '' else none }}"
+                  scene_entity: "{{ _pa_scene if _pa_scene != '' else none }}"
+                  transition: "{{ _pa_trans }}"
+                dusk_dawn_warning: >-
+                  {{ 'auto-managed entity — verify photosensor not fighting command'
+                     if _pa_entity in (label_entities('zen_lm_dusk_dawn') | list) else none }}
+                room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: prefs_apply complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 13. ROOM_DEFAULT_GET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'room_default_get' }}"
+        then:
+          - if: "{{ _room_slug == '' or _hh_cabinet in ['','unavailable','unknown'] }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "room required."
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_default_get error
+                response_variable: _result
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_rdg
+          - variables:
+              _rdg_stored: >-
+                {%- set r = _fc_rdg.get('result', {}) if _fc_rdg is mapping else {} -%}
+                {%- set d = r.get('light_prefs_' + _room_slug, {}) if r is mapping else {} -%}
+                {%- set v = d.get('value', d) if d is mapping else {} -%}
+                {{ v.get('default_role', 'auto') if v is mapping else 'auto' }}
+          - variables:
+              _result:
+                status: ok
+                mode: room_default_get
+                room: "{{ _room_slug }}"
+                stored_default_role: "{{ _rdg_stored }}"
+                resolved_entity: "{{ _auto_resolved }}"
+                resolved_via: >-
+                  {{ 'zen_lm_group' if _r_group != ''
+                     else ('zen_lm_main/legacy' if _r_main != ''
+                     else 'first_in_room') }}
+                caller_token: "{{ _caller_token }}"
+          - stop: room_default_get complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 14. ROOM_DEFAULT_SET
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'room_default_set' }}"
+        then:
+          - if: "{{ _room_slug == '' or _target_role == '' or _hh_cabinet in ['','unavailable','unknown'] }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "room and target_role required. Pass target_role=auto to clear."
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_default_set error
+                response_variable: _result
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_rds
+          - variables:
+              _rds_existing: >-
+                {%- set r = _fc_rds.get('result', {}) if _fc_rds is mapping else {} -%}
+                {%- set d = r.get('light_prefs_' + _room_slug, {}) if r is mapping else {} -%}
+                {{ d.get('value', d) if d is mapping and d else {} }}
+          - variables:
+              _rds_merged: >-
+                {{ dict((_rds_existing if _rds_existing is mapping else {}), default_role=_target_role) }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: "{{ 'update' if (_rds_existing is mapping and _rds_existing | length > 0) else 'create' }}"
+              key: "light_prefs_{{ _room_slug }}"
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: "{{ _rds_merged | tojson }}"
+              description: "ZenLux prefs — {{ _room_slug }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _fc_rds_write
+          - variables:
+              _result:
+                status: ok
+                mode: room_default_set
+                room: "{{ _room_slug }}"
+                default_role: "{{ _target_role }}"
+                note: "Pass target_role=auto to clear back to auto-chain."
+                caller_token: "{{ _caller_token }}"
+          - stop: room_default_set complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 15. SCENE_LIST — search all scenes; filter by room label and/or search
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'scene_list' }}"
+        then:
+          - variables:
+              _sl_pool: >-
+                {{ states.scene | map(attribute='entity_id') | list }}
+          - variables:
+              _sl_results: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for s in _sl_pool -%}
+                  {%- set name = state_attr(s, 'friendly_name') | default(s, true) -%}
+                  {%- if _search == '' or _search in name | lower or _search in s | lower -%}
+                    {%- set affected = state_attr(s, 'entity_id') | default([], true) | list -%}
+                    {%- set area = area_name(s) | default('', true) -%}
+                    {%- set ns.out = ns.out + [{
+                      'entity_id': s,
+                      'name': name,
+                      'area': area,
+                      'entities_affected': affected,
+                      'light_count': affected | select('match', 'light\\.') | list | length
+                    }] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - variables:
+              _sl_mystery: >-
+                {%- if _room_slug != '' -%}
+                  {%- set room_lights = label_entities(_room_slug) | select('match', 'light\\.') | list -%}
+                  {%- set ns = namespace(all=[]) -%}
+                  {%- for s in _sl_results -%}
+                    {%- set s_area = s.get('area', '') | lower | replace(' ', '_') -%}
+                    {%- if s_area == _room_slug -%}
+                      {%- for e in s.get('entities_affected', []) -%}
+                        {%- if 'light.' in e and e not in ns.all -%}
+                          {%- set ns.all = ns.all + [e] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.all | reject('in', room_lights) | list }}
+                {%- else -%}
+                  {{ [] }}
+                {%- endif -%}
+          - variables:
+              _result:
+                status: ok
+                mode: scene_list
+                filter_room: "{{ _room_slug if _room_slug != '' else none }}"
+                search: "{{ _search if _search != '' else none }}"
+                count: "{{ _sl_results | length }}"
+                scenes: "{{ _sl_results }}"
+                unlabeled_in_room: "{{ _sl_mystery if _sl_mystery | length > 0 else none }}"
+                next_step: >-
+                  {%- if _room_slug != '' and _sl_mystery | length > 0 -%}
+                    {{ _sl_mystery | length }} lights in these scenes lack the '{{ _room_slug }}' label — invisible to discover. Add label via zen_dojotools_labels, then discover room={{ _room_slug }} to see them in resolution.
+                  {%- elif _room_slug != '' -%}
+                    All scene lights are labeled '{{ _room_slug }}'. Run label_suggest room={{ _room_slug }} for zen_lm_* role proposals.
+                  {%- else -%}
+                    Narrow down: add room='Room Name' to filter by label, or keep search= to find by name across all rooms.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: scene_list complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 16. AUTO_LABEL — apply room label to unlabeled area lights via dispatcher
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'auto_label' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: room_required
+                    message: "auto_label requires room=. Example: room='Office'."
+                    caller_token: "{{ _caller_token }}"
+              - stop: room required
+                response_variable: _result
+
+          - variables:
+              _al_already:   "{{ _room_ents | select('in', label_entities(_room_slug) | list) | list }}"
+              _al_unlabeled: "{{ _room_ents | reject('in', label_entities(_room_slug) | list) | list }}"
+
+          - if: "{{ _dry_run or _al_unlabeled | length == 0 }}"
+            then:
+              - variables:
+                  _result:
+                    status: "{{ 'dry_run' if _dry_run else 'ok' }}"
+                    mode: auto_label
+                    room: "{{ _room_slug }}"
+                    label: "{{ _room_slug }}"
+                    total_area_lights: "{{ _room_ents | length }}"
+                    already_labeled_count: "{{ _al_already | length }}"
+                    would_label: "{{ _al_unlabeled }}"
+                    would_label_count: "{{ _al_unlabeled | length }}"
+                    dispatched: false
+                    message: >-
+                      {%- if _al_unlabeled | length == 0 -%}
+                        All {{ _room_ents | length }} area lights already carry the '{{ _room_slug }}' label.
+                      {%- else -%}
+                        dry_run: {{ _al_unlabeled | length }} unlabeled light(s) found. Set dry_run=false to tag them.
+                      {%- endif -%}
+                    next_step: >-
+                      {%- if _al_unlabeled | length == 0 -%}
+                        discover room={{ _room_slug }}
+                      {%- else -%}
+                        Call again with dry_run=false to apply '{{ _room_slug }}' label to {{ _al_unlabeled | length }} light(s)
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: auto_label dry_run or nothing_to_do
+                response_variable: _result
+
+          - variables:
+              _act_cid: >-
+                {%- set _a = range(0, 65535) | random -%}
+                {%- set _b = range(0, 65535) | random -%}
+                {%- set _c = range(0, 65535) | random -%}
+                {%- set _d = range(0, 65535) | random -%}
+                {{ '%04x%04x-%04x-%04x' | format(_a, _b, _c, _d) }}
+
+          - event: zen_event
+            event_data:
+              event:
+                kind: dojotool_call
+                tool: zen_dojotools_labels
+                version: "1"
+                correlation_id: "{{ _act_cid }}"
+                payload:
+                  action_type: tag
+                  target_entities: "{{ _al_unlabeled | tojson }}"
+                  label_list: "{{ [_room_slug] | tojson }}"
+                  confirm: true
+                  caller_token: "{{ _caller_token }}"
+
+          - wait_for_trigger:
+              - trigger: event
+                event_type: zen_event
+                event_data:
+                  event:
+                    kind: dojotool_return
+                    correlation_id: "{{ _act_cid }}"
+            timeout: "00:00:30"
+            continue_on_timeout: true
+
+          - variables:
+              _al_timed_out: "{{ wait.trigger is none }}"
+
+          - variables:
+              _al_label_result: >-
+                {%- if not _al_timed_out -%}
+                  {{ wait.trigger.event.data.event.result | default({}) }}
+                {%- else -%}{{ {} }}{%- endif -%}
+
+          - variables:
+              _result:
+                status: "{{ 'timeout' if _al_timed_out else (_al_label_result.get('status', 'ok') if _al_label_result is mapping else 'ok') }}"
+                mode: auto_label
+                room: "{{ _room_slug }}"
+                label: "{{ _room_slug }}"
+                total_area_lights: "{{ _room_ents | length }}"
+                labeled: "{{ _al_unlabeled }}"
+                labeled_count: "{{ _al_unlabeled | length }}"
+                dispatched: true
+                label_result: "{{ _al_label_result }}"
+                message: >-
+                  {%- if _al_timed_out -%}
+                    Dispatcher timeout — zen_dojotools_labels did not return within 30s. Check HA logs.
+                  {%- else -%}
+                    Tagged {{ _al_unlabeled | length }} light(s) with '{{ _room_slug }}'. Run discover room={{ _room_slug }} to verify resolution.
+                  {%- endif -%}
+                next_step: "{{ 'discover room=' + _room_slug if not _al_timed_out else 'check HA logs for dispatcher errors' }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: auto_label complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 17. BLEED_SET — set primary room + propagate via room_manager light_tx
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'bleed_set' }}"
+        then:
+          - variables:
+              _bs_eff_bri: >-
+                {{ _brightness if _brightness >= 0
+                   else (_intent_bri | int(-1) if _intent != '' else -1) }}
+          - if: "{{ _bs_eff_bri < 0 or _room_slug == '' or _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "bleed_set requires room= and brightness= (or intent=). No entity resolved."
+                    caller_token: "{{ _caller_token }}"
+              - stop: bleed_set error
+                response_variable: _result
+
+          # Apply to primary room
+          - if: "{{ not _dry_run }}"
+            then:
+              - if: "{{ _bs_eff_bri == 0 }}"
+                then:
+                  - action: light.turn_off
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                    data:
+                      transition: "{{ _transition }}"
+                else:
+                  - action: light.turn_on
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                    data:
+                      brightness: "{{ (_bs_eff_bri * 2.55) | round(0) | int }}"
+                      color_temp_kelvin: >-
+                        {{ _intent_ct_k | int
+                           if (_intent_ct_k | int(-1) > 0 and _has_ct) else omit }}
+                      transition: "{{ _transition }}"
+
+          # Read topology inline from cabinet
+          - variables:
+              _bs_topo: >-
+                {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('room_topology',none) -%}
+                {%- set topo=_r if _r is mapping else (_r|from_json if _r is string and _r|trim not in ['None','none','','null'] else {}) -%}
+                {{ topo.get(_room_area_id, none) if _room_area_id != '' else none }}
+              _bs_threshold: "{{ bleed_threshold | default(0.20) | float(0.20) }}"
+
+          # Live door state — gate normally-closed portals (RM +topo inline)
+          - variables:
+              _bs_open_sensors: >-
+                {%- if _room_area_id != '' -%}
+                  {%- set _contact_dc = ['door', 'window', 'opening'] -%}
+                  {%- set ns = namespace(ids=[]) -%}
+                  {%- for eid in area_entities(_room_area_id) | select('match', 'binary_sensor\\.') -%}
+                    {%- set _dc = state_attr(eid, 'device_class') | default('', true) | lower -%}
+                    {%- if _dc in _contact_dc and states(eid) == 'on' -%}{%- set ns.ids = ns.ids + [eid] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.ids }}
+                {%- else -%}{{ [] }}{%- endif -%}
+
+          # Build bleed map from portals + boundary_links
+          - variables:
+              _bs_bleed_map: >-
+                {%- set _sp=_bs_topo if _bs_topo is mapping else {} -%}
+                {%- set ns=namespace(b=[]) -%}
+                {%- for p in (_sp.get('portals',[])|list) -%}
+                  {%- if p is mapping and p.get('to',none) is not none -%}
+                    {%- set _ltx=p.get('light_tx',0.0)|float(0.0) -%}
+                    {%- set _normally=p.get('normally','open') -%}
+                    {%- set _door_open=_normally != 'closed' or _bs_open_sensors|count > 0 -%}
+                    {%- if _ltx >= _bs_threshold and _door_open -%}
+                      {%- set _bmode='propagate' if _ltx >= 0.65 else 'scale' -%}
+                      {%- set _bbri=(_bs_eff_bri | int) if _ltx >= 0.65 else ((_bs_eff_bri | int * _ltx) | round(0) | int) -%}
+                      {%- set ns.b=ns.b+[{'to':p.get('to'),'source':'portal','light_tx':_ltx,'blend_mode':_bmode,'bleed_bri':_bbri}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for bl in (_sp.get('boundary_links',[])|list) -%}
+                  {%- if bl is mapping and bl.get('to',none) is not none -%}
+                    {%- set _ltx=bl.get('light_tx',0.0)|float(0.0) -%}
+                    {%- if _ltx >= _bs_threshold -%}
+                      {%- set _bmode='propagate' if _ltx >= 0.65 else 'scale' -%}
+                      {%- set _bbri=(_bs_eff_bri | int) if _ltx >= 0.65 else ((_bs_eff_bri | int * _ltx) | round(0) | int) -%}
+                      {%- set ns.b=ns.b+[{'to':bl.get('to'),'source':'boundary_link','light_tx':_ltx,'blend_mode':_bmode,'bleed_bri':_bbri}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.b | sort(attribute='light_tx', reverse=true) }}
+
+          # Propagate to each adjacent room
+          - if: "{{ not _dry_run and _bs_bleed_map | length > 0 }}"
+            then:
+              - repeat:
+                  for_each: "{{ _bs_bleed_map }}"
+                  sequence:
+                    - variables:
+                        _bt_main: >-
+                          {%- set _bl_ents=area_entities(repeat.item.to)|select('match','light\\.')|list -%}
+                          {%- set t1=_bl_ents|select('in',label_entities('zen_lm_group')|list)|list -%}
+                          {%- set t2=_bl_ents|select('in',label_entities('zen_lm_main')|list)|list -%}
+                          {%- set t3=_bl_ents|select('in',label_entities('main_lighting')|list)|list -%}
+                          {%- set t4=_bl_ents|select('in',label_entities('lighting')|list)|list -%}
+                          {{ (t1|first) if t1 else ((t2|first) if t2 else ((t3|first) if t3 else ((t4|first) if t4 else (_bl_ents|first|default(''))))) }}
+                    - if: "{{ _bt_main != '' }}"
+                      then:
+                        - if: "{{ repeat.item.bleed_bri | int == 0 }}"
+                          then:
+                            - action: light.turn_off
+                              target:
+                                entity_id: "{{ _bt_main }}"
+                              data:
+                                transition: "{{ _transition }}"
+                          else:
+                            - action: light.turn_on
+                              target:
+                                entity_id: "{{ _bt_main }}"
+                              data:
+                                brightness: "{{ (repeat.item.bleed_bri | int * 2.55) | round(0) | int }}"
+                                color_temp_kelvin: >-
+                                  {{ _intent_ct_k | int
+                                     if (_intent_ct_k | int(-1) > 0) else omit }}
+                                transition: "{{ _transition }}"
+
+          - variables:
+              _result:
+                status: ok
+                mode: bleed_set
+                dry_run: "{{ _dry_run }}"
+                primary:
+                  room: "{{ _room_slug }}"
+                  entity: "{{ _resolved_entity }}"
+                  brightness_pct: "{{ _bs_eff_bri }}"
+                  intent: "{{ _intent if _intent != '' else none }}"
+                  color_temp_k: "{{ _intent_ct_k if _intent_ct_k | int(-1) > 0 else none }}"
+                bleed_applied: "{{ _bs_bleed_map }}"
+                bleed_count: "{{ _bs_bleed_map | length }}"
+                threshold_used: "{{ _bs_threshold }}"
+                topology_source: "{{ 'room_manager' if _bs_topo is mapping else 'none — register room first via zen_dojotools_room_manager' }}"
+                blend_modes: "propagate (light_tx≥0.65) = same brightness as primary. scale (0.20-0.65) = primary_bri × light_tx."
+                door_gate_active: "{{ _bs_open_sensors | count == 0 }}"
+                open_sensors_in_area: "{{ _bs_open_sensors }}"
+                room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override adjacent room commands' if _rm_active else none }}"
+                shade_sync: none
+                caller_token: "{{ _caller_token }}"
+
+          - if: "{{ _sync_shades and _shade_scene != '' and _room_area_id != '' and not _dry_run }}"
+            then:
+              - action: script.zen_dojotools_covers
+                data:
+                  mode: scene_set
+                  room: "{{ _room_area_id }}"
+                  scene: "{{ _shade_scene }}"
+                response_variable: _shade_raw
+              - variables:
+                  _result: >-
+                    {{ _result | combine({'shade_sync': {
+                      'status': _shade_raw.status | default('unknown'),
+                      'scene': _shade_scene,
+                      'applied_count': _shade_raw.applied_count | default(0),
+                      'tilt_applied_count': _shade_raw.tilt_applied_count | default(0)
+                    }}) }}
+
+          - stop: bleed_set complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 18. FALLBACK
+      # ═══════════════════════════════════════════════════════════════════════
+      - variables:
+          _result:
+            status: error
+            error: "Unknown mode '{{ _mode }}'. See mode=help for valid modes."
+            caller_token: "{{ _caller_token }}"
+      - stop: unknown mode
+        response_variable: _result

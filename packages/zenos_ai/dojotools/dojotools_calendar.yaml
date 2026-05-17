@@ -1,0 +1,607 @@
+###############################################################################
+# ZenOS-AI DojoTools: Calendar
+# Version: 1.11.0
+#
+# Scripts:
+#   zen_dojotools_calendar  — HA Calendar domain CRUD (v1.11.0)
+#
+# SPLIT FROM: dojotools_office.yaml (2026-05-15)
+# Previously bundled with M365 office tools (Teams, Mail).
+# Now standalone as a generalist HA calendar domain tool.
+#
+# === CARRIED UAT PASS from dojotools_office.yaml (2026-03-06) ===
+###############################################################################
+
+script:
+  zen_dojotools_calendar:
+    alias: Zen Dojotools Calendar
+    description: >-
+      zen_dojotools_calendar 1.11.0 — canonical ZenOS-AI domain tool for the HA calendar
+      domain. All AI-driven calendar operations (read, create, update, delete) MUST use
+      this tool — never call HA calendar services directly. Full CRUD for any calendar
+      entity. MS365 calendars use native modify/remove APIs; other providers use
+      delete+re-create for update. Update and delete require event_id — providers that
+      do not expose event_id safely block these operations. Use inspect action to locate
+      event_id. Wildcard calendar discovery and label-targeted reads supported. Default
+      action_type is read. Aliases: ['Zen Dojotools Calendar', 'Domain tool for Calendar']
+    sequence:
+    # --------------------------------------------------------------
+    # Always normalize User/AI inputs so we don't have to react JIT
+    # --------------------------------------------------------------
+    - variables:
+        caller_token: "{{- caller_token | default('') -}}"
+    - variables:
+        action_type: '{{ action_type | default(''read'') }}'
+        calendar_name: '{{ calendar_name | default('''') }}'
+        calendar_query: "{{ (calendar_name in ['', None, '*'] and (label_targets |\
+          \ length == 0))\n   or action_type == 'list' }}"
+        calendar_entity: "{% if calendar_name[0:9] == 'calendar.' %}\n  {{ calendar_name\
+          \ | lower | replace(' ', '_') }}\n{% else %}\n  calendar.{{ calendar_name\
+          \ | lower | replace(' ', '_') }}\n{% endif %}"
+        valid_calendar_entities: '{{ states.calendar | map(attribute=''entity_id'')
+          | map(''lower'') | list }}'
+        calendar_entity_resolved: "{% if calendar_entity in valid_calendar_entities\
+          \ %}\n  {{ calendar_entity }}\n{% else %}\n  {%- set target = '' -%}\n\
+          \  {%- for cal in states.calendar -%}\n    {%- set fn = (cal.attributes.friendly_name\
+          \ | default('')) | lower -%}\n    {%- if fn == (calendar_name | lower) and\
+          \ calendar_name not in ['', None, '*'] -%}\n      {%- set target = cal.entity_id\
+          \ | lower -%}\n    {%- endif -%}\n  {%- endfor -%}\n  {{ target }}\n{%\
+          \ endif %}"
+        calendar_entity_exists: '{{ calendar_entity_resolved in valid_calendar_entities
+          }}'
+        is_ms365_cal: '{{ calendar_entity_resolved in integration_entities(''ms365'') }}'
+        start: "{% set raw = start if (start is defined and start | string | trim != '') else now().replace(hour=0,\
+          \ minute=0, second=0) %} {% if raw is string %}\n  {% set dt = as_datetime(raw)\
+          \ if 'T' in raw else strptime(raw, \"%Y-%m-%d\") %}\n{% else %}\n  {% set\
+          \ dt = raw %}\n{% endif %} {{ dt | as_local | as_timestamp | timestamp_custom(\"\
+          %Y-%m-%dT%H:%M:%S%:z\", false) }}"
+        end: "{% set raw = end if (end is defined and end | string | trim != '') else (now().replace(hour=0, minute=0,\
+          \ second=0) + timedelta(days=1)) %} {% if raw is string %}\n  {% set dt\
+          \ = as_datetime(raw) if 'T' in raw else strptime(raw, \"%Y-%m-%d\") %}\n\
+          {% else %}\n  {% set dt = raw %}\n{% endif %} {{ dt | as_local | as_timestamp\
+          \ | timestamp_custom(\"%Y-%m-%dT%H:%M:%S%:z\", false) }}"
+        event_id: '{{ event_id | default('''') }}'
+        start_provided: "{{ start is defined and start | string | trim not in ['', 'None', 'none'] }}"
+        end_provided: "{{ end is defined and end | string | trim not in ['', 'None', 'none'] }}"
+        start_is_all_day: "{{ start is defined and start | string | trim not in ['', 'None', 'none'] and 'T' not in (start | string) }}"
+        end_is_all_day: "{{ end is defined and end | string | trim not in ['', 'None', 'none'] and 'T' not in (end | string) }}"
+        label_targets: "{{\n  (\n    label_targets|default('')\n    if label_targets\
+          \ is iterable and label_targets is not string\n    else (label_targets|default('')).splitlines()\
+          \ if '\\n' in (label_targets|default(''))\n    else (label_targets|default('')).split(',')\n\
+          \  )\n  | map('trim')\n  | map('lower')\n  | select('string')\n  | reject('equalto',\
+          \ '')\n  | list\n}}"
+        label_target_entities: "{{\n  label_targets\n  | map('label_entities')\n\
+          \  | sum(start=[])\n  | select('match', '^calendar\\\\.')\n  | unique\n\
+          \  | list\n}}"
+        target_calendars: "{% if label_target_entities %}\n  {{ label_target_entities\
+          \ }}\n{% elif calendar_entity_exists %}\n  [ \"{{ calendar_entity_resolved\
+          \ }}\" ]\n{% else %}\n  []\n{% endif %}"
+        target_is_multi: '{{ (label_target_entities | count > 0) }}'
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ action_type in [''create'',''update'',''delete''] and
+            target_is_multi }}'
+        sequence:
+        - variables:
+            final_response: "{{\n  {\n    \"status\": \"error\",\n    \"message\"\
+              : \"Multiple calendars match the query. Please specify a single calendar\
+              \ for this action.\"\n  } | tojson\n}}"
+        - variables:
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        - stop:
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: multiple targets error
+      - conditions:
+        - condition: template
+          value_template: '{{ action_type == ''read'' and label_targets | length >
+            0 and target_calendars | length == 0 }}'
+        sequence:
+        - variables:
+            final_response: "{{\n  {\n    \"status\": \"error\",\n    \"message\"\
+              : \"No calendars found for labels: \" ~ (label_targets | join(', '))\
+              \ ~ \".\"\n  } | tojson\n}}"
+        - variables:
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        - stop:
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: no calendar for label error
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ action_type == ''help'' }}'
+        sequence:
+        - variables:
+            help_data: "{{\n  {\n    \"status\": \"info\",\n    \"message\": \"This\
+              \ is the Zen Dojotools Calendar Help function.\",\n    \"actions\": {\n\
+              \      \"read\": \"Reads events from a given calendar. Requires 'calendar_name'.\
+              \ Optional: 'start', 'end'.\",\n      \"inspect\": \"Advanced read using\
+              \ the system inspect tool; shows event_id if provider supports it.\"\
+              ,\n      \"create\": \"Creates a new event. Requires 'calendar_name'\
+              \ and 'summary'.\",\n      \"delete\": \"Deletes by event_id ONLY. Provider\
+              \ must expose event_id.\",\n      \"update\": \"Updates by event_id\
+              \ ONLY. Provider must expose event_id.\",\n      \"help\": \"Returns\
+              \ this help response.\"\n    },\n    \"defaults\": {\n      \"start\"\
+              : \"Defaults to today at 00:00 local time.\",\n      \"end\": \"Defaults\
+              \ to tomorrow at 00:00 local time.\",\n      \"timestamp_normalization\"\
+              : \"Calendar providers return timestamps in varying formats (UTC or local\
+              \ offset). Normalize externally during UAT.\"\n    },\n    \"notes\"\
+              : [\n      \"Use '*' or blank for 'calendar_name' to list all calendars.\"\
+              ,\n      \"Deletes/updates operate ONLY by event_id. No summary matching.\"\
+              ,\n      \"If your read does not return event_id, inspect the entity_id\
+              \ directly.\",\n      \"If multiple events match, update/delete is blocked.\"\
+              ,\n      \"Some providers (Google, HA Local, ICS) do not expose event_id;\
+              \ update/delete will be safely blocked.\",\n      \"Label targeting\
+              \ aggregates events across all matching entities.\"\n    ]\n  } | tojson\n\
+              }}"
+        - variables:
+            help_data: "{{ (help_data if help_data is mapping else (help_data | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        - stop:
+          response_variable: help_data
+        - set_conversation_response: '{{ help_data }}'
+        alias: Return help
+      - conditions:
+        - condition: template
+          value_template: '{{ not calendar_entity_exists and calendar_name not in
+            ['''', None, ''*''] }}'
+        sequence:
+        - variables:
+            final_response: "{{\n  {\n    \"status\": \"error\",\n    \"message\"\
+              : \"No valid calendar entity_id found for '{{ calendar_name }}'. Provide\
+              \ a valid entity_id or use '*' to list calendars.\"\n  } | tojson\n\
+              }}"
+        - variables:
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        - stop:
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: invalid entity_id error
+      - conditions:
+        - condition: template
+          value_template: '{{ action_type == ''create'' and (label_targets | length
+            == 0) and (calendar_name in ['''', None, ''*''] or not calendar_entity_exists)
+            }}'
+        sequence:
+        - variables:
+            final_response: "{{\n  {\n    \"status\": \"error\",\n    \"message\"\
+              : \"Create requires a single explicit calendar target (entity_id or label).\"\
+              \n  } | tojson\n}}"
+        - variables:
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        - stop:
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: create requires explicit target
+      - conditions:
+        - condition: template
+          value_template: "{{ calendar_query\n   or (action_type in ['read','update']\n\
+            \       and not calendar_entity_exists\n       and (label_targets | length\
+            \ == 0)) }}\n"
+        sequence:
+        - variables:
+            cal_list: "[\n{%- for cal in states.calendar -%}\n  {\n    \"entity_id\"\
+              : \"{{ cal.entity_id }}\",\n    \"friendly_name\": \"{{ cal.attributes.friendly_name\
+              \ | default('') }}\",\n    \"state\": \"{{ cal.state }}\",\n    \"labels\"\
+              : [{% for lid in labels(cal.entity_id) %}\"{{ label_name(lid) }}\"{%\
+              \ if not loop.last %}, {% endif %}{% endfor %}],\n    \"start_time\"\
+              : \"{{ cal.attributes.start_time | default('') }}\",\n    \"end_time\"\
+              : \"{{ cal.attributes.end_time | default('') }}\",\n    \"location\"\
+              : \"{{ cal.attributes.location | default('') }}\",\n    \"description\"\
+              : \"{{ cal.attributes.description | default('') }}\"\n  }{% if not\
+              \ loop.last %}, {% endif %}\n{%- endfor -%}\n]"
+            final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+              : \"Listed all available calendars.\",\n    \"calendars\": cal_list\n\
+              \  } | tojson\n}}"
+        - variables:
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        - stop:
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: return available calendars
+      - conditions:
+        - condition: template
+          value_template: '{{ action_type == ''read'' and target_calendars | length
+            > 0 }}'
+        sequence:
+        - variables:
+            all_event_results: []
+        - repeat:
+            for_each: '{{ target_calendars }}'
+            sequence:
+            - data:
+                start_date_time: '{{ start }}'
+                end_date_time: '{{ end }}'
+              response_variable: read_events
+              action: calendar.get_events
+              target:
+                entity_id: '{{ repeat.item }}'
+            - variables:
+                events: '{{ read_events[repeat.item][''events''] if read_events[repeat.item]
+                  is defined else [] }}'
+            - variables:
+                event_items: >-
+                  {%- set ns = namespace(items=[]) -%}
+                  {%- for event in events -%}
+                    {%- set ns.items = ns.items + [{'summary': event.summary | default(''),
+                      'start': event.start | default(''), 'end': event.end | default(''),
+                      'event_id': event.event_id | default(''), 'description': event.description
+                      | default(''), 'location': event.location | default(''), 'all_day':
+                      event.all_day | default(false), 'created': event.created | default(''),
+                      'updated': event.updated | default('')}] -%}
+                  {%- endfor -%}
+                  {{ ns.items | tojson }}
+            - variables:
+                one_result: "{{ {'calendar_entity': repeat.item, 'friendly_name': state_attr(repeat.item,
+                  'friendly_name') | default(''), 'event_count': events | length, 'events':
+                  event_items | from_json if event_items is string else event_items}
+                  }}"
+            - variables:
+                all_event_results: '{{ all_event_results + [one_result] }}'
+        - variables:
+            final_response: "{{ {'status': 'success', 'message': 'Aggregated events from
+              ' ~ (target_calendars | length) ~ ' calendars.', 'total_event_count':
+              all_event_results | sum(attribute='event_count'), 'results': all_event_results,
+              'note': \"Use 'inspect' to locate event_id(s). Providers may return timestamps
+              in UTC or offset; normalize externally during UAT.\", 'caller_token': caller_token
+              | default('')} }}"
+        - stop:
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: read events from calendar
+      - conditions:
+        - condition: template
+          value_template: "{{ action_type == 'inspect'\n   and not target_is_multi\n\
+            \   and (calendar_entity_exists or label_target_entities | length == 1)\
+            \ }}\n"
+        sequence:
+        - variables:
+            calendar_entity_list: "{% set ce = calendar_entity_resolved | default(none)\
+              \ %} {% if ce %}\n  [\"{{ ce }}\"]\n{% else %}\n  []\n{% endif %}"
+        - action: script.dojotools_zen_inspect
+          data:
+            entity_id: '{{ calendar_entity_list }}'
+            timeout: 30
+          response_variable: inspect_response
+        - variables:
+            final_response: '{{ inspect_response }}'
+        - variables:
+            final_response: "{{ final_response | combine({'caller_token': caller_token | default('')}) if final_response is mapping else final_response }}"
+        - stop:
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: inspect calendar
+      - conditions:
+        - condition: template
+          value_template: "{{ action_type == 'create'\n   and not target_is_multi\n\
+            \   and (calendar_entity_exists or label_target_entities | length == 1)\
+            \ }}\n"
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ start < end }}'
+            sequence:
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ is_ms365_cal }}'
+                sequence:
+                - variables:
+                    ms365_create_data: "{% set is_all_day = not 'T' in start and not\
+                      \ 'T' in end %}\n{% set d = {'subject': summary | default('Untitled\
+                      \ Event')} %}\n{% if is_all_day %}\n  {% set d = dict(d, start=start.split('T')[0],\
+                      \ end=end.split('T')[0]) %}\n{% else %}\n  {% set d = dict(d,\
+                      \ start=start, end=end) %}\n{% endif %}\n{% if description %}{%\
+                      \ set d = dict(d, body=description) %}{% endif %}\n{% if location\
+                      \ %}{% set d = dict(d, location=location) %}{% endif %}\n{% if\
+                      \ attendees %}\n  {% set ns = namespace(al=[]) %}\n  {% for a\
+                      \ in attendees.split(',') | map('trim') %}\n    {% set ns.al =\
+                      \ ns.al + [{'email': a, 'type': 'Required'}] %}\n  {% endfor\
+                      \ %}\n  {% set d = dict(d, attendees=ns.al) %}\n{% endif %}\n\
+                      {{ d }}"
+                - data: '{{ ms365_create_data }}'
+                  target:
+                    entity_id: '{{ calendar_entity_resolved if calendar_entity_exists else label_target_entities[0] }}'
+                  action: ms365_calendar.create_calendar_event
+                - variables:
+                    final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+                      : \"Created MS365 event '\" ~ ms365_create_data.subject ~ \"'\
+                      .\",\n    \"event\": ms365_create_data\n  } | tojson\n}}"
+                - variables:
+                    final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+                - stop:
+                  response_variable: final_response
+                - set_conversation_response: '{{ final_response }}'
+            - variables:
+                create_data: "{% set is_all_day = not 'T' in start and not 'T' in\
+                  \ end %} {% set d = {\n  'summary': summary | default(\"Untitled Event\")\n\
+                  } %} {% if is_all_day %}\n  {% set d = dict(d,\n    start_date=start.split('T')[0],\n\
+                  \    end_date=end.split('T')[0]\n  ) %}\n{% else %}\n  {% set d = dict(d,\n\
+                  \    start_date_time=start,\n    end_date_time=end\n  ) %}\n{% endif\
+                  \ %} {% if description %}\n  {% set d = dict(d, description=description)\
+                  \ %}\n{% endif %} {% if location %}\n  {% set d = dict(d, location=location)\
+                  \ %}\n{% endif %} {% if attendees %}\n  {% set attendee_list = attendees.split(',')\
+                  \ | map('trim') | list %}\n  {% set d = dict(d, attendees=attendee_list)\
+                  \ %}\n{% endif %} {{ d }}"
+            - data: '{{ create_data }}'
+              target:
+                entity_id: '{{ calendar_entity_resolved if calendar_entity_exists else label_target_entities[0] }}'
+              action: calendar.create_event
+            - variables:
+                final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+                  : \"Created calendar event '\" ~ create_data.summary ~ \"' on calendar\
+                  \ '\" ~ (\n      (label_target_entities[0] if (label_target_entities\
+                  \ | length > 0) else calendar_entity_resolved)\n    ) ~ \"'.\",\n\
+                  \    \"event\": create_data\n  } | tojson\n}}"
+            - variables:
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            - stop:
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+          - conditions:
+            - condition: template
+              value_template: '{{ start >= end }}'
+            sequence:
+            - variables:
+                final_response: "{{\n  {\n    \"status\": \"error\",\n    \"message\"\
+                  : \"Invalid date range: start must be before end. Got start='\" ~\
+                  \ start ~ \"', end='\" ~ end ~ \"'.\"\n  } | tojson\n}}"
+            - variables:
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            - stop:
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+        alias: create calendar event
+      - conditions:
+        - condition: template
+          value_template: "{{ action_type == 'update'\n   and not target_is_multi\n\
+            \   and (calendar_entity_exists or label_target_entities | length == 1)\
+            \ }}\n"
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ is_ms365_cal and event_id }}'
+            sequence:
+            - variables:
+                ms365_modify_data: >-
+                  {%- set d = {'event_id': event_id} -%}
+                  {%- if summary -%}{%- set d = dict(d, subject=summary) -%}{%- endif -%}
+                  {%- if start_provided -%}
+                    {%- if start_is_all_day -%}{%- set d = dict(d, start=start.split('T')[0]) -%}
+                    {%- else -%}{%- set d = dict(d, start=start) -%}{%- endif -%}
+                  {%- endif -%}
+                  {%- if end_provided -%}
+                    {%- if end_is_all_day -%}{%- set d = dict(d, end=end.split('T')[0]) -%}
+                    {%- else -%}{%- set d = dict(d, end=end) -%}{%- endif -%}
+                  {%- endif -%}
+                  {%- if description -%}{%- set d = dict(d, body=description) -%}{%- endif -%}
+                  {%- if location -%}{%- set d = dict(d, location=location) -%}{%- endif -%}
+                  {{ d }}
+            - data: '{{ ms365_modify_data }}'
+              target:
+                entity_id: '{{ calendar_entity_resolved }}'
+              action: ms365_calendar.modify_calendar_event
+            - variables:
+                final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+                  : \"Updated MS365 event '\" ~ ms365_modify_data.subject ~ \"'.\"\
+                  ,\n    \"event\": ms365_modify_data\n  } | tojson\n}}"
+            - variables:
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            - stop: Pass response variables back to LLM
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+        - variables:
+            delete_data: "{{\n  {\n    'entity_id': (calendar_entity_resolved if calendar_entity_exists\
+              \ else label_target_entities[0]),\n    'summary': summary,\n    'event_id':\
+              \ event_id,\n    'start_date_time': start,\n    'end_date_time': end\n\
+              \  }\n}}\n"
+        - action: script.zen_dojotools_calendar
+          data:
+            action_type: delete
+            event_id: '{{ event_id }}'
+            calendar_name: '{{ calendar_entity_resolved }}'
+          response_variable: zen_delete_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ zen_delete_response.status == ''error'' }}'
+            sequence:
+            - variables:
+                final_response: '{{ zen_delete_response }}'
+            - variables:
+                final_response: "{{ final_response | combine({'caller_token': caller_token | default('')}) if final_response is mapping else final_response }}"
+            - stop:
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ zen_delete_response.status == ''not_found'' }}'
+            sequence:
+            - variables:
+                warn_msg: No existing event matched. Creating new event.
+          - conditions:
+            - condition: template
+              value_template: '{{ zen_delete_response.status == ''success'' }}'
+            sequence:
+            - variables:
+                warn_msg: ''
+        - variables:
+            create_data: "{% set is_all_day = not 'T' in start and not 'T' in end\
+              \ %} {% set d = {\n  'summary': summary | default(\"Untitled Event\")\n\
+              } %} {% if is_all_day %}\n  {% set d = dict(d,\n    start_date=start.split('T')[0],\n\
+              \    end_date=end.split('T')[0]\n  ) %}\n{% else %}\n  {% set d = dict(d,\n\
+              \    start_date_time=start,\n    end_date_time=end\n  ) %}\n{% endif\
+              \ %} {% if description %}\n  {% set d = dict(d, description=description)\
+              \ %}\n{% endif %} {% if location %}\n  {% set d = dict(d, location=location)\
+              \ %}\n{% endif %} {% if attendees %}\n  {% set attendee_list = attendees.split(',')\
+              \ | map('trim') | list %}\n  {% set d = dict(d, attendees=attendee_list)\
+              \ %}\n{% endif %} {{ d }}"
+        - data: '{{ create_data }}'
+          target:
+            entity_id: '{{ calendar_entity_resolved if calendar_entity_exists else label_target_entities[0] }}'
+          action: calendar.create_event
+        - variables:
+            final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+              : \"Updated event via delete+create on calendar '\" ~ (\n      (label_target_entities[0]\
+              \ if (label_target_entities | length > 0) else calendar_entity_resolved)\n\
+              \    ) ~ \"'. \" ~ (warn_msg | default(\"\")),\n    \"event\": create_data\n\
+              \  } | tojson\n}}"
+        - variables:
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        - stop: Pass response variables back to LLM
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: update calendar event
+      - conditions:
+        - condition: template
+          value_template: "{{ action_type == 'delete'\n   and not target_is_multi\n\
+            \   and (calendar_entity_exists or label_target_entities | length == 1)\
+            \ }}\n"
+        sequence:
+        - variables:
+            SUPPORTED_FEATURES:
+              calendar:
+                name: CalendarEntityFeature
+                enum:
+                  CREATE_EVENT: 1
+                  DELETE_EVENT: 2
+                  UPDATE_EVENT: 4
+            calendar_features: '{{ state_attr(calendar_entity_resolved, ''supported_features'')
+              | int(0) }}'
+            supports_delete: '{% set want = SUPPORTED_FEATURES.calendar.enum.DELETE_EVENT
+              %} {% set have = calendar_features | int | bitwise_and(want) %} {{ have
+              == want }}
+
+              '
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not supports_delete }}'
+            sequence:
+            - action: script.dojotools_zen_inspect
+              data:
+                entity_id:
+                - '{{ calendar_entity_resolved }}'
+              response_variable: inspect_response
+            - variables:
+                final_response: "{{\n  {\n    \"status\": \"error\",\n    \"message\"\
+                  : \"Delete requires a calendar entity that supports delete.\",\n\
+                  \    \"inspect\": inspect_response | default({})\n  } | tojson\n\
+                  }}"
+            - variables:
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            - stop:
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+          - conditions:
+            - condition: template
+              value_template: '{{ event_id is not defined or not event_id }}'
+            sequence:
+            - action: script.dojotools_zen_inspect
+              data:
+                entity_id:
+                - '{{ calendar_entity_resolved }}'
+              response_variable: inspect_response
+            - variables:
+                final_response: "{{\n  {\n    \"status\": \"error\",\n    \"message\"\
+                  : \"Delete/update requires 'event_id'. The calendar provider did\
+                  \ not expose an event_id for this event. This is an expected provider\
+                  \ limitation; operation safely blocked.\",\n    \"inspect\": inspect_response\
+                  \ | default({})\n  } | tojson\n}}"
+            - variables:
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            - stop:
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+          - conditions: []
+            sequence:
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ is_ms365_cal }}'
+                sequence:
+                - action: ms365_calendar.remove_calendar_event
+                  data:
+                    event_id: '{{ event_id }}'
+                  target:
+                    entity_id: '{{ calendar_entity_resolved }}'
+              default:
+              - action: calendar.delete_event
+                data:
+                  event_id: '{{ event_id }}'
+                target:
+                  entity_id: '{{ calendar_entity_resolved }}'
+            - variables:
+                final_response: "{{\n  {\n    \"status\": \"delete triggered\",\n\
+                  \    \"message\": \"Deleted calendar event '\" ~ event_id ~ \"'.\
+                  \ If no event was found, this was a no-op.\",\n    \"entity_id\"\
+                  : calendar_entity_resolved,\n    \"event_id\": event_id\n  } | tojson\n\
+                  }}"
+            - variables:
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            - stop:
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+        alias: delete event from calendar
+    fields:
+      action_type:
+        selector:
+          select:
+            options:
+            - create
+            - read
+            - inspect
+            - update
+            - delete
+            - help
+        default: help
+      calendar_name:
+        selector:
+          text:
+        required: false
+      summary:
+        selector:
+          text:
+        required: false
+      description:
+        selector:
+          text:
+            multiline: true
+        required: false
+      start:
+        selector:
+          text:
+        required: false
+      end:
+        selector:
+          text:
+        required: false
+      location:
+        selector:
+          text:
+        required: false
+      attendees:
+        selector:
+          text:
+            multiline: true
+        required: false
+      label_targets:
+        selector:
+          text:
+            multiple: true
+            multiline: true
+        required: false
+      event_id:
+        selector:
+          text:
+        required: false
+      caller_token:
+        name: Caller Token
+        description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
+        required: false
+        selector:
+          text:
+    icon: mdi:calendar
+    mode: parallel

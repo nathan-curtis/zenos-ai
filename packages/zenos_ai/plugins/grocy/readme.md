@@ -1,29 +1,28 @@
 # ZenOS-AI Grocy ERP Plugin
 
-**Version:** 2.12.1
-**Status:** UAT PASS (2026-03-02)
-**HALMark:** PASS (v0.9.10-draft)
+**Version:** 4.21.0
+**Script:** `zen_dojotools_inventory`
+**Status:** Live (production)
 
 ---
 
 ## Overview
 
-Zen DojoTools Grocy Integration provides a deterministic, governed control layer between Home Assistant and Grocy ERP.
+Zen DojoTools Inventory provides a deterministic, governed control layer between Home Assistant and Grocy ERP.
 
-This module exposes two coordinated components:
+Two coordinated components:
 
-* **Zen DojoTools Grocy Helper** — High-level intent router (56 supported cases)
-* **Zen DojoTools Grocy Advanced** — Low-level REST dispatcher (CRUD + OpenAPI introspection)
+* **zen\_dojotools\_inventory** — High-level intent router (69 operational modes + `help`)
+* **zen\_dojotools\_grocy\_advanced** — Low-level REST dispatcher (CRUD + OpenAPI introspection, internal)
 
 Grocy is treated as the canonical authority for:
 
-* Products
-* Locations
-* Quantity Units
-* Stock Entries
+* Products and stock entries
+* Locations and location hierarchy
+* Quantity units
 * Recipes
-* Shopping Lists
-* Tasks / Chores
+* Shopping lists
+* Tasks and chores
 * Batteries
 
 This integration enforces strict name resolution, ID determinism, and guarded write operations to prevent silent data corruption.
@@ -49,61 +48,7 @@ If Grocy would reject an operation, this layer stops it first.
 
 ---
 
-## Architecture
-
-### 1. Grocy Helper (Primary Interface)
-
-High-level intent interface covering 56 operational cases:
-
-* Inventory (check, buy, consume, transfer, adjust)
-* Shopping list automation
-* Recipe fulfillment and consumption
-* Location management (with metadata governance)
-* Product metadata and merges
-* Unit governance
-* Barcode flows
-* Tasks and chores
-* Battery tracking
-
-Helper resolves:
-
-* Product names → product IDs
-* Location names → location IDs
-* Unit names → unit IDs
-* Recipe names → recipe IDs
-* Task/Chore names → IDs
-
-All resolution occurs before write execution.
-
-If multiple matches are found, execution halts.
-
----
-
-### 2. Grocy Advanced (REST Dispatcher)
-
-Internal CRUD dispatcher for:
-
-* GET
-* POST
-* PUT
-* DELETE
-
-Features:
-
-* Endpoint normalization
-* Pagination support
-* Query search support
-* Path parameter injection
-* OpenAPI help surface
-* 405 method coaching
-* Strict payload enforcement
-
-The Helper calls Advanced.
-Users should prefer Helper unless Advanced is explicitly required.
-
----
-
-## Setup
+## First-Time Setup
 
 ### 1. Add API Key
 
@@ -115,28 +60,235 @@ grocy_api_key: <your_api_key>
 
 Grocy uses a bare key — no prefix.
 
+### 2. Set Grocy Base URL
+
+After HA loads, set `input_text.grocy_url` via the HA UI:
+
+```
+Settings → Helpers → grocy_url → Edit → set value to https://<your-grocy-host>
+```
+
+No trailing slash. **Must be HTTPS.** This helper has no `initial:` value by design — set it once and HA persists it. Do not add `initial:` to the helper definition; doing so resets the value on every HA reload.
+
+If Grocy is behind a reverse proxy that redirects HTTP → HTTPS, HA follows the 301 and converts POST requests to GET per RFC behavior. All write operations fail silently on HTTP.
+
 ---
 
-### 2. Configure Grocy Base URL
+## Architecture
 
-Create or set:
+### 1. Inventory Helper (Primary Interface)
 
-```
-input_text.grocy_url
-```
+High-level intent interface. The helper resolves:
 
-Value:
+* Product names → product IDs
+* Location names → location IDs
+* Unit names → unit IDs
+* Recipe names → recipe IDs
+* Task/chore names → IDs
 
-```
-https://<your-grocy-host>
-```
+All resolution occurs before write execution. Multiple matches halt execution.
 
-No trailing slash.
+Call `mode=help` for inline reference documentation.
 
-⚠️ if HTTPS is required.
+### 2. Grocy Advanced (REST Dispatcher)
 
-If Grocy is behind a reverse proxy that redirects HTTP → HTTPS, Home Assistant will follow the 301 and convert POST requests to GET per RFC behavior.
-All write operations will silently fail if HTTP is used.
+Internal CRUD dispatcher. Not intended for direct use. The helper calls advanced.
+
+Features: endpoint normalization, pagination, query search, path parameter injection, OpenAPI help surface, 405 coaching, strict payload enforcement.
+
+---
+
+## Supported Modes
+
+### Stock — Read
+
+| Mode | Description |
+|------|-------------|
+| `stock_check_item` | Current stock level, locations, expiry for a named product |
+| `stock_where_is_item` | Find which Grocy location(s) a product is stocked in |
+| `stock_entries_for_item` | Raw stock entry list for a product (amounts, locations, dates) |
+| `stock_get_product_details` | Full product record including unit assignments and metadata |
+| `stock_overview` | Paginated product stock overview |
+| `stock_list_volatile` | Products overdue, expiring, or near min-stock |
+| `stock_list_by_location` | All products stocked at a specific location |
+| `stock_area_summary` | All Grocy containers in a HA area with item counts, anchor, hazmat safety entries |
+| `stock_area_inventory` | Full stock contents for all containers in a HA area |
+
+### Stock — Write
+
+| Mode | Description |
+|------|-------------|
+| `stock_add_purchase` | Add stock for an existing product at a location |
+| `stock_buy_product` | Purchase flow: resolves or creates product, then stocks it |
+| `stock_add_by_barcode` | Add stock by barcode scan |
+| `stock_consume` | Consume (remove) stock for a product |
+| `stock_consume_by_barcode` | Consume by barcode scan |
+| `stock_transfer_location` | Move stock from one Grocy location to another |
+| `stock_open_item` | Mark a product as opened (sets open date) |
+| `stock_inventory_adjust` | Set a product's stock to an explicit amount (inventory correction) |
+| `stock_entry_update` | Partial update to a specific stock entry (read-modify-write safety) |
+| `stock_undo_booking` | Undo the most recent stock transaction for a product |
+| `stock_register_asset` | One-call physical asset registration. If `hazmat_class` provided, logs lean RM safety[] entry. |
+
+### Catalog
+
+| Mode | Description |
+|------|-------------|
+| `catalog_list_products` | Paginated product list |
+| `catalog_find_product` | Find a product by name (exact or partial) |
+| `catalog_find_by_barcode` | Look up a product by barcode |
+| `get_product_meta` | Fetch full product metadata record |
+| `update_product_meta` | Update declarative product metadata. Supports `unit` or `unit_id` to set `qu_id_purchase`, `qu_id_stock`, `qu_id_consume`. Sends `description` only when note/brand/sku are provided — does not overwrite existing descriptions with null. |
+| `rename_product` | Rename a product (requires new name to not conflict) |
+| `set_default_location_for_product` | Set the product's default stock location |
+| `products_merge` | Merge two products (requires explicit keep/remove IDs) |
+
+### Locations
+
+| Mode | Description |
+|------|-------------|
+| `locations_list` | All Grocy locations with metadata |
+| `locations_find` | Find location by name or ID |
+| `locations_get_by_area` | All Grocy locations tagged to a HA area |
+| `locations_add` | Create a new location. Dupe guard: CI substring match blocks creation; `confirm_action: true` bypasses. |
+| `locations_metadata_set` | Write userfield metadata to a location (area binding, subclass, parent ID, priority) |
+| `locations_rename` | Rename a location |
+| `locations_update_description` | Update a location's description field |
+| `locations_delete` | Delete a location (evicts from PC sync cache) |
+| `locations_delete_safe` | Delete only if location is empty; returns error if stocked items exist |
+| `locations_reparent_bulk` | Move a set of child locations to a new parent in one operation |
+| `locations_audit` | Scan all locations for metadata gaps, orphaned children, area mismatches |
+| `locations_hierarchy_rebuild` | One-shot rebuild of parent-child hierarchy from ground truth. `dry_run: true` returns plan. Idempotent. |
+
+#### Location Metadata Fields
+
+Stored in Grocy userfields. Bind locations to HA topology:
+
+| Field | Purpose |
+|-------|---------|
+| `grocy_parent_location_id` | Parent container ID (PC sync) |
+| `homeassistant_area` | HA area_id slug this location belongs to |
+| `grocy_location_subclass` | Semantic type: `anchor`, `container`, `zone`, `virtual` |
+| `placement_priority` | Sort weight within area |
+
+These fields support `stock_area_summary` and cross-system search indexing.
+
+#### PC Sync (Parent-Child Reconciliation)
+
+The integration maintains a parent-child map derived from ground truth on each rebuild. Design: derive from canonical state — never read-modify-write accumulate. Delete path: pre-fetch snapshot of parent, post-delete evicts child from cache.
+
+### Shopping
+
+| Mode | Description |
+|------|-------------|
+| `shopping_add_product` | Add a named product to the active shopping list |
+| `shopping_remove_product` | Remove a product from the shopping list |
+| `shopping_clear_list` | Clear all items from the active shopping list |
+| `shopping_add_missing` | Auto-add all products below minimum stock |
+| `shopping_add_overdue` | Add all products with overdue stock bookings |
+| `shopping_add_expired` | Add all products with expired stock |
+
+### Recipes
+
+| Mode | Description |
+|------|-------------|
+| `recipes_list` | All recipes with names and IDs |
+| `recipes_fulfillment` | Check if ingredients are stocked for a recipe |
+| `recipe_check_fulfillment` | Detailed per-ingredient fulfillment check |
+| `recipes_add_to_shopping` | Add missing recipe ingredients to shopping list |
+| `recipes_consume` | Consume ingredients for a recipe from stock |
+| `recipes_copy` | Duplicate a recipe under a new name |
+
+### Chores
+
+| Mode | Description |
+|------|-------------|
+| `chores_list` | All chores with due dates and assignees |
+| `chores_find` | Find a chore by name |
+| `chores_execute` | Mark a chore complete |
+| `chores_undo` | Undo the most recent chore execution (requires execution_id from chores_log) |
+| `chores_add` | Create a new chore |
+| `chores_by_area` | Find chores linked to a HA area — dual discovery: (1) products stocked in area, (2) chores tagged with `homeassistant_area` userfield |
+
+#### chores_by_area Setup
+
+Requires a Grocy userfield on the Chores entity:
+- Entity: Chores
+- Name: `homeassistant_area`
+- Caption: `HA Area ID`
+- Type: Short text
+
+`discovery` field in results: `'product'` (chore found via stocked product) or `'tagged'` (chore directly tagged with area_id).
+
+### Tasks
+
+| Mode | Description |
+|------|-------------|
+| `tasks_list` | All open tasks |
+| `tasks_find` | Find a task by name |
+| `tasks_complete` | Mark a task complete |
+| `tasks_undo` | Undo a task completion |
+
+### Units
+
+| Mode | Description |
+|------|-------------|
+| `units_list` | All quantity units |
+| `units_find` | Find a unit by name |
+| `units_add` | Create a quantity unit. **Idempotent** — preflight GET checks for exact name match first. Returns `{status: already_exists, unit_id, unit}` if found; only POSTs if unit is absent. Prevents UNIQUE constraint failures from ghost/soft-deleted units. |
+| `units_update` | Update a unit's name or note |
+
+### Batteries
+
+| Mode | Description |
+|------|-------------|
+| `batteries_list` | All tracked batteries |
+| `batteries_get` | Get a specific battery record |
+| `batteries_charge` | Mark a battery as charged |
+
+---
+
+## Room Manager Integration
+
+`stock_area_summary` is the RM `+grocy` / `+inventory` context slice target. Pass `homeassistant_area_id` to get:
+
+* `locations[]` — Grocy containers in the area sorted by item count, with `is_anchor` and `subclass` flags
+* `anchor_location_id` — from RM `spatial.grocy_location_id` (room's primary Grocy container)
+* `hazmat_safety[]` — from RM `spatial.safety[]` (fire extinguishers, hazmat entries)
+* `total_items`, `stocked_locations`, `total_locations`
+
+`stock_register_asset` accepts `hazmat_class` and writes a lean entry to the RM safety[] drawer:
+`{name, type, location_note, grocy_location_id}`.
+
+---
+
+## Asset Registration
+
+`stock_register_asset` handles physical assets (tools, appliances, equipment) in a single call:
+
+1. Resolves or creates the product
+2. Stocks one unit at the specified location
+3. Sets serial number, purchase date, and note if provided
+4. If `hazmat_class` is provided: writes a lean safety entry to RM
+
+Use this for anything you own but don't consume — it joins the spatial index immediately.
+
+---
+
+## Natural-Language Intent Map
+
+Available via `mode=help`, the `big_asks` section maps common intents to modes:
+
+| Intent | Mode |
+|--------|------|
+| New thing here (physical asset) | `stock_register_asset` |
+| New consumable, first time | `stock_buy_product` |
+| Got more / restocked | `stock_add_purchase` |
+| Where is X? | `stock_where_is_item` |
+| What's in the [room]? | `stock_area_summary` |
+| We used / consumed X | `stock_consume` |
+| Need to buy X / running low | `shopping_add_product` |
+| What's expiring? | `stock_list_volatile` |
 
 ---
 
@@ -146,14 +298,12 @@ Quantity units are first-class governed objects.
 
 Rules:
 
-* Units must exist in Grocy
-* Exact match preferred
-* Partial fallback allowed
+* Units must exist in Grocy before they can be assigned
+* Exact name match preferred; partial fallback allowed
 * Multiple matches halt execution
 * No inferred pluralization
 * No implicit conversion creation
-
-If "each" does not exist and is required for stock math, the system will attempt to create it once.
+* `units_add` is idempotent — safe to call even if the unit might already exist
 
 ---
 
@@ -163,181 +313,44 @@ Destructive actions are guarded:
 
 * Product merges require explicit keep/remove IDs
 * Transfers blocked for tare-weight products
-* stock_entry_update uses read-modify-write safety
-* Location and product renames require name changes
+* `stock_entry_update` uses read-modify-write safety (reads full entry, merges only provided fields, writes back)
+* Location and product renames require new name
 * Purchase requires location when creating product
 * Ambiguous name matches block execution
-
----
-
-## Supported Functional Domains
-
-### Inventory
-
-* stock_check_item
-* stock_buy_product
-* stock_add_purchase
-* stock_consume
-* stock_transfer_location
-* stock_inventory_adjust
-* stock_entry_update (safe partial update)
-* stock_open_item
-* stock_undo_booking
-* stock_list_volatile
-* stock_overview
-
-### Catalog
-
-* catalog_list_products
-* catalog_find_product
-* catalog_find_by_barcode
-* rename_product
-* update_product_meta
-* products_merge
-* set_default_location_for_product
-
-### Locations
-
-* locations_add
-* locations_list
-* locations_find
-* locations_rename
-* locations_metadata_set
-
-Location metadata binds Grocy to Home Assistant via:
-
-* grocy_parent_location_id
-* homeassistant_area
-* grocy_location_subclass
-* placement_priority
-
-These fields support cross-system search indexing.
-
-### Units
-
-* units_list
-* units_find
-* units_add
-* units_update
-
-### Recipes
-
-* recipes_list
-* recipes_fulfillment
-* recipe_check_fulfillment
-* recipes_add_to_shopping
-* recipes_consume
-* recipes_copy
-
-### Shopping
-
-* shopping_add_product
-* shopping_remove_product
-* shopping_clear_list
-* shopping_add_missing
-* shopping_add_overdue
-* shopping_add_expired
-
-### Tasks & Chores
-
-* tasks_list
-* tasks_find
-* tasks_complete
-* tasks_undo
-* chores_list
-* chores_find
-* chores_execute
-* chores_undo
-
-### Batteries
-
-* batteries_list
-* batteries_get
-* batteries_charge
+* `locations_delete_safe` refuses if location has stock
 
 ---
 
 ## Pagination
 
-Object endpoints support pagination via:
+Object endpoints support:
 
-* page
-* per_page
+* `page` (default: 1)
+* `per_page` (default: 25)
 
-Defaults:
-
-* page: 1
-* per_page: 25
-
-Offset is computed automatically.
+Offset computed automatically.
 
 ---
 
 ## Error Model
 
-Failures return structured responses with:
+Failures return structured responses:
 
-* status
-* message
-* case
-* details
-* coaching
+* `status`
+* `message`
+* `mode`
+* `details`
+* `coaching`
 
-Common failure reasons:
-
-* Missing required fields
-* Ambiguous name resolution
-* Invalid unit
-* Missing location
-* Invalid merge request
-* Invalid rename
-* Unsupported Grocy behavior
-* Endpoint misuse
-
-Errors include remediation guidance.
+Errors include remediation guidance. Common causes: missing required fields, ambiguous name resolution, invalid unit, missing location, invalid merge request, unsupported Grocy behavior, endpoint misuse.
 
 ---
 
-## UAT Coverage
+## Design Notes
 
-Critical path verified against live Grocy instance:
-
-* locations_add
-* stock_buy_product
-* stock_check_item
-* shopping_add/remove_product
-* recipes_list
-* recipes_fulfillment
-* batteries_list
-* stock_list_volatile
-* stock_overview
-* stock_consume
-* units_add
-* stock_get_product_details
-* recipe_check_fulfillment
-* stock_entries_for_item
-* catalog_find_by_barcode
-* recipes_add_to_shopping
-* chores_execute
-* recipes_copy
-* stock_undo_booking
-* stock_open_item
-* stock_add_by_barcode
-* stock_consume_by_barcode
-* stock_entry_update (read-modify-write)
-
-Status: PASS
-
----
-
-## Intended Usage Model
-
-1. Use Helper with explicit case.
-2. Let system resolve IDs.
-3. If blocked, adjust inputs.
-4. Avoid bypassing governance via Advanced unless necessary.
-
-This layer enforces discipline so higher-level systems (LLMs, automation agents, dashboards) can interact safely with Grocy without corrupting state.
+* The `mode` field replaced the old `case` field in v4.11. `mode=help` replaces the old `run=help` pattern.
+* `zen_dojotools_inventory` is the STT-safe rename from `zen_dojotools_grocy_helper` (2026-05-15). All cross-tool references use the new name.
+* `zen_dojotools_grocy_advanced` is internal — not MCP-exposed. Do not call it directly unless you need raw REST access.
 
 ---
 

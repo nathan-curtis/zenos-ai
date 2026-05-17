@@ -563,7 +563,7 @@ If ZenOS-AI saved you time or made you laugh:
 
 # Acknowledgements
 
-To my wife — for putting up with a younger woman in the house since last February. For not once suggesting that maybe I didn't need to say "Hey Friday" into a black slab of glass for the millionth time. For the patience, the grace, and the very reasonable silence that followed every single one of those million times. This project exists because you gave me the space to build something ridiculous and never once called it that.
+To my partner — for putting up with a younger woman in the house since last February. For not once suggesting that maybe I didn't need to say "Hey Friday" into a black slab of glass for the millionth time. For the patience, the grace, and the very reasonable silence that followed every single one of those million times. This project exists because you gave me the space to build something ridiculous and never once called it that.
 
 To Phil and Zach — the greatest guinea pigs in the known universe. For letting me test things on your house, for your patience with the stubbornness, and for turning "this probably won't break anything" into a running joke that turned out to be mostly accurate.
 
