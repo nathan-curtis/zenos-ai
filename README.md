@@ -10,11 +10,23 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current version: 2026.5.0 'Fry's Grandpa'**
+**Next release: 2026.6.0 'Clue' — Beta** | Stable: 2026.5.0 'Fry's Grandpa'
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-2026.5.0 'Fry's Grandpa' shipped 2026-05-03 — Priority inject system (error/life-safety alerts land in `_zen_priority_inject`, surface via `zen_priority_context` sensor, appear in every AI prompt NOTIFICATIONS block), Alertmanager v1.2.0 (postman as primary notify target, `notification_router` deprecated), Camera v1.3.0 (`set_alert_policy` mode, `sendto sensor.*` dynamic cabinet routing, `_default_ctx`/`_alert_policy` preserved across look/scan), Identity `provision_member` (provision an external family member into an expansion slot and register them in one call), ZQ-1 v4.6.0 (`regex` corrected to `regex_search()`, `entity_id_regex` filter, `stats_eligible` filter), profile editor read fix (user/family profiles now return correctly).
+> **⚠️ Beta notice:** 2026.6.0 'Clue' is currently in public beta on the `feat/2026.6.0` branch. If testing passes, GA release is targeted for the **first week of June 2026**. Not recommended for production installs unless you enjoy living on the edge (Nyx does; she's fine).
+>
+> Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
+
+**What's in Clue:** The AI knows which room. Every room. And what's connected to it.
+
+2026.6.0 ships **Room Manager v1.42.0** (full spatial topology — portals, adjacency, exits, safety equipment, emergency routing), **Plant Manager v1.2.2** (physical plant + energy: electric live watts, utility billing, grid carbon, water, gas, HVAC, sump, circuits, validate), **Media Manager v0.7.2** (whole-home discovery and intent routing), **Security Manager v1.2.0** (replaces alarm_panel, room-aware zone inventory), **OOBE v4.2.0** (RM-native first-run room setup), and **ZenShade v0.2.2** (cover management with ZenLux sync). Every room-aware tool now reads from a navigable spatial map instead of a flat entity list.
+
+→ [Release Notes — Clue](zenos_ai/docs/releases/clue.md) *(beta)*
+
+---
+
+**Stable: 2026.5.0 'Fry's Grandpa'** — shipped 2026-05-03. Priority inject system, Alertmanager v1.2.0, Camera v1.3.0, Identity `provision_member`, ZQ-1 v4.6.0, profile editor read fix.
 
 Release notes: [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights, Camera, Action](zenos_ai/docs/releases/lights_camera_action.md) | [Action Jackson 2](zenos_ai/docs/releases/action_jackson_2.md) | [Action Jackson](zenos_ai/docs/releases/action_jackson.md) | [Ectoplasm](zenos_ai/docs/releases/ectoplasm.md) | [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md)
 
