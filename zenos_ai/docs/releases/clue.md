@@ -106,10 +106,6 @@ Label-first. `zen_plant_*` override labels take first priority for every slot. S
 | `circuits` | Top circuits by lifetime Wh or live amps. `circuit_limit` (default 10), `sort_by=energy\|current` |
 | `validate` | 15-slot resolution report — entity_id, pinned, raw_state, ok. Run this after setup. |
 
-### PII scrub
-
-`input_number.saws_water_usage_fee_per_1000_gallons` (hardcoded SAWS entity ID — geographic PII, FG-07) removed from the water rate fallback path. `label_entities('cps_energy')` renamed to `label_entities('utility_billing')` throughout — generic label, no provider identification.
-
 Apply `zen_plant_water_rate` or tag a `water_usage` sensor with a name matching `fee|rate|cost` to wire the water rate slot.
 
 See [Plant Manager reference](../plant_manager.md) for the full discovery waterfall and slot reference.
@@ -232,8 +228,8 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | FG-05: `states.media_player` scan | `dojotools_media_manager.yaml` | `label_entities('media_player') \| select('match','media_player\\.') \| list` + fallback |
 | FG-05/FG-19: `states.todo` loop | `dojotools_todo.yaml` | Entity ID pool + `state_attr()` reads |
 | FG-05: `states.light` loop | `dojotools_lights.yaml` | `area_entities()` pre-scan outside main loop — builds on/unavail lists before iterating |
-| PII/FG-07: Hardcoded SAWS entity ID | `dojotools_plant.yaml` | Fallback removed; `zen_plant_water_rate` label is now the correct path |
-| PII: Provider-specific label name | `dojotools_plant.yaml` | `cps_energy` → `utility_billing` throughout |
+| FG-07: Hardcoded entity ID in water rate fallback | `dojotools_plant.yaml` | Fallback removed; `zen_plant_water_rate` label is now the correct path |
+| FG-07: Integration-specific label name | `dojotools_plant.yaml` | Provider label → `utility_billing` throughout |
 
 ### WONT FIX — documented
 
