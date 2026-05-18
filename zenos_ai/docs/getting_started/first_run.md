@@ -1,6 +1,6 @@
 # ZenOS-AI: First Run Guide
 
-> **Version:** 2026.5.0 'Fry's Grandpa' | **Last Updated:** May 2026
+> **Version:** 2026.6.0 'Clue' | **Last Updated:** May 2026
 
 ---
 
@@ -54,18 +54,25 @@ Name and address. Timezone is detected automatically.
 > *"What would you like to call your home?"*
 
 **2. Rooms**
-Your AI reads HA areas and confirms the list with you. For each room it asks:
-- What rooms connect to it directly?
-- Anything notable? (Smart speaker, fireplace, special equipment)
+Your AI reads your HA areas and confirms the list with you. It then registers each room in the **Room Manager** — the spatial layer that stores how your rooms connect. Any rooms that don't exist in HA yet are created automatically.
 
-It writes a room profile as it goes — not at the end.
+For each room it asks:
+- What rooms connect to it directly?
+- Are there any exterior doors or emergency exits?
+- Any safety equipment on this floor? (fire extinguisher, first aid kit, AED)
+
+It also collects a household rally point — where people meet outside in an emergency.
+
+Room connections are stored as a navigable spatial map: adjacency, portal types, and exit priority. This is what powers room-aware lighting, climate, emergency guidance, and the Security Manager.
+
+It writes as it goes — not at the end.
 
 **3. People**
 Who lives in the home, with their name and role. It checks HA for matching person entities. It'll also ask about family who matter but don't live there (parents, siblings) and keep those separately.
 
 **4. Devices**
 For each category it finds in your system it'll confirm placement before tagging anything:
-- Cameras → confirmed to a room
+- Cameras → confirmed to a room, tagged `security_camera` (powers room-level security views)
 - Vacuums → confirmed cleaning coverage
 - Locks → confirmed to a door
 - Presence sensors → mapped to a person
@@ -86,9 +93,9 @@ A quick opt-in for features relevant to your setup — security alerts, vacuum s
 
 ## When OOBE Finishes
 
-Your AI writes an `_oobe_complete` flag to its cabinet. On the next HA restart, Flynn sees it and clears the welcome notification. You won't see it again.
+Your AI writes an `_oobe_complete` flag to its cabinet and the setup notification is dismissed automatically. You won't see it again.
 
-**The persona selector** (`select.zenos_active_persona`) updates automatically once your AI has a name. If you previously only saw "friday" in the selector, completing OOBE will add your newly named AI to the list.
+**To activate your named AI:** At the end of OOBE, your assistant will tell you to set the **ZenOS: Persona** helper (`input_text.zenos_persona_name`) to the name just configured, then start a fresh conversation. That fresh conversation hands off to the real persona — the one you just built.
 
 ---
 
@@ -123,7 +130,7 @@ Your AI's name may still be the default ("your AI"). Ask your AI what its name i
 The selector builds from AI user cabinets that have a named persona. Complete OOBE or ask your AI to set its name directly.
 
 **A room or device wasn't set up correctly**
-Just ask your AI to fix it. "The motion sensor in the hallway is actually in the bedroom." It can relabel entities and update room drawers without re-running the full flow.
+Just ask your AI to fix it. "The motion sensor in the hallway is actually in the bedroom." It can relabel entities and update room topology without re-running the full flow.
 
 **OOBE can be re-run**
 Ask your AI: "Run OOBE again" or "Re-do first-time setup." It will walk through the protocol again. Existing values are skipped unless you ask it to overwrite.

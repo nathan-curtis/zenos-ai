@@ -1,22 +1,24 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.5.0 | **Last Updated:** May 2026 | **License:** MIT
+> **Version:** 2026.6.0 | **Last Updated:** May 2026 | **License:** MIT
 >
-> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.5.0` is the May release 'Fry's Grandpa'. A new month resets to `.0`.*
+> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.6.0` is the June release 'Clue'. A new month resets to `.0`.*
 
 → [Project Overview & Install](../../README.md)
 
 ---
 
-> ### What's New in 2026.5.0 'Fry's Grandpa'
+> ### What's New in 2026.6.0 'Clue'
 >
-> **1. Priority Inject — AI situational awareness.** Error and life-safety alerts now land in `_zen_priority_inject` (5 slots), surface via the always-live `zen_priority_context` sensor, and appear in every AI prompt NOTIFICATIONS block. The AI enters every conversation already knowing what's wrong.
+> **1. Room Manager (RoomReg) v1.42.0.** The spatial intelligence hub. Stores physical room topology — portals, adjacency, exits, safety equipment. Provides live context slices (+light/+climate/+media/+topo/+security), whole-home `home_overview` with weather + plant + home_mode snapshots, and scenario-aware emergency routing. Every room-aware tool reads from here.
 >
-> **2. Alertmanager v1.2.0 + Camera v1.3.0.** Alertmanager wires into priority inject automatically; postman is now the primary notify target (`notification_router` deprecated). Camera gains `set_alert_policy` mode, `sendto sensor.*` for dynamic cabinet routing, and preserves `_default_ctx`/`_alert_policy` across look/scan cycles.
+> **2. Plant Manager v1.2.2.** New physical plant + energy manager. Electric: live watts, billing, tariff, grid carbon, panel status. Water, gas, HVAC, mechanical (water heater + sump), and circuit breakdown. Label-first discovery with `zen_plant_*` pin overrides. `mode=validate` shows every slot's resolution status.
 >
-> **3. Identity `provision_member` + ZQ-1 v4.6.0.** Provision an external family member (no HA account) into an expansion slot and register them in one call. ZQ-1 corrects `regex` to `regex_search()`, adds `entity_id_regex` (step 10b), and adds `stats_eligible` filter.
+> **3. Media Manager (NyxMau5) + Security Manager v1.2.0.** Media Manager handles whole-home discovery, source management, and intent routing. Security Manager replaces alarm_panel — room-aware zone inventory via RM +security slice, `cameras_by_area` cross-reference.
 >
-> → [Full Release Notes — Fry's Grandpa](releases/frys_grandpa.md)
+> **4. OOBE v4.2.0.** First-run room setup is now RM-native. The AI registers rooms directly into Room Manager topology (portals, adjacency, exits, rally point, safety equipment) instead of writing flat filecabinet drawers.
+>
+> → [Full Release Notes — Fry's Grandpa](releases/frys_grandpa.md) | [Room Manager](room_manager.md) | [Plant Manager](plant_manager.md)
 
 ---
 
@@ -30,7 +32,7 @@ If you're building an AI construct, designing a DojoTool, wiring the action pipe
 
 # 📚 **Included Documentation**
 
-This directory contains **11 documentation suites**, each aligned with a major subsystem in ZenOS-AI.
+This directory contains **12 documentation suites**, each aligned with a major subsystem in ZenOS-AI.
 
 ---
 
@@ -52,7 +54,23 @@ If you just installed ZenOS-AI and want to know what to do next, start here.
 
 ---
 
-## 🧠 **1. Architecture**
+## 🛠️ **1. Tool Reference**
+
+**Folder:** `docs/` (root-level)
+
+Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, parameters, and response shape.
+
+* `room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
+* `plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, validate
+* `media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
+* `spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
+* `alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep
+* `zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
+* `zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
+
+---
+
+## 🧠 **2. Architecture**
 
 **Folder:** `docs/architecture/`
 
@@ -124,6 +142,9 @@ Each Kung Fu component is a discipline: a subsystem Friday loads at runtime.
 Documents:
 
 * `understanding_kf4.md` — **Start here.** Plain-language guide to the Dojo, Kung Fu Components, and the KF4 action pipeline. How to add a new component in five steps, no code required.
+* `building_a_kfc.md` — Step-by-step build guide with worked example.
+* `alert_manager.md` — AlertManager KFC: severity labels, fire-once dedup, TTL, priority inject wiring.
+* `taskmaster.md` — Taskmaster KFC: AI conductor queue, task lifecycle, Abbot dispatch.
 * `readme.md` — Technical spec: drawer schema, trigger ID reference, command strip migration notes.
 
 This is Friday’s skill tree.
@@ -176,6 +197,8 @@ Includes:
 * `zen_dojotools_index_readme.md`
 * `zen_dojotools_hyperindex_readme.md`
 * `zen_dojotools_query_readme.md`
+* `zen_dojotools_camera_readme.md` — Camera: ai_task gate, look/scan, dynamic cabinet routing, Security Manager lens pattern
+* `zen_dojotools_postman_readme.md` — Postman: ack loop, actionable notifications, image support
 * `zen_dojotools_office_readme.md`
 * `zen_dojotools_event_emitter_readme.md`
 * `readme.md` – Overview
@@ -256,6 +279,22 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 ## 🗺️ **12. Roadmap**
 
 **File:** `docs/roadmap.md`
+
+**2026.6.0 'Clue' — Shipped (2026-05-17)**
+
+* Room Manager (RoomReg) v1.42.0 — spatial topology hub, context slices, home_overview with plant/weather/home_mode, emergency routing
+* Plant Manager v1.2.2 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits, validate
+* Media Manager (NyxMau5) v0.7.2 — whole-home media management and intent routing
+* Security Manager v1.2.0 — replaces alarm_panel; room-aware zone inventory via RM +security slice
+* ZenShade v0.2.2 — cover management, tilt support, ZenLux sync
+* OOBE v4.2.0 — RM-native room setup flow (portals, adjacency, exits, rally point, safety equipment)
+* Office v5.0.0 — todo + calendar split into standalone dojotools
+* AlertManager v1.3.0 — severity labels, 24h auto-expiry, DojoTools Core GC sweep
+* calderaspas retired — SpaMaster v3.3.0 is the replacement
+
+See: [Release Notes — Clue](releases/clue.md)
+
+---
 
 **2026.5.0 'Fry's Grandpa' — Shipped (2026-05-03)**
 

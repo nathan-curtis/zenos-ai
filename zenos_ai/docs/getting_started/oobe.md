@@ -41,18 +41,23 @@ Collects your household's name and address. The AI writes these to the household
 
 ### Step 2 — Rooms
 
-Maps your home's physical layout into the ZenOS label graph.
+Maps your home's physical layout into the Room Manager spatial topology store.
 
-The AI first queries your existing HA areas (`zen_dojotools_index` or `zen_dojotools_inspect`). For each area you confirm:
+The AI:
 
-1. Adjacent rooms are noted
-2. Notable features are recorded
-3. A label is created if one doesn't exist (`zen_dojotools_labels`)
-4. A room drawer is written to the household cabinet with `{area_label, adjacent, features, notes}`
+1. **Deploys the Room Manager KFC** — `zen_dojotools_room_manager mode=setup confirm_action=true` (one-time, safe to re-run)
+2. **Discovers existing HA areas** — queries the compact index and `mode=list` to see which areas are already RM-registered
+3. **Presents the list** — confirms what it found, asks what's missing or in the wrong place
+4. **Creates missing rooms** — for areas not yet in HA, calls `mode=area_create area_name='Room Name'` — creates the HA area, applies the `room_layout` label, and initializes topology in one call
+5. **Registers each room** — `mode=set area=X description='...'` — auto-applies `room_layout`; no separate label step needed
+6. **Links adjacency** — for each room, asks what it connects to directly; calls `mode=link area=X area_b=Y portal_type=door|archway|passage` — `adjacent[]` is derived automatically from portals, never built by hand
+7. **Maps exterior exits** — doors/windows to outside get `exterior: true exit: true`; emergency exits get `emerg_exit: true`
+8. **Collects rally point** — `mode=set rally_point='...' address='...' zip_code='...'` for emergency location data
+9. **Records safety equipment** — fire extinguishers, first aid kits, AEDs written via `mode=set area=X safety=[...]`
 
-If you mention suite groupings (e.g., a master suite), a suite drawer is written as well.
+Suite or zone groupings are modeled as a cluster of linked rooms — no separate container object needed.
 
-> The AI confirms entity placement with you before labeling. It will never silently guess which room a device belongs to.
+> `room_layout` is applied automatically by `mode=set` and `mode=area_create`. No manual HA UI labeling step.
 
 ---
 
@@ -77,7 +82,7 @@ The AI only offers categories where relevant integrations exist — no vacuum pr
 
 | Category | Domain / Device Class | What Gets Tagged |
 |---|---|---|
-| Cameras | `camera` | Room label + `camera` label |
+| Cameras | `camera` | Room label + `security_camera` label (required for Room Manager +security slice and Security Manager discovery) |
 | Vacuums | `vacuum` | `autovac` label + room coverage order |
 | Locks | `lock` | `security` label + room label |
 | Presence | device_class: `presence` | Mapped to person from Step 3 |
@@ -107,9 +112,11 @@ Activation preferences are written to the system cabinet.
 ### Step 6 — Close Out
 
 The AI:
-1. Rebuilds the compact index (`zen_dojotools_index`, mode: `build_compact_index`)
-2. Writes the OOBE completion flag (`zen_flynn_oobe`, mode: `complete`)
-3. Tells you the system is ready
+1. **Spatial sanity check** — `zen_dojotools_room_manager mode=home_overview` to verify rooms are registered and key connections are present before sealing
+2. **Rebuilds the compact index** — `zen_dojotools_index mode=build_compact_index`
+3. **Writes the OOBE completion flag** — `zen_flynn_oobe mode=complete` (also dismisses the setup notification)
+4. **Tells you the system is ready** — one sentence
+5. **Instructs persona handoff** — set the `ZenOS: Persona` helper (`input_text.zenos_persona_name`) to the agent name just configured, then start a fresh conversation to hand off to the real AI persona
 
 After Step 6, Flynn's Gate 3.5 will no longer fire the OOBE notification. The system is live.
 
@@ -168,6 +175,6 @@ Or call `zen_flynn_oobe` with `mode: complete` to re-stamp the flag after manual
 ## Related
 
 - [Flynn Stepgate Sentinel](../scripts/zen_flynn_readme.md) — Gate 3.5 OOBE detection
+- [Room Manager](../room_manager.md) — spatial topology store, modes, setup reference
 - [Profile Editor](../scripts/zen_dojotools_profile_readme.md) — household/user profile writes
-- [Labels](../scripts/zen_dojotools_labels_readme.md) — label creation during room/integration mapping
 - [Install Guide](install.md) — prerequisites before first boot

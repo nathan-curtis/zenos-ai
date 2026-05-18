@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 1.26.0
+**Version:** 1.42.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -34,7 +34,8 @@ All topology is stored in the household cabinet under key `room_topology`.
 
 | Label | Applied to | Purpose |
 |-------|-----------|---------|
-| `room_layout` | HA Area (not entity) | Marks area as physically registered in Room Manager. Added via HA UI: Settings → Areas → [Area] → Labels. |
+| `room_layout` | HA Area (not entity) | Marks area as physically registered in Room Manager. Applied automatically by `mode=set` and `mode=area_create`. |
+| `zen_rm_ignore` | Entity | Suppresses entity from all `home_overview` discovery passes (battery scan, alarm panel, plant snapshot). Apply to entities that exist but should not appear in whole-home rollups. |
 
 ### Setup Steps
 
@@ -52,10 +53,16 @@ zen_dojotools_room_manager  mode=setup  confirm_action=true
 
 Stamps the Room Manager KFC drawer into the dojo cabinet. Safe to re-run.
 
-**Step 2 — Register each room**
+**Step 2 — Register each room** (`room_layout` is applied automatically)
 
 ```
 mode=set  area=<area_id>  walls=4  description="Main living space"
+```
+
+For rooms that don't exist in HA yet, use `area_create` — it creates the HA area, applies `room_layout`, and optionally inits topology in one call:
+
+```
+mode=area_create  area_name="Room Name"  description="Rear bedroom"
 ```
 
 **Step 3 — Link adjacent rooms**
@@ -66,13 +73,7 @@ mode=link  area=<area_id>  area_b=<neighbor_id>
 
 Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 
-**Step 4 — Apply `room_layout` label in HA UI**
-
-```
-Settings → Areas → [Area Name] → Labels → add room_layout
-```
-
-This unlocks ZenLux bleed-aware scenes, vacuum zone targeting, egress routing, and label-intersection discovery.
+`adjacent[]` is derived automatically from portals written by `mode=link` — do not build it by hand.
 
 ---
 
@@ -88,8 +89,11 @@ This unlocks ZenLux bleed-aware scenes, vacuum zone targeting, egress routing, a
 | `boundary_link` | Non-passable shared boundary (drywall, partition, floor/ceiling). Writes both sides. Requires `boundary_link_sound_tx` and `boundary_link_light_tx`. |
 | `boundary_unlink` | Remove boundary link between two areas. |
 | `emergency` | Crisis snapshot for the whole home or a specific room. `scenario=fire\|burglar\|weather\|medical\|general`. Returns `guidance{action,advisory}`, `exits[]`, `shelter{primary/secondary/avoid}` (floor-tagged), `safety_equipment[]`, `hazards[]`, `likely_occupied[]`, `location{name,address,zip_code,gps}`, `rally_point`. Pass `area=` to add `from_room{room_exits,adjacent_exits,nearest_shelter}`. |
-| `home_overview` | Whole-house snapshot: `signal{}`, `alerts{}`, `domain_summaries{}`, `floors[]`. No `area=` needed. |
-| `vac_sync` | Returns room list formatted for vacuum zone targeting. |
+| `home_overview` | Whole-house snapshot: `signal{}`, `alerts{}`, `domain_summaries{}`, `floors[]`, `weather{}`, `plant{}`, `home_mode`, `utility_index{}`. No `area=` needed. |
+| `area_create` | Create a new HA area, apply `room_layout` label, and optionally init topology in one call. `area_name=` required. `floor_id_new=`, `description=`, `walls=` optional. |
+| `area_update` | Update HA area metadata — name, floor assignment, icon, compiled description (auto-built from floor + adjacency + `area_note`). `area=` required. |
+| `area_delete` | Delete HA area and remove from room_topology. `area=` required. `confirm_action=true` required. |
+| `utility` | Manage utility_index in household cabinet. `utility_action=list\|get\|set\|delete`. `utility_type=electric\|gas\|water\|...` required for get/set/delete. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
 | `help` | Full reference: purpose, when_to_call, seed_steps, domain_routing, schema, context_slices, concepts, modes. |
 
@@ -261,6 +265,15 @@ GPS coordinates are **not** stored — read live from `zone.home` at query time.
 
 Returns everything needed for AI home-state reasoning in a single call.
 
+### Top-Level Fields
+
+| Field | Content |
+|-------|---------|
+| `home_mode` | Current ZenOS home mode string (`sensor.zen_home_mode` or `input_select.zen_home_mode`). |
+| `generated` | ISO timestamp of the snapshot. |
+| `registered_room_count` | Total rooms in topology. |
+| `floor_count` | Distinct floor count. |
+
 ### `signal{}` — Pre-synthesized
 
 | Field | Content |
@@ -283,9 +296,83 @@ Whole-home rollups: `lights{on_total, total}`, `covers{avg_position}`, `media{ac
 
 `battery_count` (sensors below 20%), `alert_count` (active non-idle alerts).
 
+Entities tagged `zen_rm_ignore` are excluded from battery scan and alarm panel discovery.
+
 ### `floors[]`
 
 Per-floor grouping of rooms with room_count and rooms[].
+
+### `weather{}`
+
+Current conditions from the entity labeled `zen_weather` (or first available `weather.*`).
+
+| Field | Content |
+|-------|---------|
+| `available` | `false` if no weather entity found or unavailable |
+| `entity_id` | Source entity |
+| `condition` | Current condition string |
+| `temperature` | Current temperature |
+| `humidity` | Current humidity |
+| `wind_speed` | Current wind speed |
+| `next_hour` | First forecast slot from `forecast` attribute |
+| `detail` | `"weather_forecasts MCP — hourly | daily"` — depth call pointer |
+
+### `plant{}`
+
+Top-line physical plant snapshot. For depth, call `zen_dojotools_plant` directly.
+
+| Field | Content |
+|-------|---------|
+| `live_kw` | Whole-home live draw in kW (null if no entity resolved) |
+| `water_gal` | Current water reading in gallons (null if no entity resolved) |
+| `detail` | `"zen_dojotools_plant — electric | water | hvac | gas | circuits | validate"` |
+
+Discovery waterfall mirrors Plant Manager: `zen_plant_site_power` → `label:utility_main` → `label:main_panel` *site_power* for power; `zen_plant_water` → `label:water_usage` → `label:droplet` for water. Entities tagged `zen_rm_ignore` are excluded.
+
+### `utility_index{}`
+
+Utility registry from the household cabinet — same data as `zen_dojotools_plant` `utilities` field. Contains provider, contact, and service entry info for electric, gas, water, etc.
+
+---
+
+## zen_rm_ignore Label
+
+Tag any entity with `zen_rm_ignore` to suppress it from all `home_overview` discovery passes:
+
+- Battery scan (`battery_count` rollup)
+- Alarm panel discovery (`_ho_security`)
+- Plant snapshot (`_ho_plant` — power + water waterfalls)
+
+Useful for entities that exist and are functional but should not appear in whole-home rollups — test sensors, duplicate meters, auxiliary devices that would skew aggregates.
+
+The ignore list is read once at `home_overview` start and applied uniformly via `reject('in', _rm_ignored)` filters.
+
+---
+
+## mode=utility — Utility Index
+
+Read and write utility provider info for the home. Data is stored in the household cabinet under `utility_index` and injected into every `zen_dojotools_plant` response.
+
+```
+mode=utility  utility_action=set  utility_type=electric
+  utility_name="CPS Energy"
+  emerg_phone="1-800-555-0100"
+  emerg_cutoff_loc="main panel, breaker 1"
+  service_entry_loc="south wall of garage"
+```
+
+| Parameter | Notes |
+|-----------|-------|
+| `utility_action` | `list` (default) \| `get` \| `set` \| `delete` |
+| `utility_type` | `electric` \| `gas` \| `water` \| any string key |
+| `utility_name` | Provider name |
+| `emerg_phone` | Emergency line for outages |
+| `emerg_email` | Emergency contact email |
+| `emerg_cutoff_loc` | Physical location of shutoff (main breaker, valve, etc.) |
+| `service_entry_loc` | Where the utility enters the home |
+| `utility_notes` | Free-form notes |
+
+`utility_action=list` returns the full `utility_index{}`. `get` returns a single entry by type.
 
 ---
 
