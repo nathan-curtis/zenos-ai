@@ -66,9 +66,10 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 5. **`meta.enabled` check** — exits with `reason: meta_disabled` if the component's `meta.enabled` is `false`
 6. **Run governor** — dedup burnout window check (see below). Exits with `reason: dedup_window` if blocked.
 7. **Step 3c — Seed tool call (v4.3.0+)** — if the KFC defines `seed` or `area_seed`:
-   - If `area_id` input is set and the KFC has `area_seed`: fires `area_seed.tool` with `{{area_id}}` slot filled.
-   - Otherwise if `seed` is defined: fires `seed.tool` with `seed.params`.
-   - Sets `_seed_used: true`. Step 8 (HyperIndex) is skipped.
+   - Resolves `_seed_tool`: `area_seed` takes priority when `area_id` input is set; falls back to `seed`.
+   - **Whitelist check**: reads `zen_summarizer_seed_whitelist` from syscab (`allowed_tools` list). Default if drawer missing: `['zen_dojotools_index']`.
+     - Whitelisted → fires `script.{{ _seed_tool }}`, sets `_seed_used: true`, step 8 skipped.
+     - Not whitelisted → emits `seed_tool_blocked` zen_event (warn), falls through to step 8 (HyperIndex runs normally).
    - If neither `seed` nor `area_seed` is defined: step 3c is skipped, step 8 runs normally.
 8. **Run HyperIndex** — queries the index using the component's configured index call. Skipped if `_seed_used`. Routing:
    - If the Dojo drawer has an `index_command` dict field: emits compound/recursive index call via `zen_indexer_request` event. Supports the full nested DSL: `{operator, index_1: {...}, index_2: {...}}`. Use for components whose context spans multiple independent label sets.
@@ -222,6 +223,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | Kill switch `disabled` state | One of the three kill switches is off — intentional. Turn back on; pipeline auto-restarts. |
 | Empty or malformed output | Check inference server logs for context length errors. Models under ~4B parameters are not reliable as summarization backends. |
 | Component not included in SuperSummary | Check `meta.enabled` in its Dojo drawer. Also verify `kata_key` is set and a matching drawer exists in Kata cabinet. |
+| Seed always falls through to HyperIndex / `seed_tool_blocked` events | `zen_summarizer_seed_whitelist` drawer is missing from syscab, or the tool is not in `allowed_tools`. Run `zen_admintools_reset_template` to seed the default whitelist, then add tools via `zen_admintools_summarizer_seed action_type: add tool: <script_name>`. |
 
 ---
 
@@ -249,4 +251,4 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
-| v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex. Backward compatible — no seed = old behavior. |
+| v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist gate (`zen_summarizer_seed_whitelist`). Backward compatible — no seed = old behavior. |

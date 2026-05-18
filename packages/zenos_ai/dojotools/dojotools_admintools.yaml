@@ -180,6 +180,13 @@ script:
               "note": "Operator-managed whitelist. Add event kind strings via zen_admintools_summarizer_act. Empty by default — all action emission is blocked until explicitly allowed."
             } | tojson
           }}
+        seed_whitelist_seed: >-
+          {{
+            {
+              "allowed_tools": ["zen_dojotools_index"],
+              "note": "Operator-managed seed whitelist. Add script names via zen_admintools_summarizer_seed. zen_dojotools_index allowed by default for backcompat."
+            } | tojson
+          }}
     - variables:
         _rtt_kata: "{{- states('sensor.zen_kata_cabinet_resolved') -}}"
         _rtt_dojo: "{{- states('sensor.zen_dojo_cabinet_resolved') -}}"
@@ -383,14 +390,30 @@ script:
                 key: zen_summarizer_act_whitelist
                 value: "{{- act_whitelist_seed -}}"
                 set_timestamp: true
+    # System cabinet — seed zen_summarizer_seed_whitelist if missing
+    - if: "{{- _rtt_system != '' -}}"
+      then:
+        - variables:
+            _rtt_sys_swl_raw: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{- CABS.cabinet_drawer_value(_rtt_system, 'zen_summarizer_seed_whitelist', {}) | from_json() }}
+            _rtt_sys_seed_wl_exists: >-
+              {{- _rtt_sys_swl_raw is mapping and _rtt_sys_swl_raw.keys() | list | length > 0 -}}
+        - if: "{{- not _rtt_sys_seed_wl_exists -}}"
+          then:
+            - event: set_variable_zenos_system_cabinet
+              event_data:
+                key: zen_summarizer_seed_whitelist
+                value: "{{- seed_whitelist_seed -}}"
+                set_timestamp: true
     alias: Zen AdminTools Reset Template
     description: >-
       Zen AdminTools Reset Templates (1.3.0). Presses zen_template and
       kata_template into the Kata cabinet, kfc_template into the Dojo cabinet,
-      and zen_summarizer_act_whitelist into the System cabinet. Called by Flynn
-      gate-3 if templates are missing or outdated. Upconverts KFC drawers from
-      1.1.0 or 1.2.0 to 1.3.0 (adds drift_threshold, emission_cooldown_minutes,
-      suggested_act_event). Idempotent.
+      and zen_summarizer_act_whitelist + zen_summarizer_seed_whitelist into the
+      System cabinet. Called by Flynn gate-3 if templates are missing or outdated.
+      Upconverts KFC drawers from 1.1.0 or 1.2.0 to 1.3.0 (adds drift_threshold,
+      emission_cooldown_minutes, suggested_act_event). Idempotent.
 
 
   zen_admintools_summarizer_act:
@@ -524,6 +547,143 @@ script:
           action_type: "{{- action_type -}}"
           event: "{{- event -}}"
           allowed_events: >-
+            {{ _wl_updated | from_json if _wl_updated is string else _wl_updated }}
+          caller_token: "{{- caller_token -}}"
+    - stop: "{{- action_type -}} complete"
+      response_variable: result
+
+  zen_admintools_summarizer_seed:
+    alias: Zen AdminTools Summarizer Seed Whitelist
+    description: >-
+      Manages the zen_summarizer_seed_whitelist drawer in the System cabinet.
+      Controls which tools the ninja summarizer is allowed to use as a seed
+      source (step 3c). zen_dojotools_index is allowed by default for backcompat.
+      Any other tool must be explicitly added. Closed to unlisted tools —
+      unwhitelisted seed attempts emit seed_tool_blocked and fall through to
+      HyperIndex.
+    icon: mdi:shield-key
+    mode: single
+    fields:
+      action_type:
+        name: Action Type
+        description: list | add | remove | reset
+        required: true
+        selector:
+          select:
+            options:
+              - list
+              - add
+              - remove
+              - reset
+      tool:
+        name: Tool Script Name
+        description: The script name to add or remove (e.g. zen_dojotools_room_manager). Required for add/remove.
+        required: false
+        selector:
+          text:
+      caller_token:
+        name: Caller Token
+        description: Opaque correlation token. Not interpreted by this script.
+        required: false
+        selector:
+          text:
+
+    sequence:
+    - variables:
+        caller_token: "{{- caller_token | default('') -}}"
+        action_type: "{{- action_type | default('list') | lower -}}"
+        tool: "{{- tool | default('') | trim -}}"
+        _system: "{{- states('sensor.zen_system_cabinet_resolved') -}}"
+    - if:
+      - condition: template
+        value_template: "{{- _system == '' -}}"
+      then:
+      - variables:
+          _ss_stop:
+            status: error
+            message: System cabinet unavailable.
+            caller_token: "{{- caller_token -}}"
+      - stop: >-
+          summarizer_seed failed — system cabinet not resolved
+        response_variable: _ss_stop
+    - variables:
+        _wl_raw: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {{- CABS.cabinet_drawer_value(_system, 'zen_summarizer_seed_whitelist', {}) | from_json() -}}
+        _wl_current: >-
+          {%- set w = _wl_raw if _wl_raw is mapping else {} -%}
+          {{ w.get('allowed_tools', ['zen_dojotools_index']) if w is mapping else ['zen_dojotools_index'] }}
+    # list
+    - if:
+      - condition: template
+        value_template: "{{- action_type == 'list' -}}"
+      then:
+      - variables:
+          result:
+            status: success
+            action_type: list
+            allowed_tools: "{{- _wl_current -}}"
+            count: "{{- _wl_current | length -}}"
+            caller_token: "{{- caller_token -}}"
+      - stop: list complete
+        response_variable: result
+    # reset — restores default (index only)
+    - if:
+      - condition: template
+        value_template: "{{- action_type == 'reset' -}}"
+      then:
+      - event: set_variable_zenos_system_cabinet
+        event_data:
+          key: zen_summarizer_seed_whitelist
+          value:
+            allowed_tools:
+              - zen_dojotools_index
+            note: Operator-managed seed whitelist.
+          set_timestamp: true
+      - variables:
+          result:
+            status: success
+            action_type: reset
+            message: Seed whitelist reset. Only zen_dojotools_index is allowed.
+            caller_token: "{{- caller_token -}}"
+      - stop: reset complete
+        response_variable: result
+    # add / remove — require tool field
+    - if:
+      - condition: template
+        value_template: "{{- tool == '' -}}"
+      then:
+      - variables:
+          _ss_missing_tool:
+            status: error
+            message: tool field required for add/remove.
+            caller_token: "{{- caller_token -}}"
+      - stop: >-
+          summarizer_seed add/remove requires tool field
+        response_variable: _ss_missing_tool
+    - variables:
+        _wl_updated: >-
+          {%- if action_type == 'add' -%}
+            {%- if tool not in _wl_current -%}
+              {{ (_wl_current + [tool]) | tojson }}
+            {%- else -%}
+              {{ _wl_current | tojson }}
+            {%- endif -%}
+          {%- else -%}
+            {{ _wl_current | reject('equalto', tool) | list | tojson }}
+          {%- endif -%}
+    - event: set_variable_zenos_system_cabinet
+      event_data:
+        key: zen_summarizer_seed_whitelist
+        value: >-
+          {{ {'allowed_tools': _wl_updated | from_json if _wl_updated is string else _wl_updated, 'note': 'Operator-managed seed whitelist.'} | tojson }}
+        set_timestamp: true
+    - variables:
+        result:
+          status: success
+          action_type: "{{- action_type -}}"
+          tool: "{{- tool -}}"
+          allowed_tools: >-
             {{ _wl_updated | from_json if _wl_updated is string else _wl_updated }}
           caller_token: "{{- caller_token -}}"
     - stop: "{{- action_type -}} complete"

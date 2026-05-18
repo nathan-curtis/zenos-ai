@@ -263,9 +263,20 @@ Fixed params, fires once per run. Use when the context source is domain-specific
 
 `{{area_id}}` is filled at runtime from the Ninja Summarizer's `area_id` input field. One KFC definition, N room-scoped runs. This is the **per-area rollup pattern**: parent KFC rolls up whole-home, child KFCs fire per-area with `area_seed`.
 
+### Whitelist gate
+
+Step 3c checks `zen_summarizer_seed_whitelist` in syscab before firing any seed tool.
+
+- Shape: `{allowed_tools: ["zen_dojotools_index", ...], note: "..."}`
+- **`zen_dojotools_index` is whitelisted by default** — existing KFCs unaffected.
+- Unwhitelisted tool → emits `seed_tool_blocked` zen_event (warn) → falls through to HyperIndex. Summarizer still runs; operator gets visibility via the event.
+- To add Room Manager: `zen_admintools_summarizer_seed action_type: add tool: zen_dojotools_room_manager` (not MCP-exposed — run via HA script action).
+
+**If the summarizer pipeline is running but seeds are always falling through to HyperIndex, force-run `zen_admintools_reset_template` to seed the whitelist drawer into syscab, then add your tools.**
+
 ### Backward compatibility
 
-No `seed` and no `area_seed` → step 3c is skipped, step 4 runs as before. All existing KFCs continue unchanged. This is a purely additive change to the KFC schema.
+No `seed` and no `area_seed` → step 3c is skipped, step 4 runs as before. All existing KFCs continue unchanged.
 
 ---
 
@@ -314,10 +325,10 @@ The old pattern: most tools wrote values directly as raw JSON. Some wrote string
 | **Labels** | v4.6.0 | `target_areas` support, `add/remove_label_to_area` |
 | **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion, **3h result expiry** for look/scan modes (was 24h). Lens pattern: Security Manager + RM +security are complementary, not competing. |
 | **Scribe** | v1.4.0 | `seed` and `area_seed` input fields added. Parsed into draft and publish payloads. Publish preserves existing seed values when inputs blank. Help updated with `context_source_guide`, `per_area_rollup_pattern`, `tuning_guide`. Also: replaces KungFu Writer. |
-| **Ninja Summarizer** | v4.3.0 | Dual-seed architecture — new step 3c, `area_id` input field. **MCP-exposed.** See [Ninja Summarizer section](#ninja-summarizer--v430--dual-seed-architecture) above. |
+| **Ninja Summarizer** | v4.3.0 | Dual-seed architecture — new step 3c, `area_id` input field, seed whitelist gate (`zen_summarizer_seed_whitelist` in syscab). **MCP-exposed.** See [Ninja Summarizer section](#ninja-summarizer--v430--dual-seed-architecture) above. |
 | **SystemTools** | v4.5.9 | `ha_reload_all` and `ha_reload_scripts` now deferred via `zen_event(kind: deferred_script_reload / deferred_reload_all)`. Closes the WONT FIX asyncio `InvalidStateError` from `__remove_future` cancellation. All four reload modes now config-check gated. Ships with Scheduler v4.5.5 (hard dependency). **MCP-exposed.** |
 | **Scheduler** | v4.5.5 | Two new event triggers: `deferred_script_reload` and `deferred_reload_all`. Required companion to SystemTools v4.5.9. Must ship together. Automation-driven — not MCP-exposed. |
-| **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` optional fields added to `kfc_template`. Schema_version guard bumped. Flynn redeploys on next warmup; existing KFCs unaffected. **Admin-only — not MCP-exposed.** |
+| **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` fields added to `kfc_template`. `zen_admintools_reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab (Flynn gate-3). New `zen_admintools_summarizer_seed` management script (list/add/remove/reset). **Admin-only — not MCP-exposed.** |
 | **FileCabinet** | v4.7.0 | Global normalization — see [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
 | **SpaMaster** | v3.3.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. |
 | **Identity** | v4.5.6 | VolumeInfo decode guard, profile autosign, provision_member (from Fry's Grandpa — carried forward) |
@@ -403,8 +414,9 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_office.yaml` | v5.0.0: todo + calendar removed |
 | `dojotools/dojotools_postman.yaml` | Ack loop, actionable notifications, image support |
 | `dojotools/dojotools_filecabinet.yaml` | v4.7.0: FC normalization — always-wrap write struct, `set_timestamp` default true, `_` prefix read fix |
-| `dojotools/dojotools_summarizers.yaml` | v4.3.0: dual-seed step 3c, `area_id` input field, `_seed_used` gate on HyperIndex step |
+| `dojotools/dojotools_summarizers.yaml` | v4.3.0: dual-seed step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist check against `zen_summarizer_seed_whitelist` |
 | `dojotools/dojotools_scribe.yaml` | v1.4.0: `seed` and `area_seed` input fields, updated help (context_source_guide, per_area_rollup_pattern, tuning_guide) |
+| `dojotools/dojotools_admintools.yaml` | v4.6.1: seed_whitelist_seed, `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab, new `zen_admintools_summarizer_seed` script |
 | `dojotools/dojotools_systemtools.yaml` | v4.5.9: `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`; all four reload modes config-check gated |
 | `dojotools/dojotools_scheduler.yaml` | v4.5.5: `deferred_script_reload` and `deferred_reload_all` event triggers added |
 | `dojotools/dojotools_spamaster.yaml` | v3.3.0: replaces calderaspas |

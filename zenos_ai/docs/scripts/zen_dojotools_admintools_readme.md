@@ -24,7 +24,8 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
 | `zen_admintools_zenos_prompt_loader` | 4.6.0 | No | Load versioned Cortex, Directives, and Purpose (v32 = True Voice (default/latest), v30 = Living Index, v29 = Ninja Fusion, v27 = RC2) |
-| `zen_admintools_run_repair` | 4.5.6 | No | Human-confirmed passthrough to versioned maint/ repair scripts |
+| `zen_admintools_summarizer_seed` | 1.0.0 | **No** | Manage `zen_summarizer_seed_whitelist` — list/add/remove/reset allowed seed tools |
+| `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
 
@@ -286,9 +287,11 @@ Use the `cortex_version` field to select which version to load. The three primit
 
 Selecting `latest` or passing no `cortex_version` loads v32.
 
-### KFC Schema v1.4.0
+### KFC Schema v1.4.0 and Seed Whitelist
 
-`zen_admintools_reset_template` now presses the v1.4.0 `kfc_template` seed into the Dojo cabinet. Changes from v1.3.x:
+`zen_admintools_reset_template` now presses the v1.4.0 `kfc_template` seed into the Dojo cabinet **and** seeds `zen_summarizer_seed_whitelist` into the System cabinet if the drawer is missing (idempotent). Both are seeded at Flynn gate-3 on boot.
+
+`kfc_template` changes from v1.3.x:
 
 - `seed` field added — optional. Tool-first context descriptor: `{"tool": "...", "params": {...}}`. When defined in a KFC, the Ninja Summarizer calls this tool directly instead of running HyperIndex.
 - `area_seed` field added — optional. Location-first variant of `seed`. `{{area_id}}` slot in params is filled at runtime by the Ninja Summarizer's `area_id` input. Used for per-area rollup patterns with Room Manager.
@@ -299,6 +302,68 @@ Flynn redeploys the template on next warmup when the version guard detects a sta
 ### Custom Prompt Material
 
 If you want to ship completely custom Purpose, Directives, or Cortex content, copy the prompt loader script, make your changes, and fire it. The loader is a standard HA script — there's nothing special about it beyond the version-select logic. Custom forks are your own maintenance surface; ZenOS ships the versioned canonical set and that's the extent of it.
+
+---
+
+## zen_admintools_summarizer_seed
+
+Manages the `zen_summarizer_seed_whitelist` drawer in the System cabinet. Controls which tools are allowed as seed sources in Ninja Summarizer step 3c.
+
+**Not MCP-exposed.** Run via HA Developer Tools → Services.
+
+Mirrors `zen_admintools_summarizer_act` exactly — same pattern, `allowed_tools`/`tool` fields, same storage (syscab via CABS).
+
+### The whitelist
+
+`zen_summarizer_seed_whitelist` lives in `sensor.zenos_system_cabinet`:
+
+```json
+{
+  "allowed_tools": ["zen_dojotools_index"],
+  "note": "Operator-managed seed whitelist."
+}
+```
+
+`zen_dojotools_index` is allowed by default for backward compatibility. Every other script name must be explicitly added before a KFC's `seed` or `area_seed` will fire it.
+
+**If the drawer is missing, step 3c falls back to the default `['zen_dojotools_index']` whitelist.** To seed the drawer, run `zen_admintools_reset_template` — it seeds `zen_summarizer_seed_whitelist` into syscab at Flynn gate-3.
+
+### Input Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `action_type` | select | `list` | `list`, `add`, `remove`, `reset` |
+| `tool` | text | — | Script name to add or remove (e.g. `zen_dojotools_room_manager`). Required for `add`/`remove`. |
+
+### Actions
+
+| Action | What It Does |
+|--------|-------------|
+| `list` | Return current `allowed_tools` list. |
+| `add` | Append `tool` to `allowed_tools` if not already present. Idempotent. |
+| `remove` | Remove `tool` from `allowed_tools`. No-op if not present. |
+| `reset` | Restore to default: `['zen_dojotools_index']` only. |
+
+### Common operations
+
+```yaml
+# See what's allowed
+action: script.zen_admintools_summarizer_seed
+data:
+  action_type: list
+
+# Add Room Manager as a seed source
+action: script.zen_admintools_summarizer_seed
+data:
+  action_type: add
+  tool: zen_dojotools_room_manager
+
+# Remove a tool
+action: script.zen_admintools_summarizer_seed
+data:
+  action_type: remove
+  tool: zen_dojotools_room_manager
+```
 
 ---
 
@@ -346,5 +411,5 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 
 | Version | Change |
 |---------|--------|
-| v4.6.1 | KFC schema v1.4.0: `seed` and `area_seed` fields added to `kfc_template`. Version guard bumped. |
+| v4.6.1 | KFC schema v1.4.0: `seed` and `area_seed` fields. `reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab. New `zen_admintools_summarizer_seed` management script. |
 | v4.6.0 | Cortex v39 (Home First). Dispatcher spamaster route. |
