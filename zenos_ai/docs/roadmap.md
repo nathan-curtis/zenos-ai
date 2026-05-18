@@ -10,9 +10,39 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.5.0 "Fry's Grandpa" — In Progress (feat/2026.5.0)**
+**2026.6.0 'Clue' — Beta (feat/2026.6.0) — GA target: first week of June 2026**
 
-Closed loops release. Five open circuits — all closed. Priority inject wires alertmanager → `_zen_priority_inject` drawer → `zen_priority_context` sensor → NOTIFICATIONS block in AI prompt. The AI enters every conversation already knowing what's wrong. Camera alert policy classifies motion events and routes them into the inject layer. `provision_member` mode closes the identity onboarding gap — one call provisions an expansion slot, wires the new member into the family, and rebuilds the manifest (no more orphans after restart, closes #135). Profile editor write bug fixed — FC returns `confirmed` not `success`, and second-write merge now correctly parses the JSON-encoded drawer value. ZQ-1 v4.6.0: `regex` corrected to `regex_search()` (was silently matching nothing), `entity_id_regex` filter (step 10b), `stats_eligible` filter. Cortex v37 Kata First. SystemTools v1.7.0 `cabinet_schema_upgrade`. Calderaspas SPA manager v5.2.0 complete rewrite (workshop before ship — hardware definition needs to be pluggable).
+Room awareness release. The AI knows which room. Every room. And what's connected to it.
+
+**Room Manager v1.42.0** — spatial topology store. Portals, adjacency, exits, rally point, safety equipment. Context slices (+light/+climate/+media/+topo/+security). `home_overview` with plant{}, weather{}, home_mode, utility_index{} snapshots. Emergency routing. `zen_rm_ignore` label suppresses entities from all discovery passes. `mode=utility` builds a structured utility registry injected into plant and home_overview.
+
+**Plant Manager v1.2.2** — physical plant + energy manager. Electric: live watts, utility billing, tariff, grid carbon, panel status. Water, gas, HVAC, mechanical (water heater + sump), circuit breakdown. Label-first discovery with `zen_plant_*` pin overrides. `utility_billing` label (generic — replaces integration-specific label, FG-07 clean). `zen_plant_ignore` suppresses entities. `mode=validate` 15-slot resolution report.
+
+**Media Manager v0.7.2** — whole-home media discovery, source management, intent routing.
+
+**Security Manager v1.2.0** — replaces `alarm_panel`. Room-aware zone inventory via RM +security slice. `cameras_by_area` cross-reference. `security_camera` label required for zone discovery.
+
+**ZenShade v0.2.2** — cover management. Tilt support, barrier exclusion, ZenLux sync.
+
+**ZenLux v3.4.0** — lighting manager. Bleed-aware scene control, media awareness, shade sync.
+
+**SpaMaster v3.3.0** — replaces calderaspas plugin (retired). Hot tub management, ESPHome discovery, scene/chemistry/log.
+
+**OOBE v4.2.0** — RM-native room setup flow. deploy → area_create → set → link → exits → rally point → safety. Persona handoff requires manual `input_text.zenos_persona_name` set + fresh conversation.
+
+**Office v5.0.0** — todo + calendar split into standalone dojotools (`dojotools_todo.yaml`, `dojotools_calendar.yaml`).
+
+**AlertManager v1.3.0** — severity labels, 24h auto-expiry, DojoTools Core GC sweep.
+
+**Cortex v39** — Home First prompt ordering. Room Manager context block surfaced earlier; media/security awareness improved.
+
+See: [Release Notes — Clue](releases/clue.md)
+
+---
+
+**2026.5.0 'Fry's Grandpa' — Shipped (2026-05-03)**
+
+Closed loops release. Five open circuits — all closed. Priority inject wires alertmanager → `_zen_priority_inject` drawer → `zen_priority_context` sensor → NOTIFICATIONS block in AI prompt. The AI enters every conversation already knowing what's wrong. Camera alert policy classifies motion events and routes them into the inject layer. `provision_member` mode closes the identity onboarding gap — one call provisions an expansion slot, wires the new member into the family, and rebuilds the manifest (no more orphans after restart). Profile editor write bug fixed — FC returns `confirmed` not `success`, and second-write merge now correctly parses the JSON-encoded drawer value. ZQ-1 v4.6.0: `regex` corrected to `regex_search()` (was silently matching nothing), `entity_id_regex` filter (step 10b), `stats_eligible` filter. Cortex v37 Kata First. SystemTools v1.7.0 `cabinet_schema_upgrade`.
 
 See: [Release Notes — Fry's Grandpa](releases/frys_grandpa.md)
 

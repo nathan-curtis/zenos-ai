@@ -291,24 +291,52 @@ packages/zenos_ai/
   flynn_oobe.yaml              — OOBE protocol driver (run / complete / status)
 
   dojotools/
+    — Core infrastructure —
     dojotools_filecabinet.yaml — FileCabinet v4 — typed drawer I/O
     dojotools_core.yaml        — Core operations + FileCabinet GC
     dojotools_scheduler.yaml   — Scheduled automation triggers
-    dojotools_admintools.yaml  — Cabinet repair, manifest write, KFC loader
     dojotools_manifest.yaml    — Manifest engine
-    dojotools_index.yaml       — Index and query tools
-    dojotools_identity.yaml    — Identity resolver and privilege model
-    dojotools_labels.yaml      — Label inspection and management
     dojotools_library.yaml     — Library tools
     dojotools_history.yaml     — History management
+    dojotools_utilities.yaml   — General utilities
+    zen_home_mode.yaml         — 8-state home mode machine + schedule anchors
+
+    — Identity & Memory —
+    dojotools_identity.yaml    — Identity resolver and privilege model
     dojotools_profile.yaml     — Profile editor (ai_user / household / user / family)
+    dojotools_provisioner.yaml — Identity provisioning (household / user / AI user)
+    dojotools_labels.yaml      — Label inspection and management
+    dojotools_index.yaml       — Index, HyperIndex, ZQ-1 query engine
+    dojotools_admintools.yaml  — Cabinet repair, manifest write, KFC loader, prompt loader
     dojotools_summarizers.yaml — Kata and Supersummary engines
     dojotools_systemtools.yaml — System tools and event emitter
-    dojotools_utilities.yaml   — General utilities
-    dojotools_office.yaml      — Office integrations (Teams, mail, todo, calendar)
+    dojotools_dispatcher.yaml  — Two-level urgency dispatch router
+    dojotools_kungfu_loader.yaml — KFC component loader and lifecycle
+
+    — AI Interface —
+    dojotools_scribe.yaml      — KF4 artifact authoring (MCP-exposed KFC registration)
+    dojotools_ectoplasm.yaml   — Spook/HA extended surface (areas, floors, entity lifecycle)
+    dojotools_camera.yaml      — Camera tool — look/scan, alert policy, dynamic cabinet routing
+    dojotools_postman.yaml     — Notifications — ack loop, actionable alerts, image support
+    dojotools_image_generator.yaml — Image generation tool
+
+    — Home Systems (new in 2026.6.0) —
+    dojotools_room_manager.yaml   — Room Manager (RoomReg) — spatial topology, context slices
+    dojotools_plant.yaml          — Plant Manager — electric, water, gas, HVAC, mechanical, energy
+    dojotools_media_manager.yaml  — Media Manager (NyxMau5) — whole-home media and intent routing
+    dojotools_security_manager.yaml — Security Manager — zone inventory, cameras_by_area
+    dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
+    dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
+    dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
+    dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
+
+    — Productivity —
+    dojotools_office.yaml      — Office integrations (Teams, mail)
+    dojotools_todo.yaml        — Todo list management
+    dojotools_calendar.yaml    — Calendar integrations
 
   maint/
-    maint_4_5_6.yaml             — One-time repair scripts (not AI-accessible, run manually)
+    maint_4_5_6.yaml           — One-time repair scripts (not AI-accessible, run manually)
 
   sensors/
     zenos_agent_health.yaml
@@ -318,17 +346,15 @@ packages/zenos_ai/
     zenos_summarizer_system_health.yaml
     sensor_helpers.yaml
 
-  plugins/
+  plugins/                     — Optional — install only what you need
     grocy/grocy.yaml
     mealie/mealie.yaml
     kitchen_sync/kitchen_sync.yaml
-    calderaspas/calderaspas_spa_manager.yaml
-
-  room_manager/room_manager.yaml
 
 custom_templates/zenos_ai/
   zen_os_1.jinja               — Prompt engine and macro library
   zen_query.jinja              — ZenQuery filter engine
+  zenos_cabinets.jinja         — Cabinet macro library (safe drawer I/O, FG-38 normalization)
   library_index.jinja          — Library index
   conversation_agent_prompt_template.yaml — Paste into conversation agent system prompt
 ```
