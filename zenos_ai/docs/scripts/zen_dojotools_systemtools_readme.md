@@ -1,6 +1,6 @@
-# Zen DojoTools SystemTools — 4.5.6
+# Zen DojoTools SystemTools — v4.5.9
 
-*HA lifecycle management, log reading, event emission, and home mode*
+*HA lifecycle management, log reading, event emission, and home mode — MCP-exposed*
 
 ---
 
@@ -105,6 +105,26 @@ entity_id: update.home_assistant_core_update
 do_backup: true
 confirm_action: true
 ```
+
+---
+
+#### `ha_reload_all`
+
+Reloads all YAML domains: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, and the `homeassistant:` core block.
+
+**Config check runs first** — blocked on nogo. **Deferred via scheduler** — script fires `zen_event(kind: deferred_reload_all)` and exits; the Scheduler automation handles the actual reload from automation context. This avoids the `asyncio.InvalidStateError` that occurs when a script calls `homeassistant.reload_all` directly after a `response_variable` child call. Returns immediately with `result: success` and `config_check: passed` when queued.
+
+**Default choice for most reloads.**
+
+---
+
+#### `ha_reload_scripts`
+
+Reloads scripts only. Config check runs first. Deferred via `zen_event(kind: deferred_script_reload)`. Returns immediately.
+
+Use when automations are actively running and you do not want to interrupt them.
+
+**Ships as a hard dependency pair with `dojotools_scheduler.yaml` v4.5.5.** The Scheduler must be loaded to handle the deferred events. Both files must be reloaded together.
 
 ---
 
@@ -311,3 +331,12 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 | `zone.home` | Presence detection for Away mode |
 | `input_datetime.zen_*` | Schedule anchors and time windows |
 | `update.*` entities | Update install/skip targets |
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v4.5.9 | `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`. Closes asyncio `InvalidStateError` WONT FIX. All four reload modes now config-check gated. Requires Scheduler v4.5.5. |
+| v4.5.6 | `run_repair` tool added. Identity family repair action. |

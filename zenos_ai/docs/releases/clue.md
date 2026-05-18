@@ -23,7 +23,9 @@ Then there's Plant Manager. The home finally has a nervous system readout: live 
 
 And then the rest: Media Manager for whole-home audio/video. ZenShade for covers. Security Manager replacing the old alarm panel stub. Calendar and Todo as standalone tools. Cortex v39 with the Home First directive — the AI leads with what's happening in the home, not with what you just asked. Office split into its component tools. The calderaspas plugin is gone and SpaMaster is the replacement.
 
-Six new tools. Seventeen updated. One release that changes what the AI knows it's standing in.
+Six new tools. Twenty-plus updated. One release that changes what the AI knows it's standing in.
+
+Before beta shipped, the foundation got swept too. FileCabinet normalization touched every tool in the stack — one writer, one reader, one normalized struct. The Ninja Summarizer gained a dual-seed path so KFCs can pull from Room Manager or any tool directly. AlertManager grew a face: Friday can now list, fire, and clear alerts as a first-class agent action. The engine underneath changed. The spatial model stays the headline.
 
 In Clue, the whole game is figuring out which room. We're done figuring.
 
@@ -190,6 +192,114 @@ Load: `zen_admintools_prompt_loader: cortex_version: latest`
 
 ---
 
+## AlertManager Tool — v1.0.1 (New)
+
+`zen_dojotools_alertmanager` — new MCP-facing CRUD script. Friday can now manage the alert system directly: query active alerts, fire, clear, and read or set notify policy.
+
+This is the agent-accessible complement to the automation-side AlertManager. The automation handles event routing; this tool handles inspection and programmatic control.
+
+### Modes
+
+| Mode | What It Does |
+|------|-------------|
+| `list` | Return all active alerts from `_zen_active_alerts` with fire times, severity, and TTL remaining. |
+| `fire` | Fire an alert by key. Queues the event and returns. Respects dedup — no-op if already active. |
+| `clear` | Clear a specific alert by key. Queues clear event. |
+| `clear_all` | Clear all active alerts. Returns count cleared. |
+| `get_policy` | Read the current notify policy — filter entity, base urgency, per-severity routing. |
+| `set_policy` | Write a new notify policy to the household cabinet. |
+| `help` | Full tool contract, mode reference, and field list. |
+
+### Key Inputs
+
+| Field | Required For | Purpose |
+|-------|-------------|---------|
+| `mode` | — | Operation mode. Default: `help`. |
+| `alert_key` | `fire`, `clear` | Alert dedup key — must match exactly. |
+| `message` | `fire` | Human-readable alert text. |
+| `severity` | `fire` | `info` \| `warn` \| `error`. Default: `warn`. |
+| `notify_target` | `fire` | `persistent` \| `postman` \| `notify.<service>`. Default: `persistent`. |
+| `clear_after_minutes` | `fire` | TTL in minutes. Default: 1440 (24h). Pass `0` for permanent. |
+| `provider_id` | `set_policy` | Policy scope key. |
+| `urgency` | `set_policy` | Urgency level for this policy entry. |
+
+**`fire` and `clear` queue events** — alert state change happens asynchronously via the AlertManager automation. Call `list` after a brief wait to confirm.
+
+**HA restart required on first install.** `zen_dojotools_alertmanager` is a new script entity. Script reload alone is not enough — it will not appear in the MCP schema until HA is fully restarted once.
+
+---
+
+## Ninja Summarizer — v4.3.0 — Dual-Seed Architecture
+
+KFCs can now define their own context source, bypassing HyperIndex when a richer tool gives better data.
+
+Before: every component drove context acquisition through the same path — label-based HyperIndex (step 4). Works well for entity-centric components. Falls short when the right context source is a tool, not a label query.
+
+After: new **step 3c**. A KFC can define `seed` (concept-first) or `area_seed` (location-first). When either is present, step 3c fires the configured tool with configured params, step 4 (HyperIndex) is skipped via `_seed_used: true`, and the monk receives the tool's richer output directly.
+
+### `seed` — concept-first
+
+```json
+{
+  "seed": {
+    "tool": "zen_dojotools_room_manager",
+    "params": {"mode": "get", "area": "garage", "context_slices": "+topo,+security"}
+  }
+}
+```
+
+Fixed params, fires once per run. Use when the context source is domain-specific and doesn't change per invocation.
+
+### `area_seed` — location-first
+
+```json
+{
+  "area_seed": {
+    "tool": "zen_dojotools_room_manager",
+    "params": {"mode": "get", "area": "{{area_id}}", "context_slices": "+topo,+light,+climate"}
+  }
+}
+```
+
+`{{area_id}}` is filled at runtime from the Ninja Summarizer's `area_id` input field. One KFC definition, N room-scoped runs. This is the **per-area rollup pattern**: parent KFC rolls up whole-home, child KFCs fire per-area with `area_seed`.
+
+### Backward compatibility
+
+No `seed` and no `area_seed` → step 3c is skipped, step 4 runs as before. All existing KFCs continue unchanged. This is a purely additive change to the KFC schema.
+
+---
+
+## FileCabinet Normalization — Global Architecture
+
+Every tool in ZenOS-AI now flows through two canonical I/O paths:
+
+- **Scripts and automations** — all cabinet reads and writes go through `zen_dojotools_filecabinet`
+- **Templates** — all cabinet access goes through `zenos_cabinets.jinja` CABS macros
+
+And all cabinet writes now produce a normalized struct:
+
+```json
+{
+  "value": <payload>,
+  "timestamp": "2026-05-18T10:00:00",
+  "meta": {}
+}
+```
+
+`timestamp` is always written. You can suppress it, but the struct is preserved. `meta` is reserved for future use (ACL tagging, versioning, drawer-level metadata).
+
+The old pattern: most tools wrote values directly as raw JSON. Some wrote strings. Some wrote dicts. Reads guessed. Guards were inconsistent. One writer, one reader, one struct closes that.
+
+### What changed under the hood
+
+- **Read guards** — `x if x is not string else (x | from_json)` applied throughout. Native Python lists returned by HA's template engine are no longer double-parsed. JSON-encoded strings still parse correctly. This fixes FG-38 across the stack.
+- **`zenos_cabinets.jinja`** — fallback handles legacy non-structured drawers: `drawer.get('value', drawer if drawer else fallback)`. Pre-normalization drawers degrade gracefully instead of returning None.
+- **`zen_os_1.jinja`** — guards on `_slot` and `_alerts` reads.
+- **FileCabinet v4.7.0** — `set_timestamp` defaults to `true`. Writes always produce the normalized struct. `_` prefix reads no longer silently strip the underscore when `force_action` is omitted.
+- **~21 files touched** — FC normalization sweep across the full DojoTools package.
+
+---
+
 ## Other Tool Updates
 
 | Tool | Version | Key Changes |
@@ -202,8 +312,13 @@ Load: `zen_admintools_prompt_loader: cortex_version: latest`
 | **Index / ZQ-1** | v4.9.1 | `+rm` pipeline, `area_entities()` fix, `filter_json` fix |
 | **ZQ-1 filter engine** (`zen_query.jinja`) | v4.5.7 | `friendly_name_regex` filter — `regex_search()` against `friendly_name` attribute; SEED or FILTER mode. Complements `entity_id_regex` (added v4.6.0). |
 | **Labels** | v4.6.0 | `target_areas` support, `add/remove_label_to_area` |
-| **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion. Lens pattern: Security Manager + RM +security are complementary, not competing. |
-| **Scribe** | v1.3.0 | Replaces KungFu Writer. `zen_dojotools_kungfu_writer` retired. `zen_dojotools_kungfu_loader` is a separate tool — do not confuse them. |
+| **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion, **3h result expiry** for look/scan modes (was 24h). Lens pattern: Security Manager + RM +security are complementary, not competing. |
+| **Scribe** | v1.4.0 | `seed` and `area_seed` input fields added. Parsed into draft and publish payloads. Publish preserves existing seed values when inputs blank. Help updated with `context_source_guide`, `per_area_rollup_pattern`, `tuning_guide`. Also: replaces KungFu Writer. |
+| **Ninja Summarizer** | v4.3.0 | Dual-seed architecture — new step 3c, `area_id` input field. **MCP-exposed.** See [Ninja Summarizer section](#ninja-summarizer--v430--dual-seed-architecture) above. |
+| **SystemTools** | v4.5.9 | `ha_reload_all` and `ha_reload_scripts` now deferred via `zen_event(kind: deferred_script_reload / deferred_reload_all)`. Closes the WONT FIX asyncio `InvalidStateError` from `__remove_future` cancellation. All four reload modes now config-check gated. Ships with Scheduler v4.5.5 (hard dependency). **MCP-exposed.** |
+| **Scheduler** | v4.5.5 | Two new event triggers: `deferred_script_reload` and `deferred_reload_all`. Required companion to SystemTools v4.5.9. Must ship together. Automation-driven — not MCP-exposed. |
+| **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` optional fields added to `kfc_template`. Schema_version guard bumped. Flynn redeploys on next warmup; existing KFCs unaffected. **Admin-only — not MCP-exposed.** |
+| **FileCabinet** | v4.7.0 | Global normalization — see [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
 | **SpaMaster** | v3.3.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. |
 | **Identity** | v4.5.6 | VolumeInfo decode guard, profile autosign, provision_member (from Fry's Grandpa — carried forward) |
 | **DojoTools Core** | v4.5.6 | `_zen_active_alerts` TTL sweep (step 4c) |
@@ -230,6 +345,8 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | FG-05: `states.light` loop | `dojotools_lights.yaml` | `area_entities()` pre-scan outside main loop — builds on/unavail lists before iterating |
 | FG-07: Hardcoded entity ID in water rate fallback | `dojotools_plant.yaml` | Fallback removed; `zen_plant_water_rate` label is now the correct path |
 | FG-07: Integration-specific label name | `dojotools_plant.yaml` | Provider label → `utility_billing` throughout |
+| FG-38: Unguarded `from_json` on FileCabinet drawer reads | All 21 affected tools | `x if x is not string else (x | from_json)` guard applied throughout. Native Python list/dict values no longer double-parsed. |
+| SystemTools asyncio `InvalidStateError` | `dojotools_systemtools.yaml` + `dojotools_scheduler.yaml` | Deferred event pattern — script fires `zen_event(kind: deferred_script_reload)` and exits. Scheduler automation handles reload from automation context. All four reload modes now config-check gated. Previously documented WONT FIX — closed. |
 
 ### WONT FIX — documented
 
@@ -268,11 +385,13 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_covers.yaml` | New — v0.2.2. ZenShade cover manager. |
 | `dojotools/dojotools_kungfu_loader.yaml` | Restored — was incorrectly omitted from branch. Factory KFC deployer. |
 | `dojotools/dojotools_admintools.yaml` | Cortex v39 (Home First); dispatcher spamaster route |
-| `dojotools/dojotools_alertmanager.yaml` | v1.3.0: severity labels, fire-once dedup, `clear_after_minutes` default 1440, GC sweep |
-| `dojotools/dojotools_camera.yaml` | v1.4.0: `ai_task` gate, `sendto` expansion, lens cross-reference |
+| `dojotools/dojotools_alertmanager.yaml` | v1.3.0: severity labels, fire-once dedup, `clear_after_minutes` default 1440, GC sweep. v1.0.1: new `zen_dojotools_alertmanager` MCP CRUD tool appended. |
+| `dojotools/dojotools_camera.yaml` | v1.4.0: `ai_task` gate, `sendto` expansion, 3h result expiry, lens cross-reference |
 | `dojotools/dojotools_climate.yaml` (utilities) | v1.1.0: topology_context in GET |
 | `dojotools/dojotools_core.yaml` | v4.5.6: `_zen_active_alerts` TTL sweep (step 4c) |
 | `dojotools/dojotools_dispatcher.yaml` | v1.1.0: Postman Tier 2, spamaster + security_manager routes; full spamaster payload passthrough (scene, lights, jets, audio, chemistry, cover) |
+| `custom_templates/zenos_ai/zenos_cabinets.jinja` | FC normalization: legacy drawer fallback `drawer.get('value', drawer if drawer else fallback)` |
+| `custom_templates/zenos_ai/zen_os_1.jinja` | FC normalization: `_slot` and `_alerts` read guards |
 | `custom_templates/zenos_ai/zen_query.jinja` | ZQ-1 v4.5.7: `friendly_name_regex` filter added |
 | `dojotools/dojotools_ectoplasm.yaml` | v4.6.1: floor REST path, area_id fix |
 | `dojotools/dojotools_grocy.yaml` | v4.10.0: idempotent units_add, RM integration, chores_by_area |
@@ -283,7 +402,11 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_manifest.yaml` | FG-05: domain filter on label_entities |
 | `dojotools/dojotools_office.yaml` | v5.0.0: todo + calendar removed |
 | `dojotools/dojotools_postman.yaml` | Ack loop, actionable notifications, image support |
-| `dojotools/dojotools_scribe.yaml` | v1.3.0: replaces kungfu_writer |
+| `dojotools/dojotools_filecabinet.yaml` | v4.7.0: FC normalization — always-wrap write struct, `set_timestamp` default true, `_` prefix read fix |
+| `dojotools/dojotools_summarizers.yaml` | v4.3.0: dual-seed step 3c, `area_id` input field, `_seed_used` gate on HyperIndex step |
+| `dojotools/dojotools_scribe.yaml` | v1.4.0: `seed` and `area_seed` input fields, updated help (context_source_guide, per_area_rollup_pattern, tuning_guide) |
+| `dojotools/dojotools_systemtools.yaml` | v4.5.9: `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`; all four reload modes config-check gated |
+| `dojotools/dojotools_scheduler.yaml` | v4.5.5: `deferred_script_reload` and `deferred_reload_all` event triggers added |
 | `dojotools/dojotools_spamaster.yaml` | v3.3.0: replaces calderaspas |
 | `dojotools/dojotools_zenlux.yaml` | v0.5.1: sync_shades, burnout timer, RM hold gate |
 | `flynn_oobe.yaml` | v4.2.0: RM-native room setup, persona handoff step, security_camera label |
@@ -316,3 +439,9 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 **Office split:** No immediate action needed — Todo and Calendar scripts work unchanged. Clean up any internal references to the old office.yaml definitions at your own pace.
 
 **OOBE users (re-running setup):** The room setup step now uses Room Manager instead of filecabinet drawers. Existing room topology data written by the old OOBE is not migrated — if re-running on an existing install, the AI will discover HA areas as usual but will not import old room drawer contents.
+
+**AlertManager Tool first install:** `zen_dojotools_alertmanager` is a new script entity. It will not appear in the MCP tool schema after a script reload — HA must be fully restarted once. After the initial restart, normal reloads apply.
+
+**KFC schema v1.4.0:** The updated `kfc_template` drawer (with `seed` and `area_seed` fields) is deployed by Flynn on next warmup. Existing KFCs are unaffected — `seed` and `area_seed` are optional. No manual migration needed.
+
+**SystemTools + Scheduler — must ship together:** `dojotools_systemtools.yaml` v4.5.9 and `dojotools_scheduler.yaml` v4.5.5 are a hard dependency pair. SystemTools fires `deferred_script_reload` and `deferred_reload_all` events; Scheduler handles them. If you're patching just one file, patch both.

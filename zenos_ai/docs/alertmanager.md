@@ -1,12 +1,13 @@
 # ZenOS-AI AlertManager
 
-**Version:** 1.2.0
+**Version:** 1.3.0 (KFC automation) / 1.0.1 (MCP tool)
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**
 - `automation.zen_alert_manager` — fire/clear handler
 - `automation.zen_priority_inject_handler` — priority slot write/clear handler
 - `sensor.zen_priority_context` — live priority status sensor
+- `script.zen_dojotools_alertmanager` — MCP-exposed CRUD tool (**MCP-exposed**)
 
 ---
 
@@ -219,3 +220,82 @@ And when the condition resolves:
 ```
 
 Keep `alert_key` stable and unique across all components — it is the dedup key and appears in `home_overview` output.
+
+---
+
+## `zen_dojotools_alertmanager` — MCP Tool (v1.0.1)
+
+Agent-accessible CRUD interface for AlertManager. Friday can query active alerts, fire, clear, and manage notify policy directly without emitting raw `zen_event` calls.
+
+**MCP-exposed.** Requires a full HA restart to appear in the tool schema on first install (script reload is not sufficient for new script entities).
+
+### Modes
+
+| Mode | What It Does |
+|------|-------------|
+| `list` | Return all entries in `_zen_active_alerts`: key, message, severity, fired_at, expires_at. |
+| `fire` | Fire an alert by key. Queues `alert_fire` event. No-op if key already active (dedup). Returns immediately; state change is async. |
+| `clear` | Clear a specific alert by key. Queues `alert_clear` event. Returns immediately. |
+| `clear_all` | Clear all active alerts. Returns count of keys cleared. |
+| `get_policy` | Read the current notify policy from the household cabinet. |
+| `set_policy` | Write a new notify policy entry to the household cabinet. |
+| `help` | Return full tool contract and field reference. |
+
+**Default:** No input → `mode: help`.
+
+### Inputs
+
+| Field | Required For | Type | Description |
+|-------|-------------|------|-------------|
+| `mode` | — | string | Operation mode. Default: `help`. |
+| `alert_key` | `fire`, `clear` | string | Alert dedup key — must match the key used at fire time. |
+| `message` | `fire` | string | Human-readable description of the alert condition. |
+| `severity` | `fire` | string | `info` \| `warn` \| `error`. Default: `warn`. |
+| `notify_target` | `fire` | string | `persistent` \| `postman` \| `notify.<service>`. Default: `persistent`. |
+| `clear_after_minutes` | `fire` | number | TTL in minutes. Default: 1440 (24h). Pass `0` for no auto-expiry. |
+| `channel_hint` | `fire` (postman) | string | `push` \| `tts` \| `teams` — used when `notify_target: postman`. |
+| `title` | `fire` | string | Notification title override. Defaults to severity label. |
+| `provider_id` | `set_policy` | string | Policy scope key. |
+| `urgency` | `set_policy` | string | Urgency level for this policy entry. |
+
+### Response
+
+All modes return a structured response via `response_variable`. Shape varies by mode.
+
+**`list` response:**
+```json
+{
+  "mode": "list",
+  "active_alerts": [
+    {"key": "slug", "message": "...", "severity": "warn", "fired_at": "...", "expires_at": "..."}
+  ],
+  "alert_count": 1
+}
+```
+
+**`fire` / `clear` response:**
+```json
+{
+  "mode": "fire",
+  "alert_key": "slug",
+  "severity": "warn",
+  "queued": true
+}
+```
+
+`queued: true` means the event was fired — state change is asynchronous. Call `list` after a moment to confirm.
+
+**`clear_all` response:**
+```json
+{
+  "mode": "clear_all",
+  "cleared_count": 3,
+  "cleared_keys": ["key1", "key2", "key3"]
+}
+```
+
+### Notes
+
+- `fire` and `clear` return immediately after queuing the event. The actual `_zen_active_alerts` drawer update happens when the `zen_alert_manager` automation processes the event.
+- Policy reads/writes target the household cabinet `zen_alert_policy` drawer.
+- **HA restart required on first install** — `zen_dojotools_alertmanager` is a new script entity that does not appear in the MCP schema after a script reload alone.

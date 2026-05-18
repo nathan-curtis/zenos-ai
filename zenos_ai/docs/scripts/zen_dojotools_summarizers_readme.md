@@ -1,6 +1,6 @@
-# Zen DojoTools Summarizers — 4.7.0 'Lights, Camera, Action'
+# Zen DojoTools Summarizers — v4.3.0
 
-*Ninja Summarizer + SuperSummary — the KF4 action pipeline*
+*Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
 ---
 
@@ -54,6 +54,7 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 | `post_to_kata_cabinet` | No | Write result to Kata cabinet? Default: `false`. |
 | `supplemental_prompt` | No | Extra data or instructions appended to the monk prompt. |
 | `force` | No | Bypass the run governor (dedup burnout window). For admin overrides or emergency on-demand runs. Default `false`. |
+| `area_id` | No | HA area ID. When set and the KFC defines `area_seed`, the `{{area_id}}` slot in `area_seed.params` is filled at runtime. Used for per-area rollup patterns. |
 | `caller_token` | No | Opaque pass-through token for correlation. |
 
 ### What It Does
@@ -64,15 +65,20 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 4. **Read Dojo drawer** — loads the component's KFC metadata (friendly name, label, command, tool, kata_key)
 5. **`meta.enabled` check** — exits with `reason: meta_disabled` if the component's `meta.enabled` is `false`
 6. **Run governor** — dedup burnout window check (see below). Exits with `reason: dedup_window` if blocked.
-7. **Run HyperIndex** — queries the index using the component's configured index call. Routing:
+7. **Step 3c — Seed tool call (v4.3.0+)** — if the KFC defines `seed` or `area_seed`:
+   - If `area_id` input is set and the KFC has `area_seed`: fires `area_seed.tool` with `{{area_id}}` slot filled.
+   - Otherwise if `seed` is defined: fires `seed.tool` with `seed.params`.
+   - Sets `_seed_used: true`. Step 8 (HyperIndex) is skipped.
+   - If neither `seed` nor `area_seed` is defined: step 3c is skipped, step 8 runs normally.
+8. **Run HyperIndex** — queries the index using the component's configured index call. Skipped if `_seed_used`. Routing:
    - If the Dojo drawer has an `index_command` dict field: emits compound/recursive index call via `zen_indexer_request` event. Supports the full nested DSL: `{operator, index_1: {...}, index_2: {...}}`. Use for components whose context spans multiple independent label sets.
    - If the drawer has a `label` field: standard label-based index call in hypergraph mode.
    - If neither is present: HyperIndex step is skipped.
-8. **Run library command** — if the component has a `command` field, dispatches it through `command_interpreter.jinja`
-9. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions
-10. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
-11. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and monk returned data, writes result to `kata_cabinet[component_slug]`
-12. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
+9. **Run library command** — if the component has a `command` field, dispatches it through `command_interpreter.jinja`
+10. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions
+11. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
+12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and monk returned data, writes result to `kata_cabinet[component_slug]`
+13. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
 
 ### Response
 
@@ -236,3 +242,11 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | `zen_os_1.jinja` | `zen_cabinets()`, `manifest_loader()`, `ai_capsule()` (SuperSummary prompt context) |
 | `script.zen_dojotools_event_emitter` | Post-run event emission |
 | `automation.zen_dojotools_scheduler` | Scheduled dispatch |
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex. Backward compatible — no seed = old behavior. |

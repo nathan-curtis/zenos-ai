@@ -1,4 +1,4 @@
-# Zen DojoTools AdminTools — 4.6.0 'Ectoplasm'
+# Zen DojoTools AdminTools — v4.6.1
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -8,7 +8,9 @@
 
 AdminTools is the **Ring-2 administrative layer** of ZenOS-AI. It handles tasks that fall outside normal runtime behavior: repairing cabinets, pressing schema templates, and loading the AI's identity substrate.
 
-All tools in this module are **admin-only** — they are not exposed to the AI agent and should not be called by Friday during normal operation. For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe` — it is a DojoTools script (fully MCP-exposed) and is the correct tool for Friday and operators alike.
+**All tools in this module are admin-only — not MCP-exposed.** They are not accessible to the AI agent and should not be called by Friday during normal operation. Run them via HA Developer Tools → Services.
+
+For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe` — it is a DojoTools script, **MCP-exposed**, and the correct tool for both Friday and operators.
 
 ---
 
@@ -16,7 +18,7 @@ All tools in this module are **admin-only** — they are not exposed to the AI a
 
 | Script | Version | MCP-Exposed | Purpose |
 |---|---|---|---|
-| `zen_admintools_reset_template` | 1.1.0 | No | Press zen_template and kfc_template into cabinets |
+| `zen_admintools_reset_template` | 1.1.0 | **No** | Press zen_template and kfc_template into cabinets |
 | `zen_admintools_reset_labels` | 4.5.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild |
 | `zen_admintools_cabinetadmin` | 4.5.0 | No | Inspect, restore, reset, hammer, init, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
@@ -284,6 +286,16 @@ Use the `cortex_version` field to select which version to load. The three primit
 
 Selecting `latest` or passing no `cortex_version` loads v32.
 
+### KFC Schema v1.4.0
+
+`zen_admintools_reset_template` now presses the v1.4.0 `kfc_template` seed into the Dojo cabinet. Changes from v1.3.x:
+
+- `seed` field added — optional. Tool-first context descriptor: `{"tool": "...", "params": {...}}`. When defined in a KFC, the Ninja Summarizer calls this tool directly instead of running HyperIndex.
+- `area_seed` field added — optional. Location-first variant of `seed`. `{{area_id}}` slot in params is filled at runtime by the Ninja Summarizer's `area_id` input. Used for per-area rollup patterns with Room Manager.
+- `schema_version` bumped to `"1.4.0"`.
+
+Flynn redeploys the template on next warmup when the version guard detects a stale `kfc_template` drawer. Existing KFCs are unaffected — both fields are optional and absent by default.
+
 ### Custom Prompt Material
 
 If you want to ship completely custom Purpose, Directives, or Cortex content, copy the prompt loader script, make your changes, and fire it. The loader is a standard HA script — there's nothing special about it beyond the version-select logic. Custom forks are your own maintenance surface; ZenOS ships the versioned canonical set and that's the extent of it.
@@ -327,3 +339,12 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 | Zen Dojo Cabinet | KFC component registry |
 | Zen Kata Cabinet | Summary template storage |
 | `sensor.zen_*_cabinet` (Ring-0 set) | cabinetadmin targets |
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v4.6.1 | KFC schema v1.4.0: `seed` and `area_seed` fields added to `kfc_template`. Version guard bumped. |
+| v4.6.0 | Cortex v39 (Home First). Dispatcher spamaster route. |
