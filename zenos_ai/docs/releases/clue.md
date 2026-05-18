@@ -204,6 +204,7 @@ Load: `zen_admintools_prompt_loader: cortex_version: latest`
 | **Grocy** | v4.10.0 | `units_add` idempotent, `update_product_meta` unit support, hazmat/safety RM integration, `chores_by_area` dual discovery |
 | **Ectoplasm** | v4.6.1 | `floor_assign`/`unassign` REST path, `area_id` reserved word fix, error surface improvements |
 | **Index / ZQ-1** | v4.9.1 | `+rm` pipeline, `area_entities()` fix, `filter_json` fix |
+| **ZQ-1 filter engine** (`zen_query.jinja`) | v4.5.7 | `friendly_name_regex` filter — `regex_search()` against `friendly_name` attribute; SEED or FILTER mode. Complements `entity_id_regex` (added v4.6.0). |
 | **Labels** | v4.6.0 | `target_areas` support, `add/remove_label_to_area` |
 | **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion. Lens pattern: Security Manager + RM +security are complementary, not competing. |
 | **Scribe** | v1.3.0 | Replaces KungFu Writer. `zen_dojotools_kungfu_writer` retired. `zen_dojotools_kungfu_loader` is a separate tool — do not confuse them. |
@@ -213,7 +214,7 @@ Load: `zen_admintools_prompt_loader: cortex_version: latest`
 | **Office** | v5.0.0 | Todo + Calendar removed — now standalone `dojotools_todo.yaml` and `dojotools_calendar.yaml`. Office carries Teams + Mail only. |
 | **Flynn** | v4.5.6 | Household membership + identity manifest at bootstrap, warmup timer |
 | **Calendar** | v1.11.0 | Split from office.yaml. Standalone HA Calendar domain CRUD. |
-| **Todo** | v2.0.0 | Split from office.yaml. Standalone HA Todo domain CRUD. |
+| **Todo** | v2.1.0 | Split from office.yaml. `action` alias for `action_type`; `list_id` alias for `list_name` (accepts entity_id or friendly name). Invalid `action_type` now returns help instead of noop. |
 
 ---
 
@@ -267,7 +268,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_media_manager.yaml` | New — v0.7.2. Whole-home media management. |
 | `dojotools/dojotools_security_manager.yaml` | New — v1.2.0. Replaces dojotools_alarm_panel.yaml (deleted). |
 | `dojotools/dojotools_calendar.yaml` | New — v1.11.0. Split from office.yaml. |
-| `dojotools/dojotools_todo.yaml` | New — v2.0.0. Split from office.yaml. |
+| `dojotools/dojotools_todo.yaml` | New — v2.1.0. Split from office.yaml. `action`/`list_id` aliases; invalid action_type returns help. |
 | `dojotools/dojotools_covers.yaml` | New — v0.2.2. ZenShade cover manager. |
 | `dojotools/dojotools_kungfu_loader.yaml` | Restored — was incorrectly omitted from branch. Factory KFC deployer. |
 | `dojotools/dojotools_admintools.yaml` | Cortex v39 (Home First); dispatcher spamaster route |
@@ -275,7 +276,8 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_camera.yaml` | v1.4.0: `ai_task` gate, `sendto` expansion, lens cross-reference |
 | `dojotools/dojotools_climate.yaml` (utilities) | v1.1.0: topology_context in GET |
 | `dojotools/dojotools_core.yaml` | v4.5.6: `_zen_active_alerts` TTL sweep (step 4c) |
-| `dojotools/dojotools_dispatcher.yaml` | v1.1.0: Postman Tier 2, spamaster + security_manager routes |
+| `dojotools/dojotools_dispatcher.yaml` | v1.1.0: Postman Tier 2, spamaster + security_manager routes; full spamaster payload passthrough (scene, lights, jets, audio, chemistry, cover) |
+| `custom_templates/zenos_ai/zen_query.jinja` | ZQ-1 v4.5.7: `friendly_name_regex` filter added |
 | `dojotools/dojotools_ectoplasm.yaml` | v4.6.1: floor REST path, area_id fix |
 | `dojotools/dojotools_grocy.yaml` | v4.10.0: idempotent units_add, RM integration, chores_by_area |
 | `dojotools/dojotools_identity.yaml` | v4.5.6: FG-07 expansion cabinet fix, VolumeInfo guard |
