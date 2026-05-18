@@ -254,8 +254,8 @@ script:
             {%- set manifest   = zen.manifest_loader() | from_json -%}
             {%- set capsule    = zen.ai_capsule(idcard_raw) | from_json -%}
             {%- set overview   = states['sensor.home_overview'].attributes | default({}) -%}
-            {%- set kata_vars  = state_attr(kata_cabinet, 'variables') or {} -%}
-            {%- set last_sum   = kata_vars.get('zen_summary', {}) -%}
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set last_sum = CABS.cabinet_drawer_value(kata_cabinet, 'zen_summary', {}) | from_json -%}
             {{
               {
                 "identity":     idcard_raw,
@@ -269,12 +269,19 @@ script:
 
       # ── 4. Load last summary ──────────────────────────────────────────────
       - alias: Load last summary
-        variables:
+        action: script.zen_dojotools_filecabinet
+        data:
+          action_type: read
+          volume_entity_id: "{{ kata_cabinet }}"
+          key: zen_summary
+        response_variable: _zen_sum_fc_read
+      - variables:
           last_summary: >-
-            {%- set _raw = (state_attr(kata_cabinet, 'variables') or {}).get('zen_summary', {}) -%}
-            {%- set _v1 = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
-            {%- set _v2 = _v1 if _v1 is mapping else (_v1 | from_json if _v1 is string else {}) -%}
-            {{ _v2 | tojson }}
+            {%- set r = _zen_sum_fc_read.get('result', {}) -%}
+            {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+            {%- set raw = r.get('zen_summary', {}) -%}
+            {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+            {{ raw.get('value', raw) | tojson if raw is mapping else '{}' }}
 
       # ── 5. Collect active components — direct tier only ──────────────────
       # FIX: was {% set active = {} %} inside for loop — Jinja2 scoping bug,
@@ -599,6 +606,15 @@ script:
         required: false
         selector:
           text:
+      area_id:
+        name: Area ID
+        description: >-
+          Optional HA area ID. When set and the KFC defines area_seed, the
+          area_seed tool call is used instead of seed or index_call. The
+          {{area_id}} slot in area_seed.params is filled at runtime.
+        required: false
+        selector:
+          text:
       parent_component_id:
         name: Parent Component ID
         description: >-
@@ -734,6 +750,15 @@ script:
               {%- set _ic = _ic if _ic is not none else (dojo_drawer_value.index_call | default(none)) -%}
               {{ _ic if _ic is mapping else {} }}
             {%- endif -%}
+          _kfc_seed: >-
+            {%- set _s = (dojo_drawer.seed | default(none)) -%}
+            {%- set _s = _s if _s is not none else (dojo_drawer_value.seed | default(none)) -%}
+            {{ _s if _s is mapping else {} }}
+          _kfc_area_seed: >-
+            {%- set _s = (dojo_drawer.area_seed | default(none)) -%}
+            {%- set _s = _s if _s is not none else (dojo_drawer_value.area_seed | default(none)) -%}
+            {{ _s if _s is mapping else {} }}
+          _area_id: "{{ area_id | default('', true) | trim }}"
           meta_enabled: >-
             {%- set _meta = (dojo_drawer.meta | default(none)) -%}
             {%- set _meta = _meta if _meta is not none else (dojo_drawer_value.meta | default(none)) -%}
@@ -791,14 +816,46 @@ script:
               Ninja summarizer governor — {{ component_slug }} ran {{ _gov_elapsed }}s ago
               (< {{ _gov_burnout }}s burnout window). Absorbing duplicate run.
 
+      # ── 3c. Seed tool call — location-first or concept-first via KFC seed block
+      - alias: Run seed tool call if KFC defines seed or area_seed
+        if:
+          - condition: template
+            value_template: >-
+              {{ _kfc_seed is mapping and _kfc_seed.get('tool', '') not in ['', none] }}
+        then:
+          - variables:
+              _seed_tool: >-
+                {%- if _area_id != '' and _kfc_area_seed is mapping and _kfc_area_seed.get('tool', '') not in ['', none] -%}
+                  {{ _kfc_area_seed.get('tool') }}
+                {%- else -%}
+                  {{ _kfc_seed.get('tool') }}
+                {%- endif -%}
+              _seed_params: >-
+                {%- if _area_id != '' and _kfc_area_seed is mapping and _kfc_area_seed.get('tool', '') not in ['', none] -%}
+                  {%- set _p = _kfc_area_seed.get('params', {}) -%}
+                  {%- set _p = (_p | from_json) if _p is string else _p -%}
+                  {%- set _p = _p if _p is mapping else {} -%}
+                  {{ dict(_p, **{'area': _area_id}) if '{{area_id}}' in (_p.get('area', '') | string) else _p }}
+                {%- else -%}
+                  {%- set _p = _kfc_seed.get('params', {}) -%}
+                  {%- set _p = (_p | from_json) if _p is string else _p -%}
+                  {{ _p if _p is mapping else {} }}
+                {%- endif -%}
+          - action: "script.{{ _seed_tool }}"
+            data: "{{ _seed_params }}"
+            response_variable: zen_index_result
+          - variables:
+              _seed_used: true
+
       # ── 4. Run HyperIndex ─────────────────────────────────────────────────
       - alias: Run HyperIndex using full index_call from KFC drawer
         if:
           - alias: If index_call or fallback label exists
             condition: template
             value_template: >-
-              {{ (index_call is mapping and index_call.keys() | list | length > 0)
-                 or index_command | trim != '' }}
+              {{ not (_seed_used | default(false)) and
+                 ((index_call is mapping and index_call.keys() | list | length > 0)
+                 or index_command | trim != '') }}
         then:
           - choose:
             - conditions: "{{ index_call is mapping and index_call.get('index_command', '') not in ['', none, {}] }}"
