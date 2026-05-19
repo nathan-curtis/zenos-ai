@@ -309,6 +309,8 @@ The old pattern: most tools wrote values directly as raw JSON. Some wrote string
 - **FileCabinet v4.7.0** — `set_timestamp` defaults to `true`. Writes always produce the normalized struct. `_` prefix reads no longer silently strip the underscore when `force_action` is omitted.
 - **~21 files touched** — FC normalization sweep across the full DojoTools package.
 
+> **v4.7.1 hotfix (2026-05-19) — required before release.** v4.7.0 introduced a system-wide write lockout under normal operating conditions. Root cause: event dispatch sent `new_entry.value` as a raw Python object; the wait_template compared it against the stored JSON string — type mismatch, always `False`, 30s timeout fires, `mode: single` holds the slot. HA log floods with "Already running" (2000+/hr); all cabinet writes silently drop within ~10 minutes. Fix: `mode: queued / max: 2`; event dispatch `| tojson`; verification `| tojson` on both sides. Pull v4.7.1 before deploying — do not ship v4.7.0.
+
 ---
 
 ## Other Tool Updates
@@ -329,7 +331,7 @@ The old pattern: most tools wrote values directly as raw JSON. Some wrote string
 | **SystemTools** | v4.5.9 | `ha_reload_all` and `ha_reload_scripts` now deferred via `zen_event(kind: deferred_script_reload / deferred_reload_all)`. Closes the WONT FIX asyncio `InvalidStateError` from `__remove_future` cancellation. All four reload modes now config-check gated. Ships with Scheduler v4.5.5 (hard dependency). **MCP-exposed.** |
 | **Scheduler** | v4.5.5 | Two new event triggers: `deferred_script_reload` and `deferred_reload_all`. Required companion to SystemTools v4.5.9. Must ship together. Automation-driven — not MCP-exposed. |
 | **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` fields added to `kfc_template`. `zen_admintools_reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab (Flynn gate-3). New `zen_admintools_summarizer_seed` management script (list/add/remove/reset). **Admin-only — not MCP-exposed.** |
-| **FileCabinet** | v4.7.0 | Global normalization — see [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
+| **FileCabinet** | v4.7.1 | Global normalization + v4.7.1 write-lockout hotfix. `mode: queued / max: 2`; `\| tojson` on event dispatch and verification. **Do not ship v4.7.0.** See [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
 | **SpaMaster** | v3.3.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. |
 | **Identity** | v4.5.6 | VolumeInfo decode guard, profile autosign, provision_member (from Fry's Grandpa — carried forward) |
 | **DojoTools Core** | v4.5.6 | `_zen_active_alerts` TTL sweep (step 4c) |
@@ -413,7 +415,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_manifest.yaml` | FG-05: domain filter on label_entities |
 | `dojotools/dojotools_office.yaml` | v5.0.0: todo + calendar removed |
 | `dojotools/dojotools_postman.yaml` | Ack loop, actionable notifications, image support |
-| `dojotools/dojotools_filecabinet.yaml` | v4.7.0: FC normalization — always-wrap write struct, `set_timestamp` default true, `_` prefix read fix |
+| `dojotools/dojotools_filecabinet.yaml` | v4.7.1: FC normalization + write-lockout hotfix. `mode: queued / max: 2`, event dispatch `\| tojson`, verification `\| tojson` both sides. **v4.7.0 must not ship.** |
 | `dojotools/dojotools_summarizers.yaml` | v4.3.0: dual-seed step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist check against `zen_summarizer_seed_whitelist` |
 | `dojotools/dojotools_scribe.yaml` | v1.4.0: `seed` and `area_seed` input fields, updated help (context_source_guide, per_area_rollup_pattern, tuning_guide) |
 | `dojotools/dojotools_admintools.yaml` | v4.6.1: seed_whitelist_seed, `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab, new `zen_admintools_summarizer_seed` script |
