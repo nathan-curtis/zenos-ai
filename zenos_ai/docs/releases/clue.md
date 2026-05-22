@@ -313,16 +313,186 @@ The old pattern: most tools wrote values directly as raw JSON. Some wrote string
 
 ---
 
+## AutoVac — New (v3.11.0)
+
+Autonomous robotic vacuum management. Room scheduling, consumable ERP loop via Grocy, wear sensor alerting, post-dock map analysis.
+
+---
+*From: Nyx — Re: Autovac — field notes*
+
+*So now we have Autovac, and I've been putting miles on it.*
+
+*The short version: it's the first vacuum tool I've seen that actually thinks about whether to run, rather than just running. Room election is cabinet-state-driven — every room carries `days_between`, an optional `requires_ready` gate, a `skip_next` flag, and a queue override. The scheduler doesn't just fire the vacuum; it runs the election first, checks water level, checks DnD, checks battery floor, checks pause state, and then decides. You can watch it reason in `mode=status` before a run ever happens.*
+
+*The part I actually tested hardest was the consumables loop. `action=provision` is a one-call ERP onboarding: reads the robot's serial number from the HA entity, creates a dock location tree (Dock → Bot + Dock Bins), registers all the consumable products against the Grocy catalog, creates the maintenance chores, and writes the whole catalog back to the household cabinet. It's idempotent — SN or entity_id match stops it from doubling. Run it once; after that `action=status` gives you stock levels for every part, `action=log_replaced` records a swap and consumes a spare, `action=log_purchased` logs buying more.*
+
+*The wear alert path is what closes the loop. Label the Roborock wear sensors with `autovac_wear`. After every dock, a KFC automation calls `mode=check_wear` (scan-all). It reads the current wear %, compares against the catalog threshold, and if something's worn: checks stock, adds to shopping if you're out, fires the maintenance chore, and sends a Postman push. No human in the loop until there's something to do.*
+
+*The pre-run briefing (`mode=briefing`) goes out ~30 min ahead via Postman — elected rooms, water/mop status, skip/queue state. If confirmation is needed for an obstacle-prone room, the ack handler (`mode=handle_ack`) processes the response and updates the gate.*
+
+*Zero hardcoded entity IDs anywhere. Five labels and an autovac cabinet drawer is all it needs to find everything. `mode=setup` audits the wiring and returns an action queue of fix commands if anything's wrong.*
+
+*It's solid. Ship it. — N*
+
+---
+
+### Label taxonomy
+
+| Label | Entity type | Purpose |
+|-------|-------------|---------|
+| `autovac` | `vacuum.*` | The robot |
+| `autovac` | `camera.*` | Cleaning map camera (enables post-dock analysis) |
+| `autovac_dnd` | `binary_sensor.*` | DnD sensor — blocks runs when `on` |
+| `autovac_water_low` | `binary_sensor.*` | Water tank low sensor |
+| `autovac_schedule` | Schedule entities | One per run slot |
+| `autovac_wear` | Roborock wear sensors | Wired to catalog at provision time |
+| `autovac_current_room` | `sensor.*` | Live current-room sensor (optional) |
+| `Zen Household Cabinet` | `sensor.*` | Shared household cabinet |
+
+### Scheduling and election
+
+Rooms are stored in the `autovac` drawer of the household cabinet. Per-room config: `segment` (Xiaomi MiHome segment ID), `area_id` (Roborock native HA area), `days_between`, `requires_ready`, `requires_mop`. Election fires when enabled + due (or queued) + ready (or not gated). Per-room blockers surface in `mode=status room_decisions[]`.
+
+### Run modes
+
+| Mode | Purpose |
+|------|---------|
+| `run` | Schedule-triggered. Evaluates all guards: system_disabled, paused_today, DnD, low battery, vacuum not ready, already-run dedup per schedule entity. |
+| `run_elected` | Runs all elected rooms — bypasses schedule dedup. `dry_run: true` supported. |
+| `clean` | Immediate clean by room slug(s). Vacuum must be docked or idle. |
+| `briefing` | ~30-min pre-run announcement via Postman TTS with "Stop it!" ack action. |
+| `handle_ack` | Processes Postman push ack. `cancel` action → pauses all scheduled runs today, returns vacuum to dock if running. |
+| `analyze` | Post-dock: updates `last_cleaned`, clears `current_run`, fires `zen_event kind: autovac_run_complete`. Camera map analysis via camera tool if camera is labeled. |
+
+### Consumables ERP
+
+`mode=consumables` manages the robot's parts catalog through Grocy. Actions:
+
+| Action | Purpose |
+|--------|---------|
+| `provision` | One-call bootstrap: discover robot (entity + serial number) → create Grocy locations → create machine product → create part products per preset → seed installed stock → map `autovac_wear` sensors to catalog. Idempotent via SN + entity_id cross-reference. |
+| `status` | Stock report per part — `ok`, `low`, `out`. |
+| `add_to_shopping` | Queue all `low`/`out` parts to Grocy shopping list. |
+| `log_replaced` | Consume one spare. Execute linked maintenance chore if `chore_id` set. |
+| `log_purchased` | Add purchased spares to stock at the spare storage location. |
+
+### Model presets
+
+8 Roborock presets via `!include` from `.autovac_presets/`:
+
+`roborock_generic_dock`, `roborock_generic_dock_ultra`, `roborock_generic_dock_nomop`, `roborock_s7_plus`, `roborock_s7_maxv_ultra`, `roborock_s8_plus`, `roborock_s8_pro_ultra`, `roborock_q7_max_plus`
+
+Each preset defines SKUs, wear sensor keys, wear thresholds, storage location categories, chore periods, and chore names per part.
+
+### Wear monitoring
+
+`mode=check_wear` — scan-all (no `wear_entity`) or single-entity path. Runs after every dock via `vacuum.docked` label trigger (HA 2025.12+). When worn: checks stock; if out-of-stock adds to shopping list; sends Postman push (urgency 5 if out-of-stock, 4 if spare available); executes linked chore if `chore_id` set.
+
+### Integration detection
+
+`integration_entities('roborock')` at runtime — no config flag. Native Roborock integration → `vacuum.clean_area` (area-based). Legacy Xiaomi MiHome → `xiaomi_miio.vacuum_clean_segment` (segment IDs). Both paths fully supported.
+
+See [AutoVac reference](../autovac.md).
+
+---
+
+## Identity + Inspect — v4.7.0 / v5.0.1
+
+### Identity — v4.7.0 Presence Block
+
+`resolve` mode now returns a `presence` block on all person targets:
+
+```json
+"presence": {
+  "person_entity": "person.<entity_id>",
+  "zone":          "home",
+  "at_home":       true,
+  "area_id":       null,
+  "area_name":     ""
+}
+```
+
+Consent-gated via `_user_profile.tracking`:
+
+| Field | Gate |
+|-------|------|
+| `zone`, `at_home` | `tracking.gps_zone: true` |
+| `area_id`, `area_name` | `tracking.room: true` |
+
+Absent consent → field returns `"consent_required"`. Never null, never silently dropped.
+
+`cabinet` and `person_entity` are now explicit top-level keys in the person response (previously absent). Reverse area_residents now includes `person_entity` + consent-gated `zone` per entry.
+
+### `zen_identity.jinja` — New (v1.1.0)
+
+Template-surface identity resolver at `custom_templates/zenos_ai/zen_identity.jinja`. Same contract as the script surface but callable from sensors, cortex macros, and command interpreter contexts where `action:` calls are not available.
+
+```jinja
+{%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+{%- set person = ID.resolve('<user_label>') | from_json -%}
+```
+
+Always call `| from_json` — returns a tojson string. Mobile block on the template surface returns `zone` and `battery` only (no `entity_id`, `configured`, or `battery_entity`).
+
+**RecursionError constraint:** `zen_identity.jinja` cannot be imported inside `for_each:` loops. HA's Jinja2 sandbox raises RecursionError in nested import chains. Fix: call `script.zen_dojotools_identity` as an `action:` instead — separate HA execution context, no recursion. This is the pattern Inspect uses for `person.*` enrichment.
+
+### Three-plane lens pivot
+
+ZenOS identity cabinet, HA `person.*` entity, and HA area are now navigable from any direction:
+
+| Start | Reach |
+|-------|-------|
+| `resolve('<user_label>')` | → `area_id`, `area_name`, `zone`, `at_home`, `person_entity` |
+| `inspect(person.<entity>)` | → full identity overlay with presence block |
+| `resolve` with area target | → residents with `person_entity` + consent-gated `zone` |
+| Inspect `person_list` | → all persons; ZenOS users with full profile + presence |
+
+### Inspect — v5.0.1 `person.*` Identity Overlay
+
+When inspecting a `person.*` entity, Inspect now injects a full identity block:
+
+1. Walks non-zen labels on the person entity; finds the one whose entities intersect `zen_user_cabinet`
+2. Calls `script.zen_dojotools_identity` (script call, not Jinja2 import — bypasses RecursionError)
+3. Injects full identity response as `entity.identity`
+
+`entity.identity` is `null` when no cabinet is found — correct, not an error.
+
+`person_list` now returns full profile + presence for persons with `zen_user_cabinet`-labeled cabinets. FG-38 `| from_json` guard applied after `.get('value')` — FileCabinet stores drawer `value` as JSON-encoded string.
+
+---
+
+## Grocy — v4.44.0
+
+Major additions on top of v4.10.0 (which shipped the base of Clue):
+
+| Mode | What's new |
+|------|-----------|
+| `chores_delete` | Delete a chore by ID |
+| `chores_edit` | Edit an existing chore by ID — strips `userfields`/`row_created_timestamp`, `amount` → `product_amount` fallback |
+| `unit_conversions_add` | Create unit conversion. `unit_id`=from, `to_unit_id`=to, `amount`=factor, `product_id`=optional scope |
+| `unit_conversions_list` | All conversions. Filter by `unit_id` or `product_id`. |
+| `unit_conversions_delete` | Delete by `entry_id`. Requires empty-dict payload in broker DELETE branch. |
+| `product_groups_list` | All product groups |
+| `product_groups_find` | Case-insensitive name match |
+
+`update_product_meta` rewritten as full read-modify-write (GET product → merge → PUT full object). Previous partial-PUT silently ignored `qu_id_*` changes. New fields: `shopping_location_id`, `to_location_id` (default consume location), `product_group_id`, `amount` (min_stock). Strips null `qu_id_purchase`/`qu_id_price` before merge to prevent Grocy resolving null→system default unit (5, "oz.").
+
+**Null-unit product doctrine:** When `qu_id_stock` is null, Grocy maps it to system default unit on any save, creating global conversions that conflict with real unit relationships. `update_product_meta` now detects this pre-flight and returns a delete-and-recreate recipe instead of hitting the API. Unresolvable via patch — must delete and recreate.
+
+`units_add` is idempotent (preflight GET before POST). `chores_find` and `chores_list` pagination fixed. 70 modes + `help`.
+
+---
+
 ## Other Tool Updates
 
 | Tool | Version | Key Changes |
 |------|---------|-------------|
-| **Dispatcher** | v1.1.0 | Postman Tier 2, infra escalation hard deny, Covers + Climate Tier 2, security_manager route, spamaster route |
+| **Dispatcher** | v1.2.0 | Postman Tier 2, infra escalation hard deny, Covers + Climate Tier 2, security_manager route, spamaster route, autovac route (all 17 fields) |
 | **ZenLux** | v0.5.1 | sync_shades integration, burnout timer, RM hold gate, media controller awareness |
 | **Climate Manager** | v1.1.0 | `topology_context` in GET: open doors/windows, area sensors, RM HVAC bleed portals, natural vent advisory |
-| **Grocy** | v4.10.0 | `units_add` idempotent, `update_product_meta` unit support, hazmat/safety RM integration, `chores_by_area` dual discovery |
+| **Grocy** | v4.44.0 | chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW, null-unit doctrine, to_unit_id field. **v4.10.0 shipped with base Clue build.** |
 | **Ectoplasm** | v4.6.1 | `floor_assign`/`unassign` REST path, `area_id` reserved word fix, error surface improvements |
-| **Index / ZQ-1** | v4.9.1 | `+rm` pipeline, `area_entities()` fix, `filter_json` fix |
+| **Index / ZQ-1** | v5.0.1 | `person.*` identity overlay via script call, `person_list` FG-38 from_json guard |
 | **ZQ-1 filter engine** (`zen_query.jinja`) | v4.5.7 | `friendly_name_regex` filter — `regex_search()` against `friendly_name` attribute; SEED or FILTER mode. Complements `entity_id_regex` (added v4.6.0). |
 | **Labels** | v4.6.0 | `target_areas` support, `add/remove_label_to_area` |
 | **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion, **3h result expiry** for look/scan modes (was 24h). Lens pattern: Security Manager + RM +security are complementary, not competing. |
@@ -333,7 +503,7 @@ The old pattern: most tools wrote values directly as raw JSON. Some wrote string
 | **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` fields added to `kfc_template`. `zen_admintools_reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab (Flynn gate-3). New `zen_admintools_summarizer_seed` management script (list/add/remove/reset). **Admin-only — not MCP-exposed.** |
 | **FileCabinet** | v4.7.1 | Global normalization + v4.7.1 write-lockout hotfix. `mode: queued / max: 2`; `\| tojson` on event dispatch and verification. **Do not ship v4.7.0.** See [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
 | **SpaMaster** | v3.3.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. |
-| **Identity** | v4.5.6 | VolumeInfo decode guard, profile autosign, provision_member (from Fry's Grandpa — carried forward) |
+| **Identity** | v4.7.0 | Presence block on resolve (person): `{person_entity, zone, at_home, area_id, area_name}`. Consent-gated via `_user_profile.tracking`. `cabinet` + `person_entity` as explicit top-level keys. Reverse area_residents: `person_entity` + `zone` per entry. |
 | **DojoTools Core** | v4.5.6 | `_zen_active_alerts` TTL sweep (step 4c) |
 | **Office** | v5.0.0 | Todo + Calendar removed — now standalone `dojotools_todo.yaml` and `dojotools_calendar.yaml`. Office carries Teams + Mail only. |
 | **Flynn** | v4.5.6 | Household membership + identity manifest at bootstrap, warmup timer |
@@ -423,14 +593,25 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_scheduler.yaml` | v4.5.5: `deferred_script_reload` and `deferred_reload_all` event triggers added |
 | `dojotools/dojotools_spamaster.yaml` | v3.3.0: replaces calderaspas |
 | `dojotools/dojotools_zenlux.yaml` | v0.5.1: sync_shades, burnout timer, RM hold gate |
+| `dojotools/dojotools_autovac.yaml` | New — v3.11.0. Full autonomous vacuum surface. |
+| `dojotools/.autovac_presets/*.yaml` | New — 8 Roborock model presets (loaded via `!include`) |
+| `dojotools/dojotools_dispatcher.yaml` | v1.2.0: autovac route added (all 17 fields) |
+| `dojotools/dojotools_identity.yaml` | v4.7.0: presence block, `cabinet`/`person_entity` explicit keys, reverse residents enriched |
+| `dojotools/dojotools_index.yaml` | v5.0.1: `person.*` identity overlay via script call, `person_list` FG-38 guard |
+| `custom_templates/zenos_ai/zen_identity.jinja` | New — v1.1.0. Template-surface identity resolver. |
+| `plugins/grocy/grocy.yaml` | v4.44.0: chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW + null-unit guard, to_unit_id field |
 | `flynn_oobe.yaml` | v4.2.0: RM-native room setup, persona handoff step, security_camera label |
 | `zenos_ai/docs/room_manager.md` | New — v1.42.0 full reference |
 | `zenos_ai/docs/plant_manager.md` | New — v1.2.2 full reference |
 | `zenos_ai/docs/media_manager.md` | New |
 | `zenos_ai/docs/spamaster.md` | New — includes calderaspas migration note |
+| `zenos_ai/docs/autovac.md` | New — v3.11.0 full reference |
 | `zenos_ai/docs/alertmanager.md` | Updated |
 | `zenos_ai/docs/zenlux.md` | Updated |
 | `zenos_ai/docs/zenshade.md` | New |
+| `zenos_ai/docs/scripts/zen_dojotools_identity_readme.md` | v4.7.0: presence block, lens pivot, template surface, RecursionError note |
+| `zenos_ai/docs/scripts/zen_dojotools_inspect_readme.md` | v5.0.1: person.* overlay section, person_list identity enrichment |
+| `plugins/grocy/readme.md` | v4.44.0: new modes, null-unit doctrine, unit conversions, product groups |
 | `zenos_ai/docs/getting_started/oobe.md` | v4.2.0 RM-native room setup; security_camera label; persona handoff |
 | `zenos_ai/docs/getting_started/first_run.md` | v2026.6.0; Room Manager in rooms step; persona handoff; security_camera |
 | `zenos_ai/docs/readme.md` | v2026.6.0; Tool Reference section; 2026.6.0 What's New; roadmap entry |

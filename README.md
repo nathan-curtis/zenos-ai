@@ -18,9 +18,9 @@ And a few things that are.
 >
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-**What's in Clue:** The AI knows which room. Every room. And what's connected to it.
+**What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it.
 
-2026.6.0 ships **Room Manager v1.42.0** (full spatial topology — portals, adjacency, exits, safety equipment, emergency routing), **Plant Manager v1.2.2** (physical plant + energy: electric live watts, utility billing, grid carbon, water, gas, HVAC, sump, circuits, validate), **Media Manager v0.7.2** (whole-home discovery and intent routing), **Security Manager v1.2.0** (replaces alarm_panel, room-aware zone inventory), **OOBE v4.2.0** (RM-native first-run room setup), and **ZenShade v0.2.2** (cover management with ZenLux sync). Every room-aware tool now reads from a navigable spatial map instead of a flat entity list.
+2026.6.0 ships **Room Manager v1.42.0** (full spatial topology — portals, adjacency, exits, safety equipment, emergency routing), **Plant Manager v1.2.2** (physical plant + energy: electric live watts, utility billing, grid carbon, water, gas, HVAC, sump, circuits, validate), **Media Manager v0.7.2** (whole-home discovery and intent routing), **Security Manager v1.2.0** (replaces alarm_panel, room-aware zone inventory), **OOBE v4.2.0** (RM-native first-run room setup), **ZenShade v0.2.2** (cover management with ZenLux sync), and **AutoVac v3.11.0** (autonomous vacuum management: room election, schedule-aware runs, full consumables ERP loop via Grocy, wear sensor alerting, post-dock camera map analysis — zero hardcoded entity IDs). Identity v4.7.0 adds a presence block to every person resolve (zone, at_home, area — consent-gated), a new template-surface resolver (`zen_identity.jinja`), and the three-plane lens pivot: ZenOS cabinet ↔ HA person entity ↔ HA area, navigable from any direction. Every room-aware tool now reads from a navigable spatial map instead of a flat entity list.
 
 → [Release Notes — Clue](zenos_ai/docs/releases/clue.md) *(beta)*
 
@@ -328,6 +328,7 @@ packages/zenos_ai/
     dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
     dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
+    dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
     dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
 
     — Productivity —
@@ -355,6 +356,7 @@ custom_templates/zenos_ai/
   zen_os_1.jinja               — Prompt engine and macro library
   zen_query.jinja              — ZenQuery filter engine
   zenos_cabinets.jinja         — Cabinet macro library (safe drawer I/O, FG-38 normalization)
+  zen_identity.jinja           — Template-surface identity resolver (Jinja2 contexts, sensors, cortex macros)
   library_index.jinja          — Library index
   conversation_agent_prompt_template.yaml — Paste into conversation agent system prompt
 ```
