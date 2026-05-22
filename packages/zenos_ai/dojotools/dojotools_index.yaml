@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Index Cluster
-# Version: 4.9.1
+# Version: 5.0.1
 #
 # Scripts:
 #   zen_dojotools_query   — ZQ-1 entity filter/query engine
@@ -627,9 +627,43 @@ script:
         sequence:
         - variables:
             _mode_result: >-
+              {%- set _user_cabs = label_entities('zen_user_cabinet') | list -%}
               {%- set ns = namespace(list=[]) -%}
               {%- for s in states.person | list -%}
                 {%- set eid = s.entity_id -%}
+                {# Find personal cabinet — zen_user_cabinet label only (excludes group cabs) #}
+                {%- set ns_c = namespace(cab='') -%}
+                {%- for lbl in labels(eid) | reject('match', '^zen_') | list if ns_c.cab == '' -%}
+                  {%- set _c = label_entities(lbl) | select('in', _user_cabs) | list | first | default('') -%}
+                  {%- if _c != '' -%}{%- set ns_c.cab = _c -%}{%- endif -%}
+                {%- endfor -%}
+                {%- if ns_c.cab != '' -%}
+                  {%- set _vars = state_attr(ns_c.cab, 'variables') | default({}, true) -%}
+                  {%- set _vars = _vars if _vars is mapping else {} -%}
+                  {%- set _up_raw = _vars.get('_user_profile') -%}
+                  {%- set _up_val = _up_raw.get('value', _up_raw) if _up_raw is mapping and 'value' in _up_raw else (_up_raw if _up_raw is mapping else {}) -%}
+                  {%- set _up = _up_val | from_json if _up_val is string else _up_val -%}
+                  {%- set _fp_raw = _vars.get('_family_profile') -%}
+                  {%- set _fp_val = _fp_raw.get('value', _fp_raw) if _fp_raw is mapping and 'value' in _fp_raw else (_fp_raw if _fp_raw is mapping else {}) -%}
+                  {%- set _fp = _fp_val | from_json if _fp_val is string else _fp_val -%}
+                  {%- set _p = _up if (_up is mapping and _up | length > 0) else (_fp if _fp is mapping else {}) -%}
+                  {%- set _tr = _p.get('tracking', {}) if _p is mapping else {} -%}
+                  {%- set _zone_ok = _tr.get('gps_zone', false) | bool -%}
+                  {# Use eid (the person entity itself) for zone — most reliable source #}
+                  {%- set _zone = states(eid) if _zone_ok else 'consent_required' -%}
+                  {%- set _identity = {
+                    'cabinet': ns_c.cab,
+                    'name': _p.get('preferred_name', _p.get('name', '')) if _p is mapping else '',
+                    'role': _p.get('role', '') if _p is mapping else '',
+                    'presence': {
+                      'person_entity': eid,
+                      'zone': _zone,
+                      'at_home': (states(eid) == 'home') if _zone_ok else none
+                    }
+                  } -%}
+                {%- else -%}
+                  {%- set _identity = none -%}
+                {%- endif -%}
                 {%- set ns.list = ns.list + [{
                   'entity_id': eid,
                   'name': state_attr(eid, 'friendly_name') | default('', true),
@@ -638,7 +672,8 @@ script:
                   'device_trackers': (state_attr(eid, 'device_trackers') or []) | list,
                   'source': state_attr(eid, 'source') | default('', true),
                   'lat': state_attr(eid, 'latitude') | default(none, true),
-                  'lon': state_attr(eid, 'longitude') | default(none, true)
+                  'lon': state_attr(eid, 'longitude') | default(none, true),
+                  'identity': _identity
                 }] -%}
               {%- endfor -%}
               {{ {
@@ -1074,6 +1109,36 @@ script:
               {{- ns.out -}}
         - if:
           - condition: template
+            value_template: "{{- current_entity.startswith('person.') -}}"
+          then:
+          - variables:
+              _person_user_label: >-
+                {%- set _ucabs = label_entities('zen_user_cabinet') | list -%}
+                {%- set ns = namespace(lbl='') -%}
+                {%- for lbl in labels(current_entity) | reject('match', '^zen_') | list if ns.lbl == '' -%}
+                  {%- if label_entities(lbl) | select('in', _ucabs) | list | count > 0 -%}
+                    {%- set ns.lbl = lbl -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{- ns.lbl -}}
+          - if:
+            - condition: template
+              value_template: "{{- _person_user_label != '' -}}"
+            then:
+            - action: script.zen_dojotools_identity
+              data:
+                mode: resolve
+                user_label: "{{- _person_user_label -}}"
+                caller_token: inspect-identity
+              response_variable: _person_identity
+            else:
+            - variables:
+                _person_identity: "{{- {} | tojson -}}"
+          else:
+          - variables:
+              _person_identity: "{{- {} | tojson -}}"
+        - if:
+          - condition: template
             value_template: "{{- _show_history and stats_eligible -}}"
           then:
           - action: recorder.get_statistics
@@ -1136,6 +1201,10 @@ script:
               {%- endif -%}
               {%- if drawer_result is not none and drawer_result != 'none' -%}
                 {%- set ns.out = ns.out | combine({'drawer': drawer_result}) -%}
+              {%- endif -%}
+              {%- set _pi = _person_identity | from_json if _person_identity is string else _person_identity -%}
+              {%- if _pi is mapping and _pi.get('is_person', false) -%}
+                {%- set ns.out = ns.out | combine({'identity': _pi}) -%}
               {%- endif -%}
               {{- ns.out -}}
             results: "{{- (results + [entity_result]) | list -}}"
@@ -2363,7 +2432,11 @@ automation:
                   correlation_id: "{{- correlation_id ~ '_c' ~ repeat.index -}}"
               timeout: 3
             - variables:
-                resolved_children: "{{- resolved_children + [ wait.trigger.event.data.response ] -}}"
+                resolved_children: >-
+                  {{- resolved_children + [
+                    wait.trigger.event.data.response if (wait.trigger is not none)
+                    else {'result': {'simple': [], 'entity_count': 0}, 'status': 'timeout'}
+                  ] -}}
         - variables:
             parsed_cmd: >
               {{-
