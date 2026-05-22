@@ -1,0 +1,2601 @@
+###############################################################################
+# DojoTools — Autovac
+# zen_dojotools_autovac (v3.11.0)
+#
+# Full vacuum control surface. All room state stored in the household cabinet
+# ('autovac' drawer). Zero hardcoded entity IDs — all discovery via HA labels.
+#
+# Quick-start:
+#   1. Apply labels in HA Settings > Labels + Entities:
+#        autovac           → vacuum entity, map camera, last-clean sensors
+#        autovac_dnd           → DnD binary_sensor (optional — disables runs when on)
+#        autovac_water_low     → water-low binary_sensor (optional — warns in briefing)
+#        autovac_schedule      → schedule entities that trigger runs
+#        autovac_current_room  → vacuum current-room sensor (optional — enables per-room timing stats)
+#   2. Add rooms:
+#        mode=configure room=<slug> config='{"enabled":true,"segment":<num>,"days_between":7}'
+#   3. Run mode=setup to verify label wiring.
+#   4. Place triggers in your personal KFC trigger file — see mode=help for details.
+#
+# Cabinet drawer: 'autovac' in Zen Household Cabinet
+#   system:  {enabled, pause_today, minimum_battery, water_low_action, <schedule_slug>_has_run}
+#   rooms:   {<slug>: {enabled, segment, days_between, require_confirmation,
+#              last_cleaned, queued, skip_next, ready_to_clean, requires_mop}}
+#
+# Modes: status, help, setup, queue, dequeue, clear, skip, unskip, ready,
+#        unready, mark_cleaned, configure, pause, unpause, clean, run,
+#        analyze, briefing, handle_ack, nightly_reset, morning_reset,
+#        consumables (action=status|add_to_shopping|log_replaced|log_purchased|provision),
+#        check_wear (wear_entity= optional; omit for post-dock scan-all via analyze)
+###############################################################################
+
+script:
+
+  zen_dojotools_autovac:
+    alias: "Zen DojoTools Autovac (v3.11.0)"
+    description: >-
+      Full autonomous vacuum surface — room election, schedule-aware runs, inventory ERP loop for consumables.
+      Use mode=help for full docs, label conventions, cabinet schema, and config recipes.
+      mode=status: live snapshot — vacuum state, battery, elected rooms, next schedule.
+      mode=setup: verify label wiring. mode=configure: view/update room or system settings.
+      mode=preset preset=<name> rooms=<csv>: apply named config bundle.
+      mode=queue/dequeue/skip/unskip/ready/unready/mark_cleaned room=<slug>: room state ops.
+      mode=clean rooms=<csv>: immediate clean. mode=run_elected: run elected rooms now.
+      mode=pause/unpause: gate today runs.
+      mode=consumables action=status: stock levels. action=add_to_shopping: queue low/out.
+      action=log_replaced part=<key>: record swap. action=log_purchased part=<key> amount=<n>: log spares.
+      action=provision: first-time ERP setup (idempotent).
+      mode=check_wear: IoT wear alert. wear_entity= targets one part; omit for scan-all (post-dock use).
+    fields:
+      mode:
+        name: Mode
+        description: "status|help|setup|configure|consumables|check_wear|etc. Default: status."
+        default: status
+        selector:
+          select:
+            options:
+              - status
+              - help
+              - setup
+              - queue
+              - dequeue
+              - clear
+              - skip
+              - unskip
+              - ready
+              - unready
+              - mark_cleaned
+              - configure
+              - preset
+              - consumables
+              - check_wear
+              - pause
+              - unpause
+              - clean
+              - run_elected
+              - run
+              - analyze
+              - briefing
+              - handle_ack
+              - nightly_reset
+              - morning_reset
+      caller_token:
+        name: Caller Token
+        description: "Optional governance token — echoed in all responses."
+        selector:
+          text:
+      room:
+        name: Room
+        description: "Room slug. Required for queue/dequeue/skip/unskip/ready/unready/configure."
+        selector:
+          text:
+      config:
+        name: Config
+        description: "JSON string. configure: room fields to update. setup: {create_labels:true}."
+        selector:
+          text:
+      rooms:
+        name: Rooms (clean mode)
+        description: "CSV room slugs. Required for mode=clean; optional for mode=preset."
+        selector:
+          text:
+      dry_run:
+        name: Dry Run
+        description: "run_elected only: preview without firing vacuum."
+        default: false
+        selector:
+          boolean:
+      action:
+        name: Consumables Action
+        description: "Consumables sub-action. See mode=help for full details. Default: status."
+        selector:
+          text:
+      part:
+        name: Part Key
+        description: "Part key for log_replaced/log_purchased. See mode=help for valid keys."
+        selector:
+          text:
+      amount:
+        name: Amount
+        description: "Quantity for consumables log_purchased. Default: 1."
+        default: 1
+        selector:
+          number:
+            min: 1
+            step: 1
+      wear_entity:
+        name: Wear Entity
+        description: "HA entity_id of wear sensor for check_wear. Omit to scan all."
+        selector:
+          text:
+      preset:
+        name: Preset Name
+        description: "Preset name. Omit to list all available presets."
+        selector:
+          text:
+      model_preset:
+        name: Model Preset
+        description: "Model preset key for action=provision. See mode=help for available keys."
+        selector:
+          text:
+      schedule_entity_id:
+        name: Schedule Entity ID
+        description: "Triggering schedule entity. Required for mode=run."
+        selector:
+          text:
+      trigger_id:
+        name: Trigger ID
+        description: "Context for mode=analyze: 'docked' or 'error'."
+        selector:
+          text:
+      ack_action:
+        name: Ack Action
+        description: "Action taken (cancel, timeout, etc.). Required for mode=handle_ack."
+        selector:
+          text:
+      ack_context:
+        name: Ack Context
+        description: "Context string from postman ack. For mode=handle_ack."
+        selector:
+          text:
+      pm_tag:
+        name: Postman Tag
+        description: "Postman log tag for cleanup. For mode=handle_ack."
+        selector:
+          text:
+    sequence:
+
+      # -- 0 Normalize inputs --------------------------------------------------
+      - variables:
+          _mode:               "{{ mode | default('status') | lower | trim }}"
+          _caller_token:       "{{ caller_token | default('') | string | trim }}"
+          _room:               "{{ room | default('') | string | lower | trim | replace(' ', '_') }}"
+          _rooms:              "{{ rooms | default('') | string | lower | trim }}"
+          _schedule_entity_id: "{{ schedule_entity_id | default('') | string | trim }}"
+          _trigger_id:         "{{ trigger_id | default('docked') | string | trim }}"
+          _ack_action:         "{{ ack_action | default('') | string | lower | trim }}"
+          _ack_context:        "{{ ack_context | default('') | string | trim }}"
+          _pm_tag:             "{{ pm_tag | default('') | string | trim }}"
+          _config:             "{{ config | default('{}') | string | trim }}"
+
+      # -- 0.5 Entity discovery via labels ------------------------------------
+      - variables:
+          _hh_cabinet: >-
+            {{ label_entities('Zen Household Cabinet')
+               | select('match', 'sensor\.')
+               | list | first | default('') }}
+          _vac_ent: >-
+            {{ label_entities('autovac')
+               | select('match', 'vacuum\.')
+               | list | first | default('') }}
+          _cam_ent: >-
+            {{ label_entities('autovac')
+               | select('match', 'camera\.')
+               | list | first | default('') }}
+          _dnd_ent: >-
+            {{ label_entities('autovac_dnd')
+               | select('match', 'binary_sensor\.')
+               | list | first | default('') }}
+          _water_low_ent: >-
+            {{ label_entities('autovac_water_low')
+               | select('match', 'binary_sensor\.')
+               | list | first | default('') }}
+          _last_area_ent: >-
+            {{ label_entities('autovac')
+               | select('match', 'sensor\.')
+               | select('search', 'last_clean_area')
+               | list | first | default('') }}
+          _last_dur_ent: >-
+            {{ label_entities('autovac')
+               | select('match', 'sensor\.')
+               | select('search', 'last_clean_dur')
+               | list | first | default('') }}
+          _last_start_ent: >-
+            {{ label_entities('autovac')
+               | select('match', 'sensor\.')
+               | select('search', 'last_clean_start')
+               | list | first | default('') }}
+
+      # -- help (early exit — no cabinet state needed) -------------------------
+      - if: "{{ _mode == 'help' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'help',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'quick_start': 'Label your vacuum entity with autovac, DnD sensor with autovac_dnd (optional), water-low sensor with autovac_water_low (optional), schedule entities with autovac_schedule, vacuum current-room sensor with autovac_current_room (optional). Add rooms via mode=configure. Run mode=setup to verify wiring. Roborock native: use mode=configure room=<slug> config={"area_id":"<ha_area>"} if HA area name differs from room slug.',
+                  'modes': {
+                    'consumables': 'ERP+IoT consumables loop. Parts: dust_bags, hepa_filter, main_brush, side_brushes, washable_pad, disposable_pads. action=status (default): stock levels for all parts — returns consumables[] (part/name/sku/amount/status ok|low|out) + shopping_actions[] for low/out items. action=add_to_shopping: auto-queue all low/out parts to shopping list in one call. action=log_replaced part=<key>: record a swap — consumes one spare from stock + executes linked maintenance chore. action=log_purchased part=<key> amount=<n>: log buying spares — adds stock at the configured storage location. action=provision: flagship first-time setup — reads robot SN from HA entity, creates inventory dock location + catalog products + maintenance chores, stores full catalog in household cabinet under autovac.grocy_catalog. Idempotent (SN key). Re-run with config={"force":true} to re-provision. Cabinet catalog overrides hardcoded product IDs after first provision.',
+                  'status': 'Full system snapshot: vacuum_state/battery, system_config (enabled/pause/water_low_action/min_battery), integration (roborock_native|xiaomi_miio), current_room (if live), schedule_entities (per-schedule state+has_run_today+next_event), last_run, next_schedule, schedule_active, elected/queued/skipped rooms, room_decisions, run_readiness.',
+                    'setup': 'Verify label wiring and audit all room configs. result=ok|warn|error|needs_config. room_audit has per-room issues + suggestions. action_queue lists all fix commands. config={"create_labels":true} creates missing label objects.',
+                    'configure': 'room=<slug> alone: show current settings. room=<slug> config=<json>: update (enabled, segment, area_id, days_between, requires_ready, notes, requires_mop). require_confirmation accepted as alias for requires_ready (normalized on write). area_id: overrides default room-slug when mapping to HA areas for roborock native vacuum.clean_area. No room=: view/set system config (water_low_action=warn|stop, enabled).',
+                    'preset': 'Apply a named config bundle to one or more rooms in one call. preset=<name> rooms=<csv> (or room=<slug>). No args: list all presets + their settings. Presets patch specified fields only — other settings preserved. Available: obstacle_prone, mop_room, guest_room, high_traffic, twice_weekly, weekly, disabled, standard.',
+                    'queue': 'Force-add a room to the next run. room=<slug> required.',
+                    'dequeue': 'Remove a room from force-queue. room=<slug> required.',
+                    'clear': 'Clear all force-queued rooms.',
+                    'skip': 'Skip a room on the next scheduled run. room=<slug> required.',
+                    'unskip': 'Clear skip-next flag. room=<slug> required.',
+                    'ready': 'Mark a room ready for confirmed cleaning. room=<slug> required.',
+                    'unready': 'Clear ready flag. room=<slug> required.',
+                    'mark_cleaned': 'Record today as last cleaned date. room=<slug> required.',
+                    'pause': 'Pause all scheduled runs for today.',
+                    'unpause': 'Resume scheduled runs today.',
+                    'clean': 'Immediate clean by room slug(s). rooms=<csv> required. Uses vacuum.clean_area (roborock native) or segment IDs (xiaomi_miio). Vacuum must be docked or idle.',
+                    'run_elected': 'Run all currently elected rooms now. dry_run=true previews and sends Postman notification without firing vacuum.',
+                    'run': 'Run scheduled clean with all guards. schedule_entity_id required. Called by automation.',
+                    'analyze': 'Analyze last job map via camera tool. trigger_id=docked|error. Called by automation.',
+                    'briefing': 'Build and send pre-run briefing via Postman ~30 min before a run. Called by automation.',
+                    'handle_ack': 'Process a Postman ack. ack_action + ack_context + pm_tag. Called by automation.',
+                    'nightly_reset': 'Reset daily run flags and pause state. Called at midnight by automation.',
+                    'morning_reset': 'Clear is_ready flags after morning run starts. Called by automation.',
+                    'check_wear': 'IoT wear trigger — wear_entity= required (HA entity_id of the sensor that fired). Resolves part from catalog wear_entity map, reads current wear %, compares against catalog threshold. If worn: checks stock; if out-of-stock adds to shopping list; sends Postman push alert; executes linked maintenance chore if chore_id set. category field in catalog distinguishes bot parts (brushes/pads, wear-sensor wired) from dock parts (bags/HEPA). Called by KFC wear automation via HA 2025.12+ label-based numeric_state trigger on autovac_wear label.'
+                  },
+                  'cabinet_schema': {
+                    'drawer': 'autovac',
+                    'system_keys': 'enabled, pause_today, minimum_battery, water_low_action, <schedule_slug>_has_run',
+                    'room_keys': 'enabled, segment, area_id, days_between, requires_ready, notes, requires_mop, last_cleaned, queued, skip_next, is_ready',
+                    'grocy_catalog': 'Written by action=provision. Top-level: robot_name, model, entity_id, serial_number, model_preset, machine_product_id, dock_location_id, bot_location_id, dock_bins_location_id, spare_location_id. parts dict keyed by part slug — each entry: product_id, name, sku, storage_location_id (spare bin), installed_location_id (bot or dock_bins), min_stock, chore_id, category (bot|dock), wear_sensor_key, wear_threshold, wear_entity.'
+                  },
+                  'label_conventions': {
+                    'autovac': 'vacuum entity + map camera + last-clean area/duration/start sensors',
+                    'autovac_dnd': 'DnD binary_sensor — gates runs when on (optional)',
+                    'autovac_water_low': 'water-low binary_sensor — warns in briefing; gates mop-room runs when water_low_action=stop (optional)',
+                    'autovac_schedule': 'schedule entities that trigger mode=run (and mode=morning_reset)',
+                    'autovac_wear': 'Roborock wear sensors (main_brush_left, side_brush_left, filter_remaining, mop_lifespan) — applied at provision time to wire IoT→ERP alerts. Post-dock wear check fires mode=check_wear scan-all after each dock via vacuum.docked label trigger (HA 2025.12+). Real-time per-sensor alert pending numeric_state label target support.',
+                    'autovac_current_room': 'vacuum current-room sensor — enables per-room timing stats; state=unavailable silently skipped (optional)',
+                    'Zen Household Cabinet': 'system label — household cabinet sensor (required)'
+                  },
+                  'agent_hints': 'When onboarding or troubleshooting: (1) suggest applying HA labels first — autovac_current_room: <sensor_entity_id>; (2) use mode=preset preset=<name> rooms=<csv> to apply a named config bundle to one or more rooms in one call — faster than configure for common scenarios; (3) use mode=configure room=<slug> config={"key": "value"} for custom settings not covered by a preset; (4) area_id: key sets HA area override for roborock native vacuum.clean_area — suggest it when room slug does not match HA area name; (5) consumables ERP loop: mode=consumables action=provision (first-time setup — creates inventory locations/products/chores, idempotent via HA entity_id); action=status (check stock, get shopping_actions[]); action=add_to_shopping (auto-queue out/low to shopping list); action=log_replaced part=<key> (record a swap, consumes spare); action=log_purchased part=<key> amount=<n> (log buying spares); (6) wear alert recovery: when check_wear fires, result=alert means the part is worn. If stock=0 it was added to the shopping list automatically — confirm with action=status. If stock>0 user just needs to physically install the spare then run action=log_replaced part=<key>. If result=not_found the wear_entity is not in the catalog — re-provision to rebuild the wear_entity map.',
+                  'config_recipes': {
+                    'obstacle_prone_room': 'Room where socks/cables/chairs get left out: requires_ready=true — blocked until mode=ready room=<slug>. Once marked ready AND due AND vacuum available (AND water OK if requires_mop), fires automatically on next scheduled run. morning_reset re-gates after the run. Shortcut: mode=preset preset=obstacle_prone rooms=<csv>',
+                    'mop_room': 'Kitchen, bathroom, hallway that needs mopping: requires_mop=true. When water tank is low: water_low_action=warn lets run proceed with a warning; water_low_action=stop blocks mop rooms entirely (mode=configure config={"water_low_action":"stop"}). Shortcut: mode=preset preset=mop_room rooms=<csv>',
+                    'guest_room': 'Room only cleaned between guests: days_between=14 + requires_ready=true. Sits idle until mode=ready after guest leaves — then auto-fires next election cycle. Shortcut: mode=preset preset=guest_room rooms=<csv>',
+                    'high_traffic': 'Kitchen or entry hall cleaned daily: days_between=1 — elected every run as long as vacuum available. Also twice_weekly (days_between=3) and weekly (days_between=7). Shortcut: mode=preset preset=high_traffic rooms=<csv>',
+                    'seasonal_disable': 'Room under renovation or skipped indefinitely: enabled=false — completely removed from election, no briefing mention. Shortcut: mode=preset preset=disabled rooms=<csv>',
+                    'force_one_off': 'Add any room to the next run regardless of days_between: mode=queue room=<slug>. Cleared automatically after the run.',
+                    'skip_next': 'Keep a room out of one specific run: mode=skip room=<slug>. Auto-clears after the next scheduled run passes.',
+                    'election_flow': 'A room is elected when: enabled=true AND due (days_since_cleaned >= days_between OR queued=true) AND (requires_ready=false OR is_ready=true) AND skip_next=false. All gates must pass. Vacuum state + water checks happen at run time, not election time.'
+                  },
+                  'trigger_automation_modes': 'run, analyze, briefing, handle_ack, nightly_reset, morning_reset, check_wear are called by KFC automations in your personal install file. check_wear (scan-all) fires after each dock via vacuum.docked label trigger (HA 2025.12+ purpose-specific trigger). Single-entity check_wear available for future numeric_state label trigger when HA adds that support.',
+                  'model_presets': 'action=provision requires model_preset=<key>. Generics (REPLACE_SKU placeholders): roborock_generic_dock (VibraRise + standard dock), roborock_generic_dock_ultra (VibraRise + ultra dock), roborock_generic_dock_nomop (no mop). Runnable: roborock_s7_plus, roborock_s7_maxv_ultra, roborock_s8_plus*, roborock_s8_pro_ultra*, roborock_q7_max_plus* (* = VERIFY_SKU on 1-2 parts). Preset files in .autovac_presets/ dir alongside engine. Add new models by dropping a YAML file and adding an !include entry to the _preset_lib block in provision Step 0.'
+                } }}
+          - stop: "autovac help"
+            response_variable: response
+
+      # -- 0.6 Cabinet — read autovac config drawer ----------------------------
+      - action: script.zen_dojotools_filecabinet
+        data:
+          action_type: read
+          volume_entity_id: "{{ _hh_cabinet }}"
+          key: autovac
+        response_variable: _fc_av
+      - variables:
+          _av_rooms: >-
+            {%- set outer = _fc_av.get('result', '{}') -%}
+            {%- set outer = (outer | from_json) if outer is string else outer -%}
+            {%- set val = outer.get('autovac', {}).get('value', '{}') -%}
+            {%- set cfg = (val | from_json) if val is string else val -%}
+            {{ cfg.get('rooms', {}) }}
+          _av_system: >-
+            {%- set outer = _fc_av.get('result', '{}') -%}
+            {%- set outer = (outer | from_json) if outer is string else outer -%}
+            {%- set val = outer.get('autovac', {}).get('value', '{}') -%}
+            {%- set cfg = (val | from_json) if val is string else val -%}
+            {{ cfg.get('system', {}) }}
+
+      # -- setup (after cabinet read so drawer status can be reported) ---------
+      - if: "{{ _mode == 'setup' }}"
+        then:
+          - variables:
+              _setup_cfg:            "{{ _config | from_json(default={}) }}"
+              _cabinet_ok:           "{{ _hh_cabinet != '' }}"
+              _drawer_ok:            "{{ _av_rooms | length > 0 or _av_system | length > 0 }}"
+              _vac_ok:               "{{ _vac_ent != '' }}"
+              _cam_ok:               "{{ _cam_ent != '' }}"
+              _dnd_ok:               "{{ _dnd_ent != '' }}"
+              _water_ok:             "{{ _water_low_ent != '' }}"
+              _sched_ok:             "{{ label_entities('autovac_schedule') | list | length > 0 }}"
+              _setup_use_clean_area: "{{ _vac_ent != '' and _vac_ent in integration_entities('roborock') }}"
+              _setup_cur_room_ent: >-
+                {{ label_entities('autovac_current_room') | select('match', 'sensor\.') | list | first | default('') }}
+          - variables:
+              _cur_room_ok:   "{{ _setup_cur_room_ent != '' }}"
+              _cur_room_live: >-
+                {{ _setup_cur_room_ent != '' and states(_setup_cur_room_ent) not in ['unavailable', 'unknown', ''] }}
+              _create_labels: "{{ _setup_cfg.get('create_labels', false) | bool(false) }}"
+              _missing_label_names: >-
+                {%- set ns = namespace(m=[]) -%}
+                {%- if not _vac_ok -%}{%- set ns.m = ns.m + ['autovac'] -%}{%- endif -%}
+                {%- if not _dnd_ok -%}{%- set ns.m = ns.m + ['autovac_dnd'] -%}{%- endif -%}
+                {%- if not _water_ok -%}{%- set ns.m = ns.m + ['autovac_water_low'] -%}{%- endif -%}
+                {%- if not _sched_ok -%}{%- set ns.m = ns.m + ['autovac_schedule'] -%}{%- endif -%}
+                {%- if not _cur_room_ok -%}{%- set ns.m = ns.m + ['autovac_current_room'] -%}{%- endif -%}
+                {{ ns.m }}
+          - if: "{{ _create_labels and _missing_label_names | length > 0 }}"
+            then:
+              - action: script.zen_dojotools_labels
+                data:
+                  action_type: create
+                  label_list: "{{ _missing_label_names }}"
+          - variables:
+              _room_audit: >-
+                {%- set ns = namespace(audit=[]) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- set iss = namespace(i=[]) -%}
+                  {%- set sug = namespace(s=[]) -%}
+                  {%- set seg = rv.get('segment', 0) | int(0) -%}
+                  {%- set db  = rv.get('days_between', 0) | int(0) -%}
+                  {%- set lc  = rv.get('last_cleaned', '') -%}
+                  {%- if rv.get('enabled', true) and not _setup_use_clean_area and seg == 0 -%}
+                    {%- set iss.i = iss.i + ['segment missing — room cannot be cleaned (xiaomi_miio requires segment ID)'] -%}
+                    {%- set sug.s = sug.s + ['mode=configure room=' ~ rn ~ ' config={"segment": <map_id>}'] -%}
+                  {%- endif -%}
+                  {%- if _setup_use_clean_area and rv.get('area_id', '') == '' -%}
+                    {%- set sug.s = sug.s + ['if HA area differs from slug: mode=configure room=' ~ rn ~ ' config={"area_id": "<ha_area>"}'] -%}
+                  {%- endif -%}
+                  {%- if rv.get('enabled', true) and db <= 0 -%}
+                    {%- set iss.i = iss.i + ['days_between is 0 — room will never become due'] -%}
+                    {%- set sug.s = sug.s + ['mode=configure room=' ~ rn ~ ' config={"days_between": 7}'] -%}
+                  {%- endif -%}
+                  {%- if lc != '' -%}
+                    {%- set days_ago = ((now().timestamp() - as_timestamp(lc ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
+                    {%- if days_ago > 365 -%}
+                      {%- set iss.i = iss.i + ['last_cleaned is ' ~ days_ago ~ ' days ago — may be stale'] -%}
+                      {%- set sug.s = sug.s + ['mode=mark_cleaned room=' ~ rn ~ '  (if cleaned recently)'] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {%- set is_err = rv.get('enabled', true) and not _setup_use_clean_area and seg == 0 -%}
+                  {%- set status = 'error' if is_err else ('warn' if iss.i | length > 0 else 'ok') -%}
+                  {%- set ns.audit = ns.audit + [{
+                    'room': rn, 'enabled': rv.get('enabled', true),
+                    'segment': seg, 'area_id': rv.get('area_id', ''),
+                    'days_between': db, 'requires_ready': rv.get('requires_ready', false),
+                    'requires_mop': rv.get('requires_mop', false),
+                    'last_cleaned': lc, 'status': status,
+                    'issues': iss.i, 'suggestions': sug.s}] -%}
+                {%- endfor -%}
+                {{ ns.audit }}
+          - variables:
+              _setup_action_queue: >-
+                {%- set ns = namespace(q=[]) -%}
+                {%- for ra in _room_audit -%}
+                  {%- for s in ra.suggestions -%}
+                    {%- set ns.q = ns.q + [s] -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+                {%- if not _cur_room_ok -%}
+                  {%- set ns.q = ns.q + ['Optional: label vacuum current-room sensor with autovac_current_room — enables per-room timing stats'] -%}
+                {%- elif not _cur_room_live -%}
+                  {%- set ns.q = ns.q + ['autovac_current_room sensor is ' ~ states(_setup_cur_room_ent) ~ ' — timing stats paused'] -%}
+                {%- endif -%}
+                {{ ns.q }}
+              _setup_has_errors: >-
+                {{ _room_audit | selectattr('status', 'equalto', 'error') | list | length > 0 }}
+              _setup_has_warns: >-
+                {{ _room_audit | selectattr('status', 'equalto', 'warn') | list | length > 0 }}
+          - variables:
+              _setup_result: >-
+                {%- if not _cabinet_ok or not _vac_ok or not _sched_ok -%}needs_config
+                {%- elif _setup_has_errors -%}error
+                {%- elif _setup_has_warns or _missing_label_names | length > 0 -%}warn
+                {%- else -%}ok{%- endif -%}
+              _setup_tip: >-
+                {%- if _create_labels and _missing_label_names | length > 0 -%}
+                  Label objects created. Assign entities in HA Settings > Labels, then run mode=setup again.
+                {%- elif _missing_label_names | length > 0 -%}
+                  Run mode=setup config='{"create_labels":true}' to create missing label objects, then assign entities.
+                {%- elif _setup_has_errors -%}
+                  One or more rooms have errors — check room_audit and action_queue for fix commands.
+                {%- elif _setup_has_warns -%}
+                  Setup OK with warnings — review action_queue for suggested fixes.
+                {%- else -%}
+                  All labels wired, all rooms valid.
+                {%- endif -%}
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'setup',
+                  'result': _setup_result | trim,
+                  'caller_token': _caller_token,
+                  'integration': 'roborock_native' if _setup_use_clean_area else 'xiaomi_miio',
+                  'cabinet_entity': _hh_cabinet if _cabinet_ok else 'NOT FOUND — Zen Household Cabinet label missing',
+                  'autovac_drawer': _drawer_ok,
+                  'rooms_configured': _av_rooms | length,
+                  'vacuum_entity': _vac_ent if _vac_ok else 'NOT FOUND — label a vacuum entity with autovac',
+                  'camera_entity': _cam_ent if _cam_ok else 'not found (optional)',
+                  'dnd_entity': _dnd_ent if _dnd_ok else 'not found (optional)',
+                  'water_low_entity': _water_low_ent if _water_ok else 'not found (optional)',
+                  'current_room_entity': _setup_cur_room_ent if _cur_room_ok else 'not found (optional)',
+                  'current_room_live': _cur_room_live,
+                  'schedule_entities_found': label_entities('autovac_schedule') | list | length,
+                  'missing_label_objects': _missing_label_names,
+                  'labels_created_this_run': (_create_labels and _missing_label_names | length > 0),
+                  'room_audit': _room_audit,
+                  'action_queue': _setup_action_queue,
+                  'tip': _setup_tip | trim
+                } }}
+          - stop: "autovac setup complete"
+            response_variable: response
+
+      # -- 1 System state ------------------------------------------------------
+      - variables:
+          _vacuum_state: "{{ states(_vac_ent) if _vac_ent != '' else 'unavailable' }}"
+          _battery:      "{{ state_attr(_vac_ent, 'battery_level') | int(0) if _vac_ent != '' else 0 }}"
+          _water_low:    "{{ is_state(_water_low_ent, 'on') if _water_low_ent != '' else false }}"
+          _water_low_action: "{{ _av_system.get('water_low_action', 'warn') | string | lower }}"
+          _dnd:          "{{ is_state(_dnd_ent, 'on') if _dnd_ent != '' else false }}"
+          _enabled:      "{{ _av_system.get('enabled', true) }}"
+          _use_clean_area: "{{ _vac_ent in integration_entities('roborock') }}"
+          _current_room_ent: >-
+            {{ label_entities('autovac_current_room') | select('match', 'sensor\.') | list | first | default('') }}
+      - variables:
+          _current_room_live: >-
+            {{ _current_room_ent != '' and states(_current_room_ent) not in ['unavailable', 'unknown', ''] }}
+
+      # -- 2 Elected rooms (cabinet-computed election) -------------------------
+      - variables:
+          _elected: >-
+            {%- set ns = namespace(rooms=[]) -%}
+            {%- for room_name, room in _av_rooms.items() -%}
+              {%- if room.get('enabled', false) -%}
+                {%- set last = room.get('last_cleaned', '') -%}
+                {%- set days_since = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
+                {%- set autoschedule = days_since >= room.get('days_between', 7) -%}
+                {%- set queued = room.get('queued', false) -%}
+                {%- set skip_next = room.get('skip_next', false) -%}
+                {%- set req_ready = room.get('requires_ready', room.get('require_confirmation', false)) -%}
+                {%- set is_rdy = room.get('is_ready', room.get('ready_to_clean', false)) -%}
+                {%- set ready_pass = (not req_ready) or is_rdy -%}
+                {%- set can_schedule = (not skip_next) and ready_pass -%}
+                {%- if can_schedule and (autoschedule or queued) -%}
+                  {%- set ns.rooms = ns.rooms + [{'room': room_name, 'segment': room.get('segment', 0), 'requires_mop': room.get('requires_mop', false), 'blocked': false}] -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.rooms }}
+
+      # -- 3 Queue / skip snapshots --------------------------------------------
+      - variables:
+          _queued_rooms: >-
+            {%- set ns = namespace(rooms=[]) -%}
+            {%- for room_name, room in _av_rooms.items() -%}
+              {%- set ns.rooms = ns.rooms + [{'room': room_name, 'active': room.get('queued', false)}] -%}
+            {%- endfor -%}
+            {{ ns.rooms }}
+          _skipped_rooms: >-
+            {%- set ns = namespace(rooms=[]) -%}
+            {%- for room_name, room in _av_rooms.items() -%}
+              {%- set ns.rooms = ns.rooms + [{'room': room_name, 'active': room.get('skip_next', false)}] -%}
+            {%- endfor -%}
+            {{ ns.rooms }}
+
+      # -- 4 Next schedule + active window -----------------------------------
+      - variables:
+          _next_schedule: >-
+            {%- set ns = namespace(entity='', secs=999999, label='') -%}
+            {%- set is_weekend = now().weekday() >= 5 -%}
+            {%- for s in label_entities('autovac_schedule') -%}
+              {%- set day_ok = ('weekend' in s and is_weekend) or ('weekday' in s and not is_weekend) or ('weekend' not in s and 'weekday' not in s) -%}
+              {%- if day_ok and states(s) == 'off' -%}
+                {%- set ne = state_attr(s, 'next_event') -%}
+                {%- if ne is not none -%}
+                  {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
+                  {%- if delta > 0 and delta < ns.secs -%}
+                    {%- set ns.secs = delta -%}
+                    {%- set h = as_datetime(ne).hour | int -%}
+                    {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' at ' ~ '%02d:%02d' | format(h, as_datetime(ne).minute | int) -%}
+                    {%- set ns.entity = s -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'entity': ns.entity, 'in_seconds': (ns.secs if ns.secs < 999999 else -1), 'label': ns.label} }}
+          _schedule_active: >-
+            {%- set ns = namespace(entity='', label='') -%}
+            {%- for s in label_entities('autovac_schedule') -%}
+              {%- if states(s) == 'on' -%}
+                {%- set ne = state_attr(s, 'next_event') -%}
+                {%- if ne is not none -%}
+                  {%- set h = as_datetime(ne).hour | int -%}
+                  {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' window open until ' ~ '%02d:%02d' | format(h, as_datetime(ne).minute | int) -%}
+                {%- else -%}
+                  {%- set ns.label = 'active' -%}
+                {%- endif -%}
+                {%- set ns.entity = s -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'entity': ns.entity, 'label': ns.label} if ns.entity != '' else none }}
+
+      # -- 5 Room lookup -------------------------------------------------------
+      - variables:
+          _room_exists: "{{ _room != '' and _room in _av_rooms }}"
+
+      # -- configure: show current settings if no config= provided (early exit) --
+      - if: "{{ _mode == 'configure' and _room_exists and _config == '{}' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'configure',
+                  'result': 'current_settings',
+                  'caller_token': _caller_token,
+                  'room': _room,
+                  'settings': _av_rooms[_room]
+                } }}
+          - stop: "autovac configure — current settings"
+            response_variable: response
+
+      # -- 6 Write / action ops ------------------------------------------------
+
+      - if: "{{ _mode == 'queue' and _room_exists }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine({'queued': true})}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'queue', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'note': _room ~ ' force-queued for next run'} }}
+          - stop: "autovac queue ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'dequeue' and _room_exists }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine({'queued': false})}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'dequeue', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'note': _room ~ ' removed from force-queue'} }}
+          - stop: "autovac dequeue ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'clear' }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {%- set ns = namespace(r={}) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- set ns.r = ns.r | combine({rn: rv | combine({'queued': false})}) -%}
+                {%- endfor -%}
+                {{ {'rooms': ns.r, 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'clear', 'result': 'ok', 'caller_token': _caller_token,
+                    'note': 'all force-queued rooms cleared'} }}
+          - stop: "autovac clear ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'skip' and _room_exists }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine({'skip_next': true})}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'skip', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'note': _room ~ ' will be skipped next run'} }}
+          - stop: "autovac skip ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'unskip' and _room_exists }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine({'skip_next': false})}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'unskip', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'note': _room ~ ' skip flag cleared'} }}
+          - stop: "autovac unskip ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'ready' and _room_exists }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine({'is_ready': true})}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'ready', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'note': _room ~ ' marked ready to clean'} }}
+          - stop: "autovac ready ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'unready' and _room_exists }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine({'is_ready': false})}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'unready', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'note': _room ~ ' ready flag cleared'} }}
+          - stop: "autovac unready ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'mark_cleaned' and _room_exists }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine({'last_cleaned': now().strftime('%Y-%m-%d'), 'is_ready': false})}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'mark_cleaned', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'note': _room ~ ' marked cleaned — last_cleaned set to today'} }}
+          - stop: "autovac mark_cleaned ok"
+            response_variable: response
+
+      # ---- system configure (no room — sets water_low_action, enabled) --------
+      - if: "{{ _mode == 'configure' and _room == '' }}"
+        then:
+          - variables:
+              _sys_patch: "{{ _config | from_json(default={}) }}"
+          - variables:
+              _sys_filtered: >-
+                {%- set allowed = ['water_low_action', 'enabled'] -%}
+                {%- set ns = namespace(p={}) -%}
+                {%- for k, v in _sys_patch.items() -%}
+                  {%- if k in allowed -%}{%- set ns.p = ns.p | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.p }}
+              _sys_ignored: >-
+                {%- set allowed = ['water_low_action', 'enabled'] -%}
+                {%- set ns = namespace(ign=[]) -%}
+                {%- for k in _sys_patch.keys() -%}
+                  {%- if k not in allowed -%}{%- set ns.ign = ns.ign + [k] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.ign }}
+          - if: "{{ _sys_filtered | length > 0 }}"
+            then:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                  value: >-
+                    {{ {'rooms': _av_rooms, 'system': _av_system | combine(_sys_filtered)} | tojson }}
+              - variables:
+                  response: >-
+                    {{ {'mode': 'configure', 'result': 'ok', 'caller_token': _caller_token,
+                        'scope': 'system', 'applied': _sys_filtered, 'ignored': _sys_ignored} }}
+              - stop: "autovac system configure ok"
+                response_variable: response
+          - variables:
+              response: >-
+                {{ {'mode': 'configure', 'result': 'ok', 'caller_token': _caller_token,
+                    'scope': 'system', 'current_system_config': _av_system} }}
+          - stop: "autovac system configure view"
+            response_variable: response
+
+      - if: "{{ _mode == 'configure' and _room_exists and _config != '{}' }}"
+        then:
+          - variables:
+              _cfg_patch: "{{ _config | from_json(default={}) }}"
+          - variables:
+              _cfg_normalized: >-
+                {%- set ns = namespace(p={}) -%}
+                {%- for k, v in _cfg_patch.items() -%}
+                  {%- set nk = 'requires_ready' if k == 'require_confirmation' else k -%}
+                  {%- set ns.p = ns.p | combine({nk: v}) -%}
+                {%- endfor -%}
+                {{ ns.p }}
+          - variables:
+              _cfg_filtered: >-
+                {%- set allowed = ['enabled', 'segment', 'area_id', 'days_between', 'requires_ready', 'notes', 'requires_mop'] -%}
+                {%- set ns = namespace(p={}) -%}
+                {%- for k, v in _cfg_normalized.items() -%}
+                  {%- if k in allowed -%}{%- set ns.p = ns.p | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.p }}
+              _cfg_ignored: >-
+                {%- set allowed = ['enabled', 'segment', 'area_id', 'days_between', 'requires_ready', 'notes', 'requires_mop'] -%}
+                {%- set ns = namespace(ign=[]) -%}
+                {%- for k in _cfg_normalized.keys() -%}
+                  {%- if k not in allowed -%}{%- set ns.ign = ns.ign + [k] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.ign }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms | combine({_room: _av_rooms[_room] | combine(_cfg_filtered)}), 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'configure', 'result': 'ok', 'caller_token': _caller_token,
+                    'room': _room, 'applied': _cfg_filtered, 'ignored': _cfg_ignored} }}
+          - stop: "autovac configure ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'pause' }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'pause_today': true})} | tojson }}"
+          - variables:
+              response: >-
+                {{ {'mode': 'pause', 'result': 'ok', 'caller_token': _caller_token,
+                    'note': 'scheduled runs paused for today'} }}
+          - stop: "autovac pause ok"
+            response_variable: response
+
+      - if: "{{ _mode == 'unpause' }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'pause_today': false})} | tojson }}"
+          - variables:
+              response: >-
+                {{ {'mode': 'unpause', 'result': 'ok', 'caller_token': _caller_token,
+                    'note': 'scheduled runs resumed for today'} }}
+          - stop: "autovac unpause ok"
+            response_variable: response
+
+      # ---- preset ------------------------------------------------------------
+      - if: "{{ _mode == 'preset' }}"
+        then:
+          - variables:
+              _presets: >-
+                {{ {
+                  'obstacle_prone': {'requires_ready': true},
+                  'mop_room':       {'requires_mop': true},
+                  'guest_room':     {'days_between': 14, 'requires_ready': true},
+                  'high_traffic':   {'days_between': 1},
+                  'twice_weekly':   {'days_between': 3},
+                  'weekly':         {'days_between': 7},
+                  'disabled':       {'enabled': false},
+                  'standard':       {'enabled': true, 'requires_ready': false, 'requires_mop': false, 'days_between': 7}
+                } }}
+              _preset_name: "{{ preset | default('', true) | string | lower | replace(' ', '_') }}"
+              _preset_rooms: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- set csv = (rooms | default(room | default('', true), true)) | string -%}
+                {%- for r in csv.split(',') -%}
+                  {%- set slug = r | trim | lower | replace(' ', '_') -%}
+                  {%- if slug != '' -%}{%- set ns.r = ns.r + [slug] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.r }}
+          - if: "{{ _preset_name == '' or _preset_rooms | length == 0 }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'preset', 'result': 'list', 'caller_token': _caller_token,
+                      'available_presets': _presets,
+                      'usage': 'mode=preset preset=<name> rooms=<csv>  or  room=<slug> for single room',
+                      'note': 'Presets patch the specified fields only — all other room settings are preserved.'
+                    } }}
+              - stop: "autovac preset list"
+                response_variable: response
+          - if: "{{ _preset_name not in _presets }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'preset', 'result': 'error', 'caller_token': _caller_token,
+                      'note': 'Unknown preset: ' ~ _preset_name ~ '. Call mode=preset (no args) to list available presets.',
+                      'available': _presets | list
+                    } }}
+              - stop: "autovac preset unknown"
+                response_variable: response
+          - variables:
+              _preset_patch: "{{ _presets[_preset_name] }}"
+              _preset_valid_rooms: "{{ _preset_rooms | select('in', _av_rooms) | list }}"
+              _preset_unknown_rooms: "{{ _preset_rooms | reject('in', _av_rooms) | list }}"
+          - if: "{{ _preset_valid_rooms | length == 0 }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'preset', 'result': 'error', 'caller_token': _caller_token,
+                      'note': 'No valid rooms found: ' ~ (_preset_rooms | join(', ')) ~ '. Run mode=status to see configured rooms.',
+                      'unknown_rooms': _preset_unknown_rooms
+                    } }}
+              - stop: "autovac preset no valid rooms"
+                response_variable: response
+          - variables:
+              _new_av_rooms: >-
+                {%- set ns = namespace(r={}) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- if rn in _preset_valid_rooms -%}
+                    {%- set ns.r = ns.r | combine({rn: rv | combine(_preset_patch)}) -%}
+                  {%- else -%}
+                    {%- set ns.r = ns.r | combine({rn: rv}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.r }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: "{{ {'rooms': _new_av_rooms, 'system': _av_system} | tojson }}"
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'preset', 'result': 'ok', 'caller_token': _caller_token,
+                  'preset': _preset_name,
+                  'applied_settings': _preset_patch,
+                  'rooms_updated': _preset_valid_rooms,
+                  'rooms_skipped': _preset_unknown_rooms
+                } }}
+          - stop: "autovac preset ok"
+            response_variable: response
+
+      # ---- consumables -------------------------------------------------------
+      - if: "{{ _mode == 'consumables' }}"
+        then:
+          - variables:
+              _cons_action: "{{ action | default('status', true) | string | lower | trim }}"
+              _cons_part:   "{{ part   | default('', true)       | string | lower | trim }}"
+              _cons_amount: "{{ amount | default(1, true)        | int(1) }}"
+
+          # -- Resolve catalog from cabinet (provision required) ---------------
+          - variables:
+              _gc:           "{{ _av_system.get('grocy_catalog', {}) }}"
+              _gc_parts:     "{{ _gc.get('parts', {}) }}"
+              _cons_catalog: "{{ _gc_parts if _gc_parts else {} }}"
+              _cons_robot:   "{{ _gc.get('robot_name', 'vacuum') }}"
+              _cons_model:   "{{ _gc.get('model', '') }}"
+
+          # -- Gate: catalog must exist before any consumables operation -------
+          - if: "{{ not _gc_parts and _cons_action != 'provision' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'consumables', 'status': 'not_provisioned',
+                      'caller_token': _caller_token,
+                      'message': 'Run mode=consumables action=provision first. Provision registers the robot as an inventory asset and creates the consumables catalog.',
+                      'hint': 'Three steps: (1) Find spare part bin IDs — zen_dojotools_inventory mode=locations_get_by_area area=<room> for each room where parts are stored. (2) Find or register the robot asset — mode=catalog_find_product item=<name> for machine_product_id; if not found use mode=stock_register_asset first. (3) Call mode=consumables action=provision model_preset=<key> config={"robot_name":"<nickname>","storage_location_dock_parts":<id>,"storage_location_wear_parts":<id>,"machine_product_id":<id>}. model auto-derived from preset. Available model_preset keys: see mode=help model_presets.'
+                    } }}
+              - stop: "consumables not provisioned"
+                response_variable: response
+
+          # ── action=provision ────────────────────────────────────────────────
+          - if: "{{ _cons_action == 'provision' }}"
+            then:
+              - variables:
+                  _prov_cfg:        "{{ _config | from_json(default={}) if _config is string else _config | default({}, true) }}"
+                  _prov_model:      "{{ _cons_model }}"
+                  _prov_robot_name: "{{ _prov_cfg.get('robot_name', _cons_robot) }}"
+                  _prov_existing:   "{{ _gc }}"
+              - variables:
+                  _prov_sn: >-
+                    {{ state_attr(_vac_ent, 'sn')
+                       | default(state_attr(_vac_ent, 'serial_number'), true)
+                       | default(state_attr(_vac_ent, 'serialNumber'), true)
+                       | default(_prov_cfg.get('serial_number'), true)
+                       | default(device_id(_vac_ent), true)
+                       | default(_vac_ent, true) | string }}
+                  _prov_sn_source: >-
+                    {%- if state_attr(_vac_ent, 'sn') is not none -%}sn_attr
+                    {%- elif state_attr(_vac_ent, 'serial_number') is not none -%}serial_number_attr
+                    {%- elif state_attr(_vac_ent, 'serialNumber') is not none -%}serialNumber_attr
+                    {%- elif _prov_cfg.get('serial_number') is not none -%}user_supplied
+                    {%- elif device_id(_vac_ent) is not none -%}ha_device_id
+                    {%- else -%}entity_id{%- endif -%}
+                  _prov_mpid: >-
+                    {{ (_prov_cfg.get('machine_product_id')
+                        | default(_gc.get('machine_product_id'), true)) | int(none) }}
+              - variables:
+                  _prov_sn_confidence: >-
+                    {%- if _prov_sn_source in ['sn_attr', 'serial_number_attr', 'serialNumber_attr', 'user_supplied'] -%}high
+                    {%- elif _prov_sn_source == 'ha_device_id' -%}medium
+                    {%- else -%}low{%- endif -%}
+
+              # Idempotency: entity_id OR SN — cross-ref survives integration swaps without stock rebuild
+              # entity_id changes if integration reinstalls; SN stays. SN changes if firmware hides it; entity_id stays.
+              - if: >-
+                  {{ _prov_existing and not _prov_cfg.get('force', false) and (
+                     _prov_existing.get('entity_id', '') == _vac_ent or (
+                     _prov_sn not in ['unknown', ''] and
+                     _prov_existing.get('serial_number', 'NOSN') == _prov_sn)) }}
+                then:
+                  - variables:
+                      response: >-
+                        {{ {
+                          'mode': 'consumables', 'action': 'provision',
+                          'result': 'already_provisioned', 'caller_token': _caller_token,
+                          'serial_number': _prov_sn,
+                          'sn_source': _prov_sn_source,
+                          'sn_confidence': _prov_sn_confidence,
+                          'note': 'Catalog already set up for SN: ' ~ _prov_sn ~ '. Pass config={"force":true} to re-provision.',
+                          'catalog': _prov_existing
+                        } }}
+                  - stop: "autovac provision already done"
+                    response_variable: response
+
+              # Step 0: Load model preset library and resolve the requested preset
+              - variables:
+                  _preset_lib:
+                    roborock_generic_dock: !include .autovac_presets/roborock_generic_dock.yaml
+                    roborock_generic_dock_ultra: !include .autovac_presets/roborock_generic_dock_ultra.yaml
+                    roborock_generic_dock_nomop: !include .autovac_presets/roborock_generic_dock_nomop.yaml
+                    roborock_s7_plus: !include .autovac_presets/roborock_s7_plus.yaml
+                    roborock_s7_maxv_ultra: !include .autovac_presets/roborock_s7_maxv_ultra.yaml
+                    roborock_s8_plus: !include .autovac_presets/roborock_s8_plus.yaml
+                    roborock_s8_pro_ultra: !include .autovac_presets/roborock_s8_pro_ultra.yaml
+                    roborock_q7_max_plus: !include .autovac_presets/roborock_q7_max_plus.yaml
+              - variables:
+                  _model_preset_key: >-
+                    {%- set _mp_direct = model_preset | default('', true) | trim -%}
+                    {%- set _mp_cfg    = _prov_cfg.get('model_preset', '') | trim -%}
+                    {{ (_mp_direct if _mp_direct != '' else _mp_cfg) | lower | replace(' ', '_') | replace('-', '_') | trim }}
+              - variables:
+                  _prov_preset:     "{{ _preset_lib.get(_model_preset_key, {}) }}"
+                  _prov_has_preset: "{{ _prov_preset | length > 0 }}"
+              - if: "{{ not _prov_has_preset }}"
+                then:
+                  - variables:
+                      response: >-
+                        {{ {
+                          'mode': 'consumables', 'action': 'provision',
+                          'result': 'error', 'caller_token': _caller_token,
+                          'message': 'model_preset is required. Pass model_preset=<key> with config.',
+                          'available_presets': _preset_lib.keys() | list,
+                          'hint': 'Example: model_preset=roborock_s7_maxv_ultra'
+                        } }}
+                  - stop: "provision requires model_preset"
+                    response_variable: response
+              - variables:
+                  _prov_parts_def: "{{ _prov_preset.get('parts', {}) }}"
+              # Derive model from preset brand/series/trim if not supplied in config
+              - variables:
+                  _prov_model: >-
+                    {%- set from_cfg = _prov_cfg.get('model', _cons_model) | trim -%}
+                    {%- if from_cfg != '' -%}{{ from_cfg }}
+                    {%- else -%}
+                      {%- set b = _prov_preset.get('brand', '') | trim -%}
+                      {%- set s = _prov_preset.get('series', '') | trim -%}
+                      {%- set t = _prov_preset.get('trim', '') | trim -%}
+                      {{ ([b, s, t] | reject('equalto', '') | list | join(' ')) | trim }}
+                    {%- endif -%}
+                  _prov_robot_name: >-
+                    {%- set from_cfg = _prov_cfg.get('robot_name', '') | trim -%}
+                    {%- if from_cfg != '' -%}{{ from_cfg }}
+                    {%- else -%}
+                      {%- set fn = state_attr(_vac_ent, 'friendly_name') | default('', true) | trim -%}
+                      {{ fn if fn != '' else _cons_robot }}
+                    {%- endif -%}
+
+              # Step 1: Find dock parent location from HA area of vacuum entity
+              - variables:
+                  _prov_area:      "{{ area_id(_vac_ent) | default('dining_room', true) | string }}"
+                  _prov_area_name: "{{ area_name(_vac_ent) | default('Dining Room', true) | string }}"
+                  _prov_dock_name: "{{ _prov_area_name }} - {{ _prov_model }}"
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: locations_find
+                  item: "{{ _prov_area_name }}"
+                response_variable: _prov_parent_raw
+              - variables:
+                  _prov_parent_lid: >-
+                    {{ (_prov_parent_raw.get('result', [])
+                        | selectattr('name', 'equalto', _prov_area_name)
+                        | list | first | default({})).get('id', none) | int(none) }}
+
+              # Step 2: Find or create dock location (idempotent)
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: locations_find
+                  item: "{{ _prov_dock_name }}"
+                response_variable: _prov_dock_find_raw
+              - variables:
+                  _prov_dock_lid: >-
+                    {{ (_prov_dock_find_raw.get('result', [])
+                        | selectattr('name', 'equalto', _prov_dock_name)
+                        | list | first | default({})).get('id', none) | int(none) }}
+              - if: "{{ _prov_dock_lid is none }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: locations_add
+                      location: "{{ _prov_dock_name }}"
+                      parent_location_id: "{{ _prov_parent_lid }}"
+                      homeassistant_area_id: "{{ _prov_area }}"
+                      location_subclass: container
+                      placement_priority: 70
+                    response_variable: _prov_dock_raw
+                  - variables:
+                      _prov_dock_lid: >-
+                        {{ (_prov_dock_raw.get('result', {}).get('created_object_id')
+                            or _prov_existing.get('dock_location_id')) | int(none) }}
+
+              # Step 2a: Find or create Bot location (child of Dock — installed bot parts live here)
+              - variables:
+                  _prov_bot_name: "{{ _prov_dock_name }} — Bot"
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: locations_find
+                  item: "{{ _prov_bot_name }}"
+                response_variable: _prov_bot_find_raw
+              - variables:
+                  _prov_bot_lid: >-
+                    {{ (_prov_bot_find_raw.get('result', [])
+                        | selectattr('name', 'equalto', _prov_bot_name)
+                        | list | first | default({})).get('id', none) | int(none) }}
+              - if: "{{ _prov_bot_lid is none }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: locations_add
+                      location: "{{ _prov_bot_name }}"
+                      parent_location_id: "{{ _prov_dock_lid }}"
+                      homeassistant_area_id: "{{ _prov_area }}"
+                      location_subclass: container
+                      placement_priority: 80
+                    response_variable: _prov_bot_raw
+                  - variables:
+                      _prov_bot_lid: >-
+                        {{ _prov_bot_raw.get('result', {}).get('created_object_id') | int(none) }}
+
+              # Step 2b: Find or create Dock Bins location (child of Dock — installed dock parts live here)
+              - variables:
+                  _prov_dock_bins_name: "{{ _prov_dock_name }} — Dock Bins"
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: locations_find
+                  item: "{{ _prov_dock_bins_name }}"
+                response_variable: _prov_dock_bins_find_raw
+              - variables:
+                  _prov_dock_bins_lid: >-
+                    {{ (_prov_dock_bins_find_raw.get('result', [])
+                        | selectattr('name', 'equalto', _prov_dock_bins_name)
+                        | list | first | default({})).get('id', none) | int(none) }}
+              - if: "{{ _prov_dock_bins_lid is none }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: locations_add
+                      location: "{{ _prov_dock_bins_name }}"
+                      parent_location_id: "{{ _prov_dock_lid }}"
+                      homeassistant_area_id: "{{ _prov_area }}"
+                      location_subclass: container
+                      placement_priority: 75
+                    response_variable: _prov_dock_bins_raw
+                  - variables:
+                      _prov_dock_bins_lid: >-
+                        {{ _prov_dock_bins_raw.get('result', {}).get('created_object_id') | int(none) }}
+
+              # Step 2c: Resolve spare storage location — all uninstalled spares go here
+              # config key: spare_storage_location (name or ID). Omit → Dock used as spare storage.
+              - variables:
+                  _prov_spare_raw: "{{ _prov_cfg.get('spare_storage_location', none) }}"
+              - variables:
+                  _prov_spare_lid: >-
+                    {%- if _prov_spare_raw is not none and _prov_spare_raw | string | int(-1) > 0 -%}
+                      {{ _prov_spare_raw | int }}
+                    {%- else -%}{{ none }}{%- endif -%}
+                  _prov_spare_name: >-
+                    {%- if _prov_spare_raw is string and _prov_spare_raw | int(-1) < 0 and _prov_spare_raw | length > 0 -%}
+                      {{ _prov_spare_raw }}
+                    {%- else -%}{{ '' }}{%- endif -%}
+              - if: "{{ _prov_spare_lid is none and _prov_spare_name != '' }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: locations_find
+                      item: "{{ _prov_spare_name }}"
+                    response_variable: _prov_spare_find_raw
+                  - variables:
+                      _prov_spare_lid: >-
+                        {{ (_prov_spare_find_raw.get('result', [])
+                            | selectattr('name', 'equalto', _prov_spare_name)
+                            | list | first | default({})).get('id', none) | int(none) }}
+              - variables:
+                  _prov_spare_lid: "{{ _prov_spare_lid | default(_prov_dock_lid, true) }}"
+              # Per-category spare bins — dock parts vs. bot/wear parts may be stored separately
+              # config: storage_location_dock_parts (ID), storage_location_wear_parts (ID). Omit → spare_lid for both.
+              - variables:
+                  _prov_dock_spare_lid: >-
+                    {%- set v = _prov_cfg.get('storage_location_dock_parts', none) -%}
+                    {{ v | int if v is not none and v | string | int(-1) > 0 else _prov_spare_lid }}
+                  _prov_wear_spare_lid: >-
+                    {%- set v = _prov_cfg.get('storage_location_wear_parts', none) -%}
+                    {{ v | int if v is not none and v | string | int(-1) > 0 else _prov_spare_lid }}
+
+              # Step 2d: Wire dock Grocy location_id back to Room Manager (best-effort, if dock_area provided)
+              - variables:
+                  _prov_dock_area: "{{ _prov_cfg.get('dock_area', '') | string | trim }}"
+              - if: "{{ _prov_dock_area != '' and _prov_dock_lid is not none }}"
+                then:
+                  - action: script.zen_dojotools_room_manager
+                    data:
+                      mode: set
+                      area: "{{ _prov_dock_area }}"
+                      grocy_location_id: "{{ _prov_dock_lid }}"
+                    response_variable: _prov_rm_raw
+
+              # Step 2c: Write HA entity_id to Grocy machine product as userfield (best-effort)
+              # Requires ha_entity_id userfield defined on products entity in Grocy settings.
+              # This creates the two-way link: cabinet knows machine_product_id, Grocy knows entity_id.
+              - if: "{{ _prov_mpid is not none }}"
+                then:
+                  - action: script.zen_dojotools_grocy_advanced
+                    data:
+                      action_type: put
+                      endpoint: "/userfields/products/{{ _prov_mpid }}"
+                      payload: "{{ {'ha_entity_id': _vac_ent} | tojson }}"
+                    response_variable: _prov_uf_raw
+
+              # Step 3: Create consumable products (loop, preset-driven)
+              - variables:
+                  _prov_product_ids: {}
+              - repeat:
+                  for_each: "{{ _prov_parts_def.items() | list }}"
+                  sequence:
+                    - variables:
+                        _pp_key: "{{ repeat.item[0] }}"
+                        _pp_def: "{{ repeat.item[1] }}"
+                        _pp_lid: >-
+                          {{ _prov_bot_lid if repeat.item[1].location_category == 'bot' else _prov_dock_bins_lid }}
+                    - action: script.zen_dojotools_inventory
+                      data:
+                        mode: catalog_add_product
+                        item: "{{ _prov_model }} - {{ _pp_def.name_suffix }}"
+                        location_id: "{{ _pp_lid }}"
+                        sku: "{{ _pp_def.sku }}"
+                        brand: "{{ _prov_preset.get('brand', 'Roborock') }}"
+                        note: "{{ _pp_def.chore_note | default('') }} Part# {{ _pp_def.sku }}. Robot SN: {{ _prov_sn }}"
+                      response_variable: _pp_prod_raw
+                    - variables:
+                        _prov_product_ids: >-
+                          {{ _prov_product_ids | combine({
+                            _pp_key: ((_pp_prod_raw.get('result', {}).get('product_id')
+                                      or _pp_prod_raw.get('result', {}).get('created_object_id')
+                                      or (_pp_prod_raw.get('candidate_ids', [none]) | first)) | int(none))
+                          }) }}
+
+              # Step 4: Create maintenance chores (loop, preset-driven)
+              - variables:
+                  _prov_chore_ids: {}
+              - repeat:
+                  for_each: "{{ _prov_parts_def.items() | list }}"
+                  sequence:
+                    - variables:
+                        _pc_key: "{{ repeat.item[0] }}"
+                        _pc_def: "{{ repeat.item[1] }}"
+                    - action: script.zen_dojotools_inventory
+                      data:
+                        mode: chores_add
+                        item: "{{ _prov_robot_name }} - {{ _pc_def.chore_name_suffix }}"
+                        product_id: "{{ _prov_product_ids.get(_pc_key) }}"
+                        product_amount: 0
+                        period_days: "{{ _pc_def.chore_period_days | default(90) }}"
+                        note: "{{ _pc_def.chore_note | default('') }} Part# {{ _pc_def.sku }}. Robot SN: {{ _prov_sn }}"
+                      response_variable: _pc_chore_raw
+                    - variables:
+                        _prov_chore_ids: >-
+                          {{ _prov_chore_ids | combine({
+                            _pc_key: (_pc_chore_raw.get('chore_id') | int(none))
+                          }) }}
+
+              # Step 4b: Resolve autovac_wear sensor entities → part key map (best-effort, populated post-migration)
+              - variables:
+                  _prov_wear_map: >-
+                    {%- set ns = namespace(m={}) -%}
+                    {%- set keys = ['main_brush_left', 'side_brush_left', 'filter_remaining', 'mop_lifespan'] -%}
+                    {%- for ent in label_entities('autovac_wear') -%}
+                      {%- for k in keys -%}
+                        {%- if k in ent -%}
+                          {%- set ns.m = ns.m | combine({k: ent}) -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endfor -%}
+                    {{ ns.m }}
+
+              # Step 5: Build catalog dynamically from preset parts + resolved IDs
+              # storage_location_id  = spare bin (log_purchased stocks here)
+              # installed_location_id = bot or dock_bins (seeded on first provision)
+              - variables:
+                  _prov_catalog: >-
+                    {%- set ns = namespace(parts={}) -%}
+                    {%- for pk, pd in _prov_parts_def.items() -%}
+                      {%- set installed_lid = _prov_bot_lid if pd.location_category == 'bot' else _prov_dock_bins_lid -%}
+                      {%- set wear_ent = _prov_wear_map.get(pd.wear_sensor_key, none) if pd.get('wear_sensor_key') else none -%}
+                      {%- set ns.parts = ns.parts | combine({pk: {
+                        'product_id':            _prov_product_ids.get(pk),
+                        'name':                  _prov_model ~ ' - ' ~ pd.name_suffix,
+                        'sku':                   pd.sku,
+                        'storage_location_id':   _prov_dock_spare_lid if pd.get('category', pd.get('location_category', 'bot')) == 'dock' else _prov_wear_spare_lid,
+                        'installed_location_id': installed_lid,
+                        'min_stock':             pd.min_stock | default(1) | int(1),
+                        'chore_id':              _prov_chore_ids.get(pk),
+                        'category':              pd.get('category', pd.location_category),
+                        'wear_sensor_key':       pd.get('wear_sensor_key'),
+                        'wear_threshold':        pd.get('wear_threshold'),
+                        'wear_entity':           wear_ent
+                      }}) -%}
+                    {%- endfor -%}
+                    {{ {
+                      'entity_id':              _vac_ent,
+                      'serial_number':          _prov_sn,
+                      'model':                  _prov_model,
+                      'robot_name':             _prov_robot_name,
+                      'model_preset':           _model_preset_key,
+                      'dock_location_id':       _prov_dock_lid,
+                      'bot_location_id':        _prov_bot_lid,
+                      'dock_bins_location_id':  _prov_dock_bins_lid,
+                      'spare_location_id':      _prov_spare_lid,
+                      'machine_product_id':     _prov_mpid,
+                      'parts':                  ns.parts
+                    } }}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                  value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'grocy_catalog': _prov_catalog})} | tojson }}"
+
+              # Step 6: Seed installed set — 1 of each part at its installed location
+              # (bot parts → bot, dock parts → dock bins).
+              # Skipped on re-provision (force=true) to avoid doubling existing stock.
+              - if: "{{ not _prov_cfg.get('force', false) }}"
+                then:
+                  - repeat:
+                      for_each: "{{ _prov_catalog.get('parts', {}).values() | list }}"
+                      sequence:
+                        - action: script.zen_dojotools_inventory
+                          data:
+                            mode: stock_buy_product
+                            product_id: "{{ repeat.item.product_id }}"
+                            amount: 1
+                            location_id: "{{ repeat.item.installed_location_id }}"
+                          response_variable: _seed_raw
+
+              # Step 7: Spares advisory — inform user what was seeded, ask about additional spares
+              - variables:
+                  _seed_skipped: "{{ _prov_cfg.get('force', false) }}"
+                  _spare_parts_list: >-
+                    {{ _prov_catalog.get('parts', {}).values() | map(attribute='name') | list }}
+              - action: script.zen_dojotools_postman
+                data:
+                  mode: resolve_and_dispatch
+                  message: >-
+                    {%- if not _seed_skipped -%}
+                      Robot provisioned. One installed set seeded at installed locations (bot and dock bins): {{ _spare_parts_list | join(', ') }}.
+                    {%- else -%}
+                      Robot re-provisioned (force). Existing stock untouched.
+                    {%- endif -%}
+                    Do you have additional spares on hand? If yes, log them:
+                    consumables action=log_purchased part=<key> amount=<n>.
+                    Parts often come in packs — dust bags (5-pack), mop pads (30-pack).
+                  urgency: 4
+                  channel_hint: push
+                  title: "Robot Provision Complete"
+                  tag: autovac_provision
+
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'consumables', 'action': 'provision',
+                      'result': 'provisioned', 'caller_token': _caller_token,
+                      'entity_id': _vac_ent,
+                      'serial_number': _prov_sn,
+                      'sn_source': _prov_sn_source,
+                      'sn_confidence': _prov_sn_confidence,
+                      'seeded_installed_set': not _prov_cfg.get('force', false),
+                      'catalog': _prov_catalog,
+                      'note': 'Catalog created. Installed set seeded at installed locations. Log any spares: action=log_purchased part=<key> amount=<n>.'
+                    } }}
+              - stop: "autovac provision complete"
+                response_variable: response
+
+          # ── shared stock-check (status + add_to_shopping) ──────────────────
+          - if: "{{ _cons_action in ['status', 'add_to_shopping'] }}"
+            then:
+              # Collect stock from storage locations + dock (installed units) registered in catalog
+              - variables:
+                  _unique_locs: >-
+                    {{ (_cons_catalog.values() | map(attribute='storage_location_id') | list
+                        + (_cons_catalog.values() | selectattr('installed_location_id', 'defined') | map(attribute='installed_location_id') | list)
+                        + ([_gc.get('dock_location_id')] if _gc.get('dock_location_id') is not none else []))
+                       | select('ne', none) | map('int') | unique | list }}
+                  _all_entries: []
+              - repeat:
+                  for_each: "{{ _unique_locs }}"
+                  sequence:
+                    - action: script.zen_dojotools_inventory
+                      data:
+                        mode: stock_list_by_location
+                        location_id: "{{ repeat.item }}"
+                      response_variable: _loc_result
+                    - variables:
+                        # Tag each entry with the location it came from (Grocy entries have location_id but belt+suspenders)
+                        _tagged: >-
+                          {%- set res = _loc_result.get('result', []) | default([], true) -%}
+                          {%- set ns = namespace(out=[]) -%}
+                          {%- for e in res -%}
+                            {%- set ns.out = ns.out + [e | combine({'_loc_id': repeat.item | int})] -%}
+                          {%- endfor -%}
+                          {{ ns.out }}
+                    - variables:
+                        _all_entries: "{{ _all_entries + _tagged }}"
+              - variables:
+                  # Keyed by product_id:loc_id so spare vs installed can be split
+                  _stock_by_loc: >-
+                    {%- set ns = namespace(idx={}) -%}
+                    {%- for e in _all_entries -%}
+                      {%- set k = e.product_id | string ~ ':' ~ e._loc_id | string -%}
+                      {%- set cur = ns.idx.get(k, 0) | int(0) -%}
+                      {%- set ns.idx = ns.idx | combine({k: cur + (e.amount | int(0))}) -%}
+                    {%- endfor -%}
+                    {{ ns.idx }}
+              - variables:
+                  _consumables_report: >-
+                    {%- set ns = namespace(parts=[], shopping=[]) -%}
+                    {%- for pk, pv in _cons_catalog.items() -%}
+                      {%- set pid = pv.product_id | string -%}
+                      {%- set spare_k    = pid ~ ':' ~ (pv.get('storage_location_id') | string) -%}
+                      {%- set install_k  = pid ~ ':' ~ (pv.get('installed_location_id', '') | string) -%}
+                      {%- set spare_amt  = _stock_by_loc.get(spare_k, 0) | int(0) -%}
+                      {%- set install_amt = _stock_by_loc.get(install_k, 0) | int(0) -%}
+                      {%- set min_s = pv.min_stock | int(1) -%}
+                      {%- set status = 'ok' if spare_amt >= min_s else ('low' if spare_amt > 0 else 'out') -%}
+                      {%- set ns.parts = ns.parts + [{
+                        'part':      pk,
+                        'name':      pv.get('name', pk),
+                        'sku':       pv.sku,
+                        'spare':     spare_amt,
+                        'installed': install_amt,
+                        'min_stock': min_s,
+                        'status':    status,
+                        'buy_search':'Roborock ' ~ pv.sku,
+                        'chore_id':  pv.get('chore_id', none)
+                      }] -%}
+                      {%- if status in ['low', 'out'] -%}
+                        {%- set needed = [min_s - spare_amt, 1] | max -%}
+                        {%- set ns.shopping = ns.shopping + [{
+                          'action':     'shopping_add_product',
+                          'product_id': pv.product_id,
+                          'product':    pv.get('name', pk),
+                          'sku':        pv.sku,
+                          'buy_search': 'Roborock ' ~ pv.sku,
+                          'needed':     needed
+                        }] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ {'parts': ns.parts, 'shopping_actions': ns.shopping} }}
+                  _cons_status_result: >-
+                    {{ 'ok' if _consumables_report.get('shopping_actions', []) | length == 0 else 'needs_reorder' }}
+
+              # action=add_to_shopping: fire shopping_add_product for each out/low item
+              - if: "{{ _cons_action == 'add_to_shopping' }}"
+                then:
+                  - repeat:
+                      for_each: "{{ _consumables_report.get('shopping_actions', []) }}"
+                      sequence:
+                        - action: script.zen_dojotools_inventory
+                          data:
+                            mode: shopping_add_product
+                            product_id: "{{ repeat.item.product_id }}"
+                            amount: "{{ repeat.item.needed | default(1) }}"
+                          response_variable: _shop_add_raw
+                  - variables:
+                      response: >-
+                        {{ {
+                          'mode': 'consumables', 'action': 'add_to_shopping',
+                          'result': 'ok' if _consumables_report.get('shopping_actions', []) | length > 0 else 'nothing_to_add',
+                          'caller_token': _caller_token,
+                          'added': _consumables_report.get('shopping_actions', []) | map(attribute='product') | list,
+                          'consumables': _consumables_report.get('parts', [])
+                        } }}
+                  - stop: "autovac add_to_shopping done"
+                    response_variable: response
+
+              # action=status: return report
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'consumables', 'action': 'status',
+                      'result': _cons_status_result,
+                      'caller_token': _caller_token,
+                      'robot': _cons_robot,
+                      'model': _cons_model,
+                      'catalog_source': 'cabinet' if _gc_parts else 'hardcoded_fallback',
+                      'consumables': _consumables_report.get('parts', []),
+                      'shopping_actions': _consumables_report.get('shopping_actions', []),
+                      'note': 'action=add_to_shopping queues all out/low items. action=provision to set up inventory catalog from scratch.'
+                    } }}
+              - stop: "autovac consumables status"
+                response_variable: response
+
+          # ── action=log_replaced ─────────────────────────────────────────────
+          - if: "{{ _cons_action == 'log_replaced' }}"
+            then:
+              - if: "{{ _cons_part == '' or _cons_part not in _cons_catalog }}"
+                then:
+                  - variables:
+                      response: >-
+                        {{ {
+                          'mode': 'consumables', 'action': 'log_replaced',
+                          'result': 'error', 'caller_token': _caller_token,
+                          'note': 'part= required. Valid keys: ' ~ (_cons_catalog | list | join(', '))
+                        } }}
+                  - stop: "autovac log_replaced — part required"
+                    response_variable: response
+              - variables:
+                  _lr_part: "{{ _cons_catalog[_cons_part] }}"
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: stock_consume
+                  product_id: "{{ _lr_part.product_id }}"
+                  amount: 1
+                response_variable: _lr_consume_raw
+              - if: "{{ _lr_part.get('chore_id') is not none }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: chores_execute
+                      chore_id: "{{ _lr_part.chore_id }}"
+                    response_variable: _lr_chore_raw
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'consumables', 'action': 'log_replaced',
+                      'result': 'ok', 'caller_token': _caller_token,
+                      'part': _cons_part,
+                      'product': _lr_part.get('name', _cons_part),
+                      'sku': _lr_part.sku,
+                      'chore_executed': _lr_part.get('chore_id') is not none,
+                      'note': 'Spare consumed from stock. Chore marked done if linked.'
+                    } }}
+              - stop: "autovac log_replaced done"
+                response_variable: response
+
+          # ── action=log_purchased ────────────────────────────────────────────
+          - if: "{{ _cons_action == 'log_purchased' }}"
+            then:
+              - if: "{{ _cons_part == '' or _cons_part not in _cons_catalog }}"
+                then:
+                  - variables:
+                      response: >-
+                        {{ {
+                          'mode': 'consumables', 'action': 'log_purchased',
+                          'result': 'error', 'caller_token': _caller_token,
+                          'note': 'part= required. Valid keys: ' ~ (_cons_catalog | list | join(', '))
+                        } }}
+                  - stop: "autovac log_purchased — part required"
+                    response_variable: response
+              - variables:
+                  _lp_part: "{{ _cons_catalog[_cons_part] }}"
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: stock_buy_product
+                  product_id: "{{ _lp_part.product_id }}"
+                  amount: "{{ _cons_amount }}"
+                  location_id: "{{ _lp_part.storage_location_id }}"
+                response_variable: _lp_buy_raw
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'consumables', 'action': 'log_purchased',
+                      'result': 'ok', 'caller_token': _caller_token,
+                      'part': _cons_part,
+                      'product': _lp_part.get('name', _cons_part),
+                      'sku': _lp_part.sku,
+                      'amount': _cons_amount,
+                      'stored_at': _lp_part.storage_location_id
+                    } }}
+              - stop: "autovac log_purchased done"
+                response_variable: response
+
+          # ── unknown action fallback ─────────────────────────────────────────
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'consumables', 'result': 'error', 'caller_token': _caller_token,
+                  'note': 'Unknown action: ' ~ _cons_action ~ '. Valid: status, add_to_shopping, log_replaced, log_purchased, provision.'
+                } }}
+          - stop: "autovac consumables unknown action"
+            response_variable: response
+
+      # ---- check_wear -----------------------------------------------------------
+      - if: "{{ _mode == 'check_wear' }}"
+        then:
+          - variables:
+              _cw_entity: "{{ wear_entity | default('', true) | string | trim }}"
+              _cw_gc:     "{{ _av_system.get('grocy_catalog', {}) }}"
+              _cw_parts:  "{{ _cw_gc.get('parts', {}) }}"
+              _cw_robot:  "{{ _cw_gc.get('robot_name', 'vacuum') }}"
+
+          - if: "{{ not _cw_parts }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'check_wear', 'result': 'not_provisioned',
+                      'caller_token': _caller_token,
+                      'message': 'Run mode=consumables action=provision first.'
+                    } }}
+              - stop: "check_wear not provisioned"
+                response_variable: response
+
+          # Scan-all path: no entity provided — check every catalog part with a wear_entity
+          # Used by post-dock analyze flow and direct calls without a specific entity.
+          - if: "{{ _cw_entity == '' }}"
+            then:
+              - variables:
+                  _cw_scan_worn: >-
+                    {%- set ns = namespace(worn=[]) -%}
+                    {%- for k, v in _cw_parts.items() -%}
+                      {%- set ent = v.get('wear_entity') -%}
+                      {%- if ent is not none and ent != '' -%}
+                        {%- set val = states(ent) | int(-1) -%}
+                        {%- set thr = v.get('wear_threshold', 20) | int(20) -%}
+                        {%- if val >= 0 and val <= thr -%}
+                          {%- set ns.worn = ns.worn + [{'key': k, 'part': v, 'wear_pct': val, 'threshold': thr}] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.worn }}
+              - repeat:
+                  for_each: "{{ _cw_scan_worn }}"
+                  sequence:
+                    - variables:
+                        _sw_pk:         "{{ repeat.item.key }}"
+                        _sw_pv:         "{{ repeat.item.part }}"
+                        _sw_wear_pct:   "{{ repeat.item.wear_pct }}"
+                        _sw_product_id: "{{ repeat.item.part.product_id | int(none) }}"
+                    - action: script.zen_dojotools_grocy_advanced
+                      data:
+                        action_type: read
+                        endpoint: "stock/products/{{ _sw_product_id }}"
+                      response_variable: _sw_stock_raw
+                    - variables:
+                        _sw_stock_content: "{{ _sw_stock_raw['result']['content'] | default({}, true) }}"
+                    - variables:
+                        _sw_stock_amt: "{{ _sw_stock_content.get('stock_amount', 0) | int(0) }}"
+                    - if: "{{ _sw_stock_amt == 0 }}"
+                      then:
+                        - action: script.zen_dojotools_inventory
+                          data:
+                            mode: shopping_add_product
+                            product_id: "{{ _sw_product_id }}"
+                            amount: "{{ _sw_pv.min_stock | default(1) | int(1) }}"
+                          response_variable: _sw_shop_raw
+                    - variables:
+                        _sw_pm_msg: >-
+                          {%- set name = _sw_pv.get('name', _sw_pk) -%}
+                          {%- if _sw_stock_amt > 0 -%}
+                            {{ name }} is worn ({{ _sw_wear_pct }}% left). Spare on hand — run
+                            consumables action=log_replaced part={{ _sw_pk }} to install.
+                          {%- else -%}
+                            {{ name }} is worn ({{ _sw_wear_pct }}% left) and out of stock. Added to shopping list.
+                          {%- endif -%}
+                    - action: script.zen_dojotools_postman
+                      data:
+                        mode: resolve_and_dispatch
+                        owner: autovac
+                        tag: "wear_{{ _sw_pk }}"
+                        title: "{{ _cw_robot | title }} — {{ _sw_pv.get('name', _sw_pk) }} Worn"
+                        message: "{{ _sw_pm_msg }}"
+                        urgency: "{{ 5 if _sw_stock_amt == 0 else 4 }}"
+                        channel_hint: push
+                      response_variable: _sw_pm_raw
+                    - if: "{{ _sw_pv.get('chore_id') is not none }}"
+                      then:
+                        - action: script.zen_dojotools_inventory
+                          data:
+                            mode: chores_execute
+                            chore_id: "{{ _sw_pv.chore_id }}"
+                          response_variable: _sw_chore_raw
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'check_wear', 'result': 'ok' if _cw_scan_worn | length == 0 else 'alerts',
+                      'caller_token': _caller_token,
+                      'alerts': _cw_scan_worn | length,
+                      'worn_parts': _cw_scan_worn | map(attribute='key') | list
+                    } }}
+              - stop: "autovac check_wear scan-all done"
+                response_variable: response
+
+          - variables:
+              _cw_part_key: >-
+                {%- set ns = namespace(k='') -%}
+                {%- for k, v in _cw_parts.items() -%}
+                  {%- if v.get('wear_entity') == _cw_entity -%}
+                    {%- set ns.k = k -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.k }}
+
+          - if: "{{ _cw_part_key == '' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'check_wear', 'result': 'not_found',
+                      'caller_token': _caller_token,
+                      'entity': _cw_entity,
+                      'message': 'No catalog part mapped to ' ~ _cw_entity ~ '. Re-provision to rebuild wear map.',
+                      'hint': 'Verify autovac_wear label is applied to all Roborock wear sensors.'
+                    } }}
+              - stop: "check_wear part not found"
+                response_variable: response
+
+          - variables:
+              _cw_part:       "{{ _cw_parts[_cw_part_key] }}"
+              _cw_threshold:  "{{ _cw_part.get('wear_threshold', 20) | int(20) }}"
+              _cw_wear_pct:   "{{ states(_cw_entity) | int(-1) }}"
+              _cw_product_id: "{{ _cw_part.get('product_id') | int(none) }}"
+
+          - action: script.zen_dojotools_grocy_advanced
+            data:
+              action_type: read
+              endpoint: "stock/products/{{ _cw_product_id }}"
+            response_variable: _cw_stock_raw
+
+          - variables:
+              _cw_stock_content: "{{ _cw_stock_raw['result']['content'] | default({}, true) }}"
+
+          - variables:
+              _cw_stock_amt: "{{ _cw_stock_content.get('stock_amount', 0) | int(0) }}"
+              _cw_alert:     "{{ _cw_wear_pct >= 0 and _cw_wear_pct <= _cw_threshold }}"
+
+          - if: "{{ _cw_alert and _cw_stock_amt == 0 }}"
+            then:
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: shopping_add_product
+                  product_id: "{{ _cw_product_id }}"
+                  amount: "{{ _cw_part.get('min_stock', 1) | int(1) }}"
+                response_variable: _cw_shop_raw
+
+          - if: "{{ _cw_alert }}"
+            then:
+              - variables:
+                  _cw_pm_msg: >-
+                    {%- set name = _cw_part.get('name', _cw_part_key) -%}
+                    {%- if _cw_stock_amt > 0 -%}
+                      {{ name }} is worn ({{ _cw_wear_pct }}% left). Spare on hand — run
+                      consumables action=log_replaced part={{ _cw_part_key }} to install.
+                    {%- else -%}
+                      {{ name }} is worn ({{ _cw_wear_pct }}% left) and out of stock. Added to shopping list.
+                    {%- endif -%}
+              - action: script.zen_dojotools_postman
+                data:
+                  mode: resolve_and_dispatch
+                  owner: autovac
+                  tag: "wear_{{ _cw_part_key }}"
+                  title: "{{ _cw_robot | title }} — {{ _cw_part.get('name', _cw_part_key) }} Worn"
+                  message: "{{ _cw_pm_msg }}"
+                  urgency: "{{ 5 if _cw_stock_amt == 0 else 4 }}"
+                  channel_hint: push
+                response_variable: _cw_pm_raw
+
+              - if: "{{ _cw_part.get('chore_id') is not none }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: chores_execute
+                      chore_id: "{{ _cw_part.chore_id }}"
+                    response_variable: _cw_chore_raw
+
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'check_wear',
+                  'result': 'alert' if _cw_alert else 'ok',
+                  'caller_token': _caller_token,
+                  'part': _cw_part_key,
+                  'part_name': _cw_part.get('name', _cw_part_key),
+                  'category': _cw_part.get('category', 'bot'),
+                  'wear_pct': _cw_wear_pct,
+                  'threshold': _cw_threshold,
+                  'stock': _cw_stock_amt,
+                  'action': 'added_to_shopping' if (_cw_alert and _cw_stock_amt == 0) else
+                            'notified_spare_available' if _cw_alert else 'no_action',
+                  'notified': _cw_alert
+                } }}
+          - stop: "autovac check_wear done"
+            response_variable: response
+
+      # ---- clean -------------------------------------------------------------
+      - if: "{{ _mode == 'clean' }}"
+        then:
+          - if: "{{ _rooms == '' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'clean', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'rooms parameter required for mode=clean', 'vacuum_state': _vacuum_state} }}
+              - stop: "autovac clean — rooms required"
+                response_variable: response
+          - if: "{{ _vac_ent == '' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'clean', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'No vacuum entity found — label your vacuum with autovac. Run mode=setup to verify.'} }}
+              - stop: "autovac clean — no vacuum entity"
+                response_variable: response
+          - if: "{{ _vacuum_state not in ['docked', 'idle'] }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'clean', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'Vacuum not available — state: ' ~ _vacuum_state, 'vacuum_state': _vacuum_state} }}
+              - stop: "autovac clean — vacuum not ready"
+                response_variable: response
+          - variables:
+              _segments: >-
+                {%- set ns = namespace(segs=[]) -%}
+                {%- for r in _rooms.split(',') -%}
+                  {%- set slug = r | trim | lower | replace(' ', '_') -%}
+                  {%- set seg = _av_rooms.get(slug, {}).get('segment', 0) | int(0) -%}
+                  {%- if seg > 0 -%}{%- set ns.segs = ns.segs + [seg] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.segs }}
+              _clean_rooms: >-
+                {%- set ns = namespace(rooms=[]) -%}
+                {%- for r in _rooms.split(',') -%}
+                  {%- set slug = r | trim | lower | replace(' ', '_') -%}
+                  {%- set seg_ok = _av_rooms.get(slug, {}).get('segment', 0) | int(0) > 0 -%}
+                  {%- if (_use_clean_area and slug in _av_rooms) or (not _use_clean_area and seg_ok) -%}
+                    {%- set ns.rooms = ns.rooms + [slug] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.rooms }}
+              _clean_areas: >-
+                {%- set ns = namespace(areas=[]) -%}
+                {%- for r in _rooms.split(',') -%}
+                  {%- set slug = r | trim | lower | replace(' ', '_') -%}
+                  {%- if slug in _av_rooms -%}
+                    {%- set area = _av_rooms.get(slug, {}).get('area_id', slug) -%}
+                    {%- set ns.areas = ns.areas + [area] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.areas }}
+          - if: "{{ (_use_clean_area and _clean_areas | length == 0) or (not _use_clean_area and _segments | length == 0) }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'clean', 'result': 'not_found', 'caller_token': _caller_token,
+                        'note': 'no rooms resolved — check room slugs: ' ~ _rooms ~ '. Run mode=status to see configured rooms.',
+                        'vacuum_state': _vacuum_state} }}
+              - stop: "autovac clean — no rooms resolved"
+                response_variable: response
+          - variables:
+              _vacuum_service: >-
+                {{ 'xiaomi_miio.vacuum_clean_segment' }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms, 'system': _av_system | combine({
+                      'current_run': {
+                        'started_at': now().isoformat(),
+                        'schedule_entity_id': 'manual',
+                        'rooms': _clean_rooms,
+                        'segments': _segments,
+                        'areas': _clean_areas
+                      }
+                    })} | tojson }}
+          - if: "{{ _use_clean_area }}"
+            then:
+              - action: vacuum.clean_area
+                data:
+                  areas: "{{ _clean_areas }}"
+                target:
+                  entity_id: "{{ _vac_ent }}"
+            else:
+              - action: "{{ _vacuum_service }}"
+                data:
+                  segments: "{{ _segments }}"
+                target:
+                  entity_id: "{{ _vac_ent }}"
+          - variables:
+              response: >-
+                {{ {'mode': 'clean', 'result': 'ok', 'caller_token': _caller_token,
+                    'rooms': _clean_rooms, 'segments': _segments,
+                    'areas': _clean_areas if _use_clean_area else none,
+                    'vacuum_state': _vacuum_state} }}
+          - stop: "autovac clean ok"
+            response_variable: response
+
+      # ---- run_elected -------------------------------------------------------
+      - if: "{{ _mode == 'run_elected' }}"
+        then:
+          - if: "{{ _elected | length == 0 }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run_elected', 'result': 'no_rooms_elected', 'caller_token': _caller_token,
+                        'note': 'No rooms currently elected — check mode=status for election details.'} }}
+              - stop: "autovac run_elected — nothing to run"
+                response_variable: response
+          - if: "{{ _vac_ent == '' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run_elected', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'No vacuum entity found — label your vacuum with autovac. Run mode=setup to verify.'} }}
+              - stop: "autovac run_elected — no vacuum entity"
+                response_variable: response
+          - if: "{{ _vacuum_state not in ['docked', 'idle'] }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run_elected', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'Vacuum not available — state: ' ~ _vacuum_state, 'vacuum_state': _vacuum_state} }}
+              - stop: "autovac run_elected — vacuum not ready"
+                response_variable: response
+          - variables:
+              _re_rooms: "{{ _elected | map(attribute='room') | list }}"
+              _re_segments: "{{ _elected | map(attribute='segment') | map('int') | list }}"
+              _re_mop: "{{ _elected | selectattr('requires_mop', 'equalto', true) | map(attribute='room') | list }}"
+              _re_dry_run: "{{ dry_run | default(false) }}"
+          - if: "{{ _re_dry_run }}"
+            then:
+              - variables:
+                  _re_blocked_due: >-
+                    {%- set ns = namespace(b=[]) -%}
+                    {%- for rn, rv in _av_rooms.items() -%}
+                      {%- if rv.get('enabled', false) and rv.get('requires_ready', rv.get('require_confirmation', false))
+                             and not rv.get('is_ready', rv.get('ready_to_clean', false)) -%}
+                        {%- set last = rv.get('last_cleaned', '') -%}
+                        {%- set ds = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
+                        {%- if ds >= rv.get('days_between', 7) or rv.get('queued', false) -%}
+                          {%- set ns.b = ns.b + [rn] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.b }}
+              - variables:
+                  _re_dr_msg: >-
+                    {%- set msg = 'Would run now: ' ~ (_re_rooms | join(', ')) ~ '.' -%}
+                    {%- set msg = msg ~ ' Waiting on your OK: ' ~ (_re_blocked_due | join(', ')) ~ '.' if _re_blocked_due | length > 0 else msg -%}
+                    {%- set msg = msg ~ ' Water tank is low — top it up!' if _water_low else msg -%}
+                    {{ msg }}
+              - action: script.zen_dojotools_postman
+                data:
+                  mode: resolve_and_dispatch
+                  message: "{{ _re_dr_msg }}"
+                  urgency: 4
+                  channel_hint: tts
+                  title: "Autovac Dry Run"
+                  tag: autovac_dryrun
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run_elected', 'result': 'dry_run', 'caller_token': _caller_token,
+                        'would_run': _re_rooms, 'segments': _re_segments,
+                        'blocked_due': _re_blocked_due,
+                        'water_warning': ('water low — mop required for: ' ~ (_re_mop | join(', ')))
+                                         if (_water_low and _re_mop | length > 0) else none,
+                        'message_sent': _re_dr_msg} }}
+              - stop: "autovac run_elected dry_run"
+                response_variable: response
+          - if: "{{ _water_low and _re_mop | length > 0 and _water_low_action == 'stop' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run_elected', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'water tank low — run stopped (water_low_action=stop), mop required for: ' ~ (_re_mop | join(', ')),
+                        'water_low': true, 'mop_required_rooms': _re_mop} }}
+              - stop: "autovac run_elected — water low"
+                response_variable: response
+          - variables:
+              _re_areas: >-
+                {%- set ns = namespace(areas=[]) -%}
+                {%- for r in _elected -%}
+                  {%- set area = _av_rooms.get(r.room, {}).get('area_id', r.room) -%}
+                  {%- set ns.areas = ns.areas + [area] -%}
+                {%- endfor -%}
+                {{ ns.areas }}
+              _vacuum_service: "{{ 'xiaomi_miio.vacuum_clean_segment' }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {{ {'rooms': _av_rooms, 'system': _av_system | combine({
+                      'current_run': {
+                        'started_at': now().isoformat(),
+                        'schedule_entity_id': 'run_elected',
+                        'rooms': _re_rooms,
+                        'segments': _re_segments,
+                        'areas': _re_areas
+                      }
+                    })} | tojson }}
+          - if: "{{ _use_clean_area }}"
+            then:
+              - action: vacuum.clean_area
+                data:
+                  areas: "{{ _re_areas }}"
+                target:
+                  entity_id: "{{ _vac_ent }}"
+            else:
+              - action: "{{ _vacuum_service }}"
+                data:
+                  segments: "{{ _re_segments }}"
+                target:
+                  entity_id: "{{ _vac_ent }}"
+          - variables:
+              response: >-
+                {{ {'mode': 'run_elected', 'result': 'ok', 'caller_token': _caller_token,
+                    'rooms': _re_rooms, 'segments': _re_segments,
+                    'areas': _re_areas if _use_clean_area else none,
+                    'water_warning': ('water low — mop required for: ' ~ (_re_mop | join(', ')))
+                                     if (_water_low and _re_mop | length > 0) else none} }}
+          - stop: "autovac run_elected ok"
+            response_variable: response
+
+      # ---- run ---------------------------------------------------------------
+      - if: "{{ _mode == 'run' }}"
+        then:
+          - if: "{{ _schedule_entity_id == '' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'schedule_entity_id required'} }}
+              - stop: "autovac run — missing schedule entity"
+                response_variable: response
+          - if: "{{ _vac_ent == '' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'error', 'caller_token': _caller_token,
+                        'note': 'No vacuum entity found — label your vacuum with autovac. Run mode=setup to verify.'} }}
+              - stop: "autovac run — no vacuum entity"
+                response_variable: response
+          - variables:
+              _has_run_key: >-
+                {{ _schedule_entity_id | replace('.', '_') | replace('-', '_') ~ '_has_run' }}
+          - if: "{{ _av_system.get(_has_run_key, false) }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'already run for this slot today', 'key': _has_run_key} }}
+              - stop: "autovac run — already run"
+                response_variable: response
+          - if: "{{ not _enabled }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'autovac disabled'} }}
+              - stop: "autovac run — disabled"
+                response_variable: response
+          - if: "{{ _av_system.get('pause_today', false) }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'paused today'} }}
+              - stop: "autovac run — paused"
+                response_variable: response
+          - if: "{{ _battery < (_av_system.get('minimum_battery', 20) | int(20)) }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'battery too low: ' ~ _battery ~ '%', 'battery_pct': _battery} }}
+              - stop: "autovac run — low battery"
+                response_variable: response
+          - if: "{{ _dnd }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'DnD active'} }}
+              - stop: "autovac run — DnD active"
+                response_variable: response
+          - if: "{{ _vacuum_state not in ['docked', 'idle'] }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'vacuum not ready — state: ' ~ _vacuum_state} }}
+              - stop: "autovac run — vacuum not ready"
+                response_variable: response
+          - variables:
+              _elected_valid: >-
+                {%- set ns = namespace(valid=[]) -%}
+                {%- for r in _elected -%}
+                  {%- if _use_clean_area or r.get('segment', 0) | int(0) > 0 -%}
+                    {%- set ns.valid = ns.valid + [r] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.valid }}
+          - variables:
+              _elected_segments: "{{ _elected_valid | map(attribute='segment') | map('int') | list }}"
+              _elected_areas: >-
+                {%- set ns = namespace(areas=[]) -%}
+                {%- for r in _elected_valid -%}
+                  {%- set area = _av_rooms.get(r.room, {}).get('area_id', r.room) -%}
+                  {%- set ns.areas = ns.areas + [area] -%}
+                {%- endfor -%}
+                {{ ns.areas }}
+              _mop_elected: "{{ _elected_valid | selectattr('requires_mop', 'equalto', true) | map(attribute='room') | list }}"
+              _water_low_action: "{{ _av_system.get('water_low_action', 'warn') | string | lower }}"
+              _vacuum_service: "{{ 'xiaomi_miio.vacuum_clean_segment' }}"
+          - if: "{{ _water_low and _mop_elected | length > 0 and _water_low_action == 'stop' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'water tank low — run stopped (water_low_action=stop), mop required for: ' ~ (_mop_elected | join(', ')),
+                        'water_low': true, 'mop_required_rooms': _mop_elected} }}
+              - stop: "autovac run — water low, mop required"
+                response_variable: response
+          - if: "{{ (_use_clean_area and _elected_areas | length == 0) or (not _use_clean_area and _elected_segments | length == 0) }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run', 'result': 'skipped', 'caller_token': _caller_token,
+                        'note': 'no rooms elected for this run — check election criteria or add rooms via mode=configure'} }}
+              - stop: "autovac run — no elected rooms"
+                response_variable: response
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {%- set ns = namespace(r={}) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- set ns.r = ns.r | combine({rn: rv | combine({'skip_next': false})}) -%}
+                {%- endfor -%}
+                {{ {'rooms': ns.r, 'system': _av_system | combine({
+                      _has_run_key: true,
+                      'current_run': {
+                        'started_at': now().isoformat(),
+                        'schedule_entity_id': _schedule_entity_id,
+                        'rooms': _elected_valid | map(attribute='room') | list,
+                        'segments': _elected_segments,
+                        'areas': _elected_areas
+                      }
+                    })} | tojson }}
+          - if: "{{ _use_clean_area }}"
+            then:
+              - action: vacuum.clean_area
+                data:
+                  areas: "{{ _elected_areas }}"
+                target:
+                  entity_id: "{{ _vac_ent }}"
+            else:
+              - action: "{{ _vacuum_service }}"
+                data:
+                  segments: "{{ _elected_segments }}"
+                target:
+                  entity_id: "{{ _vac_ent }}"
+          - variables:
+              response: >-
+                {{ {'mode': 'run', 'result': 'ok', 'caller_token': _caller_token,
+                    'note': 'run started', 'vacuum_state': _vacuum_state,
+                    'current_run': {'rooms': _elected_valid | map(attribute='room') | list, 'segments': _elected_segments},
+                    'water_warning': ('water low — mop required for: ' ~ (_mop_elected | join(', '))) if (_water_low and _mop_elected | length > 0) else none} }}
+          - stop: "autovac run complete"
+            response_variable: response
+
+      # ---- analyze -----------------------------------------------------------
+      - if: "{{ _mode == 'analyze' }}"
+        then:
+          - variables:
+              camera_response: {}
+          - if: "{{ _cam_ent != '' }}"
+            then:
+              - alias: Analyze cleaning map via camera tool
+                action: script.zen_dojotools_camera
+                data:
+                  tool: look
+                  camera_entity: "{{ _cam_ent }}"
+                  context_index_call:
+                    label_1: autovac
+                    expand_entities: true
+                  instructions: >-
+                    You are presented with a coverage map from a robotic vacuum on either
+                    completion of its last job or upon error.
+
+                    Analyze the map and summarize in 255 characters or less.
+
+                    Identify if the vacuum appears to have covered the targeted area without
+                    issue. The image shows a lighter 'path' across boundary boxes (rooms).
+                    Nogo zones are vivid red lines or enclosed polygons. X's denote found
+                    obstacles. A thin line shows the robot's path and estimated coverage.
+
+                    Look for: vacuum stopped or trapped without completing a room; poor or
+                    missed coverage; obstacles noted during the path.
+
+                    If only some rooms show coverage, assume only those areas were called
+                    and assess coverage for those areas only.
+
+                    Title your report AutoVac: (Success|Fail|Attention) as appropriate.
+
+                    Your summary MUST fit within 255 characters.
+                response_variable: camera_response
+          - variables:
+              _current_run: "{{ _av_system.get('current_run', {}) | default({}, true) }}"
+          - variables:
+              _run_rooms: "{{ _current_run.get('rooms', []) }}"
+              _updated_rooms: >-
+                {%- set ns = namespace(r=_av_rooms) -%}
+                {%- for rn in _run_rooms -%}
+                  {%- if rn in ns.r -%}
+                    {%- set ns.r = ns.r | combine({rn: ns.r[rn] | combine({
+                        'last_cleaned': now().strftime('%Y-%m-%d'),
+                        'is_ready': false,
+                        'queued': false
+                    })}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.r }}
+          - if: "{{ _run_rooms | length > 0 }}"
+            then:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                  value: >-
+                    {{ {'rooms': _updated_rooms, 'system': _av_system | combine({'current_run': {}})} | tojson }}
+          - alias: Broadcast run-complete event for downstream consumers
+            event: zen_event
+            event_data:
+              event:
+                kind: autovac_run_complete
+                status: "{{ 'error' if _trigger_id == 'error' else 'complete' }}"
+                rooms_cleaned: "{{ _run_rooms }}"
+                last_clean_area_m2: "{{ states(_last_area_ent) | float(0) if _last_area_ent != '' else 0 }}"
+                last_clean_duration_s: "{{ states(_last_dur_ent) | int(0) if _last_dur_ent != '' else 0 }}"
+                analysis: "{{ camera_response.get('analysis', '') }}"
+          - variables:
+              response: >-
+                {{ {'mode': 'analyze', 'result': 'ok', 'caller_token': _caller_token,
+                    'status': ('error' if _trigger_id == 'error' else 'complete'),
+                    'rooms_cleaned': _run_rooms,
+                    'camera_used': _cam_ent != '',
+                    'analysis': camera_response.get('analysis', '')} }}
+          - stop: "autovac analyze complete"
+            response_variable: response
+
+      # ---- briefing ----------------------------------------------------------
+      - if: "{{ _mode == 'briefing' }}"
+        then:
+          - alias: Find which schedule fires in ~30 min
+            variables:
+              _schedule_entity: >-
+                {%- set schedules = label_entities('autovac_schedule') | list -%}
+                {%- set ns = namespace(found='') -%}
+                {%- set is_weekend = now().weekday() >= 5 -%}
+                {%- for s in schedules -%}
+                  {%- set day_ok = ('weekend' in s and is_weekend) or ('weekday' in s and not is_weekend) or ('weekend' not in s and 'weekday' not in s) -%}
+                  {%- if ns.found == '' and day_ok -%}
+                    {%- set ne = state_attr(s, 'next_event') -%}
+                    {%- if ne is not none and as_datetime(ne).date() == now().date() -%}
+                      {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
+                      {%- if delta > 0 and delta >= 1770 and delta <= 2400 -%}
+                        {%- set ns.found = s -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.found }}
+          - alias: Build run label from next_event
+            variables:
+              _run_label: >-
+                {%- if _schedule_entity != '' -%}
+                  {%- set ne = state_attr(_schedule_entity, 'next_event') -%}
+                  {%- if ne is not none -%}
+                    {%- set h = as_datetime(ne).hour | int(0) -%}
+                    {%- set m = as_datetime(ne).minute | int(0) -%}
+                    {{ ('morning' if h < 12 else 'evening') ~ ' run at ' ~ '%02d:%02d' | format(h, m) }}
+                  {%- else -%}
+                    scheduled run
+                  {%- endif -%}
+                {%- else -%}
+                  upcoming run
+                {%- endif -%}
+          - alias: Build time label
+            variables:
+              _time_label: >-
+                {%- set _sched = _schedule_entity -%}
+                {%- if _sched == '' -%}
+                  {%- set _we = now().weekday() >= 5 -%}
+                  {%- set _am = now().hour < 12 -%}
+                  {%- set _type = ('weekend' if _we else 'weekday') ~ ('_morning' if _am else '_evening') -%}
+                  {%- set _sched = label_entities('autovac_schedule') | select('search', _type) | list | first | default('') -%}
+                {%- endif -%}
+                {%- set ne = state_attr(_sched, 'next_event') if _sched != '' else none -%}
+                {%- if ne is not none -%}
+                  {%- set mins = ((as_datetime(ne) - now()).total_seconds() / 60) | round(0) | int -%}
+                  {%- if mins <= 1 -%}
+                    in about a minute
+                  {%- elif mins < 60 -%}
+                    in {{ mins }} minutes
+                  {%- else -%}
+                    {%- set hrs = (mins / 60) | round(0, 'floor') | int -%}
+                    {%- set rem = mins - (hrs * 60) -%}
+                    in {{ hrs }} hour{{ 's' if hrs != 1 else '' }}{{ ' ' ~ rem ~ ' min' if rem > 0 else '' }}
+                  {%- endif -%}
+                {%- else -%}
+                  soon
+                {%- endif -%}
+          - alias: Build message and urgency
+            variables:
+              _message: >-
+                {%- set ns = namespace(will_run=[], blocked=[], parts=[]) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- if rv.get('enabled', false) and not rv.get('skip_next', false) -%}
+                    {%- set last = rv.get('last_cleaned', '') -%}
+                    {%- set ds = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
+                    {%- set due = ds >= rv.get('days_between', 7) -%}
+                    {%- set will_be_ready = rv.get('is_ready', rv.get('ready_to_clean', false)) or not rv.get('requires_ready', rv.get('require_confirmation', false)) -%}
+                    {%- if will_be_ready and (due or rv.get('queued', false)) -%}
+                      {%- set ns.will_run = ns.will_run + [rn] -%}
+                    {%- elif rv.get('requires_ready', rv.get('require_confirmation', false)) and not rv.get('is_ready', rv.get('ready_to_clean', false)) and (due or rv.get('queued', false)) -%}
+                      {%- set ns.blocked = ns.blocked + [rn] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if ns.will_run | length > 0 -%}
+                  {%- set ns.parts = ns.parts + ["The " ~ _run_label ~ " starts " ~ _time_label ~ ". Rooms: " ~ (ns.will_run | join(', ')) ~ "."] -%}
+                {%- else -%}
+                  {%- set ns.parts = ns.parts + ["The " ~ _run_label ~ " starts " ~ _time_label ~ " but no rooms are elected yet."] -%}
+                {%- endif -%}
+                {%- if ns.blocked | length > 0 -%}
+                  {%- set ns.parts = ns.parts + ["Waiting on your OK: " ~ (ns.blocked | join(', ')) ~ "."] -%}
+                {%- endif -%}
+                {%- if _water_low_ent != '' and is_state(_water_low_ent, 'on') -%}
+                  {%- set ns.parts = ns.parts + ["Water tank is low — top it up!"] -%}
+                {%- endif -%}
+                {%- set battery = state_attr(_vac_ent, 'battery_level') | int(100) if _vac_ent != '' else 100 -%}
+                {%- if battery < 50 -%}
+                  {%- set ns.parts = ns.parts + ["Battery at " ~ battery ~ "% — may not finish the full run."] -%}
+                {%- endif -%}
+                {%- set last = states(_last_start_ent) if _last_start_ent != '' else 'unknown' -%}
+                {%- if last not in ['unknown', 'unavailable', ''] -%}
+                  {%- set days = ((now() - as_datetime(last)).total_seconds() / 86400) | round(1) -%}
+                  {%- if days | float(0) > 3 -%}
+                    {%- set ns.parts = ns.parts + ["The vacuum hasn't run in " ~ days ~ " days."] -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {{ ns.parts | join(' ') }}
+              _urgency: >-
+                {{ 7 if ((_water_low_ent != '' and is_state(_water_low_ent, 'on'))
+                    or (_vac_ent != '' and (state_attr(_vac_ent, 'battery_level') | int(100)) < 50))
+                   else 4 }}
+          - alias: Auto-mark require_confirmation=false due rooms ready
+            action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {%- set ns = namespace(r=_av_rooms) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- if rv.get('enabled', false) and not rv.get('requires_ready', rv.get('require_confirmation', false))
+                         and not rv.get('skip_next', false) -%}
+                    {%- set last = rv.get('last_cleaned', '') -%}
+                    {%- set ds = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
+                    {%- if ds >= rv.get('days_between', 7) or rv.get('queued', false) -%}
+                      {%- set ns.r = ns.r | combine({rn: rv | combine({'ready_to_clean': true})}) -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'rooms': ns.r, 'system': _av_system} | tojson }}
+          - alias: Dispatch via Postman
+            action: script.zen_dojotools_postman
+            data:
+              mode: resolve_and_dispatch
+              message: "{{ _message }}"
+              urgency: "{{ _urgency | int }}"
+              channel_hint: tts
+              title: "Autovac Pre-Run Briefing"
+              tag: autovac_prerun
+              response_type: custom
+              response_timeout_s: 1800
+              ack_owner: autovac
+              ack_context: >-
+                prerun_{{ now().strftime('%Y%m%d') }}_{{ 'morning' if now().hour < 12 else 'evening' }}
+              notification_data:
+                actions:
+                  - action: cancel
+                    title: "Stop it!"
+          - variables:
+              response: >-
+                {{ {'mode': 'briefing', 'result': 'dispatched', 'caller_token': _caller_token,
+                    'message': _message} }}
+          - stop: "autovac briefing dispatched"
+            response_variable: response
+
+      # ---- handle_ack --------------------------------------------------------
+      - if: "{{ _mode == 'handle_ack' }}"
+        then:
+          - if: "{{ _ack_action == 'cancel' and _ack_context.startswith('prerun_') }}"
+            then:
+              - alias: Pause today's scheduled runs
+                action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                  value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'pause_today': true})} | tojson }}"
+              - if: "{{ _vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused'] }}"
+                then:
+                  - alias: Stop vacuum mid-run
+                    action: vacuum.return_to_base
+                    target:
+                      entity_id: "{{ _vac_ent }}"
+              - alias: Confirm cancellation
+                action: script.zen_dojotools_postman
+                data:
+                  mode: resolve_and_dispatch
+                  message: >-
+                    Paused — staying docked today. Today's scheduled runs are cancelled.
+                    {{ "On the way back to dock." if (_vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused']) else '' }}
+                  urgency: 5
+                  channel_hint: push
+                  title: "Autovac Paused"
+                  tag: autovac_prerun
+          - if: "{{ _pm_tag != '' }}"
+            then:
+              - action: script.zen_dojotools_postman
+                data:
+                  mode: clear_tag
+                  tag: "{{ _pm_tag }}"
+                  caller_token: "{{ _caller_token }}"
+          - variables:
+              response: >-
+                {{ {'mode': 'handle_ack', 'result': 'ok', 'caller_token': _caller_token,
+                    'ack_action': _ack_action} }}
+          - stop: "autovac handle_ack complete"
+            response_variable: response
+
+      # ---- nightly_reset -----------------------------------------------------
+      - if: "{{ _mode == 'nightly_reset' }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {%- set ns = namespace(sys={}, r={}) -%}
+                {%- for s in label_entities('autovac_schedule') -%}
+                  {%- set k = s | replace('.', '_') | replace('-', '_') ~ '_has_run' -%}
+                  {%- set ns.sys = ns.sys | combine({k: false}) -%}
+                {%- endfor -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- set ns.r = ns.r | combine({rn: rv | combine({'is_ready': false})}) -%}
+                {%- endfor -%}
+                {{ {'rooms': ns.r, 'system': _av_system | combine(ns.sys) | combine({'pause_today': false})} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'nightly_reset', 'result': 'ok', 'caller_token': _caller_token} }}
+          - stop: "autovac nightly_reset complete"
+            response_variable: response
+
+      # ---- morning_reset -----------------------------------------------------
+      - if: "{{ _mode == 'morning_reset' }}"
+        then:
+          - delay:
+              minutes: 1
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+              value: >-
+                {%- set ns = namespace(r={}) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- set ns.r = ns.r | combine({rn: rv | combine({'is_ready': false})}) -%}
+                {%- endfor -%}
+                {{ {'rooms': ns.r, 'system': _av_system} | tojson }}
+          - variables:
+              response: >-
+                {{ {'mode': 'morning_reset', 'result': 'ok', 'caller_token': _caller_token} }}
+          - stop: "autovac morning_reset complete"
+            response_variable: response
+
+      # -- 7 Build status response (status + queue/dequeue/skip/unskip/clear/pause/unpause/clean/configure) --
+      - variables:
+          _op_result: >-
+            {%- set room_modes = ['queue', 'dequeue', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'configure'] -%}
+            {%- if _room == '' and _mode in room_modes -%}error
+            {%- elif _mode in room_modes and not _room_exists -%}not_found
+            {%- else -%}ok{%- endif -%}
+          _op_note: >-
+            {%- set room_modes = ['queue', 'dequeue', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'configure'] -%}
+            {%- if _room == '' and _mode in room_modes -%}
+              room parameter required for mode={{ _mode }}. Run mode=status to see configured rooms.
+            {%- elif _mode in room_modes and not _room_exists -%}
+              room not found: {{ _room }}. Run mode=status to see configured rooms.
+            {%- endif -%}
+      - variables:
+          _room_decisions: >-
+            {%- set elected_names = _elected | map(attribute='room') | list -%}
+            {%- set ns = namespace(decisions=[]) -%}
+            {%- for rn, rv in _av_rooms.items() -%}
+              {%- set enabled = rv.get('enabled', false) -%}
+              {%- set last = rv.get('last_cleaned', '') -%}
+              {%- set days_since = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
+              {%- set db = rv.get('days_between', 7) -%}
+              {%- set due = days_since >= db -%}
+              {%- set queued = rv.get('queued', false) -%}
+              {%- set skip_next = rv.get('skip_next', false) -%}
+              {%- set req_ready = rv.get('requires_ready', rv.get('require_confirmation', false)) -%}
+              {%- set is_rdy = rv.get('is_ready', rv.get('ready_to_clean', false)) -%}
+              {%- set elected = rn in elected_names -%}
+              {%- set _wla = _av_system.get('water_low_action', 'warn') | lower -%}
+              {%- set b0 = ['disabled'] if not enabled else [] -%}
+              {%- set b1 = b0 + ['not_due'] if (not due and not queued) else b0 -%}
+              {%- set b2 = b1 + ['skip_next'] if skip_next else b1 -%}
+              {%- set b3 = b2 + ['not_ready'] if (req_ready and not is_rdy) else b2 -%}
+              {%- set blockers = b3 + ['water_low'] if (rv.get('requires_mop', false) and _water_low and _wla == 'stop') else b3 -%}
+              {%- set reason = (
+                'Elected for next run.' if elected else
+                'Disabled.' if not enabled else
+                'Skipped this run.' if skip_next else
+                'Not ready — call mode=ready room=' ~ rn ~ '.' if (req_ready and not is_rdy) else
+                'Water low — mop room blocked (water_low_action=stop).' if ('water_low' in blockers) else
+                ('Not due yet (' ~ days_since ~ '/' ~ db ~ ' days).' if (not due and not queued) else 'Not elected.')
+              ) -%}
+              {%- set ns.decisions = ns.decisions + [{
+                'room': rn,
+                'enabled': enabled,
+                'days_since_cleaned': days_since,
+                'days_between': db,
+                'due': due,
+                'queued': queued,
+                'skip_next': skip_next,
+                'requires_ready': req_ready,
+                'is_ready': is_rdy,
+                'segment': rv.get('segment', 0),
+                'last_cleaned': rv.get('last_cleaned', ''),
+                'requires_mop': rv.get('requires_mop', false),
+                'elected': elected,
+                'blockers': blockers,
+                'reason': reason
+              }] -%}
+            {%- endfor -%}
+            {{ ns.decisions }}
+      - variables:
+          _run_readiness: >-
+            {%- set ns = namespace(b=[]) -%}
+            {%- if not _enabled -%}{%- set ns.b = ns.b + ['system_disabled'] -%}{%- endif -%}
+            {%- if _av_system.get('pause_today', false) -%}{%- set ns.b = ns.b + ['paused_today'] -%}{%- endif -%}
+            {%- if _dnd -%}{%- set ns.b = ns.b + ['dnd'] -%}{%- endif -%}
+            {%- if _battery < (_av_system.get('minimum_battery', 20) | int(20)) -%}{%- set ns.b = ns.b + ['low_battery'] -%}{%- endif -%}
+            {%- if _vacuum_state not in ['docked', 'idle'] -%}{%- set ns.b = ns.b + ['vacuum_not_ready'] -%}{%- endif -%}
+            {%- set _wla = _av_system.get('water_low_action', 'warn') | lower -%}
+            {%- set _mop_ent = _elected | selectattr('requires_mop', 'equalto', true) | list -%}
+            {%- if _water_low and _mop_ent | length > 0 and _wla == 'stop' -%}{%- set ns.b = ns.b + ['water_low_mop_required'] -%}{%- endif -%}
+            {%- if _elected | length == 0 -%}{%- set ns.b = ns.b + ['no_rooms_elected'] -%}{%- endif -%}
+            {%- set can_run = ns.b | length == 0 -%}
+            {%- set reason = (
+              'Ready to run.' if can_run else
+              'System disabled.' if 'system_disabled' in ns.b else
+              'Paused today.' if 'paused_today' in ns.b else
+              'DnD active.' if 'dnd' in ns.b else
+              ('Battery too low (' ~ _battery ~ '%).') if 'low_battery' in ns.b else
+              ('Vacuum not ready — state: ' ~ _vacuum_state ~ '.') if 'vacuum_not_ready' in ns.b else
+              'Water low — mop rooms blocked (water_low_action=stop).' if 'water_low_mop_required' in ns.b else
+              'No rooms elected for this run.'
+            ) -%}
+            {{ {'can_run_now': can_run, 'blockers': ns.b, 'reason': reason} }}
+      - variables:
+          _schedule_report: >-
+            {%- set ns = namespace(scheds=[]) -%}
+            {%- for s in label_entities('autovac_schedule') -%}
+              {%- set hrk = s | replace('.', '_') | replace('-', '_') ~ '_has_run' -%}
+              {%- set ne  = state_attr(s, 'next_event') -%}
+              {%- set ns.scheds = ns.scheds + [{
+                'entity': s,
+                'state': states(s),
+                'has_run_today': _av_system.get(hrk, false),
+                'next_event': ne | string if ne is not none else none
+              }] -%}
+            {%- endfor -%}
+            {{ ns.scheds }}
+          _system_config: >-
+            {{ {
+              'enabled':          _enabled,
+              'pause_today':      _av_system.get('pause_today', false),
+              'water_low_action': _av_system.get('water_low_action', 'warn'),
+              'minimum_battery':  _av_system.get('minimum_battery', 20) | int(20)
+            } }}
+          _last_run: "{{ _av_system.get('current_run', none) }}"
+      - variables:
+          response: >-
+            {{ {
+              'mode': _mode,
+              'result': _op_result | trim,
+              'note': _op_note | trim,
+              'caller_token': _caller_token,
+              'integration': 'roborock_native' if _use_clean_area else 'xiaomi_miio',
+              'vacuum_state': _vacuum_state,
+              'vacuum_entity': _vac_ent,
+              'battery_pct': _battery,
+              'water_low': _water_low,
+              'dnd': _dnd,
+              'system_config': _system_config,
+              'current_room': states(_current_room_ent) if _current_room_live else none,
+              'elected_rooms': _elected,
+              'queued_rooms': _queued_rooms,
+              'skipped_rooms': _skipped_rooms,
+              'last_run': _last_run,
+              'schedule_entities': _schedule_report,
+              'next_schedule': _next_schedule,
+              'schedule_active': _schedule_active,
+              'room_decisions': _room_decisions,
+              'run_readiness': _run_readiness
+            } }}
+
+      - stop: "autovac {{ _mode }} complete"
+        response_variable: response
+
+    mode: queued
+    max: 3
+    icon: mdi:robot-vacuum
