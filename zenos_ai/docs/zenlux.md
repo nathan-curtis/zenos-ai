@@ -1,6 +1,6 @@
 # ZenOS-AI ZenLux — Lighting Manager
 
-**Version:** 0.5.1
+**Version:** 0.6.0
 **Script:** `zen_dojotools_lights`
 **Codename:** ZenLux
 
@@ -113,7 +113,8 @@ Confirm all role slots resolve and advisory is clear.
 |------|-------------|
 | `prefs_get` | Read all stored lighting contexts for a room from household cabinet. |
 | `prefs_set` | Teach a context: `room` + `home_context` + any of `target_role`, `brightness`, `color_temp_k`, `rgb_color`, `scene_entity`, `transition`. |
-| `prefs_apply` | Apply stored context for a room. Reads `input_select.zen_home_mode` if no `home_context` given. Re-resolves entity live. Supports `dry_run=true`. |
+| `prefs_apply` | Apply stored context for a room. Auto-detects context from RM occupancy state (`Engaged` to `work`, `Asleep` to `sleep`, `Away` to `away`) or falls back to `zen_home_mode`. Re-resolves entity live. Supports `dry_run=true`. |
+| `prefs_sweep` | Apply stored preferences across all rooms in one call. `home_context` optional -- defaults to current `zen_home_mode`. Skips rooms with no stored prefs for the context. |
 | `room_default_get` | Read stored default role for a room and what it currently resolves to. |
 | `room_default_set` | Store `target_role` as room default. Pass `target_role=auto` to clear. |
 

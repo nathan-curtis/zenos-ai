@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 1.42.0
+**Version:** 1.44.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -89,7 +89,7 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | `boundary_link` | Non-passable shared boundary (drywall, partition, floor/ceiling). Writes both sides. Requires `boundary_link_sound_tx` and `boundary_link_light_tx`. |
 | `boundary_unlink` | Remove boundary link between two areas. |
 | `emergency` | Crisis snapshot for the whole home or a specific room. `scenario=fire\|burglar\|weather\|medical\|general`. Returns `guidance{action,advisory}`, `exits[]`, `shelter{primary/secondary/avoid}` (floor-tagged), `safety_equipment[]`, `hazards[]`, `likely_occupied[]`, `location{name,address,zip_code,gps}`, `rally_point`. Pass `area=` to add `from_room{room_exits,adjacent_exits,nearest_shelter}`. |
-| `home_overview` | Whole-house snapshot: `signal{}`, `alerts{}`, `domain_summaries{}`, `floors[]`, `weather{}`, `plant{}`, `home_mode`, `utility_index{}`. No `area=` needed. |
+| `home_overview` | Whole-house snapshot: `signal{}`, `alerts{}`, `domain_summaries{}`, `floors[]`, `weather{}`, `plant{}`, `home_mode`, `utility_index{}`. Optional: `include_notices=true`, `include_presence=true`. No `area=` needed. |
 | `area_create` | Create a new HA area, apply `room_layout` label, and optionally init topology in one call. `area_name=` required. `floor_id_new=`, `description=`, `walls=` optional. |
 | `area_update` | Update HA area metadata — name, floor assignment, icon, compiled description (auto-built from floor + adjacency + `area_note`). `area=` required. |
 | `area_delete` | Delete HA area and remove from room_topology. `area=` required. `confirm_action=true` required. |
@@ -332,6 +332,30 @@ Discovery waterfall mirrors Plant Manager: `zen_plant_site_power` → `label:uti
 ### `utility_index{}`
 
 Utility registry from the household cabinet — same data as `zen_dojotools_plant` `utilities` field. Contains provider, contact, and service entry info for electric, gas, water, etc.
+
+### `notices{}` — `include_notices=true`
+
+Active system alerts, HA state, and a pre-built action queue. Default `false` — opt in explicitly.
+
+| Field | Content |
+|-------|---------|
+| `zen_alerts[]` | Active ZenOS alerts from the kata cabinet |
+| `persistent_notifications[]` | Active HA persistent notifications |
+| `ha_repairs[]` | Open HA repair issues |
+| `postman_dispatches[]` | Postman messages sent in the last hour |
+| `action_queue[]` | Pre-built action entries: `{priority, item, tool, call}` — fire directly without additional resolution |
+
+### `presence{}` — `include_presence=true`
+
+Presence tracker block. Default `false` — opt in explicitly.
+
+| Parameter | Values | Effect |
+|-----------|--------|--------|
+| `include_presence` | `true` / `false` | Include presence block in response |
+| `presence_mode` | `filtered` (default) | Return only `hps`-labeled presence trackers — lean, low noise |
+| `presence_mode` | `discover` | Return all BPS (Bluetooth/Presence/Sensor) candidates with `hint` (phone/wearable/mobile_tag/appliance/tablet/unknown) and `suggest` (whether to add `hps` label) — use to guide initial labeling |
+
+Apply `hps` label to phone and wearable device trackers to enroll them in filtered mode.
 
 ---
 

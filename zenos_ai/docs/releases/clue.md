@@ -488,7 +488,8 @@ Major additions on top of v4.10.0 (which shipped the base of Clue):
 | Tool | Version | Key Changes |
 |------|---------|-------------|
 | **Dispatcher** | v1.2.0 | Postman Tier 2, infra escalation hard deny, Covers + Climate Tier 2, security_manager route, spamaster route, autovac route (all 17 fields) |
-| **ZenLux** | v0.5.1 | sync_shades integration, burnout timer, RM hold gate, media controller awareness |
+| **ZenLux** | v0.6.0 | zen_lm_* hardware role label taxonomy (8 labels + legacy fallback chain), discover/setup/label_suggest/resolve_debug/auto_label modes, prefs_sweep whole-home apply, bleed_threshold param, prefs_apply RM-state auto-detection (Engaged→work, Asleep→sleep) |
+| **Room Manager** | v1.44.0 | `home_overview`: three new opt-in fields — `include_notices` (active ZenOS alerts, HA repairs, persistent notifications, Postman dispatches, pre-built action_queue[]), `include_presence` (hps-labeled tracker block), `presence_mode=filtered\|discover` (discover surfaces all BPS candidates with hint + suggest for labeling guidance) |
 | **Climate Manager** | v1.1.0 | `topology_context` in GET: open doors/windows, area sensors, RM HVAC bleed portals, natural vent advisory |
 | **Grocy** | v4.44.0 | chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW, null-unit doctrine, to_unit_id field. **v4.10.0 shipped with base Clue build.** |
 | **Ectoplasm** | v4.6.1 | `floor_assign`/`unassign` REST path, `area_id` reserved word fix, error surface improvements |
@@ -616,6 +617,12 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `zenos_ai/docs/getting_started/first_run.md` | v2026.6.0; Room Manager in rooms step; persona handoff; security_camera |
 | `zenos_ai/docs/readme.md` | v2026.6.0; Tool Reference section; 2026.6.0 What's New; roadmap entry |
 | `zenos_ai/docs/_index.json` | v10: tools section, 7 releases, 2 scripts, 3 kung_fu, 1 custom_templates |
+| `dojotools/dojotools_lights.yaml` | v0.6.0: zen_lm_* label taxonomy, discover/setup/label_suggest, prefs_sweep, bleed_threshold |
+| `dojotools/dojotools_room_manager.yaml` | v1.44.0: include_notices, include_presence, presence_mode in home_overview |
+| `custom_templates/zenos_ai/zenos_cabinets.jinja` | identity_roster() macro, safe_parse_json_string, safe_get_nested (identity v4.7.0 bridge) |
+| `custom_templates/zenos_ai/zen_os_1.jinja` | zen_drawer refactor: explicit kata_cab param, meta.enabled, desc from label_description; purpose/directives migrated to cabinet_drawer_value |
+| `zenos_ai/docs/zenlux.md` | v0.6.0: prefs_sweep mode, prefs_apply RM-state detection |
+| `zenos_ai/docs/room_manager.md` | v1.44.0: notices{}, presence{} sections under home_overview |
 
 ---
 
