@@ -593,7 +593,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_systemtools.yaml` | v4.5.9: `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`; all four reload modes config-check gated |
 | `dojotools/dojotools_scheduler.yaml` | v4.5.5: `deferred_script_reload` and `deferred_reload_all` event triggers added |
 | `dojotools/dojotools_spamaster.yaml` | v3.3.0: replaces calderaspas |
-| `dojotools/dojotools_zenlux.yaml` | v0.5.1: sync_shades, burnout timer, RM hold gate |
+| `dojotools/dojotools_lights.yaml` | v0.5.1: sync_shades, burnout timer, RM hold gate |
 | `dojotools/dojotools_autovac.yaml` | New — v3.11.0. Full autonomous vacuum surface. |
 | `dojotools/.autovac_presets/*.yaml` | New — 8 Roborock model presets (loaded via `!include`) |
 | `dojotools/dojotools_dispatcher.yaml` | v1.2.0: autovac route added (all 17 fields) |
