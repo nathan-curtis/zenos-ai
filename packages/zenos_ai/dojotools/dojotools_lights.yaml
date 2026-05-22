@@ -1,5 +1,5 @@
 ###############################################################################
-# zen_dojotools_lights v0.5.1 (codename: ZenLux)
+# zen_dojotools_lights v0.6.0 (codename: ZenLux)
 # Room-aware lighting intent resolver with memory + label-driven topology
 #
 # ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@
 
 script:
   zen_dojotools_lights:
-    alias: Zen DojoTools Lights v0.5.1
+    alias: Zen DojoTools Lights v0.6.0
     description: >-
       Act now: brightness_set/scene_set/rgb_set room=X work immediately — no
       setup needed, legacy labels resolve the right entity automatically. Get
@@ -87,6 +87,7 @@ script:
               - room_default_set
               - scene_list
               - auto_label
+              - prefs_sweep
               - help
 
       entity_id:
@@ -170,7 +171,9 @@ script:
         description: >-
           Mode this pref applies to: morning, work, evening, movie, sleep,
           away, party, etc. Required for prefs_set. Omit on prefs_apply —
-          reads input_select.zen_home_mode automatically.
+          uses room RM state (Engaged→work, Asleep→sleep, Away→away) or
+          zen_home_mode as fallback. Optional on prefs_sweep — defaults to
+          zen_home_mode.
         selector:
           text:
 
@@ -272,7 +275,7 @@ script:
       - if: >-
           {{ _room_slug != '' and _entity_id == '' and _target_role == ''
              and _mode not in ['help','prefs_get','prefs_set','prefs_apply',
-                                'room_default_get','room_default_set','auto_label']
+                                'room_default_get','room_default_set','auto_label','prefs_sweep']
              and _hh_cabinet not in ['','unavailable','unknown'] }}
         then:
           - action: script.zen_dojotools_filecabinet
@@ -516,7 +519,7 @@ script:
                 status: ok
                 tool: zen_dojotools_lights
                 codename: ZenLux
-                version: "0.3.0"
+                version: "0.6.0"
                 summary: >-
                   Say 'set the office to work mode' and this tool handles it.
                   Discover room layout once, teach a pref, apply it forever.
@@ -577,11 +580,12 @@ script:
                   rgb_set: "Set RGB color 'r,g,b'. Resolves entity via room + role."
                   prefs_get: "Read all stored prefs for a room."
                   prefs_set: "Teach a context: room + home_context + bri/ct/role/scene."
-                  prefs_apply: "Apply stored pref. Reads zen_home_mode if no context. Re-resolves live."
+                  prefs_apply: "Apply stored pref. Context: explicit > room RM state (Engaged→work, Asleep→sleep, Away→away) > zen_home_mode. Re-resolves live."
                   room_default_get: "Stored default role + current resolution."
                   room_default_set: "Store zen_lm_* role as room default. auto clears it."
                   scene_list: "List scenes. room= filters to room label. search= substring on name/entity_id. No filters = all scenes."
                   auto_label: "Tag unlabeled area lights with the room= label. dry_run=true previews targets. Dispatches via zen_dojotools_labels — no manual label calls needed."
+                  prefs_sweep: "Apply a stored context pref to every room that has one. home_context= selects context (or reads zen_home_mode). dry_run=true previews. RM-held rooms skipped silently."
                 example_flows:
                   whole_home: "discover → every area with lights, on/off count, roles found"
                   drill_room: "discover room='Office' → all slots, capabilities, current state"
@@ -589,6 +593,12 @@ script:
                   teach_movie: "prefs_set room='Living Room' home_context=movie target_role=zen_lm_accent brightness=15 color_temp_k=2700"
                   apply_movie: "prefs_apply room='Living Room' home_context=movie"
                   dry_first: "prefs_apply room='Living Room' dry_run=true"
+                  sweep_movie: "prefs_sweep home_context=movie — dims every room that knows movie"
+                whitelist_note: >-
+                  To surface ZenLux in ninja_summarizer: add
+                  'zen_dojotools_lights_called' to
+                  zen_summarizer_act_whitelist.allowed_events in
+                  dojotools_summarizers.yaml — ask Nyx when ready.
                 caller_token: "{{ _caller_token }}"
           - stop: help
             response_variable: _result
@@ -1360,8 +1370,22 @@ script:
                 response_variable: _result
           - variables:
               _apply_ctx: >-
-                {{ _context_raw if _context_raw != ''
-                   else states('input_select.zen_home_mode') | lower | replace(' ','_') }}
+                {%- if _context_raw != '' -%}
+                  {{ _context_raw }}
+                {%- elif _rm_entity != '' -%}
+                  {%- set _rm_map = {'engaged': 'work', 'asleep': 'sleep', 'away': 'away'} -%}
+                  {%- set _rm_ctx = _rm_map.get(_rm_state | lower, '') -%}
+                  {{ _rm_ctx if _rm_ctx != '' else states('input_select.zen_home_mode') | lower | replace(' ','_') }}
+                {%- else -%}
+                  {{ states('input_select.zen_home_mode') | lower | replace(' ','_') }}
+                {%- endif -%}
+              _apply_ctx_source: >-
+                {%- if _context_raw != '' -%}explicit
+                {%- elif _rm_entity != '' -%}
+                  {%- set _rm_map = {'engaged': 'work', 'asleep': 'sleep', 'away': 'away'} -%}
+                  {{ 'room_manager' if _rm_map.get(_rm_state | lower, '') != '' else 'zen_home_mode' }}
+                {%- else -%}zen_home_mode
+                {%- endif -%}
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: read
@@ -1451,6 +1475,7 @@ script:
                 mode: prefs_apply
                 room: "{{ _room_slug }}"
                 context: "{{ _apply_ctx }}"
+                context_source: "{{ _apply_ctx_source | trim }}"
                 entity: "{{ _pa_entity }}"
                 applied:
                   brightness_pct: "{{ _pa_bri if _pa_bri >= 0 else none }}"
@@ -1903,7 +1928,143 @@ script:
             response_variable: _result
 
       # ═══════════════════════════════════════════════════════════════════════
-      # 18. FALLBACK
+      # 18. PREFS_SWEEP — apply a context pref to every room that has one
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'prefs_sweep' }}"
+        then:
+          - if: "{{ _hh_cabinet in ['','unavailable','unknown'] }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    error: "Household cabinet not reachable."
+                    caller_token: "{{ _caller_token }}"
+              - stop: prefs_sweep error
+                response_variable: _result
+          - variables:
+              _sweep_ctx: >-
+                {{ _context_raw if _context_raw != ''
+                   else states('input_select.zen_home_mode') | lower | replace(' ','_') }}
+          - variables:
+              _sweep_vars: "{{ state_attr(_hh_cabinet, 'variables') | default({}, true) }}"
+          - variables:
+              _sweep_found: >-
+                {%- set ns = namespace(rooms=[]) -%}
+                {%- for k, v in _sweep_vars.items() -%}
+                  {%- if k.startswith('light_prefs_') -%}
+                    {%- set slug = k[12:] -%}
+                    {%- set raw = v.get('value', v) if v is mapping else {} -%}
+                    {%- set prefs = raw if raw is mapping else (raw | from_json(default={}) if raw is string else {}) -%}
+                    {%- set ctx_pref = prefs.get(_sweep_ctx, none) -%}
+                    {%- if ctx_pref is not none and ctx_pref is mapping and ctx_pref | length > 0 -%}
+                      {%- set ns.rooms = ns.rooms + [{'room': slug, 'pref': ctx_pref}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.rooms }}
+              _sweep_no_pref: >-
+                {%- set ns = namespace(rooms=[]) -%}
+                {%- for k, v in _sweep_vars.items() -%}
+                  {%- if k.startswith('light_prefs_') -%}
+                    {%- set slug = k[12:] -%}
+                    {%- set raw = v.get('value', v) if v is mapping else {} -%}
+                    {%- set prefs = raw if raw is mapping else (raw | from_json(default={}) if raw is string else {}) -%}
+                    {%- if not (prefs.get(_sweep_ctx, none) is mapping and prefs.get(_sweep_ctx, none) | length > 0) -%}
+                      {%- set ns.rooms = ns.rooms + [slug] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.rooms }}
+          - if: "{{ _dry_run or _sweep_found | length == 0 }}"
+            then:
+              - variables:
+                  _result:
+                    status: "{{ 'dry_run' if _dry_run else 'no_prefs_found' }}"
+                    mode: prefs_sweep
+                    context: "{{ _sweep_ctx }}"
+                    would_apply: "{{ _sweep_found | map(attribute='room') | list }}"
+                    no_pref: "{{ _sweep_no_pref }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: prefs_sweep dry_run or nothing_to_do
+                response_variable: _result
+          - repeat:
+              for_each: "{{ _sweep_found }}"
+              sequence:
+                - variables:
+                    _sw_area_id: >-
+                      {%- set ns = namespace(aid='') -%}
+                      {%- for a in areas() -%}
+                        {%- if area_name(a) | lower | replace(' ', '_') == repeat.item.room
+                               or a == repeat.item.room -%}
+                          {%- set ns.aid = a -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.aid }}
+                - variables:
+                    _sw_ents: >-
+                      {{ area_entities(_sw_area_id) | select('match', 'light\.') | list
+                         if _sw_area_id != '' else [] }}
+                    _sw_role: "{{ repeat.item.pref.get('target_role', '') }}"
+                    _sw_bri: "{{ repeat.item.pref.get('brightness', -1) | int(-1) }}"
+                    _sw_ct_k: "{{ repeat.item.pref.get('color_temp_k', -1) | int(-1) }}"
+                    _sw_scene: "{{ repeat.item.pref.get('scene_entity', '') }}"
+                    _sw_trans: "{{ repeat.item.pref.get('transition', 1) | int(1) }}"
+                - variables:
+                    _sw_entity: >-
+                      {%- set role_ent = _sw_ents | select('in', label_entities(_sw_role) | list) | list | first | default('')
+                           if _sw_role != '' else '' -%}
+                      {%- set grp = _sw_ents | select('in', label_entities('zen_lm_group') | list) | list | first | default('') -%}
+                      {%- set main = _sw_ents | select('in', label_entities('zen_lm_main') | list) | list | first | default('') -%}
+                      {{ role_ent if role_ent != '' else (grp if grp != '' else (main if main != '' else _sw_ents | first | default(''))) }}
+                    _sw_rm_held: >-
+                      {%- set rm_ent = label_entities('room_manager')
+                          | select('in', label_entities(repeat.item.room) | list)
+                          | select('match', 'input_select\.') | list | first | default('') -%}
+                      {%- set rm_ent = 'input_select.' ~ repeat.item.room ~ '_occupancy'
+                          if rm_ent == '' else rm_ent -%}
+                      {{ states(rm_ent) | lower in ['hold', 'pause', 'paused']
+                         if states(rm_ent) not in ['unknown', 'unavailable', ''] else false }}
+                - if: "{{ not _sw_rm_held }}"
+                  then:
+                    - if: "{{ _sw_scene != '' }}"
+                      then:
+                        - action: scene.turn_on
+                          target:
+                            entity_id: "{{ _sw_scene }}"
+                          data:
+                            transition: "{{ _sw_trans }}"
+                    - if: "{{ _sw_entity != '' and _sw_bri >= 0 }}"
+                      then:
+                        - if: "{{ _sw_bri == 0 }}"
+                          then:
+                            - action: light.turn_off
+                              target:
+                                entity_id: "{{ _sw_entity }}"
+                              data:
+                                transition: "{{ _sw_trans }}"
+                          else:
+                            - action: light.turn_on
+                              target:
+                                entity_id: "{{ _sw_entity }}"
+                              data:
+                                brightness: "{{ (_sw_bri * 2.55) | round(0) | int }}"
+                                color_temp_kelvin: >-
+                                  {{ _sw_ct_k | int if _sw_ct_k > 0 else omit }}
+                                transition: "{{ _sw_trans }}"
+          - variables:
+              _result:
+                status: ok
+                mode: prefs_sweep
+                context: "{{ _sweep_ctx }}"
+                applied: "{{ _sweep_found | map(attribute='room') | list }}"
+                no_pref: "{{ _sweep_no_pref }}"
+                note: RM-held rooms were skipped — they appear in applied[] but no hardware was commanded.
+                caller_token: "{{ _caller_token }}"
+          - stop: prefs_sweep complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 19. FALLBACK
       # ═══════════════════════════════════════════════════════════════════════
       - variables:
           _result:
