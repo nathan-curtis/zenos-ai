@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy ERP Plugin
 
-**Version:** 4.21.0
+**Version:** 4.44.0
 **Script:** `zen_dojotools_inventory`
 **Status:** Live (production)
 
@@ -138,7 +138,7 @@ Features: endpoint normalization, pagination, query search, path parameter injec
 | `catalog_find_product` | Find a product by name (exact or partial) |
 | `catalog_find_by_barcode` | Look up a product by barcode |
 | `get_product_meta` | Fetch full product metadata record |
-| `update_product_meta` | Update declarative product metadata. Supports `unit` or `unit_id` to set `qu_id_purchase`, `qu_id_stock`, `qu_id_consume`. Sends `description` only when note/brand/sku are provided — does not overwrite existing descriptions with null. |
+| `update_product_meta` | Full read-modify-write product metadata update. GET product → merge changes → PUT full object. Supports `unit`/`unit_id` (sets all three qu_id fields), `amount` (min_stock), `shopping_location_id`, `to_location_id` (default consume location), `product_group_id`. Strips null `qu_id_purchase`/`qu_id_price` before merge to prevent Grocy resolving null→system default unit. Sends `description` only when note/brand/sku are provided. |
 | `rename_product` | Rename a product (requires new name to not conflict) |
 | `set_default_location_for_product` | Set the product's default stock location |
 | `products_merge` | Merge two products (requires explicit keep/remove IDs) |
@@ -203,11 +203,13 @@ The integration maintains a parent-child map derived from ground truth on each r
 
 | Mode | Description |
 |------|-------------|
-| `chores_list` | All chores with due dates and assignees |
-| `chores_find` | Find a chore by name |
+| `chores_list` | All chores with due dates and assignees (paginated, limit/offset) |
+| `chores_find` | Find a chore by name (searches up to 500 rows — no capping) |
 | `chores_execute` | Mark a chore complete |
 | `chores_undo` | Undo the most recent chore execution (requires execution_id from chores_log) |
 | `chores_add` | Create a new chore |
+| `chores_edit` | Edit an existing chore by ID — strips `userfields` and `row_created_timestamp`, maps `amount` → `product_amount` as fallback |
+| `chores_delete` | Delete a chore by ID |
 | `chores_by_area` | Find chores linked to a HA area — dual discovery: (1) products stocked in area, (2) chores tagged with `homeassistant_area` userfield |
 
 #### chores_by_area Setup
@@ -237,6 +239,27 @@ Requires a Grocy userfield on the Chores entity:
 | `units_find` | Find a unit by name |
 | `units_add` | Create a quantity unit. **Idempotent** — preflight GET checks for exact name match first. Returns `{status: already_exists, unit_id, unit}` if found; only POSTs if unit is absent. Prevents UNIQUE constraint failures from ghost/soft-deleted units. |
 | `units_update` | Update a unit's name or note |
+
+### Unit Conversions
+
+| Mode | Description |
+|------|-------------|
+| `unit_conversions_add` | Create a unit conversion. `unit_id` = from unit, `to_unit_id` = to unit, `amount` = factor, `product_id` = optional product scope (omit for global). |
+| `unit_conversions_list` | All unit conversions. Filter by `unit_id` or `product_id`. |
+| `unit_conversions_delete` | Delete a conversion by `entry_id`. |
+
+**Field semantics:** `unit_id` is the source unit (from_qu_id), `to_unit_id` is the destination unit (to_qu_id). The legacy `to_location_id` field is accepted as a fallback for backward compatibility but `to_unit_id` is preferred.
+
+**Global vs product-specific:**
+- Global (`product_id` omitted) = real physics only: lb↔oz, g↔kg. Never build global conversions around ghost or null units.
+- Product-specific = container↔dose, serving size, packaging/concentration ratios.
+
+### Product Groups
+
+| Mode | Description |
+|------|-------------|
+| `product_groups_list` | All product groups (categories) |
+| `product_groups_find` | Find a product group by name (case-insensitive match) |
 
 ### Batteries
 
@@ -346,11 +369,25 @@ Errors include remediation guidance. Common causes: missing required fields, amb
 
 ---
 
+## Null-Unit Product Doctrine
+
+When `qu_id_stock` is null, Grocy maps it to the system default unit on any save. This creates a global conversion that conflicts with real unit relationships and causes cascading data corruption.
+
+`update_product_meta` detects this condition before hitting the API. If `unit_id` is supplied and the product's `qu_id_stock` is null, it returns a 5-step delete-and-recreate recipe instead of attempting a partial update. **There is no patch path — the product must be deleted and recreated.**
+
+Correct creation order when stock and purchase units differ:
+1. `catalog_add_product` with `unit_id=<stock_unit>` — sets stock = purchase, no conversion needed
+2. `update_product_meta` with `purchase_unit_id=<purchase_unit>` + any remaining metadata
+
+---
+
 ## Design Notes
 
 * The `mode` field replaced the old `case` field in v4.11. `mode=help` replaces the old `run=help` pattern.
 * `zen_dojotools_inventory` is the STT-safe rename from `zen_dojotools_grocy_helper` (2026-05-15). All cross-tool references use the new name.
 * `zen_dojotools_grocy_advanced` is internal — not MCP-exposed. Do not call it directly unless you need raw REST access.
+* `unit_conversions_delete` uses an empty-dict payload in the broker's DELETE branch. Any future DELETE-method mode must be added to the same branch or it will silently fail with a `requires_payload` block.
+* 70 operational modes + `help` (71 enum entries total).
 
 ---
 

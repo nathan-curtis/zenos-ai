@@ -1,4 +1,4 @@
-# Zen DojoTools Inspect — 4.6.2 'Ectoplasm'
+# Zen DojoTools Inspect — 5.0.1
 **File:** `zen_dojotools_inspect_readme.md`  
 **Type:** Technical Documentation  
 
@@ -207,7 +207,7 @@ When `mode` is set to a registry mode, Inspect bypasses the entity loop entirely
 | `floor_list` | — | All floors: count, floors[]{floor_id, name, area_ids, area_count} |
 | `label_list` | — | All labels: count, labels[]{label_id, entity_count, area_count} |
 | `zone_list` | — | All zones: count, zones[]{entity_id, name, lat, lon, radius, passive, icon} |
-| `person_list` | — | All persons: count, persons[]{entity_id, name, state, user_id, device_trackers, source, lat, lon} |
+| `person_list` | — | All persons: count, persons[]{entity_id, name, state, user_id, device_trackers, source, lat, lon, identity} — `identity` is populated for persons with a `zen_user_cabinet`-labeled cabinet; null otherwise |
 | `device_list` | — | All devices (large installs: very large responses — use floor_list → area_info → device_info drill-down for AI workflows) |
 | `integration_entities` | `integration` domain slug (required) | integration, entity_ids, entity_count |
 | `help` | — | Full schema, contract, and examples |
@@ -295,6 +295,27 @@ Inspect outputs a unified, LLM-safe envelope:
 ```
 
 All entities appear in the order provided.
+
+---
+
+## Identity Overlay for `person.*` Entities (v5.0.1)
+
+When inspecting a `person.*` entity, Inspect automatically enriches the result with a full ZenOS identity block.
+
+**How it works:**
+
+1. Detect `person.*` entity_id prefix
+2. Walk the entity's non-zen labels; find the one whose entities intersect `zen_user_cabinet`
+3. Call `script.zen_dojotools_identity` (separate HA execution context — avoids RecursionError from nested Jinja2 imports)
+4. Inject the full identity response as `entity.identity`
+
+`entity.identity` is `null` when no `zen_user_cabinet`-labeled cabinet is found for the person — correct behavior, not an error.
+
+**Why a script call, not a Jinja2 import:** `zen_identity.jinja` raises a RecursionError when imported inside the `for_each:` loop that Inspect uses for entity iteration. The script call runs in a separate HA execution context, bypassing this constraint.
+
+**`person_list` identity enrichment:**
+
+`person_list` reads each person's cabinet and extracts `_user_profile` / `_family_profile`. FileCabinet stores drawer `value` as a **JSON-encoded string** — a `| from_json` guard is applied after `.get('value')` (FG-38). Without this guard, the profile silently evaluates as `{}` and all identity fields fall back to empty / `consent_required`.
 
 ---
 
@@ -429,7 +450,7 @@ it's because Inspect told her what it is — safely.
 
 ## Summary
 
-The Zen DojoTools Inspect 4.6.2 'Ectoplasm' provides:
+The Zen DojoTools Inspect 5.0.1 provides:
 
 - multi-entity snapshot (default `mode: inspect`)
 - caller-controlled output fields (`output_fields`)
@@ -441,6 +462,8 @@ The Zen DojoTools Inspect 4.6.2 'Ectoplasm' provides:
 - label-targeted drawer blurbs via FileCabinet (`label_targets`)
 - inline label descriptions via `{slug: description}` dict on every entity
 - HA registry modes: `area_info`, `floor_info`, `device_info`, `area_list`, `floor_list`, `label_list`, `zone_list`, `person_list`, `device_list`, `integration_entities`
+- `person.*` entity identity overlay — full ZenOS presence block injected via script call
+- `person_list` identity enrichment — profile + presence for ZenOS-provisioned persons
 - JSON-compatible, LLM-stable outputs
 - strict no-write behavior
 - guaranteed safety against HA quirks
