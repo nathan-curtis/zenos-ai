@@ -66,6 +66,7 @@ New to ZenOS-AI? Start here.
 * `install.md` — File copy, configuration.yaml setup, conversation agent prompt, set conversation agent before restart, restart, health verification
 * `first_run.md` — First boot walkthrough, OOBE conversation, persona selector, editing profiles, troubleshooting
 * `entity_exposure.md` — What to expose to your conversation agent: actionable vs contextable vs invisible, the three-tier model
+* `autovac_first_setup.md` — Full AutoVac commissioning: rooms, labels, schedules, Postman policy, Grocy inventory, consumables, wear checks, AlertManager
 * `cabinet_placement.md` — Where things go and why: Dojo vs Kata, drawer vs KFC, the quick-reference placement table. Read after entity_exposure.
 * `oobe.md` — OOBE walkthrough: the six-step first-boot configuration protocol to your conversation agent: actionable vs contextable vs invisible, the three-tier model
 * `troubleshooting.md` — Gauges → Kill Switches → Repair Tools. Health sensor quick-reads, summarizer kill switches, and a seven-step graduated repair sequence (resolver refresh → reseed → label reset → nuclear cabinet reset)
@@ -87,6 +88,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * `alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep
+* `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, shopping, chores, AutoVac and SpaMaster consumables
 * `zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
 * `zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
 
