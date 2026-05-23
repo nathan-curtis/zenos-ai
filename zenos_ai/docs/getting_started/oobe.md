@@ -6,7 +6,7 @@
 
 ## Overview
 
-OOBE is the guided first-run workflow that configures your ZenOS-AI install through conversation. Your AI assistant leads you through six steps — naming the household, mapping rooms, adding people, linking integrations, activating components, and sealing the install.
+OOBE is the guided first-run workflow that configures your ZenOS-AI install through conversation. Your AI assistant leads you through six steps — naming the household, mapping rooms, adding people, optionally seeding the AI persona, linking integrations, activating components, and sealing the install.
 
 OOBE runs once. When complete, it stamps `_oobe_complete` in the AI user cabinet and the flag is never set again unless explicitly reset.
 
@@ -29,7 +29,9 @@ flowchart TD
   Components["Optional components"]
   Close["Index rebuild and OOBE complete"]
 
-  Household --> Rooms --> People --> Integrations --> Components --> Close
+  Persona["AI Persona (optional)"]
+
+  Household --> Rooms --> People --> Persona --> Integrations --> Components --> Close
 ```
 
 ---
@@ -95,6 +97,20 @@ For each person in the household:
 - Written to the user cabinet via `zen_dojotools_profile_editor` (`target_type: user`)
 
 Extended family (non-residents who matter to the household context) are written as `target_type: family`.
+
+---
+
+### Step 3a — AI Persona (Optional Quick-Start)
+
+Seeds the minimum AI persona fields via `zen_dojotools_persona_editor` before moving to integration mapping. Optional — if `persona_name` is already set, this step is skipped.
+
+**What gets set here:**
+- `persona_name` — the agent's name (e.g. `Friday`)
+- `primary_user` — the head of household `person.*` entity or name
+
+**What to defer:** Full persona identity (voice, environment, familiar, pronouns beyond basics) is the live agent's job in its first conversation. Do not over-configure in OOBE.
+
+> Use `zen_dojotools_persona_editor` for all AI user writes. `zen_dojotools_profile_editor` no longer accepts `target_type: ai_user`.
 
 ---
 

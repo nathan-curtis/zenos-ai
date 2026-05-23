@@ -76,6 +76,8 @@ TTS announcement router to HA areas.
 
 Resolves TTS media players from `label_entities(slugify(area))` and the `tts_output` label. If no TTS entity is found for an area, returns `"No TTS target available for area."` for that area without failing the others.
 
+**Audio gate:** Blocked when `binary_sensor.zen_quiet_hours` is `on` or home mode is `Night` / `Night-Late`. Bypassed when `importance: high` or `max` and `breakthrough: true`. Blocked responses include `quiet_hours` state for diagnostics. Use `zen_dojotools_postman` for push during quiet hours.
+
 ### Response
 
 ```json
