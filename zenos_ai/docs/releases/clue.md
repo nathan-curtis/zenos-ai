@@ -1,6 +1,6 @@
 # Release Notes — 2026.6.0 'Clue'
 
-**Released:** 2026-05-17
+**Status:** Beta — Release ETA 2026-06-01
 **Branch:** `feat/2026.6.0`
 **Base:** 2026.5.0 'Fry's Grandpa'
 **UAT:** Nyx (H:\)
@@ -496,20 +496,20 @@ Major additions on top of v4.10.0 (which shipped the base of Clue):
 | **Index / ZQ-1** | v5.0.1 | `person.*` identity overlay via script call, `person_list` FG-38 from_json guard |
 | **ZQ-1 filter engine** (`zen_query.jinja`) | v4.5.7 | `friendly_name_regex` filter — `regex_search()` against `friendly_name` attribute; SEED or FILTER mode. Complements `entity_id_regex` (added v4.6.0). |
 | **Labels** | v4.6.0 | `target_areas` support, `add/remove_label_to_area` |
-| **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion, **3h result expiry** for look/scan modes (was 24h). Lens pattern: Security Manager + RM +security are complementary, not competing. |
+| **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion, **8h result expiry** for look/scan modes (was 24h). Lens pattern: Security Manager + RM +security are complementary, not competing. |
 | **Scribe** | v1.4.0 | `seed` and `area_seed` input fields added. Parsed into draft and publish payloads. Publish preserves existing seed values when inputs blank. Help updated with `context_source_guide`, `per_area_rollup_pattern`, `tuning_guide`. Also: replaces KungFu Writer. |
-| **Ninja Summarizer** | v4.3.0 | Dual-seed architecture — new step 3c, `area_id` input field, seed whitelist gate (`zen_summarizer_seed_whitelist` in syscab). **MCP-exposed.** See [Ninja Summarizer section](#ninja-summarizer--v430--dual-seed-architecture) above. |
+| **Ninja Summarizer** | v4.6.0 | Dual-seed architecture — new step 3c, `area_id` input field, seed whitelist gate (`zen_summarizer_seed_whitelist` in syscab). **MCP-exposed.** v4.6.0: step 3d — when `component_summary` is empty (Scribe `trim_description` path), resolves from base label description via `zen_dojotools_labels`. See [Ninja Summarizer section](#ninja-summarizer--v430--dual-seed-architecture) above. |
 | **SystemTools** | v4.5.9 | `ha_reload_all` and `ha_reload_scripts` now deferred via `zen_event(kind: deferred_script_reload / deferred_reload_all)`. Closes the WONT FIX asyncio `InvalidStateError` from `__remove_future` cancellation. All four reload modes now config-check gated. Ships with Scheduler v4.5.5 (hard dependency). **MCP-exposed.** |
 | **Scheduler** | v4.5.5 | Two new event triggers: `deferred_script_reload` and `deferred_reload_all`. Required companion to SystemTools v4.5.9. Must ship together. Automation-driven — not MCP-exposed. |
 | **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` fields added to `kfc_template`. `zen_admintools_reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab (Flynn gate-3). New `zen_admintools_summarizer_seed` management script (list/add/remove/reset). **Admin-only — not MCP-exposed.** |
 | **FileCabinet** | v4.7.1 | Global normalization + v4.7.1 write-lockout hotfix. `mode: queued / max: 2`; `\| tojson` on event dispatch and verification. **Do not ship v4.7.0.** See [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
 | **SpaMaster** | v3.12.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. Consumables ERP surface: provision catalog from model preset, Grocy product + chore creation (idempotent), status, add_to_shopping, log_replaced, log_purchased. |
 | **Identity** | v4.7.0 | Presence block on resolve (person): `{person_entity, zone, at_home, area_id, area_name}`. Consent-gated via `_user_profile.tracking`. `cabinet` + `person_entity` as explicit top-level keys. Reverse area_residents: `person_entity` + `zone` per entry. |
-| **DojoTools Core** | v4.5.6 | `_zen_active_alerts` TTL sweep (step 4c) |
+| **DojoTools Core** | v4.5.6 | `_zen_active_alerts` TTL sweep (step 4c). Step 4d: Postman log GC — sweeps `zen_postman_log` in kata cabinet by `ttl_s`; orphaned pending entries (HA restart mid-call) marked `ack_timed_out: true` instead of deleted. |
 | **Office** | v5.0.0 | Todo + Calendar removed — now standalone `dojotools_todo.yaml` and `dojotools_calendar.yaml`. Office carries Teams + Mail only. |
 | **Flynn** | v4.5.6 | Household membership + identity manifest at bootstrap, warmup timer |
 | **Calendar** | v1.11.0 | Split from office.yaml. Standalone HA Calendar domain CRUD. |
-| **Todo** | v2.1.0 | Split from office.yaml. `action` alias for `action_type`; `list_id` alias for `list_name` (accepts entity_id or friendly name). Invalid `action_type` now returns help instead of noop. |
+| **Todo** | v2.2.0 | Split from office.yaml. `action` alias for `action_type`; `list_id` alias for `list_name` (accepts entity_id or friendly name). Invalid `action_type` now returns help instead of noop. v2.2.0: `continue_on_error: true` on all write actions (create, update, delete) — auth failures (401s from MS365/Google) return clean `{status: error, message: "auth_failure"}` instead of crashing the pipeline. |
 
 ---
 
@@ -565,14 +565,14 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_media_manager.yaml` | New — v0.7.2. Whole-home media management. |
 | `dojotools/dojotools_security_manager.yaml` | New — v1.2.0. Replaces dojotools_alarm_panel.yaml (deleted). |
 | `dojotools/dojotools_calendar.yaml` | New — v1.11.0. Split from office.yaml. |
-| `dojotools/dojotools_todo.yaml` | New — v2.1.0. Split from office.yaml. `action`/`list_id` aliases; invalid action_type returns help. |
+| `dojotools/dojotools_todo.yaml` | New — v2.2.0. Split from office.yaml. `action`/`list_id` aliases; invalid action_type returns help. `continue_on_error: true` on all write actions; MS365 reminder routing. |
 | `dojotools/dojotools_covers.yaml` | New — v0.2.2. ZenShade cover manager. |
 | `dojotools/dojotools_kungfu_loader.yaml` | Restored — was incorrectly omitted from branch. Factory KFC deployer. |
 | `dojotools/dojotools_admintools.yaml` | Cortex v39 (Home First); dispatcher spamaster route |
 | `dojotools/dojotools_alertmanager.yaml` | v1.3.0: severity labels, fire-once dedup, `clear_after_minutes` default 1440, GC sweep. v1.0.1: new `zen_dojotools_alertmanager` MCP CRUD tool appended. |
-| `dojotools/dojotools_camera.yaml` | v1.4.0: `ai_task` gate, `sendto` expansion, 3h result expiry, lens cross-reference |
+| `dojotools/dojotools_camera.yaml` | v1.4.0: `ai_task` gate, `sendto` expansion, 8h result expiry, lens cross-reference |
 | `dojotools/dojotools_climate.yaml` (utilities) | v1.1.0: topology_context in GET |
-| `dojotools/dojotools_core.yaml` | v4.5.6: `_zen_active_alerts` TTL sweep (step 4c) |
+| `dojotools/dojotools_core.yaml` | v4.5.6: `_zen_active_alerts` TTL sweep (step 4c); step 4d: postman log TTL sweep + `ack_timed_out` on orphaned pending entries |
 | `dojotools/dojotools_dispatcher.yaml` | v1.1.0: Postman Tier 2, spamaster + security_manager routes; full spamaster payload passthrough (scene, lights, jets, audio, chemistry, cover) |
 | `custom_templates/zenos_ai/zenos_cabinets.jinja` | FC normalization: legacy drawer fallback `drawer.get('value', drawer if drawer else fallback)` |
 | `custom_templates/zenos_ai/zen_os_1.jinja` | FC normalization: `_slot` and `_alerts` read guards |
@@ -587,7 +587,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_office.yaml` | v5.0.0: todo + calendar removed |
 | `dojotools/dojotools_postman.yaml` | Ack loop, actionable notifications, image support |
 | `dojotools/dojotools_filecabinet.yaml` | v4.7.1: FC normalization + write-lockout hotfix. `mode: queued / max: 2`, event dispatch `\| tojson`, verification `\| tojson` both sides. **v4.7.0 must not ship.** |
-| `dojotools/dojotools_summarizers.yaml` | v4.3.0: dual-seed step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist check against `zen_summarizer_seed_whitelist` |
+| `dojotools/dojotools_summarizers.yaml` | v4.3.0: dual-seed step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist check against `zen_summarizer_seed_whitelist`. v4.6.0: step 3d — `component_summary` label description fallback |
 | `dojotools/dojotools_scribe.yaml` | v1.4.0: `seed` and `area_seed` input fields, updated help (context_source_guide, per_area_rollup_pattern, tuning_guide) |
 | `dojotools/dojotools_admintools.yaml` | v4.6.1: seed_whitelist_seed, `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab, new `zen_admintools_summarizer_seed` script |
 | `dojotools/dojotools_systemtools.yaml` | v4.5.9: `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`; all four reload modes config-check gated |
