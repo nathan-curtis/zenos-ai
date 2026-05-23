@@ -503,7 +503,7 @@ Major additions on top of v4.10.0 (which shipped the base of Clue):
 | **Scheduler** | v4.5.5 | Two new event triggers: `deferred_script_reload` and `deferred_reload_all`. Required companion to SystemTools v4.5.9. Must ship together. Automation-driven — not MCP-exposed. |
 | **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` fields added to `kfc_template`. `zen_admintools_reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab (Flynn gate-3). New `zen_admintools_summarizer_seed` management script (list/add/remove/reset). **Admin-only — not MCP-exposed.** |
 | **FileCabinet** | v4.7.1 | Global normalization + v4.7.1 write-lockout hotfix. `mode: queued / max: 2`; `\| tojson` on event dispatch and verification. **Do not ship v4.7.0.** See [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
-| **SpaMaster** | v3.3.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. |
+| **SpaMaster** | v3.12.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. Consumables ERP surface: provision catalog from model preset, Grocy product + chore creation (idempotent), status, add_to_shopping, log_replaced, log_purchased. |
 | **Identity** | v4.7.0 | Presence block on resolve (person): `{person_entity, zone, at_home, area_id, area_name}`. Consent-gated via `_user_profile.tracking`. `cabinet` + `person_entity` as explicit top-level keys. Reverse area_residents: `person_entity` + `zone` per entry. |
 | **DojoTools Core** | v4.5.6 | `_zen_active_alerts` TTL sweep (step 4c) |
 | **Office** | v5.0.0 | Todo + Calendar removed — now standalone `dojotools_todo.yaml` and `dojotools_calendar.yaml`. Office carries Teams + Mail only. |
@@ -592,7 +592,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_admintools.yaml` | v4.6.1: seed_whitelist_seed, `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab, new `zen_admintools_summarizer_seed` script |
 | `dojotools/dojotools_systemtools.yaml` | v4.5.9: `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`; all four reload modes config-check gated |
 | `dojotools/dojotools_scheduler.yaml` | v4.5.5: `deferred_script_reload` and `deferred_reload_all` event triggers added |
-| `dojotools/dojotools_spamaster.yaml` | v3.3.0: replaces calderaspas |
+| `dojotools/dojotools_spa_manager.yaml` | v3.12.0: replaces calderaspas; consumables ERP (provision, status, add_to_shopping, log_replaced, log_purchased); idempotent Grocy chore creation |
 | `dojotools/dojotools_lights.yaml` | v0.5.1: sync_shades, burnout timer, RM hold gate |
 | `dojotools/dojotools_autovac.yaml` | New — v3.11.0. Full autonomous vacuum surface. |
 | `dojotools/.autovac_presets/*.yaml` | New — 8 Roborock model presets (loaded via `!include`) |
@@ -605,7 +605,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `zenos_ai/docs/room_manager.md` | New — v1.42.0 full reference |
 | `zenos_ai/docs/plant_manager.md` | New — v1.2.2 full reference |
 | `zenos_ai/docs/media_manager.md` | New |
-| `zenos_ai/docs/spamaster.md` | New — includes calderaspas migration note |
+| `zenos_ai/docs/spamaster.md` | Updated — v3.12.0: consumables mode section added |
 | `zenos_ai/docs/autovac.md` | New — v3.11.0 full reference |
 | `zenos_ai/docs/alertmanager.md` | Updated |
 | `zenos_ai/docs/zenlux.md` | Updated |

@@ -1,6 +1,6 @@
 # ZenOS-AI SpaMaster
 
-**Version:** 3.3.0
+**Version:** 3.12.0
 **Script:** `zen_dojotools_spamaster`
 
 ---
@@ -135,6 +135,7 @@ Verifies all readings are live. If no cabinet config exists, discover runs inlin
 | `cover` | `cover_action`: `open` | `close`. |
 | `chemistry` | Strip reading evaluation (`salt_ppm`, `free_chlorine_ppm`, `ph`, `alkalinity_ppm`, `hardness_ppm`) against stored targets. Returns guidance per parameter. |
 | `log` | Post-soak wrap-up: chemistry eval, calendar entry, oxidizer dose calc, optional `close_cover=true`, `set_hold_temp`. Requires `soak_duration_hours` and `soak_persons`. |
+| `consumables` | ERP surface: provision catalog from preset, track stock, add to shopping list, log replacements and purchases. See Consumables below. |
 | `help` | `help_topic`: `index` | `entities` | `chemistry` | `actions` | `models` |
 
 ---
@@ -242,6 +243,47 @@ What it does:
 3. Optionally: `boost_chlorine=true`, `close_cover=true`, `set_hold_temp=<°F>`
 4. Creates HA calendar entry with soak summary
 5. Adds supply todos if chemistry correction needed
+
+---
+
+## Consumables
+
+`mode=consumables` is the ERP surface for spa supply tracking. It integrates with Grocy for inventory, shopping lists, and scheduled maintenance chores.
+
+### Actions
+
+| Action | Description |
+|--------|-------------|
+| `provision` | Builds parts + chem catalog from a model preset. Creates Grocy products, location, and scheduled chores. Idempotent — safe to re-run; existing chores found by name and reused. |
+| `status` | Returns catalog with current stock levels, last-replaced dates, reorder flags. |
+| `add_to_shopping` | Adds flagged items to a Grocy shopping list. |
+| `log_replaced` | Records a part replacement to the Grocy chore log. Requires `part`. |
+| `log_purchased` | Records a supply purchase (quantity received). Requires `part`. `amount` defaults to 1; decimals supported. |
+
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| `action` | Sub-action: `status` \| `provision` \| `add_to_shopping` \| `log_replaced` \| `log_purchased` |
+| `part` | Supply key from spa catalog (required for `log_replaced`, `log_purchased`) |
+| `amount` | Quantity for `log_purchased` (default 1, decimals supported) |
+| `force` | Re-run provision even if catalog already exists. Stock is preserved. |
+
+### Provision
+
+Provision links a spa model preset to Grocy ERP. Run once after `mode=setup`:
+
+```
+mode=consumables  action=provision  model_preset=caldera_utopia_florence_2024
+```
+
+What it does:
+1. Creates a Grocy location matching the HA area name (skips if exists)
+2. Creates products for each part in the preset (brand-generic names; duplicate-safe)
+3. Creates scheduled chores for maintenance parts; on-demand chems get `chore_id: null` by design
+4. Stores the full catalog in cabinet key `spa_consumables`
+
+Re-provision with `force=true` rebuilds the catalog entry; existing Grocy chores are found by name and reused rather than duplicated.
 
 ---
 

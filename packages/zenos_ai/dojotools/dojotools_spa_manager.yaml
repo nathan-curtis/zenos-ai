@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Zen Spa
-# Version: 3.3.0
+# Version: 3.12.0
 #
 # ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
 #   spa_climate   — Thermostat/climate entity. Setup anchor (device scan root).
@@ -39,12 +39,22 @@
 # v3.1.0 2026-05-10: discover verbose=true — full device entity inventory grouped by domain
 # v3.2.0 2026-05-10: audio EQ controls (treble/bass/balance/subwoofer) + playback pointer to MediaManager
 # v3.3.0 2026-05-10: discover pool = device_entities + area_entities(area_id(anchor)) + label_entities(hot_tub) — triple-source, area resolved dynamically, no hardcoded area_id
+# v3.4.0 2026-05-21: consumables mode — provision (parts+chem catalog from preset), status, add_to_shopping, log_replaced, log_purchased; new fields: action, part, amount, force
+# v3.4.1 2026-05-22: fix _cons_amount | int(1) → | float(1.0); add step: 0.01 to amount selector (decimal support)
+# v3.5.0 2026-05-22: provision find-before-create — catalog_find_product by name_suffix before catalog_add_product; remove product_id from preset (runtime data, not config)
+# v3.6.0 2026-05-22: genericize provision product names — Steps 2+3 create/find with name_suffix directly (no brand prefix); remove product_name override field
+# v3.7.0 2026-05-22: provision result — failures[] + resolved count + partial status; fix Step 4 parts name (was brand-prefixed); add_to_shopping — accumulate per-item results with list_id
+# v3.8.0 2026-05-22: provision Steps 2+3 — drop find-before-create (catalog_find_product returns string repr); always call catalog_add_product, dupe guard returns candidate_ids for existing products
+# v3.9.0 2026-05-22: provision Step 1 — create Grocy location if no exact match for HA area name; guard chore creation with _pp_pid/_pc_pid is not none
+# v3.10.0 2026-05-22: fix none-guard footgun — HA renders Python None as string "none" in data templates so "is not none" is unreliable; guards now use | int(-1) > 0 (robust to None/string/zero)
+# v3.11.0 2026-05-22: fix chore creation — product_amount: 0 → 1 (Grocy rejects 0 with consume_product_on_execution: 1); load existing chore_ids from catalog on re-provision to skip already-created chores
+# v3.12.0 2026-05-22: idempotent chore provision — brand-scoped chores_find pre-load before loops; name→ID map used in _pp_cid/_pc_cid init (3rd tier after catalog+preset); add _pc_cid is none to chem guard
 ###############################################################################
 
 script:
   zen_dojotools_spamaster:
     alias: Zen DojoTools SpaMaster
-    description: "Zen DojoTools SpaMaster (3.3.0) — Full-stack spa management.\n\
+    description: "Zen DojoTools SpaMaster (3.12.0) — Full-stack spa management.\n\
       \nCANONICAL: Use for ALL spa intents. Self-bootstrapping — status works\
       \ immediately with zero config. Discovers ESPHome device, resolves all\
       \ entity roles, and creates spa_* labels in one shot if needed.\n\
@@ -62,6 +72,7 @@ script:
       \  cover       — cover_action (open/close).\n\
       \  chemistry   — strip readings or live IQ eval with profile doctrine.\n\
       \  log         — Post-soak: chem eval, oxidizer dose, todos, calendar.\n\
+      \  consumables — ERP surface: provision, status, add_to_shopping, log_replaced, log_purchased.\n\
       \  help        — help_topic (index/entities/chemistry/actions/models).\n\
       \nBackward compat: chemistry fields without mode → chemistry path."
     mode: single
@@ -84,6 +95,7 @@ script:
             - cover
             - chemistry
             - log
+            - consumables
             - help
         required: false
       anchor:
@@ -234,6 +246,34 @@ script:
       open_cover:
         name: Open Cover
         description: "Open motorized cover when setting the scene (mode: scene)."
+        selector:
+          boolean:
+        required: false
+        default: false
+      action:
+        name: Action
+        description: "consumables sub-action: status, add_to_shopping, log_replaced, log_purchased, provision"
+        selector:
+          select:
+            options: [status, add_to_shopping, log_replaced, log_purchased, provision]
+        required: false
+      part:
+        name: Part
+        description: "Part/supply key from spa catalog (consumables: log_replaced, log_purchased)"
+        selector:
+          text:
+        required: false
+      amount:
+        name: Amount
+        description: "Quantity for log_purchased. Default: 1. Decimals supported (e.g. 2.5)."
+        selector:
+          number:
+            min: 0
+            step: 0.01
+        required: false
+      force:
+        name: Force Re-provision
+        description: "Re-run provision even if catalog exists (consumables: provision). Stock preserved."
         selector:
           boolean:
         required: false
@@ -2462,10 +2502,504 @@ script:
         - stop: help unknown
           response_variable: _result
 
+    # ── CONSUMABLES ──────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'consumables' }}"
+      then:
+      - variables:
+          _cons_action:  "{{ _action_raw | lower | trim if _action_raw != '' else 'status' }}"
+          _cons_part:    "{{ part | default('', true) | trim }}"
+          _cons_amount:  "{{ amount | default(1, true) | float(1.0) }}"
+          _cons_force:   "{{ force | default(false, true) | bool }}"
+          _gc: "{{ (_cfg.get('value') | from_json if _cfg.get('value') is string else (_cfg.get('value', _cfg) if _cfg.get('value') is mapping else _cfg)).get('grocy_catalog', {}) if _cfg is mapping else {} }}"
+          _gc_parts:     "{{ _gc.get('parts', {}) }}"
+          _gc_chems:     "{{ _gc.get('chem_supplies', {}) }}"
+          _cons_catalog: "{{ _gc_parts | combine(_gc_chems) }}"
+
+      # Gate: not provisioned (except provision action itself)
+      - if: "{{ not _gc_parts and _cons_action != 'provision' }}"
+        then:
+        - variables:
+            _result:
+              mode: consumables
+              result: not_provisioned
+              note: "Run mode=consumables action=provision model_preset=caldera_utopia_florence_2024 first."
+        - stop: spa consumables not provisioned
+          response_variable: _result
+
+      # ── action=provision ────────────────────────────────────────────────────
+      - if: "{{ _cons_action == 'provision' }}"
+        then:
+        - variables:
+            _prov_key:       "{{ model_preset | default('', true) | lower | replace(' ', '_') }}"
+            _prov_preset:    "{{ _preset_lib.get(_prov_key, {}) }}"
+            _prov_parts_def: "{{ _prov_preset.get('parts', {}) }}"
+            _prov_chems_def: "{{ _prov_preset.get('chem_supplies', {}) }}"
+
+        - if: "{{ _prov_key == '' or (_prov_parts_def | length == 0 and _prov_chems_def | length == 0) }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'provision', 'result': 'error',
+                    'note': 'model_preset required. Available: ' ~ (_preset_lib.keys() | list | join(', '))} }}
+          - stop: spa consumables provision no preset
+            response_variable: _result
+
+        - if: "{{ _gc_parts and not _cons_force }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'provision', 'result': 'already_provisioned',
+                    'catalog': _gc,
+                    'note': 'Already provisioned. Pass force=true to re-provision. Stock preserved.'} }}
+          - stop: spa consumables provision already done
+            response_variable: _result
+
+        # Step 1: Find/create Grocy storage location for spa area
+        - variables:
+            _prov_brand:     "{{ _prov_preset.get('model', {}).get('brand', _model.get('brand', 'Spa')) }}"
+            _prov_area_name: "{{ area_name(_e_climate) | default('', true) | string | trim }}"
+        - action: script.zen_dojotools_inventory
+          data:
+            mode: locations_find
+            item: "{{ _prov_area_name }}"
+          response_variable: _prov_parent_raw
+        - variables:
+            _prov_area_lid: >-
+              {{ (_prov_parent_raw.get('result', [])
+                  | selectattr('name', 'equalto', _prov_area_name)
+                  | list | first | default({})).get('id', none) | int(none) }}
+        - if: "{{ _prov_area_lid is none and _prov_area_name != '' }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: locations_add
+              item: "{{ _prov_area_name }}"
+            response_variable: _prov_loc_raw
+          - variables:
+              _prov_area_lid: >-
+                {{ (_prov_loc_raw.get('candidate_ids', [none]) | first
+                    or _prov_loc_raw.get('result', {}).get('created_object_id')) | int(none) }}
+
+        # Step 2: Loop parts — create product + chore per entry
+        - variables:
+            _prov_product_ids: {}
+            _prov_chore_ids:   {}
+
+        # Pre-load existing Grocy chores by name (brand-scoped) for idempotent provision
+        - action: script.zen_dojotools_inventory
+          data:
+            mode: chores_find
+            item: "{{ _prov_brand }}"
+          response_variable: _prov_existing_chores_raw
+        - variables:
+            _prov_chores_by_name: >-
+              {%- set ns = namespace(m={}) -%}
+              {%- for ch in _prov_existing_chores_raw.get('result', []) -%}
+                {%- set ns.m = ns.m | combine({ch.get('name', ''): ch.get('id') | int(-1)}) -%}
+              {%- endfor -%}
+              {{ ns.m }}
+
+        - repeat:
+            for_each: "{{ _prov_parts_def.items() | list }}"
+            sequence:
+              - variables:
+                  _pp_key: "{{ repeat.item[0] }}"
+                  _pp_def: "{{ repeat.item[1] }}"
+                  _pp_pid: "{{ none }}"
+                  _pp_cid: >-
+                    {%- set _ec = _gc_parts.get(_pp_key, {}).get('chore_id') | int(-1) -%}
+                    {%- set _pc = _pp_def.get('existing_chore_id') | int(-1) -%}
+                    {%- set _cn = _prov_brand ~ ' — ' ~ _pp_def.get('chore_name_suffix', _pp_key) -%}
+                    {%- set _nf = _prov_chores_by_name.get(_cn, -1) | int(-1) -%}
+                    {{ _ec if _ec > 0 else (_pc if _pc > 0 else (_nf if _nf > 0 else none)) }}
+
+              # catalog_add_product handles both new and existing — dupe guard returns candidate_ids
+              - if: "{{ _pp_def.get('name_suffix') is not none }}"
+                then:
+                - action: script.zen_dojotools_inventory
+                  data:
+                    mode: catalog_add_product
+                    item: "{{ _pp_def.get('name_suffix', _pp_key) }}"
+                    location_id: "{{ _prov_area_lid }}"
+                    sku: "{{ _pp_def.get('sku', '') }}"
+                    brand: "{{ _prov_brand }}"
+                    note: "{{ _pp_def.get('chore_note', '') }}"
+                  response_variable: _pp_prod_raw
+                - variables:
+                    _pp_pid: >-
+                      {{ (_pp_prod_raw.get('candidate_ids', [none]) | first
+                          or _pp_prod_raw.get('result', {}).get('product_id')
+                          or _pp_prod_raw.get('result', {}).get('created_object_id')) | int(none) }}
+
+              - variables:
+                  _prov_product_ids: "{{ _prov_product_ids | combine({_pp_key: _pp_pid}) }}"
+
+              # Create chore if not already existing and period_days set
+              - if: "{{ _pp_cid is none and _pp_pid | int(-1) > 0 and _pp_def.get('chore_period_days') is not none }}"
+                then:
+                - action: script.zen_dojotools_inventory
+                  data:
+                    mode: chores_add
+                    item: "{{ _prov_brand ~ ' — ' ~ _pp_def.get('chore_name_suffix', _pp_key) }}"
+                    product_id: "{{ _pp_pid }}"
+                    product_amount: 1
+                    period_days: "{{ _pp_def.get('chore_period_days') }}"
+                    note: "{{ _pp_def.get('chore_note', '') }}"
+                  response_variable: _pp_chore_raw
+                - variables:
+                    _pp_cid: "{{ _pp_chore_raw.get('chore_id') | int(none) }}"
+
+              - variables:
+                  _prov_chore_ids: "{{ _prov_chore_ids | combine({_pp_key: _pp_cid}) }}"
+
+        # Step 3: Loop chem supplies — create product + chore per entry
+        - variables:
+            _prov_chem_product_ids: {}
+            _prov_chem_chore_ids:   {}
+
+        - repeat:
+            for_each: "{{ _prov_chems_def.items() | list }}"
+            sequence:
+              - variables:
+                  _pc_key: "{{ repeat.item[0] }}"
+                  _pc_def: "{{ repeat.item[1] }}"
+                  _pc_pid: "{{ none }}"
+                  _pc_cid: >-
+                    {%- set _ec = _gc_chems.get(_pc_key, {}).get('chore_id') | int(-1) -%}
+                    {%- set _cn = _prov_brand ~ ' — ' ~ _pc_def.get('chore_name_suffix', _pc_key) -%}
+                    {%- set _nf = _prov_chores_by_name.get(_cn, -1) | int(-1) -%}
+                    {{ _ec if _ec > 0 else (_nf if _nf > 0 else none) }}
+
+              # catalog_add_product handles both new and existing — dupe guard returns candidate_ids
+              - if: "{{ _pc_def.get('name_suffix') is not none }}"
+                then:
+                - action: script.zen_dojotools_inventory
+                  data:
+                    mode: catalog_add_product
+                    item: "{{ _pc_def.get('name_suffix', _pc_key) }}"
+                    location_id: "{{ _prov_area_lid }}"
+                    brand: "{{ _prov_brand }}"
+                    note: "{{ _pc_def.get('chore_note', '') }}"
+                  response_variable: _pc_prod_raw
+                - variables:
+                    _pc_pid: >-
+                      {{ (_pc_prod_raw.get('candidate_ids', [none]) | first
+                          or _pc_prod_raw.get('result', {}).get('product_id')
+                          or _pc_prod_raw.get('result', {}).get('created_object_id')) | int(none) }}
+
+              - variables:
+                  _prov_chem_product_ids: "{{ _prov_chem_product_ids | combine({_pc_key: _pc_pid}) }}"
+
+              # Create chore if period_days set and not already in Grocy
+              - if: "{{ _pc_cid is none and _pc_pid | int(-1) > 0 and _pc_def.get('chore_period_days') is not none }}"
+                then:
+                - action: script.zen_dojotools_inventory
+                  data:
+                    mode: chores_add
+                    item: "{{ _prov_brand ~ ' — ' ~ _pc_def.get('chore_name_suffix', _pc_key) }}"
+                    product_id: "{{ _pc_pid }}"
+                    product_amount: 1
+                    period_days: "{{ _pc_def.get('chore_period_days') }}"
+                    note: "{{ _pc_def.get('chore_note', '') }}"
+                  response_variable: _pc_chore_raw
+                - variables:
+                    _pc_cid: "{{ _pc_chore_raw.get('chore_id') | int(none) }}"
+
+              - variables:
+                  _prov_chem_chore_ids: "{{ _prov_chem_chore_ids | combine({_pc_key: _pc_cid}) }}"
+
+        # Step 4: Build catalog
+        - variables:
+            _prov_catalog_parts: >-
+              {%- set ns = namespace(p={}) -%}
+              {%- for pk, pd in _prov_parts_def.items() -%}
+                {%- set ns.p = ns.p | combine({pk: {
+                  'name':                pd.get('name_suffix', pk),
+                  'sku':                 pd.get('sku'),
+                  'category':            pd.get('category', 'filter'),
+                  'product_id':          _prov_product_ids.get(pk),
+                  'chore_id':            _prov_chore_ids.get(pk),
+                  'min_stock':           pd.get('min_stock', 1) | int(1),
+                  'storage_location_id': _prov_area_lid
+                }}) -%}
+              {%- endfor -%}
+              {{ ns.p }}
+            _prov_catalog_chems: >-
+              {%- set ns = namespace(c={}) -%}
+              {%- for ck, cd in _prov_chems_def.items() -%}
+                {%- set ns.c = ns.c | combine({ck: {
+                  'name':                cd.get('name_suffix', ck) | default(ck, true),
+                  'sku':                 cd.get('sku'),
+                  'category':            cd.get('category', 'chem'),
+                  'product_id':          _prov_chem_product_ids.get(ck),
+                  'chore_id':            _prov_chem_chore_ids.get(ck),
+                  'min_stock':           (cd.get('min_stock', 1) | int(1)) if cd.get('min_stock') is not none else 1,
+                  'storage_location_id': _prov_area_lid
+                }}) -%}
+              {%- endfor -%}
+              {{ ns.c }}
+        - variables:
+            _prov_catalog:
+              parts: "{{ _prov_catalog_parts }}"
+              chem_supplies: "{{ _prov_catalog_chems }}"
+              spa_entity: "{{ _e_climate }}"
+              preset: "{{ _prov_key }}"
+              provisioned_at: "{{ now().isoformat() }}"
+
+        - action: script.zen_dojotools_filecabinet
+          data:
+            action_type: >-
+              {%- set _cv = state_attr(_cab, 'variables') | default({}, true) -%}
+              {{ 'update' if 'spa_config' in _cv else 'create' }}
+            volume_entity_id: "{{ _cab }}"
+            key: spa_config
+            value: >-
+              {%- set raw = _cfg.get('value', _cfg) if _cfg is mapping else _cfg -%}
+              {%- set content = raw | from_json if raw is string else (raw if raw is mapping else {}) -%}
+              {{ content | combine({'grocy_catalog': _prov_catalog}) | tojson }}
+
+        # Step 5: Seed 1 spare of each part at storage location (skip on re-provision)
+        - if: "{{ not _cons_force }}"
+          then:
+          - repeat:
+              for_each: "{{ _prov_catalog_parts.values() | list }}"
+              sequence:
+                - if: "{{ repeat.item.get('product_id') is not none }}"
+                  then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: stock_buy_product
+                      product_id: "{{ repeat.item.product_id }}"
+                      amount: 1
+                      location_id: "{{ repeat.item.storage_location_id }}"
+                    response_variable: _seed_raw
+
+        - variables:
+            _prov_failures: >-
+              {%- set ns = namespace(f=[]) -%}
+              {%- for k, pid in _prov_product_ids.items() -%}
+                {%- if pid | int(-1) < 1 and _prov_parts_def.get(k, {}).get('name_suffix') is not none -%}
+                  {%- set ns.f = ns.f + [{'key': k, 'name': _prov_parts_def.get(k, {}).get('name_suffix', k), 'reason': 'product_resolve_failed'}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- for k, pid in _prov_chem_product_ids.items() -%}
+                {%- if pid | int(-1) < 1 and _prov_chems_def.get(k, {}).get('name_suffix') is not none -%}
+                  {%- set ns.f = ns.f + [{'key': k, 'name': _prov_chems_def.get(k, {}).get('name_suffix', k), 'reason': 'product_resolve_failed'}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.f }}
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'provision',
+                  'result': 'partial' if _prov_failures | length > 0 else 'provisioned',
+                  'spa_entity': _e_climate, 'preset': _prov_key,
+                  'resolved': (_prov_product_ids.values() | list + _prov_chem_product_ids.values() | list) | select | list | length,
+                  'failures': _prov_failures,
+                  'catalog': _prov_catalog,
+                  'note': 'Catalog created. One spare seeded per part. Log extra stock: action=log_purchased part=<key> amount=<n>.'} }}
+        - stop: spa consumables provision complete
+          response_variable: _result
+
+      # ── shared stock check (status + add_to_shopping) ──────────────────────
+      - if: "{{ _cons_action in ['status', 'add_to_shopping'] }}"
+        then:
+        - variables:
+            _unique_locs: >-
+              {{ _cons_catalog.values()
+                 | selectattr('storage_location_id', 'defined')
+                 | map(attribute='storage_location_id')
+                 | select('ne', none) | map('int') | unique | list }}
+            _all_entries: []
+
+        - repeat:
+            for_each: "{{ _unique_locs }}"
+            sequence:
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: stock_list_by_location
+                  location_id: "{{ repeat.item }}"
+                response_variable: _loc_result
+              - variables:
+                  _tagged: >-
+                    {%- set res = _loc_result.get('result', []) | default([], true) -%}
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for e in res -%}
+                      {%- set ns.out = ns.out + [e | combine({'_loc_id': repeat.item | int})] -%}
+                    {%- endfor -%}
+                    {{ ns.out }}
+              - variables:
+                  _all_entries: "{{ _all_entries + _tagged }}"
+
+        - variables:
+            _stock_by_loc: >-
+              {%- set ns = namespace(idx={}) -%}
+              {%- for e in _all_entries -%}
+                {%- set k = e.product_id | string ~ ':' ~ e._loc_id | string -%}
+                {%- set cur = ns.idx.get(k, 0) | int(0) -%}
+                {%- set ns.idx = ns.idx | combine({k: cur + (e.amount | int(0))}) -%}
+              {%- endfor -%}
+              {{ ns.idx }}
+
+        - variables:
+            _consumables_report: >-
+              {%- set ns = namespace(parts=[], shopping=[]) -%}
+              {%- for pk, pv in _cons_catalog.items() -%}
+                {%- if pv.get('product_id') is not none -%}
+                  {%- set pid   = pv.product_id | string -%}
+                  {%- set loc_k = pid ~ ':' ~ (pv.get('storage_location_id', '') | string) -%}
+                  {%- set amt   = _stock_by_loc.get(loc_k, 0) | int(0) -%}
+                  {%- set min_s = pv.get('min_stock', 1) | int(1) -%}
+                  {%- set status = 'ok' if amt >= min_s else ('low' if amt > 0 else 'out') -%}
+                  {%- set ns.parts = ns.parts + [{
+                    'part':      pk,
+                    'name':      pv.get('name', pk),
+                    'sku':       pv.get('sku'),
+                    'category':  pv.get('category', 'part'),
+                    'stock':     amt,
+                    'min_stock': min_s,
+                    'status':    status,
+                    'chore_id':  pv.get('chore_id', none)
+                  }] -%}
+                  {%- if status in ['low', 'out'] -%}
+                    {%- set needed = [min_s - amt, 1] | max -%}
+                    {%- set ns.shopping = ns.shopping + [{
+                      'product_id': pv.product_id,
+                      'product':    pv.get('name', pk),
+                      'sku':        pv.get('sku'),
+                      'needed':     needed
+                    }] -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ {'parts': ns.parts, 'shopping_actions': ns.shopping} }}
+            _cons_status_result: >-
+              {{ 'ok' if _consumables_report.get('shopping_actions', []) | length == 0 else 'needs_reorder' }}
+
+        - if: "{{ _cons_action == 'add_to_shopping' }}"
+          then:
+          - variables:
+              _shop_adds: []
+          - repeat:
+              for_each: "{{ _consumables_report.get('shopping_actions', []) }}"
+              sequence:
+                - action: script.zen_dojotools_inventory
+                  data:
+                    mode: shopping_add_product
+                    product_id: "{{ repeat.item.product_id }}"
+                    amount: "{{ repeat.item.needed | default(1) }}"
+                  response_variable: _shop_add_raw
+                - variables:
+                    _shop_adds: >-
+                      {{ _shop_adds + [{'product': repeat.item.product,
+                         'sku': repeat.item.get('sku'),
+                         'amount': repeat.item.needed | default(1),
+                         'list_id': (_shop_add_raw.get('result', {}).get('shopping_list_id')
+                                     or _shop_add_raw.get('list_id') or 1) | int(1),
+                         'status': 'added' if _shop_add_raw.get('success') else 'error',
+                         'error': _shop_add_raw.get('result', {}).get('error')}] }}
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'add_to_shopping',
+                    'result': 'ok' if _shop_adds | length > 0 else 'nothing_to_add',
+                    'added': _shop_adds,
+                    'shopping_list_id': (_shop_adds | map(attribute='list_id') | list | first | default(1)),
+                    'consumables': _consumables_report.get('parts', [])} }}
+          - stop: spa consumables add_to_shopping done
+            response_variable: _result
+
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'status',
+                  'result': _cons_status_result,
+                  'spa_entity': _e_climate,
+                  'consumables': _consumables_report.get('parts', []),
+                  'shopping_actions': _consumables_report.get('shopping_actions', []),
+                  'note': 'action=add_to_shopping queues all out/low items. action=provision to set up from scratch.'} }}
+        - stop: spa consumables status
+          response_variable: _result
+
+      # ── action=log_replaced ─────────────────────────────────────────────────
+      - if: "{{ _cons_action == 'log_replaced' }}"
+        then:
+        - if: "{{ _cons_part == '' or _cons_part not in _cons_catalog }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'log_replaced', 'result': 'error',
+                    'note': 'part= required. Valid keys: ' ~ (_cons_catalog.keys() | list | join(', '))} }}
+          - stop: spa consumables log_replaced part required
+            response_variable: _result
+        - variables:
+            _lr_part: "{{ _cons_catalog[_cons_part] }}"
+        - if: "{{ _lr_part.get('product_id') is not none }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: stock_consume
+              product_id: "{{ _lr_part.product_id }}"
+              amount: 1
+            response_variable: _lr_consume_raw
+        - if: "{{ _lr_part.get('chore_id') is not none }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: chores_execute
+              chore_id: "{{ _lr_part.chore_id }}"
+            response_variable: _lr_chore_raw
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'log_replaced', 'result': 'ok',
+                  'part': _cons_part,
+                  'product': _lr_part.get('name', _cons_part),
+                  'sku': _lr_part.get('sku'),
+                  'chore_executed': _lr_part.get('chore_id') is not none,
+                  'note': 'Stock consumed. Chore marked done if linked.'} }}
+        - stop: spa consumables log_replaced done
+          response_variable: _result
+
+      # ── action=log_purchased ────────────────────────────────────────────────
+      - if: "{{ _cons_action == 'log_purchased' }}"
+        then:
+        - if: "{{ _cons_part == '' or _cons_part not in _cons_catalog }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'log_purchased', 'result': 'error',
+                    'note': 'part= required. Valid keys: ' ~ (_cons_catalog.keys() | list | join(', '))} }}
+          - stop: spa consumables log_purchased part required
+            response_variable: _result
+        - variables:
+            _lp_part: "{{ _cons_catalog[_cons_part] }}"
+        - action: script.zen_dojotools_inventory
+          data:
+            mode: stock_add_purchase
+            product_id: "{{ _lp_part.product_id }}"
+            amount: "{{ _cons_amount }}"
+            location_id: "{{ _lp_part.get('storage_location_id') }}"
+          response_variable: _lp_buy_raw
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'log_purchased', 'result': 'ok',
+                  'part': _cons_part,
+                  'product': _lp_part.get('name', _cons_part),
+                  'sku': _lp_part.get('sku'),
+                  'amount': _cons_amount,
+                  'stored_at': _lp_part.get('storage_location_id')} }}
+        - stop: spa consumables log_purchased done
+          response_variable: _result
+
+      # ── unknown action fallback ─────────────────────────────────────────────
+      - variables:
+          _result: >-
+            {{ {'mode': 'consumables', 'result': 'error',
+                'note': 'Unknown action: ' ~ _cons_action ~ '. Valid: status, add_to_shopping, log_replaced, log_purchased, provision.'} }}
+      - stop: spa consumables unknown action
+        response_variable: _result
+
     # ── DEFAULT ───────────────────────────────────────────────────────────────
     - variables:
         _result: >-
           {{ {"error": "unknown_mode", "mode": _mode,
-              "valid_modes": ["status","scene","discover","setup","lights","jets","audio","temperature","cover","chemistry","log","help"]} }}
+              "valid_modes": ["status","scene","discover","setup","lights","jets","audio","temperature","cover","chemistry","log","consumables","help"]} }}
     - stop: unknown mode
       response_variable: _result
