@@ -169,6 +169,8 @@ zen_dojotools_autovac:
 
 `mode=consumables` manages the robot's consumable parts catalog through Grocy. The catalog is stored in the `autovac` cabinet drawer under `grocy_catalog`.
 
+For end-to-end commissioning, including Postman policy setup and Grocy prerequisites, start with [AutoVac First Setup](getting_started/autovac_first_setup.md). For the shared inventory contract used by AutoVac and SpaMaster, see [Grocy Inventory Component](plugins/grocy.md).
+
 ### Actions
 
 | Action | Description |

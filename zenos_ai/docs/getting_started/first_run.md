@@ -203,4 +203,4 @@ Ask your AI: "Run OOBE again" or "Re-do first-time setup." It will walk through 
 
 Once your home is set up, your AI has full context to be useful. The fastest next step is **[Your First Alert](first_alert.md)** — it walks you through firing, listing, and clearing a real AlertManager notification, which is the quickest way to prove the attention pipeline is working.
 
-After that, work through entity exposure and cabinet placement to finish configuring what your AI can see directly, what it should discover through labels, and where operational memory belongs.
+After that, work through entity exposure and cabinet placement to finish configuring what your AI can see directly, what it should discover through labels, and where operational memory belongs. If you want the first full end-to-end component setup, use **[AutoVac First Setup](autovac_first_setup.md)** next; it commissions rooms, labels, schedules, Postman policies, Grocy inventory, wear checks, and AlertManager tests as one chain.

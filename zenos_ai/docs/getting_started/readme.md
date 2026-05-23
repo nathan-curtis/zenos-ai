@@ -15,6 +15,7 @@ installed but inert
   -> devices gain meaning
   -> components can notice useful events
   -> AlertManager/Postman can ask for human judgment
+  -> full components like AutoVac can run end to end
 ```
 
 The "wow, it noticed that" moment should arrive as a clear consent-based loop, not as a surprise. ZenOS-AI only has the tool access and labeled context you give it.
@@ -93,7 +94,22 @@ After the first alert test, use this to clean up what the AI can see and touch. 
 
 ---
 
-### 5. `cabinet_placement.md` — Where Things Go and Why
+### 5. `autovac_first_setup.md` — AutoVac First Setup
+
+The first big integrated component. Covers the whole chain:
+
+* DojoTools exposure and dashboard selectors
+* Room Manager room truth
+* Postman policy seeding and ack test
+* Grocy inventory setup
+* AutoVac labels, schedules, and room configuration
+* Consumables provisioning, wear checks, AlertManager, and final acceptance tests
+
+Use this when you want to prove ZenOS-AI can move from first-run setup to a fully governed automation loop.
+
+---
+
+### 6. `cabinet_placement.md` — Where Things Go and Why
 
 After entity exposure. Covers:
 
@@ -104,7 +120,7 @@ After entity exposure. Covers:
 
 ---
 
-### 6. `oobe.md` — OOBE Walkthrough
+### 7. `oobe.md` — OOBE Walkthrough
 
 The six-step first-boot configuration protocol in detail. Covers:
 
@@ -116,7 +132,7 @@ The six-step first-boot configuration protocol in detail. Covers:
 
 ---
 
-### 7. `troubleshooting.md` — Troubleshooting
+### 8. `troubleshooting.md` — Troubleshooting
 
 When something isn't right. Covers:
 
@@ -133,7 +149,7 @@ When something isn't right. Covers:
 
 ---
 
-### 8. `user_management.md` — User and AI User Management
+### 9. `user_management.md` — User and AI User Management
 
 For adding, removing, and moving identities after initial setup. Covers:
 
@@ -149,7 +165,7 @@ For adding, removing, and moving identities after initial setup. Covers:
 ## Recommended Order
 
 ```
-install.md -> first_run.md -> first_alert.md -> entity_exposure.md -> cabinet_placement.md -> oobe.md
+install.md -> first_run.md -> first_alert.md -> entity_exposure.md -> autovac_first_setup.md -> cabinet_placement.md -> oobe.md
 ```
 
 Keep `troubleshooting.md` and `user_management.md` open in a tab. You might need them.

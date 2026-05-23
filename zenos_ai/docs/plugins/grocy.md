@@ -1,0 +1,282 @@
+# ZenOS-AI Grocy Inventory Component
+
+**Version:** 4.44.0  
+**Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
+**Primary script:** `zen_dojotools_inventory`  
+**Internal REST dispatcher:** `zen_dojotools_grocy_advanced`
+
+---
+
+## Overview
+
+Grocy is the governed inventory, location, shopping, and chore surface for ZenOS-AI. The plugin does not treat Grocy as a loose pantry lookup. It treats Grocy as a durable ERP-style system with explicit IDs, strict ambiguity checks, and controlled write paths.
+
+In practical terms:
+
+* Products, stock entries, locations, units, shopping lists, chores, recipes, tasks, and batteries live in Grocy.
+* ZenOS-AI tools call `zen_dojotools_inventory` for normal work.
+* `zen_dojotools_grocy_advanced` is the lower-level REST dispatcher and should stay internal unless the inventory tool explicitly points there.
+* AutoVac and SpaMaster use Grocy for consumable parts and supplies, but each stores its own local catalog pointer in its cabinet config.
+
+---
+
+## Why This Component Is Different
+
+Most ZenOS tools own their domain state directly in cabinets. Grocy is different: it is both an external application and a shared physical inventory graph. ZenOS stores local intent and catalog bindings, while Grocy remains the authority for stock, locations, chores, shopping, and product IDs.
+
+That split is intentional:
+
+| Layer | Authority | Example |
+|-------|-----------|---------|
+| Component cabinet | Tool-specific catalog bindings | AutoVac part key `hepa_filter` maps to Grocy product ID + wear sensor |
+| Grocy | Physical inventory truth | Current spare filters in stock, storage location, shopping list entry |
+| Room Manager | Spatial context | Area anchor, safety notes, room context slices |
+| Postman | Human acknowledgement | "Spare on hand, replace this part?" |
+
+---
+
+## Inventory Flow
+
+```mermaid
+flowchart LR
+  subgraph Components["Domain Components"]
+    AutoVac["AutoVac"]
+    SpaMaster["SpaMaster"]
+    RoomManager["Room Manager"]
+  end
+
+  subgraph LocalState["ZenOS Local State"]
+    AVDrawer["household.autovac.grocy_catalog"]
+    SpaConfig["household.spa_config.grocy_catalog"]
+    Spatial["room_topology spatial data"]
+  end
+
+  subgraph GrocyLayer["Grocy Inventory Layer"]
+    Inventory["zen_dojotools_inventory"]
+    Advanced["zen_dojotools_grocy_advanced"]
+    Grocy["Grocy API"]
+  end
+
+  subgraph HumanLoop["Human Loop"]
+    Shopping["Shopping list"]
+    Chores["Maintenance chores"]
+    Postman["Postman notification"]
+  end
+
+  AutoVac --> AVDrawer
+  SpaMaster --> SpaConfig
+  RoomManager --> Spatial
+  AVDrawer --> Inventory
+  SpaConfig --> Inventory
+  Spatial --> Inventory
+  Inventory --> Advanced --> Grocy
+  Inventory --> Shopping
+  Inventory --> Chores
+  AutoVac --> Postman
+  SpaMaster --> Postman
+  Postman --> AutoVac
+  Postman --> SpaMaster
+```
+
+Read this as two truths meeting in the middle: the component knows what a part means inside its domain, and Grocy knows whether the part exists, where it is, and whether it needs to be purchased or logged as used.
+
+---
+
+## Core Inventory Modes
+
+| Mode | Use |
+|------|-----|
+| `stock_check_item` | Current stock level for a product |
+| `stock_where_is_item` | Find where a product is stored |
+| `stock_entries_for_item` | Raw stock entries for a product |
+| `stock_buy_product` | Create or resolve a product, then add stock |
+| `stock_add_purchase` | Add purchased stock for an existing product |
+| `stock_consume` | Remove stock after use or replacement |
+| `shopping_add_product` | Add a specific product to the shopping list |
+| `stock_area_summary` | Area-level container and stock count rollup |
+| `stock_area_inventory` | Full denormalized room inventory: locations, products, amounts |
+| `chores_by_area` | Maintenance chores connected to an HA area |
+| `chores_execute` | Mark a chore complete |
+| `stock_register_asset` | Register a permanent physical asset and stock one unit |
+| `locations_metadata_set` | Bind Grocy locations to HA area and parent/container metadata |
+
+Use `mode=help` on `zen_dojotools_inventory` for the complete mode catalog.
+
+---
+
+## Area And Location Model
+
+Grocy locations can be bound into Home Assistant topology with userfield metadata:
+
+| Field | Purpose |
+|-------|---------|
+| `homeassistant_area` | HA area slug associated with the Grocy location |
+| `grocy_parent_location_id` | Parent container ID for nested storage |
+| `grocy_location_subclass` | Semantic role such as `anchor`, `container`, `zone`, or `virtual` |
+| `placement_priority` | Sort order inside the area |
+
+This is what lets Room Manager ask "what inventory belongs to this room?" without hand-maintained entity lists. The important room-facing modes are:
+
+* `stock_area_summary`: compact count and anchor view for a room or area.
+* `stock_area_inventory`: denormalized detailed view with product names and amounts.
+* `chores_by_area`: maintenance chores discovered through stocked products or direct `homeassistant_area` tags.
+
+---
+
+## AutoVac Integration
+
+AutoVac uses Grocy for robot consumables: bags, filters, brushes, pads, and other model preset parts.
+
+```mermaid
+flowchart TD
+  Provision["AutoVac consumables provision"]
+  Robot["Resolve vacuum entity and serial number"]
+  Locations["Create or resolve robot, dock, bin, and spare locations"]
+  Products["Create or resolve part products from model preset"]
+  Catalog["Write household.autovac.grocy_catalog"]
+  Wear["autovac_wear sensors"]
+  Check["check_wear"]
+  Stock["Grocy stock check"]
+  Decision{"Spare on hand?"}
+  Replace["Postman: replace part"]
+  Shop["Add product to shopping list"]
+  Chore["Execute linked maintenance chore"]
+
+  Provision --> Robot --> Locations --> Products --> Catalog
+  Catalog --> Check
+  Wear --> Check
+  Check --> Stock --> Decision
+  Decision -->|yes| Replace --> Chore
+  Decision -->|no| Shop --> Replace
+```
+
+AutoVac stores its Grocy bindings in the `autovac` drawer under `grocy_catalog`. Each part entry can include:
+
+* `product_id`
+* `name`
+* `sku`
+* `storage_location_id`
+* `installed_location_id`
+* `min_stock`
+* `chore_id`
+* `category`
+* `wear_sensor_key`
+* `wear_threshold`
+* `wear_entity`
+
+The operational loop is:
+
+1. `mode=consumables action=provision` builds the catalog and writes the cabinet binding.
+2. `mode=check_wear` reads wear sensors from `autovac_wear` labels and compares them to catalog thresholds.
+3. If a part is worn, AutoVac checks stock through Grocy.
+4. If stock exists, Postman tells the human a spare is available.
+5. If stock is missing, AutoVac adds the item to the Grocy shopping list.
+6. `action=log_replaced` consumes one spare and executes the linked chore when `chore_id` exists.
+7. `action=log_purchased` adds new spares to the configured storage location.
+
+See also: [AutoVac](../autovac.md).
+
+---
+
+## SpaMaster Integration
+
+SpaMaster uses Grocy for spa parts and chemistry supplies. It combines preset-driven catalog creation with stock, shopping, and maintenance chores.
+
+```mermaid
+flowchart TD
+  Setup["SpaMaster setup"]
+  Preset["Model and chemistry presets"]
+  Location["Create or resolve spa area location"]
+  Parts["Create part products"]
+  Chems["Create chemistry supply products"]
+  Chores["Find or create maintenance chores"]
+  Catalog["Write spa_config.grocy_catalog"]
+  Status["consumables status"]
+  Shopping{"Low or out?"}
+  AddShop["add_to_shopping"]
+  Replace["log_replaced"]
+  Purchase["log_purchased"]
+  Consume["Grocy stock_consume"]
+  AddStock["Grocy stock_add_purchase"]
+
+  Setup --> Preset --> Location
+  Location --> Parts --> Catalog
+  Location --> Chems --> Catalog
+  Parts --> Chores --> Catalog
+  Catalog --> Status --> Shopping
+  Shopping -->|yes| AddShop
+  Replace --> Consume --> Chores
+  Purchase --> AddStock
+```
+
+SpaMaster stores its Grocy bindings in `spa_config.grocy_catalog`. The catalog is split into `parts` and `chem_supplies`, then combined at runtime for consumable actions.
+
+The operational loop is:
+
+1. `mode=consumables action=provision` loads a spa preset, creates or reuses products, creates or reuses chores, and writes the catalog.
+2. `action=status` reports current stock and reorder flags.
+3. `action=add_to_shopping` queues all low or out items to the Grocy shopping list.
+4. `action=log_replaced part=<key>` consumes stock and executes the linked maintenance chore when present.
+5. `action=log_purchased part=<key> amount=<n>` adds purchased stock to the part's configured storage location.
+
+See also: [SpaMaster](../spamaster.md).
+
+---
+
+## First-Time Setup
+
+1. Add the Grocy API key to `secrets.yaml`:
+
+```yaml
+grocy_api_key: <your_api_key>
+```
+
+2. In Home Assistant, set `input_text.grocy_url` to the HTTPS base URL for Grocy:
+
+```text
+https://<your-grocy-host>
+```
+
+Do not add a trailing slash. Use HTTPS, not HTTP. If a reverse proxy redirects HTTP to HTTPS, Home Assistant may follow the redirect in a way that changes POST requests into GET requests, which breaks writes.
+
+3. Expose `zen_dojotools_inventory` to the conversation agent if the agent should help with household inventory. Keep `zen_dojotools_grocy_advanced` internal unless you are deliberately giving the agent raw REST access.
+
+4. Provision domain catalogs from the owning tools:
+
+```yaml
+zen_dojotools_autovac:
+  mode: consumables
+  action: provision
+  model_preset: roborock_s8_pro_ultra
+```
+
+```yaml
+zen_dojotools_spamaster:
+  mode: consumables
+  action: provision
+  model_preset: caldera_utopia_florence_2024
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Check |
+|---------|--------------|-------|
+| Grocy reads work but writes fail | `grocy_url` is HTTP or proxy redirects POST | Set `input_text.grocy_url` to HTTPS directly |
+| AutoVac says consumables are not provisioned | `autovac.grocy_catalog` missing | Run AutoVac `mode=consumables action=provision` |
+| SpaMaster says consumables are not provisioned | `spa_config.grocy_catalog.parts` missing | Run SpaMaster `mode=consumables action=provision` |
+| Room inventory is empty | Grocy locations are not tagged with `homeassistant_area` | Use `locations_metadata_set` or `locations_audit` |
+| Maintenance chores do not appear by area | Chores are not linked to products or area userfield is missing | Check `chores_by_area` setup |
+| Product update is blocked by unit error | Existing product has a null or incompatible quantity unit | Follow the tool's delete/recreate or conversion guidance |
+
+---
+
+## Source Notes
+
+This page is derived from:
+
+* `packages/zenos_ai/plugins/grocy/readme.md`
+* `packages/zenos_ai/plugins/grocy/grocy.yaml`
+* [AutoVac](../autovac.md)
+* [SpaMaster](../spamaster.md)

@@ -250,6 +250,8 @@ What it does:
 
 `mode=consumables` is the ERP surface for spa supply tracking. It integrates with Grocy for inventory, shopping lists, and scheduled maintenance chores.
 
+For the shared Grocy inventory contract used by SpaMaster and AutoVac, see [Grocy Inventory Component](plugins/grocy.md).
+
 ### Actions
 
 | Action | Description |
