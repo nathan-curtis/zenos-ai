@@ -177,6 +177,32 @@ confirm: true
 
 ---
 
+## Scope-Change Pattern
+
+To move entities from one label scope to another (e.g. reassigning a camera from `interior` to `exterior`):
+
+```yaml
+# 1. Remove from old scope
+action_type: untag
+label_list: [interior]
+target_entities: [camera.hallway]
+
+# 2. Add to new scope
+action_type: tag
+label_list: [exterior]
+target_entities: [camera.hallway]
+```
+
+No confirm required for tag/untag. Changes take effect on the next trigger cycle — no redeploy or reload needed.
+
+## Footguns
+
+- **`delete`** is permanent and drops ALL entity/area associations instantly. Any KFC or heartbeat that references the deleted label will stop finding entities. No undo.
+- **`install`** resets all `zen_` labels to canonical definitions (icons, colors, descriptions). It clobbers any customizations made since install. Never run mid-session without explicitly asking the operator — it will undo label description edits that Scribe and other tools may have written.
+- **`confirm: true`** on writes is a safety gate, not a formality. The script refuses without it.
+
+---
+
 ## Response Status Values
 
 | Status | Meaning |

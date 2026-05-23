@@ -90,6 +90,7 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
      - Whitelisted → fires `script.{{ _seed_tool }}`, sets `_seed_used: true`, step 8 skipped.
      - Not whitelisted → emits `seed_tool_blocked` zen_event (warn), falls through to step 8 (HyperIndex runs normally).
    - If neither `seed` nor `area_seed` is defined: step 3c is skipped, step 8 runs normally.
+7.5. **Step 3d — Resolve component_summary from label description (v4.6.0+)** — if `component_summary` is empty after reading the Dojo drawer (Scribe's `trim_description` path leaves it blank), the summarizer reads the base label description via `zen_dojotools_labels` and uses it as `component_summary`. This means the label description is the authoritative routing signal when the drawer field is trimmed — keep label descriptions accurate.
 8. **Run HyperIndex** — queries the index using the component's configured index call. Skipped if `_seed_used`. Routing:
    - If the Dojo drawer has an `index_command` dict field: emits compound/recursive index call via `zen_indexer_request` event. Supports the full nested DSL: `{operator, index_1: {...}, index_2: {...}}`. Use for components whose context spans multiple independent label sets.
    - If the drawer has a `label` field: standard label-based index call in hypergraph mode.
