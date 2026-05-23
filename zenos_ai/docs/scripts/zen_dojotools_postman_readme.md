@@ -14,6 +14,66 @@ Every send goes through the same pipeline: sleep gate check → urgency tier →
 
 ---
 
+## Dispatch Flow
+
+```mermaid
+flowchart TD
+  Request["Caller: component, alert, or Friday"]
+  Resolve["Postman resolve"]
+  Profiles["Read postman_profile stack"]
+  House["House ceiling: sleep gate, work gate, life safety bypass"]
+  Family["Family floor: escalation policy (SP1 seed)"]
+  User["User preference: push targets, TTS satellite, urgency tiers, away policy"]
+  Decision{"Would dispatch?"}
+  Blocked["Return blocked reason"]
+  Channels["Select channels"]
+  Push["notify.<push target slug>"]
+  TTS["assist_satellite or announce"]
+  Teams["Teams send"]
+  Log["Write zen_postman_log"]
+  Event["Emit audit zen_event"]
+
+  Request --> Resolve --> Profiles
+  Profiles --> House --> Family --> User --> Decision
+  Decision -->|no| Blocked
+  Decision -->|yes| Channels
+  Channels --> Push
+  Channels --> TTS
+  Channels --> Teams
+  Push --> Log
+  TTS --> Log
+  Teams --> Log
+  Log --> Event
+```
+
+`resolve` stops at the decision and returns the audit. `resolve_and_dispatch` continues through channels, log, and event emission.
+
+---
+
+## Action Button Ack Flow
+
+```mermaid
+sequenceDiagram
+  participant Caller
+  participant Postman
+  participant Mobile as Mobile App
+  participant Router as zen_postman_response_router
+  participant EventBus as HA EventBus
+
+  Caller->>Postman: resolve_and_dispatch(response_type=yes_no)
+  Postman->>Postman: generate pm_tag
+  Postman->>Mobile: push with action buttons and tag
+  Postman->>EventBus: wait for zen_event(kind=postman_response, tag)
+  Mobile->>Router: mobile_app_notification_action
+  Router->>EventBus: zen_event(kind=postman_response, tag, action)
+  EventBus-->>Postman: matching response event
+  Postman-->>Caller: ack_action, ack_timed_out, pm_tag
+```
+
+AlertManager uses this same path when `notify_target: postman` and `response_type` is set. Other tools can either wait on Postman's return value or subscribe independently to `zen_event(kind: postman_response)`.
+
+---
+
 ## Modes
 
 | Mode | Dispatches | Logs | Description |

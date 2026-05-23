@@ -25,6 +25,64 @@ Key capabilities:
 
 ---
 
+## Alert Surface Flow
+
+```mermaid
+flowchart TD
+  Source["Component or Friday"]
+  Fire["zen_event kind=alert_fire"]
+  Manager["zen_alert_manager automation"]
+  Active["Household drawer: _zen_active_alerts"]
+  Dedup{"alert_key already active?"}
+  Notify{"notify_target"}
+  Persistent["HA persistent notification"]
+  Postman["Postman profile routing"]
+  RawNotify["notify.<service suffix>"]
+  Severity{"severity = error?"}
+  Priority["Household drawer: _zen_priority_inject"]
+  Sensor["sensor.zen_priority_context"]
+  HomeOverview["Room Manager home_overview"]
+  Human["Human sees, acknowledges, or acts"]
+
+  Source --> Fire --> Manager --> Dedup
+  Dedup -->|yes| Active
+  Dedup -->|no| Active --> Notify
+  Notify -->|persistent| Persistent --> Human
+  Notify -->|postman| Postman --> Human
+  Notify -->|raw notify| RawNotify --> Human
+  Active --> Severity
+  Severity -->|yes| Priority --> Sensor --> HomeOverview
+  Severity -->|no| HomeOverview
+```
+
+Fire-once dedup happens before dispatch. A repeated `alert_fire` with the same active `alert_key` updates nothing and sends nothing until the alert clears or expires.
+
+---
+
+## Clear And Acknowledge Flow
+
+```mermaid
+flowchart LR
+  Human["Human action"]
+  PostmanAck["Postman response"]
+  AlertResponse["zen_event kind=alert_response"]
+  Cache["Kata drawer: alert_response_<alert_key>"]
+  GetResponse["alertmanager mode=get_response"]
+  Clear["zen_event kind=alert_clear"]
+  RemoveActive["Remove _zen_active_alerts entry"]
+  RemovePriority["Remove alert_<key> from _zen_priority_inject"]
+  Dismiss["Dismiss persistent notification"]
+
+  Human --> PostmanAck --> AlertResponse --> Cache --> GetResponse
+  Human --> Clear --> RemoveActive
+  Clear --> RemovePriority
+  Clear --> Dismiss
+```
+
+Acknowledging a Postman button response and clearing an alert are separate operations. A response records what the human said. A clear removes the active alert and any priority inject provider.
+
+---
+
 ## How to Fire an Alert
 
 Emit a `zen_event` HA event:
