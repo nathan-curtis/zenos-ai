@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Core Package
-# Version: 4.5.6
+# Version: 4.5.7
 #
 # Scripts:
 #   zen_dojotools_filecabinet_gc — Cabinet GC: hide/delete/recycle/unhide lifecycle (v4.5.x)
@@ -577,6 +577,73 @@ script:
                         event:
                           kind: alert_clear
                           alert_key: "{{ repeat.item }}"
+
+      # ── 4d. Postman log GC — TTL sweep of zen_postman_log ─────────────────────
+      # zen_postman_log is a list in the kata cabinet. Each entry has timestamp
+      # and ttl_s. GC evicts entries older than ttl_s, marks orphaned pending
+      # entries (>300s old) as timeout, and caps the list at 50.
+      - alias: Postman log GC — evict stale entries, mark orphaned pending as timeout
+        if:
+          - condition: template
+            value_template: "{{ gc_action == 'gc' and not dry_run }}"
+        then:
+          - variables:
+              _pl_kata: "{{ states('sensor.zen_kata_cabinet_resolved') }}"
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ _pl_kata not in ['', 'unavailable', 'unknown'] }}
+            then:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _pl_kata }}"
+                  key: zen_postman_log
+                  force_action: true
+                response_variable: _pl_fc_read
+              - variables:
+                  _pl_raw_list: >-
+                    {%- set r = _pl_fc_read.get('result', '{}') -%}
+                    {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+                    {%- set raw = r.get('zen_postman_log', none) -%}
+                    {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else none) -%}
+                    {%- set log_str = raw.get('value', raw) if raw is mapping else (raw if raw is string else '[]') -%}
+                    {%- set log_list = log_str | from_json if log_str is string else (log_str if log_str is sequence else []) -%}
+                    {{ log_list | tojson }}
+              - variables:
+                  _pl_cleaned: >-
+                    {%- set now_ts = as_timestamp(now()) | float -%}
+                    {%- set entries = _pl_raw_list if _pl_raw_list is sequence and _pl_raw_list is not string else (_pl_raw_list | from_json if _pl_raw_list is string else []) -%}
+                    {%- set entries = entries if entries is sequence else [] -%}
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for entry in entries if entry is mapping -%}
+                      {%- set ts = entry.get('timestamp', '') | string | trim -%}
+                      {%- set ttl = entry.get('ttl_s', 86400) | int -%}
+                      {%- set status = entry.get('status', 'dispatched') -%}
+                      {%- if ts != '' -%}
+                        {%- set ts_val = as_timestamp(ts) -%}
+                        {%- set age_s = (now_ts - ts_val) | int if ts_val is not none else 999999 -%}
+                        {%- if age_s < ttl -%}
+                          {%- if status == 'pending' and age_s > 300 -%}
+                            {%- set entry = dict(entry, **{'status': 'timeout', 'ack_timed_out': true, 'ttl_s': 86400}) -%}
+                          {%- endif -%}
+                          {%- set ns.out = ns.out + [entry] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.out[-10:] | tojson }}
+              - if:
+                  - condition: template
+                    value_template: "{{ _pl_raw_list != _pl_cleaned }}"
+                then:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      volume_entity_id: "{{ _pl_kata }}"
+                      key: zen_postman_log
+                      value: >-
+                        {{ _pl_cleaned | tojson if _pl_cleaned is sequence and _pl_cleaned is not string else _pl_cleaned }}
+                      force_action: true
 
       # ── 5. Post-prune scheduler nudge ────────────────────────────────────────
       # GC doesn't decide what to re-summarize — it just announces what it collected.
