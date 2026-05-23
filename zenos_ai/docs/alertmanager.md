@@ -1,6 +1,6 @@
 # ZenOS-AI AlertManager
 
-**Version:** 1.3.0 (KFC automation) / 1.0.1 (MCP tool)
+**Version:** 1.5.0
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**
@@ -37,7 +37,7 @@ event_data:
     alert_key: unique_slug        # required — used as dedup key and cabinet key
     message: "Human-readable description"   # optional, defaults to alert_key
     severity: warn                # optional — info | warn | error, defaults to warn
-    notify_target: persistent     # optional — persistent | postman | notify.<service>
+    notify_target: persistent     # optional — persistent | postman | notify service suffix
 ```
 
 ### Postman-specific fields
@@ -47,6 +47,7 @@ event_data:
     channel_hint: push            # push | tts | teams
     title: "Override Title"       # defaults to severity label (Warning / Error / Notice)
     image_entity: camera.front    # attaches snapshot
+    response_type: yes_no         # none | yes_no | yes_no_ignore | ok_cancel | acknowledge
 ```
 
 ---
@@ -83,7 +84,9 @@ Only `error`-severity alerts are auto-wired to the Room Manager priority inject 
 |-------|---------|
 | `persistent` (default) | Creates HA persistent notification |
 | `postman` | Routes via `zen_dojotools_postman` with authority-stack routing. Household/family `postman_profile` policy applied. |
-| `notify.<service>` | Any registered HA notify service (e.g., `notify.pushover`) |
+| `<service suffix>` | Raw-event path only: calls `notify.<service suffix>` (for example, `mobile_app_pixel_8`). |
+
+The MCP tool exposes the safe selector values `persistent`, `mobile`, and `postman`. Use `persistent` for first tests and `postman` when profile-based routing is configured.
 
 ---
 
@@ -96,7 +99,8 @@ State stored in household cabinet drawer `_zen_active_alerts`:
   "unique_slug": {
     "fired_at": "2026-05-16T12:00:00",
     "message": "Description",
-    "severity": "warn"
+    "severity": "warn",
+    "expires_at": "2026-05-17T12:00:00"
   }
 }
 ```
@@ -105,7 +109,7 @@ State stored in household cabinet drawer `_zen_active_alerts`:
 
 **Clear:** If `alert_key` present → remove entry + dismiss notification + remove from priority slot. If absent → silent no-op.
 
-This means the same condition can re-alert after it clears. The dedup window is "while the alert is active" — not time-based.
+This means the same condition can re-alert after it clears. The dedup window is "while the alert is active." By default, `alert_fire` stamps `expires_at` 24 hours in the future; pass `clear_after_minutes: 0` for a permanent alert that requires explicit clear.
 
 ---
 
@@ -115,7 +119,7 @@ This means the same condition can re-alert after it clears. The dedup window is 
 
 ```json
 {
-  "alert_unique_slug": {
+  "alert_<alert_key>": {
     "summary": "message text",
     "urgency": "critical",
     "expires": "ISO timestamp (60 min from fire)",
@@ -127,6 +131,8 @@ This means the same condition can re-alert after it clears. The dedup window is 
 
 Clearing an `error` alert removes it from this drawer.
 
+For alerts, the internal priority provider ID is `alert_<alert_key>`. Users normally do not pass this value to `zen_dojotools_alertmanager`; it is generated when an `error` alert fires and cleared when the alert clears.
+
 ### `sensor.zen_priority_context`
 
 Live rollup sensor reading `_zen_priority_inject`:
@@ -136,7 +142,7 @@ Live rollup sensor reading `_zen_priority_inject`:
 | state | `active` or `clear` |
 | `count` | Number of non-expired priority entries |
 | `providers` | List of active provider IDs |
-| `highest_urgency` | `critical` | `urgent` | `""` |
+| `highest_urgency` | `critical`, `urgent`, or `""` |
 | `oldest_since` | ISO timestamp of oldest active entry |
 
 This sensor is the integration point for Room Manager `home_overview`. Its state feeds `signal.all_quiet` and `alerts.priority_context`.
@@ -174,10 +180,10 @@ This sensor is the integration point for Room Manager `home_overview`. Its state
 
 | Drawer | Format | Auto-Expire |
 |--------|--------|------------|
-| `_zen_active_alerts` | `{alert_key: {fired_at, message, severity}}` | Never (protected) |
-| `_zen_priority_inject` | `{provider_id: {summary, urgency, expires, since, entities}}` | Never (protected) |
+| `_zen_active_alerts` | `{alert_key: {fired_at, message, severity, expires_at}}` | Default 24h; `clear_after_minutes: 0` disables expiry |
+| `_zen_priority_inject` | `{alert_<alert_key>: {summary, urgency, expires, since, entities}}` | Provider expiry, usually 60 minutes for error alerts |
 
-Both drawers are created automatically on first write. The `_` prefix marks them hidden and protected — FileCabinet GC never collects them.
+Both drawers are created automatically on first write. The `_` prefix marks them hidden and protected from generic FileCabinet expiry. AlertManager/Core still perform purpose-built TTL cleanup by emitting `alert_clear` for expired alert entries.
 
 ---
 
@@ -223,7 +229,7 @@ Keep `alert_key` stable and unique across all components — it is the dedup key
 
 ---
 
-## `zen_dojotools_alertmanager` — MCP Tool (v1.0.1)
+## `zen_dojotools_alertmanager` — MCP Tool
 
 Agent-accessible CRUD interface for AlertManager. Friday can query active alerts, fire, clear, and manage notify policy directly without emitting raw `zen_event` calls.
 
@@ -237,6 +243,7 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `fire` | Fire an alert by key. Queues `alert_fire` event. No-op if key already active (dedup). Returns immediately; state change is async. |
 | `clear` | Clear a specific alert by key. Queues `alert_clear` event. Returns immediately. |
 | `clear_all` | Clear all active alerts. Returns count of keys cleared. |
+| `get_response` | Read the cached ack for a fired alert. Returns `{status: pending}` if the response hasn't arrived yet, or `{status: captured, ack_action, ack_timed_out, ack_device_id}` once captured. |
 | `get_policy` | Read the current notify policy from the household cabinet. |
 | `set_policy` | Write a new notify policy entry to the household cabinet. |
 | `help` | Return full tool contract and field reference. |
@@ -251,12 +258,14 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `alert_key` | `fire`, `clear` | string | Alert dedup key — must match the key used at fire time. |
 | `message` | `fire` | string | Human-readable description of the alert condition. |
 | `severity` | `fire` | string | `info` \| `warn` \| `error`. Default: `warn`. |
-| `notify_target` | `fire` | string | `persistent` \| `postman` \| `notify.<service>`. Default: `persistent`. |
+| `notify_target` | `fire` | string | `persistent` \| `mobile` \| `postman`. Default: `persistent`. |
 | `clear_after_minutes` | `fire` | number | TTL in minutes. Default: 1440 (24h). Pass `0` for no auto-expiry. |
 | `channel_hint` | `fire` (postman) | string | `push` \| `tts` \| `teams` — used when `notify_target: postman`. |
-| `title` | `fire` | string | Notification title override. Defaults to severity label. |
-| `provider_id` | `set_policy` | string | Policy scope key. |
-| `urgency` | `set_policy` | string | Urgency level for this policy entry. |
+| `image_entity` | `fire` (postman) | string | Camera or image entity to attach a snapshot. Used when `notify_target: postman`. |
+| `response_type` | `fire` (postman) | string | Actionable button preset: `none` \| `yes_no` \| `yes_no_ignore` \| `ok_cancel` \| `acknowledge`. Default: `none`. Used when `notify_target: postman`. Response cached to kata cabinet and emitted as `zen_event(kind: alert_response)`. |
+| `label` | `get_policy`, `set_policy` | string | HA label slug. Targets all entities returned by `label_entities()`. |
+| `target_entity` | `get_policy`, `set_policy` | string | Single entity ID. Overrides `label`. |
+| `policy_json` | `set_policy` | JSON string | Routing override shape: `{notify_target, channel_hint, suppress_minutes}`. |
 
 ### Response
 
@@ -267,7 +276,7 @@ All modes return a structured response via `response_variable`. Shape varies by 
 {
   "mode": "list",
   "active_alerts": [
-    {"key": "slug", "message": "...", "severity": "warn", "fired_at": "...", "expires_at": "..."}
+    {"alert_key": "slug", "message": "...", "severity": "warn", "fired_at": "...", "expires_at": "..."}
   ],
   "alert_count": 1
 }
@@ -294,8 +303,31 @@ All modes return a structured response via `response_variable`. Shape varies by 
 }
 ```
 
+**`get_response` response — pending:**
+```json
+{
+  "mode": "get_response",
+  "alert_key": "slug",
+  "status": "pending"
+}
+```
+
+**`get_response` response — captured:**
+```json
+{
+  "mode": "get_response",
+  "alert_key": "slug",
+  "status": "captured",
+  "ack_action": "YES",
+  "ack_timed_out": false,
+  "ack_device_id": "abc123"
+}
+```
+
+The response is read from the kata cabinet drawer `alert_response_<alert_key>`. It is written there when `zen_alert_manager` processes the `alert_response` event from Postman. Call `get_response` after firing with `response_type` set — poll until `status: captured` or until `ack_timed_out: true`.
+
 ### Notes
 
 - `fire` and `clear` return immediately after queuing the event. The actual `_zen_active_alerts` drawer update happens when the `zen_alert_manager` automation processes the event.
-- Policy reads/writes target the household cabinet `zen_alert_policy` drawer.
+- Policy reads/writes target the household cabinet `_alert_policy` drawer.
 - **HA restart required on first install** — `zen_dojotools_alertmanager` is a new script entity that does not appear in the MCP schema after a script reload alone.

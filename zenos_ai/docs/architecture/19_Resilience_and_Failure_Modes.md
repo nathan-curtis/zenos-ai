@@ -2,6 +2,8 @@
 
 # 19. Resilience, Failure Modes, and Degradation Strategies
 
+> **Clue operator note:** This chapter is a design record. For the current health dashboard, SystemTools checks, and first-response troubleshooting flows, use `../getting_started/troubleshooting.md` and `../sensors/readme.md`.
+
 Friday’s architecture treats failure as a *normal operating condition*, not an exception. Consumer IoT networks are noisy. Wi-Fi drops packets. ESPHome devices reboot. Vendors throttle APIs. LLM calls timeout. Home Assistant’s event bus occasionally races state transitions. A cognitive system that assumes ideal conditions will misbehave in real conditions.
 
 This section outlines the resilience model that underpins Version 1 of Friday’s House, including:

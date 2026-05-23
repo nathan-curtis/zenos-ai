@@ -41,6 +41,25 @@ These slots fill on first add and block re-entry. Use `set_principal` to transfe
 
 **Partner = delegation authority.** `acls.partner[]` records who is authorized to delegate on an entity's behalf. This is a governance relationship, not a social one. No token is issued without an explicit allow — the link records who has delegation authority, it does not grant it automatically. Works for any entity pair (user↔user, user↔AI, AI↔AI).
 
+```mermaid
+flowchart TD
+  Household["Household cabinet\nresidence boundary"]
+  Family["Family cabinet\nbelonging boundary"]
+  SubFamily["Sub-family cabinet\nextended family"]
+  User["User cabinet"]
+  AI["AI user cabinet"]
+  Manifest["zen_identity_manifest"]
+
+  Household --> Family
+  Family --> SubFamily
+  Family --> User
+  Household --> AI
+  Household --> Manifest
+  Family --> Manifest
+  User --> Manifest
+  AI --> Manifest
+```
+
 ---
 
 ## Modes
@@ -470,6 +489,31 @@ Flynn bootstrap (`flynn_bootstrap_content`) runs steps 4–7 automatically on fi
 
 ---
 
+## Valid Identity Surface
+
+A valid identity is more than a profile drawer. It requires a cabinet role, profile data, membership edges, and a manifest rebuild.
+
+| Identity Kind | Must Have | Written By |
+|---|---|---|
+| Person/User | User cabinet role label, `_user_profile`, optional HA `person.*`, family ACL when joined | Provisioner, Profile Editor, Identity |
+| Family | Family cabinet role label, optional `_family_profile`, `members` drawer | Provisioner, Profile Editor, Identity |
+| Household | Household cabinet role label, `_household_profile`, `members` drawer, HoH owner, prime AI partner | Flynn, Profile Editor, Identity |
+| AI User | AI user cabinet role label, `zenai_essence`, optional family/partner ACLs | Provisioner, Profile Editor, Identity |
+
+The membership graph is valid when:
+
+- household `members.families[]` contains the family cabinets that belong to the household
+- family `members.users[]`, `members.ai_users[]`, and `members.families[]` reflect current membership
+- member VolumeInfo `acls.family[]` mirrors family membership
+- member VolumeInfo `default_family_guid` is set when a default family exists
+- household VolumeInfo `acls.owner` identifies the Head of Household
+- household VolumeInfo `acls.partner[]` includes one `role: prime` AI partner
+- `zen_identity_manifest` has been rebuilt after membership changes
+
+See [Cabinet Specification](../cabinets/cabinet_spec.md#101-valid-identity-cabinet-shapes) for the drawer-level shapes and [Profile Editor](zen_dojotools_profile_readme.md#valid-profile-structures) for the profile writer.
+
+---
+
 ## Events Reference
 
 | Event | Mode | Key Fields |
@@ -543,3 +587,13 @@ A Jinja2-callable identity resolver lives at `custom_templates/zenos_ai/zen_iden
 | `zen_identity.jinja` | Template surface (Jinja2 contexts) — v1.1.0 |
 | Household Cabinet | `members` drawer, `AI_Cabinet_VolumeInfo`, `zen_identity_manifest` |
 | User / AI User / Family Cabinets | `AI_Cabinet_VolumeInfo.acls` — partner, family, owner entries |
+
+---
+
+## Cross-References
+
+- [User Management](../getting_started/user_management.md) — operator workflow for provisioning and teardown
+- [Profile Editor](zen_dojotools_profile_readme.md) — profile drawer writer
+- [Cabinet Specification](../cabinets/cabinet_spec.md) — valid cabinet and identity shapes
+- [Security Model GA](../architecture/security_model_ga.md) — current policy/caller-token status
+- [Script Modules](readme.md) — return path to the internal tool map

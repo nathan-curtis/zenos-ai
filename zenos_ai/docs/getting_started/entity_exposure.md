@@ -16,6 +16,36 @@ Every entity in your Home Assistant install falls into one of three tiers:
 
 The goal is a **small, curated exposed set** and a **large, richly labeled contextable set**. The HyperIndex is designed to handle thousands of labeled entities efficiently. Your conversation agent's tool list is not.
 
+In 2026.6.0, labels also connect entities to the Room Manager map and to operational tools. A camera with a room label and `security_camera` is not just searchable; it can participate in room security views. A vacuum labeled `autovac` can become an AutoVac actor. A person entity tied to an identity profile can receive Postman questions under that user's quiet/work-hour policy.
+
+Use this rule of thumb:
+
+```text
+Expose tools for action.
+Label entities for meaning.
+Keep internals invisible unless a tool needs them.
+```
+
+This is also the privacy/comfort boundary. Direct exposure is permission to act or read immediately. Labels are permission to understand an entity in context. Invisible means ZenOS-AI should not see or reason about it.
+
+```mermaid
+flowchart TB
+  Entity["Home Assistant entity"]
+  Actionable{"Needs direct action or immediate read?"}
+  Contextable{"Provides operational meaning?"}
+  Expose["Expose to Assist"]
+  Label["Tag with HA labels"]
+  Invisible["Leave invisible"]
+  Tools["DojoTools and direct-control entities"]
+  Index["HyperIndex, Room Manager, and KFC tools"]
+
+  Entity --> Actionable
+  Actionable -- "Yes" --> Expose --> Tools
+  Actionable -- "No" --> Contextable
+  Contextable -- "Yes" --> Label --> Index
+  Contextable -- "No" --> Invisible
+```
+
 ---
 
 ## Tier 1: Actionable — Expose to Assist
@@ -31,9 +61,40 @@ Keep this list as short as possible. Every entity exposed to Assist is a token i
 
 **All ZenOS-AI DojoTools scripts** — these are Friday's hands. Every `script.zen_dojotools_*` belongs in the exposed set.
 
-> `zen_admintools_*` scripts are admin-only and should NOT be exposed to the conversation agent. See [AdminTools](../scripts/zen_dojotools_admintools_readme.md). (`zen_dojotools_scribe` is the MCP-exposed KFC registration tool — it is a DojoTools script and is already covered by the "always expose all `zen_dojotools_*`" rule.)
+If you skip this, important things simply will not work. OOBE needs DojoTools to create rooms, tag entities, write profile data, resolve identity, call Room Manager, fire alerts, and talk through Postman.
+
+This is the minimum line for a functional first run: expose DojoTools to Assist. Without them, the AI can talk about setup but cannot reliably perform setup.
+
+> `zen_admintools_*` scripts are admin-only and should NOT be exposed to the conversation agent by default. See [AdminTools](../scripts/zen_dojotools_admintools_readme.md). (`zen_dojotools_scribe` is the MCP-exposed KFC registration tool — it is a DojoTools script and is already covered by the "always expose all `zen_dojotools_*`" rule.)
+
+Minimum default exposure:
+
+| Expose | Reason |
+|---|---|
+| `script.zen_dojotools_*` | Normal governed tool surface |
+| `input_text.zenos_conversation_agent` | Conversation agent self-reference |
+| `input_select.zen_home_mode` | Home mode context and preference application |
+
+Friendly dashboard controls:
+
+| Add to dashboard | Writes to |
+|---|---|
+| `select.zenos_conversation_agent` | `input_text.zenos_conversation_agent` |
+| `select.zenos_active_persona` | `input_text.zenos_persona_name` |
+
+These selects are not a separate source of truth. They make the canonical helpers usable as dropdowns, which is much less error-prone for a new installer.
+
+Default deny:
+
+| Do not expose by default | Reason |
+|---|---|
+| `script.zen_admintools_*` | Repair/reset/admin functions |
+| Cabinet sensors | Use resolver + FileCabinet tools instead |
+| Secrets/debug/internal helpers | Not needed for normal operation |
 
 **Conversation agent helper** — `input_text.zenos_conversation_agent` (Friday needs to know her own entity ID for self-reference)
+
+Use `select.zenos_conversation_agent` on a dashboard when available; it writes the same helper with a valid `conversation.*` entity.
 
 **Home mode** — `input_select.zen_home_mode` or equivalent (Friday actively sets this based on presence and context)
 
@@ -72,14 +133,29 @@ Friday gets a compressed, timestamped summary of everything tagged — without t
 ### What Belongs Here
 
 * All sensors you want summarized — water, energy, temperature, humidity, air quality
-* Media state sensors
-* Security sensors — motion, contact, cameras (state only, not streams)
+* Media state sensors and media players that should be resolved by Media Manager
+* Security sensors — motion, contact, cameras, locks, and areas they protect
 * Device status sensors — appliances, pool/spa, irrigation
 * Anything feeding a KFC component
+* Room-aware actors such as vacuums, covers, lights, and cameras that tools should resolve by label rather than hardcoded entity ID
 
 ### The Rule
 
-> If it feeds a Kata, it belongs in a label — not in the exposed tool list.
+> If it provides operational meaning, it belongs in a label — not in the exposed tool list.
+
+Some labels feed summaries. Others feed immediate tools. Both are contextable.
+
+The best camera example is a fence or driveway camera. Do not expose every camera attribute directly just because it exists. Label the camera with its room/area and role, then let the camera/security tools resolve it when a component needs perception.
+
+Examples:
+
+| Entity kind | Useful labels | Why |
+|---|---|---|
+| Fence or yard camera | Room/area label + `security_camera` | Camera, Security Manager, and Room Manager can agree where the image came from |
+| Robot vacuum | `autovac` + covered room labels/config | AutoVac can elect rooms and report blockers |
+| Mobile/person tracker | Person/identity labels | Postman and Identity can route to the right human |
+| Exterior lock/contact | Room label + `security` | Alerts can include which portal or boundary is involved |
+| Utility meter | `utility_main`, `utility_billing`, or `zen_plant_*` | Plant Manager can resolve infrastructure state |
 
 ---
 
@@ -113,6 +189,19 @@ In your conversation agent configuration, add:
 Create labels for each KFC domain you run. Tag every sensor that feeds those domains. The KFC drawer's `label` field connects the label to the Ninja Summarizer — from there, HyperIndex does the work.
 
 You do not need to maintain entity lists anywhere. Labels are the only list that matters.
+
+For room-aware tools, include the room or area label too. Domain labels say what the thing is; room labels say where it lives.
+
+```text
+camera.back_fence
+  labels: security_camera, back_yard, fence_line
+
+vacuum.downstairs_robot
+  labels: autovac
+
+lock.side_gate
+  labels: security, side_yard
+```
 
 ### Step 3 — Leave everything else alone
 

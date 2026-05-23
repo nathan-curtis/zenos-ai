@@ -1,4 +1,4 @@
-# Zen DojoTools Core — 4.5.5 'Ready Player Two'
+# Zen DojoTools Core — 2026.6.0 'Clue'
 
 *FileCabinet garbage collector — drawer lifecycle management*
 

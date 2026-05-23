@@ -1,6 +1,6 @@
-# ZenOS-AI Troubleshooting Guide — 2026.5.0 'Fry's Grandpa'
+# ZenOS-AI Troubleshooting Guide — 2026.6.0 'Clue'
 
-*Gauges → Kill Switches → Repair Tools. Start at the top, work down.*
+*SystemTools → Gauges → Kill Switches → Repair Tools. Start at the top, work down.*
 
 ---
 
@@ -8,15 +8,136 @@
 
 ZenOS-AI is self-healing. Most problems resolve on their own once the right condition is fixed. This guide is for when they don't.
 
-The structure mirrors the system's own repair logic: **read the gauges first**, then **use the least invasive tool that fixes it**. The repair sequence is ordered from safest to most destructive. Don't skip ahead.
+The structure mirrors the system's own repair logic: **ask SystemTools for a diagnosis first**, read the gauges it points at, then use the least invasive tool that fixes it. The repair sequence is ordered from safest to most destructive. Don't skip ahead.
 
 ---
 
-## 1. Gauges — Read These First
+## 0. SystemTools — Ask the System What It Sees
+
+SystemTools is the safest first stop because it reads the same health sensors and resolver states you would inspect manually, then returns a compact diagnosis.
+
+```yaml
+script.zen_dojotools_systemtools
+  tool: zen_health_report
+```
+
+Or ask your AI: *"run Zen health report."*
+
+`zen_health_report` checks the core health sensors, all cabinet resolver states, summarizer kill switches, summary freshness, schema state, and AI task entity configuration. If it reports `issues_found`, use the diagnosis text to jump to the matching section below.
+
+For summarizer-specific issues, use the pipeline monitor:
+
+```yaml
+script.zen_dojotools_systemtools
+  tool: pipeline
+  period_hours: 3
+```
+
+`pipeline` shows queue state, per-component freshness, scheduler history, recent logbook invocations, dynamic flags, and KFC trigger-pattern recommendations. Use this before resetting summarizers or cabinets.
+
+```mermaid
+flowchart TD
+  Operator["Operator or Assist"]
+  SystemTools["SystemTools"]
+  HealthReport["zen_health_report"]
+  Pipeline["pipeline"]
+  LogViewer["HA Log Viewer"]
+  ResolverRefresh["zen_resolver_refresh"]
+  Reloads["Config-Checked Reloads"]
+
+  Operator --> SystemTools
+  SystemTools --> HealthReport
+  SystemTools --> Pipeline
+  SystemTools --> LogViewer
+  SystemTools --> ResolverRefresh
+  SystemTools --> Reloads
+
+  HealthReport --> Gauges["Health Sensor Tree"]
+  Pipeline --> SummarizerBranch["Summarizer Pipeline Branch"]
+  LogViewer --> Logs["HA logs or journal-mode guidance"]
+  ResolverRefresh --> Resolvers["Cabinet resolver sensors"]
+  Reloads --> Scheduler["Scheduler-deferred reloads"]
+```
+
+SystemTools also wraps reload and restart safely:
+
+| Tool | Use When | Notes |
+|---|---|---|
+| `ha_config_check` | Before restart/reload suspicion | No side effects |
+| `ha_reload_all` | Most YAML/package/template changes | Config-check gated; deferred through Scheduler |
+| `ha_reload_scripts` | Script-only changes | Config-check gated; deferred through Scheduler |
+| `ha_reload_automations` | Automation-only changes | Config-check gated; stops in-flight automation actions |
+| `ha_reload_templates` | `custom_templates/` Jinja changes | Config-check gated; takes effect on next render |
+| `ha_restart` | Core HA config or integration bootstrap changes | Requires `confirm_action: true`; config-check gated |
+
+Expose `script.zen_dojotools_systemtools` and `script.zen_dojotools_ha_log_viewer` to Assist. Do **not** expose `script.zen_dojotools_ha_api`; it is an internal primitive.
+
+---
+
+## 1. Gauges — Read These Manually When Needed
 
 ### Health Sensor Stack
 
 Check these in order. A problem at the bottom propagates up.
+
+```mermaid
+flowchart LR
+  subgraph Inputs["Inputs and Controls"]
+    Resolvers["7 resolver sensors<br/>dojo, kata, system, household, ai_user, user, family"]
+    KillSwitches["summarizer kill switches<br/>master, ninja, supersummary"]
+    AITask["input_text.zenos_ai_task_entity"]
+  end
+
+  subgraph Foundation["Foundation Health"]
+    Label["sensor.zen_label_health<br/>labels exist and are assigned"]
+    Cabinet["sensor.zen_cabinet_health<br/>cabinet slots, schema state, init state"]
+  end
+
+  subgraph Runtime["Runtime Health"]
+    Ninja["sensor.zen_summarizer_health<br/>Ninja heartbeat"]
+    Super["sensor.zen_supersummary_health<br/>SuperSummary freshness"]
+    Monastery["sensor.zen_monastery_health<br/>schemas, summaries, resolver readiness"]
+    Prompt["sensor.zen_prompt_health<br/>sensor.zen_prompt_length"]
+  end
+
+  subgraph Rollups["Rollups"]
+    Flynn["sensor.zen_flynn_health<br/>infrastructure gate rollup"]
+    Ready["binary_sensor.flynn_system_ready"]
+    Agent["sensor.zen_agent_health<br/>agent bootability roster"]
+  end
+
+  subgraph Operator["What You Read"]
+    HealthReport["SystemTools<br/>zen_health_report"]
+    Roster["agent roster / current gate"]
+    Pipeline["SystemTools<br/>pipeline"]
+  end
+
+  Resolvers --> Cabinet
+  Resolvers --> Monastery
+  KillSwitches --> Ninja
+  KillSwitches --> Super
+  AITask --> Ninja
+
+  Label --> Flynn
+  Cabinet --> Flynn
+  Ninja --> Monastery
+  Super --> Monastery
+  Monastery --> Flynn
+  Prompt --> Agent
+
+  Flynn --> Ready
+  Flynn --> Agent
+  Monastery --> Agent
+
+  HealthReport -. reads .-> Label
+  HealthReport -. reads .-> Cabinet
+  HealthReport -. reads .-> Monastery
+  HealthReport -. reads .-> Flynn
+  HealthReport -. reads .-> Agent
+  Pipeline -. reads .-> Ninja
+  Pipeline -. reads .-> Super
+  Agent --> Roster
+```
 
 | Sensor | What It Tells You | Where to Check |
 |---|---|---|
@@ -28,7 +149,7 @@ Check these in order. A problem at the bottom propagates up.
 | `sensor.zen_flynn_health` | Infrastructure rollup | → `current_gate`, `next_step` attrs |
 | `sensor.zen_agent_health` | Is Friday bootable | → `roster` attr (per-gate status per agent) |
 
-**Start with `sensor.zen_agent_health` → `roster`.** It tells you exactly which gate is blocking each agent and what's missing. If you see `friday won't wake up`, this sensor explains why in one attribute read.
+**Start with `script.zen_dojotools_systemtools tool: zen_health_report`.** If you are in Developer Tools and reading manually, start with `sensor.zen_agent_health` → `roster`. It tells you exactly which gate is blocking each agent and what's missing. If you see `friday won't wake up`, this sensor explains why in one attribute read.
 
 ### Resolver Sensors
 
@@ -85,15 +206,94 @@ When a switch is re-enabled, `automation.zen_pipeline_autofire_on_enable` fires 
 
 Work through this list from top to bottom. Try the least invasive fix first.
 
+```mermaid
+flowchart TD
+  Start["Something looks wrong"]
+  Health["Run SystemTools<br/>tool: zen_health_report"]
+  Issues{"issues_found?"}
+  Done["Wait for sensors to update<br/>then re-run health report"]
+
+  ResolverBad{"Resolvers unavailable?"}
+  SummariesBad{"Summaries stale or disabled?"}
+  SchemaBad{"Schema missing or legacy?"}
+  ConfigBad{"YAML/reload problem?"}
+  LabelsBad{"Labels missing or wrong?"}
+  CabinetsBad{"Cabinet missing or corrupt?"}
+  AgentBad{"Agent gate blocked?"}
+
+  Refresh["tool: zen_resolver_refresh"]
+  PipelineTool["tool: pipeline<br/>then check kill switches"]
+  ResetTemplate["script.zen_admintools_reset_template"]
+  SchemaUpgrade["tool: cabinet_schema_upgrade"]
+  ConfigCheck["tool: ha_config_check"]
+  ReloadAll["tool: ha_reload_all"]
+  Restart["tool: ha_restart<br/>confirm_action: true"]
+  SoftLabels["script.zen_dojotools_labels<br/>action_type: reset"]
+  HardLabels["script.zen_admintools_reset_labels<br/>confirm: true"]
+  SingleCab["script.zen_admintools_cabinetadmin<br/>mode: reset"]
+  PromptLoader["script.zen_admintools_prompt_loader<br/>cortex_version: latest"]
+  Nuclear["Last resort:<br/>reset labels, then reset_all cabinets"]
+
+  Start --> Health --> Issues
+  Issues -- "no" --> Done
+  Issues -- "yes" --> ResolverBad
+  ResolverBad -- "yes" --> Refresh --> Done
+  ResolverBad -- "no" --> SummariesBad
+  SummariesBad -- "yes" --> PipelineTool --> Done
+  SummariesBad -- "no" --> SchemaBad
+  SchemaBad -- "missing" --> ResetTemplate --> Done
+  SchemaBad -- "legacy/pre-RC2" --> SchemaUpgrade --> Done
+  SchemaBad -- "no" --> ConfigBad
+  ConfigBad -- "yes" --> ConfigCheck
+  ConfigCheck -- "go" --> ReloadAll --> Refresh --> Done
+  ConfigCheck -- "nogo" --> Logs["Fix returned config errors"]
+  Logs --> ConfigCheck
+  ConfigBad -- "restart-required" --> Restart --> Done
+  ConfigBad -- "no" --> LabelsBad
+  LabelsBad -- "labels exist, assignments wrong" --> SoftLabels --> Refresh --> Done
+  LabelsBad -- "label IDs corrupt" --> HardLabels --> Refresh --> Done
+  LabelsBad -- "no" --> CabinetsBad
+  CabinetsBad -- "one cabinet" --> SingleCab --> Done
+  CabinetsBad -- "many cabinets / reinstall" --> Nuclear
+  CabinetsBad -- "no" --> AgentBad
+  AgentBad -- "system purpose/directives" --> PromptLoader --> Done
+  AgentBad -- "OOBE pending" --> FirstRun["Continue first_run.md"]
+  AgentBad -- "unknown" --> Health
+```
+
 ### Step 1 — Kick the Resolvers (safest, try first)
 
-```
-zen_resolver_refresh  (fire as HA event)
+```yaml
+script.zen_dojotools_systemtools
+  tool: zen_resolver_refresh
 ```
 
 Fires the resolver sensors to re-evaluate immediately without touching labels, cabinets, or schemas. Use this after any label change, after a reload, or when resolver sensors show `unavailable` after a clean boot.
 
-**How:** Developer Tools → Events → Event type: `zen_resolver_refresh` → Fire Event.
+**Alternative:** Developer Tools → Events → Event type: `zen_resolver_refresh` → Fire Event.
+
+---
+
+### Step 1.5 — Reload Safely After YAML or Template Edits
+
+```yaml
+script.zen_dojotools_systemtools
+  tool: ha_reload_all
+```
+
+Use this after package/doc-install YAML changes when you do not need a full restart. SystemTools runs `ha_config_check` first; if the check fails, the reload is blocked and the errors are returned.
+
+`ha_reload_all` and `ha_reload_scripts` return immediately because the actual reload is deferred through Scheduler. That is expected. If a reload reports success but sensors still show cold-start `unavailable`, run Step 1 (`zen_resolver_refresh`).
+
+Use narrower reloads only when you know the edit scope:
+
+| Tool | Scope |
+|---|---|
+| `ha_reload_scripts` | Scripts only |
+| `ha_reload_automations` | Automations only; stops in-flight actions |
+| `ha_reload_templates` | `custom_templates/` Jinja files only |
+
+Use `ha_restart` only for restart-required changes: `auth_providers`, `http:`, `recorder:`, newly bootstrapped integrations, or the `logger:` YAML block.
 
 ---
 
@@ -122,7 +322,7 @@ Or ask your AI: *"run cabinet schema upgrade"* — it knows this tool.
 
 Toggles `cab_schema_version` in the system cabinet from legacy (0) to mount-aware (1). Idempotent. No data loss.
 
-**Use when:** Flynn sends the "one or more cabinets are on a pre-RC2 schema" notification.
+**Use when:** Flynn sends the "one or more cabinets are on a pre-RC2 schema" notification. After it runs, verify with `tool: zen_health_report`.
 
 ---
 
@@ -204,18 +404,21 @@ Flynn handles the full rebuild sequence automatically.
 
 | Symptom | Start Here |
 |---|---|
+| Not sure what's wrong | `script.zen_dojotools_systemtools tool: zen_health_report` |
 | Friday won't wake up | `sensor.zen_agent_health` → `roster` attr |
 | `zen_agent_health: warn` on fresh install | Expected — OOBE pending and/or summarizers disabled. Continue to `first_run.md`. |
 | `monastery: disabled` on fresh install | Kill switches ship off. Enable in Settings → Helpers: `zen_summarizers_enabled` (master), `zen_ninja_summarizer_enabled`, `zen_supersummarizer_enabled`. |
-| Summaries stopped | Check kill switches — ships `off` by default; all three must be `on` to run |
+| Summaries stopped | Run `script.zen_dojotools_systemtools tool: pipeline`, then check kill switches |
 | Summarizer health shows `disabled` | Kill switch is off — intentional state. Enable the relevant switch; autofire restarts it. |
 | Flynn cabinet schema migration notification | Run `zen_dojotools_systemtools tool: cabinet_schema_upgrade` or ask your AI to do it. See Step 2.5. |
 | Summaries are stale | `sensor.zen_supersummary_health` → `monk_status` |
 | Scheduler not firing | `sensor.zen_summarizer_health` → `ai_task_entity`, `last_timestamp` |
 | Flynn stuck at boot | `sensor.zen_flynn_health` → `current_gate`, `next_step` |
-| Resolver sensors unavailable | Fire `zen_resolver_refresh`. If still stuck → Step 4 (soft label reset) |
+| Resolver sensors unavailable | Run `zen_dojotools_systemtools tool: zen_resolver_refresh`. If still stuck → Step 4 (soft label reset) |
 | Labels not assigning | `sensor.zen_label_health` → `missing_label_ids`, `unassigned_label_ids` |
 | Cabinet missing or corrupt | `sensor.zen_cabinet_health` → `missing_cabinets` → Step 6 |
+| Reload did nothing | Run `ha_config_check`; if clean, use `ha_reload_all`, then `zen_resolver_refresh` |
+| HA log file missing | Use `script.zen_dojotools_ha_log_viewer`; HA 2025.11+ journal mode is expected and returns guidance |
 | New install stuck — cabinets all in `init`, nothing initializing | Flynn Gate 2.1 handles this post-warmup. Wait ~5 min after HA start. If still stuck → Step 6 (single cabinet reset). |
 | Schema missing / Gate 3 keeps firing | Step 2 (`reset_template`) |
 | Full reinstall needed | Step 7 (nuclear sequence) |
@@ -225,6 +428,16 @@ Flynn handles the full rebuild sequence automatically.
 ## Notes
 
 - **Flynn is self-healing.** After any repair action, wait for the relevant health sensor to update — Flynn re-engages automatically. You rarely need to trigger it manually.
+- **`zen_health_report`** is the safest first diagnostic. It reads state only.
 - **`zen_resolver_refresh`** is always safe to fire. It re-evaluates resolver sensors without changing anything.
+- **SystemTools reloads are config-check gated.** A failed config check blocks reload/restart and returns the errors instead of failing silently.
 - **Kill switches** are non-destructive. Turning the summarizers off and back on is always safe.
 - **Backup before nuclear ops.** Steps 5–7 have no undo. If your cabinet data matters, export it via `zen_admintools_cabinetadmin mode: inspect` before proceeding.
+
+---
+
+## Cross-References
+
+- [SystemTools](../scripts/zen_dojotools_systemtools_readme.md) — health report, reload/restart wrappers, log viewer, pipeline monitor
+- [Entity Exposure](entity_exposure.md) — expose SystemTools and Log Viewer to Assist; keep HA API internal
+- [Script Modules](../scripts/readme.md) — internal tool map and module index

@@ -10,6 +10,28 @@ OOBE is the guided first-run workflow that configures your ZenOS-AI install thro
 
 OOBE runs once. When complete, it stamps `_oobe_complete` in the AI user cabinet and the flag is never set again unless explicitly reset.
 
+The output is a usable operating graph, not just stored preferences. OOBE establishes:
+
+| Layer | What OOBE creates |
+|---|---|
+| Place | Room Manager topology: rooms, portals, exits, rally point, safety equipment |
+| Meaning | HA labels that connect devices to rooms, people, and tool scopes |
+| Actors | Tool-ready surfaces for cameras, vacuums, locks, spa, energy, and other components |
+| Attention | Component activation and AlertManager/Postman paths for events that need a person |
+| Memory | Cabinet drawers that preserve the household profile and first operational defaults |
+
+```mermaid
+flowchart TD
+  Household["Household profile"]
+  Rooms["Rooms and exits"]
+  People["People and identities"]
+  Integrations["Cameras, vacuums, locks, presence"]
+  Components["Optional components"]
+  Close["Index rebuild and OOBE complete"]
+
+  Household --> Rooms --> People --> Integrations --> Components --> Close
+```
+
 ---
 
 ## How OOBE Starts
@@ -59,6 +81,8 @@ Suite or zone groupings are modeled as a cluster of linked rooms — no separate
 
 > `room_layout` is applied automatically by `mode=set` and `mode=area_create`. No manual HA UI labeling step.
 
+Why this matters: later tools use this map to avoid guessing. A camera alert can be tied to the correct exterior boundary, ZenLux can account for light bleed through an archway, Security Manager can group cameras by area, and AutoVac can reason about which rooms are due or blocked.
+
 ---
 
 ### Step 3 — People
@@ -82,12 +106,16 @@ The AI only offers categories where relevant integrations exist — no vacuum pr
 
 | Category | Domain / Device Class | What Gets Tagged |
 |---|---|---|
-| Cameras | `camera` | Room label + `security_camera` label (required for Room Manager +security slice and Security Manager discovery) |
-| Vacuums | `vacuum` | `autovac` label + room coverage order |
-| Locks | `lock` | `security` label + room label |
-| Presence | device_class: `presence` | Mapped to person from Step 3 |
+| Cameras | `camera` | Room label + `security_camera` label for Room Manager +security, Security Manager, and camera perception flows |
+| Vacuums | `vacuum` | `autovac` label + room coverage order for AutoVac election and scheduling |
+| Locks | `lock` | `security` label + room/portal context |
+| Presence | device_class: `presence` | Person or room mapping for occupancy and human routing |
 
 Nothing is labeled without your confirmation.
+
+This is the step that lets later workflows say "the fence camera saw a person near the exterior boundary" instead of "camera.back_yard detected something." The label graph connects raw HA entities to the physical map and to the right tool.
+
+That wording matters for first-time users. A camera is not "watching you" in the abstract. It is an entity you confirmed, assigned to a place, labeled for a purpose, and connected to a governed flow. If you do not confirm that meaning, ZenOS-AI should treat it as unknown context, not as an authority.
 
 ---
 
@@ -104,6 +132,16 @@ Options offered (if applicable):
 
 Activation preferences are written to the system cabinet.
 
+Think of activation as enabling governed loops:
+
+| Component | Loop it enables |
+|---|---|
+| Security / Camera | Perception -> classification -> alert or human check |
+| AutoVac | Room election -> readiness gates -> clean -> analyze -> consumables |
+| Energy / Plant | Utility state -> attention signals -> troubleshooting context |
+| SpaMaster | Spa status -> scene/chemistry/logging -> optional consumables |
+| AlertManager + Postman | Dedup -> route by profile -> collect acknowledgement -> clear or escalate |
+
 > **Optional — Kung Fu System Switch**
 > Each active KFC component can have a paired `input_boolean` in HA labeled `Kung Fu System Switch`. When present, the boolean overrides the component's `meta.enabled` drawer flag — useful for toggling a component on/off without editing the Dojo. No switch is required; if absent, `meta.enabled` governs. Create one at any time by making an `input_boolean` whose entity ID contains the component's `kata_key` and assigning it the `Kung Fu System Switch` label.
 
@@ -116,7 +154,7 @@ The AI:
 2. **Rebuilds the compact index** — `zen_dojotools_index mode=build_compact_index`
 3. **Writes the OOBE completion flag** — `zen_flynn_oobe mode=complete` (also dismisses the setup notification)
 4. **Tells you the system is ready** — one sentence
-5. **Instructs persona handoff** — set the `ZenOS: Persona` helper (`input_text.zenos_persona_name`) to the agent name just configured, then start a fresh conversation to hand off to the real AI persona
+5. **Instructs persona handoff** — choose the agent name just configured from `select.zenos_active_persona`, then start a fresh conversation to hand off to the real AI persona. Manual fallback: set `input_text.zenos_persona_name` directly.
 
 After Step 6, Flynn's Gate 3.5 will no longer fire the OOBE notification. The system is live.
 

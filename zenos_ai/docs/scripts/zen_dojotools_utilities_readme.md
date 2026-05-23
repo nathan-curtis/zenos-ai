@@ -1,12 +1,12 @@
-# Zen DojoTools Utilities — 4.5.5 'Ready Player Two'
+# Zen DojoTools Utilities — 2026.6.0 'Clue'
 
-*Calculator, dice, announcements, music search, notifications, system help, and misc tools*
+*Calculator, dice, announcements, music search, deprecated notification compatibility, system help, and misc tools*
 
 ---
 
 ## Overview
 
-Utilities is a collection of general-purpose tools that don't belong to a specific subsystem. Eight scripts covering math, randomness, TTS, music, notifications, system introspection, and cabinet auditing.
+Utilities is a collection of general-purpose tools that don't belong to a specific subsystem. It covers math, randomness, TTS, music lookup, system introspection, and cabinet auditing. Notification Router remains here only as a deprecated compatibility bridge; new notification work should use Postman.
 
 ---
 
@@ -131,7 +131,7 @@ Timed delay. Useful for narrative pacing or spacing out sequential tool calls.
 
 ## zen_dojotools_notification_router
 
-Multi-target notification router with quiet hours enforcement, HTML support, and breakthrough override.
+Deprecated compatibility router for older automations. New sends should use `zen_dojotools_postman` with `mode: resolve_and_dispatch`, because Postman preserves native Android notification data, image payloads, and action-button responses.
 
 ### Input Fields
 
@@ -141,7 +141,7 @@ Multi-target notification router with quiet hours enforcement, HTML support, and
 | Routing | `notification_targets` (default: `Admin Devices`), `click_action`, `group`, `tag` |
 | Appearance | `color`, `icon_url`, `visibility`, `sticky`, `persistent`, `timeout` |
 | Android | `channel`, `importance` (`min`/`low`/`default`/`high`/`max`), `vibration_pattern`, `led_color` |
-| Override | `breakthrough` (boolean) — bypasses quiet/work hours blocks |
+| Override | `breakthrough` (boolean) — legacy bypass flag |
 
 ### Targets
 
@@ -154,7 +154,7 @@ Multi-target notification router with quiet hours enforcement, HTML support, and
 
 ### Breakthrough Logic
 
-Breakthrough is allowed when `importance` is `high` or `max` AND `breakthrough: true`. Without breakthrough, notifications to non-admin targets are blocked during quiet hours and work hours.
+Breakthrough is allowed when `importance` is `high` or `max` AND `breakthrough: true`. Without breakthrough, notifications to non-admin targets are blocked during quiet hours and work hours. This is legacy behavior; Postman now owns the current authority stack and response path.
 
 ```json
 { "error": "send blocked, use high importance or better and request breakthrough if appropriate." }

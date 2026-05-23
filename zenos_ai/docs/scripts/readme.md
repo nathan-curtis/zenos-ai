@@ -2,6 +2,55 @@
 
 DojoTools and operational scripts that drive Friday's real-time automation, reasoning, telemetry, storage access, and system reflexes. Each module is fully documented in its own readme.
 
+## Internal Tool Map
+
+```mermaid
+flowchart LR
+  subgraph Authoring["Authoring and Configuration"]
+    Assist["Assist / Friday"]
+    Scribe["Scribe"]
+    Dojo["Dojo Cabinet"]
+  end
+
+  subgraph Triggers["Triggers"]
+    Scheduler["Scheduler"]
+    Camera["Camera"]
+  end
+
+  subgraph Decisions["Context and Decisions"]
+    Ninja["Ninja Summarizer"]
+    Index["Index / HyperIndex"]
+    Inspect["Inspect"]
+  end
+
+  subgraph Memory["Memory and Summarization"]
+    FileCabinet["FileCabinet"]
+    Kata["Kata Cabinet"]
+    SuperSummary["SuperSummary"]
+    Prompt["Live Prompt"]
+  end
+
+  subgraph Action["Action and Acknowledgement"]
+    AlertManager["AlertManager"]
+    Postman["Postman"]
+    Human["Human response"]
+  end
+
+  Assist --> Scribe --> Dojo
+  Dojo --> Ninja
+  Scheduler --> Ninja
+  Ninja --> Index --> Inspect --> FileCabinet
+  Ninja --> FileCabinet --> Kata
+  Kata --> SuperSummary --> FileCabinet
+  SuperSummary --> Prompt --> Assist
+  Camera --> AlertManager --> Postman --> Human
+  AlertManager --> FileCabinet
+  Postman --> FileCabinet
+  Human --> Postman
+```
+
+Read this diagram left to right by zone: authoring fills Dojo, triggers start work, Index/Inspect/FileCabinet assemble context for decisions, Kata and SuperSummary compress memory, and action tools like Camera/AlertManager/Postman close the loop with people.
+
 ---
 
 ## 0. Zen DojoTools Scribe — 4.6.0 'Ectoplasm'
@@ -18,17 +67,17 @@ Ring-2 administrative tools: cabinet repair, template management, label reset, p
 
 ---
 
-## 2. Flynn — Stepgate Sentinel & Bootstrap Engine — 4.5.5 'Ready Player Two'
+## 2. Flynn — Stepgate Sentinel & Bootstrap Engine — 2026.6.0 'Clue'
 **File:** `zen_flynn_readme.md`
 
 Boot guard, initializer, OOBE driver, and prompt fallback. Gates 0–4 drive the full bootstrap sequence. Prompt fallback routes to `prompt_system_flynn()` with zero cabinet dependencies when the system isn't ready. If the system isn't coming up clean, Flynn is why — and where to look first.
 
 ---
 
-## 3. Zen DojoTools Profile Editor — 4.5.5 'Ready Player Two'
+## 3. Zen DojoTools Profile Editor — 5.0 'Clue'
 **File:** `zen_dojotools_profile_readme.md`
 
-Universal read/write interface for ZenOS-AI identity profiles. Four cabinet types: `ai_user`, `household`, `user`, `family`. Expose to your conversation agent — Friday can configure household details conversationally.
+Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI persona, household, user, and family profile drawers; signs/restores AI essence; and manages AI KFC certifications. Expose to your conversation agent so Friday can configure household details conversationally.
 
 ---
 
@@ -39,14 +88,14 @@ Core primitive for label CRUD and entity tagging. Backbone of the label index th
 
 ---
 
-## 5. Zen DojoTools Identity — 4.5.5 'Ready Player Two'
+## 5. Zen DojoTools Identity — 2026.6.0 'Clue'
 **File:** `zen_dojotools_identity_readme.md`
 
 Identity resolver for household members and AI constructs. MCP-exposed. Resolves by label, person entity, cabinet entity, or GUID. Delegates to the same path the prompt uses.
 
 ---
 
-## 6. Zen DojoTools Scheduler — 4.5.5 'Ready Player Two'
+## 6. Zen DojoTools Scheduler — 2026.6.0 'Clue'
 **File:** `zen_dojotools_scheduler_readme.md`
 
 Trigger orchestrator. 20+ trigger IDs, component subscription via Dojo drawer, heartbeat drawer, and manual force events (`summary_force`, `ninja_force`, `supersummary_force`). Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.
@@ -67,63 +116,63 @@ The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and Sup
 
 ---
 
-## 8. Zen DojoTools Library — 4.5.5 'Ready Player Two'
+## 8. Zen DojoTools Library — 2026.6.0 'Clue'
 **File:** `zen_dojotools_library_readme.md`
 
 Unified system utility runner. Routes queries through `command_interpreter.jinja`. Also provides `hash_md5`, `slugify`. The engine the Ninja Summarizer uses for component `command` field dispatch.
 
 ---
 
-## 9. Zen Home Mode — 4.5.5 'Ready Player Two'
+## 9. Zen Home Mode — 2026.6.0 'Clue'
 **File:** `zen_home_mode_readme.md`
 
 Eight-state home presence and time-of-day state machine. Presence-driven transitions, six configurable `input_datetime` anchors, quiet hours, work hours, vacation mode via label. Feeds the Scheduler and Postman sleep gate.
 
 ---
 
-## 10. Zen DojoTools History — 4.5.5 'Ready Player Two'
+## 10. Zen DojoTools History — 2026.6.0 'Clue'
 **File:** `zen_dojotools_history_readme.md`
 
 Recorder statistics query engine. Time-bucketed historical data (5min/hour/day/week/month) for sensors with a valid state_class. Read-only — never modifies history.
 
 ---
 
-## 11. Zen DojoTools Utilities — 4.5.5 'Ready Player Two'
+## 11. Zen DojoTools Utilities — 2026.6.0 'Clue'
 **File:** `zen_dojotools_utilities_readme.md`
 
 General-purpose collection: `calculator`, `dice_roller`, `announce` (TTS by area label), `music_search`, `wait`, `volume_auditor`, `help`. `notification_router` is deprecated — use `zen_dojotools_postman` instead.
 
 ---
 
-## 12. Zen DojoTools Core (FileCabinet GC) — 4.5.5 'Ready Player Two'
+## 12. Zen DojoTools Core (FileCabinet GC) — 2026.6.0 'Clue'
 **File:** `zen_dojotools_core_readme.md`
 
 FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `gc`, `recycle`, `hide`, `unhide`, `dry_run`. Protected drawers (`_prefix`, VolumeInfo, schema keys) are never touched.
 
 ---
 
-## 13. Zen DojoTools SystemTools — 4.5.5 'Ready Player Two'
+## 13. Zen DojoTools SystemTools — 2026.6.0 'Clue'
 **File:** `zen_dojotools_systemtools_readme.md`
 
 HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`.
 
 ---
 
-## 14. Zen DojoTools Office — 4.5.5 'Ready Player Two'
+## 14. Zen DojoTools Office — 2026.6.0 'Clue'
 **File:** `zen_dojotools_office_readme.md`
 
 Unified, deterministic access to all HA calendar entities. Multi-calendar reads, event creation, update/delete, label-based targeting, strict ambiguity prevention.
 
 ---
 
-## 15. Zen DojoTools Event Emitter — 4.5.5 'Ready Player Two'
+## 15. Zen DojoTools Event Emitter — 2026.6.0 'Clue'
 **File:** `zen_dojotools_event_emitter_readme.md`
 
 Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events onto the HA EventBus. Canonical event shape: `{timestamp, component, severity, kind, summary, metadata, kata, monk}`.
 
 ---
 
-## 16. Zen DojoTools FileCabinet — 4.5.5 'Ready Player Two'
+## 16. Zen DojoTools FileCabinet — 2026.6.0 'Clue'
 **File:** `zen_dojotools_filecabinet_readme.md`
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet.

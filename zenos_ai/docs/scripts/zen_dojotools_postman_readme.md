@@ -1,4 +1,4 @@
-# Zen DojoTools Postman — v1.0.0 'Lights, Camera, Action'
+# Zen DojoTools Postman — v1.4.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_postman.yaml`
 **Script:** `zen_dojotools_postman`
@@ -21,6 +21,7 @@ Every send goes through the same pipeline: sleep gate check → urgency tier →
 | `resolve` | no | no | Evaluate authority stack, return would-dispatch result. Browse and debug. |
 | `resolve_and_dispatch` | yes | yes | Full send — resolve + dispatch + kata log + audit event. |
 | `author_policy` | no (policy write) | no | Write or update a `postman_profile` drawer in any cabinet. |
+| `clear_tag` | no | yes (removes) | Remove a log entry from `zen_postman_log` by `pm_tag`. Requires `tag=<pm_tag>`. Returns `{removed: true/false}`. |
 | `help` | no | no | Return full schema, drawer seeds, and example calls. |
 
 ---

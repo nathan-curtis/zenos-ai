@@ -19,15 +19,34 @@ Two scripts ship in this package:
 
 Both scripts are **MCP-exposed** for on-demand runs. The Scheduler drives them automatically.
 
+```mermaid
+flowchart LR
+  Scheduler["Scheduler / force event"]
+  KFC["Dojo KFC drawer"]
+  Seed{"seed or area_seed?"}
+  SeedTool["Whitelisted seed tool"]
+  Index["Index / HyperIndex"]
+  Monk["ai_task.generate_data"]
+  FileCabinet["FileCabinet write"]
+  Kata["Kata drawer"]
+  SuperSummary["SuperSummary"]
+  Prompt["Prompt context"]
+
+  Scheduler --> KFC --> Seed
+  Seed -- "Yes" --> SeedTool --> Monk
+  Seed -- "No" --> Index --> Monk
+  Monk --> FileCabinet --> Kata --> SuperSummary --> Prompt
+```
+
 ---
 
 ## Kill Switches
 
-Three `input_boolean` entities control the pipeline. All default **on**.
+Three `input_boolean` entities control the pipeline. Fresh installs default the master switch **off** so a new user does not accidentally run continuous background inference before choosing a local/background AI task.
 
 | Entity | Default | Purpose |
 |---|---|---|
-| `input_boolean.zen_summarizers_enabled` | on | Master gate — turns off both summarizers immediately |
+| `input_boolean.zen_summarizers_enabled` | off on fresh install | Master gate — turns off both summarizers immediately |
 | `input_boolean.zen_ninja_summarizer_enabled` | on | Ninja Summarizer individual kill switch |
 | `input_boolean.zen_supersummarizer_enabled` | on | SuperSummary individual kill switch |
 
@@ -244,6 +263,17 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | `zen_os_1.jinja` | `zen_cabinets()`, `manifest_loader()`, `ai_capsule()` (SuperSummary prompt context) |
 | `script.zen_dojotools_event_emitter` | Post-run event emission |
 | `automation.zen_dojotools_scheduler` | Scheduled dispatch |
+
+---
+
+## Cross-References
+
+- [Zen Summarizer Overview](../zen_summarizer/readme.md) — conceptual pipeline from Dojo to prompt
+- [DojoTools Scheduler](zen_dojotools_scheduler_readme.md) — trigger IDs, component subscriptions, and force events
+- [DojoTools Index](zen_dojotools_index_readme.md) — default Ninja context resolver
+- [HyperIndex Overview](../zen_hyperindex/zen_hyperindex_overview.md) — SELECT -> FILTER -> COMPOSE graph model
+- [DojoTools FileCabinet](zen_dojotools_filecabinet_readme.md) — Kata and status drawer writes
+- [Script Modules](readme.md) — return path to the internal tool map
 
 ---
 

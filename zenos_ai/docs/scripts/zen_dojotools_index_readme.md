@@ -75,10 +75,41 @@ This supports high-intelligence, LLM-originated queries using a structured query
 When `expand_entities: true`, the Zen Index invokes `script.zen_dojotools_inspect`
 with the resolved entity set, passing through `output_fields` and `label_targets`.
 
-Inspect returns enriched entity data plus `drawers` — a dict of label-targeted
+Inspect returns composed entity overlays plus `drawers` — a dict of label-targeted
 blurbs from FileCabinet. Index surfaces both in the result.
 
-This is how Friday walks the entity graph and reads Dojo context in one call.
+This is how Friday walks the entity graph and reads Dojo context in one call. The expansion is layered:
+
+```mermaid
+flowchart LR
+  Set["Resolved entity set"]
+  Inspect["Inspect"]
+  Entity["Base state"]
+  Labels["Labels"]
+  Device["Device / area"]
+  Person["Person identity"]
+  Cabinet["Cabinet header"]
+  Domain["Domain overlays"]
+  Drawers["Drawer blurbs"]
+  Output["result.expanded + domain_context + drawers"]
+
+  Set --> Inspect
+  Inspect --> Entity --> Output
+  Inspect --> Labels --> Output
+  Inspect --> Device --> Output
+  Inspect --> Person --> Output
+  Inspect --> Cabinet --> Output
+  Inspect --> Domain --> Output
+  Drawers --> Output
+```
+
+For example:
+
+- a `person.*` entity can gain a ZenOS identity/presence overlay
+- a cabinet sensor gains a header-only cabinet overlay, while private drawers stay behind FileCabinet
+- a camera entity can gain cached image-analysis context
+- a room-aware entity can gain Room Manager context
+- future domain tools can add their own "Foo" overlay without changing the base set logic
 
 ### 🏷 Label Aggregation & Adjacency
 The Zen Index automatically computes which labels appear across:

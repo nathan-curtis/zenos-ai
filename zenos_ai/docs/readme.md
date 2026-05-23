@@ -18,7 +18,7 @@
 >
 > **4. OOBE v4.2.0.** First-run room setup is now RM-native. The AI registers rooms directly into Room Manager topology (portals, adjacency, exits, rally point, safety equipment) instead of writing flat filecabinet drawers.
 >
-> → [Full Release Notes — Fry's Grandpa](releases/frys_grandpa.md) | [Room Manager](room_manager.md) | [Plant Manager](plant_manager.md)
+> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](room_manager.md) | [Plant Manager](plant_manager.md)
 
 ---
 
@@ -27,6 +27,27 @@ Welcome to the **ZenOS-AI Documentation** — the full map of the architecture, 
 ZenOS-AI turns **Home Assistant** into a real agentic, persona-aware operating system. This documentation explains how the pieces fit together: the **Cabinet System** for identity and memory, the **Monastery** for reasoning, the **KF4 action pipeline** for awareness and action, and the **HyperIndex** for graph-based attention and discovery.
 
 If you're building an AI construct, designing a DojoTool, wiring the action pipeline, or just trying to understand how Friday thinks, this directory is your guide.
+
+```mermaid
+flowchart LR
+  HomeAssistant["Home Assistant state"]
+  Labels["Labels and Room Manager"]
+  HyperIndex["Index / HyperIndex"]
+  FileCabinet["FileCabinet + Cabinets"]
+  Summarizers["Ninja + SuperSummary"]
+  Prompt["Live Prompt"]
+  Tools["DojoTools"]
+  People["Postman / Human ack"]
+
+  HomeAssistant --> Labels --> HyperIndex
+  HyperIndex --> Summarizers
+  FileCabinet --> Summarizers
+  Summarizers --> FileCabinet
+  Summarizers --> Prompt
+  Prompt --> Tools
+  Tools --> FileCabinet
+  Tools --> People
+```
 
 ---
 
@@ -63,6 +84,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
 * `plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, validate
 * `media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
+* `autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * `alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep
 * `zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades

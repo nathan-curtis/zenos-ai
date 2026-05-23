@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v1.4.0
+# Zen DojoTools Scribe — v1.8.0
 
 *Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
 
@@ -48,6 +48,7 @@ in different states.
 | `delete` | Delete the drawer entirely. Requires `delete_confirm: true`. |
 | `formalize_scroll` | Lock the artifact as formal and read-only (`artifact_state: formal`). Applies `zen_scroll` label — hard RO via FileCabinet. |
 | `publish_kfc` | Press a formal scroll to the Dojo as a live KFC. Requires `artifact_state == formal` and `publish_confirm: true`. |
+| `republish_kfc` | Edit-and-republish an existing KFC without going through the formal scroll gate. Reads the current KFC from the Dojo, merges any supplied field changes, runs the full trim block (label create-or-update, `icon` sync, chonk warning). Use after `patch` when label sync is needed, or standalone to sync only the label description. |
 | `dry_run` | Preview scope discovery and authoring guidance without writing anything. |
 | `list_triggers` | Return all available scheduler trigger IDs. |
 | `enable` | Shorthand — patch `meta.enabled: true` without a full rewrite. |
@@ -125,6 +126,7 @@ Use this when one domain (e.g., `water_manager`) needs multiple summarizer views
 | Field | Purpose |
 |---|---|
 | `component_summary` | One-line operational description (what Friday sees) |
+| `icon` | MDI icon for the KFC label (e.g. `mdi:water`). Set on first publish via label create; preserved on subsequent updates. |
 | `component_instructions` | Monk guidance for the Ninja Summarizer |
 | `more_info` | Extra rationale, references, design notes |
 | `what_it_does` | Plain-English description of the collection's purpose |
@@ -311,5 +313,7 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
-| v1.4.0 | `seed` and `area_seed` input fields; parsed into draft and publish payloads. Help updated: `context_source_guide`, `per_area_rollup_pattern`, `tuning_guide`. |
+| v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. |
+| v1.7.0 | `icon` field added to KFC schema; set on first publish (label create), preserved on update. `publish_kfc` label upsert — creates label if absent, always updates description. Component summary chonk warning (>150 chars). |
+| v1.4.0 | `seed` and `area_seed` input fields; parsed into draft and publish payloads. |
 | v1.3.0 | Initial release as Scribe. Replaces `zen_dojotools_kungfu_writer`. Full lifecycle management, LLM-native authoring, component group model. |

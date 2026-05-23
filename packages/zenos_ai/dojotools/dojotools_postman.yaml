@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Postman
-# Version: 1.0.0
+# Version: 1.4.0
 #
 # Purpose:
 #   Unified household communications layer. Resolves notification intent
@@ -29,14 +29,15 @@
 #   - Per-target user cabinet resolution (multi-user routing)
 #   - Ack watch / response_required escalation
 #   - Family escalation loop
-#   - zen_postman_log capping (currently last-write-wins)
+#   - zen_postman_log per-entry TTL + list log, ack/timeout/dispatched (v1.2.3+)
+#   - mode=clear_tag — remove log entry by pm_tag (v1.4.0)
 #   - Work gate activation condition (currently checks postman_profile only)
 #   - content_policy per channel
 ###############################################################################
 
 script:
   zen_dojotools_postman:
-    alias: Zen DojoTools Postman (v1.0.0)
+    alias: Zen DojoTools Postman (v1.4.0)
     mode: parallel
     max: 5
     icon: mdi:envelope-outline
@@ -53,6 +54,7 @@ script:
           happen. No dispatch, no log write. Use for browse and debug.
           resolve_and_dispatch — resolve + dispatch + log. Full send.
           author_policy — write/update a postman_profile in a cabinet drawer.
+          clear_tag — remove a log entry from zen_postman_log by pm_tag (pass as tag=<pm_tag>).
           help — return drawer schemas and example calls for setup.
         required: true
         selector:
@@ -61,6 +63,7 @@ script:
               - resolve
               - resolve_and_dispatch
               - author_policy
+              - clear_tag
               - help
 
       target:
@@ -166,14 +169,19 @@ script:
       response_type:
         name: Response Type
         description: >-
-          Predefined action button set appended to the notification.
-          none       — no buttons (default)
-          yes_no     — Yes / No
+          Action button set appended to the notification. Postman waits for
+          the response up to response_timeout_s. All ack_action values are
+          normalized to canonical: yes/no/ok/cancel/ignore/ack/timeout.
+          none        — no buttons, no wait (default)
+          yes_no      — Yes / No
           yes_no_ignore — Yes / No / Ignore
-          ok_cancel  — Ok / Cancel
+          ok_cancel   — Ok / Cancel
           acknowledge — Got it (single dismiss button)
-          Fires mobile_app_notification_action event with action: YES/NO/etc.
-          when tapped. Postman waits for the response up to response_timeout_s.
+          custom      — no buttons injected; supply your own via
+                        notification_data.actions using canonical action names
+                        or known aliases (proceed→ok, stop→cancel, later→ignore,
+                        confirm→ok, abort→cancel, snooze→ignore, done→ack).
+                        Postman still waits and normalizes the response.
         required: false
         default: none
         selector:
@@ -184,18 +192,20 @@ script:
               - yes_no_ignore
               - ok_cancel
               - acknowledge
+              - custom
 
       response_timeout_s:
         name: Response Timeout (seconds)
         description: >-
           How long to wait for a button tap before timing out.
           Only active when response_type is set. Default 60s.
+          Extended range (up to 3600s/1hr) for pre-run / long-window notifications.
         required: false
         default: 60
         selector:
           number:
             min: 10
-            max: 300
+            max: 3600
             step: 10
 
       force_audio:
@@ -254,6 +264,50 @@ script:
         default: false
         selector:
           boolean:
+
+      on_ack:
+        name: On-Ack Branch Payloads
+        description: >-
+          JSON string: dict mapping response action → partial postman call fired
+          after this notification's ack resolves.
+          Keys: yes / no / ignore / ok / cancel / ack / timeout.
+          Each value is a partial postman call dict — any field valid on
+          resolve_and_dispatch (message, title, urgency, open_dashboard,
+          response_type, on_ack for nesting, etc.).
+          Chain max depth: 3 levels.
+          Example: {"yes": {"message": "Opening dashboard.", "open_dashboard": true, "urgency": 3}}
+          Timeout branch fires when response_timeout_s elapses with no tap.
+        required: false
+        selector:
+          text:
+
+      ack_depth:
+        name: Ack Chain Depth
+        description: "INTERNAL — auto-managed recursion counter for on_ack chaining. Never set manually."
+        required: false
+        default: 0
+        selector:
+          text:
+
+      ack_owner:
+        name: Ack Owner
+        description: >-
+          Who owns this response — the subsystem or script that should receive
+          the postman_ack event. Carried verbatim in zen_event(kind: postman_ack).
+          Subscribers filter on this field. e.g. autovac, alert_manager, taskmaster.
+        required: false
+        selector:
+          text:
+
+      ack_context:
+        name: Ack Context
+        description: >-
+          Which specific question this is. Disambiguates multiple concurrent
+          notifications from the same owner. Carried in postman_ack event.
+          e.g. 4pm_run, clean_kitchen, confirm_lock.
+        required: false
+        selector:
+          text:
 
       # --- Author Policy Fields ---
       scope_id:
@@ -327,13 +381,16 @@ script:
           _force_audio:         "{{ force_audio | default(false) | bool(false) }}"
           _kata_raw:            "{{ kata_input | default({}, true) }}"
           _breakthrough:        "{{ breakthrough | default(false) | bool(false) }}"
+          _ack_depth:           "{{ ack_depth | default(0) | int(0) }}"
+          _ack_owner:           "{{ ack_owner | default('', true) | string | trim }}"
+          _ack_context:         "{{ ack_context | default('', true) | string | trim }}"
           # Cabinet entity IDs resolved at runtime via label resolver sensors
           _hh_cab:        "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
           _user_cab:      "{{ states('sensor.zen_default_user_cabinet_resolved') }}"
           _family_cab:    "{{ states('sensor.zen_default_family_cabinet_resolved') }}"
           _kata_cab:      "{{ states('sensor.zen_kata_cabinet_resolved') }}"
 
-      # ── 0b. Kata-input fallback — derive title/message when not explicit ──
+      # ── 0b. Kata-input fallback + SP1 user cabinet resolution ────────────
       - variables:
           _message: >-
             {%- if _message != '' -%}{{ _message }}
@@ -345,6 +402,22 @@ script:
             {%- elif _kata_raw is mapping and _kata_raw | length > 0 -%}
               {{ (_kata_raw.get('component', '') | replace('_', ' ') | title) ~ ' — ' ~ (_kata_raw.get('period', 'Update') | title) }}
             {%- else -%}{{ _title }}{%- endif -%}
+          _resolved_user_cab: >-
+            {%- if _target.startswith('person.') -%}
+              {%- set _slug = _target.split('.')[1] -%}
+              {%- set _cabs = label_entities(_slug) | select('match', 'sensor\\..*cabinet.*resolved') | list -%}
+              {{ _cabs | first if _cabs | length > 0 else _user_cab }}
+            {%- else -%}
+              {{ _user_cab }}
+            {%- endif -%}
+
+      # ── 0c. Parse on_ack + depth gate ─────────────────────────────────────
+      # Nulled when _ack_depth >= 3 (hard recursion limit).
+      - variables:
+          _on_ack: >-
+            {%- if _ack_depth < 3 and on_ack is mapping and on_ack | length > 0 -%}{{ on_ack }}
+            {%- elif _ack_depth < 3 and on_ack is string and on_ack | trim | length > 2 -%}{{ on_ack | trim | from_json }}
+            {%- endif -%}
 
       # ══════════════════════════════════════════════════════════════════════
       # MODE: resolve — read side, no dispatch, no log, no audit event
@@ -371,7 +444,7 @@ script:
               action_type: read
               show_hidden_volumes: false
               volume_entity_id:
-                - "{{ _user_cab }}"
+                - "{{ _resolved_user_cab }}"
               key: postman_profile
               caller_token: "{{ _caller_token }}"
             response_variable: _user_fc_res
@@ -414,7 +487,7 @@ script:
               _bypass_all_gates:   "{{ _urgency >= _life_safety_bypass or _breakthrough }}"
               _sleep_gate:         "{{ _house_policy.get('sleep_gate', {}) if _house_policy is mapping else {} }}"
               _sleep_block_below:  "{{ (_sleep_gate.get('block_below_urgency', 9)) | int(9) }}"
-              _is_sleep:           "{{ is_state('input_select.zen_home_mode', 'sleep') or (now().hour >= 23 or now().hour < 7) }}"
+              _is_sleep:           "{{ is_state('binary_sensor.zen_quiet_hours', 'on') or is_state('input_select.zen_home_mode', 'Night') or is_state('input_select.zen_home_mode', 'Night-Late') }}"
               _sleep_blocked:      "{{ not _bypass_all_gates and _is_sleep and _urgency < _sleep_block_below }}"
               _work_gate:          "{{ _house_policy.get('work_gate', {}) if _house_policy is mapping else {} }}"
               _work_block_tts:     "{{ (_work_gate.get('block_tts', false) | bool) if not _bypass_all_gates else false }}"
@@ -481,10 +554,8 @@ script:
                 {%- if _img == '' and _image_url != '' -%}{%- set _img = _image_url -%}{%- endif -%}
                 {%- if _img != '' -%}{%- set d = d | combine({'image': _img}) -%}{%- endif -%}
                 {%- if _audio_url != '' -%}{%- set d = d | combine({'audio': _audio_url}) -%}{%- endif -%}
-                {%- if _open_dashboard -%}
-                  {%- set _ap = (_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim -%}
-                  {%- if _ap != '' -%}{%- set d = d | combine({'clickAction': _ap, 'url': _ap}) -%}{%- endif -%}
-                {%- endif -%}
+                {%- set _ap = (_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim -%}
+                {%- if _open_dashboard and _ap != '' and _response_type in ['', 'none'] -%}{%- set d = d | combine({'clickAction': _ap, 'url': _ap}) -%}{%- endif -%}
                 {%- if _pm_tag != '' -%}{%- set d = d | combine({'tag': _pm_tag}) -%}{%- endif -%}
                 {%- if _response_type not in ['', 'none'] -%}
                   {%- set _sets = {
@@ -494,6 +565,11 @@ script:
                     'acknowledge':    [{'action': 'ACK',    'title': 'Got it'}]
                   } -%}
                   {%- set _acts = _sets.get(_response_type, []) -%}
+                  {%- if _open_dashboard and _ap != '' -%}
+                    {%- set _ns = namespace(u=[]) -%}
+                    {%- for a in _acts -%}{%- set _ns.u = _ns.u + [a | combine({'uri': _ap})] -%}{%- endfor -%}
+                    {%- set _acts = _ns.u -%}
+                  {%- endif -%}
                   {%- if _acts | length > 0 -%}{%- set d = d | combine({'actions': _acts}) -%}{%- endif -%}
                 {%- endif -%}
                 {{ d if d is mapping else {} }}
@@ -585,15 +661,13 @@ script:
               caller_token: "{{ _caller_token }}"
             response_variable: _house_fc_res
 
-          # ── 2. Read postman_profile from user cabinet ──────────────────
-          # SP1: resolve _target person → their own user cabinet entity.
-          # For now: default user cabinet for all targets.
+          # ── 2. Read postman_profile from user cabinet (SP1: per-person) ─
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: read
               show_hidden_volumes: false
               volume_entity_id:
-                - "{{ _user_cab }}"
+                - "{{ _resolved_user_cab }}"
               key: postman_profile
               caller_token: "{{ _caller_token }}"
             response_variable: _user_fc_res
@@ -636,7 +710,7 @@ script:
               _bypass_all_gates:   "{{ _urgency >= _life_safety_bypass or _breakthrough }}"
               _sleep_gate:         "{{ _house_policy.get('sleep_gate', {}) if _house_policy is mapping else {} }}"
               _sleep_block_below:  "{{ (_sleep_gate.get('block_below_urgency', 9)) | int(9) }}"
-              _is_sleep:           "{{ is_state('input_select.zen_home_mode', 'sleep') or (now().hour >= 23 or now().hour < 7) }}"
+              _is_sleep:           "{{ is_state('binary_sensor.zen_quiet_hours', 'on') or is_state('input_select.zen_home_mode', 'Night') or is_state('input_select.zen_home_mode', 'Night-Late') }}"
               _sleep_blocked:      "{{ not _bypass_all_gates and _is_sleep and _urgency < _sleep_block_below }}"
               _work_gate:          "{{ _house_policy.get('work_gate', {}) if _house_policy is mapping else {} }}"
               _work_block_tts:     "{{ (_work_gate.get('block_tts', false) | bool) if not _bypass_all_gates else false }}"
@@ -733,10 +807,8 @@ script:
                 {%- if _img == '' and _image_url != '' -%}{%- set _img = _image_url -%}{%- endif -%}
                 {%- if _img != '' -%}{%- set d = d | combine({'image': _img}) -%}{%- endif -%}
                 {%- if _audio_url != '' -%}{%- set d = d | combine({'audio': _audio_url}) -%}{%- endif -%}
-                {%- if _open_dashboard -%}
-                  {%- set _ap = (_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim -%}
-                  {%- if _ap != '' -%}{%- set d = d | combine({'clickAction': _ap, 'url': _ap}) -%}{%- endif -%}
-                {%- endif -%}
+                {%- set _ap = (_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim -%}
+                {%- if _open_dashboard and _ap != '' and _response_type in ['', 'none'] -%}{%- set d = d | combine({'clickAction': _ap, 'url': _ap}) -%}{%- endif -%}
                 {%- if _pm_tag != '' -%}{%- set d = d | combine({'tag': _pm_tag}) -%}{%- endif -%}
                 {%- if _response_type not in ['', 'none'] -%}
                   {%- set _sets = {
@@ -746,6 +818,11 @@ script:
                     'acknowledge':    [{'action': 'ACK',    'title': 'Got it'}]
                   } -%}
                   {%- set _acts = _sets.get(_response_type, []) -%}
+                  {%- if _open_dashboard and _ap != '' -%}
+                    {%- set _ns = namespace(u=[]) -%}
+                    {%- for a in _acts -%}{%- set _ns.u = _ns.u + [a | combine({'uri': _ap})] -%}{%- endfor -%}
+                    {%- set _acts = _ns.u -%}
+                  {%- endif -%}
                   {%- if _acts | length > 0 -%}{%- set d = d | combine({'actions': _acts}) -%}{%- endif -%}
                 {%- endif -%}
                 {{ d if d is mapping else {} }}
@@ -935,33 +1012,125 @@ script:
                   _ack_device_id: "{{ wait.trigger.event.data.event.device_id if wait.trigger is not none else '' }}"
                   _ack_timed_out: "{{ wait.trigger is none }}"
 
+          # ── 8.6. Normalize ack_action to canonical set ──────────────────
+          # Runs after both voice (8.3) and push (8.5) ack paths.
+          # Maps caller-supplied action names to canonical vocabulary so all
+          # downstream consumers (on_ack, postman_ack event, log) speak one language.
+          - variables:
+              _ack_action: >-
+                {%- set aliases = {
+                  'proceed': 'ok',     'confirm': 'ok',    'approve': 'ok',   'release': 'ok',
+                  'stop':    'cancel', 'abort':   'cancel',
+                  'deny':    'no',     'nope':    'no',
+                  'later':   'ignore', 'snooze':  'ignore', 'dismiss': 'ignore', 'delay': 'ignore',
+                  'got_it':  'ack',    'done':    'ack',    'received': 'ack'
+                } -%}
+                {%- set a = _ack_action | lower | trim -%}
+                {{ aliases.get(a, a) }}
+
           # ── 9. Write delivery record ────────────────────────────────────
-          # SP1: cap log at N entries (currently last-write-wins)
+          # Inline read-modify-write: skips intermediate variables to avoid
+          # NativeEnvironment list re-parsing. Dedup on pm_tag, cap at 10.
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              volume_entity_id: "{{ _kata_cab }}"
+              key: zen_postman_log
+              force_action: true
+            response_variable: _log_read
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: create
               show_hidden_volumes: false
+              force_action: true
               volume_entity_id:
                 - "{{ _kata_cab }}"
               key: zen_postman_log
               value: >-
-                {{
-                  {
-                    "timestamp":         now().isoformat(),
-                    "target":            _target,
-                    "urgency":           _urgency | int,
-                    "tier":              _urgency_tier,
-                    "channels":          _final_channels,
-                    "bypass_all_gates":  _bypass_all_gates,
-                    "response_required": _response_req,
-                    "pm_tag":            _pm_tag,
-                    "ack_action":        _ack_action,
-                    "ack_timed_out":     _ack_timed_out,
-                    "ack_device_id":     _ack_device_id,
-                    "caller_token":      _caller_token
-                  } | tojson
-                }}
+                {%- set r = _log_read.get('result', {}) -%}
+                {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+                {%- set raw = r.get('zen_postman_log', none) -%}
+                {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else none) -%}
+                {%- set log_val = raw.get('value', none) if raw is mapping else none -%}
+                {%- set cur = log_val if log_val is sequence and log_val is not string else (log_val | from_json if log_val is string else []) -%}
+                {%- set cur = cur if cur is sequence else [] -%}
+                {%- set cur = cur | rejectattr('pm_tag', 'equalto', _pm_tag) | list if _pm_tag != '' else cur | list -%}
+                {%- set s = 'ack' if _ack_action != '' else ('timeout' if _ack_timed_out else 'dispatched') -%}
+                {%- set entry = {
+                  'pm_tag': _pm_tag, 'status': s,
+                  'timestamp': now().isoformat(), 'ttl_s': 86400,
+                  'target': _target, 'urgency': _urgency | int,
+                  'tier': _urgency_tier, 'channels': _final_channels,
+                  'bypass_all_gates': _bypass_all_gates,
+                  'response_required': _response_req,
+                  'ack_action': _ack_action, 'ack_timed_out': _ack_timed_out,
+                  'ack_device_id': _ack_device_id,
+                  'caller_token': _caller_token
+                } -%}
+                {{ (cur + [entry])[-10:] | tojson }}
             response_variable: _log_result
+
+          # ── 9b. Post-ack zen_event ─────────────────────────────────────────
+          # Fires after any response_type wait resolves (ack, timeout, or
+          # dispatched-with-no-wait). Enables async KFC/automation chaining.
+          - if: "{{ _response_type not in ['', 'none'] and _pm_tag != '' }}"
+            then:
+              - event: zen_event
+                event_data:
+                  event:
+                    kind:          postman_ack
+                    pm_tag:        "{{ _pm_tag }}"
+                    ack_action:    "{{ _ack_action }}"
+                    ack_timed_out: "{{ _ack_timed_out }}"
+                    ack_owner:     "{{ _ack_owner }}"
+                    ack_context:   "{{ _ack_context }}"
+                    ack_depth:     "{{ _ack_depth }}"
+
+          # ── 9c. on_ack chain ────────────────────────────────────────────
+          # Resolves matching branch key and fires a recursive postman call.
+          # Depth gate (_ack_depth < 3) enforced at normalize step 0c.
+          - if: "{{ _on_ack is mapping and _on_ack | length > 0 }}"
+            then:
+              - variables:
+                  _ack_key: >-
+                    {%- if _ack_timed_out and 'timeout' in _on_ack -%}timeout
+                    {%- elif _ack_action != '' and _ack_action | lower in _on_ack -%}{{ _ack_action | lower }}
+                    {%- endif -%}
+              - variables:
+                  _ack_branch: >-
+                    {{ _on_ack.get(_ack_key, {}) if _ack_key is string and _ack_key != '' and _on_ack is mapping else {} }}
+              - if: "{{ _ack_branch is mapping and _ack_branch | length > 0 }}"
+                then:
+                  - variables:
+                      _chain_urgency:  "{{ _ack_branch.get('urgency', _urgency) | int }}"
+                      _chain_msg:      "{{ _ack_branch.get('message', '') | string }}"
+                      _chain_title:    "{{ _ack_branch.get('title', '') | string }}"
+                      _chain_ch_hint:  "{{ _ack_branch.get('channel_hint', '') | string }}"
+                      _chain_resp_t:   "{{ _ack_branch.get('response_type', 'none') | string }}"
+                      _chain_resp_to:  "{{ _ack_branch.get('response_timeout_s', 60) | int }}"
+                      _chain_open_d:   "{{ _ack_branch.get('open_dashboard', false) | bool }}"
+                      _chain_tag:      "{{ _ack_branch.get('tag', _pm_tag) | string }}"
+                      _chain_nested:   "{{ _ack_branch.get('on_ack', {}) | tojson }}"
+                      _chain_bt:       "{{ _ack_branch.get('breakthrough', false) | bool }}"
+                      _chain_owner:    "{{ _ack_branch.get('ack_owner', _ack_owner) | string }}"
+                      _chain_ctx:      "{{ _ack_branch.get('ack_context', _ack_context) | string }}"
+                  - action: script.zen_dojotools_postman
+                    data:
+                      mode:               resolve_and_dispatch
+                      target:             "{{ _target }}"
+                      message:            "{{ _chain_msg }}"
+                      title:              "{{ _chain_title }}"
+                      urgency:            "{{ _chain_urgency }}"
+                      channel_hint:       "{{ _chain_ch_hint }}"
+                      response_type:      "{{ _chain_resp_t }}"
+                      response_timeout_s: "{{ _chain_resp_to }}"
+                      open_dashboard:     "{{ _chain_open_d }}"
+                      tag:                "{{ _chain_tag }}"
+                      on_ack:             "{{ _chain_nested }}"
+                      ack_depth:          "{{ _ack_depth + 1 }}"
+                      ack_owner:          "{{ _chain_owner }}"
+                      ack_context:        "{{ _chain_ctx }}"
+                      breakthrough:       "{{ _chain_bt }}"
 
           # ── 10. Audit event ─────────────────────────────────────────────
           - event: zen_event
@@ -1112,6 +1281,59 @@ script:
 
 
       # ══════════════════════════════════════════════════════════════════════
+      # MODE: clear_tag
+      # ══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'clear_tag' }}"
+        then:
+          - if: "{{ _tag == '' }}"
+            then:
+              - variables:
+                  _final_response:
+                    mode: clear_tag
+                    result: error
+                    note: "tag= is required for mode=clear_tag"
+                    caller_token: "{{ _caller_token }}"
+              - stop: "clear_tag error — no tag"
+                response_variable: _final_response
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              volume_entity_id: "{{ _kata_cab }}"
+              key: zen_postman_log
+              force_action: true
+            response_variable: _log_read
+          - variables:
+              _ct_log: >-
+                {%- set r = _log_read.get('result', {}) -%}
+                {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+                {%- set raw = r.get('zen_postman_log', none) -%}
+                {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else none) -%}
+                {%- set log_val = raw.get('value', none) if raw is mapping else none -%}
+                {%- set cur = log_val if log_val is sequence and log_val is not string else (log_val | from_json if log_val is string else []) -%}
+                {{ cur if cur is sequence else [] }}
+          - variables:
+              _ct_removed: "{{ (_ct_log | selectattr('pm_tag', 'equalto', _tag) | list | length) > 0 }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: create
+              force_action: true
+              volume_entity_id:
+                - "{{ _kata_cab }}"
+              key: zen_postman_log
+              value: "{{ (_ct_log | rejectattr('pm_tag', 'equalto', _tag) | list) | tojson }}"
+            response_variable: _log_result
+          - variables:
+              _final_response:
+                mode: clear_tag
+                result: ok
+                pm_tag: "{{ _tag }}"
+                removed: "{{ _ct_removed }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: "clear_tag complete"
+            response_variable: _final_response
+
+
+      # ══════════════════════════════════════════════════════════════════════
       # MODE: help
       # ══════════════════════════════════════════════════════════════════════
       - if: "{{ _mode == 'help' }}"
@@ -1121,7 +1343,7 @@ script:
                 {{
                   {
                     "tool": "zen_dojotools_postman",
-                    "version": "1.0.0",
+                    "version": "1.4.0",
                     "about": "Household comms layer. Resolves urgency + target against authority stack (house ceiling → family floor → user preference) and dispatches to push/tts/teams. Supports image attachments, actionable response buttons, and full Android notification data passthrough.",
 
                     "setup_required": {
@@ -1232,12 +1454,23 @@ script:
                         "2. After push dispatch, Postman waits for zen_event(kind: postman_response, tag: pm_tag)",
                         "3. zen_postman_response_router converts mobile_app_notification_action → zen_event",
                         "4. Postman resumes with ack_action set to the tapped button (YES/NO/etc)",
-                        "5. On timeout: ack_timed_out=true, ack_action=''"
+                        "5. On timeout: ack_timed_out=true, ack_action=''",
+                        "6. zen_event(kind: postman_ack) always fires after ack resolves — carries pm_tag, ack_action, ack_timed_out, caller_token, ack_depth",
+                        "7. If on_ack field was provided, the matching branch fires as a new postman call"
                       ],
                       "caller_response_fields": {
                         "pm_tag":       "Correlation tag stamped on the notification and postman log",
                         "ack_action":   "Button tapped: YES | NO | IGNORE | OK | CANCEL | ACK | '' (timeout)",
                         "ack_timed_out": "true if no tap received within response_timeout_s"
+                      },
+                      "on_ack_chaining": {
+                        "field": "on_ack",
+                        "description": "JSON dict mapping ack outcome → partial postman call. Fired inline after parent ack resolves.",
+                        "keys": "yes | no | ignore | ok | cancel | ack | timeout",
+                        "branch_fields": "Any resolve_and_dispatch field: message, title, urgency, open_dashboard, response_type, on_ack (nested), tag, breakthrough, channel_hint",
+                        "depth_limit": "Max 3 chain levels. Depth counter auto-managed — never pass ack_depth manually.",
+                        "example": "{\"yes\": {\"message\": \"Opening Friday's dashboard.\", \"open_dashboard\": true, \"urgency\": 3}, \"timeout\": {\"message\": \"No response — ignoring.\"}}",
+                        "postman_ack_event": "zen_event(kind: postman_ack) fires after EVERY response_type wait — subscribe independently without blocking caller. Carries: pm_tag, ack_action, ack_timed_out, caller_token, ack_depth."
                       },
                       "subscribe_independently": "Other automations can also listen for zen_event(kind: postman_response) and filter by tag without blocking the caller."
                     },
@@ -1397,10 +1630,15 @@ script:
                       }
                     },
 
+                    "example_clear_tag": {
+                      "mode": "clear_tag",
+                      "tag": "pm_1744000000",
+                      "_note": "Removes the log entry with that pm_tag from zen_postman_log. Returns removed: true if it was present."
+                    },
+
                     "sp1_not_yet_implemented": [
                       "Per-target user cabinet resolution (all targets use default user cabinet)",
                       "Family escalation loop",
-                      "zen_postman_log capping (last-write-wins)",
                       "Work gate activation condition",
                       "content_policy per channel"
                     ],
@@ -1409,6 +1647,167 @@ script:
                 }}
           - stop: "Help"
             response_variable: _final_response
+
+
+# ============================================================================
+# zen_dojotools_announce
+# TTS broadcast layer — called by zen_dojotools_postman when TTS channel is
+# active but no tts_satellite is configured in the user postman_profile.
+# Finds available assist_satellite entities and announces to them.
+# Optional target_area scopes to that room's satellites.
+# Fallback: persistent_notification when no satellites available.
+# ============================================================================
+
+  zen_dojotools_announce:
+    alias: Zen DojoTools Announce (v1.0.0)
+    mode: parallel
+    max: 5
+    icon: mdi:bullhorn-outline
+    description: >-
+      TTS broadcast. Finds available assist_satellite entities and announces.
+      target_area scopes to that room's satellites (falls back to all).
+      Fallback: persistent_notification when no satellites available.
+
+    fields:
+      message:
+        name: Message
+        description: Text to announce.
+        required: true
+        selector:
+          text:
+            multiline: true
+      urgency:
+        name: Urgency
+        description: "1–10. Informational only."
+        required: false
+        default: 1
+        selector:
+          number:
+            min: 1
+            max: 10
+            step: 1
+      target_area:
+        name: Target Area
+        description: >-
+          Scope to satellites in this area. Falls back to all if none found.
+        required: false
+        selector:
+          text:
+      duck_media:
+        name: Duck Media
+        description: >-
+          If true (default), ducks active media players in target_area before
+          announcing and restores after. Set false to announce without touching
+          media. No-op when target_area is not set.
+        required: false
+        default: true
+        selector:
+          boolean:
+      caller_token:
+        name: Caller Token
+        description: Opaque correlation token.
+        required: false
+        selector:
+          text:
+
+    sequence:
+
+      # ── 0. Normalize ───────────────────────────────────────────────────────
+      - variables:
+          _msg:          "{{ message | default('', true) | string | trim }}"
+          _area:         "{{ target_area | default('', true) | string | trim }}"
+          _duck:         "{{ duck_media | default(true) | bool }}"
+          _caller_token: "{{ caller_token | default('', true) | string | trim }}"
+
+      # ── 1. Resolve target satellites ──────────────────────────────────────
+      - variables:
+          _target_sats: >-
+            {%- set _all = states.assist_satellite | map(attribute='entity_id') | list -%}
+            {%- if _area != '' -%}
+              {%- set _area_sats = area_entities(_area) | select('match', 'assist_satellite\\.') | list -%}
+              {{ _area_sats if _area_sats | length > 0 else _all }}
+            {%- else -%}
+              {{ _all }}
+            {%- endif -%}
+
+      # ── 1b. Find active media players to duck (area-scoped + duck=true) ────
+      # Broadcast (no target_area) or duck_media=false skips ducking.
+      - variables:
+          _duck_players: >-
+            {%- if _area != '' and _duck -%}
+              {%- set _players = area_entities(_area) | select('match', 'media_player\\.') | list -%}
+              {%- set ns = namespace(active=[]) -%}
+              {%- for p in _players -%}
+                {%- if states(p) == 'playing' -%}
+                  {%- set _vol = state_attr(p, 'volume_level') | default(0.5, true) | float -%}
+                  {%- set ns.active = ns.active + [{'entity_id': p, 'volume': _vol}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.active | tojson }}
+            {%- else -%}
+              {{ [] | tojson }}
+            {%- endif -%}
+
+      # ── 2. Dispatch — satellite or persistent notification fallback ────────
+      - choose:
+        - conditions: "{{ _target_sats | length > 0 }}"
+          sequence:
+
+            # Duck active media in area
+            - repeat:
+                for_each: "{{ _duck_players | from_json }}"
+                sequence:
+                  - action: media_player.volume_set
+                    data:
+                      entity_id: "{{ repeat.item.entity_id }}"
+                      volume_level: "{{ [repeat.item.volume * 0.25, 0.05] | max | round(2) }}"
+                    continue_on_error: true
+
+            # Brief pause for volume change to settle
+            - if: "{{ (_duck_players | from_json) | length > 0 }}"
+              then:
+                - delay: "00:00:01"
+
+            # Announce to each satellite
+            - repeat:
+                for_each: "{{ _target_sats }}"
+                sequence:
+                  - action: assist_satellite.announce
+                    data:
+                      entity_id: "{{ repeat.item }}"
+                      message:   "{{ _msg }}"
+                    continue_on_error: true
+
+            # Restore media volumes
+            - repeat:
+                for_each: "{{ _duck_players | from_json }}"
+                sequence:
+                  - action: media_player.volume_set
+                    data:
+                      entity_id: "{{ repeat.item.entity_id }}"
+                      volume_level: "{{ repeat.item.volume | round(2) }}"
+                    continue_on_error: true
+
+        default:
+          - action: persistent_notification.create
+            data:
+              message:         "{{ _msg }}"
+              title:           Announcement
+              notification_id: "zen_announce_{{ as_timestamp(now()) | int }}"
+
+      - variables:
+          _result: >-
+            {{
+              {
+                "status":        "ok",
+                "dispatched_to": _target_sats,
+                "fallback_used": _target_sats | length == 0,
+                "ducked":        _duck_players | from_json | map(attribute="entity_id") | list,
+                "caller_token":  _caller_token
+              }
+            }}
+      - stop: announce
+        response_variable: _result
 
 
 # ============================================================================

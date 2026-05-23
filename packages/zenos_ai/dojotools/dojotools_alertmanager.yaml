@@ -1,6 +1,15 @@
 ###############################################################################
 # ZenOS-AI Alert Manager
-# Version: 1.4.0
+# Version: 1.5.0
+#
+# Additions in 1.5.0:
+#   fire: image_entity + response_type fields — passed through to postman.
+#   fire: response_type triggers wait_for_trigger in postman; ack cached to
+#     kata cabinet under alert_response_{key} and re-emitted as
+#     zen_event(kind=alert_response) for any downstream subscriber.
+#   get_response: new mode — reads cached ack for a given alert_key from
+#     kata cabinet. Returns {ack_action, ack_timed_out, ack_device_id,
+#     responded_at} or status: pending if not yet captured.
 #
 # Fixes in 1.4.0:
 #   Tool: all FileCabinet write value: fields now guard with tojson when value
@@ -266,6 +275,8 @@ automation:
                   _notify_target: "{{ _ev.notify_target | default('persistent') | trim }}"
                   _channel_hint:  "{{ _ev.channel_hint | default('', true) | string | trim }}"
                   _image_entity:  "{{ _ev.image_entity | default('', true) | string | trim }}"
+                  _response_type: "{{ _ev.response_type | default('', true) | string | trim }}"
+                  _kata_cab:      "{{ states('sensor.zen_kata_cabinet_resolved') }}"
                   _title:         >-
                     {{ _ev.title | default('ZenOS — ' ~
                       ('Error' if _severity == 'error' else
@@ -299,7 +310,41 @@ automation:
                           urgency: "{{ _urgency }}"
                           channel_hint: "{{ _channel_hint }}"
                           image_entity: "{{ _image_entity }}"
+                          response_type: "{{ _response_type }}"
                           caller_token: "zen_alert_manager/{{ _key }}"
+                        response_variable: _pm_res
+
+                      # Cache response + re-emit for downstream subscribers
+                      - if:
+                          - condition: template
+                            value_template: >-
+                              {{ _response_type not in ['', 'none']
+                                 and _kata_cab not in ['', 'unavailable', 'unknown'] }}
+                        then:
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              action_type: create
+                              volume_entity_id: "{{ _kata_cab }}"
+                              key: "alert_response_{{ _key }}"
+                              set_timestamp: true
+                              value: >-
+                                {{
+                                  {
+                                    'alert_key':     _key,
+                                    'ack_action':    (_pm_res.get('ack_action', '') if _pm_res is mapping else ''),
+                                    'ack_timed_out': (_pm_res.get('ack_timed_out', true) if _pm_res is mapping else true),
+                                    'ack_device_id': (_pm_res.get('ack_device_id', '') if _pm_res is mapping else '')
+                                  } | tojson
+                                }}
+                              caller_token: "zen_alert_manager/{{ _key }}"
+                          - event: zen_event
+                            event_data:
+                              event:
+                                kind:          alert_response
+                                alert_key:     "{{ _key }}"
+                                ack_action:    "{{ _pm_res.get('ack_action', '') if _pm_res is mapping else '' }}"
+                                ack_timed_out: "{{ _pm_res.get('ack_timed_out', true) if _pm_res is mapping else true }}"
+                                ack_device_id: "{{ _pm_res.get('ack_device_id', '') if _pm_res is mapping else '' }}"
 
                 default:
                   - action: "notify.{{ _notify_target }}"
@@ -628,9 +673,19 @@ script:
       why the AI agent is in priority/urgent mode (error-severity alerts
       write to sensor.zen_priority_context, which the active agent sees).
 
-      LIST: read live alert roster + priority inject slot — start here.
+      FOR FULL TRIAGE (alerts + persistent notifications + repairs + pending
+      updates + recent dispatches with pre-built action_queue): call
+      systemtools tool=notice_dashboard first — it aggregates everything and
+      returns action_queue[]{priority,item,tool,call} ready to fire.
+
+      LIST: read live alert roster + priority inject slot — alerts only.
       FIRE: raise a new alert by key; dedup means already-active key is a
       no-op; error-severity also activates sensor.zen_priority_context.
+      Pass image_entity + response_type to attach a snapshot and actionable
+      buttons (postman only). Response cached to kata cabinet + emitted as
+      zen_event(kind=alert_response) for downstream subscribers.
+      GET_RESPONSE: read cached ack for a fired alert — returns ack_action,
+      ack_timed_out, ack_device_id or status:pending if not yet captured.
       CLEAR: dismiss one alert + its persistent notification + priority slot.
       CLEAR_ALL: dismiss every active alert at once.
       POLICY: get/set per-entity or per-label routing overrides
@@ -639,11 +694,11 @@ script:
       Use mode=help for full field reference, severity pipeline, and GC notes.
     fields:
       mode:
-        description: "list | fire | clear | clear_all | get_policy | set_policy | help"
+        description: "list | fire | clear | clear_all | get_response | get_policy | set_policy | help"
         required: true
         selector:
           select:
-            options: [list, fire, clear, clear_all, get_policy, set_policy, help]
+            options: [list, fire, clear, clear_all, get_response, get_policy, set_policy, help]
       alert_key:
         description: "Unique dedup slug in _zen_active_alerts (fire / clear)"
         selector:
@@ -666,6 +721,15 @@ script:
         description: "Postman dispatch channel — push | tts | teams (fire)"
         selector:
           text:
+      image_entity:
+        description: "Camera or image entity to attach snapshot (fire, postman only)"
+        selector:
+          text:
+      response_type:
+        description: "Actionable buttons — none | yes_no | yes_no_ignore | ok_cancel | acknowledge (fire, postman only)"
+        selector:
+          select:
+            options: [none, yes_no, yes_no_ignore, ok_cancel, acknowledge]
       clear_after_minutes:
         description: "TTL in minutes; 0=permanent, omit=24h auto-GC (fire)"
         selector:
@@ -788,12 +852,14 @@ script:
           - conditions: "{{ _mode == 'fire' }}"
             sequence:
               - variables:
-                  _key:  "{{ alert_key | default('') | trim }}"
-                  _msg:  "{{ message | default('') | trim }}"
-                  _sev:  "{{ severity | default('warn') | trim }}"
-                  _ntgt: "{{ notify_target | default('persistent') | trim }}"
-                  _ch:   "{{ channel_hint | default('', true) | string | trim }}"
-                  _cam:  "{{ clear_after_minutes | default(none, true) }}"
+                  _key:   "{{ alert_key | default('') | trim }}"
+                  _msg:   "{{ message | default('') | trim }}"
+                  _sev:   "{{ severity | default('warn') | trim }}"
+                  _ntgt:  "{{ notify_target | default('persistent') | trim }}"
+                  _ch:    "{{ channel_hint | default('', true) | string | trim }}"
+                  _img:   "{{ image_entity | default('', true) | string | trim }}"
+                  _rtype: "{{ response_type | default('', true) | string | trim }}"
+                  _cam:   "{{ clear_after_minutes | default(none, true) }}"
 
               - if:
                   - condition: template
@@ -811,11 +877,13 @@ script:
                 event_data:
                   event:
                     kind: alert_fire
-                    alert_key: "{{ _key }}"
-                    message:   "{{ _msg }}"
-                    severity:  "{{ _sev }}"
-                    notify_target: "{{ _ntgt }}"
-                    channel_hint:  "{{ _ch }}"
+                    alert_key:           "{{ _key }}"
+                    message:             "{{ _msg }}"
+                    severity:            "{{ _sev }}"
+                    notify_target:       "{{ _ntgt }}"
+                    channel_hint:        "{{ _ch }}"
+                    image_entity:        "{{ _img }}"
+                    response_type:       "{{ _rtype }}"
                     clear_after_minutes: "{{ _cam }}"
 
               - variables:
@@ -1028,6 +1096,57 @@ script:
                         'targets_updated': (_targets if _targets is not string else (_targets | from_json)),
                         'policy_applied': _new_policy,
                         'caller_token': _caller_token} | tojson }}
+
+          # ── get_response ──────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'get_response' }}"
+            sequence:
+              - variables:
+                  _key:      "{{ alert_key | default('') | trim }}"
+                  _kata_cab: "{{ states('sensor.zen_kata_cabinet_resolved') }}"
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _key == '' }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        error: alert_key required
+                        caller_token: "{{ _caller_token }}"
+                  - stop: get_response_validation_error
+                    response_variable: result
+
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _kata_cab }}"
+                  key: "alert_response_{{ _key }}"
+                  caller_token: "zen_dojotools_alertmanager/get_response"
+                response_variable: _fc_resp
+
+              - variables:
+                  _raw: >-
+                    {%- set r = _fc_resp.get('result', {}) -%}
+                    {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+                    {%- set key = 'alert_response_' ~ _key -%}
+                    {%- set raw = r.get(key, {}) -%}
+                    {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+                    {%- set v = raw.get('value', raw) if raw is mapping else {} -%}
+                    {%- set v = v | from_json if v is string else v -%}
+                    {{ v if v is mapping else {} }}
+                  _response: >-
+                    {%- set v = _raw if _raw is mapping else {} -%}
+                    {%- if v | length == 0 -%}
+                      {{ {'mode': 'get_response', 'alert_key': _key,
+                          'status': 'pending', 'caller_token': _caller_token} | tojson }}
+                    {%- else -%}
+                      {{ {'mode': 'get_response', 'alert_key': _key,
+                          'status': 'captured',
+                          'ack_action':    v.get('ack_action', ''),
+                          'ack_timed_out': v.get('ack_timed_out', true),
+                          'ack_device_id': v.get('ack_device_id', ''),
+                          'caller_token':  _caller_token} | tojson }}
+                    {%- endif -%}
 
           # ── help ──────────────────────────────────────────────────────────────
           - conditions: "{{ _mode == 'help' }}"

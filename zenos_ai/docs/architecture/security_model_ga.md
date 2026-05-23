@@ -1,18 +1,20 @@
 # ZenOS-AI Security Model — GA Reference
 
-**Version:** 4.5.5 'Ready Player Two' GA
-**Status:** Operational reference — describes what is active at GA and what is stubbed for SP1
+**Version:** Architecture record, refreshed for 2026.6.0 'Clue'
+**Status:** Historical GA security model with current operator caveats
 
 ---
 
 ## The Short Version
 
-ZenOS-AI has a complete security architecture. At GA, the structural layer is fully wired —
-identity, principal chains, delegation limits, group nesting rules, and the claims engine
-are all in place and enforced. The external authentication provider is not yet connected.
+ZenOS-AI has a complete security architecture. This document records the GA security model:
+identity, principal chains, delegation limits, group nesting rules, and the claims engine.
+For Clue-era runtime setup, use the getting-started exposure guide and the current
+Profile Editor, Identity, FileCabinet, and Postman references.
 
-One drawer setting activates full enforcement at SP1: `secure: true` in the System Cabinet
-`security_policy` drawer. Everything else is already running.
+Do not use this page as the list of tools to expose to Assist. Expose the documented
+minimum DojoTools surface; keep AdminTools and raw HA API tools internal unless a human
+administrator deliberately enables them for recovery.
 
 ---
 

@@ -1,6 +1,6 @@
 # ZenOS-AI: Install Guide
 
-> **Version:** 2026.5.0 'Fry's Grandpa' | **Last Updated:** May 2026
+> **Version:** 2026.6.0 'Clue' | **Last Updated:** May 2026
 
 ---
 
@@ -86,9 +86,67 @@ You can test the template output in **Developer Tools → Templates** before pas
 
 ---
 
+## Step 4.5 — Expose the Required Tools to Assist
+
+Your conversation agent must be allowed to call the ZenOS DojoTools scripts. If these tools are not exposed to Assist, OOBE may start but it will not be able to write rooms, labels, profiles, alerts, or cabinet-backed setup state.
+
+Expose at minimum:
+
+| Entity pattern | Required? | Why |
+|---|---|---|
+| `script.zen_dojotools_*` | Yes | The normal tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Camera, Postman, AutoVac, etc. |
+| `input_text.zenos_conversation_agent` | Yes | Lets Flynn and the prompt layer know which conversation agent is active. |
+| `input_select.zen_home_mode` | Recommended | Lets the AI read/apply home mode context. |
+
+Once the package has loaded, add these friendly selector entities to a ZenOS setup dashboard:
+
+| Dashboard entity | Why it is friendlier |
+|---|---|
+| `select.zenos_conversation_agent` | Dropdown of available `conversation.*` agents; writes back to `input_text.zenos_conversation_agent`. |
+| `select.zenos_active_persona` | Dropdown of registered AI personas; writes back to `input_text.zenos_persona_name`. |
+
+These selects are UI overlays. The underlying `input_text` helpers remain the source of truth, but the selects prevent first-time users from typing entity IDs or persona names by hand.
+
+```mermaid
+flowchart LR
+  Dashboard["ZenOS setup dashboard"]
+  AgentSelect["select.zenos_conversation_agent"]
+  PersonaSelect["select.zenos_active_persona"]
+  AgentHelper["input_text.zenos_conversation_agent"]
+  PersonaHelper["input_text.zenos_persona_name"]
+  Flynn["Flynn and prompt layer"]
+
+  Dashboard --> AgentSelect
+  Dashboard --> PersonaSelect
+  AgentSelect --> AgentHelper
+  PersonaSelect --> PersonaHelper
+  AgentHelper --> Flynn
+  PersonaHelper --> Flynn
+```
+
+Do **not** expose by default:
+
+| Entity pattern | Why not |
+|---|---|
+| `script.zen_admintools_*` | Admin/recovery surface. Keep this operator-only unless you are deliberately repairing the system. |
+| Cabinet sensors such as `sensor.zenos_*_cabinet` | The AI should use FileCabinet and resolver tools, not direct cabinet entities. |
+| Secrets, debug helpers, broad internal sensors | Not needed for first run and increases risk/noise. |
+
+Rule of thumb: **DojoTools are the default Assist tool surface. AdminTools are not.**
+
+---
+
 ## Step 5 — Point Flynn at Your Conversation Agent
 
 One input_text needs to be set for Flynn to bootstrap correctly. Do this **before** restarting so Flynn sees it on the first boot pass and completes all gates in one shot.
+
+Preferred after the ZenOS package has loaded:
+
+**Dashboard dropdown:** `select.zenos_conversation_agent`
+
+This select lists the available `conversation.*` entities and writes your choice into `input_text.zenos_conversation_agent`.
+
+Manual fallback:
 
 **Settings → Helpers → ZenOS: Conversation Agent** (`input_text.zenos_conversation_agent`)
 
@@ -97,7 +155,7 @@ Set this to the entity ID of your HA conversation agent, for example:
 conversation.claude
 ```
 
-> **Fresh install?** If `input_text.zenos_conversation_agent` doesn't appear in your Helpers list yet, the packages haven't loaded yet. Skip to Step 6 (restart), wait for HA to come back up, then return here and set the conversation agent before continuing. Flynn completes its full boot pass on the second restart.
+> **Fresh install?** If neither `select.zenos_conversation_agent` nor `input_text.zenos_conversation_agent` exists yet, the packages have not loaded. Skip to Step 6 (restart), wait for HA to come back up, then return here and choose the conversation agent from the dashboard dropdown before continuing. Flynn completes its full boot pass on the second restart.
 
 > **Note:** Flynn confirms the entity exists and is reachable but does not perform a live inference test at boot. If your model is misconfigured or offline it will pass this gate — the failure surfaces at runtime when the summarizer first calls it.
 
@@ -129,7 +187,7 @@ conversation.claude
 | ZenOS: Primary User | `input_text.zenos_primary_user` | Your name |
 | ZenOS: Persona Name | `input_text.zenos_persona_name` | Your AI's name |
 
-If you leave these blank, OOBE will collect them conversationally. Only `zenos_conversation_agent` is required before first boot.
+If you leave these blank, OOBE will collect them conversationally. Once personas exist, use `select.zenos_active_persona` on your dashboard to switch the active persona instead of editing `input_text.zenos_persona_name` directly. Only `zenos_conversation_agent` is required before first boot.
 
 ---
 
@@ -171,8 +229,9 @@ Plugins live under `packages/zenos_ai/plugins/`. Install only the integrations y
 |---|---|---|
 | Mealie | `plugins/mealie/mealie.yaml` | Mealie instance + `input_text.mealie_url` |
 | Grocy | `plugins/grocy/grocy.yaml` | Grocy instance + `input_text.grocy_url` |
-| Calderas Spas | `plugins/calderaspas/` | Balboa-compatible spa integration |
 | Kitchen Sync | `plugins/kitchen_sync/` | (see plugin readme) |
+
+SpaMaster is no longer an optional plugin in 2026.6.0. It ships as the core DojoTool `dojotools/dojotools_spa_manager.yaml` and discovers ESPHome spa hardware through `spa_*` labels.
 
 ---
 

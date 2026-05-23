@@ -21,7 +21,30 @@ Cabinet volumes are identified and surfaced via **header-only metadata**,
 ensuring agents like Friday or Veronica can *recognize* cabinets  
 without being able to tamper with them (that stays the job of FileCabinet).
 
-Inspect is the **eyes** of ZenOS-AI.
+Inspect is the **eyes** of ZenOS-AI, but it is more than a state reader. It composes safe overlays onto an entity so higher-level tools can reason about what the entity means:
+
+```mermaid
+flowchart LR
+  Entity["HA entity"]
+  Snapshot["State snapshot"]
+  Labels["Label overlay"]
+  Device["Device / area overlay"]
+  Cabinet["Cabinet header overlay"]
+  Person["Person identity overlay"]
+  Domain["Domain overlays\ncamera, room, future Foo"]
+  Drawers["Label-targeted drawer blurbs"]
+  Result["Composed Inspect result"]
+
+  Entity --> Snapshot --> Result
+  Entity --> Labels --> Result
+  Entity --> Device --> Result
+  Entity --> Cabinet --> Result
+  Entity --> Person --> Result
+  Entity --> Domain --> Result
+  Drawers --> Result
+```
+
+That is why Inspect is the COMPOSE stage behind Index/HyperIndex. It turns "this entity exists" into a layered, LLM-safe object: raw state, labels, device/area context, identity context when the entity is a person, cabinet header context when the entity is a cabinet, and domain-specific overlays when a tool knows more.
 
 ---
 
@@ -55,7 +78,7 @@ Inspect can detect Cabinet entities by signature:
 
 ```
 
-AI_Cabinet_VolumeInfo → validation == "ALLYOURBASEBELONGTOUS"
+AI_Cabinet_VolumeInfo -> validation == "ALLYOURBASEAREBELONGTOUS"
 
 ```
 
@@ -84,6 +107,8 @@ No label indexes
 
 Cabinet internals remain hidden by design —  
 LLMs must use FileCabinet or Manifest for that.
+
+A cabinet sensor is effectively a synthetic Home Assistant entity: the entity exists so HA can store and expose the cabinet, but its real semantic payload lives in structured drawers. Inspect exposes only the cabinet's header overlay. FileCabinet is the safe path for drawer reads/writes, and Manifest is the safe path for whole-cabinet inventory.
 
 ---
 
@@ -233,6 +258,24 @@ multi-integration deep-walk inspection flows.
 
 Default: `60s`  
 Valid range: 30–300 seconds
+
+---
+
+## Overlay Model
+
+Inspect composes overlays in a fixed, safe order:
+
+| Overlay | Applies To | What It Adds |
+|---|---|---|
+| Base entity | Every entity | `entity_id`, friendly name, domain, state, timestamps |
+| Label overlay | Every entity | `{label_slug: description}` semantic tags |
+| Device/area overlay | Entities with device metadata | Device ID, area, integration, optional device tree |
+| Cabinet overlay | Cabinet sensor entities | Header-only VolumeInfo metadata; no drawers |
+| Person overlay | `person.*` entities | ZenOS identity/presence block via `zen_dojotools_identity` |
+| Drawer blurbs | Calls with `label_targets` | Brief FileCabinet context snippets keyed by drawer |
+| Domain overlays | Supported domains | Camera cache, Room Manager context, and future tool-specific overlays |
+
+Domain overlays are deliberately extensible. Camera cache and Room Manager context already follow the pattern: build a domain map, inject per-entity context, and also expose a `domain_context.<domain>` map for batch consumers. A future "Foo" tool can use the same shape without changing the base entity contract.
 
 ---
 

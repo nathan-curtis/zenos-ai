@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — v4.5.9
+# Zen DojoTools SystemTools — 2026.6.0 'Clue'
 
 *HA lifecycle management, log reading, event emission, and home mode — MCP-exposed*
 
@@ -12,7 +12,7 @@ This package consolidates four script modules and the home mode subsystem:
 
 | Component | MCP-Exposed | Purpose |
 |---|---|---|
-| `zen_dojotools_systemtools` | **Yes** | Config check, safe restart, update management |
+| `zen_dojotools_systemtools` | **Yes** | Config check, safe restart, reloads, and update management |
 | `zen_dojotools_ha_log_viewer` | **Yes** | Log reading in five modes + HA 2025.11+ journal detection |
 | `zen_dojotools_event_emitter` | **Yes** | Structured `zen_event` emission to the EventBus |
 | `zen_dojotools_ha_api` | **No** | Internal HA API wrapper (do not expose) |
@@ -124,7 +124,7 @@ Reloads scripts only. Config check runs first. Deferred via `zen_event(kind: def
 
 Use when automations are actively running and you do not want to interrupt them.
 
-**Ships as a hard dependency pair with `dojotools_scheduler.yaml` v4.5.5.** The Scheduler must be loaded to handle the deferred events. Both files must be reloaded together.
+**Ships as a hard dependency pair with `dojotools_scheduler.yaml`.** The Scheduler must be loaded to handle the deferred events. Both files must be reloaded together.
 
 ---
 
@@ -134,24 +134,57 @@ Skip or un-skip a pending update. Both require `confirm_action: true` and `entit
 
 ---
 
-#### `run_repair`
+#### `pnotif_list`
 
-Dispatches a versioned one-time repair script by name. Used to apply maintenance patches on existing installs without manual Developer Tools surgery.
+List all active HA persistent notifications. Returns `{count, notifications[]}` where each entry has `notification_id`, `title`, `message`, `created_at`.
 
-```yaml
-tool: run_repair
-repair_action: identity_family_repair_4_5_6
-```
+> **Caveat:** reads `states.persistent_notification` — HA 2025.x+ may store some notifications outside the state machine. `count=0` does not guarantee the HA panel is clear; verify in UI if suspicious.
 
-**`repair_action` values:**
+---
 
-| Value | What it does |
-|---|---|
-| `identity_family_repair_4_5_6` | Wires default family into household graph for installs bootstrapped before 4.5.6. Idempotent — safe to re-run. |
+#### `pnotif_raise`
 
-Repair scripts live in `packages/zenos_ai/maint/` and are not AI-accessible. Run via SystemTools or directly from Developer Tools → Services if preferred. Each script is idempotent and includes a version declaration.
+Create a new persistent notification. Fields: `notif_id`, `notif_title`, `notif_message`. All optional — HA generates an ID if omitted.
 
-**Response:** Passes through the repair script's response directly — includes `status`, `message`, and script-specific fields (e.g., `family_cabinet`, `timestamp`).
+---
+
+#### `pnotif_edit`
+
+Update an existing persistent notification by re-raising it with the same `notif_id`. Fields: `notif_id`, `notif_title`, `notif_message`.
+
+---
+
+#### `pnotif_dismiss`
+
+Dismiss a persistent notification by ID. Requires `notif_id`.
+
+---
+
+#### `repairs_list`
+
+List all active HA repairs (issues). Returns `{count, issues[]}` where each entry has `entity_id`, `issue_id`, `domain`, `severity`, `is_fixable`, `ignored`, `title`.
+
+Fixable issues can be resolved via `repair_fix`. ZenOS-generated issues have `domain: zenos`.
+
+---
+
+#### `repair_fix`
+
+Fix a single HA repair issue. Delegates to `script.zen_dojotools_ectoplasm` with `action_type: repair_remove`. Requires `confirm: true`, `repair_domain`, and `issue_id`. Returns the ectoplasm result.
+
+---
+
+#### `notice_dashboard`
+
+Aggregate system health view. Pulls ZenOS active alerts + persistent notifications + HA repairs in one call. Returns `action_queue[]` — a pre-built list of `{priority, item, tool, call}` entries ready to fire, ordered by urgency. Use this first for triage rather than calling `alertmanager`, `pnotif_list`, and `repairs_list` separately.
+
+---
+
+#### Versioned maintenance scripts
+
+Versioned repair scripts live in the Admin/Recovery plane and are not part of the normal conversation-agent surface.
+
+Use `script.zen_admintools_run_repair` with `confirm_action: true` for human-approved maintenance, or run the target `maint/` script directly from Developer Tools when following a release note.
 
 ---
 
@@ -338,5 +371,5 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
-| v4.5.9 | `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`. Closes asyncio `InvalidStateError` WONT FIX. All four reload modes now config-check gated. Requires Scheduler v4.5.5. |
-| v4.5.6 | `run_repair` tool added. Identity family repair action. |
+| v4.8.0 | `pnotif_list`, `pnotif_raise`, `pnotif_edit`, `pnotif_dismiss` — persistent notification CRUD. `repairs_list`, `repair_fix` — HA repairs surface. `notice_dashboard` — aggregate triage view with pre-built `action_queue[]`. |
+| v4.5.9 | `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`. Closes asyncio `InvalidStateError` WONT FIX. All four reload modes now config-check gated. Requires Scheduler support for deferred reload events. |

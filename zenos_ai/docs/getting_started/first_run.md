@@ -11,8 +11,20 @@ You'll need:
 - Home Assistant running with the ZenOS-AI packages installed (`packages/zenos_ai/` and `custom_templates/zenos_ai/`)
 - A conversation agent configured in HA and pointed at a compatible AI model (tool-calling support required; models smaller than ~8B parameters or with short context windows are not recommended)
 - The conversation agent prompt template loaded from `custom_templates/zenos_ai/conversation_agent_prompt_template.yaml`
+- The normal DojoTools scripts exposed to Assist: `script.zen_dojotools_*`
 
 If you haven't done those steps yet, see the **[Install Guide](install.md)** first.
+
+Do not expose `script.zen_admintools_*` for normal first run. AdminTools are for operator repair and recovery, not the default conversational surface.
+
+Recommended dashboard controls after the package loads:
+
+| Entity | Use |
+|---|---|
+| `select.zenos_conversation_agent` | Pick the HA conversation agent from a dropdown. |
+| `select.zenos_active_persona` | Pick the active ZenOS persona from registered AI users. |
+
+Both are friendlier wrappers around the canonical `input_text` helpers, so first-time users do not have to type raw entity IDs.
 
 ---
 
@@ -31,6 +43,50 @@ If everything passes you'll see a **"ZenOS-AI: System Ready"** notification. If 
 > *Flynn here. Your system is ready but your AI doesn't have a name yet...*
 
 That notification means setup completed successfully. The OOBE (onboarding) step is next.
+
+---
+
+## What OOBE Is Building
+
+OOBE is not just a profile wizard. It builds the first version of the graph ZenOS uses to operate safely:
+
+```text
+rooms -> areas -> labels -> devices -> people -> tools -> alerts -> acknowledgement
+```
+
+Room Manager gives the system a physical map. Labels attach devices to that map. Cameras become perception, vacuums become room-aware actors, locks and presence become security context, AlertManager decides what needs attention, and Postman asks the right human when the system needs judgment.
+
+You can skip parts of OOBE and fill them in later. The important thing is that every answer should either place something in the home, attach meaning to an entity, or define who should be asked when ZenOS is not sure.
+
+Think of first run as moving from zero to the first governed "is this okay?" moment:
+
+```text
+Blank install
+  -> Assist can call DojoTools
+  -> OOBE maps rooms and people
+  -> labels connect devices to places
+  -> a camera/vacuum/lock/tool reports something meaningful
+  -> AlertManager dedups it
+  -> Postman asks the right person
+  -> the person acknowledges, clears, cancels, or escalates
+```
+
+That is the goal of first run: ZenOS-AI should become useful in visible steps. You decide which tools it can call, which entities have meaning, which components are active, and when a person should be asked before an alert escalates.
+
+```mermaid
+flowchart LR
+  Blank["Blank install"]
+  Tools["DojoTools exposed to Assist"]
+  OOBE["OOBE conversation"]
+  Rooms["Room Manager map"]
+  Labels["Labels give entities meaning"]
+  Components["Opted-in components notice events"]
+  Alert["AlertManager dedups attention"]
+  Postman["Postman routes by profile"]
+  Human["Human acknowledges or escalates"]
+
+  Blank --> Tools --> OOBE --> Rooms --> Labels --> Components --> Alert --> Postman --> Human
+```
 
 ---
 
@@ -72,15 +128,19 @@ Who lives in the home, with their name and role. It checks HA for matching perso
 
 **4. Devices**
 For each category it finds in your system it'll confirm placement before tagging anything:
-- Cameras → confirmed to a room, tagged `security_camera` (powers room-level security views)
-- Vacuums → confirmed cleaning coverage
-- Locks → confirmed to a door
-- Presence sensors → mapped to a person
+- Cameras -> confirmed to a room, tagged `security_camera` (powers room-level security views and camera context)
+- Vacuums -> confirmed cleaning coverage, ready for AutoVac room election and post-run analysis
+- Locks -> confirmed to a door or exterior portal
+- Presence sensors -> mapped to a person or room so routing and occupancy are grounded
 
 It will never label a device without asking first.
 
+For example, a fence camera is not useful just because it exists. It becomes useful after you confirm where it is, what boundary it observes, and whether camera/security flows should use it. Then a future event can be phrased like: "The back fence camera saw a person near the fence. I do not think this is an issue, but is this okay?" The answer can be acknowledgement, alarm/escalation, cancellation, or a note for future suppression.
+
 **5. Components (optional)**
 A quick opt-in for features relevant to your setup — security alerts, vacuum scheduling, spa manager, trash reminders, energy monitoring. If the hardware isn't there the option won't be offered.
+
+These opt-ins do not make the AI "magically automate everything." They turn on governed loops. For example, AutoVac can elect rooms based on schedule/readiness, Camera can provide perception, AlertManager can dedup attention-worthy states, and Postman can ask a person for an acknowledgement before a questionable event escalates.
 
 ### Rules your AI follows during OOBE
 
@@ -95,7 +155,9 @@ A quick opt-in for features relevant to your setup — security alerts, vacuum s
 
 Your AI writes an `_oobe_complete` flag to its cabinet and the setup notification is dismissed automatically. You won't see it again.
 
-**To activate your named AI:** At the end of OOBE, your assistant will tell you to set the **ZenOS: Persona** helper (`input_text.zenos_persona_name`) to the name just configured, then start a fresh conversation. That fresh conversation hands off to the real persona — the one you just built.
+**To activate your named AI:** At the end of OOBE, use the dashboard dropdown **ZenOS: Active Persona** (`select.zenos_active_persona`) and choose the name just configured, then start a fresh conversation. That fresh conversation hands off to the real persona — the one you just built.
+
+Under the hood, the select writes to `input_text.zenos_persona_name`. If the select has not appeared yet, the manual fallback is to set `input_text.zenos_persona_name` directly.
 
 ---
 
@@ -139,6 +201,6 @@ Ask your AI: "Run OOBE again" or "Re-do first-time setup." It will walk through 
 
 ## What's Next
 
-Once your home is set up, your AI has full context to be useful. The fastest next step is **[Your First Alert](first_alert.md)** — it walks you through enabling `alert_manager` and getting a real notification, which is the quickest way to see the full KF4 action pipeline working end to end.
+Once your home is set up, your AI has full context to be useful. The fastest next step is **[Your First Alert](first_alert.md)** — it walks you through firing, listing, and clearing a real AlertManager notification, which is the quickest way to prove the attention pipeline is working.
 
-After that, work through entity exposure and cabinet placement to finish configuring what your AI can see and how it reasons.
+After that, work through entity exposure and cabinet placement to finish configuring what your AI can see directly, what it should discover through labels, and where operational memory belongs.
