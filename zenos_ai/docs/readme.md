@@ -10,15 +10,15 @@
 
 > ### What's New in 2026.6.0 'Clue'
 >
-> **1. Room Manager (RoomReg) v1.42.0.** The spatial intelligence hub. Stores physical room topology — portals, adjacency, exits, safety equipment. Provides live context slices (+light/+climate/+media/+topo/+security), whole-home `home_overview` with weather + plant + home_mode snapshots, and scenario-aware emergency routing. Every room-aware tool reads from here.
+> **1. Room Manager v1.47.0 + Grocy v4.47.0.** `+inventory` now calls `stock_area_volatile` — actual overdue/due-soon/expiring items per room, not a summary count. Grocy adds `stock_area_volatile` mode and `location_id` on all volatile projections. New [Getting Started — Area Inventory](plugins/grocy.md#getting-started--area-inventory) walkthrough: tag locations → stock products → Room Manager reads automatically.
 >
-> **2. Plant Manager v1.2.2.** New physical plant + energy manager. Electric: live watts, billing, tariff, grid carbon, panel status. Water, gas, HVAC, mechanical (water heater + sump), and circuit breakdown. Label-first discovery with `zen_plant_*` pin overrides. `mode=validate` shows every slot's resolution status.
+> **2. Plant Manager v1.3.1.** New modes: `thermal` (hot tub, freezer — temperature-managed objects), `garage_water` (water softener, auto-shutoff valve, leak sensors — NC binary_sensor convention), and `ignore`/`unignore` (entity tagging via `zen_plant_ignore` label).
 >
-> **3. Media Manager (NyxMau5) + Security Manager v1.2.0.** Media Manager handles whole-home discovery, source management, and intent routing. Security Manager replaces alarm_panel — room-aware zone inventory via RM +security slice, `cameras_by_area` cross-reference.
+> **3. Postman v1.6.2 + AlertManager Postman Integration.** Full ack lifecycle: fire with `response_type` → pm_tag logged → poll `get_response` → `clear_tag` after consuming (owner's responsibility; GC is safety net). `open_dashboard: true` injects `homeassistant://navigate/<assist_path>` — companion app opens Friday's dashboard on tap. New [Postman Integration](alertmanager.md#postman-integration) section in AlertManager docs.
 >
-> **4. OOBE v4.2.0.** First-run room setup is now RM-native. The AI registers rooms directly into Room Manager topology (portals, adjacency, exits, rally point, safety equipment) instead of writing flat filecabinet drawers.
+> **4. Scribe v1.8.0 + Summarizer v4.6.0.** Scribe gains `repair` mode (wrapper-accumulated drawer corruption up to 5 levels), `republish_kfc` (edit-and-republish without scroll gate), `component_size` feedback, and schedules upsert by `kata_key`. Summarizer adds `zen_action_emission_enabled` operator kill switch and `emission_cooldown_minutes` per-component gate.
 >
-> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](room_manager.md) | [Plant Manager](plant_manager.md)
+> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](room_manager.md) | [Plant Manager](plant_manager.md) | [Grocy](plugins/grocy.md)
 
 ---
 
@@ -87,8 +87,8 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
 * `autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
-* `alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep
-* `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, shopping, chores, AutoVac and SpaMaster consumables
+* `alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
+* `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
 * `zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
 * `zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
 
@@ -222,7 +222,8 @@ Includes:
 * `zen_dojotools_hyperindex_readme.md`
 * `zen_dojotools_query_readme.md`
 * `zen_dojotools_camera_readme.md` — Camera: ai_task gate, look/scan, dynamic cabinet routing, Security Manager lens pattern
-* `zen_dojotools_postman_readme.md` — Postman: ack loop, actionable notifications, image support
+* `zen_dojotools_postman_readme.md` — Postman: ack loop, clear_tag consumer pattern, open_dashboard companion URI, actionable notifications, image support
+* `zen_dojotools_todo_readme.md` — Todo: HA todo + MS365 tasks, bulk complete, discoverability
 * `zen_dojotools_office_readme.md`
 * `zen_dojotools_event_emitter_readme.md`
 * `readme.md` – Overview
@@ -304,16 +305,23 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 **File:** `docs/roadmap.md`
 
-**2026.6.0 'Clue' — Shipped (2026-05-17)**
+**2026.6.0 'Clue' — Shipped (2026-05-17), updated 2026-05-27**
 
-* Room Manager (RoomReg) v1.42.0 — spatial topology hub, context slices, home_overview with plant/weather/home_mode, emergency routing
-* Plant Manager v1.2.2 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits, validate
+* Room Manager (RoomReg) v1.47.0 — spatial topology hub, context slices, home_overview; +inventory via stock_area_volatile; setup preflight canon resolver; area_create 1.5s settling
+* Plant Manager v1.3.1 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + garage_water + ignore/unignore modes
+* Grocy v4.47.0 — stock_area_volatile mode; location_id on volatile projections; area inventory getting-started walkthrough
+* Postman v1.6.2 — full ack lifecycle: clear_tag consumer pattern, open_dashboard companion URI, race fix
+* Todo v2.5.0 — discoverability, bulk complete, MS365 read fix (all_todos attr), structured 404
+* ZenLux v0.6.0 — major rewrite (ZenLux)
+* Scribe v1.8.0 — repair mode, republish_kfc, component_size feedback, schedules upsert by kata_key
+* Ninja Summarizer v4.6.0 — emission gate (zen_action_emission_enabled + emission_cooldown_minutes)
+* FileCabinet v4.7.2 — key='*' preserved through slugify; wildcard routing fix
+* Index v5.0.1 — +rm pipeline (Room Manager snapshot per entity area), area_entities fix
+* AlertManager v1.5.0 — Postman integration documented; ack lifecycle + open_dashboard pattern
+* OOBE — _oobe_done backward compat (checks both _oobe_complete and legacy oobe_complete); 5-component options dict with tool names
 * Media Manager (NyxMau5) v0.7.2 — whole-home media management and intent routing
 * Security Manager v1.2.0 — replaces alarm_panel; room-aware zone inventory via RM +security slice
 * ZenShade v0.2.2 — cover management, tilt support, ZenLux sync
-* OOBE v4.2.0 — RM-native room setup flow (portals, adjacency, exits, rally point, safety equipment)
-* Office v5.0.0 — todo + calendar split into standalone dojotools
-* AlertManager v1.3.0 — severity labels, 24h auto-expiry, DojoTools Core GC sweep
 * calderaspas retired — SpaMaster v3.3.0 is the replacement
 
 See: [Release Notes — Clue](releases/clue.md)
