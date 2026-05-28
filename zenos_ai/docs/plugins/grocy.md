@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 4.44.0  
+**Version:** 4.47.0  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
 **Internal REST dispatcher:** `zen_dojotools_grocy_advanced`
@@ -94,6 +94,7 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `stock_consume` | Remove stock after use or replacement |
 | `shopping_add_product` | Add a specific product to the shopping list |
 | `stock_area_summary` | Area-level container and stock count rollup |
+| `stock_area_volatile` | Volatile items (overdue/due_soon/expiring) scoped to a HA area |
 | `stock_area_inventory` | Full denormalized room inventory: locations, products, amounts |
 | `chores_by_area` | Maintenance chores connected to an HA area |
 | `chores_execute` | Mark a chore complete |
@@ -118,8 +119,56 @@ Grocy locations can be bound into Home Assistant topology with userfield metadat
 This is what lets Room Manager ask "what inventory belongs to this room?" without hand-maintained entity lists. The important room-facing modes are:
 
 * `stock_area_summary`: compact count and anchor view for a room or area.
+* `stock_area_volatile`: volatile items (overdue, due soon, expiring) scoped to a HA area.
 * `stock_area_inventory`: denormalized detailed view with product names and amounts.
 * `chores_by_area`: maintenance chores discovered through stocked products or direct `homeassistant_area` tags.
+
+---
+
+## stock_area_volatile
+
+Returns all volatile (overdue, due-soon, or expiring) items whose `location_id` falls inside the given HA area.
+
+**Input:** `homeassistant_area_id` (required) — HA area slug (e.g., `kitchen`).
+
+**How it works:**
+
+1. GET `/objects/locations` — collect all Grocy locations tagged with `userfields.homeassistant_area` matching the requested area. Build the area location ID set.
+2. GET `stock/volatile` — fetch the whole-house overdue/due_soon/expiring lists.
+3. For each item in all three lists: include it if `item.location_id` is a member of the area location ID set.
+
+Area membership is determined by the stock entry's storage location (`item.location_id`), not the product's default location. Items without a `location_id` are excluded.
+
+**Response shape:**
+
+```json
+{
+  "status": "success",
+  "mode": "stock_area_volatile",
+  "area_id": "<area_slug>",
+  "location_ids": [<int>, ...],
+  "overdue": [...],
+  "due_soon": [...],
+  "expiring": [...],
+  "counts": {
+    "overdue": <int>,
+    "due_soon": <int>,
+    "expiring": <int>
+  }
+}
+```
+
+Items in `overdue`, `due_soon`, and `expiring` are the full Grocy volatile entry objects — the same shape returned by `GET stock/volatile`.
+
+**If the area has no tagged locations:** `location_ids` is `[]` and all three item lists are empty (no error).
+
+**Example:**
+
+```yaml
+zen_dojotools_inventory:
+  mode: stock_area_volatile
+  homeassistant_area_id: kitchen
+```
 
 ---
 

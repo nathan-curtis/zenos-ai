@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — v4.3.0
+# Zen DojoTools Summarizers — v4.6.0
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
@@ -49,6 +49,7 @@ Three `input_boolean` entities control the pipeline. Fresh installs default the 
 | `input_boolean.zen_summarizers_enabled` | off on fresh install | Master gate — turns off both summarizers immediately |
 | `input_boolean.zen_ninja_summarizer_enabled` | on | Ninja Summarizer individual kill switch |
 | `input_boolean.zen_supersummarizer_enabled` | on | SuperSummary individual kill switch |
+| `input_boolean.zen_action_emission_enabled` | off | Allows Ninja to emit `suggested_act_event` kinds onto the event bus. Operator-only — AI cannot write this boolean. `zen_summarizer_act_whitelist` is a separate per-kind gate. |
 
 Master is checked first. If the master is off, both summarizers exit regardless of their individual switches. Turning any switch off is non-destructive — no schedules, automations, or cabinet data are touched.
 
@@ -282,4 +283,5 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| v4.6.0 | Step 3d — label description resolution: when `component_summary` is empty after reading the Dojo drawer (Scribe `trim_description` path), ninja resolves it from the base label description via `zen_dojotools_labels`. `zen_action_emission_enabled` boolean added (operator-only gate for `suggested_act_event` emission). `emission_cooldown_minutes` Dojo drawer field (default 60 min) gates per-component action event emission; emits `emission_suppressed` on cooldown. FG-38 `from_json` guards on all FileCabinet drawer reads. |
 | v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist gate (`zen_summarizer_seed_whitelist`). Backward compatible — no seed = old behavior. |

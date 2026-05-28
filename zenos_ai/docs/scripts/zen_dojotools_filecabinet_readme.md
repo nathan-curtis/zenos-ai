@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v4.7.1
+# Zen DojoTools FileCabinet — v4.7.2
 **File:** `zen_dojotools_filecabinet_readme.md`  
 **Type:** Technical Documentation  
 
@@ -426,6 +426,7 @@ If it reads like a filesystem, feels like a KV store, smells like a structured p
 
 | Version | Change |
 |---------|--------|
+| v4.7.2 | `key='*'` preserved through slugify; both `'*'` and `''` route to directory listing without erroring. |
 | v4.7.1 | **Write-lockout hotfix.** `mode: queued / max: 2` prevents single-slot deadlock. Event dispatch `\| tojson` on CREATE + UPDATE (`value` and `_label_index`). Verification comparison `\| tojson` on both sides — type-safe JSON string comparison. Root cause: v4.7.0 stored raw Python repr in cabinets; wait_template type mismatch caused 30s timeout → "Already running" floods → all writes dropped. v4.7.0 must not be deployed. |
 | v4.7.0 | Global normalization. `set_timestamp` defaults to `true`. All writes produce `{value, timestamp, meta}` struct. `_` prefix reads no longer silently strip the underscore when `force_action` is omitted. |
 

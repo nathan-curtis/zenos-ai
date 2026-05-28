@@ -313,7 +313,7 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
-| v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. |
+| v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. `component_size` feedback on `publish_kfc`/`republish_kfc` responses — reports component_instructions chars, token estimate (~chars/4), % of 16KB FileCabinet drawer limit, and size_tier (ok/advisory/warning/danger). `schedules_summary` field on read responses (count + kata_keys). Patch mode merges `schedules[]` by `kata_key` (upsert) instead of replacing the full array. `publish_kfc` preserves schedules array. `repair` mode — detect and flatten wrapper-accumulated drawer corruption up to 5 levels deep (dry_run default). |
 | v1.7.0 | `icon` field added to KFC schema; set on first publish (label create), preserved on update. `publish_kfc` label upsert — creates label if absent, always updates description. Component summary chonk warning (>150 chars). |
 | v1.4.0 | `seed` and `area_seed` input fields; parsed into draft and publish payloads. |
 | v1.3.0 | Initial release as Scribe. Replaces `zen_dojotools_kungfu_writer`. Full lifecycle management, LLM-native authoring, component group model. |

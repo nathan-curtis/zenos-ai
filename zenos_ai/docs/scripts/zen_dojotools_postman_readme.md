@@ -1,4 +1,4 @@
-# Zen DojoTools Postman — v1.4.0
+# Zen DojoTools Postman — v1.6.2
 
 **File:** `packages/zenos_ai/dojotools/dojotools_postman.yaml`
 **Script:** `zen_dojotools_postman`
@@ -201,7 +201,7 @@ Other automations can also listen for `zen_event(kind: postman_response)` filter
 | `response_type` | resolve_and_dispatch | `none` | Actionable button preset. |
 | `response_timeout_s` | resolve_and_dispatch | `60` | Seconds to wait for button tap. Range 10–300. |
 | `force_audio` | resolve_and_dispatch | `false` | Bypass urgency >= 9 gate for phone TTS audio attachment. |
-| `open_dashboard` | resolve_and_dispatch | `false` | Navigate to `assist_path` from user profile on tap. |
+| `open_dashboard` | resolve_and_dispatch | `false` | On tap, navigate to `assist_path` from user profile. Injects `clickAction` and `url` as `homeassistant://navigate/<assist_path>` into the notification data — companion app opens the dashboard directly. Has no effect if `assist_path` is unset in the user profile. |
 | `notification_data` | resolve_and_dispatch | — | Raw dict passed to notification data field. See Android fields below. |
 | `kata_input` | resolve_and_dispatch | — | Kata payload dict from ninja pipeline. Derives `title`/`message` from `component`, `period`, `attention`, `suggested_act_desc` when explicit values are not set. |
 | `breakthrough` | resolve_and_dispatch | `false` | If true, bypasses house sleep gate regardless of urgency. Equivalent to urgency >= life_safety_bypass for gate evaluation only. |

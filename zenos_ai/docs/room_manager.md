@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 1.44.0
+**Version:** 1.47.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -53,6 +53,8 @@ zen_dojotools_room_manager  mode=setup  confirm_action=true
 
 Stamps the Room Manager KFC drawer into the dojo cabinet. Safe to re-run.
 
+**Preflight gate:** `mode=setup` checks that `sensor.zen_dojo_cabinet_resolved` and the Household Cabinet are accessible before touching Scribe. If either is missing, returns `{status: error, missing[], action}` with a specific HA Labels UI action — no partial writes. Uses the canon resolver entity (`states('sensor.zen_dojo_cabinet_resolved')`), not `label_entities()`.
+
 **Step 2 — Register each room** (`room_layout` is applied automatically)
 
 ```
@@ -64,6 +66,8 @@ For rooms that don't exist in HA yet, use `area_create` — it creates the HA ar
 ```
 mode=area_create  area_name="Room Name"  description="Rear bedroom"
 ```
+
+**Settling delay:** `area_create` waits 1.5 seconds after HA area creation before writing topology. HA sometimes needs this window to fully register the area — without it, back-to-back `area_create` calls in OOBE can fire topology writes before the area is resolvable.
 
 **Step 3 — Link adjacent rooms**
 
@@ -82,7 +86,7 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | Mode | Description |
 |------|-------------|
 | `get` | Room intelligence brief: area metadata, spatial topology, live HA state, opt-in context slices. `area=` required. |
-| `set` | Write or patch room topology. Register new room or update walls, portals, windows, safety items, `grocy_location_id`. Upserts non-destructively. `dry_run=true` previews changes. |
+| `set` | Write or patch room topology. Register new room or update walls, portals, windows, safety items, `grocy_location_id`. Upserts non-destructively. `dry_run=true` previews changes. Error responses are bifurcated: household cabinet missing returns a specific "label not assigned" message; `area=` omitted returns a separate "area required" message. |
 | `list` | All registered rooms with `rm_managed` / `layout_labeled` flags. No `area=` needed. |
 | `link` | Bidirectional adjacency + interior portal between `area=` and `area_b=`. Optionally set `link_sound_tx` and `link_light_tx` (0.0–1.0). |
 | `unlink` | Remove bidirectional adjacency and portals between two areas. |
@@ -110,7 +114,7 @@ Pass as comma-separated flags to `context_slices=` on `mode=get`. Any combinatio
 | `+climate` | First climate entity in area. `entity_id`, `hvac_mode`, `setpoint`, `current_temp` |
 | `+covers` | `covers[]`, `open[]`, `avg_position` (0–100) |
 | `+media` | Active media player. `entity_id`, `state`, `media_title`, `volume_level`. Returns `active_count: 0` when nothing playing. |
-| `+inventory` | Full room inventory via `zen_dojotools_inventory mode=stock_area_summary`. All containers with product counts, anchor flagged. Alias: `+grocy` |
+| `+inventory` | Volatile items (overdue/due_soon/expiring) in this room via `zen_dojotools_grocy mode=stock_area_volatile`. Filters by `homeassistant_area_id` — returns actual items at risk, not a location container tree. Alias: `+grocy` |
 | `+chores` | Maintenance chores linked to products stocked in the area. `is_due`, `next_execution`, `cadence`, `assignee` |
 | `+tasks` | Todo entities whose labels intersect the area's HA labels. See Label-Intersection below. |
 | `+conductor` | Todo entities labeled `schedule` (AI conductor queue). Always unfiltered — full list regardless of area. |

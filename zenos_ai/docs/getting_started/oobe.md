@@ -8,7 +8,7 @@
 
 OOBE is the guided first-run workflow that configures your ZenOS-AI install through conversation. Your AI assistant leads you through six steps — naming the household, mapping rooms, adding people, optionally seeding the AI persona, linking integrations, activating components, and sealing the install.
 
-OOBE runs once. When complete, it stamps `_oobe_complete` in the AI user cabinet and the flag is never set again unless explicitly reset.
+OOBE runs once. When complete, it stamps `_oobe_complete` in the AI user cabinet and the flag is never set again unless explicitly reset. The OOBE detection check (`_oobe_done`) accepts both `_oobe_complete` (current) and the legacy `oobe_complete` key (no leading underscore) for backward compatibility with pre-v1.0 installs.
 
 The output is a usable operating graph, not just stored preferences. OOBE establishes:
 
@@ -140,11 +140,14 @@ That wording matters for first-time users. A camera is not "watching you" in the
 Opt-in activation of available KFC components. The AI presents only the components that make sense given your integrations.
 
 Options offered (if applicable):
-- Security alerts
-- Vacuum scheduler
-- Hot tub / spa manager
-- Trash day reminders
-- Energy monitoring
+
+| Option | Condition | Tool |
+|--------|-----------|------|
+| Security alerts | `lock` or `alarm_control_panel` domain found | `zen_dojotools_security_manager` |
+| Vacuum scheduler | `vacuum` domain found | `zen_dojotools_autovac` |
+| Spa manager | User mentions a hot tub or spa | `zen_dojotools_spa_manager` |
+| Trash reminders | Always offered | `zen_dojotools_todo` — creates recurring reminder items |
+| Energy monitoring | `sensor` with `device_class: energy` found | No dedicated tool — surfaced via `zen_dojotools_index` or `zen_dojotools_history` |
 
 Activation preferences are written to the system cabinet.
 

@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 1.2.2
+**Version:** 1.3.1
 **Script:** `zen_dojotools_plant`
 
 ---
@@ -29,14 +29,17 @@ All sections return `available: false` when entities are missing or unavailable.
 
 | Mode | Description |
 |------|-------------|
-| `overview` | Top-line snapshot: electric, hvac, water, gas, mechanical, utility registry |
+| `overview` | Top-line snapshot: electric, hvac, thermal, water, gas, mechanical, utility registry |
 | `electric` | Full electrical: live watts, billing (daily/weekly/monthly), tariff, grid carbon, panel status |
 | `hvac` | Climate units: mode, setpoint, current temp. Gas utility contact from utility_index. |
 | `water` | Water usage sensor + billing rate + `usage_since` timestamp |
 | `gas` | Live gas sensor if labeled, else graceful N/A + utility contact |
-| `mechanical` | Water heater (mode, temps, hot water %, live W, daily kWh) + sump pump |
+| `mechanical` | Water heater + sump pump + garage_water subnodes (softener, auto-shutoff, leak sensors) |
+| `thermal` | Thermal-managed loads distinct from HVAC — hot tub, freezers, generic thermal. Not room air. |
 | `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`) |
-| `validate` | Slot resolution report: 15 slots — entity_id, pinned, raw_state, ok |
+| `validate` | Slot resolution report — entity_id, pinned, raw_state, ok |
+| `ignore` | Tag entity with `zen_plant_ignore` (creates label if missing). Param: `target_entity`. |
+| `unignore` | Remove `zen_plant_ignore` from entity. Param: `target_entity`. |
 | `help` | Full discovery reference (returned inline, no docs needed) |
 
 ---
@@ -83,6 +86,12 @@ Pin a sensor to any slot by applying the matching label. Overrides always take f
 | `zen_plant_water_rate` | Water billing rate | sensor.* |
 | `zen_plant_gas` | Gas consumption (therms) | sensor.* |
 | `zen_plant_ignore` | Suppress from all waterfalls | Any domain |
+| `zen_plant_hot_tub` | Thermal: hot tub setpoint + temp | `climate.*` (setpoint+temp) or `sensor.*temp*` (read-only) |
+| `zen_plant_freezer` | Thermal: freezer temp (one node per entity) | `sensor.*` |
+| `zen_plant_thermal` | Thermal: generic thermal-managed load | Any — surfaced as `thermal_load` nodes |
+| `zen_plant_water_softener` | Garage water: softener/conditioner sensors | `sensor.*`, `binary_sensor.*` |
+| `zen_plant_auto_shutoff` | Garage water: auto shutoff valve | `binary_sensor.*` or `switch.*` |
+| `zen_plant_leak_sensor` | Garage water: leak detection probes | `binary_sensor.*` |
 
 ---
 
@@ -198,6 +207,37 @@ Adds `usage_since` — sensor `last_reset` attribute as ISO timestamp, or `null`
 |-------|---------|
 | `entity_id` | binary_sensor.* entity |
 | `active` | bool — pump running (`on` state) |
+
+### mechanical — garage_water{}
+
+Present when any `zen_plant_water_softener`, `zen_plant_auto_shutoff`, or `zen_plant_leak_sensor` entity is labeled. Covers the mechanical water infrastructure outside the main distribution path.
+
+| Subnode | Content |
+|---------|---------|
+| `water_softener` | List of softener/conditioner sensor nodes — `entity_id`, `name`, `state`. `null` if none labeled. |
+| `auto_shutoff` | `{entity_id, state}` for the shutoff valve. State `on` = cutoff engaged (normally-open convention). `null` if none labeled. |
+| `leak_sensors` | List of leak probe nodes — `entity_id`, `name`, `state`. `null` if none labeled. |
+
+Grocy chores for garage water maintenance are accessible via `chores_by_area homeassistant_area_id=garage`.
+
+### mode=thermal — Response
+
+Returns `thermal` block — thermal-managed loads distinct from HVAC (not room air).
+
+| Key | Content |
+|-----|---------|
+| `hot_tub` | `{entity_id, name, setpoint, current_temp}` if `zen_plant_hot_tub` labeled, else `null` |
+| `freezers` | List of freezer nodes `{entity_id, name, temp}` from `zen_plant_freezer` entities |
+| `other_loads` | List of `{type: thermal_load, entity_id, name, state}` from `zen_plant_thermal` entities |
+
+### mode=ignore / mode=unignore
+
+```
+zen_dojotools_plant  mode=ignore   target_entity=binary_sensor.garage_lights_sump_pump_active
+zen_dojotools_plant  mode=unignore target_entity=binary_sensor.garage_lights_sump_pump_active
+```
+
+`mode=ignore` creates the `zen_plant_ignore` label if it doesn't exist, then tags the entity in one call. `mode=unignore` removes the tag. Use for ghost entities or any sensor that should never appear in plant discovery.
 
 ---
 

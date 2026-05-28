@@ -1,4 +1,4 @@
-# Zen DojoTools Index — 4.7.1 'Lights, Camera, Action'
+# Zen DojoTools Index — 5.0.1
 **File:** `zen_dojotools_zen_index_readme.md`  
 **Type:** Technical Documentation  
 
@@ -387,7 +387,7 @@ This is the *search brainstem* of ZenOS-AI.
 
 ## Summary
 
-The Zen Index 4.7.1 'Lights, Camera, Action' provides:
+The Zen Index 5.0.1 provides:
 
 - A fully featured, label/entity correlation engine
 - Full topology seed chain per operand: entities > label > device > integration > area > floor
@@ -397,6 +397,9 @@ The Zen Index 4.7.1 'Lights, Camera, Action' provides:
 - Pagination via `limit` / `offset`; `dry_run` returns `total_count` for paging loops
 - Auto-cap of 50 on topology/wildcard seeds with `expand_entities: true` and no limit
 - `+history` flag for 24h recorder stats (requires explicit limit)
+- `+rm` output field: Room Manager snapshot per entity area — `topo`, `light`, `climate`, `covers`, `media` slices injected as `room_context` per entity and in `domain_context.room_manager[area_id]`
+- `+chores` output field: Grocy chores per entity area via `chores_by_area`
+- `+tasks` output field: HA todo tasks per entity area via RM `+tasks` slice
 - Inspect registry modes: `area_info`, `floor_info`, `device_info`, `area_list`, `floor_list`, `label_list`, `zone_list`, `person_list`, `device_list`, `integration_entities`
 - Optional Zen Inspect expansion with `output_fields` passthrough
 - Label-targeted drawer blurbs via `label_targets` → Inspect → FileCabinet
