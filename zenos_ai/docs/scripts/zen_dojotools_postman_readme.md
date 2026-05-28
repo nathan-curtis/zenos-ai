@@ -295,7 +295,7 @@ would_dispatch: true          # false if blocked
 blocked_by: null              # or "house_sleep_gate"
 urgency: 5
 tier: medium
-target: person.nathan
+target: person.resident
 person_state: home
 is_away: false
 channel_hint: ""
@@ -408,7 +408,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 6
     kata_input: "{{ monk.data }}"   # full kata dict from ninja output
     notification_data:
@@ -440,7 +440,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve
-    target: person.nathan
+    target: person.resident
     urgency: 5
   response_variable: check
 # check.would_dispatch → proceed or skip
@@ -449,7 +449,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 5
     message: "Front door unlocked."
     title: "Security"
@@ -458,7 +458,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 7
     title: "Motion at front door"
     message: "Someone is at the door. Let them in?"
@@ -477,7 +477,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 5
     message: "Hot tub ready. Open it?"
     image_entity: image.zen_image_canvas
@@ -487,7 +487,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 8
     title: "Security Alert"
     message: "Motion in back yard."
@@ -503,7 +503,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 6
     kata_input: "{{ monk.data }}"
     notification_data:
@@ -513,7 +513,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 5
     breakthrough: true
     title: "Package delivered"
