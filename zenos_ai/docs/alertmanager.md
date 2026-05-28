@@ -389,3 +389,82 @@ The response is read from the kata cabinet drawer `alert_response_<alert_key>`. 
 - `fire` and `clear` return immediately after queuing the event. The actual `_zen_active_alerts` drawer update happens when the `zen_alert_manager` automation processes the event.
 - Policy reads/writes target the household cabinet `_alert_policy` drawer.
 - **HA restart required on first install** — `zen_dojotools_alertmanager` is a new script entity that does not appear in the MCP schema after a script reload alone.
+
+---
+
+## Postman Integration
+
+### Ack Lifecycle
+
+When `notify_target: postman` is used with `response_type` set, AlertManager routes the notification through Postman with action buttons and waits for a human response.
+
+Fire the interactive alert:
+
+```yaml
+event: zen_event
+event_data:
+  event:
+    kind: alert_fire
+    alert_key: freezer_door_open
+    message: "Freezer door has been open for 10 minutes"
+    severity: warn
+    notify_target: postman
+    channel_hint: push
+    response_type: yes_no
+```
+
+AlertManager dispatches via Postman. Postman generates a `pm_tag`, sends the push notification with Yes / No buttons, and logs the dispatch to the kata cabinet `zen_postman_log` drawer (keyed by `pm_tag`).
+
+When the user taps a button, `zen_postman_response_router` processes the ack and emits `zen_event(kind: postman_response)`. AlertManager catches this and writes the response to the kata cabinet drawer `alert_response_<alert_key>`, then emits `zen_event(kind: alert_response)`.
+
+**Poll for the response:**
+
+```yaml
+zen_dojotools_alertmanager:
+  mode: get_response
+  alert_key: freezer_door_open
+```
+
+Returns `{status: pending}` while waiting. Once the user responds:
+
+```json
+{
+  "status": "captured",
+  "ack_action": "YES",
+  "ack_timed_out": false,
+  "ack_device_id": "abc123"
+}
+```
+
+`ack_timed_out: true` means Postman's `response_timeout_s` elapsed with no tap.
+
+**Remove the log entry after consuming:**
+
+After reading the response, clear the Postman log entry:
+
+```yaml
+zen_dojotools_postman:
+  mode: clear_tag
+  tag: <pm_tag>
+```
+
+The `pm_tag` is in the `zen_postman_log` drawer in the kata cabinet. Read it from there after `get_response` returns `status: captured`.
+
+This is the caller's responsibility. GC sweeps clean up orphaned log entries over time, but `clear_tag` is the correct primary path — call it explicitly after consuming.
+
+### open_dashboard Pattern
+
+`open_dashboard: true` on a Postman push injects `homeassistant://navigate/<assist_path>` as the notification's tap target. When the user taps the notification, the companion app opens directly to Friday's dashboard.
+
+`assist_path` is stored in the user's `postman_profile` in their user cabinet. If `assist_path` is not set, the field is omitted and tap behavior falls back to the app default.
+
+This is useful as a follow-up after an alert resolves — send a push that lands the user on the dashboard rather than just a notification:
+
+```yaml
+zen_dojotools_postman:
+  # ... routing fields ...
+  message: "Freezer door is closed. All clear."
+  open_dashboard: true
+```
+
+`open_dashboard` is a Postman-level field, not an AlertManager field. Fire it as a separate Postman call alongside or after the alert, not as part of `alert_fire`.

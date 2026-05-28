@@ -308,6 +308,80 @@ zen_dojotools_spamaster:
 
 ---
 
+## Getting Started — Area Inventory
+
+This walkthrough assumes Grocy is reachable (API key and URL configured) and at least one HA area exists. The goal: one room's inventory visible to Room Manager and queryable by area.
+
+### Step 1 — Tag a Grocy location with an HA area
+
+Create the Grocy location in the Grocy UI if it does not exist. Then bind it to an HA area slug:
+
+```yaml
+zen_dojotools_inventory:
+  mode: locations_metadata_set
+  location_id: 12              # Grocy location ID (integer)
+  homeassistant_area: kitchen  # HA area slug
+  grocy_location_subclass: anchor
+```
+
+Use `anchor` for the primary location of the area. Use `container` for nested shelves or bins inside the anchor. A room can have multiple tagged locations — all of them contribute to area queries.
+
+Audit the binding after tagging:
+
+```yaml
+zen_dojotools_inventory:
+  mode: locations_audit
+```
+
+Returns all Grocy locations with their `homeassistant_area` userfield. Confirm the slug matches an active HA area.
+
+### Step 2 — Add products and stock them
+
+In the Grocy UI, set each product's default location to the tagged location. Purchased stock defaults to that location. Alternatively, use `stock_buy_product` to create a product and stock it in one call:
+
+```yaml
+zen_dojotools_inventory:
+  mode: stock_buy_product
+  product_name: "Dish Soap"
+  amount: 2
+  location_id: 12    # anchor location for kitchen
+```
+
+### Step 3 — Verify the area summary
+
+```yaml
+zen_dojotools_inventory:
+  mode: stock_area_summary
+  homeassistant_area_id: kitchen
+```
+
+Returns container count, product count, and stock totals for the area. Correct counts confirm the area binding is working.
+
+### Step 4 — Check volatile items
+
+```yaml
+zen_dojotools_inventory:
+  mode: stock_area_volatile
+  homeassistant_area_id: kitchen
+```
+
+Returns overdue, due-soon, and expiring items whose stock entries are located inside the area. Empty results are normal if no items have open or best-by dates set.
+
+### Room Manager reads this automatically
+
+Once locations are tagged, Room Manager's `+inventory` slice calls `stock_area_volatile` for the room on every expand. No additional configuration is needed:
+
+```yaml
+zen_dojotools_room_manager:
+  mode: room
+  area_id: kitchen
+  output_fields: "+inventory"
+```
+
+The `inventory` slice in the response carries the kitchen's volatile items from this point forward.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Check |
