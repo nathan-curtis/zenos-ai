@@ -8,7 +8,7 @@
 
 ---
 
-> ### What's New in 2026.6.0 'Clue'
+> ### In Progress: 2026.6.0 'Clue' — Beta (ETA 2026-06-01)
 >
 > **1. Room Manager v1.47.0 + Grocy v4.47.0.** `+inventory` now calls `stock_area_volatile` — actual overdue/due-soon/expiring items per room, not a summary count. Grocy adds `stock_area_volatile` mode and `location_id` on all volatile projections. New [Getting Started — Area Inventory](plugins/grocy.md#getting-started--area-inventory) walkthrough: tag locations → stock products → Room Manager reads automatically.
 >
@@ -305,7 +305,7 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 **File:** `docs/roadmap.md`
 
-**2026.6.0 'Clue' — Shipped (2026-05-17), updated 2026-05-27**
+**2026.6.0 'Clue' — Beta (ETA 2026-06-01)**
 
 * Room Manager (RoomReg) v1.47.0 — spatial topology hub, context slices, home_overview; +inventory via stock_area_volatile; setup preflight canon resolver; area_create 1.5s settling
 * Plant Manager v1.3.1 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + garage_water + ignore/unignore modes
