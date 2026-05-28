@@ -1,9 +1,9 @@
 ###############################################################################
-# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v1.2.2)
+# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v1.3.1)
 #
 # Script: zen_dojotools_plant
 #
-# mode: overview | electric | water | gas | mechanical | circuits | help
+# mode: overview | electric | water | gas | mechanical | thermal | circuits | help
 #
 # Discovery: label-based with graceful fallbacks.
 # All sections surface available: false if no entities found or unavailable.
@@ -22,16 +22,19 @@
 script:
 
   zen_dojotools_plant:
-    alias: "Zen DojoTools Plant v1.2.2"
+    alias: "Zen DojoTools Plant v1.3.1"
     description: >
       Physical plant + energy manager. Electric: whole-home live watts, utility
       billing, grid carbon, circuit breakdown. Water: usage + billing rate.
       Gas: live sensor if labeled, else graceful N/A. Utility registry from RM cabinet.
       mode=overview: top-line all utilities. mode=electric: full electrical.
       mode=water: usage + billing. mode=gas: sensor or graceful N/A + contact.
-      mode=mechanical: water heater status (mode, temps, hot water %, live W, daily kWh) + sump pump.
+      mode=mechanical: water heater + sump pump + garage water subnodes (Kinetico, Leak Gopher, leak probe).
+      mode=thermal: thermal-managed loads distinct from HVAC — water heater, hot tub, freezers.
       mode=circuits: circuit breakdown (circuit_limit, sort_by energy|current).
       mode=validate: slot resolution report — see what's wired, what needs a label.
+      mode=ignore: tag entity with zen_plant_ignore (creates label if missing). Param: target_entity.
+      mode=unignore: remove zen_plant_ignore from entity. Param: target_entity.
       Discovery: zen_plant_* labels first, then integration labels, then generic.
       mode=help for full reference.
     mode: queued
@@ -41,11 +44,11 @@ script:
 
       mode:
         name: Mode
-        description: "overview (default), electric, water, gas, mechanical, circuits, help"
+        description: "overview, electric, water, gas, mechanical, thermal, circuits, validate, ignore, unignore, help"
         default: overview
         selector:
           select:
-            options: [overview, electric, hvac, water, gas, mechanical, circuits, validate, help]
+            options: [overview, electric, hvac, water, gas, mechanical, thermal, circuits, validate, ignore, unignore, help]
 
       circuit_limit:
         name: Circuit Limit
@@ -64,6 +67,12 @@ script:
         selector:
           select:
             options: [energy, current]
+
+      target_entity:
+        name: Target Entity
+        description: "Entity ID for mode=ignore / mode=unignore"
+        selector:
+          text:
 
       caller_token:
         name: Caller Token
@@ -87,16 +96,19 @@ script:
                 status: ok
                 mode: help
                 tool: zen_dojotools_plant
-                version: "1.2.2"
+                version: "1.3.0"
                 modes:
-                  overview: "Top-line snapshot: electric, hvac, water, gas, mechanical, utility registry"
+                  overview: "Top-line snapshot: electric, hvac, thermal, water, gas, mechanical, utility registry"
                   electric: "Live whole-home power + billing + grid carbon + panel status"
-                  hvac: "Climate units: mode, setpoint, current temp. Gas utility contact."
+                  hvac: "Climate units (room air): mode, setpoint, current temp. Gas utility contact."
                   water: "Water usage sensor + billing rate"
                   gas: "zen_plant_gas sensor if tagged, else graceful N/A + utility contact surfaced"
-                  mechanical: "Water heater status + sump pump. Discovery: label:water_heater, label:sump_pump"
+                  mechanical: "Water heater + sump pump + garage water subnodes (water softener, auto shutoff, leak sensors). Grocy chores via chores_by_area homeassistant_area_id=garage."
+                  thermal: "Thermal-managed loads — distinct from HVAC (not room air). Water heater, hot tub, freezers. Labels: zen_plant_hot_tub, zen_plant_freezer, zen_plant_thermal."
                   circuits: "Circuit breakdown. Params: circuit_limit (default 10), sort_by (energy|current)"
                   validate: "Resolution report — every slot: entity_id, pinned, raw_state, ok. Run to see what needs labeling."
+                  ignore: "Tag entity with zen_plant_ignore — suppresses from all plant discovery waterfalls. Param: target_entity."
+                  unignore: "Remove zen_plant_ignore tag from entity — restores to plant discovery. Param: target_entity."
                   help: "This reference"
                 discovery:
                   override_labels: "zen_plant_* labels take priority — tag any sensor to pin it"
@@ -109,12 +121,87 @@ script:
                   gas: "zen_plant_gas (therms) → graceful N/A if unset"
                   water_heater: "label:water_heater → water_heater.* + sensor.*available* + binary_sensor.*running* + sensor.*power*"
                   sump_pump: "label:sump_pump → binary_sensor.* running status"
+                  hot_tub: "zen_plant_hot_tub → climate.* (setpoint+temp) or sensor.*temp* (read-only)"
+                  freezer: "zen_plant_freezer → sensor.* (temp reading per unit). Multiple entities = multiple nodes."
+                  thermal_generic: "zen_plant_thermal → any additional thermal-managed entity not covered above"
+                  water_softener: "zen_plant_water_softener → sensors/binary_sensors for softener/conditioner systems (e.g. Kinetico). Chores via Grocy chores_by_area."
+                  auto_shutoff: "zen_plant_auto_shutoff → binary_sensor.* or switch.* for automatic water shutoff valves (e.g. Leak Gopher)"
+                  leak_sensor: "zen_plant_leak_sensor → binary_sensor.* wet/dry leak detection probes and sensors"
+                  grocy_link: "Grocy location.userfields.ha_entity_id links location to controlling HA entity (future: auto-wiring)"
                   ignore: "zen_plant_ignore → entity suppressed from all waterfalls"
                   circuits_energy: "label:consumed_energy → sensor.* sorted desc by lifetime Wh"
                   circuits_current: "label:main_panel+sub_panel → sensor.*_current* (excludes panel-level bus sensors)"
                 fallback: "All sections return available=false when entities are missing or unavailable"
                 utility_registry: "Injected from RM household cabinet utility_index on every response"
           - stop: help
+            response_variable: _result
+
+      # ── IGNORE ────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'ignore' }}"
+        then:
+          - if: "{{ target_entity | default('') | trim == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    message: "target_entity is required for mode=ignore"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing target_entity
+                response_variable: _result
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: create
+              label_list: ["zen_plant_ignore"]
+              new_description: "Suppress entity from all zen_dojotools_plant discovery waterfalls"
+              new_icon: "mdi:eye-off"
+              confirm: true
+            response_variable: _create_resp
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: tag
+              label_list: ["zen_plant_ignore"]
+              target_entities: "{{ [target_entity | trim] }}"
+              confirm: true
+            response_variable: _tag_resp
+          - variables:
+              _result:
+                status: ok
+                mode: ignore
+                entity_id: "{{ target_entity | trim }}"
+                label: zen_plant_ignore
+                message: "Entity suppressed from all plant discovery waterfalls"
+                caller_token: "{{ _caller_token }}"
+          - stop: ignore
+            response_variable: _result
+
+      # ── UNIGNORE ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'unignore' }}"
+        then:
+          - if: "{{ target_entity | default('') | trim == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    message: "target_entity is required for mode=unignore"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing target_entity
+                response_variable: _result
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: untag
+              label_list: ["zen_plant_ignore"]
+              target_entities: "{{ [target_entity | trim] }}"
+              confirm: true
+            response_variable: _untag_resp
+          - variables:
+              _result:
+                status: ok
+                mode: unignore
+                entity_id: "{{ target_entity | trim }}"
+                label: zen_plant_ignore
+                message: "Entity restored to plant discovery waterfalls"
+                caller_token: "{{ _caller_token }}"
+          - stop: unignore
             response_variable: _result
 
       # ── UTILITY REGISTRY ──────────────────────────────────────────────────
@@ -173,6 +260,12 @@ script:
           _zp_water: "{{ label_entities('zen_plant_water') | select('match', 'sensor\\.') | list | first | default('') }}"
           _zp_water_rate: "{{ label_entities('zen_plant_water_rate') | select('match', 'sensor\\.') | list | first | default('') }}"
           _zp_gas: "{{ label_entities('zen_plant_gas') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_hot_tub: "{{ label_entities('zen_plant_hot_tub') | reject('in', _zp_ignored) | list }}"
+          _zp_freezer: "{{ label_entities('zen_plant_freezer') | reject('in', _zp_ignored) | list }}"
+          _zp_thermal: "{{ label_entities('zen_plant_thermal') | reject('in', _zp_ignored) | list }}"
+          _zp_water_softener: "{{ label_entities('zen_plant_water_softener') | reject('in', _zp_ignored) | list }}"
+          _zp_auto_shutoff: "{{ label_entities('zen_plant_auto_shutoff') | reject('in', _zp_ignored) | list }}"
+          _zp_leak_sensor: "{{ label_entities('zen_plant_leak_sensor') | reject('in', _zp_ignored) | list }}"
 
       # ── RESOLVE SPECIFIC ENTITY IDS (zen_plant_* → generic → integration) ─
       - variables:
@@ -262,6 +355,14 @@ script:
           _wh_power_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'power') | reject('search', 'today|daily') | list | first | default('') }}"
           _wh_daily_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'power_usage_today|daily') | list | first | default('') }}"
           _sump_eid: "{{ _sump_entities | select('match', 'binary_sensor\\.') | list | first | default('') }}"
+          # Thermal loads
+          _ht_climate_eid: "{{ _zp_hot_tub | select('match', 'climate\\.') | list | first | default('') }}"
+          _ht_temp_eid: "{{ _zp_hot_tub | select('match', 'sensor\\.') | select('search', 'temp') | list | first | default('') }}"
+          _freezer_eids: "{{ _zp_freezer | list }}"
+          # Garage water subnodes
+          _softener_eids: "{{ _zp_water_softener | list }}"
+          _shutoff_eid: "{{ _zp_auto_shutoff | list | first | default('') }}"
+          _leak_sensor_eids: "{{ _zp_leak_sensor | select('match', 'binary_sensor\\.') | list }}"
 
       # ── READ SENSOR STATES ────────────────────────────────────────────────
       - variables:
@@ -335,6 +436,47 @@ script:
           _sump_active: >-
             {%- set _s = states(_sump_eid) if _sump_eid != '' else 'unavailable' -%}
             {{ (_s == 'on') if _s not in ['unavailable','unknown',''] else none }}
+          _ht_setpoint: >-
+            {%- if _ht_climate_eid != '' -%}
+              {%- set _v = state_attr(_ht_climate_eid, 'temperature') -%}
+              {{ _v | float(none) if _v is not none else none }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _ht_temp: >-
+            {%- set _eid = _ht_climate_eid if _ht_climate_eid != '' else _ht_temp_eid -%}
+            {%- if _eid != '' -%}
+              {%- set _s = state_attr(_eid, 'current_temperature') if _ht_climate_eid != '' else states(_eid) -%}
+              {{ _s | float(none) if _s is not none and _s not in ['unavailable','unknown',''] else none }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _ht_mode: >-
+            {%- set _s = states(_ht_climate_eid) if _ht_climate_eid != '' else 'unavailable' -%}
+            {{ _s if _s not in ['unavailable','unknown',''] else none }}
+          _freezer_nodes: >-
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for eid in _freezer_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'temp': _s | float(none) if _s not in ['unavailable','unknown',''] else none, 'unit': state_attr(eid, 'unit_of_measurement') | default('°F', true)}] -%}
+            {%- endfor -%}
+            {{ ns.rows }}
+          _softener_nodes: >-
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for eid in _softener_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'state': _s, 'unit': state_attr(eid, 'unit_of_measurement') | default(none, true)}] -%}
+            {%- endfor -%}
+            {{ ns.rows }}
+          _shutoff_state: >-
+            {%- set _s = states(_shutoff_eid) if _shutoff_eid != '' else 'unavailable' -%}
+            {{ _s if _s not in ['unavailable','unknown',''] else none }}
+          _leak_nodes: >-
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for eid in _leak_sensor_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'wet': (_s == 'on') if _s not in ['unavailable','unknown',''] else none}] -%}
+            {%- endfor -%}
+            {{ ns.rows }}
 
       # ── VALIDATE ──────────────────────────────────────────────────────────
       - if: "{{ _mode == 'validate' }}"
@@ -436,10 +578,42 @@ script:
             {%- else -%}
               {{ {'available': false, 'live_consumption_therms': none, 'note': 'No live HA gas sensor — metered by utility only', 'source': 'none'} }}
             {%- endif -%}
+          _thermal_block: >-
+            {%- set ns = namespace(loads=[]) -%}
+            {%- if _wh_eid != '' -%}
+              {%- set ns.loads = ns.loads + [{'type': 'water_heater', 'entity_id': _wh_eid, 'mode': _wh_mode, 'current_temp_f': _wh_current_temp, 'setpoint_f': _wh_setpoint, 'running': _wh_running, 'live_power_w': _wh_power_w, 'available_hot_water_pct': _wh_avail_pct}] -%}
+            {%- endif -%}
+            {%- if _ht_climate_eid != '' or _ht_temp_eid != '' -%}
+              {%- set ns.loads = ns.loads + [{'type': 'hot_tub', 'entity_id': _ht_climate_eid if _ht_climate_eid != '' else _ht_temp_eid, 'current_temp': _ht_temp, 'setpoint': _ht_setpoint, 'mode': _ht_mode}] -%}
+            {%- endif -%}
+            {%- for eid in _freezer_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns.loads = ns.loads + [{'type': 'freezer', 'entity_id': eid, 'name': _name, 'temp': _s | float(none) if _s not in ['unavailable','unknown',''] else none, 'unit': state_attr(eid, 'unit_of_measurement') | default('°F', true) | string}] -%}
+            {%- endfor -%}
+            {%- set _known = ([_wh_eid, _ht_climate_eid, _ht_temp_eid] + _freezer_eids) | select('string') | reject('eq', '') | list -%}
+            {%- for eid in _zp_thermal if eid not in _known -%}
+              {%- set _s = states(eid) -%}
+              {%- set ns.loads = ns.loads + [{'type': 'thermal_load', 'entity_id': eid, 'name': state_attr(eid, 'friendly_name') | default(eid, true), 'state': _s}] -%}
+            {%- endfor -%}
+            {{ {'available': ns.loads | count > 0, 'note': 'Thermal-managed loads — not room air. Use mode=hvac for climate controls.', 'count': ns.loads | count, 'loads': ns.loads} }}
           _mechanical_block: >-
+            {%- set _gw_avail = _softener_eids | count > 0 or _shutoff_eid != '' or _leak_sensor_eids | count > 0 -%}
+            {%- set ns_sw = namespace(rows=[]) -%}
+            {%- for eid in _softener_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns_sw.rows = ns_sw.rows + [{'entity_id': eid, 'name': _name, 'state': _s, 'unit': state_attr(eid, 'unit_of_measurement') | default(none, true)}] -%}
+            {%- endfor -%}
+            {%- set ns_lk = namespace(rows=[]) -%}
+            {%- for eid in _leak_sensor_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns_lk.rows = ns_lk.rows + [{'entity_id': eid, 'name': _name, 'wet': (_s == 'on') if _s not in ['unavailable','unknown',''] else none}] -%}
+            {%- endfor -%}
             {{
               {
-                'available': _wh_eid != '',
+                'available': _wh_eid != '' or _sump_eid != '' or _gw_avail,
                 'water_heater': {
                   'entity_id': _wh_eid,
                   'mode': _wh_mode,
@@ -453,7 +627,13 @@ script:
                 'sump_pump': {
                   'entity_id': _sump_eid,
                   'active': _sump_active
-                } if _sump_eid != '' else none
+                } if _sump_eid != '' else none,
+                'garage_water': {
+                  'water_softener': ns_sw.rows if ns_sw.rows | count > 0 else none,
+                  'auto_shutoff': {'entity_id': _shutoff_eid, 'state': _shutoff_state} if _shutoff_eid != '' else none,
+                  'leak_sensors': ns_lk.rows if ns_lk.rows | count > 0 else none,
+                  'grocy_chores': 'zen_dojotools_inventory mode=chores_by_area homeassistant_area_id=garage'
+                } if _gw_avail else none
               }
             }}
 
@@ -466,6 +646,7 @@ script:
                 mode: overview
                 electric: "{{ _elec_block }}"
                 hvac: "{{ _hvac_block }}"
+                thermal: "{{ _thermal_block }}"
                 water: "{{ _water_block }}"
                 gas: "{{ _gas_block }}"
                 mechanical: "{{ _mechanical_block }}"
@@ -556,6 +737,18 @@ script:
           - stop: mechanical
             response_variable: _result
 
+      # ── THERMAL ───────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'thermal' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: thermal
+                summary: "{{ _thermal_block }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: thermal
+            response_variable: _result
+
       # ── CIRCUITS ──────────────────────────────────────────────────────────
       - if: "{{ _mode == 'circuits' }}"
         then:
@@ -603,7 +796,7 @@ script:
       - variables:
           _result:
             status: error
-            message: "Unknown mode '{{ _mode }}'. Use overview, electric, hvac, water, gas, mechanical, circuits, validate, help."
+            message: "Unknown mode '{{ _mode }}'. Use overview, electric, hvac, water, gas, mechanical, thermal, circuits, validate, ignore, unignore, help."
             caller_token: "{{ _caller_token }}"
       - stop: unknown mode
         response_variable: _result

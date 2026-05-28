@@ -1,6 +1,11 @@
 ###############################################################################
 # ZenOS-AI DojoTools: ToDo
-# Version: 2.2.0
+# Version: 2.5.0
+# 2.4.0 — Multi-entity read (inspect_export): entity_ids[] + include_task_ids flag.
+#          Called by Inspect domain context to feed domain_context.todo without GUIDs.
+#          +task_ids output_fields flag opts in to uid field.
+# 2.3.0 — Read: use all_todos entity attr for MS365 lists (due field was
+#          returning reminderDateTime instead of dueDateTime via todo.get_items)
 #
 # Scripts:
 #   zen_dojotools_todo  — HA Todo domain CRUD (v2.0.0)
@@ -16,14 +21,18 @@ script:
   zen_dojotools_todo:
     alias: Zen DojoTools ToDo
     description: >-
-      zen_dojotools_todo 2.2.0 — Use this for ALL todo ops, never call HA todo
-      services directly. Why: wraps add/update/remove with continue_on_error so
-      auth failures (401s, integration outages) return clean JSON errors instead
-      of crashing the pipeline. Resolves list names and label targets automatically.
-      action_type: read (default)|create|update|delete|help. list_name: friendly
-      name or entity_id; omit/'*' = wildcard discovery. items: strings or
-      {item,status,due_date,description,rename}. Bulk status update: multiple
-      strings + status field. MS365: reminder field routes through ms365_todo.new_todo.
+      zen_dojotools_todo 2.5.0 — Household and person-centric todos: shopping
+      lists, trash day reminders, health tasks, medication schedules, async
+      backlogs. Never call HA todo services directly
+      — wraps all ops with continue_on_error so auth failures return clean JSON
+      instead of crashing pipelines. Resolves list names and label targets automatically.
+      ROUTING: Tasks attached to a product or physical location (spa checks,
+      equipment maintenance, asset chores) belong in zen_dojotools_inventory,
+      not here. action_type: read (default)|create|update|delete|help.
+      Complete a task: action_type=update items=['Name'] status=completed
+      list_name='List'. list_name: friendly name or entity_id; omit/'*' =
+      wildcard. items: strings or {item,status,due_date,description,rename}.
+      Bulk complete: multiple item strings + status=completed. MS365: reminder field routes through ms365_todo.new_todo.
       label_targets: read across label-tagged lists. Errors return {status:error,message}.
       Use action_type=help for field docs + examples.
       Aliases: ['Zen DojoTools ToDo', 'Domain tool for ToDo lists']
@@ -75,11 +84,16 @@ script:
           {{ ns.items | tojson }}
         is_ms365_todo: '{{ todo_list_entity in integration_entities(''ms365'') }}'
         reminder: '{{ reminder | default('''') }}'
+        entity_ids_list: >-
+          {%- if entity_ids is defined and entity_ids not in ['', none] -%}
+            {%- if entity_ids is string -%}{{ entity_ids | from_json | default([]) }}{%- elif entity_ids is iterable -%}{{ entity_ids | list }}{%- else -%}[]{%- endif -%}
+          {%- else -%}[]{%- endif -%}
+        include_task_ids: "{{ include_task_ids | default(false) | bool }}"
     - choose:
       - conditions:
         - condition: template
           value_template: '{{ is_list_wildcard and action_type in [''read'',''list'']
-            }}'
+            and entity_ids_list | length == 0 }}'
         sequence:
         - variables:
             final_response: >-
@@ -91,7 +105,7 @@ script:
                 } | tojson
               }}
         - variables:
-            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
         - stop: Pass response variables back to LLM
           response_variable: final_response
         - set_conversation_response: '{{ final_response }}'
@@ -106,8 +120,8 @@ script:
               {{
                 {
                   "status": "info",
-                  "version": "2.2.0",
-                  "message": "Zen DojoTools ToDo v2.2.0 Help",
+                  "version": "2.5.0",
+                  "message": "Zen DojoTools ToDo v2.3.0 Help",
                   "why_use_this": "Wraps HA todo services with continue_on_error isolation. Auth failures (401s) return clean errors instead of crashing the pipeline. Consistent JSON responses, automatic list name resolution, label targeting.",
                   "actions": {
                     "read": "Read items. Omit list_name or use '*' for wildcard (discovers all lists). Filter by status field.",
@@ -135,17 +149,69 @@ script:
                     "Read all lists: {action_type: read}",
                     "Read one list: {action_type: read, list_name: 'Household Chores'}",
                     "Create: {action_type: create, list_name: 'Household Chores', items: ['Take out trash'], due_date: '2026-05-25'}",
+                    "Complete one: {action_type: update, list_name: 'Household Chores', items: ['Take out trash'], status: completed}",
                     "Bulk complete: {action_type: update, list_name: 'Household Chores', items: ['Task A', 'Task B'], status: completed}",
                     "Delete: {action_type: delete, list_name: 'Household Chores', items: ['Old task']}"
                   ]
                 } | tojson
               }}
         - variables:
-            help_data: "{{ (help_data if help_data is mapping else (help_data | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            help_data: "{{ (help_data if help_data is mapping else (help_data | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
         - stop: Pass response variables back to LLM
           response_variable: help_data
         - set_conversation_response: '{{ help_data }}'
         alias: return help
+      - conditions:
+        - condition: template
+          value_template: "{{ action_type == 'read' and entity_ids_list | length > 0 }}"
+        sequence:
+        - variables:
+            multi_lists: >-
+              {%- set ns = namespace(out={}) -%}
+              {%- for eid in entity_ids_list -%}
+                {%- set _at = state_attr(eid, 'all_todos') -%}
+                {%- set _fn = state_attr(eid, 'friendly_name') | default(eid) -%}
+                {%- set ns_itms = namespace(items=[]) -%}
+                {%- if _at is not none and _at is not string and _at | length > 0 -%}
+                  {%- for itm_raw in _at -%}
+                    {%- set itm = (itm_raw | from_json) if itm_raw is string else itm_raw -%}
+                    {%- if itm is mapping -%}
+                      {%- set _ms_status = itm.get('status', 'notStarted') -%}
+                      {%- set _ha_status = 'completed' if _ms_status == 'completed' else 'needs_action' -%}
+                      {%- set _due_raw = itm.get('due', none) -%}
+                      {%- set _due = _due_raw.isoformat() if _due_raw is not none and _due_raw is not string else _due_raw | default('') -%}
+                      {%- set _base = {
+                        'summary': itm.get('subject', ''),
+                        'status': _ha_status,
+                        'due': _due,
+                        'description': itm.get('description', '') | default('')
+                      } -%}
+                      {%- set _entry = _base | combine({'uid': itm.get('todo_id', '')}) if include_task_ids else _base -%}
+                      {%- set ns_itms.items = ns_itms.items + [_entry] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- set ns.out = ns.out | combine({eid: {
+                  'friendly_name': _fn,
+                  'count': ns_itms.items | length,
+                  'items': ns_itms.items
+                }}) -%}
+              {%- endfor -%}
+              {{ ns.out | tojson }}
+        - variables:
+            final_response: >-
+              {{
+                {
+                  "status": "success",
+                  "message": "Multi-entity todo read",
+                  "lists": multi_lists if multi_lists is mapping else (multi_lists | from_json),
+                  "caller_token": caller_token | default('')
+                }
+              }}
+        - stop: Pass items back to LLM
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: Multi-entity read for inspect_export
       - conditions:
         - condition: template
           value_template: '{{ action_type == ''update'' and todo_list_entity_exists
@@ -180,7 +246,7 @@ script:
                   \ '\" ~ list_name ~ \"'.\",\n    \"list_name\": list_name,\n   \
                   \ \"items\": items\n  } | tojson\n}}"
             - variables:
-                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
             - stop: Pass response variables back to LLM
               response_variable: final_response
             - set_conversation_response: '{{ final_response }}'
@@ -194,7 +260,7 @@ script:
                   : \"Multiple complex updates not supported. Only bulk status updates\
                   \ allowed.\",\n    \"list_name\": list_name\n  } | tojson\n}}"
             - variables:
-                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
             - stop: Pass response variables back to LLM
               response_variable: final_response
             - set_conversation_response: '{{ final_response }}'
@@ -229,7 +295,7 @@ script:
                 \ ~ list_name ~ \"'.\",\n    \"item\": update_data,\n    \"list_name\"\
                 : list_name\n  } | tojson\n}}"
           - variables:
-              final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+              final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
           - stop: Pass response variables back to LLM
             response_variable: final_response
           - set_conversation_response: '{{ final_response }}'
@@ -243,18 +309,39 @@ script:
           target:
             entity_id: '{{ todo_list_entity }}'
           response_variable: list_items
+          continue_on_error: true
         - variables:
-            _all_items: '{{ list_items.get(todo_list_entity, {}).get(''items'', [])
-              }}'
+            _svc_items: '{{ (list_items if list_items is mapping else {}).get(todo_list_entity, {}).get(''items'', []) }}'
+        - variables:
+            _all_items: >-
+              {%- set _at = state_attr(todo_list_entity, 'all_todos') -%}
+              {%- if _at is not none and _at is not string and _at | length > 0 -%}
+                {%- set ns = namespace(items=[]) -%}
+                {%- for itm_raw in _at -%}
+                  {%- set itm = (itm_raw | from_json) if itm_raw is string else itm_raw -%}
+                  {%- if itm is mapping -%}
+                    {%- set _ms_status = itm.get('status', 'notStarted') -%}
+                    {%- set _ha_status = 'completed' if _ms_status == 'completed' else 'needs_action' -%}
+                    {%- set _due_raw = itm.get('due', none) -%}
+                    {%- set _due = _due_raw.isoformat() if _due_raw is not none and _due_raw is not string else _due_raw | default('') -%}
+                    {%- set ns.items = ns.items + [{'uid': itm.get('todo_id',''), 'summary': itm.get('subject',''), 'status': _ha_status, 'due': _due, 'description': itm.get('description','')}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.items }}
+              {%- else -%}
+                {{ _svc_items }}
+              {%- endif -%}
+        - variables:
             items_only: "{% if status in ['needs_action','completed'] %}\n  {{ _all_items\
               \ | selectattr('status','equalto', status) | list }}\n{% else %}\n \
               \ {{ _all_items }}\n{% endif %}"
+        - variables:
             final_response: "{{ {\n  \"status\": \"success\",\n  \"message\": \"All\
               \ items for list '\" ~ list_name ~ \"'\",\n  \"list_name\": list_name,\n\
               \  \"count\": items_only | length,\n  \"items\": items_only\n} | tojson\
               \ }}\n"
         - variables:
-            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
         - stop: Pass items back to LLM
           response_variable: final_response
         - set_conversation_response: '{{ final_response }}'
@@ -297,7 +384,7 @@ script:
         - variables:
             final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\": \"Created \" ~ (items | length) ~ \" item(s) in '\" ~ list_name ~ \"'.\",\n    \"list_name\": list_name,\n    \"items\": items\n  } | tojson\n}}"
         - variables:
-            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
         - stop: Pass response variables back to LLM
           response_variable: final_response
         - set_conversation_response: '{{ final_response }}'
@@ -306,31 +393,92 @@ script:
         - condition: template
           value_template: '{{ action_type == ''delete'' and todo_list_entity_exists and not is_items_wildcard }}'
         sequence:
-        - repeat:
-            for_each: '{{ items }}'
-            sequence:
-            - variables:
-                item_name: '{{ repeat.item if repeat.item is string else repeat.item.get(''item'', repeat.item) }}'
-            - data:
-                item: '{{ item_name }}'
-              target:
-                entity_id: '{{ todo_list_entity }}'
-              action: todo.remove_item
-              continue_on_error: true
+        - if: '{{ is_ms365_todo }}'
+          then:
+          - action: todo.get_items
+            target:
+              entity_id: '{{ todo_list_entity }}'
+            response_variable: _del_raw
+          - variables:
+              _del_uid_map: >-
+                {%- set _at = state_attr(todo_list_entity, 'all_todos') -%}
+                {%- set ns = namespace(map={}) -%}
+                {%- if _at is not none and _at is iterable and _at is not string -%}
+                  {%- for itm_raw in _at -%}
+                    {%- set itm = (itm_raw | from_json) if itm_raw is string else itm_raw -%}
+                    {%- if itm is mapping and itm.get('todo_id','') != '' -%}
+                      {%- set ns.map = ns.map | combine({itm.get('subject',''): itm.get('todo_id','')}) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.map }}
+          - repeat:
+              for_each: '{{ items }}'
+              sequence:
+              - variables:
+                  item_name: '{{ repeat.item if repeat.item is string else repeat.item.get(''item'', repeat.item) }}'
+                  _del_uid: '{{ _del_uid_map.get(item_name, '''') }}'
+              - if: '{{ _del_uid != '''' }}'
+                then:
+                - data:
+                    todo_id: '{{ _del_uid }}'
+                  target:
+                    entity_id: '{{ todo_list_entity }}'
+                  action: ms365_todo.delete_todo
+                  continue_on_error: true
+                else:
+                - data:
+                    item: '{{ item_name }}'
+                  target:
+                    entity_id: '{{ todo_list_entity }}'
+                  action: todo.remove_item
+                  continue_on_error: true
+          else:
+          - repeat:
+              for_each: '{{ items }}'
+              sequence:
+              - variables:
+                  item_name: '{{ repeat.item if repeat.item is string else repeat.item.get(''item'', repeat.item) }}'
+              - data:
+                  item: '{{ item_name }}'
+                target:
+                  entity_id: '{{ todo_list_entity }}'
+                action: todo.remove_item
+                continue_on_error: true
         - variables:
             final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\": \"Deleted \" ~ (items | length) ~ \" item(s) from '\" ~ list_name ~ \"'.\",\n    \"list_name\": list_name\n  } | tojson\n}}"
         - variables:
-            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
         - stop: Pass response variables back to LLM
           response_variable: final_response
         - set_conversation_response: '{{ final_response }}'
         alias: delete items
+    - if:
+        - condition: template
+          value_template: >-
+            {{ not todo_list_entity_exists
+               and action_type in ['read','create','update','delete']
+               and not is_list_wildcard }}
+      then:
+        - variables:
+            final_response: >-
+              {{
+                {
+                  "status": "error",
+                  "message": "List not found: '" ~ list_name ~ "'. Use action_type=read (no list_name) to see all valid lists.",
+                  "list_name": list_name
+                } | tojson
+              }}
+        - variables:
+            final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
+        - stop: list not found error
+          response_variable: final_response
     - variables:
         final_response: "{{\n  final_response\n  | default(\n    {\n      \"status\"\
           : \"noop\",\n      \"message\": \"No matching branch produced a response.\"\
           \n    } | tojson\n  )\n}}"
     - variables:
-        final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+        final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
     - stop: Pass context
       response_variable: final_response
     - set_conversation_response: '{{ final_response }}'
@@ -361,12 +509,12 @@ script:
           text:
       items:
         description: >-
-          Tasks as strings or objects with fields: item, status, due_date, description,
-          rename. Bulk status update: pass multiple strings + top-level status field.
+          Strings or objects {item,status,due_date,description,rename}. Bulk complete: multiple strings + status=completed.
         selector:
           text:
             multiple: true
       status:
+        description: "completed|needs_action. Complete: action_type=update items=['Name'] status=completed list_name='X'."
         selector:
           select:
             options:
@@ -389,11 +537,22 @@ script:
         selector:
           text:
       label_targets:
+        description: "HA labels to scope read across multiple lists. e.g. ['household_tasks']"
         selector:
           text:
             multiple: true
       reminder:
         description: 'MS365 only: reminder datetime (ISO format). Uses ms365_todo.new_todo if set.'
+        required: false
+        selector:
+          text:
+      entity_ids:
+        description: 'JSON array of todo entity_ids for multi-entity read (inspect_export path). Passed by Inspect domain context — not for direct human use.'
+        required: false
+        selector:
+          text:
+      include_task_ids:
+        description: 'When true, include uid (MS365 todo_id) in multi-entity read output. Controlled by +task_ids in output_fields. Default false.'
         required: false
         selector:
           text:

@@ -565,7 +565,7 @@ script:
       Queues up to 2 concurrent runs. ~15s warm, ~60s cold. (v4.5.x)
     icon: mdi:karate
     mode: queued
-    max: 2
+    max: 5
     fields:
       kung_fu_component_id:
         name: Kung Fu Component ID
@@ -658,8 +658,13 @@ script:
               {{ states('input_text.zenos_ai_task_entity') | trim
                  in ['unknown','unavailable','none',''] }}
         then:
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "ai_task_entity_unset",
+                    "component": kung_fu_component_id | slugify,
+                    "caller_token": caller_token | default("")} }}
           - stop: "ai_task entity unset — aborting ninja summarizer"
-            error: true
+            response_variable: final_response
 
       # ── 0b. Start timer + emit summarizer_start ──────────────────────────
       - alias: Capture start time and emit summarizer_start
@@ -698,7 +703,13 @@ script:
 
       - alias: Unpack drawer values
         variables:
-          dojo_drawer_value: "{{ dojo_drawer.value | default({}) }}"
+          _dojo_v1: >-
+            {%- set _r = dojo_drawer -%}
+            {%- set _v1 = _r.get('value', _r) if _r is mapping else {} -%}
+            {{ (_v1 | from_json) if _v1 is string else _v1 }}
+          dojo_drawer_value: >-
+            {%- set _v = _dojo_v1 -%}
+            {{ _v if _v is mapping else ((_v | from_json) if _v is string else {}) }}
           household_drawer_value: "{{ household_drawer.value | default({}) }}"
 
       # ── 2b. FG-38-safe household drawer unwind ────────────────────────────
@@ -778,6 +789,7 @@ script:
             value_template: "{{ component_summary | trim == '' and index_command | trim != '' }}"
         then:
           - action: script.zen_dojotools_labels
+            continue_on_error: true
             data:
               action_type: read
               label_list:
@@ -805,7 +817,14 @@ script:
               component: "{{ component_slug }}"
               reason: meta_disabled
               severity: info
+          - variables:
+              final_response: >-
+                {{ {"status": "skipped", "reason": "meta_disabled",
+                    "component": component_slug,
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
           - stop: "Ninja summarizer skipped — meta.enabled is false for {{ component_slug }}"
+            response_variable: final_response
 
       # ── 3b. Run governor — dedup burnout window ───────────────────────────
       # Reads burnout_seconds from zen_ninja_config drawer in household cabinet.
@@ -823,8 +842,12 @@ script:
             {{ (_v1 | from_json) if _v1 is string else _v1 }}
           _gov_last_ts: >-
             {%- set _d = _gov_last_raw if _gov_last_raw is mapping else {} -%}
-            {%- set _ts_str = _d.get('run_started_at', '') -%}
-            {{ (_ts_str | as_datetime).timestamp() | float(0) if _ts_str | trim != '' else 0 }}
+            {%- set _ts_raw = _d.get('run_started_at', '') | string | trim -%}
+            {%- set _ts_num = _ts_raw | float(-1) -%}
+            {%- if _ts_raw == '' -%}{{ 0 }}
+            {%- elif _ts_num > 0 -%}{{ (_ts_num / 1000000) if _ts_num > 9999999999 else _ts_num }}
+            {%- else -%}{{ (_ts_raw | as_datetime).timestamp() | float(0) }}
+            {%- endif -%}
           _gov_elapsed: "{{ (now().timestamp() - _gov_last_ts) | round(0) | int }}"
           _gov_blocked: "{{ _gov_elapsed < _gov_burnout | int and not (force | default(false) | bool) }}"
       - if:
@@ -840,9 +863,18 @@ script:
                 elapsed_secs: "{{ _gov_elapsed }}"
                 burnout_secs: "{{ _gov_burnout }}"
                 severity: info
+          - variables:
+              final_response: >-
+                {{ {"status": "skipped", "reason": "governor_blocked",
+                    "component": component_slug,
+                    "elapsed_secs": _gov_elapsed | int,
+                    "burnout_secs": _gov_burnout | int,
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
           - stop: >-
               Ninja summarizer governor — {{ component_slug }} ran {{ _gov_elapsed }}s ago
               (< {{ _gov_burnout }}s burnout window). Absorbing duplicate run.
+            response_variable: final_response
 
       # ── 3c. Seed tool call — location-first or concept-first via KFC seed block
       - alias: Run seed tool call if KFC defines seed or area_seed
@@ -884,6 +916,7 @@ script:
               value_template: "{{ _seed_tool_whitelisted }}"
             then:
             - action: "script.{{ _seed_tool }}"
+              continue_on_error: true
               data: "{{ _seed_params }}"
               response_variable: zen_index_result
             - variables:
@@ -912,6 +945,7 @@ script:
             - conditions: "{{ index_call is mapping and index_call.get('index_command', '') not in ['', none, {}] }}"
               sequence:
                 - action: script.zen_dojotools_index
+                  continue_on_error: true
                   data:
                     index_command: >-
                       {%- set _ic = index_call.get('index_command') -%}
@@ -923,6 +957,7 @@ script:
                   response_variable: zen_index_result
             default:
               - action: script.zen_dojotools_index
+                continue_on_error: true
                 data:
                   label_1:         "{{ index_call.get('label_1', index_command) if index_call is mapping and index_call else index_command }}"
                   label_2:         "{{ index_call.get('label_2', none) if index_call is mapping and index_call else none }}"
@@ -980,7 +1015,10 @@ script:
                     {%- else -%}
                       {{ _all[:_limit] }}
                     {%- endif -%}
-                  output_fields: "+attributes"
+                  output_fields: >-
+                    {%- set _kfc_of = index_call.get('output_fields', '') if index_call is mapping and index_call else '' -%}
+                    {%- set _extra = _kfc_of | replace(' ', ',') | replace(',,', ',') | trim(',') if _kfc_of | trim else '' -%}
+                    {{ '+attributes,' ~ _extra if _extra else '+attributes' }}
                   caller_token: "{{ caller_token }}"
           - wait_for_trigger:
               - trigger: event
@@ -989,7 +1027,7 @@ script:
                   event:
                     kind: dojotool_return
                     correlation_id: "{{ _inspect_cid }}"
-            timeout: "00:00:10"
+            timeout: "00:00:35"
             continue_on_timeout: true
           - variables:
               domain_context: >-
@@ -1022,13 +1060,30 @@ script:
                   Add domain_inspect_domains or reduce domain_inspect_limit
                   in this KFC's index_call to limit domain context size.
                 severity: warn
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "summarizer_size_exceeded",
+                    "component": component_slug,
+                    "estimated_bytes": _review_size_estimate | int,
+                    "domain_context_bytes": _domain_ctx_size | int,
+                    "index_bytes": _index_size | int,
+                    "limit_bytes": 262144,
+                    "hint": "Remove +chores from output_fields or add domain_inspect_domains to KFC index_call",
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
           - stop: >-
               review_data size estimate {{ _review_size_estimate }} exceeds safe
               limit (262144). Aborting {{ component_slug }} ninja summarizer run.
               Set index_call.domain_inspect_domains to filter entity domains.
-            error: true
+            response_variable: final_response
 
       # ── 6. Build monk prompt ──────────────────────────────────────────────
+      - alias: Strip component_instructions from drawer copy for prompt
+        variables:
+          _drawer_clean: >-
+            {%- set _d = dojo_drawer_value if dojo_drawer_value is mapping else {} -%}
+            {{ _d | combine({'component_instructions': ''}) }}
+
       - alias: Build monk prompt
         variables:
           default_query: >-
@@ -1071,7 +1126,7 @@ script:
                 "library_data": {
                   "dojo_cabinet":          dojo_cabinet | default(''),
                   "kata_cabinet":          kata_cabinet | default(''),
-                  "drawer":                dojo_drawer | default({}),
+                  "drawer":                _drawer_clean | default({}),
                   "household_prefs":       _hh | default({}),
                   "interpretation":        hh_interpretation | default({}),
                   "policy_overlays":       hh_policy_overlays | default({}),
@@ -1110,14 +1165,89 @@ script:
               | to_json
             }}
 
-      # ── 7. Run monk ───────────────────────────────────────────────────────
+      # ── 6b. Context budget guard ─────────────────────────────────────
+      - alias: Context budget guard — abort if prompt exceeds model context window
+        variables:
+          _ctx_cfg: >-
+            {%- set _hh = states('sensor.zenos_default_household_cabinet') -%}
+            {%- set _cfg_raw = (state_attr(_hh, 'variables') or {}).get('zen_ninja_config', {}) if _hh != '' else {} -%}
+            {%- set _cfg = _cfg_raw.get('value', _cfg_raw) if _cfg_raw is mapping else {} -%}
+            {{ _cfg if _cfg is mapping else {} }}
+          _max_ctx_tokens: "{{ (_ctx_cfg.get('max_context_tokens', 28000) | int(28000)) if _ctx_cfg is mapping else 28000 }}"
+          _prompt_chars: "{{ prompt | length }}"
+          _prompt_tokens_est: "{{ (_prompt_chars | int / 4) | round(0) | int }}"
+          _ctx_overflow: "{{ _prompt_tokens_est | int > _max_ctx_tokens | int }}"
+      - if:
+          - condition: template
+            value_template: "{{ _ctx_overflow }}"
+        then:
+          - event: zen_event
+            event_data:
+              event:
+                kind: ninja_context_overflow
+                component: "{{ component_slug }}"
+                prompt_chars: "{{ _prompt_chars }}"
+                prompt_tokens_est: "{{ _prompt_tokens_est }}"
+                max_context_tokens: "{{ _max_ctx_tokens }}"
+                hint: >-
+                  Reduce domain_inspect_limit or set max_context_tokens in
+                  zen_ninja_config (household cabinet). Current default: 28000.
+                severity: warn
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "ninja_context_overflow",
+                    "component": component_slug,
+                    "prompt_tokens_est": _prompt_tokens_est | int,
+                    "max_context_tokens": _max_ctx_tokens | int,
+                    "hint": "Reduce domain_inspect_limit in KFC index_call or raise max_context_tokens in zen_ninja_config",
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
+          - stop: >-
+              Context budget exceeded for {{ component_slug }}.
+              Estimated {{ _prompt_tokens_est }} tokens > limit {{ _max_ctx_tokens }}.
+              Reduce domain_inspect_limit in KFC index_call or raise
+              max_context_tokens in zen_ninja_config.
+            response_variable: final_response
+
+      # ── 7. Run monk ─────────────────────────────────────────
       - alias: Monk Runner — Perform ai_task
         action: ai_task.generate_data
+        continue_on_error: true
         data:
           task_name: "{{ kung_fu_component_id | title }} Monk"
           instructions: "{{ prompt }}"
           entity_id: "{{ states('input_text.zenos_ai_task_entity') }}"
         response_variable: monk_response
+
+      - alias: Surface monk failure — emit error event if ai_task did not return data
+        if:
+          - condition: template
+            value_template: >-
+              {{ monk_response is not defined
+                 or not (monk_response is mapping)
+                 or monk_response.get('data', none) is none }}
+        then:
+          - event: zen_event
+            event_data:
+              event:
+                kind: monk_failure
+                component: "{{ component_slug }}"
+                prompt_size_chars: "{{ prompt | length }}"
+                monk_response: "{{ monk_response | default('undefined') | string | truncate(500) }}"
+                severity: error
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "monk_failure",
+                    "component": component_slug,
+                    "prompt_size_chars": prompt | length,
+                    "monk_response_excerpt": monk_response | default({}) | string | truncate(500),
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
+          - stop: >-
+              Monk Runner failed for {{ component_slug }}.
+              Prompt {{ prompt | length }} chars. Response:
+              {{ monk_response | default('undefined') | string | truncate(300) }}
+            response_variable: final_response
 
       - alias: Extract kata summary from monk response
         variables:
