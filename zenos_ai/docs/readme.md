@@ -88,6 +88,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * `alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
+* `security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
 * `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
 * `zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
 * `zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
@@ -224,6 +225,7 @@ Includes:
 * `zen_dojotools_camera_readme.md` — Camera: ai_task gate, look/scan, dynamic cabinet routing, Security Manager lens pattern
 * `zen_dojotools_postman_readme.md` — Postman: ack loop, clear_tag consumer pattern, open_dashboard companion URI, actionable notifications, image support
 * `zen_dojotools_todo_readme.md` — Todo: HA todo + MS365 tasks, bulk complete, discoverability
+* `zen_dojotools_calendar_readme.md` — Calendar: full CRUD, MS365 native APIs, label-targeted reads, wildcard discovery
 * `zen_dojotools_office_readme.md`
 * `zen_dojotools_event_emitter_readme.md`
 * `readme.md` – Overview

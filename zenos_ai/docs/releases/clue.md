@@ -31,7 +31,7 @@ In Clue, the whole game is figuring out which room. We're done figuring.
 
 ---
 
-## Room Manager (RoomReg) — New (v1.42.0)
+## Room Manager (RoomReg) — New (v1.42.0 → v1.47.0)
 
 The spatial intelligence hub. Everything room-aware in ZenOS-AI reads from here.
 
@@ -85,7 +85,7 @@ See [Room Manager reference](../room_manager.md) for the full schema.
 
 ---
 
-## Plant Manager — New (v1.2.2)
+## Plant Manager — New (v1.3.1)
 
 Physical plant + energy manager. Every utility in the home, surfaced in one tool.
 
@@ -109,6 +109,17 @@ Label-first. `zen_plant_*` override labels take first priority for every slot. S
 | `validate` | 15-slot resolution report — entity_id, pinned, raw_state, ok. Run this after setup. |
 
 Apply `zen_plant_water_rate` or tag a `water_usage` sensor with a name matching `fee|rate|cost` to wire the water rate slot.
+
+### v1.3.1 additions
+
+| Mode | Returns |
+|------|---------|
+| `thermal` | Temperature-managed loads — hot tub, freezer, generic. Discovery via `zen_plant_hot_tub`, `zen_plant_freezer`, `zen_plant_thermal` labels. |
+| `garage_water` | Mechanical water subnode: softener (mode, salt %), auto-shutoff valve (state), leak sensors. Grocy chores pointer when wired via `zen_plant_water_softener`, `zen_plant_auto_shutoff`, `zen_plant_leak_sensor`. |
+| `ignore` | Tag an entity with `zen_plant_ignore` (creates label if missing). Suppresses from all discovery waterfalls. |
+| `unignore` | Remove `zen_plant_ignore` tag from an entity. |
+
+**`garage_water` binary sensor convention:** normally-open — `ON` means cutoff engaged (valve closed), `OFF` means flowing normally. Correct for most auto-shutoff hardware.
 
 See [Plant Manager reference](../plant_manager.md) for the full discovery waterfall and slot reference.
 
@@ -192,9 +203,9 @@ Load: `zen_admintools_prompt_loader: cortex_version: latest`
 
 ---
 
-## AlertManager Tool — v1.0.1 (New)
+## AlertManager Tool — v1.5.0
 
-`zen_dojotools_alertmanager` — new MCP-facing CRUD script. Friday can now manage the alert system directly: query active alerts, fire, clear, and read or set notify policy.
+`zen_dojotools_alertmanager` — MCP-facing CRUD script. Friday can manage the alert system directly: query active alerts, fire, clear, read/set notify policy, and poll for interactive responses.
 
 This is the agent-accessible complement to the automation-side AlertManager. The automation handles event routing; this tool handles inspection and programmatic control.
 
@@ -206,6 +217,7 @@ This is the agent-accessible complement to the automation-side AlertManager. The
 | `fire` | Fire an alert by key. Queues the event and returns. Respects dedup — no-op if already active. |
 | `clear` | Clear a specific alert by key. Queues clear event. |
 | `clear_all` | Clear all active alerts. Returns count cleared. |
+| `get_response` | Read the cached ack for a fired alert. Returns `{status: pending}` until the response arrives, then `{status: captured, ack_action, ack_timed_out, ack_device_id}`. |
 | `get_policy` | Read the current notify policy — filter entity, base urgency, per-severity routing. |
 | `set_policy` | Write a new notify policy to the household cabinet. |
 | `help` | Full tool contract, mode reference, and field list. |
@@ -215,17 +227,33 @@ This is the agent-accessible complement to the automation-side AlertManager. The
 | Field | Required For | Purpose |
 |-------|-------------|---------|
 | `mode` | — | Operation mode. Default: `help`. |
-| `alert_key` | `fire`, `clear` | Alert dedup key — must match exactly. |
+| `alert_key` | `fire`, `clear`, `get_response` | Alert dedup key — must match exactly. |
 | `message` | `fire` | Human-readable alert text. |
 | `severity` | `fire` | `info` \| `warn` \| `error`. Default: `warn`. |
 | `notify_target` | `fire` | `persistent` \| `postman` \| `notify.<service>`. Default: `persistent`. |
 | `clear_after_minutes` | `fire` | TTL in minutes. Default: 1440 (24h). Pass `0` for permanent. |
+| `channel_hint` | `fire` (postman) | `push` \| `tts` \| `teams`. Used when `notify_target: postman`. |
+| `image_entity` | `fire` (postman) | Camera or image entity — attach snapshot to Postman push. |
+| `response_type` | `fire` (postman) | `none` \| `yes_no` \| `yes_no_ignore` \| `ok_cancel` \| `acknowledge`. Adds action buttons to the push. Response cached and retrievable via `get_response`. |
 | `provider_id` | `set_policy` | Policy scope key. |
 | `urgency` | `set_policy` | Urgency level for this policy entry. |
 
 **`fire` and `clear` queue events** — alert state change happens asynchronously via the AlertManager automation. Call `list` after a brief wait to confirm.
 
 **HA restart required on first install.** `zen_dojotools_alertmanager` is a new script entity. Script reload alone is not enough — it will not appear in the MCP schema until HA is fully restarted once.
+
+### v1.4.0 fixes
+
+- All FileCabinet write `value:` fields guard with `tojson` on native dict inputs (FG-38).
+- All `stop:` actions converted to `variables:result + stop: label + response_variable: result` (stop: tojson string was silently ignored by HA).
+- `from_json` guards added on all list/inject/policy variables.
+- Script description rewritten for agent discoverability.
+
+### v1.5.0 additions
+
+- **`image_entity`** — pass a camera or image entity to attach a snapshot to Postman notifications.
+- **`response_type`** — fire with action buttons (`yes_no`, `yes_no_ignore`, `ok_cancel`, `acknowledge`). When the user taps, the ack is cached to the kata cabinet drawer `alert_response_<alert_key>` and re-emitted as `zen_event(kind=alert_response)`.
+- **`get_response` mode** — poll for the cached ack. Returns `{status: pending}` until captured, then `{ack_action, ack_timed_out, ack_device_id, responded_at}`. Call `zen_dojotools_postman mode=clear_tag` after consuming.
 
 ---
 
@@ -562,7 +590,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 
 | File | Change |
 |------|--------|
-| `dojotools/dojotools_room_manager.yaml` | New — v1.42.0. Full spatial topology tool. |
+| `dojotools/dojotools_room_manager.yaml` | New — v1.42.0 → v1.47.0. Full spatial topology tool. v1.47.0: `+inventory` → stock_area_volatile, setup preflight canon resolver, area_create 1.5s settling, set error bifurcation, include_notices/include_presence in home_overview. |
 | `dojotools/dojotools_plant.yaml` | New — v1.3.1. Physical plant + energy manager. mode=thermal (hot_tub/freezers/generic loads), mode=mechanical garage_water subnode (softener/auto_shutoff/leak_sensor), mode=ignore/unignore (creates zen_plant_ignore label on-demand). |
 | `dojotools/dojotools_media_manager.yaml` | New — v0.7.2. Whole-home media management. |
 | `dojotools/dojotools_security_manager.yaml` | New — v1.2.0. Replaces dojotools_alarm_panel.yaml (deleted). |
@@ -570,8 +598,8 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_todo.yaml` | New — v2.5.0. Split from office.yaml. `action`/`list_id` aliases; invalid action_type returns help. `continue_on_error: true` on all write actions; MS365 reminder routing. v2.3.0: MS365 `all_todos` attr fix. v2.4.0: `inspect_export` multi-entity read. v2.5.0: discoverability. |
 | `dojotools/dojotools_covers.yaml` | New — v0.2.2. ZenShade cover manager. |
 | `dojotools/dojotools_kungfu_loader.yaml` | Restored — was incorrectly omitted from branch. Factory KFC deployer. |
-| `dojotools/dojotools_admintools.yaml` | Cortex v39 (Home First); dispatcher spamaster route |
-| `dojotools/dojotools_alertmanager.yaml` | v1.3.0: severity labels, fire-once dedup, `clear_after_minutes` default 1440, GC sweep. v1.0.1: new `zen_dojotools_alertmanager` MCP CRUD tool appended. |
+| `dojotools/dojotools_admintools.yaml` | v4.6.1: Cortex v39 (Home First), seed_whitelist_seed, `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab, new `zen_admintools_summarizer_seed` script; dispatcher spamaster route. |
+| `dojotools/dojotools_alertmanager.yaml` | v1.5.0: `image_entity` + `response_type` on fire, ack cached to kata cabinet (`alert_response_<key>`), `get_response` mode. v1.4.0: FileCabinet write/stop action fixes, `from_json` guards, description rewrite. v1.3.0: severity labels, fire-once dedup, `clear_after_minutes` default 1440, GC sweep. v1.0.1: new `zen_dojotools_alertmanager` MCP CRUD tool appended. |
 | `dojotools/dojotools_camera.yaml` | v1.4.0: `ai_task` gate, `sendto` expansion, 8h result expiry, lens cross-reference |
 | `dojotools/dojotools_climate.yaml` (utilities) | v1.1.0: topology_context in GET |
 | `dojotools/dojotools_core.yaml` | v4.5.6: `_zen_active_alerts` TTL sweep (step 4c); step 4d: postman log TTL sweep + `ack_timed_out` on orphaned pending entries |
@@ -581,26 +609,20 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `custom_templates/zenos_ai/zen_query.jinja` | ZQ-1 v4.5.7: `friendly_name_regex` filter added |
 | `dojotools/dojotools_ectoplasm.yaml` | v4.6.1: floor REST path, area_id fix |
 | `dojotools/dojotools_grocy.yaml` | v4.10.0: idempotent units_add, RM integration, chores_by_area |
-| `dojotools/dojotools_identity.yaml` | v4.5.6: FG-07 expansion cabinet fix, VolumeInfo guard |
+| `dojotools/dojotools_identity.yaml` | v4.7.0: presence block, `cabinet`/`person_entity` explicit keys, reverse residents enriched. v4.5.6: FG-07 expansion cabinet fix, VolumeInfo guard. |
 | `dojotools/dojotools_index.yaml` | v5.0.1: +rm pipeline (Room Manager snapshot slices per entity area), area_entities fix, filter_json fix, person.* identity overlay via script call, person_list FG-38 guard. |
 | `dojotools/dojotools_labels.yaml` | v4.6.0: target_areas, add/remove_label_to_area |
-| `dojotools/dojotools_lights.yaml` | FG-05: area_entities() pre-scan |
 | `dojotools/dojotools_manifest.yaml` | FG-05: domain filter on label_entities |
 | `dojotools/dojotools_office.yaml` | v5.0.0: todo + calendar removed |
 | `dojotools/dojotools_postman.yaml` | v1.6.2: ack loop (owner deletes log entry after consuming), `homeassistant://navigate/<assist_path>` companion URI in `open_dashboard`, race fix (step 8.4 removed). |
 | `dojotools/dojotools_filecabinet.yaml` | v4.7.2: FC normalization + write-lockout hotfix. `mode: queued / max: 2`, event dispatch `\| tojson`, verification `\| tojson` both sides. v4.7.2: `key='*'` preserved through slugify. **v4.7.0 must not ship.** |
 | `dojotools/dojotools_summarizers.yaml` | v4.6.0: dual-seed step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist check against `zen_summarizer_seed_whitelist`. Step 3d: `component_summary` label description fallback. `zen_action_emission_enabled` boolean (operator-only emission gate). `emission_cooldown_minutes` Dojo drawer field. FG-38 `from_json` guards. |
 | `dojotools/dojotools_scribe.yaml` | v1.8.0: `seed` and `area_seed` input fields, updated help (context_source_guide, per_area_rollup_pattern, tuning_guide). `repair` mode, `schedules_summary` on read, schedules upsert by `kata_key`, `publish_kfc` preserves schedules, `republish_kfc` mode, `component_size` feedback (chars/token/16KB%). |
-| `dojotools/dojotools_admintools.yaml` | v4.6.1: seed_whitelist_seed, `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab, new `zen_admintools_summarizer_seed` script |
 | `dojotools/dojotools_systemtools.yaml` | v4.5.9: `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`; all four reload modes config-check gated |
 | `dojotools/dojotools_scheduler.yaml` | v4.5.5: `deferred_script_reload` and `deferred_reload_all` event triggers added |
 | `dojotools/dojotools_spa_manager.yaml` | v3.12.0: replaces calderaspas; consumables ERP (provision, status, add_to_shopping, log_replaced, log_purchased); idempotent Grocy chore creation |
-| `dojotools/dojotools_lights.yaml` | v0.5.1: sync_shades, burnout timer, RM hold gate |
 | `dojotools/dojotools_autovac.yaml` | New — v3.11.0. Full autonomous vacuum surface. |
 | `dojotools/.autovac_presets/*.yaml` | New — 8 Roborock model presets (loaded via `!include`) |
-| `dojotools/dojotools_dispatcher.yaml` | v1.2.0: autovac route added (all 17 fields) |
-| `dojotools/dojotools_identity.yaml` | v4.7.0: presence block, `cabinet`/`person_entity` explicit keys, reverse residents enriched |
-| `dojotools/dojotools_index.yaml` | (see v5.0.1 entry above) |
 | `custom_templates/zenos_ai/zen_identity.jinja` | New — v1.1.0. Template-surface identity resolver. |
 | `plugins/grocy/grocy.yaml` | v4.47.0: chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW + null-unit guard, to_unit_id field. v4.45.0–v4.47.0: `location_id` on volatile slim projections; `stock_area_volatile` mode. |
 | `flynn_oobe.yaml` | v4.2.0+: RM-native room setup, persona handoff step, security_camera label. `_oobe_done` check accepts both `_oobe_complete` (current) and legacy `oobe_complete` (no leading underscore) for backward compat. 5_components options dict with tool names. |
@@ -619,12 +641,13 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `zenos_ai/docs/getting_started/first_run.md` | v2026.6.0; Room Manager in rooms step; persona handoff; security_camera |
 | `zenos_ai/docs/readme.md` | v2026.6.0; Tool Reference section; 2026.6.0 What's New; roadmap entry |
 | `zenos_ai/docs/_index.json` | v10: tools section, 7 releases, 2 scripts, 3 kung_fu, 1 custom_templates |
-| `dojotools/dojotools_lights.yaml` | v0.6.0: zen_lm_* label taxonomy, discover/setup/label_suggest, prefs_sweep, bleed_threshold |
-| `dojotools/dojotools_room_manager.yaml` | v1.47.0: include_notices, include_presence, presence_mode in home_overview. `+inventory` → stock_area_volatile. setup preflight canon resolver. area_create 1.5s settling. set error bifurcation. |
+| `dojotools/dojotools_lights.yaml` | v0.6.0: zen_lm_* label taxonomy, discover/setup/label_suggest, prefs_sweep, bleed_threshold. v0.5.1: sync_shades, burnout timer, RM hold gate. FG-05: area_entities() pre-scan. |
 | `custom_templates/zenos_ai/zenos_cabinets.jinja` | identity_roster() macro, safe_parse_json_string, safe_get_nested (identity v4.7.0 bridge) |
 | `custom_templates/zenos_ai/zen_os_1.jinja` | zen_drawer refactor: explicit kata_cab param, meta.enabled, desc from label_description; purpose/directives migrated to cabinet_drawer_value |
 | `zenos_ai/docs/zenlux.md` | v0.6.0: prefs_sweep mode, prefs_apply RM-state detection |
 | `zenos_ai/docs/room_manager.md` | v1.47.0: notices{}/presence{} sections under home_overview; +inventory → stock_area_volatile; setup preflight; area_create delay; set error bifurcation |
+| `zenos_ai/docs/security_manager.md` | New — Security Manager reference (v1.2.0): lens pattern, zone/panel snapshot, arm/disarm, alert policy. |
+| `zenos_ai/docs/scripts/zen_dojotools_calendar_readme.md` | New — Calendar tool reference (v1.11.0): CRUD, MS365 native APIs, label-targeted reads, wildcard discovery. |
 
 ---
 
