@@ -20,7 +20,14 @@ And a few things that are.
 
 **What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it.
 
-2026.6.0 ships **Room Manager v1.42.0** (full spatial topology — portals, adjacency, exits, safety equipment, emergency routing), **Plant Manager v1.2.2** (physical plant + energy: electric live watts, utility billing, grid carbon, water, gas, HVAC, sump, circuits, validate), **Media Manager v0.7.2** (whole-home discovery and intent routing), **Security Manager v1.2.0** (replaces alarm_panel, room-aware zone inventory), **OOBE v4.2.0** (RM-native first-run room setup), **ZenShade v0.2.2** (cover management with ZenLux sync), and **AutoVac v3.11.0** (autonomous vacuum management: room election, schedule-aware runs, full consumables ERP loop via Grocy, wear sensor alerting, post-dock camera map analysis — zero hardcoded entity IDs). Identity v4.7.0 adds a presence block to every person resolve (zone, at_home, area — consent-gated), a new template-surface resolver (`zen_identity.jinja`), and the three-plane lens pivot: ZenOS cabinet ↔ HA person entity ↔ HA area, navigable from any direction. Every room-aware tool now reads from a navigable spatial map instead of a flat entity list.
+- **Room Manager v1.42.0** — full spatial topology: portals, adjacency, exits, safety equipment, emergency routing. Every room-aware tool now reads from a navigable spatial map instead of a flat entity list.
+- **AutoVac v3.12.0** — autonomous vacuum management: room election, schedule-aware runs, consumables ERP via Grocy, wear sensor alerting, post-dock map analysis. `mode=setup` now deploys the KFC dojo entry and inits the cabinet drawer in one call. Zero hardcoded entity IDs.
+- **Identity v4.7.0** — presence block on every person resolve (zone, at_home, area — consent-gated), new `zen_identity.jinja` template resolver, three-plane navigation: cabinet ↔ person ↔ area from any direction.
+- **Plant Manager v1.2.2** — electric live watts, utility billing, grid carbon, water, gas, HVAC, sump, circuits, validation.
+- **Media Manager v0.7.2** — whole-home media discovery and intent routing.
+- **Security Manager v1.2.0** — room-aware zone inventory, replaces alarm_panel.
+- **OOBE v4.2.0** — Room Manager-native first-run room setup.
+- **ZenShade v0.2.2** — cover management with ZenLux sync.
 
 → [Release Notes — Clue](zenos_ai/docs/releases/clue.md) *(beta)*
 
@@ -32,14 +39,13 @@ Release notes: [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights
 
 ---
 
----
-
 ## 🚀 Start Here
 
 | | |
 |---|---|
 | New install | **[Install Guide](zenos_ai/docs/getting_started/install.md)** |
 | First boot | **[First Run & OOBE](zenos_ai/docs/getting_started/first_run.md)** |
+| First component | **[AutoVac Quick Start](zenos_ai/docs/getting_started/autovac_quick_start.md)** — touches every part of the system in one visible loop |
 | Adding a component | **[Understanding KF4](zenos_ai/docs/kung_fu/understanding_kf4.md)** · **[Building a KFC](zenos_ai/docs/kung_fu/building_a_kfc.md)** |
 | Full documentation | **[Documentation Hub](zenos_ai/docs/readme.md)** |
 
@@ -97,86 +103,11 @@ Flynn guards the grid.
 
 ZenOS-AI operates in **concentric rings**, separating definition, runtime cognition, and administrative tooling.
 
----
-
-## Ring-0 — Core Kit (Canonical Spine)
-
-Location:
-
-```
-
-packages/zenos_ai/
-
-```
-
-This layer defines the **rules of the world**.
-
-It establishes:
-
-• global labels  
-• identity resolver schema  
-• persona metadata  
-• cabinet metadata and volume routing  
-• manifest definitions  
-• structured EventBus schema (`zen_event`)  
-• canonical JSON contracts  
-• health sensors
-
-Ring-0 **does not perform runtime behavior**.
-
-It does not:
-
-• run inference  
-• execute reasoning  
-• perform summarization  
-• load persona cognition
-
-It defines the **structure and contracts** that the rest of the system depends on.
-
-If Ring-0 breaks, **Friday forgets who she is**.
-
----
-
-## Ring-1 — Cognitive Runtime
-
-This layer binds **behavior to the definitions** established by Ring-0.
-
-Components include:
-
-• Zen DojoTools scripts  
-• the KF4 action pipeline  
-• prompt compilation  
-• persona capsules  
-• the conversation agent interface  
-• Monastery inference integration
-
-This is where **Friday thinks**.
-
-Requirements:
-
-• Ring-0 Core Kit  
-• FileCabinet active  
-• custom Jinja templates loaded  
-• Monastery reachable
-
----
-
-## Ring-2 — Administrative & Recovery Tools
-
-The administrative layer exists for **maintenance, repair, and recovery**.
-
-Functions include:
-
-• cabinet repair  
-• manifest writing  
-• subsystem registration  
-• emergency formatting  
-• Kung Fu module loading  
-• identity audit and privilege repair
-
-This is the **“don’t panic” layer**.
-
-When something goes wrong, Ring-2 is how the system fixes itself.
+| Ring | Name | What it does |
+|------|------|-------------|
+| Ring-0 | Core Kit | Defines the rules: labels, cabinet schema, identity contracts, event bus, health sensors. Does not run behavior. If Ring-0 breaks, Friday forgets who she is. |
+| Ring-1 | Cognitive Runtime | Binds behavior to Ring-0’s definitions: DojoTools scripts, KF4 pipeline, prompt compilation, persona capsules, conversation agent interface. This is where Friday thinks. |
+| Ring-2 | Admin & Recovery | Maintenance, repair, and recovery: cabinet repair, manifest writing, KFC loading, identity audit. The “don’t panic” layer. |
 
 ---
 
@@ -199,8 +130,6 @@ You should only need to think about Flynn when something is wrong or when you're
 - Prompt integrity (`sensor.zen_prompt_health` — schema, signature, manifest)
 
 All 9 health sensors are auto-provisioned with the correct labels by Flynn on a fresh install. No manual tagging.
-
-The prompt finalization pass will wire sensor coverage into every major section of the compiled AI context. Flynn will be able to see not just *whether* the system is running but *how cleanly it is thinking* — which sections rendered, which fell back to defaults, and how much of the context window each one consumed. The stuffiness gauge makes token pressure visible before it degrades agent quality.
 
 When Flynn onboards a fresh install, his clipboard is the checklist. When Flynn monitors a running system, his clipboard is the health report. The agent inherits a clean stage or not at all.
 
@@ -234,7 +163,7 @@ ZenOS-AI installs as a **Home Assistant package collection**.
 
 ## Requirements
 
-• Home Assistant 2024.x+
+• Home Assistant 2025.x+
 • A conversation agent with tool-calling support (models under ~4B parameters released before Nov 2025 or ~8B parameters beforehand, or with short context windows are not recommended.  Your CTX must hold the HA live state data, Tools manifest AND the ZenosPrompt. The ZenOS goals is to target a ~64K or smaller context as to be able to run the system locally on a single 16G GPU)
 • Spook integration (installable via HACS)
 
@@ -320,7 +249,7 @@ packages/zenos_ai/
     dojotools_postman.yaml     — Notifications — ack loop, actionable alerts, image support
     dojotools_image_generator.yaml — Image generation tool
 
-    — Home Systems (new in 2026.6.0) —
+    — Home Systems —
     dojotools_room_manager.yaml   — Room Manager (RoomReg) — spatial topology, context slices
     dojotools_plant.yaml          — Plant Manager — electric, water, gas, HVAC, mechanical, energy
     dojotools_media_manager.yaml  — Media Manager (NyxMau5) — whole-home media and intent routing
@@ -365,65 +294,15 @@ custom_templates/zenos_ai/
 
 # FileCabinet v4
 
-FileCabinet provides the **structured storage interface** for ZenOS-AI.
+FileCabinet provides the **structured storage interface** for ZenOS-AI. Every memory slot accessible to AI agents is stored as a **Drawer** within a **Cabinet** — typed, described, and garbage-collected on a 15-minute cycle. Drawers follow a Unix-style visibility model: active (`foo`), hidden (`.foo`), system-protected (`_foo`). Described drawers receive full context access; undescribed drawers are truncated.
 
-Every memory slot accessible to AI agents is stored as a **Drawer** within a **Cabinet**.
-
-## Drawer Structure
-
-```json
-{
-  "value": "<any>",
-  "timestamp": "ISO-8601",
-  "meta": {
-    "entity_labels": ["label1"],
-    "description": "Human-readable purpose of this drawer",
-    "expires_after": "2026-06-01T00:00:00",
-    "no_autoexpire": false,
-    "no_autorecycle": false,
-    "acl": {}
-  }
-}
-```
-
-All `meta` fields are optional.
-
-Only fields containing meaningful values are persisted.
-
----
-
-## Drawer Lifecycle
-
-Drawers follow a Unix-style visibility model:
-
-| State  | Key Pattern | Meaning                |
-| ------ | ----------- | ---------------------- |
-| Active | `foo`       | Normal readable drawer |
-| Hidden | `.foo`      | Archived drawer        |
-| System | `_foo`      | Protected drawer       |
-
-System drawers are never touched by garbage collection.
-
----
-
-## Expiry and Garbage Collection
-
-The FileCabinet garbage collector runs every **15 minutes**.
-
-Lifecycle rules:
-
-• Expired active drawers → hidden
-• Hidden expired drawers → deleted
-• Manual recycle → hide + expire in 24 hours
-• Unhide → restore drawer visibility
-
-Protected drawers (`_prefix`) are never modified automatically.
+→ **[FileCabinet Reference](zenos_ai/docs/scripts/zen_dojotools_filecabinet_readme.md)**
 
 ---
 
 # Kung Fu Components (KF4)
 
-ZenOS-AI 4.1.0 ships a fully self-describing component architecture.
+ZenOS-AI ships a fully self-describing component architecture.
 
 Every home subsystem — security, water, energy, hot tub — is defined as a **Kung Fu Component (KFC)**: a drawer in the Dojo Cabinet that tells the Scheduler when to run, tells the Summarizer what to look at, and tells the AI how to interpret what it finds.
 

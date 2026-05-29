@@ -1,6 +1,6 @@
 # ZenOS-AI AutoVac
 
-**Version:** 3.11.0
+**Version:** 3.12.0
 **Script:** `zen_dojotools_autovac`
 
 ---
@@ -47,7 +47,7 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 
 | Mode | Description |
 |------|-------------|
-| `setup` | Verify label wiring, detect integration, report missing entities |
+| `setup` | Verify label wiring, init cabinet drawer, deploy KFC dojo entry — idempotent. `dry_run=true` previews without writing. |
 | `status` | Full system snapshot: vacuum state, room decisions, election, schedules, run readiness |
 | `configure` | View or update room and system config via cabinet |
 | `queue` | Mark a room for the next run regardless of schedule |
@@ -66,7 +66,7 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `check_wear` | Check one or all wear sensors; alerts and queues shopping if worn and out of stock |
 | `analyze` | Post-dock map analysis — updates room last_cleaned, broadcasts completion event |
 | `briefing` | Pre-run announcement ~30 min before a schedule fires |
-| `handle_ack` | Process Postman push notification ack (cancel = pause today) |
+| `handle_ack` | Process Postman push notification ack — go now, skip this run, or pause all day |
 | `nightly_reset` | Reset daily run flags and pause state (call at midnight) |
 | `morning_reset` | Clear `is_ready` flags after morning run starts |
 
@@ -146,7 +146,7 @@ Called by a schedule automation. Guards:
 ```yaml
 zen_dojotools_autovac:
   mode: run
-  schedule_entity_id: calendar.autovac_weekday_morning
+  schedule_entity_id: schedule.autovac_weekday_morning
 ```
 
 ### `mode=run_elected`
@@ -186,7 +186,7 @@ For end-to-end commissioning, including Postman policy setup and Grocy prerequis
 `action=provision` is the ERP bootstrap call. It:
 
 1. Discovers the robot (entity + serial number via `autovac` label)
-2. Resolves or creates Grocy locations (bot bin, dock bins, spare storage) using `autovac_location` HA area
+2. Resolves or creates Grocy locations (bot bin, dock bins, spare storage) using the HA area the vacuum entity belongs to
 3. Creates a "Robot Machine" product (asset registration) in Grocy
 4. Creates one product per part from the model preset
 5. Seeds installed stock (one of each part at installed locations)
@@ -250,34 +250,60 @@ What it does:
 
 ## Pre-Run Briefing
 
-`mode=briefing` fires ~30 minutes before a scheduled run. Called by a schedule automation's `next_event` trigger.
+`mode=briefing` fires ~30 minutes before a scheduled run. Skips silently if the system is disabled or paused. Called by `zen_autovac_controller` via template trigger.
 
 It:
-- Identifies which scheduled rooms will run
-- Lists rooms waiting on your OK (`requires_ready`)
+- Identifies which schedule is about to fire (gate: `states(s) == 'off'` and `next_event.date() == today`)
+- Lists rooms that will run and rooms waiting on your OK (`requires_ready`)
 - Warns about low water, low battery, or a vacuum that hasn't run in 3+ days
 - Auto-marks non-`requires_ready` due rooms as `ready_to_clean`
-- Dispatches via Postman TTS with a "Stop it!" push action
+- Dispatches via Postman TTS with three push actions
 
-Responding "Stop it!" → `mode=handle_ack ack_action=cancel` → pauses all scheduled runs for today.
+**Briefing push actions:**
+
+| Button | ack_action | Effect |
+|--------|-----------|--------|
+| "Go now!" | `go_now` | Fires vacuum immediately using the current elected list; marks this schedule slot done to prevent double-fire |
+| "Skip this run" | `cancel_run` | Marks this schedule slot done only — other runs today are unaffected |
+| "Pause all day" | `pause_day` | Sets `pause_today = true`, clears at midnight. Stops an in-progress run if one is running. |
+
+`ack_context` format: `prerun_YYYYMMDD|schedule.entity_id` — used by `handle_ack` to identify the specific slot.
+
+Legacy `cancel` ack (old "Stop it!" button) maps to `pause_day` for backward compatibility.
 
 ---
 
-## Automations
+## Controller Automation
 
-The script includes a full automation block:
+`zen_autovac_controller` is included in `dojotools_autovac.yaml`. It is a single automation that routes all generic triggers. No per-schedule automations to wire up.
 
-| Automation | Trigger | Action |
-|------------|---------|--------|
-| `autovac_morning_weekday` | Calendar `autovac_weekday_morning` turns `on` | `mode=briefing`, then `mode=run` |
-| `autovac_morning_weekend` | Calendar `autovac_weekend_morning` turns `on` | `mode=briefing`, then `mode=run` |
-| `autovac_evening_weekday` | Calendar `autovac_weekday_evening` turns `on` | `mode=briefing`, then `mode=run` |
-| `autovac_evening_weekend` | Calendar `autovac_weekend_evening` turns `on` | `mode=briefing`, then `mode=run` |
-| `autovac_nightly_reset` | 23:59 daily | `mode=nightly_reset` |
-| `autovac_morning_reset` | Morning schedule `next_event` | `mode=morning_reset` (after 1 min delay) |
-| `autovac_docked` | `vacuum.*` state → `docked` | `mode=analyze trigger_id=docked`, `mode=check_wear` |
-| `autovac_error` | `vacuum.*` state → `error` | `mode=analyze trigger_id=error` |
-| `autovac_postman_ack` | `zen_event kind: postman_ack owner=autovac` | `mode=handle_ack` |
+| Trigger ID | Trigger | Action |
+|-----------|---------|--------|
+| `dock` | `vacuum.docked` on label `autovac` | analyze(docked) → check_wear → 1min delay → ninja_summarizer → `autovac_docked` event |
+| `schedule_on` | `schedule.turned_on` on label `autovac_schedule` | `mode=run`; + `mode=morning_reset` if `'morning' in trigger.entity_id` |
+| `briefing_timer` | Template: 30-min window before any `autovac_schedule` next_event | `mode=briefing` |
+| `briefing_manual` | `zen_event kind: autovac_prerun_briefing` | `mode=briefing` |
+| `nightly` | `time: 00:00:00` | `mode=nightly_reset` |
+| `ack` | `zen_event kind: postman_ack ack_owner: autovac` | `mode=handle_ack` |
+| `ha_start` | `homeassistant: start` | Catch-up `analyze(docked)` if vacuum is docked with a pending `current_run` in cabinet |
+
+**Named-entity triggers** (vacuum error state, camera blueprint) require hardcoded entity IDs and must stay in your personal KFC file. Example personal KFC structure:
+
+```yaml
+# kfc_trigger_autovac.yaml — personal file, do not commit to repo
+automation:
+  # Error state → analyze (install-specific entity ID)
+  - id: 'autovac_analyze_on_error'
+    triggers:
+      - trigger: state
+        entity_id: vacuum.your_robot
+        to: error
+    actions:
+      - action: script.zen_dojotools_autovac
+        data:
+          mode: analyze
+          trigger_id: error
+```
 
 ---
 

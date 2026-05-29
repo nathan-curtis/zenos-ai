@@ -212,20 +212,30 @@ zen_dojotools_postman:
 
 Expected: `would_dispatch: true`, `channels: [push]`, and no sleep/work blocker for push.
 
-Then test buttons:
+Then test the AutoVac briefing button flow specifically — this is the exact shape AutoVac sends at briefing time:
 
 ```yaml
 zen_dojotools_postman:
   mode: resolve_and_dispatch
   target: person.joeuser
   urgency: 5
-  title: "AutoVac setup test"
-  message: "Tap OK if AutoVac notifications should come here."
-  response_type: acknowledge
+  title: "AutoVac briefing test"
+  message: "Test: morning run starts in 28 minutes. Rooms: kitchen, living_room."
+  response_type: custom
   response_timeout_s: 60
+  ack_owner: autovac
+  ack_context: "prerun_test|none"
+  notification_data:
+    actions:
+      - action: go_now
+        title: "Go now!"
+      - action: cancel_run
+        title: "Skip this run"
+      - action: pause_day
+        title: "Pause all day"
 ```
 
-Expected: the returned `ack_action` is `ACK` or `ack_timed_out: true` if nobody taps.
+Expected: push notification arrives with all three buttons visible. Tap one and verify the ack fires (check the Postman log or watch `zen_dojotools_autovac mode=status` for `pause_today` if you tapped "Pause all day"). If buttons don't appear, the push integration doesn't support actionable notifications — check your HA mobile app version and notification channel settings.
 
 See [Postman](../scripts/zen_dojotools_postman_readme.md).
 
@@ -329,21 +339,55 @@ What rooms are elected for the next AutoVac run?
 
 ---
 
-## Step 7: Add Schedules
+## Step 7: Add Schedules and Wire the Controller
 
 Create schedule entities in HA for the run windows you want, then label them `autovac_schedule`.
 
-AutoVac discovers schedule entities by label. You do not hardcode a list into the script.
+AutoVac discovers schedule entities by label — no hardcoded list, no per-schedule automations to maintain.
 
-Example run call from an automation:
+**Schedule entity naming:** AutoVac discovers schedule entities by label only — the entity name doesn't matter to the script. But name them clearly for your own sanity: `schedule.autovac_weekday_morning`, `schedule.autovac_weekday_evening`, `schedule.autovac_weekend_morning`. One schedule per run window. Create them in HA at Settings → Helpers → + Create Helper → Schedule, configure the time window, then label them `autovac_schedule`.
+
+**The controller automation is included in the package.** `zen_autovac_controller` in `dojotools_autovac.yaml` handles all label-based and event-based triggers automatically: dock events, schedule turns-on, the 30-min briefing template trigger, midnight reset, Postman acks, and HA restart catch-up. After loading the package you only need a personal KFC file for named-entity triggers (install-specific entity IDs):
 
 ```yaml
-zen_dojotools_autovac:
-  mode: run
-  schedule_entity_id: schedule.autovac_weekday_morning
+# kfc_trigger_autovac.yaml — personal file, do not commit to repo
+automation:
+  # Error state → analyze (install-specific entity ID)
+  - id: 'autovac_analyze_on_error'
+    triggers:
+      - trigger: state
+        entity_id: vacuum.your_robot
+        to: error
+    actions:
+      - action: script.zen_dojotools_autovac
+        data:
+          mode: analyze
+          trigger_id: error
 ```
 
-Before a scheduled run, `mode=briefing` can send a Postman heads-up. If a room needs readiness or a blocker exists, you get a chance to cancel or adjust before the robot starts.
+Any other named-entity hooks your install needs — camera blueprints, integration-specific state triggers — go here by the same pattern. The rule is: if it requires a hardcoded entity ID, it's personal and lives in your KFC file, not in the package.
+
+## Step 7a: Pre-Run Briefing and Postman Ack
+
+The controller automatically fires `mode=briefing` ~30 minutes before any `autovac_schedule` entity is about to turn on. The briefing sends a TTS announcement + push notification with three action buttons:
+
+| Button | What it does |
+|--------|-------------|
+| **"Go now!"** | Fires the vacuum immediately using the current elected list; marks this schedule slot done so it won't double-fire when the scheduled time arrives |
+| **"Skip this run"** | Marks this schedule slot done only — other scheduled runs today still fire normally |
+| **"Pause all day"** | Pauses all scheduled runs until midnight; stops an in-progress run and returns to dock |
+
+For the briefing to reach you, Postman must be seeded (Step 3) and your push target must resolve. Test with:
+
+```yaml
+zen_dojotools_postman:
+  mode: resolve
+  target: person.yourname
+  urgency: 4
+  channel_hint: push
+```
+
+Expected: `would_dispatch: true`. If not, check your `postman_profile` in the user cabinet.
 
 ---
 
@@ -426,20 +470,24 @@ See [Grocy Inventory Component](../plugins/grocy.md) for the shared inventory co
 
 ---
 
-## Step 10: Turn On Wear Checks
+## Step 10: Verify Wear Checks Work
 
-If wear sensors are labeled `autovac_wear`, AutoVac can check them after the vacuum docks.
+If wear sensors are labeled `autovac_wear` and consumables are provisioned, wear checking is automatic — the controller calls `mode=check_wear` after every dock. You don't turn it on; you just confirm it's wired correctly.
+
+Run a manual check:
 
 ```yaml
 zen_dojotools_autovac:
   mode: check_wear
 ```
 
+Expected: `result: ok` with per-part wear percentages, or `result: alert` if something is worn. If you get `not_provisioned`, go back to Step 9 — the catalog hasn't been built yet.
+
 When a part is worn:
 
-* If a spare exists, Postman can tell you which part to replace.
-* If no spare exists, AutoVac adds the part to the Grocy shopping list.
-* If a linked `chore_id` exists, `log_replaced` can mark the maintenance chore complete.
+* If a spare exists: Postman pushes an alert — replace it, then run `action=log_replaced part=<key>` to update stock and mark the maintenance chore.
+* If no spare exists: AutoVac adds the part to the Grocy shopping list automatically and sends a higher-urgency push.
+* After you physically install the replacement: `action=log_replaced` records the swap and consumes one unit from your spare stock.
 
 ---
 
@@ -502,8 +550,8 @@ See [AlertManager](../alertmanager.md).
 
 AutoVac uses Postman for the moments where a human should decide:
 
-* Pre-run briefing: "These rooms are due. Stop it?"
-* Wear alert: "Filter is worn, spare is on hand. Replace it?"
+* Pre-run briefing: rooms elected, time until run, three buttons — Go now / Skip this run / Pause all day
+* Wear alert: "Filter is worn, spare is on hand — run `log_replaced` when you've swapped it"
 * Out-of-stock alert: "No spare filter. Added to shopping list."
 * Post-run map analysis: "Cleaning finished, but obstacle/coverage needs attention."
 

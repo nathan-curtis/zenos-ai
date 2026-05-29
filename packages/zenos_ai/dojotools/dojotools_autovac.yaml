@@ -1,6 +1,6 @@
 ###############################################################################
 # DojoTools — Autovac
-# zen_dojotools_autovac (v3.11.0)
+# zen_dojotools_autovac (v3.12.0)
 #
 # Full vacuum control surface. All room state stored in the household cabinet
 # ('autovac' drawer). Zero hardcoded entity IDs — all discovery via HA labels.
@@ -14,7 +14,9 @@
 #        autovac_current_room  → vacuum current-room sensor (optional — enables per-room timing stats)
 #   2. Add rooms:
 #        mode=configure room=<slug> config='{"enabled":true,"segment":<num>,"days_between":7}'
-#   3. Run mode=setup to verify label wiring.
+#   3. Run mode=setup — verifies label wiring, inits cabinet drawer, deploys KFC dojo entry.
+#      Optional: mode=setup config='{"provision_inventory":true}' to also provision Grocy ERP.
+#      Seed whitelist (for richer ninja summaries): zen_admintools_summarizer_seed mode=add tool=zen_dojotools_autovac
 #   4. Place triggers in your personal KFC trigger file — see mode=help for details.
 #
 # Cabinet drawer: 'autovac' in Zen Household Cabinet
@@ -32,12 +34,12 @@
 script:
 
   zen_dojotools_autovac:
-    alias: "Zen DojoTools Autovac (v3.11.0)"
+    alias: "Zen DojoTools Autovac (v3.12.0)"
     description: >-
       Full autonomous vacuum surface — room election, schedule-aware runs, inventory ERP loop for consumables.
       Use mode=help for full docs, label conventions, cabinet schema, and config recipes.
       mode=status: live snapshot — vacuum state, battery, elected rooms, next schedule.
-      mode=setup: verify label wiring. mode=configure: view/update room or system settings.
+      mode=setup: verify labels, init cabinet drawer, deploy KFC dojo entry (idempotent). mode=configure: view/update room or system settings.
       mode=preset preset=<name> rooms=<csv>: apply named config bundle.
       mode=queue/dequeue/skip/unskip/ready/unready/mark_cleaned room=<slug>: room state ops.
       mode=clean rooms=<csv>: immediate clean. mode=run_elected: run elected rooms now.
@@ -101,7 +103,7 @@ script:
           text:
       dry_run:
         name: Dry Run
-        description: "run_elected only: preview without firing vacuum."
+        description: "run_elected: preview without firing vacuum. setup: preview without writing cabinet or deploying KFC."
         default: false
         selector:
           boolean:
@@ -278,7 +280,7 @@ script:
                     'skip_next': 'Keep a room out of one specific run: mode=skip room=<slug>. Auto-clears after the next scheduled run passes.',
                     'election_flow': 'A room is elected when: enabled=true AND due (days_since_cleaned >= days_between OR queued=true) AND (requires_ready=false OR is_ready=true) AND skip_next=false. All gates must pass. Vacuum state + water checks happen at run time, not election time.'
                   },
-                  'trigger_automation_modes': 'run, analyze, briefing, handle_ack, nightly_reset, morning_reset, check_wear are called by KFC automations in your personal install file. check_wear (scan-all) fires after each dock via vacuum.docked label trigger (HA 2025.12+ purpose-specific trigger). Single-entity check_wear available for future numeric_state label trigger when HA adds that support.',
+                  'trigger_automation_modes': 'Most trigger routing is handled by zen_autovac_controller (included in this package). dock → analyze+check_wear+ninja_summarizer+latch event. schedule.turned_on → run (+morning_reset if morning). template 30min window → briefing. zen_event autovac_prerun_briefing → briefing. time 00:00:00 → nightly_reset. zen_event postman_ack ack_owner=autovac → handle_ack. ha_start → catch-up analyze. Named-entity triggers (vacuum error state, camera blueprint) stay in the personal KFC file.',
                   'model_presets': 'action=provision requires model_preset=<key>. Generics (REPLACE_SKU placeholders): roborock_generic_dock (VibraRise + standard dock), roborock_generic_dock_ultra (VibraRise + ultra dock), roborock_generic_dock_nomop (no mop). Runnable: roborock_s7_plus, roborock_s7_maxv_ultra, roborock_s8_plus*, roborock_s8_pro_ultra*, roborock_q7_max_plus* (* = VERIFY_SKU on 1-2 parts). Preset files in .autovac_presets/ dir alongside engine. Add new models by dropping a YAML file and adding an !include entry to the _preset_lib block in provision Step 0.'
                 } }}
           - stop: "autovac help"
@@ -310,6 +312,7 @@ script:
         then:
           - variables:
               _setup_cfg:            "{{ _config | from_json(default={}) }}"
+              _dry_run:              "{{ dry_run | default(false) | bool(false) }}"
               _cabinet_ok:           "{{ _hh_cabinet != '' }}"
               _drawer_ok:            "{{ _av_rooms | length > 0 or _av_system | length > 0 }}"
               _vac_ok:               "{{ _vac_ent != '' }}"
@@ -436,6 +439,120 @@ script:
                   'action_queue': _setup_action_queue,
                   'tip': _setup_tip | trim
                 } }}
+          # -- setup: cabinet drawer init (idempotent — skip if rooms/system present) --
+          - variables:
+              _drawer_initialized: false
+          - if: "{{ _cabinet_ok and not _drawer_ok and not _dry_run }}"
+            then:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: write
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                  value: >-
+                    {{ {'system': {'enabled': true, 'minimum_battery': 20, 'water_low_action': 'warn'}, 'rooms': {}} | tojson }}
+              - variables:
+                  _drawer_initialized: true
+
+          # -- setup: KFC dojo deploy (idempotent via Scribe) ----------------------
+          - variables:
+              _kfc_deployed: false
+          - if: "{{ _cabinet_ok and not _dry_run }}"
+            then:
+              - alias: 'Autovac KFC — new_thought'
+                action: script.zen_dojotools_scribe
+                data:
+                  mode: new_thought
+                  key: autovac
+                  friendly_name: Autovac
+                  label: autovac
+                  version_semantic: "3.12.0"
+                  seed: >-
+                    {"tool": "zen_dojotools_autovac", "params": {"mode": "status"}}
+                  component_summary: >-
+                    Autonomous vacuum surface — room election, schedule-aware runs,
+                    consumables ERP. Consult for cleaning schedule, robot state, and part stock.
+                  component_instructions: >-
+                    You are reading the vacuum system state for this household.
+
+                    SEED OUTPUT (zen_dojotools_autovac, mode=status — when whitelisted):
+                      Full cabinet snapshot: system config (enabled, pause_today, min_battery,
+                      water_low_action), elected rooms with days_since/days_between, schedule
+                      entities with has_run_today and next_event, last_run, run_readiness,
+                      consumables stock. Use this as ground truth for all vacuum questions.
+
+                    INDEX-ONLY PATH (label:autovac entity surface — automatic fallback):
+                      Vacuum entity: state (cleaning/docked/idle/error/returning), battery_level,
+                      fan_speed. Schedule entities: state (on/off), next fire time.
+                      Last-clean sensors: duration, area, start time.
+                      Current-room sensor if live. Interpret from entity state alone — no cabinet.
+
+                    REPORTING:
+                      Active run: name state, elapsed time, current room if available.
+                      Docked + battery < 50%: note charging, include battery %.
+                      Error state: surface error detail and last clean time.
+                      Elected rooms: list names with days_since/days_between. Note if due today.
+                      Consumables: surface only worn (wear < threshold) or out-of-stock parts.
+                      DnD or pause active: mention if a run was gated by it.
+
+                    NOMINAL: "Vacuum docked. [N] rooms elected. Last cleaned [room] [X] days ago."
+                    ALERT: "Vacuum [error|worn part|low water]: [specific issue]."
+                  trigger_subscriptions: "daily_midnight,ha_start"
+                  drift_threshold: 30
+                  emission_cooldown_minutes: 120
+                  caller_id: zen_dojotools_autovac
+              - alias: 'Autovac KFC — formalize_scroll'
+                action: script.zen_dojotools_scribe
+                data:
+                  mode: formalize_scroll
+                  key: autovac
+                  caller_id: zen_dojotools_autovac
+              - alias: 'Autovac KFC — publish_kfc'
+                action: script.zen_dojotools_scribe
+                data:
+                  mode: publish_kfc
+                  key: autovac
+                  publish_confirm: true
+                  caller_id: zen_dojotools_autovac
+                response_variable: _kfc_result
+              - variables:
+                  _kfc_deployed: true
+
+          # -- setup: optional Grocy ERP provision (explicit flag only) -----------
+          - variables:
+              _prov_result: >-
+                skipped — pass config={"provision_inventory":true} to provision Grocy ERP
+          - if: "{{ _setup_cfg.get('provision_inventory', false) | bool(false) and not _dry_run }}"
+            then:
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: consumables
+                  action: provision
+                response_variable: _prov_raw
+              - variables:
+                  _prov_result: "{{ _prov_raw | default({}) }}"
+
+          # -- setup: merge dojo/cabinet results into response --------------------
+          - variables:
+              response: >-
+                {{ response | combine({
+                  'dry_run': _dry_run,
+                  'kfc_deployed': _kfc_deployed,
+                  'ninja_integration': {
+                    'seed_path': 'zen_admintools_summarizer_seed mode=add tool=zen_dojotools_autovac — whitelist for full cabinet snapshot on each ninja run',
+                    'index_path': 'label:autovac entity surface — automatic fallback when seed not whitelisted (no extra setup needed)',
+                    'kfc_key': 'autovac'
+                  },
+                  'inventory_provision': _prov_result
+                }) | combine(
+                  {'drawer_initialized': true} if _drawer_initialized else {}
+                ) | combine(
+                  {'would_do': (
+                    (['init_cabinet_drawer'] if not _drawer_ok and _cabinet_ok else []) +
+                    (['deploy_kfc'] if _cabinet_ok else ['deploy_kfc_skipped_no_cabinet']) +
+                    (['provision_inventory'] if _setup_cfg.get('provision_inventory', false) else [])
+                  )} if _dry_run else {}
+                ) }}
           - stop: "autovac setup complete"
             response_variable: response
 
@@ -505,7 +622,7 @@ script:
                   {%- if delta > 0 and delta < ns.secs -%}
                     {%- set ns.secs = delta -%}
                     {%- set h = as_datetime(ne).hour | int -%}
-                    {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' at ' ~ '%02d:%02d' | format(h, as_datetime(ne).minute | int) -%}
+                    {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' at ' ~ as_datetime(ne).strftime('%I:%M %p') -%}
                     {%- set ns.entity = s -%}
                   {%- endif -%}
                 {%- endif -%}
@@ -519,7 +636,7 @@ script:
                 {%- set ne = state_attr(s, 'next_event') -%}
                 {%- if ne is not none -%}
                   {%- set h = as_datetime(ne).hour | int -%}
-                  {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' window open until ' ~ '%02d:%02d' | format(h, as_datetime(ne).minute | int) -%}
+                  {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' window open until ' ~ as_datetime(ne).strftime('%I:%M %p') -%}
                 {%- else -%}
                   {%- set ns.label = 'active' -%}
                 {%- endif -%}
@@ -2223,17 +2340,27 @@ script:
       # ---- briefing ----------------------------------------------------------
       - if: "{{ _mode == 'briefing' }}"
         then:
+          - if: "{{ not _enabled or _av_system.get('pause_today', false) }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'briefing', 'result': 'skipped',
+                      'caller_token': _caller_token,
+                      'reason': 'system_disabled' if not _enabled else 'paused_today'
+                    } }}
+              - stop: "autovac briefing skipped"
+                response_variable: response
           - alias: Find which schedule fires in ~30 min
             variables:
               _schedule_entity: >-
                 {%- set schedules = label_entities('autovac_schedule') | list -%}
                 {%- set ns = namespace(found='') -%}
-                {%- set is_weekend = now().weekday() >= 5 -%}
                 {%- for s in schedules -%}
-                  {%- set day_ok = ('weekend' in s and is_weekend) or ('weekday' in s and not is_weekend) or ('weekend' not in s and 'weekday' not in s) -%}
-                  {%- if ns.found == '' and day_ok -%}
+                  {%- if ns.found == '' -%}
                     {%- set ne = state_attr(s, 'next_event') -%}
-                    {%- if ne is not none and as_datetime(ne).date() == now().date() -%}
+                    {%- if ne is not none and states(s) == 'off'
+                        and as_datetime(ne).date() == now().date() -%}
                       {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
                       {%- if delta > 0 and delta >= 1770 and delta <= 2400 -%}
                         {%- set ns.found = s -%}
@@ -2249,8 +2376,7 @@ script:
                   {%- set ne = state_attr(_schedule_entity, 'next_event') -%}
                   {%- if ne is not none -%}
                     {%- set h = as_datetime(ne).hour | int(0) -%}
-                    {%- set m = as_datetime(ne).minute | int(0) -%}
-                    {{ ('morning' if h < 12 else 'evening') ~ ' run at ' ~ '%02d:%02d' | format(h, m) }}
+                    {{ ('morning' if h < 12 else 'evening') ~ ' run at ' ~ as_datetime(ne).strftime('%I:%M %p') }}
                   {%- else -%}
                     scheduled run
                   {%- endif -%}
@@ -2358,11 +2484,15 @@ script:
               response_timeout_s: 1800
               ack_owner: autovac
               ack_context: >-
-                prerun_{{ now().strftime('%Y%m%d') }}_{{ 'morning' if now().hour < 12 else 'evening' }}
+                prerun_{{ now().strftime('%Y%m%d') }}|{{ _schedule_entity if _schedule_entity != '' else 'none' }}
               notification_data:
                 actions:
-                  - action: cancel
-                    title: "Stop it!"
+                  - action: go_now
+                    title: "Go now!"
+                  - action: cancel_run
+                    title: "Skip this run"
+                  - action: pause_day
+                    title: "Pause all day"
           - variables:
               response: >-
                 {{ {'mode': 'briefing', 'result': 'dispatched', 'caller_token': _caller_token,
@@ -2373,32 +2503,135 @@ script:
       # ---- handle_ack --------------------------------------------------------
       - if: "{{ _mode == 'handle_ack' }}"
         then:
-          - if: "{{ _ack_action == 'cancel' and _ack_context.startswith('prerun_') }}"
+          - if: "{{ _ack_context.startswith('prerun_') }}"
             then:
-              - alias: Pause today's scheduled runs
-                action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  volume_entity_id: "{{ _hh_cabinet }}"
-                  key: autovac
-                  value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'pause_today': true})} | tojson }}"
-              - if: "{{ _vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused'] }}"
+              - variables:
+                  _prerun_sched: >-
+                    {{ _ack_context.split('|', 1)[-1] if '|' in _ack_context else 'none' }}
+              - variables:
+                  _prerun_hrk: >-
+                    {%- if _prerun_sched not in ['', 'none'] -%}
+                      {{ _prerun_sched | replace('.', '_') | replace('-', '_') ~ '_has_run' }}
+                    {%- else -%}{{ '' }}{%- endif -%}
+
+              # go_now: build elected list, fire vacuum inline, mark slot done
+              - if: "{{ _ack_action == 'go_now' }}"
                 then:
-                  - alias: Stop vacuum mid-run
-                    action: vacuum.return_to_base
-                    target:
-                      entity_id: "{{ _vac_ent }}"
-              - alias: Confirm cancellation
-                action: script.zen_dojotools_postman
-                data:
-                  mode: resolve_and_dispatch
-                  message: >-
-                    Paused — staying docked today. Today's scheduled runs are cancelled.
-                    {{ "On the way back to dock." if (_vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused']) else '' }}
-                  urgency: 5
-                  channel_hint: push
-                  title: "Autovac Paused"
-                  tag: autovac_prerun
+                  - variables:
+                      _go_valid: >-
+                        {%- set ns = namespace(rooms=[]) -%}
+                        {%- for r in _elected -%}
+                          {%- if _use_clean_area or r.get('segment', 0) | int(0) > 0 -%}
+                            {%- set ns.rooms = ns.rooms + [r] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.rooms }}
+                  - variables:
+                      _go_segs: "{{ _go_valid | map(attribute='segment') | map('int') | list }}"
+                      _go_areas: >-
+                        {%- set ns = namespace(a=[]) -%}
+                        {%- for r in _go_valid -%}
+                          {%- set area = _av_rooms.get(r.room, {}).get('area_id', r.room) -%}
+                          {%- set ns.a = ns.a + [area] -%}
+                        {%- endfor -%}
+                        {{ ns.a }}
+                  - if: "{{ _go_valid | length == 0 or _vacuum_state not in ['docked', 'idle'] }}"
+                    then:
+                      - action: script.zen_dojotools_postman
+                        data:
+                          mode: resolve_and_dispatch
+                          message: >-
+                            {{ 'No rooms are due' if _go_valid | length == 0 else 'Vacuum is busy (' ~ _vacuum_state ~ ')' }} — cannot start now.
+                          urgency: 5
+                          channel_hint: push
+                          title: "Autovac — Can't Start"
+                          tag: autovac_prerun
+                  - if: "{{ _go_valid | length > 0 and _vacuum_state in ['docked', 'idle'] }}"
+                    then:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: update
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          key: autovac
+                          value: >-
+                            {{ {'rooms': _av_rooms, 'system': _av_system | combine(
+                              ({_prerun_hrk: true} if _prerun_hrk != '' else {}),
+                              {'current_run': {
+                                'started_at': now().isoformat(),
+                                'schedule_entity_id': _prerun_sched,
+                                'rooms': _go_valid | map(attribute='room') | list,
+                                'segments': _go_segs,
+                                'areas': _go_areas
+                              }}
+                            )} | tojson }}
+                      - if: "{{ _use_clean_area }}"
+                        then:
+                          - action: vacuum.clean_area
+                            data:
+                              areas: "{{ _go_areas }}"
+                            target:
+                              entity_id: "{{ _vac_ent }}"
+                        else:
+                          - action: xiaomi_miio.vacuum_clean_segment
+                            data:
+                              segments: "{{ _go_segs }}"
+                            target:
+                              entity_id: "{{ _vac_ent }}"
+                      - action: script.zen_dojotools_postman
+                        data:
+                          mode: resolve_and_dispatch
+                          message: "Starting now — vacuum is on its way!"
+                          urgency: 5
+                          channel_hint: push
+                          title: "Autovac Starting"
+                          tag: autovac_prerun
+
+              # cancel_run: mark this slot done only — other scheduled runs today unaffected
+              - if: "{{ _ack_action == 'cancel_run' }}"
+                then:
+                  - if: "{{ _prerun_hrk != '' }}"
+                    then:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: update
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          key: autovac
+                          value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({_prerun_hrk: true})} | tojson }}"
+                  - action: script.zen_dojotools_postman
+                    data:
+                      mode: resolve_and_dispatch
+                      message: "This run skipped. Other scheduled runs today are not affected."
+                      urgency: 4
+                      channel_hint: push
+                      title: "Autovac Run Skipped"
+                      tag: autovac_prerun
+
+              # pause_day (+ legacy 'cancel'): pause_today until midnight nightly_reset
+              - if: "{{ _ack_action in ['pause_day', 'cancel'] }}"
+                then:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      key: autovac
+                      value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'pause_today': true})} | tojson }}"
+                  - if: "{{ _vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused'] }}"
+                    then:
+                      - alias: Stop vacuum mid-run
+                        action: vacuum.return_to_base
+                        target:
+                          entity_id: "{{ _vac_ent }}"
+                  - action: script.zen_dojotools_postman
+                    data:
+                      mode: resolve_and_dispatch
+                      message: >-
+                        All runs paused for today.
+                        {{ "On the way back to dock." if (_vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused']) else '' }}
+                      urgency: 5
+                      channel_hint: push
+                      title: "Autovac Paused"
+                      tag: autovac_prerun
+
           - if: "{{ _pm_tag != '' }}"
             then:
               - action: script.zen_dojotools_postman
@@ -2600,5 +2833,186 @@ script:
         response_variable: response
 
     mode: queued
-    max: 3
+    max: 5
     icon: mdi:robot-vacuum
+
+###############################################################################
+# Autovac — Controller Automation
+#
+# Single automation, all label/event/time triggers. Routes by trigger.id.
+# Named-entity triggers (vacuum error state, camera blueprint) stay in the
+# personal kfc_trigger_autovac.yaml.
+###############################################################################
+
+automation:
+
+  - id: 'zen_autovac_controller'
+    alias: Zen Autovac — Controller
+    description: >-
+      Single-entry-point controller for all autovac events. Routes by trigger.id
+      to zen_dojotools_autovac modes. Named-entity triggers remain in the
+      personal KFC file.
+    triggers:
+
+      - trigger: vacuum.docked
+        target:
+          label_id: autovac
+        options:
+          behavior: any
+        id: dock
+
+      - trigger: schedule.turned_on
+        target:
+          label_id: autovac_schedule
+        options:
+          behavior: any
+        id: schedule_on
+
+      - trigger: template
+        value_template: >-
+          {%- set schedules = label_entities('autovac_schedule') | list -%}
+          {%- set ns = namespace(hit=false) -%}
+          {%- for s in schedules -%}
+            {%- set ne = state_attr(s, 'next_event') -%}
+            {%- if ne is not none and states(s) == 'off'
+                and as_datetime(ne).date() == now().date() -%}
+              {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
+              {%- if delta > 0 and delta >= 1770 and delta <= 1830 -%}
+                {%- set ns.hit = true -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.hit }}
+        id: briefing_timer
+
+      - trigger: event
+        event_type: zen_event
+        event_data:
+          event:
+            kind: autovac_prerun_briefing
+        id: briefing_manual
+
+      - trigger: time
+        at: "00:00:00"
+        id: nightly
+
+      - trigger: event
+        event_type: zen_event
+        event_data:
+          event:
+            kind: postman_ack
+            ack_owner: autovac
+        id: ack
+
+      - trigger: homeassistant
+        event: start
+        id: ha_start
+
+    mode: queued
+    max: 5
+    actions:
+
+      - choose:
+
+          - conditions:
+              - condition: trigger
+                id: dock
+            sequence:
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: analyze
+                  trigger_id: docked
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: check_wear
+              - delay: "00:01:00"
+              - action: script.zen_dojotools_ninja_summarizer
+                data:
+                  kung_fu_component_id: autovac
+                  force: true
+              - event: zen_event
+                event_data:
+                  event:
+                    kind: autovac_docked
+            alias: Dock — analyze, wear check, ninja refresh, latch event
+
+          - conditions:
+              - condition: trigger
+                id: schedule_on
+            sequence:
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: run
+                  schedule_entity_id: "{{ trigger.entity_id }}"
+              - if: "{{ 'morning' in trigger.entity_id }}"
+                then:
+                  - action: script.zen_dojotools_autovac
+                    data:
+                      mode: morning_reset
+            alias: Scheduled run (+ morning_reset if morning schedule)
+
+          - conditions:
+              - condition: trigger
+                id:
+                  - briefing_timer
+                  - briefing_manual
+            sequence:
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: briefing
+            alias: Pre-run briefing
+
+          - conditions:
+              - condition: trigger
+                id: nightly
+            sequence:
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: nightly_reset
+            alias: Nightly reset
+
+          - conditions:
+              - condition: trigger
+                id: ack
+            sequence:
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: handle_ack
+                  ack_action:  "{{ trigger.event.data.event.ack_action | lower | trim }}"
+                  ack_context: "{{ trigger.event.data.event.ack_context | default('') }}"
+                  pm_tag:      "{{ trigger.event.data.event.pm_tag | default('') }}"
+            alias: Postman ack handler
+
+          - conditions:
+              - condition: trigger
+                id: ha_start
+            sequence:
+              - variables:
+                  _hh_cab: >-
+                    {{ label_entities('Zen Household Cabinet')
+                       | select('match', 'sensor\\.') | list | first | default('') }}
+                  _vac: >-
+                    {{ label_entities('autovac')
+                       | select('match', 'vacuum\\.') | list | first | default('') }}
+              - if: >-
+                  {%- if _hh_cab == '' or _vac == '' -%}{{ false }}
+                  {%- else -%}
+                    {%- set outer = state_attr(_hh_cab, 'variables') | default({}, true) -%}
+                    {%- set av_val = outer.get('autovac', {}).get('value', '{}') -%}
+                    {%- set av_cfg = (av_val | from_json) if av_val is string else av_val | default({}, true) -%}
+                    {{ av_cfg.get('system', {}).get('current_run', {}).get('rooms', []) | length > 0
+                       and states(_vac) == 'docked' }}
+                  {%- endif -%}
+                then:
+                  - action: script.zen_dojotools_autovac
+                    data:
+                      mode: analyze
+                      trigger_id: docked
+            alias: HA start — catch-up analyze if run completed during restart
+
+  # ---------------------------------------------------------------------------
+  # PENDING — Real-Time Wear Sensor Alert
+  # Blocked: numeric_state does NOT support target: label_id: as of HA 2026.5.
+  # When HA adds support, add trigger: numeric_state target: label_id: autovac_wear
+  # below: 21 → mode=check_wear wear_entity={{ trigger.entity_id }} here.
+  # ---------------------------------------------------------------------------
