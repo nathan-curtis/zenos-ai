@@ -81,7 +81,7 @@ zen_dojotools_room_manager  mode=set  area=kitchen  description="Open to living 
 zen_dojotools_room_manager  mode=link  area=kitchen  area_b=living_room  portal_type=archway
 ```
 
-See [Room Manager reference](../room_manager.md) for the full schema.
+See [Room Manager reference](../components/room_manager.md) for the full schema.
 
 ---
 
@@ -121,7 +121,7 @@ Apply `zen_plant_water_rate` or tag a `water_usage` sensor with a name matching 
 
 **`garage_water` binary sensor convention:** normally-open — `ON` means cutoff engaged (valve closed), `OFF` means flowing normally. Correct for most auto-shutoff hardware.
 
-See [Plant Manager reference](../plant_manager.md) for the full discovery waterfall and slot reference.
+See [Plant Manager reference](../components/plant_manager.md) for the full discovery waterfall and slot reference.
 
 ---
 
@@ -131,7 +131,7 @@ Whole-home media management. Discovers all `media_player.*` entities, resolves s
 
 FG-05 fixed at launch: `label_entities('media_player') | select('match', 'media_player\\.') | list` + `states.media_player` fallback. No unbounded domain scan.
 
-See [Media Manager reference](../media_manager.md).
+See [Media Manager reference](../components/media_manager.md).
 
 ---
 
@@ -160,7 +160,7 @@ Cover management with tilt support and ZenLux sync.
 - `sync_shades` mode: ZenLux calls this to synchronize cover positions with lighting scenes
 - Scene modes: `open`, `close`, `privacy`, `blackout`, `sync`
 
-See [ZenShade reference](../zenshade.md).
+See [ZenShade reference](../components/zenshade.md).
 
 ---
 
@@ -420,7 +420,7 @@ Each preset defines SKUs, wear sensor keys, wear thresholds, storage location ca
 
 `integration_entities('roborock')` at runtime — no config flag. Native Roborock integration → `vacuum.clean_area` (area-based). Legacy Xiaomi MiHome → `xiaomi_miio.vacuum_clean_segment` (segment IDs). Both paths fully supported.
 
-See [AutoVac reference](../autovac.md).
+See [AutoVac reference](../components/autovac.md).
 
 ---
 

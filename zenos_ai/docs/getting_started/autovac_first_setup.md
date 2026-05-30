@@ -542,7 +542,7 @@ zen_dojotools_alertmanager:
   alert_key: autovac_human_ack_test
 ```
 
-See [AlertManager](../alertmanager.md).
+See [AlertManager](../components/alertmanager.md).
 
 ---
 
@@ -594,7 +594,7 @@ When those pass, the full chain is ready: schedule -> room election -> guarded r
 
 ## Related
 
-* [AutoVac Reference](../autovac.md)
+* [AutoVac Reference](../components/autovac.md)
 * [Grocy Inventory Component](../plugins/grocy.md)
 * [Postman](../scripts/zen_dojotools_postman_readme.md)
 * [Entity Exposure](entity_exposure.md)

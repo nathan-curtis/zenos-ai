@@ -369,7 +369,7 @@ event or tool -> AlertManager -> active alert drawer -> notification -> optional
 
 Next reads:
 
-- **[AlertManager reference](../alertmanager.md)** — full current behavior, TTL, priority context, and tool modes
+- **[AlertManager reference](../components/alertmanager.md)** — full current behavior, TTL, priority context, and tool modes
 - **[Understanding KF4](../kung_fu/understanding_kf4.md)** — how summarizer-driven components fit beside direct event alerts
 - **[Entity Exposure](entity_exposure.md)** — what to expose to your AI and what to keep behind tools
 

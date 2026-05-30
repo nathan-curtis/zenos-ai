@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 4.47.0  
+**Version:** 4.48.0  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
 **Internal REST dispatcher:** `zen_dojotools_grocy_advanced`
@@ -86,22 +86,34 @@ Read this as two truths meeting in the middle: the component knows what a part m
 
 | Mode | Use |
 |------|-----|
-| `stock_check_item` | Current stock level for a product |
-| `stock_where_is_item` | Find where a product is stored |
+| `stock_check_item` | Current stock level + storage location for a product |
+| `stock_where_is_item` | Find where a product is stored — returns identical data to `stock_check_item`; prefer `stock_check_item` to avoid a redundant call |
 | `stock_entries_for_item` | Raw stock entries for a product |
 | `stock_buy_product` | Create or resolve a product, then add stock |
 | `stock_add_purchase` | Add purchased stock for an existing product |
 | `stock_consume` | Remove stock after use or replacement |
-| `shopping_add_product` | Add a specific product to the shopping list |
+| `shopping_add_product` | Add a specific product to the shopping list. Returns `{product_id, product_name, amount, list_id, action}` |
+| `shopping_remove_product` | Remove a product from the shopping list. Returns `{product_id, product_name, amount, list_id, action}` |
 | `stock_area_summary` | Area-level container and stock count rollup |
 | `stock_area_volatile` | Volatile items (overdue/due_soon/expiring) scoped to a HA area |
 | `stock_area_inventory` | Full denormalized room inventory: locations, products, amounts |
+| `room_brief` | Chores + stock summary for a HA area in one call — use instead of `chores_by_area` + `stock_area_summary` to save a round trip |
 | `chores_by_area` | Maintenance chores connected to an HA area |
 | `chores_execute` | Mark a chore complete |
+| `chores_tag` | Set `homeassistant_area` and/or `entity_id` userfields on an existing chore — required for `chores_by_area` and `room_brief` area discovery |
+| `tasks_add` | Create a new Grocy task |
+| `tasks_tag` | Set `homeassistant_area` userfield on an existing task |
+| `stock_entry_update` | Edit a stock entry (best_before_date, location, price). Returns `{product_id, product_name, entry_id, updated_entry}` |
 | `stock_register_asset` | Register a permanent physical asset and stock one unit |
 | `locations_metadata_set` | Bind Grocy locations to HA area and parent/container metadata |
+| `userfields_list` | List all Grocy userfield schema definitions. Optional `entity=` filter |
+| `userfields_deploy` | Idempotent deploy of canonical ZenOS userfield schema — creates missing fields, skips existing, stamps `schema_version` to household cabinet |
+| `userfields_repair` | Diff live Grocy schema vs canonical. Reports `ok/missing/type_drift/unknown` + version delta. Fixes missing unless `dry_run=true` |
+| `userfields_delete` | Delete a userfield schema definition by ID. Warns if canonical. Requires `confirm_action=true`. |
 
-Use `mode=help` on `zen_dojotools_inventory` for the complete mode catalog.
+Use `mode=help` on `zen_dojotools_inventory` for the complete 74-operation catalog.
+
+**`slim_objects` field:** Pass `slim_objects: true` on any large object list fetch (products, locations, chores) to return only `{id, name}` per item — prevents template overflow on big catalogs.
 
 ---
 
@@ -223,7 +235,7 @@ The operational loop is:
 6. `action=log_replaced` consumes one spare and executes the linked chore when `chore_id` exists.
 7. `action=log_purchased` adds new spares to the configured storage location.
 
-See also: [AutoVac](../autovac.md).
+See also: [AutoVac](../components/autovac.md).
 
 ---
 
@@ -268,7 +280,7 @@ The operational loop is:
 4. `action=log_replaced part=<key>` consumes stock and executes the linked maintenance chore when present.
 5. `action=log_purchased part=<key> amount=<n>` adds purchased stock to the part's configured storage location.
 
-See also: [SpaMaster](../spamaster.md).
+See also: [SpaMaster](../components/spamaster.md).
 
 ---
 
@@ -382,6 +394,61 @@ The `inventory` slice in the response carries the kitchen's volatile items from 
 
 ---
 
+## Userfields Schema Management
+
+ZenOS uses Grocy userfields to bind inventory objects to HA topology. The canonical schema defines 13 fields across locations, products, chores, and tasks.
+
+### Deploying the Schema
+
+On a fresh Grocy install, run:
+
+```yaml
+zen_dojotools_inventory:
+  mode: userfields_deploy
+```
+
+Idempotent — safe to re-run. Creates any missing fields, skips existing ones, stamps `schema_version: "1.0.0"` to the household cabinet under `grocy_schema`.
+
+### Auditing the Schema
+
+```yaml
+zen_dojotools_inventory:
+  mode: userfields_repair
+  dry_run: true
+```
+
+Returns `deployed_version`, `healthy: true/false`, and counts for `ok / missing / type_drift / unknown`. Use `dry_run: false` (or omit) to fix missing fields in place.
+
+`unknown` fields are ones Grocy has that are not in the ZenOS canonical schema — `products.mealie_ingredient_id` is a common example (Mealie-owned, expected). Not a bug.
+
+### Listing All Fields
+
+```yaml
+zen_dojotools_inventory:
+  mode: userfields_list
+  entity: locations   # optional filter: locations|products|chores|tasks
+```
+
+### Canonical Field Reference
+
+| Entity | Field | Purpose |
+|--------|-------|---------|
+| `locations` | `homeassistant_area` | HA area slug bound to this Grocy location |
+| `locations` | `grocy_parent_location_id` | Parent container ID for nested storage |
+| `locations` | `homeassistant_entity_id` | HA entity_id representing this location |
+| `locations` | `homeassistant_labels` | JSON array of HA labels |
+| `locations` | `placement_priority` | Sort order for conflict resolution |
+| `locations` | `grocy_location_subclass` | `suite\|room\|container\|furniture\|shelf\|drawer\|...` |
+| `locations` | `grocy_child_location_ids` | JSON array of child location IDs |
+| `products` | `homeassistant_area` | Direct product-to-area link |
+| `products` | `hazmat_class` | `flammable\|corrosive\|toxic\|oxidizer\|other` |
+| `products` | `zen_asset_type` | `consumable\|asset\|equipment` |
+| `chores` | `homeassistant_area` | HA area ID — required for `chores_by_area` and `room_brief` discovery |
+| `chores` | `homeassistant_entity_id` | HA schedule or todo entity linked to this chore |
+| `tasks` | `homeassistant_area` | HA area ID for area-based task queries |
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Check |
@@ -401,5 +468,5 @@ This page is derived from:
 
 * `packages/zenos_ai/plugins/grocy/readme.md`
 * `packages/zenos_ai/plugins/grocy/grocy.yaml`
-* [AutoVac](../autovac.md)
-* [SpaMaster](../spamaster.md)
+* [AutoVac](../components/autovac.md)
+* [SpaMaster](../components/spamaster.md)

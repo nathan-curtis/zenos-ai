@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 1.47.0
+**Version:** 1.48.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -94,8 +94,8 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | `boundary_unlink` | Remove boundary link between two areas. |
 | `emergency` | Crisis snapshot for the whole home or a specific room. `scenario=fire\|burglar\|weather\|medical\|general`. Returns `guidance{action,advisory}`, `exits[]`, `shelter{primary/secondary/avoid}` (floor-tagged), `safety_equipment[]`, `hazards[]`, `likely_occupied[]`, `location{name,address,zip_code,gps}`, `rally_point`. Pass `area=` to add `from_room{room_exits,adjacent_exits,nearest_shelter}`. |
 | `home_overview` | Whole-house snapshot: `signal{}`, `alerts{}`, `domain_summaries{}`, `floors[]`, `weather{}`, `plant{}`, `home_mode`, `utility_index{}`. Optional: `include_notices=true`, `include_presence=true`. No `area=` needed. |
-| `area_create` | Create a new HA area, apply `room_layout` label, and optionally init topology in one call. `area_name=` required. `floor_id_new=`, `description=`, `walls=` optional. |
-| `area_update` | Update HA area metadata — name, floor assignment, icon, compiled description (auto-built from floor + adjacency + `area_note`). `area=` required. |
+| `area_create` | Create a new HA area, apply `room_layout` label, and optionally init topology in one call. `area_name=` required. `floor_id_new=`, `description=`, `walls=` optional. Pre-flight guard: if the area already exists, returns clean `{status: error}` with a "use area_update or mode=set" hint — no exception, chat survives. Invalid `floor_id_new` also returns clean error with valid floor list. |
+| `area_update` | Update floor assignment, topology, and compiled description (`area_note` + adjacency). `area=` required. Rename, icon, and picture must be set via HA Settings → Areas UI (Spook has no `update_area` service — response includes `ha_ui_advisory` when these are requested). Invalid `floor_id_new` returns clean error with valid floor list. |
 | `area_delete` | Delete HA area and remove from room_topology. `area=` required. `confirm_action=true` required. |
 | `utility` | Manage utility_index in household cabinet. `utility_action=list\|get\|set\|delete`. `utility_type=electric\|gas\|water\|...` required for get/set/delete. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
@@ -115,8 +115,8 @@ Pass as comma-separated flags to `context_slices=` on `mode=get`. Any combinatio
 | `+covers` | `covers[]`, `open[]`, `avg_position` (0–100) |
 | `+media` | Active media player. `entity_id`, `state`, `media_title`, `volume_level`. Returns `active_count: 0` when nothing playing. |
 | `+inventory` | Volatile items (overdue/due_soon/expiring) in this room via `zen_dojotools_grocy mode=stock_area_volatile`. Filters by `homeassistant_area_id` — returns actual items at risk, not a location container tree. Alias: `+grocy` |
-| `+chores` | Maintenance chores linked to products stocked in the area. `is_due`, `next_execution`, `cadence`, `assignee` |
-| `+tasks` | Todo entities whose labels intersect the area's HA labels. See Label-Intersection below. |
+| `+chores` | Maintenance chores linked to products stocked in the area. `is_due`, `next_execution`, `cadence`, `assignee`. `context.chores.chore_actions{execute, edit, add}` — pre-built call shapes; pass `item=<chore name>`. `add` also takes `period_days=N`. |
+| `+tasks` | Todo entities whose labels intersect the area's HA labels. Each list entry includes `items[]` and `task_actions{complete, edit, add}` — pass `items=[<summary>]`. See Label-Intersection below. |
 | `+conductor` | Todo entities labeled `schedule` (AI conductor queue). Always unfiltered — full list regardless of area. |
 | `+calendar` | Calendar entities whose labels intersect area labels. 7-day lookahead. |
 
@@ -417,8 +417,8 @@ mode=utility  utility_action=set  utility_type=electric
 | `egress` | *(inline)* | Filter `exits[]` from get response. `drop_ft=0` = ground safe. `emerg_exit=true` = evacuation route. |
 | `occupant_profile` | `zen_dojotools_profile_editor` | `occupants[]` names → `mode=read` to load persona. |
 | `grocy` | `zen_dojotools_inventory` | `spatial.grocy_location_id` is the anchor. |
-| `chores` | *(context slice)* | `context_slices=+chores` |
-| `tasks` | *(context slice)* | `context_slices=+tasks` |
+| `chores` | *(context slice)* | `context_slices=+chores` — chore_actions{execute, edit, add} included at context level |
+| `tasks` | *(context slice)* | `context_slices=+tasks` — task_actions{complete, edit, add} included per list |
 | `calendar` | *(context slice)* | `context_slices=+calendar` |
 
 ---

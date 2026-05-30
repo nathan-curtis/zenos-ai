@@ -232,6 +232,6 @@ Or call `zen_flynn_oobe` with `mode: complete` to re-stamp the flag after manual
 ## Related
 
 - [Flynn Stepgate Sentinel](../scripts/zen_flynn_readme.md) — Gate 3.5 OOBE detection
-- [Room Manager](../room_manager.md) — spatial topology store, modes, setup reference
+- [Room Manager](../components/room_manager.md) — spatial topology store, modes, setup reference
 - [Profile Editor](../scripts/zen_dojotools_profile_readme.md) — household/user profile writes
 - [Install Guide](install.md) — prerequisites before first boot

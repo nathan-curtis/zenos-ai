@@ -14,11 +14,11 @@
 >
 > **2. Plant Manager v1.3.1.** New modes: `thermal` (hot tub, freezer — temperature-managed objects), `garage_water` (water softener, auto-shutoff valve, leak sensors — NC binary_sensor convention), and `ignore`/`unignore` (entity tagging via `zen_plant_ignore` label).
 >
-> **3. Postman v1.6.2 + AlertManager Postman Integration.** Full ack lifecycle: fire with `response_type` → pm_tag logged → poll `get_response` → `clear_tag` after consuming (owner's responsibility; GC is safety net). `open_dashboard: true` injects `homeassistant://navigate/<assist_path>` — companion app opens Friday's dashboard on tap. New [Postman Integration](alertmanager.md#postman-integration) section in AlertManager docs.
+> **3. Postman v1.6.2 + AlertManager Postman Integration.** Full ack lifecycle: fire with `response_type` → pm_tag logged → poll `get_response` → `clear_tag` after consuming (owner's responsibility; GC is safety net). `open_dashboard: true` injects `homeassistant://navigate/<assist_path>` — companion app opens Friday's dashboard on tap. New [Postman Integration](components/alertmanager.md#postman-integration) section in AlertManager docs.
 >
 > **4. Scribe v1.8.0 + Summarizer v4.6.0.** Scribe gains `repair` mode (wrapper-accumulated drawer corruption up to 5 levels), `republish_kfc` (edit-and-republish without scroll gate), `component_size` feedback, and schedules upsert by `kata_key`. Summarizer adds `zen_action_emission_enabled` operator kill switch and `emission_cooldown_minutes` per-component gate.
 >
-> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](room_manager.md) | [Plant Manager](plant_manager.md) | [Grocy](plugins/grocy.md)
+> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](components/room_manager.md) | [Plant Manager](components/plant_manager.md) | [Grocy](plugins/grocy.md)
 
 ---
 
@@ -78,20 +78,20 @@ If you just installed ZenOS-AI and want to know what to do next, start here.
 
 ## 🛠️ **1. Tool Reference**
 
-**Folder:** `docs/` (root-level)
+**Folder:** `docs/components/`
 
 Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, parameters, and response shape.
 
-* `room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
-* `plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, validate
-* `media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
-* `autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
-* `spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
-* `alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
-* `security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
+* `components/room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
+* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, validate
+* `components/media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
+* `components/autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
+* `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
+* `components/alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
+* `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
 * `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
-* `zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
-* `zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
+* `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
+* `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
 
 ---
 

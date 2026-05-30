@@ -601,7 +601,11 @@ script:
                   _chores_ctx: >-
                     {%- if _chores_raw is defined and _chores_raw is mapping
                            and _chores_raw.get('status') == 'success' -%}
-                      {{ _chores_raw }}
+                      {{ _chores_raw | combine({'chore_actions': {
+                        'execute': {'tool': 'zen_dojotools_inventory', 'mode': 'chores_execute', 'item': '<chore name>'},
+                        'edit':    {'tool': 'zen_dojotools_inventory', 'mode': 'chores_edit',    'item': '<chore name>'},
+                        'add':     {'tool': 'zen_dojotools_inventory', 'mode': 'chores_add',     'item': '<chore name>', 'period_days': 7}
+                      }}) }}
                     {%- else -%}{{ none }}{%- endif -%}
 
           # ── context_slices: tasks by area (HA todo entities, label-tagged) ───
@@ -629,10 +633,17 @@ script:
                     continue_on_error: true
                   - variables:
                       _tasks_agg: >-
+                        {%- set _lid = repeat.item -%}
+                        {%- set _fname = state_attr(_lid, 'friendly_name') | default(_lid, true) -%}
                         {{ _tasks_agg + [{
-                          'list': repeat.item,
-                          'friendly_name': state_attr(repeat.item, 'friendly_name') | default(repeat.item, true),
-                          'items': _t_raw.get(repeat.item, {}).get('items', [])
+                          'list': _lid,
+                          'friendly_name': _fname,
+                          'items': _t_raw.get(_lid, {}).get('items', []),
+                          'task_actions': {
+                            'complete': {'tool': 'zen_dojotools_todo', 'action_type': 'update', 'list_name': _fname, 'items': ['<task summary>'], 'status': 'completed'},
+                            'edit':     {'tool': 'zen_dojotools_todo', 'action_type': 'update', 'list_name': _fname, 'items': ['<task summary>']},
+                            'add':      {'tool': 'zen_dojotools_todo', 'action_type': 'create', 'list_name': _fname, 'items': ['<task summary>']}
+                          }
                         }] }}
               - variables:
                   _tasks_ctx: >-
@@ -824,8 +835,8 @@ script:
                   egress: "No extra call. Filter portals+windows where exit=true or emerg_exit=true. windows.drop_ft=0=ground safe. emerg_exit=true=designated evacuation route."
                   occupant_profile: "occupants[] names → zen_dojotools_profile_editor mode=get."
                   grocy: "{{ ('zen_dojotools_inventory — anchor=' ~ _get_spatial.grocy_location_id ~ '. stock_list_by_location(location_id=' ~ _get_spatial.grocy_location_id ~ '): all stock in room. locations_find: containers under anchor. Place object: find/create container (locations_add), stock product (stock_buy_product). Find any item: stock_where_is_item(item=name).') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
-                  chores: "{{ ('context_slices=+chores — maintenance chores (product-stocked or area-tagged). anchor=' ~ _get_spatial.grocy_location_id ~ '. Returns is_due, next_execution, cadence.') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
-                  tasks: "{{ ('context_slices=+tasks — ' ~ _dr_task_count ~ ' todo list(s) tagged to area labels. Returns items by list.') if (_dr_task_count | int) > 0 else none }}"
+                  chores: "{{ ('context_slices=+chores — maintenance chores (product-stocked or area-tagged). anchor=' ~ _get_spatial.grocy_location_id ~ '. Each entry has chore_id, name, is_due, next_execution. context.chores.chore_actions has execute, edit, add call shapes — pass item=<chore name>. add also takes period_days=N.') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
+                  tasks: "{{ ('context_slices=+tasks — ' ~ _dr_task_count ~ ' todo list(s) tagged to area labels. Each list has items[] + task_actions{complete, edit, add} — pass items=[<summary>]. Full capability: zen_dojotools_todo mode=help.') if (_dr_task_count | int) > 0 else none }}"
                   calendar: "{{ ('context_slices=+calendar — ' ~ _dr_cal_count ~ ' calendar(s) tagged to area labels. 7-day event window.') if (_dr_cal_count | int) > 0 else none }}"
                   conductor: "context_slices=+conductor — AI schedule/task queue. Todo entities labeled schedule. Always area-agnostic."
                   security: "context_slices=+security — alarm zones + cameras in this room. zen_dojotools_security_manager for arm/disarm/policy (security lens). zen_dojotools_camera for visual analysis per camera entity (camera lens)."
@@ -2042,6 +2053,22 @@ script:
               - stop: area_create dry_run
                 response_variable: _result
 
+          # Step 1: Guard — area already exists?
+          - if: "{{ area_id(_ac_name) not in ['', none, 'None'] }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    mode: area_create
+                    message: >-
+                      Area '{{ _ac_name }}' already exists (area_id={{ area_id(_ac_name) }}).
+                      Use mode=area_update area={{ area_id(_ac_name) }} to modify it,
+                      or mode=set area={{ area_id(_ac_name) }} to register topology.
+                    area_id: "{{ area_id(_ac_name) }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: area_create — area already exists
+                response_variable: _result
+
           # Step 1: Create HA area via ectoplasm (Spook)
           - action: script.zen_dojotools_ectoplasm
             data:
@@ -2062,6 +2089,20 @@ script:
           - choose:
             - conditions: "{{ _ac_floor != '' }}"
               sequence:
+              # Guard — invalid floor slug kills chat (ServiceValidationError not caught by continue_on_error)
+              - if: "{{ _ac_floor not in floors() }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: area_create
+                        message: >-
+                          Floor '{{ _ac_floor }}' not found. Valid floor IDs: {{ floors() | join(', ') }}.
+                          Area '{{ _ac_name }}' ({{ _ac_area_id }}) was created — use mode=area_update to assign a floor.
+                        area_id: "{{ _ac_area_id }}"
+                        caller_token: "{{ _caller_token }}"
+                  - stop: area_create — invalid floor_id
+                    response_variable: _result
               - action: script.zen_dojotools_ectoplasm
                 data:
                   action_type: floor_assign_area
@@ -2219,39 +2260,26 @@ script:
                 response_variable: _au_fc_result
                 continue_on_error: true
 
-          # Step 2: Update HA area name + compiled description
-          - action: homeassistant.update_area
-            data:
-              area_id: "{{ _area_id }}"
-              name: "{{ (area_name_new|string)|trim if (area_name_new is defined and area_name_new is not none and (area_name_new|string)|trim != '') else _area_name }}"
-              description: "{{ _au_compiled_desc }}"
-            response_variable: _au_ha_result
-            continue_on_error: true
-
-          # Step 3: Update icon if provided (separate call — only fires when changing icon, won't clear picture)
-          - choose:
-            - conditions: "{{ icon is defined and icon is not none and (icon|string)|trim != '' }}"
-              sequence:
-              - action: homeassistant.update_area
-                data:
-                  area_id: "{{ _area_id }}"
-                  icon: "{{ (icon|string)|trim }}"
-                continue_on_error: true
-
-          # Step 3b: Update picture if provided (separate call — only fires when changing picture, won't clear icon)
-          - choose:
-            - conditions: "{{ picture is defined and picture is not none and (picture|string)|trim != '' }}"
-              sequence:
-              - action: homeassistant.update_area
-                data:
-                  area_id: "{{ _area_id }}"
-                  picture: "{{ (picture|string)|trim }}"
-                continue_on_error: true
-
+          # Step 2: Floor reassignment — Spook provides no update_area service.
+          # Rename, icon, picture, and HA description must be set via HA Settings → Areas UI.
           # Step 4: Reassign floor if provided
           - choose:
             - conditions: "{{ floor_id_new is defined and floor_id_new is not none and (floor_id_new|string)|trim != '' }}"
               sequence:
+              # Guard — invalid floor slug kills chat (ServiceValidationError not caught by continue_on_error)
+              - if: "{{ (floor_id_new|string)|trim not in floors() }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: area_update
+                        message: >-
+                          Floor '{{ (floor_id_new|string)|trim }}' not found. Valid floor IDs: {{ floors() | join(', ') }}.
+                          Other area_update fields were applied — resubmit with a valid floor_id_new to assign the floor.
+                        area_id: "{{ _area_id }}"
+                        caller_token: "{{ _caller_token }}"
+                  - stop: area_update — invalid floor_id_new
+                    response_variable: _result
               - action: script.zen_dojotools_ectoplasm
                 data:
                   action_type: floor_assign_area
@@ -2265,11 +2293,13 @@ script:
                 mode: area_update
                 area_id: "{{ _area_id }}"
                 compiled_description: "{{ _au_compiled_desc }}"
-                area_name_new: "{{ area_name_new | default(none, true) }}"
                 floor_id_new: "{{ floor_id_new | default(none, true) }}"
-                icon_set: "{{ icon | default(none, true) }}"
-                picture_set: "{{ picture | default(none, true) }}"
-                ha_update_status: "{{ _au_ha_result.status | default('attempted') }}"
+                ha_ui_advisory: >-
+                  {%- set _req = [] -%}
+                  {%- if area_name_new is defined and area_name_new is not none and (area_name_new|string)|trim != '' -%}{%- set _req = _req + ['rename'] -%}{%- endif -%}
+                  {%- if icon is defined and icon is not none and (icon|string)|trim != '' -%}{%- set _req = _req + ['icon'] -%}{%- endif -%}
+                  {%- if picture is defined and picture is not none and (picture|string)|trim != '' -%}{%- set _req = _req + ['picture'] -%}{%- endif -%}
+                  {{ ('Spook has no update_area service — ' ~ (_req | join(', ')) ~ ' must be set via HA Settings → Areas UI.') if _req | length > 0 else none }}
                 caller_token: "{{ _caller_token }}"
           - stop: area_update
             response_variable: _result
@@ -2663,7 +2693,7 @@ script:
               egress: "Single room: mode=get area=X exits[] (emerg_exit=true portals+windows, sorted). Whole-home crisis: mode=emergency scenario=fire|burglar|weather|medical — guidance{action,advisory}, exits[], shelter{primary/secondary/avoid with floor_id}, hazards[], safety_equipment[], likely_occupied[]. Add area=X for from_room{room_exits,adjacent_exits,nearest_shelter}."
               occupant_profile: "occupants[] names → zen_dojotools_profile_editor mode=get to load persona and prefs."
               inventory: "context_slices=+inventory — full denormalized room view: all containers + products + amounts in one call. Or use grocy_location_id anchor for targeted ops (stock_list_by_location, locations_find, stock_where_is_item)."
-              chores: "context_slices=+chores — maintenance chores linked to products stocked in this area. Returns is_due, next_execution, cadence, assignee."
+              chores: "context_slices=+chores — maintenance chores linked to products stocked in this area. Returns chore list + chore_actions{execute, edit, add} at context level — pass item=<chore name>. add also takes period_days=N."
               tasks: "context_slices=+tasks — todo entities labeled with any area label. Label-intersection: area hot_tub_deck (labels: hot_tub, back_yard, …) surfaces any todo entity bearing hot_tub. Tag todo entity with area label to opt in."
               conductor: "context_slices=+conductor — todo entities labeled 'schedule'. The AI conductor queue. Always unfiltered — full list regardless of area."
               calendar: "context_slices=+calendar — calendar entities labeled with any area label, 7-day lookahead. Same label-intersection as tasks. Tag calendar entity with area label to opt in."
@@ -2708,10 +2738,8 @@ script:
               +covers: cover positions + open list. +media: active media_player.
               +inventory (+grocy alias): full denormalized room view — all containers
               with products and amounts (one API call, names resolved locally).
-              +chores: maintenance chores for products stocked in area — is_due,
-              next_execution, cadence, assignee.
-              +tasks: todo entities whose labels intersect the area's own HA labels.
-              Tag a todo entity with area label (e.g. hot_tub) to opt it in.
+              +chores: maintenance chores for products stocked in area. Each entry has chore_id, name, is_due, next_execution. context.chores.chore_actions{execute, edit, add} — pass item=<chore name>. add also takes period_days=N. Full capability: zen_dojotools_inventory mode=help.
+              +tasks: todo entities whose labels intersect the area's own HA labels. Each list entry has items[] + task_actions{complete, edit, add} — pass items=[<summary>]. Tag a todo entity with area label to opt it in.
               +conductor: todo entities labeled 'schedule' — the AI conductor queue.
               +calendar: calendar entities whose labels intersect the area's labels,
               7-day lookahead window. Same label-intersection as +tasks.

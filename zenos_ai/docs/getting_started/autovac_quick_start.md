@@ -203,5 +203,5 @@ Confirm Postman is seeded and your push target resolves: `zen_dojotools_postman 
 ## Related
 
 - [AutoVac First Setup](autovac_first_setup.md) — full commissioning guide with Postman policies, Grocy, and controller wiring
-- [AutoVac Reference](../autovac.md) — complete mode and field reference
+- [AutoVac Reference](../components/autovac.md) — complete mode and field reference
 - [First Alert](first_alert.md) — if you haven't set up notifications yet, consumable alerts won't reach you
