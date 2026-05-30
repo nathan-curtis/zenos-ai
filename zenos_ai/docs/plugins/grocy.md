@@ -363,7 +363,7 @@ In the Grocy UI, set each product's default location to the tagged location. Pur
 ```yaml
 zen_dojotools_inventory:
   mode: stock_buy_product
-  product_name: "Dish Soap"
+  item: "Dish Soap"
   amount: 2
   location_id: 12    # anchor location for kitchen
 ```
