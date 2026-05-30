@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 4.48.0  
+**Version:** 4.49.0  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
 **Internal REST dispatcher:** `zen_dojotools_grocy_advanced`
@@ -107,11 +107,20 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `stock_register_asset` | Register a permanent physical asset and stock one unit |
 | `locations_metadata_set` | Bind Grocy locations to HA area and parent/container metadata |
 | `userfields_list` | List all Grocy userfield schema definitions. Optional `entity=` filter |
+| `userfields_create` | Create a new userfield on a Grocy entity. Idempotent — returns `already_exists` if `entity.field_name` exists. Required: `entity`, `field_name`, `field_caption` |
 | `userfields_deploy` | Idempotent deploy of canonical ZenOS userfield schema — creates missing fields, skips existing, stamps `schema_version` to household cabinet |
 | `userfields_repair` | Diff live Grocy schema vs canonical. Reports `ok/missing/type_drift/unknown` + version delta. Fixes missing unless `dry_run=true` |
-| `userfields_delete` | Delete a userfield schema definition by ID. Warns if canonical. Requires `confirm_action=true`. |
+| `userfields_delete` | Delete a userfield schema definition by ID. Warns if canonical. Requires `confirm_action=true` |
+| `userentities_list` | List all custom Grocy userentity types |
+| `userentities_create` | Create a new custom userentity type. Required: `item` (snake_case slug), `field_caption`. Returns `entity_qualifier` — the string used in `userfields_*` and `userentity_values_*` calls |
+| `userentities_delete` | Delete a custom userentity and all its userobjects. IRREVERSIBLE. Requires `confirm_action=true`. Preview without it. |
+| `userobjects_list` | List userobjects. Optional `userentity_id` filter. |
+| `userobjects_create` | Create a userobject under a userentity. Required: `userentity_id`. Returns `created_id` — use immediately with `userentity_values_set` to attach field values |
+| `userobjects_delete` | Delete a userobject. Requires `userobject_id`, `confirm_action=true` |
+| `userentity_values_get` | Read all userfield values for a userobject. Required: `entity` (the `userentity-{name}` form), `userobject_id` |
+| `userentity_values_set` | Write userfield values for a userobject. Required: `entity`, `userobject_id`, `values_json` (JSON dict string) |
 
-Use `mode=help` on `zen_dojotools_inventory` for the complete 74-operation catalog.
+Use `mode=help` on `zen_dojotools_inventory` for the complete 96-operation catalog.
 
 **`slim_objects` field:** Pass `slim_objects: true` on any large object list fetch (products, locations, chores) to return only `{id, name}` per item — prevents template overflow on big catalogs.
 
@@ -446,6 +455,76 @@ zen_dojotools_inventory:
 | `chores` | `homeassistant_area` | HA area ID — required for `chores_by_area` and `room_brief` discovery |
 | `chores` | `homeassistant_entity_id` | HA schedule or todo entity linked to this chore |
 | `tasks` | `homeassistant_area` | HA area ID for area-based task queries |
+
+---
+
+## ERP Object Substrate — Userentities and Userobjects
+
+### Built-in entities vs. custom userentities
+
+Grocy ships with a fixed set of built-in entity types: **products**, **locations**, **chores**, **tasks**, **recipes**, **shopping lists**, **batteries**. Their schemas are set — you can extend them with userfields, but you can't change their core structure.
+
+**Userentities** are custom object types you define entirely. Each userentity is a named type (`room`, `vehicle`, `appliance`), and each instance of that type is a **userobject**. You define the schema yourself via userfields, create objects of that type, and read/write values per object.
+
+The distinction:
+
+| | Built-in (e.g. `location`) | Userentity (e.g. `room`) |
+|---|---|---|
+| Schema | Fixed by Grocy | Fully custom — you define every field |
+| Instances | Locations created via Grocy UI or `locations_add` | Userobjects created via `userobjects_create` |
+| Field values | Stored as userfields on built-in object | Stored via `userentity_values_set` per userobject |
+| Queried by | `mode=locations_list` etc. | `mode=userobjects_list userentity_id=<id>` |
+| Use case | Grocy storage bins, pantry zones | HA-aware rooms, vehicles, appliances, assets |
+
+### The `room` userentity pattern
+
+Grocy `locations` model *where things are stored* — a pantry shelf, a garage bin. They're fine for that. But a **room** in the ZenOS sense is something richer: it has an HA area slug, a floor, sensors, topology links, and chores/tasks attached to it.
+
+A `room` userentity stores that extended room model inside Grocy's XRM layer:
+
+```yaml
+# Step 1: Create the userentity type (once)
+zen_dojotools_inventory:
+  mode: userentities_create
+  item: room
+  field_caption: "Home Room"
+# → returns entity_qualifier: "userentity-room"
+
+# Step 2: Define fields for this type
+zen_dojotools_inventory:
+  mode: userfields_create
+  entity: userentity-room
+  field_name: ha_area_id
+  field_caption: "HA Area ID"
+
+zen_dojotools_inventory:
+  mode: userfields_create
+  entity: userentity-room
+  field_name: floor_id
+  field_caption: "Floor"
+
+# Step 3: Create a room object (one per room)
+zen_dojotools_inventory:
+  mode: userobjects_create
+  userentity_id: <id from step 1>
+# → returns created_id: 7
+
+# Step 4: Write values
+zen_dojotools_inventory:
+  mode: userentity_values_set
+  entity: userentity-room
+  userobject_id: 7
+  values_json: '{"ha_area_id": "kitchen", "floor_id": "ground_floor"}'
+
+# Read back
+zen_dojotools_inventory:
+  mode: userentity_values_get
+  entity: userentity-room
+  userobject_id: 7
+# → {values: {ha_area_id: "kitchen", floor_id: "ground_floor"}}
+```
+
+Once rooms exist as userobjects, you can attach chores and inventory stock to them directly in Grocy — the same graph that already tracks your consumables now tracks the spaces they live in. Room Manager remains the canonical topology source; the Grocy userentity is the inventory anchor.
 
 ---
 
