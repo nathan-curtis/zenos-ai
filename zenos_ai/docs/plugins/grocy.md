@@ -106,6 +106,7 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `stock_entry_update` | Edit a stock entry (best_before_date, location, price). Returns `{product_id, product_name, entry_id, updated_entry}` |
 | `stock_register_asset` | Register a permanent physical asset and stock one unit |
 | `locations_metadata_set` | Bind Grocy locations to HA area and parent/container metadata |
+| `provision_bom` | Native BOM provisioner — unit resolution, product create/find, meta update, HA label tagging, chore create/find, chore tag, installed stock seed — all in one call. Requires `bom` (JSON string) and `confirm_action: true`. Returns `catalog` dict keyed by part key with `product_id`, `unit_id`, `chore_id`, `storage_location_id`, `consume_location_id`, `is_new`. |
 | `userfields_list` | List all Grocy userfield schema definitions. Optional `entity=` filter |
 | `userfields_create` | Create a new userfield on a Grocy entity. Idempotent — returns `already_exists` if `entity.field_name` exists. Required: `entity`, `field_name`, `field_caption` |
 | `userfields_deploy` | Idempotent deploy of canonical ZenOS userfield schema — creates missing fields, skips existing, stamps `schema_version` to household cabinet |
@@ -400,6 +401,26 @@ zen_dojotools_room_manager:
 ```
 
 The `inventory` slice in the response carries the kitchen's volatile items from this point forward.
+
+---
+
+## Null Unit Safety
+
+`stock_buy_product` and `stock_add_purchase` both guard against products with `qu_id_stock = null`. A null unit product cannot receive stock — Grocy rejects the transaction. Instead of silently failing, both modes now return immediately:
+
+```json
+{
+  "status": "error",
+  "message": "Product {id} has no stock unit. Set a unit via update_product_meta before adding stock.",
+  "fix": "mode=update_product_meta product_id=<id> unit_id=<id>"
+}
+```
+
+**Root cause:** `catalog_add_product` called without `unit_id` creates products with `qu_id_stock = null`. Grocy permanently blocks unit changes via API once stock history exists. The only recovery is delete and recreate with the correct unit specified at POST time.
+
+**Prevention:** `catalog_add_product` now resolves the instance default unit ("each" → "Piece" fallback) when `unit_id` is omitted, before creating the product. `provision_bom` always passes `unit_id` — use it for any multi-part provisioning scenario.
+
+**`unit_conversions_add` global guard:** Calling `unit_conversions_add` without a `product_id` (global scope) now requires `confirm_action: true`. Global unit conversions affect all products in the instance and are a common source of accidental side effects. Scoped (per-product) conversions do not require confirmation.
 
 ---
 

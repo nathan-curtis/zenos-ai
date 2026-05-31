@@ -608,19 +608,30 @@ script:
             {%- endfor -%}
             {{ ns.rooms }}
 
-      # -- 4 Next schedule + active window -----------------------------------
+      # -- 4 Next schedule + active window + 7-day projection ----------------
       - variables:
           _next_schedule: >-
-            {%- set ns = namespace(entity='', secs=999999, label='') -%}
+            {%- set schedules = label_entities('autovac_schedule') | list -%}
+            {%- set today_abbr = ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] -%}
             {%- set is_weekend = now().weekday() >= 5 -%}
-            {%- for s in label_entities('autovac_schedule') -%}
-              {%- set day_ok = ('weekend' in s and is_weekend) or ('weekday' in s and not is_weekend) or ('weekend' not in s and 'weekday' not in s) -%}
-              {%- if day_ok and states(s) == 'off' -%}
+            {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
+            {%- set l_weekday = label_entities('autovac_weekday') | list -%}
+            {%- set l_weekend = label_entities('autovac_weekend') | list -%}
+            {%- set l_any_day = (l_today + l_weekday + l_weekend) | unique | list -%}
+            {%- set ns = namespace(entity='', secs=999999, label='', priority=99) -%}
+            {%- for s in schedules -%}
+              {%- set np = namespace(p=99) -%}
+              {%- if s in l_today -%}{%- set np.p = 1 -%}
+              {%- elif not (s in l_any_day) -%}{%- set np.p = 3 -%}
+              {%- elif (s in l_weekday and not is_weekend) or (s in l_weekend and is_weekend) -%}{%- set np.p = 2 -%}
+              {%- endif -%}
+              {%- if np.p < 99 and states(s) == 'off' -%}
                 {%- set ne = state_attr(s, 'next_event') -%}
                 {%- if ne is not none -%}
                   {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
-                  {%- if delta > 0 and delta < ns.secs -%}
+                  {%- if delta > 0 and (np.p < ns.priority or (np.p == ns.priority and delta < ns.secs)) -%}
                     {%- set ns.secs = delta -%}
+                    {%- set ns.priority = np.p -%}
                     {%- set h = as_datetime(ne).hour | int -%}
                     {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' at ' ~ as_datetime(ne).strftime('%I:%M %p') -%}
                     {%- set ns.entity = s -%}
@@ -628,7 +639,54 @@ script:
                 {%- endif -%}
               {%- endif -%}
             {%- endfor -%}
-            {{ {'entity': ns.entity, 'in_seconds': (ns.secs if ns.secs < 999999 else -1), 'label': ns.label} }}
+            {{ {'entity': ns.entity, 'priority': ns.priority, 'in_seconds': (ns.secs if ns.secs < 999999 else -1), 'label': ns.label} }}
+          _schedule_7day: >-
+            {%- set schedules = label_entities('autovac_schedule') | list -%}
+            {%- set day_abbrs = ['mon','tue','wed','thu','fri','sat','sun'] -%}
+            {%- set l_weekday = label_entities('autovac_weekday') | list -%}
+            {%- set l_weekend = label_entities('autovac_weekend') | list -%}
+            {%- set ns = namespace(days=[]) -%}
+            {%- for offset in range(7) -%}
+              {%- set target_dt = now() + timedelta(days=offset) -%}
+              {%- set target_dow = (now().weekday() + offset) % 7 -%}
+              {%- set target_abbr = day_abbrs[target_dow] -%}
+              {%- set target_is_weekend = target_dow >= 5 -%}
+              {%- set l_day   = label_entities('autovac_' ~ target_abbr) | list -%}
+              {%- set l_any   = (l_day + l_weekday + l_weekend) | unique | list -%}
+              {%- set nw = namespace(scheds=[]) -%}
+              {%- for s in schedules -%}
+                {%- set ne = state_attr(s, 'next_event') -%}
+                {%- if ne is not none -%}
+                  {%- set fires_on_day = as_datetime(ne).date() == target_dt.date() -%}
+                  {%- if fires_on_day -%}
+                    {%- set nw.scheds = nw.scheds + [{'entity': s, 'fire_at': as_datetime(ne).strftime('%I:%M %p'), 'confirmed': true}] -%}
+                  {%- else -%}
+                    {%- set np = namespace(p=99) -%}
+                    {%- if s in l_day -%}{%- set np.p = 1 -%}
+                    {%- elif (s in l_weekday and not target_is_weekend) or (s in l_weekend and target_is_weekend) -%}{%- set np.p = 2 -%}
+                    {%- elif not (s in l_any) -%}
+                      {%- if ('weekday' in s and not target_is_weekend) or ('weekend' in s and target_is_weekend) or ('weekday' not in s and 'weekend' not in s) -%}{%- set np.p = 3 -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                    {%- if np.p < 99 -%}
+                      {%- set nw.scheds = nw.scheds + [{'entity': s, 'fire_at': as_datetime(ne).strftime('%I:%M %p'), 'confirmed': false}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set hr = namespace(any=false) -%}
+              {%- for sched in nw.scheds -%}
+                {%- set has_run_key = (sched.entity | replace('.','_') | replace('-','_') ~ '_has_run') -%}
+                {%- if offset == 0 and _av_system.get(has_run_key, false) -%}{%- set hr.any = true -%}{%- endif -%}
+              {%- endfor -%}
+              {%- set ns.days = ns.days + [{
+                'date': target_dt.strftime('%Y-%m-%d'),
+                'day': target_abbr,
+                'schedules': nw.scheds,
+                'has_run': hr.any if offset == 0 else none
+              }] -%}
+            {%- endfor -%}
+            {{ ns.days }}
           _schedule_active: >-
             {%- set ns = namespace(entity='', label='') -%}
             {%- for s in label_entities('autovac_schedule') -%}
@@ -1299,59 +1357,41 @@ script:
                       payload: "{{ {'ha_entity_id': _vac_ent} | tojson }}"
                     response_variable: _prov_uf_raw
 
-              # Step 3: Create consumable products (loop, preset-driven)
+              # Step 3-6: BOM provision (product+chore+label+seed via provision_bom)
               - variables:
-                  _prov_product_ids: {}
-              - repeat:
-                  for_each: "{{ _prov_parts_def.items() | list }}"
-                  sequence:
-                    - variables:
-                        _pp_key: "{{ repeat.item[0] }}"
-                        _pp_def: "{{ repeat.item[1] }}"
-                        _pp_lid: >-
-                          {{ _prov_bot_lid if repeat.item[1].location_category == 'bot' else _prov_dock_bins_lid }}
-                    - action: script.zen_dojotools_inventory
-                      data:
-                        mode: catalog_add_product
-                        item: "{{ _prov_model }} - {{ _pp_def.name_suffix }}"
-                        location_id: "{{ _pp_lid }}"
-                        sku: "{{ _pp_def.sku }}"
-                        brand: "{{ _prov_preset.get('brand', 'Roborock') }}"
-                        note: "{{ _pp_def.chore_note | default('') }} Part# {{ _pp_def.sku }}. Robot SN: {{ _prov_sn }}"
-                      response_variable: _pp_prod_raw
-                    - variables:
-                        _prov_product_ids: >-
-                          {{ _prov_product_ids | combine({
-                            _pp_key: ((_pp_prod_raw.get('result', {}).get('product_id')
-                                      or _pp_prod_raw.get('result', {}).get('created_object_id')
-                                      or (_pp_prod_raw.get('candidate_ids', [none]) | first)) | int(none))
-                          }) }}
+                  _prov_bom: >-
+                    {%- set ns = namespace(parts=[]) -%}
+                    {%- for pk, pd in _prov_parts_def.items() -%}
+                      {%- set _cat = pd.get('category', pd.get('location_category', 'bot')) -%}
+                      {%- set _spare = _prov_dock_spare_lid if _cat == 'dock' else _prov_wear_spare_lid -%}
+                      {%- set _inst = _prov_bot_lid if pd.location_category == 'bot' else _prov_dock_bins_lid -%}
+                      {%- set ns.parts = ns.parts + [{
+                        'key':                pk,
+                        'name':               _prov_model ~ ' - ' ~ pd.name_suffix,
+                        'sku':                pd.sku,
+                        'unit':               'each',
+                        'storage_location_id': _spare,
+                        'consume_location_id': _inst,
+                        'min_stock':           pd.min_stock | default(1) | int(1),
+                        'ha_labels':           'autovac,autovac_part',
+                        'chore_name':          _prov_robot_name ~ ' - ' ~ pd.chore_name_suffix,
+                        'chore_period_days':   pd.chore_period_days | default(90),
+                        'chore_note':          pd.chore_note | default('')
+                      }] -%}
+                    {%- endfor -%}
+                    {{ {
+                      'robot_name':      _prov_robot_name,
+                      'ha_labels':       'autovac,autovac_part',
+                      'chore_ha_labels': 'autovac,autovac_chore'
+                    } | combine({'parts': ns.parts}) | tojson }}
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: provision_bom
+                  bom: "{{ _prov_bom }}"
+                  confirm_action: true
+                response_variable: _prov_bom_raw
 
-              # Step 4: Create maintenance chores (loop, preset-driven)
-              - variables:
-                  _prov_chore_ids: {}
-              - repeat:
-                  for_each: "{{ _prov_parts_def.items() | list }}"
-                  sequence:
-                    - variables:
-                        _pc_key: "{{ repeat.item[0] }}"
-                        _pc_def: "{{ repeat.item[1] }}"
-                    - action: script.zen_dojotools_inventory
-                      data:
-                        mode: chores_add
-                        item: "{{ _prov_robot_name }} - {{ _pc_def.chore_name_suffix }}"
-                        product_id: "{{ _prov_product_ids.get(_pc_key) }}"
-                        product_amount: 0
-                        period_days: "{{ _pc_def.chore_period_days | default(90) }}"
-                        note: "{{ _pc_def.chore_note | default('') }} Part# {{ _pc_def.sku }}. Robot SN: {{ _prov_sn }}"
-                      response_variable: _pc_chore_raw
-                    - variables:
-                        _prov_chore_ids: >-
-                          {{ _prov_chore_ids | combine({
-                            _pc_key: (_pc_chore_raw.get('chore_id') | int(none))
-                          }) }}
-
-              # Step 4b: Resolve autovac_wear sensor entities → part key map (best-effort, populated post-migration)
+              # Step 4b: Resolve autovac_wear sensor entities → part key map
               - variables:
                   _prov_wear_map: >-
                     {%- set ns = namespace(m={}) -%}
@@ -1365,27 +1405,29 @@ script:
                     {%- endfor -%}
                     {{ ns.m }}
 
-              # Step 5: Build catalog dynamically from preset parts + resolved IDs
-              # storage_location_id  = spare bin (log_purchased stocks here)
-              # installed_location_id = bot or dock_bins (seeded on first provision)
+              # Step 5: Merge provision_bom catalog with preset wear metadata
+              # storage_location_id  = spare bin | installed_location_id = bot/dock_bins
+              - variables:
+                  _prov_bom_catalog: "{{ _prov_bom_raw.get('catalog', {}) }}"
               - variables:
                   _prov_catalog: >-
                     {%- set ns = namespace(parts={}) -%}
                     {%- for pk, pd in _prov_parts_def.items() -%}
-                      {%- set installed_lid = _prov_bot_lid if pd.location_category == 'bot' else _prov_dock_bins_lid -%}
-                      {%- set wear_ent = _prov_wear_map.get(pd.wear_sensor_key, none) if pd.get('wear_sensor_key') else none -%}
+                      {%- set be = _prov_bom_catalog.get(pk, {}) -%}
+                      {%- set we = _prov_wear_map.get(pd.wear_sensor_key, none) if pd.get('wear_sensor_key') else none -%}
                       {%- set ns.parts = ns.parts | combine({pk: {
-                        'product_id':            _prov_product_ids.get(pk),
-                        'name':                  _prov_model ~ ' - ' ~ pd.name_suffix,
+                        'product_id':            be.get('product_id'),
+                        'unit_id':               be.get('unit_id'),
+                        'name':                  be.get('name', _prov_model ~ ' - ' ~ pd.name_suffix),
                         'sku':                   pd.sku,
-                        'storage_location_id':   _prov_dock_spare_lid if pd.get('category', pd.get('location_category', 'bot')) == 'dock' else _prov_wear_spare_lid,
-                        'installed_location_id': installed_lid,
+                        'storage_location_id':   be.get('storage_location_id'),
+                        'installed_location_id': be.get('consume_location_id'),
                         'min_stock':             pd.min_stock | default(1) | int(1),
-                        'chore_id':              _prov_chore_ids.get(pk),
+                        'chore_id':              be.get('chore_id'),
                         'category':              pd.get('category', pd.location_category),
                         'wear_sensor_key':       pd.get('wear_sensor_key'),
                         'wear_threshold':        pd.get('wear_threshold'),
-                        'wear_entity':           wear_ent
+                        'wear_entity':           we
                       }}) -%}
                     {%- endfor -%}
                     {{ {
@@ -1401,32 +1443,10 @@ script:
                       'machine_product_id':     _prov_mpid,
                       'parts':                  ns.parts
                     } }}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  volume_entity_id: "{{ _hh_cabinet }}"
-                  key: autovac
-                  value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'grocy_catalog': _prov_catalog})} | tojson }}"
-
-              # Step 6: Seed installed set — 1 of each part at its installed location
-              # (bot parts → bot, dock parts → dock bins).
-              # Skipped on re-provision (force=true) to avoid doubling existing stock.
-              - if: "{{ not _prov_cfg.get('force', false) }}"
-                then:
-                  - repeat:
-                      for_each: "{{ _prov_catalog.get('parts', {}).values() | list }}"
-                      sequence:
-                        - action: script.zen_dojotools_inventory
-                          data:
-                            mode: stock_buy_product
-                            product_id: "{{ repeat.item.product_id }}"
-                            amount: 1
-                            location_id: "{{ repeat.item.installed_location_id }}"
-                          response_variable: _seed_raw
 
               # Step 7: Spares advisory — inform user what was seeded, ask about additional spares
               - variables:
-                  _seed_skipped: "{{ _prov_cfg.get('force', false) }}"
+                  _seed_skipped: "{{ not (_prov_bom_catalog.values() | selectattr('is_new', 'equalto', true) | list | length > 0) }}"
                   _spare_parts_list: >-
                     {{ _prov_catalog.get('parts', {}).values() | map(attribute='name') | list }}
               - action: script.zen_dojotools_postman
@@ -1597,12 +1617,6 @@ script:
                     response_variable: response
               - variables:
                   _lr_part: "{{ _cons_catalog[_cons_part] }}"
-              - action: script.zen_dojotools_inventory
-                data:
-                  mode: stock_consume
-                  product_id: "{{ _lr_part.product_id }}"
-                  amount: 1
-                response_variable: _lr_consume_raw
               - if: "{{ _lr_part.get('chore_id') is not none }}"
                 then:
                   - action: script.zen_dojotools_inventory
@@ -1610,6 +1624,21 @@ script:
                       mode: chores_execute
                       chore_id: "{{ _lr_part.chore_id }}"
                     response_variable: _lr_chore_raw
+                else:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: stock_consume
+                      product_id: "{{ _lr_part.product_id }}"
+                      amount: 1
+                      location_id: "{{ _lr_part.installed_location_id }}"
+                    response_variable: _lr_consume_raw
+              - if: "{{ _lr_part.get('product_id') is not none }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: stock_open_item
+                      product_id: "{{ _lr_part.product_id }}"
+                    response_variable: _lr_open_raw
               - variables:
                   response: >-
                     {{ {
@@ -1619,7 +1648,7 @@ script:
                       'product': _lr_part.get('name', _cons_part),
                       'sku': _lr_part.sku,
                       'chore_executed': _lr_part.get('chore_id') is not none,
-                      'note': 'Spare consumed from stock. Chore marked done if linked.'
+                      'note': 'Installed unit consumed from slot. Next spare opened and moved to install location.'
                     } }}
               - stop: "autovac log_replaced done"
                 response_variable: response
@@ -1640,12 +1669,27 @@ script:
                     response_variable: response
               - variables:
                   _lp_part: "{{ _cons_catalog[_cons_part] }}"
+              - if: "{{ _lp_part.get('unit_id') is none }}"
+                then:
+                  - action: script.zen_dojotools_inventory
+                    data:
+                      mode: stock_get_product_details
+                      product_id: "{{ _lp_part.product_id }}"
+                    response_variable: _lp_details_raw
+                    continue_on_error: true
+                  - variables:
+                      _lp_unit_id: >-
+                        {{ _lp_details_raw.get('result', {}).get('product', {}).get('qu_id_stock') | int(none) }}
+                else:
+                  - variables:
+                      _lp_unit_id: "{{ _lp_part.get('unit_id') }}"
               - action: script.zen_dojotools_inventory
                 data:
                   mode: stock_buy_product
                   product_id: "{{ _lp_part.product_id }}"
                   amount: "{{ _cons_amount }}"
                   location_id: "{{ _lp_part.storage_location_id }}"
+                  unit_id: "{{ _lp_unit_id | default(none, true) }}"
                 response_variable: _lp_buy_raw
               - variables:
                   response: >-
@@ -2351,24 +2395,102 @@ script:
                     } }}
               - stop: "autovac briefing skipped"
                 response_variable: response
-          - alias: Find which schedule fires in ~30 min
+          - alias: Find cascade-winning schedule firing in ~30 min
             variables:
               _schedule_entity: >-
                 {%- set schedules = label_entities('autovac_schedule') | list -%}
-                {%- set ns = namespace(found='') -%}
+                {%- set today_abbr = ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] -%}
+                {%- set is_weekend = now().weekday() >= 5 -%}
+                {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
+                {%- set l_weekday = label_entities('autovac_weekday') | list -%}
+                {%- set l_weekend = label_entities('autovac_weekend') | list -%}
+                {%- set l_any_day = (l_today + l_weekday + l_weekend) | unique | list -%}
+                {%- set ns = namespace(found='', best_p=99) -%}
                 {%- for s in schedules -%}
-                  {%- if ns.found == '' -%}
+                  {%- set np = namespace(p=99) -%}
+                  {%- if s in l_today -%}{%- set np.p = 1 -%}
+                  {%- elif not (s in l_any_day) -%}{%- set np.p = 3 -%}
+                  {%- elif (s in l_weekday and not is_weekend) or (s in l_weekend and is_weekend) -%}{%- set np.p = 2 -%}
+                  {%- endif -%}
+                  {%- if np.p < ns.best_p -%}
                     {%- set ne = state_attr(s, 'next_event') -%}
                     {%- if ne is not none and states(s) == 'off'
                         and as_datetime(ne).date() == now().date() -%}
                       {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
                       {%- if delta > 0 and delta >= 1770 and delta <= 2400 -%}
                         {%- set ns.found = s -%}
+                        {%- set ns.best_p = np.p -%}
                       {%- endif -%}
                     {%- endif -%}
                   {%- endif -%}
                 {%- endfor -%}
                 {{ ns.found }}
+          - if: "{{ _schedule_entity == '' }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'briefing', 'result': 'skipped',
+                      'caller_token': _caller_token,
+                      'reason': 'no_schedule_in_window'
+                    } }}
+              - stop: "autovac briefing skipped — no schedule in window"
+                response_variable: response
+          - alias: Calendar gate
+            if: "{{ label_entities('autovac_calendar') | list | length > 0 }}"
+            then:
+              - action: calendar.get_events
+                target:
+                  entity_id: "{{ label_entities('autovac_calendar') | list }}"
+                data:
+                  start_date_time: "{{ now().isoformat() }}"
+                  end_date_time: "{{ (now() + timedelta(hours=4)).isoformat() }}"
+                response_variable: _cal_events_raw
+                continue_on_error: true
+          - variables:
+              _cal_hold: >-
+                {%- set ns = namespace(hold=false, event='') -%}
+                {%- if _cal_events_raw is defined and _cal_events_raw is mapping -%}
+                  {%- for eid, evts in _cal_events_raw.items() -%}
+                    {%- for evt in evts | default([]) -%}
+                      {%- set summ = evt.get('summary', '') | default('', true) | upper -%}
+                      {%- set desc = evt.get('description', '') | default('', true) | upper -%}
+                      {%- if 'AUTOVAC HOLD' in summ or 'AUTOVAC HOLD' in desc -%}
+                        {%- set ns.hold = true -%}
+                        {%- set ns.event = evt.get('summary', 'Calendar event') -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ {'hold': ns.hold, 'event': ns.event} }}
+              _cal_soft: >-
+                {%- set ns = namespace(events=[]) -%}
+                {%- if _cal_events_raw is defined and _cal_events_raw is mapping -%}
+                  {%- for eid, evts in _cal_events_raw.items() -%}
+                    {%- for evt in evts | default([]) -%}
+                      {%- set summ = evt.get('summary', '') | default('', true) -%}
+                      {%- set is_hold = 'AUTOVAC HOLD' in summ | upper or 'AUTOVAC HOLD' in evt.get('description','') | default('',true) | upper -%}
+                      {%- if not is_hold -%}{%- set ns.events = ns.events + [summ] -%}{%- endif -%}
+                    {%- endfor -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.events }}
+          - if: "{{ _cal_hold.get('hold', false) }}"
+            then:
+              - action: script.zen_dojotools_postman
+                data:
+                  mode: resolve_and_dispatch
+                  message: "Autovac run blocked by calendar hold: {{ _cal_hold.get('event', 'hold event') }}. Remove AUTOVAC HOLD from the event description to resume."
+                  urgency: 6
+                  channel_hint: push
+                  title: "Autovac — Calendar Hold"
+                  tag: autovac_prerun
+              - variables:
+                  response: >-
+                    {{ {'mode': 'briefing', 'result': 'skipped', 'caller_token': _caller_token,
+                        'reason': 'calendar_hold', 'hold_event': _cal_hold.get('event', '')} }}
+              - stop: "autovac briefing blocked by calendar hold"
+                response_variable: response
           - alias: Build run label from next_event
             variables:
               _run_label: >-
@@ -2446,6 +2568,9 @@ script:
                   {%- if days | float(0) > 3 -%}
                     {%- set ns.parts = ns.parts + ["The vacuum hasn't run in " ~ days ~ " days."] -%}
                   {%- endif -%}
+                {%- endif -%}
+                {%- if _cal_soft | default([]) | length > 0 -%}
+                  {%- set ns.parts = ns.parts + ["Note: " ~ (_cal_soft | join(', ')) ~ " during run window."] -%}
                 {%- endif -%}
                 {{ ns.parts | join(' ') }}
               _urgency: >-
@@ -2541,11 +2666,15 @@ script:
                         data:
                           mode: resolve_and_dispatch
                           message: >-
-                            {{ 'No rooms are due' if _go_valid | length == 0 else 'Vacuum is busy (' ~ _vacuum_state ~ ')' }} — cannot start now.
-                          urgency: 5
+                            {%- if _go_valid | length == 0 -%}
+                              No rooms elected (elected={{ _elected | length }}, valid={{ _go_valid | length }}) — cannot start.
+                            {%- else -%}
+                              Vacuum is {{ _vacuum_state }} — not ready to start. Try again when docked.
+                            {%- endif -%}
+                          urgency: 6
                           channel_hint: push
                           title: "Autovac — Can't Start"
-                          tag: autovac_prerun
+                          tag: autovac_cant_start
                   - if: "{{ _go_valid | length > 0 and _vacuum_state in ['docked', 'idle'] }}"
                     then:
                       - action: script.zen_dojotools_filecabinet
@@ -2803,6 +2932,38 @@ script:
               'minimum_battery':  _av_system.get('minimum_battery', 20) | int(20)
             } }}
           _last_run: "{{ _av_system.get('current_run', none) }}"
+      - if: "{{ label_entities('autovac_calendar') | list | length > 0 }}"
+        then:
+          - action: calendar.get_events
+            target:
+              entity_id: "{{ label_entities('autovac_calendar') | list }}"
+            data:
+              start_date_time: "{{ now().replace(hour=0,minute=0,second=0,microsecond=0).isoformat() }}"
+              end_date_time: "{{ (now() + timedelta(days=7)).replace(hour=23,minute=59,second=59,microsecond=0).isoformat() }}"
+            response_variable: _cal_7day_raw
+            continue_on_error: true
+      - variables:
+          _schedule_7day: >-
+            {%- set days_raw = _schedule_7day -%}
+            {%- set ns = namespace(days=[]) -%}
+            {%- for day in days_raw -%}
+              {%- set nev = namespace(events=[], hold=false) -%}
+              {%- if _cal_7day_raw is defined and _cal_7day_raw is mapping -%}
+                {%- for eid, evts in _cal_7day_raw.items() -%}
+                  {%- for evt in evts | default([]) -%}
+                    {%- set evt_date = as_datetime(evt.get('start','')).strftime('%Y-%m-%d') if evt.get('start','') != '' else '' -%}
+                    {%- if evt_date == day.get('date','') -%}
+                      {%- set summ = evt.get('summary','') | default('',true) -%}
+                      {%- set is_hold = 'AUTOVAC HOLD' in summ | upper or 'AUTOVAC HOLD' in evt.get('description','') | default('',true) | upper -%}
+                      {%- if is_hold -%}{%- set nev.hold = true -%}{%- endif -%}
+                      {%- set nev.events = nev.events + [{'summary': summ, 'hold': is_hold}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {%- set ns.days = ns.days + [day | combine({'hold': nev.hold, 'calendar_events': nev.events})] -%}
+            {%- endfor -%}
+            {{ ns.days }}
       - variables:
           response: >-
             {{ {
@@ -2825,6 +2986,7 @@ script:
               'schedule_entities': _schedule_report,
               'next_schedule': _next_schedule,
               'schedule_active': _schedule_active,
+              'schedule_7day': _schedule_7day,
               'room_decisions': _room_decisions,
               'run_readiness': _run_readiness
             } }}
@@ -2871,14 +3033,27 @@ automation:
       - trigger: template
         value_template: >-
           {%- set schedules = label_entities('autovac_schedule') | list -%}
+          {%- set today_abbr = ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] -%}
+          {%- set is_weekend = now().weekday() >= 5 -%}
+          {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
+          {%- set l_weekday = label_entities('autovac_weekday') | list -%}
+          {%- set l_weekend = label_entities('autovac_weekend') | list -%}
+          {%- set l_any_day = (l_today + l_weekday + l_weekend) | unique | list -%}
           {%- set ns = namespace(hit=false) -%}
           {%- for s in schedules -%}
-            {%- set ne = state_attr(s, 'next_event') -%}
-            {%- if ne is not none and states(s) == 'off'
-                and as_datetime(ne).date() == now().date() -%}
-              {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
-              {%- if delta > 0 and delta >= 1770 and delta <= 1830 -%}
-                {%- set ns.hit = true -%}
+            {%- set np = namespace(p=99) -%}
+            {%- if s in l_today -%}{%- set np.p = 1 -%}
+            {%- elif not (s in l_any_day) -%}{%- set np.p = 3 -%}
+            {%- elif (s in l_weekday and not is_weekend) or (s in l_weekend and is_weekend) -%}{%- set np.p = 2 -%}
+            {%- endif -%}
+            {%- if np.p < 99 -%}
+              {%- set ne = state_attr(s, 'next_event') -%}
+              {%- if ne is not none and states(s) == 'off'
+                  and as_datetime(ne).date() == now().date() -%}
+                {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
+                {%- if delta > 0 and delta >= 1770 and delta <= 1830 -%}
+                  {%- set ns.hit = true -%}
+                {%- endif -%}
               {%- endif -%}
             {%- endif -%}
           {%- endfor -%}
@@ -2940,16 +3115,77 @@ automation:
               - condition: trigger
                 id: schedule_on
             sequence:
+              - variables:
+                  _s: "{{ trigger.entity_id }}"
+                  _today_abbr: "{{ ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] }}"
+                  _is_weekend: "{{ now().weekday() >= 5 }}"
+              - variables:
+                  _l_today:   "{{ label_entities('autovac_' ~ _today_abbr) | list }}"
+                  _l_weekday: "{{ label_entities('autovac_weekday') | list }}"
+                  _l_weekend: "{{ label_entities('autovac_weekend') | list }}"
+                  _l_any_day: "{{ (_l_today + _l_weekday + _l_weekend) | unique | list }}"
+              - variables:
+                  _sched_p: >-
+                    {%- if _s in _l_today -%}1
+                    {%- elif not (_s in _l_any_day) -%}3
+                    {%- elif (_s in _l_weekday and not _is_weekend) or (_s in _l_weekend and _is_weekend) -%}2
+                    {%- else -%}99{%- endif -%}
+              - if: "{{ _sched_p | int >= 99 }}"
+                then:
+                  - stop: "autovac schedule not valid for today"
+              - variables:
+                  _sched_winner: >-
+                    {%- set ns = namespace(w=true) -%}
+                    {%- for other in label_entities('autovac_schedule') | list -%}
+                      {%- if other != _s and states(other) == 'on' -%}
+                        {%- set np = namespace(p=99) -%}
+                        {%- if other in _l_today -%}{%- set np.p = 1 -%}
+                        {%- elif not (other in _l_any_day) -%}{%- set np.p = 3 -%}
+                        {%- elif (other in _l_weekday and not _is_weekend) or (other in _l_weekend and _is_weekend) -%}{%- set np.p = 2 -%}
+                        {%- endif -%}
+                        {%- if np.p | int < _sched_p | int -%}{%- set ns.w = false -%}{%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.w }}
+              - if: "{{ not _sched_winner }}"
+                then:
+                  - stop: "higher-priority autovac schedule active — deferring"
+              - if: "{{ label_entities('autovac_calendar') | list | length > 0 }}"
+                then:
+                  - action: calendar.get_events
+                    target:
+                      entity_id: "{{ label_entities('autovac_calendar') | list }}"
+                    data:
+                      start_date_time: "{{ now().isoformat() }}"
+                      end_date_time: "{{ (now() + timedelta(hours=4)).isoformat() }}"
+                    response_variable: _run_cal_raw
+                    continue_on_error: true
+              - variables:
+                  _run_cal_hold: >-
+                    {%- set ns = namespace(hold=false) -%}
+                    {%- if _run_cal_raw is defined and _run_cal_raw is mapping -%}
+                      {%- for eid, evts in _run_cal_raw.items() -%}
+                        {%- for evt in evts | default([]) -%}
+                          {%- set s2 = evt.get('summary','') | default('',true) | upper -%}
+                          {%- set d2 = evt.get('description','') | default('',true) | upper -%}
+                          {%- if 'AUTOVAC HOLD' in s2 or 'AUTOVAC HOLD' in d2 -%}{%- set ns.hold = true -%}{%- endif -%}
+                        {%- endfor -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                    {{ ns.hold }}
+              - if: "{{ _run_cal_hold }}"
+                then:
+                  - stop: "autovac run blocked by AUTOVAC HOLD calendar event"
               - action: script.zen_dojotools_autovac
                 data:
                   mode: run
                   schedule_entity_id: "{{ trigger.entity_id }}"
-              - if: "{{ 'morning' in trigger.entity_id }}"
+              - if: "{{ trigger.entity_id in label_entities('autovac_morning') | list }}"
                 then:
                   - action: script.zen_dojotools_autovac
                     data:
                       mode: morning_reset
-            alias: Scheduled run (+ morning_reset if morning schedule)
+            alias: "Scheduled run — cascade filters: valid-today, cascade-winner, morning_reset"
 
           - conditions:
               - condition: trigger

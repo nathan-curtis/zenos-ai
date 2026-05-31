@@ -256,7 +256,7 @@ For the shared Grocy inventory contract used by SpaMaster and AutoVac, see [Groc
 
 | Action | Description |
 |--------|-------------|
-| `provision` | Builds parts + chem catalog from a model preset. Creates Grocy products, location, and scheduled chores. Sets `to_location_id` + `move_on_open: true` on each product so `log_replaced` can move the next spare automatically. Idempotent — safe to re-run. |
+| `provision` | Builds parts + chem catalog from a model preset using `provision_bom` — handles unit resolution, product create/find, meta update, HA label tagging (`spamaster,spamaster_part` / `spamaster,spamaster_chem`), chore create/find, chore tagging, and stock seed. Two BOM calls: parts + chem supplies. Idempotent — safe to re-run. |
 | `status` | Returns catalog with current stock levels, last-replaced dates, reorder flags. |
 | `add_to_shopping` | Adds flagged items to a Grocy shopping list. |
 | `log_replaced` | If `chore_id` set: executes chore (handles stock internally). If no chore: consumes installed unit from `storage_location_id`. Always: opens next spare via `stock_open_item` — Grocy moves it to the install slot. Requires `part`. |
@@ -281,9 +281,8 @@ mode=consumables  action=provision  model_preset=caldera_utopia_florence_2024
 
 What it does:
 1. Creates a Grocy location matching the HA area name (skips if exists)
-2. Creates products for each part and chem supply in the preset (brand-generic names; duplicate-safe); sets `to_location_id` + `move_on_open: true` on each so `log_replaced` knows where to move the next spare
-3. Creates scheduled chores for maintenance parts; on-demand chems get `chore_id: null` by design
-4. Stores the full catalog in cabinet key `spa_consumables`
+2. Calls `provision_bom` twice (parts + chem supplies separately with different HA label sets) — resolves units, creates/finds products with correct `unit_id` at creation time, applies meta (`move_on_open`, `to_location_id`), tags with `spamaster,spamaster_part` or `spamaster,spamaster_chem`, creates/finds chores, seeds installed stock for new products
+3. Stores the full catalog in cabinet key `spa_consumables`
 
 Re-provision with `force=true` rebuilds the catalog entry; existing Grocy chores are found by name and reused rather than duplicated.
 

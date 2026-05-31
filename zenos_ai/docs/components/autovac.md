@@ -36,6 +36,7 @@ Apply these labels in HA to wire up the integration:
 | `autovac_water_low` | Optional | `binary_sensor.*` | Water tank low sensor |
 | `autovac_schedule` | Yes | Schedule entities | One per run slot (morning/evening, weekday/weekend) |
 | `autovac_wear` | Optional | Roborock wear sensors | Wear % sensors — wired to consumables catalog at provision time |
+| `autovac_calendar` | Optional | `calendar.*` | Calendar entities — events with "AUTOVAC HOLD" in summary/description block runs; others surfaced as soft warnings in briefing |
 | `autovac_current_room` | Optional | `sensor.*` | Live current-room sensor |
 | `Zen Household Cabinet` | Yes | `sensor.*` | Household cabinet (shared with other dojotools) |
 
@@ -65,7 +66,7 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `consumables` | ERP loop — stock, reorder, provision, replace, purchase |
 | `check_wear` | Check one or all wear sensors; alerts and queues shopping if worn and out of stock |
 | `analyze` | Post-dock map analysis — updates room last_cleaned, broadcasts completion event |
-| `briefing` | Pre-run announcement ~30 min before a schedule fires |
+| `briefing` | Pre-run announcement ~30 min before a schedule fires. Checks `autovac_calendar` label — "AUTOVAC HOLD" events in the 4-hour run window block the run; other events appended as soft warnings in the message. |
 | `handle_ack` | Process Postman push notification ack — go now, skip this run, or pause all day |
 | `nightly_reset` | Reset daily run flags and pause state (call at midnight) |
 | `morning_reset` | Clear `is_ready` flags after morning run starts |
@@ -178,7 +179,7 @@ For end-to-end commissioning, including Postman policy setup and Grocy prerequis
 | `provision` | Bootstrap robot as Grocy asset with full parts catalog. Idempotent via serial number + entity_id cross-reference. |
 | `status` | Stock status for all cataloged parts — `ok`, `low`, or `out` per part |
 | `add_to_shopping` | Queue all `low`/`out` parts to the Grocy shopping list |
-| `log_replaced` | Consume one spare from stock. Executes linked maintenance chore if `chore_id` is set. |
+| `log_replaced` | If `chore_id` set: executes chore (chore handles stock internally). If no chore: consumes the installed unit from `installed_location_id`. Always: opens next spare via `stock_open_item` — Grocy moves it to the install slot (`move_on_open` + `to_location_id` wired at provision time). |
 | `log_purchased` | Add purchased spares to stock at the spare storage location |
 
 ### Provisioning
@@ -187,11 +188,12 @@ For end-to-end commissioning, including Postman policy setup and Grocy prerequis
 
 1. Discovers the robot (entity + serial number via `autovac` label)
 2. Resolves or creates Grocy locations (bot bin, dock bins, spare storage) using the HA area the vacuum entity belongs to
-3. Creates a "Robot Machine" product (asset registration) in Grocy
-4. Creates one product per part from the model preset
-5. Seeds installed stock (one of each part at installed locations)
-6. Maps `autovac_wear` labeled sensors to catalog part keys
-7. Sends a Postman notification to log any additional spares on hand
+3. Creates a "Robot Machine" product in Grocy (tagged `autovac`)
+4. Calls `provision_bom` — handles unit resolution, product create/find, meta update (`to_location_id`, `move_on_open`, `due_days_after_open`), HA label tagging (`autovac,autovac_part`), chore create/find, chore tagging (`autovac,autovac_chore`), and installed stock seed — all in one call per part
+5. Maps `autovac_wear` labeled sensors to catalog part keys
+6. Sends a Postman notification to log any additional spares on hand
+
+After provisioning, `catalog_find_by_tag ha_labels=autovac` returns all robot products and chores in one call. Use `autovac_part` or `autovac_chore` to narrow.
 
 ```yaml
 zen_dojotools_autovac:
