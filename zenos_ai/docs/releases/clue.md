@@ -362,7 +362,7 @@ Autonomous robotic vacuum management. Room scheduling, consumable ERP loop via G
 
 *The short version: it's the first vacuum tool I've seen that actually thinks about whether to run, rather than just running. Room election is cabinet-state-driven — every room carries `days_between`, an optional `requires_ready` gate, a `skip_next` flag, and a queue override. The scheduler doesn't just fire the vacuum; it runs the election first, checks water level, checks DnD, checks battery floor, checks pause state, and then decides. You can watch it reason in `mode=status` before a run ever happens.*
 
-*The part I actually tested hardest was the consumables loop. `action=provision` is a one-call ERP onboarding: reads the robot's serial number from the HA entity, creates a dock location tree (Dock → Bot + Dock Bins), registers all the consumable products against the Grocy catalog, creates the maintenance chores, and writes the whole catalog back to the household cabinet. It's idempotent — SN or entity_id match stops it from doubling. Run it once; after that `action=status` gives you stock levels for every part, `action=log_replaced` records a swap and consumes a spare, `action=log_purchased` logs buying more.*
+*The part I actually tested hardest was the consumables loop. `action=provision` is a one-call ERP onboarding: reads the robot's serial number from the HA entity, creates a dock location tree (Dock → Bot + Dock Bins), registers all the consumable products against the Grocy catalog, creates the maintenance chores, and writes the whole catalog back to the household cabinet. It's idempotent — SN or entity_id match stops it from doubling. Run it once; after that `action=status` gives you stock levels for every part, `action=log_replaced` records a swap — executes the linked chore or consumes the installed unit, then opens the next spare and moves it to the install slot. `action=log_purchased` logs buying more.*
 
 *The wear alert path is what closes the loop. Label the Roborock wear sensors with `autovac_wear`. After every dock, a KFC automation calls `mode=check_wear` (scan-all). It reads the current wear %, compares against the catalog threshold, and if something's worn: checks stock, adds to shopping if you're out, fires the maintenance chore, and sends a Postman push. No human in the loop until there's something to do.*
 
@@ -412,7 +412,7 @@ Rooms are stored in the `autovac` drawer of the household cabinet. Per-room conf
 | `provision` | One-call bootstrap: discover robot (entity + serial number) → create Grocy locations → create machine product → create part products per preset → seed installed stock → map `autovac_wear` sensors to catalog. Idempotent via SN + entity_id cross-reference. |
 | `status` | Stock report per part — `ok`, `low`, `out`. |
 | `add_to_shopping` | Queue all `low`/`out` parts to Grocy shopping list. |
-| `log_replaced` | Consume one spare. Execute linked maintenance chore if `chore_id` set. |
+| `log_replaced` | Chore-first: execute chore if `chore_id` set (handles stock internally), else consume installed unit from slot. Always opens next spare via `stock_open_item` — moves it to the install location. |
 | `log_purchased` | Add purchased spares to stock at the spare storage location. |
 
 ### Model presets
