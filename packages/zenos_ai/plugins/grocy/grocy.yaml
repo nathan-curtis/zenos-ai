@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI Plugin: Grocy ERP Integration
-# Version: 4.47.0
+# Version: 5.1.0
 #
 # UAT:     Critical path PASS — 2026-03-02
 #          (locations_add, stock_buy_product, stock_check_item,
@@ -371,6 +371,12 @@ script:
               {%- set ns_sl = namespace(out=[]) -%}
               {%- for o in _trimmed -%}{%- set ns_sl.out = ns_sl.out + [{'id': o.id, 'name': o.name | default('', true)}] -%}{%- endfor -%}
               {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_sl.out}} }}
+              {%- elif is_objects_products -%}
+              {%- set ns_pr = namespace(out=[]) -%}
+              {%- for o in _trimmed -%}
+              {%- set ns_pr.out = ns_pr.out + [{'id': o.id, 'name': o.name | default('', true), 'location_id': o.get('location_id'), 'consume_location_id': o.get('default_consume_location_id'), 'userfields': o.get('userfields', {})}] -%}
+              {%- endfor -%}
+              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_pr.out}} }}
               {%- else -%}
               {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": _trimmed}} }}
               {%- endif -%}
@@ -455,9 +461,9 @@ script:
   zen_dojotools_inventory:
     alias: Zen DojoTools Inventory
     description: >-
-      Household inventory (4.49.0) — full ERP stack. Stock, shopping, catalog, locations,
+      Household inventory (4.54.0) — full ERP stack. Stock, shopping, catalog, locations,
       chores, tasks, recipes, units, batteries, userentities, userobjects, userfields CRUD.
-      96 operations. Names resolve to IDs.
+      97 operations. Names resolve to IDs.
       mode=help returns a structured cases dict — CONTRACT for tool-to-tool calls.
       TASK TAXONOMY — use this (not zen_dojotools_todo) for tasks tied to a product/location.
       Inventory Task = asset todo. Inventory Chore = task + stock action on execution.
@@ -472,7 +478,7 @@ script:
     fields:
       mode:
         name: Mode
-        description: '96 operations + help. Default: help.'
+        description: '97 operations + help. Default: help.'
         selector:
           select:
             options:
@@ -491,6 +497,7 @@ script:
             - room_brief
             - chores_add
             - chores_tag
+            - products_tag
             - chores_delete
             - chores_edit
             - stock_add_purchase
@@ -557,6 +564,8 @@ script:
             - unit_conversions_delete
             - product_groups_list
             - product_groups_find
+            - catalog_find_by_tag
+            - object_lens
             - batteries_list
             - batteries_get
             - batteries_charge
@@ -618,6 +627,17 @@ script:
         selector:
           number:
             min: 1
+      move_on_open:
+        name: Move on Open
+        description: When opened via stock_open_item, auto-move to default consume location.
+        selector:
+          boolean:
+      due_days_after_open:
+        name: Due Days After Open
+        description: Best-before days after opening (e.g. 180 for a 6-month filter).
+        selector:
+          number:
+            min: 0
       amount:
         name: Amount
         description: Quantity used for stock math such as buy, consume, or transfer.
@@ -855,6 +875,26 @@ script:
         description: Hazmat major class (e.g. flammable, corrosive, toxic). Triggers lean RM safety log.
         selector:
           text:
+      safety_type:
+        name: Safety Type
+        description: "zen_safety_type userfield. fire_extinguisher|aed|first_aid|escape_ladder|spill_kit|eyewash|prescription|hazmat_storage"
+        selector:
+          text:
+      asset_type:
+        name: Asset Type
+        description: "zen_asset_type userfield. consumable|asset|equipment|medical|prescription|hazmat|tool|appliance|book"
+        selector:
+          text:
+      ha_labels:
+        name: HA Labels
+        description: "HA label slugs CSV — HA owns namespace. e.g. fire_safety,garage_tools"
+        selector:
+          text:
+      expand:
+        name: Expand
+        description: "Opt-in: expand place lens results to full object_lens objects. Use per_page to cap (default 5). 3N+1 API calls."
+        selector:
+          boolean:
       dry_run:
         name: Dry Run
         description: Return plan without writing. For locations_hierarchy_rebuild.
@@ -903,7 +943,7 @@ script:
     - variables:
         show_trace: '{{ show_trace | default(false) }}'
         tool_name: Zen DojoTools Inventory
-        tool_version: 4.49.0
+        tool_version: 5.1.0
         schema_version: "1.0.0"
     # ─── CASE AUTHORING CHECKLIST ────────────────────────────────────────────────
     # When adding a new mode/case to this script, update ALL of the following:
@@ -916,6 +956,13 @@ script:
     #  7. filtered_result template  — add elif branch if the response needs reshaping
     #  8. _meta / _ns.p paths       — update both payload-build paths if the case writes
     # Reminder: cases: dict feeds help_json automatically via combine — do NOT duplicate
+    #
+    # ⚠ CUSTOM-HANDLED MODES (choose-alias, no standard endpoint builder):
+    #   These modes handle themselves via a choose alias and call stop before the API
+    #   call step. They MUST be added to BOTH guard lists or they get NoneType errors:
+    #     GUARD 1 (value_template with double-quotes, alias: Error: Endpoint not Resolved)
+    #     GUARD 2 (value_template with single-quotes, alias: Call Grocy API)
+    #   Search "Call Grocy API" to find both. Add mode to both on every new custom handler.
     # ─────────────────────────────────────────────────────────────────────────────
     - variables:
         grocy_response: {}
@@ -935,6 +982,8 @@ script:
         pid_keep_in: '{{ product_id_keep | default(none) }}'
         pid_remove_in: '{{ product_id_remove | default(none) }}'
         product_group_id_in: '{{ product_group_id | default(none) }}'
+        move_on_open_in: "{{ move_on_open | default(none) }}"
+        due_days_after_open_in: "{{ due_days_after_open | default(none) }}"
         uid_in: '{{ unit_id | default(none) }}'
         purchase_uid_in: '{{ purchase_unit_id | default(none) }}'
         pid_in: "{% set pid = product_id | default(none) %} {% if pid is not none %}\n
@@ -1055,6 +1104,8 @@ script:
             - shopping_location_id (sets preferred store/shopping location)
             - to_location_id (sets default_consume_location_id — where item is consumed from by default)
             - product_group_id (sets product group/category)
+            - move_on_open (bool — stock_open_item auto-moves to default_consume_location)
+            - due_days_after_open (int — best_before = open_date + N days, e.g. 180 for a 6-month filter)
             does: PUT /objects/products/{productId}
             supported_fields:
             - description
@@ -1186,6 +1237,12 @@ script:
             optional: [homeassistant_area_id, homeassistant_entity_id]
             does: PUT /userfields/chores/{choreId}
             example: "{'mode':'chores_tag','item':'Lawn Tractor Oil Change','homeassistant_area_id':'garage'}"
+          products_tag:
+            intent: Set ZenOS userfields on a product — zen_safety_type, zen_asset_type, hazmat_class, homeassistant_area, ha_labels. Required to make products discoverable by emergency mode, +inventory area queries, and object_lens label lookups.
+            needs: [item OR product_id]
+            optional: [safety_type, asset_type, hazmat_class, homeassistant_area_id, ha_labels]
+            does: PUT /userfields/products/{productId}
+            example: "{'mode':'products_tag','product_id':531,'safety_type':'fire_extinguisher','ha_labels':'fire_safety,garage'}"
           chores_delete:
             intent: Delete a Grocy chore by name or chore_id.
             needs: [chore_id OR item]
@@ -1545,6 +1602,21 @@ script:
             needs: []
             does: GET /objects/product_groups
             example: "{'mode':'product_groups_list'}"
+          catalog_find_by_tag:
+            intent: Find products by ZenOS userfield tag. Single bulk call — filters zen_safety_type, zen_asset_type, and/or ha_labels in-template. HA label slugs are the canonical index — ha_labels=fire_safety returns all products in that HA label graph.
+            needs: []
+            optional: [safety_type (filter by zen_safety_type), asset_type (filter by zen_asset_type), homeassistant_area_id (filter by product homeassistant_area userfield), ha_labels (filter by HA label slug — single slug, CSV match)]
+            reads: GET /objects/products (limit=600)
+            notes:
+              - Returns slim list — id, name, zen_safety_type, zen_asset_type, hazmat_class, homeassistant_area, ha_labels, location_id
+              - Omit all filters to get all tagged products (any zen_safety_type, zen_asset_type, or ha_labels set)
+          object_lens:
+            intent: Assemble complete operational object for a product — identity, stock (installed vs spares), maintenance chore, safety, context, actions. One call replaces 5+ manual joins. Use after catalog_find_by_tag or catalog_find_product to get the full picture.
+            needs: [item OR product_id OR homeassistant_area_id]
+            optional: []
+            reads: stock/products/{id} + userfields + entries + chores + location (product lens); objects/products + objects/chores filtered by area/ha_labels (place lens)
+            returns: "product lens — {object{status}, identity, context{room,container}, stock{installed,spares,threshold,status}, maintenance, safety, actions[]}; place lens — {tagged_products[], safety[], chores[], counts{}}"
+            example: "{'mode':'object_lens','item':'spa filter'} or {'mode':'object_lens','homeassistant_area_id':'garage'}"
           product_groups_find:
             intent: Find a product group by name (partial, case-insensitive).
             needs:
@@ -1635,10 +1707,13 @@ script:
               - Mealie owns mealie_ingredient_id - not deployed here
               - schema_version stamped to household cabinet grocy_schema key
           userfields_repair:
-            intent: "Diff live Grocy schema vs canonical. Reports ok/missing/type_drift/unknown + version delta. Fixes missing unless dry_run=true."
+            intent: "Diff live Grocy schema vs canonical. Reports ok/missing/type_drift/caption_drift/unknown + version delta. Fixes missing + patches caption drift unless dry_run=true."
             needs: []
             optional: [dry_run]
             reads: GET /objects/userfields
+            notes:
+              - caption_drift detected when canonical caption is not contained in existing caption — patched via PUT /objects/userfields/{id}
+              - type_drift reported but NOT auto-fixed (type changes are destructive — manual intervention required)
           userfields_delete:
             intent: Delete a userfield schema definition by ID. Warns if canonical. Preview without confirm_action.
             needs: [field_id]
@@ -1861,6 +1936,67 @@ script:
               safety_equipment: "safety[] on RM rooms has grocy_location_id pinning each item to a specific Grocy container within that room."
         - variables:
             help_json: "{{ help_json | combine({'room_integration': room_integration_block}) }}"
+        - variables:
+            scenarios_block:
+              primitives:
+                stock_lifecycle:
+                  acquire: "stock_buy_product or stock_add_purchase — put sealed units into storage location"
+                  open_into_service: "stock_open_item — move sealed unit to default_consume_location, stamp opened_date and best_before = today + due_days_after_open"
+                  consume: "stock_consume or chores_execute — remove the in-service unit (it is used up)"
+                  transfer: "stock_transfer_location — move units between locations, FIFO by stock entry age"
+                product_configuration:
+                  default_purchase_location: "location_id on product — where stock_buy_product and stock_add_purchase land by default"
+                  default_consume_location: "update_product_meta to_location_id=X — where chores_execute and stock_consume pull from"
+                  move_on_open: "update_product_meta move_on_open=true — stock_open_item auto-moves unit to default_consume_location on open"
+                  due_days_after_open: "update_product_meta due_days_after_open=N — best_before = open_date + N days, stamped at open time"
+                  min_stock_amount: "update_product_meta amount=N — restock warning threshold shown in stock overview and volatile reports"
+                location_model:
+                  storage_location: "where sealed/spare units live (pantry shelf, cabinet, bin)"
+                  install_location: "set as default_consume_location — where the in-service unit lives (slot, tank, tray, dock)"
+                  naming: "parent asset name + slot role, e.g. 'Kitchen Refrigerator - Water Filter Slot'"
+                chores:
+                  create: "chores_add item=name period_days=N product_id=X — recurring task linked to a consumable product"
+                  execute: "chores_execute — consumes 1 unit from default_consume_location, stamps today as last-done, next_due = today + period_days"
+                  tag: "chores_tag homeassistant_area_id=area — surfaces the chore in room_brief and chores_by_area queries"
+              scenarios:
+                installable_consumable:
+                  description: >-
+                    Generic model for any consumable that installs into a slot and needs periodic
+                    replacement — filters, cartridges, bulbs, batteries, bags, pads.
+                    One product type, two locations (install slot + spare storage), one chore.
+                  decisions:
+                    what_is_the_product: "Name it, brand it, SKU it. One product = one consumable type. Use stock_buy_product to create and stock in one call."
+                    where_does_it_install: "Create a location for the slot (e.g. 'Fridge - Water Filter Slot'), parent under the asset. Set this as default_consume_location via update_product_meta to_location_id."
+                    where_are_spares_stored: "Create a location for spare stock (e.g. 'Pantry - Water Filters'), parent under the nearest cabinet or pantry. This is the product's default purchase location."
+                    how_many_to_keep: "Set min_stock_amount = restock alert threshold (e.g. 1 spare). Aim to keep preferred level (e.g. 2 spares) at the storage location."
+                    how_long_does_it_last: "Set due_days_after_open = service life in days (e.g. 180 for a 6-month filter). Grocy stamps this as best_before on open."
+                  setup_sequence:
+                    - "1. locations_add — install slot, parent under the asset"
+                    - "2. locations_add — spare storage, parent under nearby cabinet or pantry"
+                    - "3. stock_buy_product amount=N location_id=<storage> — create product and stock initial spares"
+                    - "4. update_product_meta product_id=X to_location_id=<slot> move_on_open=true due_days_after_open=N"
+                    - "5. chores_add item='Replace X' product_id=X period_days=N"
+                    - "6. chores_tag homeassistant_area_id=area — enables room_brief and chores_by_area discovery"
+                    - "7. stock_open_item product_id=X — put first spare into service: moves to slot, stamps due date"
+                    - "8. stock_add_purchase amount=N location_id=<storage> — top up spares to preferred level if needed"
+                  replacement_cycle:
+                    trigger: "Chore due date reached, or spare count at or below min_stock_amount"
+                    step_1: "chores_execute chore_id=X — consumes 1 unit from install slot, stamps today, calculates next_due = today + period_days"
+                    step_2: "stock_open_item product_id=X — opens next spare: Grocy moves it from storage to slot, stamps best_before = today + due_days_after_open"
+                    step_3: "stock_check_item product_id=X — verify spare count at storage location"
+                    step_4: "shopping_add_product product_id=X — queue restock if spare count <= min_stock_amount"
+                    fifo_note: "stock_open_item always opens the oldest sealed unit first (FIFO by stock entry creation date)"
+                  restock_cycle:
+                    trigger: "Spare count at or below min_stock_amount after a replacement"
+                    step_1: "shopping_add_product product_id=X — add to Grocy shopping list"
+                    step_2: "stock_add_purchase amount=N location_id=<storage> — receive purchased spares into storage"
+                  stock_accounting:
+                    total_physical: "1 installed at slot + N spares at storage = total product stock"
+                    installed_unit: "1 unit at install/slot location — status: opened, best_before = replacement due date"
+                    spare_units: "N units at storage location — status: sealed, awaiting service"
+                    how_to_see_breakdown: "stock_entries_for_item product_id=X — shows each unit's location_id, opened_date, and best_before"
+        - variables:
+            help_json: "{{ help_json | combine({'scenarios': scenarios_block}) }}"
         - variables:
             final_response:
               status: help
@@ -2575,7 +2711,9 @@ script:
                 {'entity':'locations','name':'grocy_child_location_ids','caption':'JSON array of child location IDs','type':'text-multi-line','show_as_column_in_tables':0},
                 {'entity':'products','name':'homeassistant_area','caption':'HA area_id direct product-to-area link','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'products','name':'hazmat_class','caption':'flammable|corrosive|toxic|oxidizer|other','type':'text-single-line','show_as_column_in_tables':0},
-                {'entity':'products','name':'zen_asset_type','caption':'consumable|asset|equipment','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'zen_asset_type','caption':'consumable|asset|equipment|medical|prescription|hazmat|tool|appliance|book','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'zen_safety_type','caption':'fire_extinguisher|aed|first_aid|escape_ladder|spill_kit|eyewash|prescription|hazmat_storage','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'products','name':'ha_labels','caption':'HA label slugs (CSV) — HA is owner, Grocy is reference','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'chores','name':'homeassistant_area','caption':'HA Area ID','type':'text-single-line','show_as_column_in_tables':1},
                 {'entity':'chores','name':'homeassistant_entity_id','caption':'HA schedule or todo entity linked to this chore','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'tasks','name':'homeassistant_area','caption':'HA Area ID for area-based task queries','type':'text-single-line','show_as_column_in_tables':0}
@@ -2809,10 +2947,25 @@ script:
                     {%- endif -%}
                   {%- endfor -%}
                   {{ ns.u }}
+                _urp_caption_drift: >-
+                  {%- set ns = namespace(d=[]) -%}
+                  {%- for f in _uf_canonical -%}
+                    {%- set match = _uf_existing | selectattr('entity','equalto',f.entity)
+                                   | selectattr('name','equalto',f.name) | list | first | default(none) -%}
+                    {%- if match is not none and f.caption not in match.get('caption','') -%}
+                      {%- set ns.d = ns.d + [{'field': f.entity ~ '.' ~ f.name,
+                                              'id': match.get('id'),
+                                              'expected': f.caption,
+                                              'actual': match.get('caption',''),
+                                              'patch': match | combine({'caption': f.caption})}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.d }}
             - variables:
                 _urp_healthy: >-
                   {{ _urp_missing | length == 0
                      and _urp_type_drift | length == 0
+                     and _urp_caption_drift | length == 0
                      and _urp_deployed_ver == schema_version }}
             - if: "{{ not (dry_run | default(false) | bool) and _urp_missing | length > 0 }}"
               then:
@@ -2833,6 +2986,18 @@ script:
                           payload: "{{ repeat.item | tojson }}"
                         response_variable: _urpm_raw
                         continue_on_error: true
+            - if: "{{ not (dry_run | default(false) | bool) and _urp_caption_drift | length > 0 }}"
+              then:
+                - repeat:
+                    for_each: "{{ _urp_caption_drift }}"
+                    sequence:
+                      - action: script.zen_dojotools_grocy_advanced
+                        data:
+                          action_type: update
+                          endpoint: "/objects/userfields/{{ repeat.item.id }}"
+                          payload: "{{ repeat.item.patch | tojson }}"
+                        response_variable: _urpc_raw
+                        continue_on_error: true
             - variables:
                 final_response:
                   status: "{{ 'ok' if _urp_healthy else 'issues_found' }}"
@@ -2846,10 +3011,15 @@ script:
                   ok: "{{ _urp_ok }}"
                   missing: "{{ _urp_missing }}"
                   type_drift: "{{ _urp_type_drift }}"
+                  caption_drift: "{{ _urp_caption_drift }}"
                   unknown: "{{ _urp_unknown }}"
                   action_taken: >-
-                    {{ "created_missing" if not (dry_run | default(false) | bool)
-                       and _urp_missing | length > 0 else "none" }}
+                    {%- set acts = [] -%}
+                    {%- if not (dry_run | default(false) | bool) -%}
+                      {%- if _urp_missing | length > 0 -%}{%- set acts = acts + ['created_missing'] -%}{%- endif -%}
+                      {%- if _urp_caption_drift | length > 0 -%}{%- set acts = acts + ['patched_captions'] -%}{%- endif -%}
+                    {%- endif -%}
+                    {{ acts | join(',') if acts | length > 0 else 'none' }}
                   caller_token: "{{ _caller_token }}"
             - stop: userfields_repair done
               response_variable: final_response
@@ -3407,7 +3577,7 @@ script:
       - conditions:
         - alias: 'Error: Endpoint not Resolved'
           condition: template
-          value_template: "{{\n  (final_endpoint is none)\n  and mode_norm not in ['catalog_find_product', 'catalog_add_product', 'catalog_delete_product', 'locations_reparent_bulk', 'locations_delete_safe', 'locations_hierarchy_rebuild', 'stock_register_asset', 'stock_area_summary', 'stock_area_volatile', 'stock_area_inventory', 'chores_by_area', 'room_brief', 'chores_add', 'chores_tag', 'chores_delete', 'chores_edit', 'tasks_add', 'tasks_tag', 'update_product_meta']\n}}\n"
+          value_template: "{{\n  (final_endpoint is none)\n  and mode_norm not in ['catalog_find_product', 'catalog_add_product', 'catalog_delete_product', 'locations_reparent_bulk', 'locations_delete_safe', 'locations_hierarchy_rebuild', 'stock_register_asset', 'stock_area_summary', 'stock_area_volatile', 'stock_area_inventory', 'chores_by_area', 'room_brief', 'chores_add', 'chores_tag', 'products_tag', 'catalog_find_by_tag', 'object_lens', 'chores_delete', 'chores_edit', 'tasks_add', 'tasks_tag', 'update_product_meta']\n}}\n"
         sequence:
         - variables:
             final_response:
@@ -3460,7 +3630,7 @@ script:
       choose:
       - conditions:
         - condition: template
-          value_template: '{{ mode_norm not in [''catalog_find_product'', ''catalog_add_product'', ''catalog_delete_product'', ''locations_reparent_bulk'', ''locations_delete_safe'', ''locations_hierarchy_rebuild'', ''stock_register_asset'', ''stock_area_summary'', ''stock_area_volatile'', ''stock_area_inventory'', ''chores_by_area'', ''room_brief'', ''chores_add'', ''chores_tag'', ''chores_delete'', ''chores_edit'', ''tasks_add'', ''tasks_tag'', ''update_product_meta''] }}'
+          value_template: '{{ mode_norm not in [''catalog_find_product'', ''catalog_add_product'', ''catalog_delete_product'', ''locations_reparent_bulk'', ''locations_delete_safe'', ''locations_hierarchy_rebuild'', ''stock_register_asset'', ''stock_area_summary'', ''stock_area_volatile'', ''stock_area_inventory'', ''chores_by_area'', ''room_brief'', ''chores_add'', ''chores_tag'', ''products_tag'', ''catalog_find_by_tag'', ''object_lens'', ''chores_delete'', ''chores_edit'', ''tasks_add'', ''tasks_tag'', ''update_product_meta''] }}'
           alias: Not 'catalog_find_product'
         sequence:
         - action: script.zen_dojotools_grocy_advanced
@@ -4325,7 +4495,7 @@ script:
           value_template: "{{ mode_norm == 'chores_by_area' }}"
         sequence:
         - variables:
-            _cba_area_id: "{{ homeassistant_area_id | default('') | string | trim }}"
+            _cba_area_id: "{{ homeassistant_area_id | default('') | string | trim | lower }}"
         - action: script.zen_dojotools_grocy_advanced
           response_variable: _cba_locs_raw
           data:
@@ -4438,7 +4608,7 @@ script:
           value_template: "{{ mode_norm == 'room_brief' }}"
         sequence:
         - variables:
-            _rb_area: "{{ homeassistant_area_id | default('') | string | trim }}"
+            _rb_area: "{{ homeassistant_area_id | default('') | string | trim | lower }}"
         - action: script.zen_dojotools_grocy_advanced
           response_variable: _rb_locs_raw
           data:
@@ -4460,29 +4630,52 @@ script:
           data:
             action_type: read
             endpoint: /chores
-        - variables:
-            _rb_chore_state: "{{ _rb_chore_state_raw['result']['content'] | default([], true) }}"
-        - variables:
-            _rb_chores: >-
-              {%- set ns = namespace(out=[]) -%}
-              {%- for c in _rb_chore_defs_raw['result']['content'] | default([], true) -%}
-                {%- if c.userfields is mapping and c.userfields.get('homeassistant_area') == _rb_area -%}
-                  {%- set _st = _rb_chore_state | selectattr('chore_id', 'equalto', c.id | string) | list | first | default({}) -%}
-                  {%- set ns.out = ns.out + [{'chore_id': c.id | int, 'name': c.name, 'is_due': _st.get('is_due', false) | bool, 'next_execution': _st.get('next_estimated_execution_time', none)}] -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.out }}
         - action: script.zen_dojotools_grocy_advanced
           response_variable: _rb_stock_raw
           data:
             action_type: read
             endpoint: /objects/stock?limit=500&offset=0
+        - action: script.zen_dojotools_grocy_advanced
+          response_variable: _rb_products_raw
+          data:
+            action_type: read
+            endpoint: /objects/products?limit=600&offset=0
+        - variables:
+            _rb_chore_state: "{{ _rb_chore_state_raw['result']['content'] | default([], true) }}"
         - variables:
             _rb_stock_in_area: >-
               {{ _rb_stock_raw['result']['content'] | default([], true)
                  | selectattr('location_id', 'defined')
                  | selectattr('location_id', 'in', _rb_area_loc_ids)
                  | list }}
+        - variables:
+            _rb_area_product_ids: >-
+              {%- set _from_stock = _rb_stock_in_area | map(attribute='product_id') | map('int') | list -%}
+              {%- set _from_labels = _rb_products_raw['result']['content'] | default([], true)
+                 | selectattr('userfields', 'defined')
+                 | selectattr('userfields', 'mapping')
+                 | selectattr('userfields.ha_labels', 'defined')
+                 | list -%}
+              {%- set ns = namespace(ids=_from_stock) -%}
+              {%- for p in _from_labels -%}
+                {%- set _labels = p.userfields.get('ha_labels', '') | default('', true) | string -%}
+                {%- if _rb_area in _labels.split(',') | map('trim') | list -%}
+                  {%- set ns.ids = ns.ids + [p.id | int] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.ids | unique | list }}
+        - variables:
+            _rb_chores: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for c in _rb_chore_defs_raw['result']['content'] | default([], true) -%}
+                {%- set _area_tagged = c.userfields is mapping and c.userfields.get('homeassistant_area') == _rb_area -%}
+                {%- set _product_in_area = c.get('product_id') | int(-1) in _rb_area_product_ids -%}
+                {%- if _area_tagged or _product_in_area -%}
+                  {%- set _st = _rb_chore_state | selectattr('chore_id', 'equalto', c.id | string) | list | first | default({}) -%}
+                  {%- set ns.out = ns.out + [{'chore_id': c.id | int, 'name': c.name, 'is_due': _st.get('is_due', false) | bool, 'next_execution': _st.get('next_estimated_execution_time', none)}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
         - variables:
             final_response:
               status: success
@@ -4594,6 +4787,609 @@ script:
               tool: "{{ tool_name }}"
               version: "{{ tool_version }}"
         - stop: Chore Tagged
+          response_variable: final_response
+    - alias: 'products_tag — set ZenOS userfields on a product'
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'products_tag' }}"
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ product_id_resolved is none }}"
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  mode: products_tag
+                  message: Product not found — pass item=<name> or product_id=<id>
+            - stop: Product Not Found
+              response_variable: final_response
+        - variables:
+            _pt_area: "{{ homeassistant_area_id | default(none, true) }}"
+            _pt_hazmat: "{{ hazmat_class | default(none, true) }}"
+            _pt_safety: "{{ safety_type | default(none, true) }}"
+            _pt_asset: "{{ asset_type | default(none, true) }}"
+            _pt_labels: "{{ ha_labels | default(none, true) }}"
+        - variables:
+            _pt_payload: >-
+              {%- set p = {} -%}
+              {%- if _pt_area is not none -%}{%- set p = p | combine({'homeassistant_area': _pt_area}) -%}{%- endif -%}
+              {%- if _pt_hazmat is not none -%}{%- set p = p | combine({'hazmat_class': _pt_hazmat}) -%}{%- endif -%}
+              {%- if _pt_safety is not none -%}{%- set p = p | combine({'zen_safety_type': _pt_safety}) -%}{%- endif -%}
+              {%- if _pt_asset is not none -%}{%- set p = p | combine({'zen_asset_type': _pt_asset}) -%}{%- endif -%}
+              {%- if _pt_labels is not none -%}{%- set p = p | combine({'ha_labels': _pt_labels}) -%}{%- endif -%}
+              {{ p | tojson }}
+        - action: script.zen_dojotools_grocy_advanced
+          response_variable: _pt_raw
+          data:
+            action_type: update
+            endpoint: "/userfields/products/{{ product_id_resolved }}"
+            payload: "{{ _pt_payload }}"
+        - variables:
+            final_response:
+              status: ok
+              mode: products_tag
+              product_id: "{{ product_id_resolved }}"
+              tagged:
+                homeassistant_area: "{{ _pt_area }}"
+                hazmat_class: "{{ _pt_hazmat }}"
+                zen_safety_type: "{{ _pt_safety }}"
+                zen_asset_type: "{{ _pt_asset }}"
+                ha_labels: "{{ _pt_labels }}"
+              tool: "{{ tool_name }}"
+              version: "{{ tool_version }}"
+        - stop: Product Tagged
+          response_variable: final_response
+    - alias: 'catalog_find_by_tag — find products by ZenOS userfield tags'
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'catalog_find_by_tag' }}"
+        sequence:
+        - variables:
+            _cft_sf: "{{ (safety_type | default('')) | trim }}"
+            _cft_af: "{{ (asset_type  | default('')) | trim }}"
+            _cft_hf: "{{ (homeassistant_area_id | default('')) | trim }}"
+            _cft_lf: "{{ (ha_labels | default('')) | trim }}"
+        - action: script.zen_dojotools_grocy_advanced
+          response_variable: _cft_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: /objects/products?limit=600&offset=0
+        - variables:
+            _cft_results: >-
+              {%- set ns = namespace(r=[]) -%}
+              {%- set _src = _cft_raw['result']['content']
+                             if _cft_raw is mapping and 'result' in _cft_raw
+                                and _cft_raw['result']['content'] is sequence
+                             else [] -%}
+              {%- for p in _src -%}
+                {%- set uf = p.get('userfields', {}) if p.get('userfields') is mapping else {} -%}
+                {%- set _st = uf.get('zen_safety_type', none) -%}
+                {%- set _at = uf.get('zen_asset_type', none) -%}
+                {%- set _hl = (uf.get('ha_labels', '') | default('', true)) | string | trim -%}
+                {%- if _st is not none or _at is not none or _hl != '' -%}
+                  {%- set _ha = uf.get('homeassistant_area', none) -%}
+                  {%- set _hz = uf.get('hazmat_class', none) -%}
+                  {%- set _s = _cft_sf == '' or _st == _cft_sf -%}
+                  {%- set _a = _cft_af == '' or _at == _cft_af -%}
+                  {%- set _h = _cft_hf == '' or _ha == _cft_hf -%}
+                  {%- set _l = _cft_lf == '' or _cft_lf in (_hl.split(',') | map('trim') | list) -%}
+                  {%- if _s and _a and _h and _l -%}
+                    {%- set ns.r = ns.r + [{'id': p.id, 'name': p.name,
+                      'zen_safety_type': _st, 'zen_asset_type': _at,
+                      'hazmat_class': _hz, 'homeassistant_area': _ha,
+                      'ha_labels': _hl, 'location_id': p.get('location_id')}] -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.r }}
+        - variables:
+            final_response:
+              status: ok
+              mode: catalog_find_by_tag
+              filters:
+                safety_type: "{{ _cft_sf | default(none, true) }}"
+                asset_type: "{{ _cft_af | default(none, true) }}"
+                homeassistant_area_id: "{{ _cft_hf | default(none, true) }}"
+                ha_labels: "{{ _cft_lf | default(none, true) }}"
+              count: "{{ _cft_results | length }}"
+              products: "{{ _cft_results }}"
+              tool: "{{ tool_name }}"
+              version: "{{ tool_version }}"
+        - stop: catalog_find_by_tag done
+          response_variable: final_response
+    - alias: 'object_lens — assemble complete operational object for a product or place'
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'object_lens' }}"
+        sequence:
+        # ── place lens: triggered when area given without a product ───────────────
+        - if: "{{ area_id_norm != '' and product_id_resolved is none }}"
+          then:
+            - action: script.zen_dojotools_grocy_advanced
+              response_variable: _pl_locs_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: /objects/locations?limit=500&offset=0
+            - variables:
+                _pl_area_loc_ids: >-
+                  {%- set ns = namespace(ids=[]) -%}
+                  {%- for loc in _pl_locs_raw['result']['content'] | default([], true) -%}
+                    {%- if loc is mapping -%}
+                      {%- set luf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                      {%- if (luf.get('homeassistant_area', '') | default('', true)) | string | trim == area_id_norm -%}
+                        {%- set ns.ids = ns.ids + [loc.id | string] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.ids }}
+            - action: script.zen_dojotools_grocy_advanced
+              response_variable: _pl_prods_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: /objects/products?limit=600&offset=0
+            - action: script.zen_dojotools_grocy_advanced
+              response_variable: _pl_chores_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: /objects/chores?limit=500&offset=0
+            - variables:
+                _pl_tagged: >-
+                  {%- set ns = namespace(r=[]) -%}
+                  {%- set _src = _pl_prods_raw['result']['content']
+                                 if _pl_prods_raw is mapping and 'result' in _pl_prods_raw
+                                    and _pl_prods_raw['result']['content'] is sequence
+                                 else [] -%}
+                  {%- for p in _src -%}
+                    {%- set uf = p.get('userfields', {}) if p.get('userfields') is mapping else {} -%}
+                    {%- set _ha = (uf.get('homeassistant_area', '') | default('', true)) | string | trim -%}
+                    {%- set _hl = (uf.get('ha_labels', '') | default('', true)) | string | trim -%}
+                    {%- set _hl_list = _hl.split(',') | map('trim') | list -%}
+                    {%- set _sloc = p.get('location_id') | string if p.get('location_id') is not none else '' -%}
+                    {%- set _cloc = p.get('consume_location_id') | string if p.get('consume_location_id') is not none else '' -%}
+                    {%- set _loc_match = (_sloc != '' and _sloc in _pl_area_loc_ids) or (_cloc != '' and _cloc in _pl_area_loc_ids) -%}
+                    {%- set _match = 'area' if _ha == area_id_norm else ('label' if area_id_norm in _hl_list else 'location') -%}
+                    {%- if _ha == area_id_norm or area_id_norm in _hl_list or _loc_match -%}
+                      {%- set ns.r = ns.r + [{'id': p.id, 'name': p.name,
+                        'zen_safety_type': uf.get('zen_safety_type', none),
+                        'zen_asset_type': uf.get('zen_asset_type', none),
+                        'hazmat_class': uf.get('hazmat_class', none),
+                        'ha_labels': _hl,
+                        'match': _match}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.r }}
+            # _pl_chores in a separate step so it can read _pl_tagged product IDs directly
+            - variables:
+                _pl_chores: >-
+                  {%- set ns = namespace(r=[]) -%}
+                  {%- set _src = _pl_chores_raw['result']['content']
+                                 if _pl_chores_raw is mapping and 'result' in _pl_chores_raw
+                                    and _pl_chores_raw['result']['content'] is sequence
+                                 else [] -%}
+                  {%- set _tagged_pids = _pl_tagged | map(attribute='id') | map('string') | list -%}
+                  {%- for c in _src -%}
+                    {%- set cuf = c.get('userfields', {}) if c.get('userfields') is mapping else {} -%}
+                    {%- set _area_match = (cuf.get('homeassistant_area', '') | default('', true)) | string | trim == area_id_norm -%}
+                    {%- set _prod_match = c.product_id is not none and c.product_id | string in _tagged_pids -%}
+                    {%- if _area_match or _prod_match -%}
+                      {%- set ns.r = ns.r + [{'id': c.id, 'name': c.name,
+                        'cadence_days': c.period_days | default(0), 'product_id': c.product_id,
+                        'match': 'area' if _area_match else 'product'}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.r }}
+            - variables:
+                _pl_safety: "{{ _pl_tagged | selectattr('zen_safety_type', 'ne', none) | list }}"
+                _pl_hazmat: "{{ _pl_tagged | selectattr('hazmat_class', 'ne', none) | list }}"
+            # ── opt-in expansion: object_lens per product (expand=true) ──────────
+            - if: "{{ expand | default(false) | bool and _pl_tagged | length > 0 }}"
+              then:
+                - variables:
+                    _pl_exp_limit: "{{ [per_page | default(5) | int(5), _pl_tagged | length] | min }}"
+                    _pl_expanded: []
+                - repeat:
+                    for_each: "{{ _pl_tagged[:_pl_exp_limit] }}"
+                    sequence:
+                      - action: script.zen_dojotools_grocy_advanced
+                        response_variable: _pl_exp_stock_raw
+                        continue_on_error: true
+                        data:
+                          action_type: read
+                          endpoint: "/stock/products/{{ repeat.item.id }}"
+                      - action: script.zen_dojotools_grocy_advanced
+                        response_variable: _pl_exp_uf_raw
+                        continue_on_error: true
+                        data:
+                          action_type: read
+                          endpoint: "/userfields/products/{{ repeat.item.id }}"
+                      - action: script.zen_dojotools_grocy_advanced
+                        response_variable: _pl_exp_entries_raw
+                        continue_on_error: true
+                        data:
+                          action_type: read
+                          endpoint: "/stock/products/{{ repeat.item.id }}/entries?limit=500&offset=0"
+                      - variables:
+                          _pl_exp_stock_obj: >-
+                            {{ _pl_exp_stock_raw['result']['content']
+                               if _pl_exp_stock_raw is mapping and 'result' in _pl_exp_stock_raw
+                                  and _pl_exp_stock_raw['result']['content'] is mapping
+                               else {} }}
+                      - variables:
+                          _pl_exp_prod_obj: "{{ _pl_exp_stock_obj.get('product', {}) if _pl_exp_stock_obj is mapping else {} }}"
+                          _pl_exp_amount:   "{{ _pl_exp_stock_obj.get('stock_amount_aggregated', 0) | float(0) }}"
+                          _pl_exp_bbd:      "{{ _pl_exp_stock_obj.get('next_due_date', none) }}"
+                          _pl_exp_qu_name: >-
+                            {%- set _qu = _pl_exp_stock_obj.get('quantity_unit_stock', none) -%}
+                            {%- if _qu is mapping -%}{{ _qu.get('name', 'unit') }}{%- else -%}unit{%- endif -%}
+                      - variables:
+                          _pl_exp_min_stock:   "{{ _pl_exp_prod_obj.get('min_stock_amount', 0) | float(0) }}"
+                          _pl_exp_consume_lid: "{{ _pl_exp_prod_obj.get('default_consume_location_id', none) }}"
+                          _pl_exp_prod_name:   "{{ _pl_exp_prod_obj.get('name', repeat.item.name) }}"
+                      - variables:
+                          _pl_exp_uf: >-
+                            {{ _pl_exp_uf_raw['result']['content']
+                               if _pl_exp_uf_raw is mapping and 'result' in _pl_exp_uf_raw
+                                  and _pl_exp_uf_raw['result']['content'] is mapping
+                               else {} }}
+                      - variables:
+                          _pl_exp_safety_type: "{{ _pl_exp_uf.get('zen_safety_type', none) }}"
+                          _pl_exp_asset_type:  "{{ _pl_exp_uf.get('zen_asset_type', none) }}"
+                          _pl_exp_hazmat_cls:  "{{ _pl_exp_uf.get('hazmat_class', none) }}"
+                          _pl_exp_ha_labels:   "{{ (_pl_exp_uf.get('ha_labels', '') | default('', true)) | string | trim }}"
+                      - variables:
+                          _pl_exp_entries: >-
+                            {{ _pl_exp_entries_raw['result']['content']
+                               if _pl_exp_entries_raw is mapping and 'result' in _pl_exp_entries_raw
+                                  and _pl_exp_entries_raw['result']['content'] is sequence
+                               else [] }}
+                      - variables:
+                          _pl_exp_installed: >-
+                            {%- set _clid = _pl_exp_consume_lid | string if _pl_exp_consume_lid is not none else '' -%}
+                            {%- set ns = namespace(out=[]) -%}
+                            {%- for e in _pl_exp_entries -%}
+                              {%- if _clid != '' and e.location_id | string == _clid -%}
+                                {%- set ns.out = ns.out + [{'amount': e.amount, 'best_before': e.best_before_date, 'opened': e.open | bool}] -%}
+                              {%- endif -%}
+                            {%- endfor -%}
+                            {{ ns.out }}
+                          _pl_exp_spares: >-
+                            {%- set _clid = _pl_exp_consume_lid | string if _pl_exp_consume_lid is not none else '' -%}
+                            {%- set ns = namespace(out=[]) -%}
+                            {%- for e in _pl_exp_entries -%}
+                              {%- if _clid == '' or e.location_id | string != _clid -%}
+                                {%- set ns.out = ns.out + [{'amount': e.amount, 'location_id': e.location_id, 'best_before': e.best_before_date}] -%}
+                              {%- endif -%}
+                            {%- endfor -%}
+                            {{ ns.out }}
+                      - variables:
+                          _pl_exp_chore: >-
+                            {%- set _src = _pl_chores_raw['result']['content']
+                                           if _pl_chores_raw is mapping and 'result' in _pl_chores_raw
+                                              and _pl_chores_raw['result']['content'] is sequence
+                                           else [] -%}
+                            {%- set ns = namespace(c=none) -%}
+                            {%- for c in _src -%}
+                              {%- if c.get('product_id') is not none
+                                     and c.get('product_id') | string == repeat.item.id | string
+                                     and ns.c is none -%}
+                                {%- set ns.c = c -%}
+                              {%- endif -%}
+                            {%- endfor -%}
+                            {{ ns.c }}
+                      - variables:
+                          _pl_exp_safety_relevant: "{{ _pl_exp_safety_type is not none or _pl_exp_hazmat_cls is not none }}"
+                          _pl_exp_stock_status: >-
+                            {%- set _today = now().date().isoformat() -%}
+                            {%- set _amt = _pl_exp_amount | float(0) -%}
+                            {%- set _min = _pl_exp_min_stock | float(0) -%}
+                            {%- if _pl_exp_bbd is not none and _pl_exp_bbd != '2999-12-31' and _pl_exp_bbd[:10] < _today -%}overdue
+                            {%- elif _min > 0 and _amt == 0 -%}critical
+                            {%- elif _min > 0 and _amt < _min -%}low
+                            {%- else -%}ok{%- endif -%}
+                      - variables:
+                          _pl_exp_status: >-
+                            {%- if _pl_exp_stock_status == 'critical' or (_pl_exp_safety_relevant and _pl_exp_stock_status == 'overdue') -%}critical
+                            {%- elif _pl_exp_stock_status in ['low', 'overdue'] -%}attention
+                            {%- else -%}healthy{%- endif -%}
+                          _pl_exp_object_type: >-
+                            {%- if _pl_exp_safety_type is not none -%}safety
+                            {%- elif _pl_exp_asset_type == 'tool' -%}tool
+                            {%- elif _pl_exp_asset_type in ['medical', 'prescription'] -%}medication
+                            {%- elif _pl_exp_asset_type in ['asset', 'equipment', 'appliance'] -%}asset
+                            {%- else -%}consumable{%- endif -%}
+                      - variables:
+                          _pl_expanded: >-
+                            {{ _pl_expanded + [{
+                              'product_id': repeat.item.id | int,
+                              'name': _pl_exp_prod_name,
+                              'object_type': _pl_exp_object_type,
+                              'status': _pl_exp_status,
+                              'unit': _pl_exp_qu_name,
+                              'ha_labels': _pl_exp_ha_labels,
+                              'stock': {
+                                'in_stock': _pl_exp_amount,
+                                'installed_count': _pl_exp_installed | map(attribute='amount') | sum | float(0),
+                                'spares_count': _pl_exp_spares | map(attribute='amount') | sum | float(0),
+                                'threshold': _pl_exp_min_stock,
+                                'status': _pl_exp_stock_status
+                              },
+                              'maintenance': {
+                                'chore': {'id': _pl_exp_chore.id, 'name': _pl_exp_chore.name} if _pl_exp_chore is mapping else none,
+                                'inspection_required': _pl_exp_safety_relevant
+                              },
+                              'safety': {
+                                'safety_relevant': _pl_exp_safety_relevant,
+                                'hazmat_class': _pl_exp_hazmat_cls
+                              }
+                            }] }}
+            - variables:
+                final_response:
+                  status: ok
+                  mode: object_lens
+                  lens:
+                    type: place
+                    focus: "{{ area_name(area_id_norm) }}"
+                    area_id: "{{ area_id_norm }}"
+                  tagged_products: "{{ _pl_tagged }}"
+                  safety: "{{ _pl_safety }}"
+                  hazmat: "{{ _pl_hazmat }}"
+                  chores: "{{ _pl_chores }}"
+                  expanded_objects: "{{ _pl_expanded | default(none) }}"
+                  counts:
+                    tagged: "{{ _pl_tagged | length }}"
+                    safety: "{{ _pl_safety | length }}"
+                    chores: "{{ _pl_chores | length }}"
+                    expanded: "{{ _pl_expanded | default([]) | length }}"
+                  status: "{{ 'attention' if (_pl_safety | length > 0 or _pl_chores | length > 0) else 'healthy' }}"
+                  hint: "Pass expand=true + per_page=N to inline full operational objects. For stock depth, use stock_area_inventory."
+                  tool: "{{ tool_name }}"
+                  version: "{{ tool_version }}"
+            - stop: object_lens place done
+              response_variable: final_response
+        # ── product error guard ───────────────────────────────────────────────────
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ product_id_resolved is none }}"
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  mode: object_lens
+                  message: "Pass item=<name>, product_id=<id>, or homeassistant_area_id=<area> for a place lens."
+            - stop: object_lens no input
+              response_variable: final_response
+        # ── stock summary + product meta ──────────────────────────────────────────
+        - action: script.zen_dojotools_grocy_advanced
+          response_variable: _ol_stock_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "/stock/products/{{ product_id_resolved }}"
+        # ── userfields ────────────────────────────────────────────────────────────
+        - action: script.zen_dojotools_grocy_advanced
+          response_variable: _ol_uf_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "/userfields/products/{{ product_id_resolved }}"
+        # ── stock entries for installed/spares split ──────────────────────────────
+        - action: script.zen_dojotools_grocy_advanced
+          response_variable: _ol_entries_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "/stock/products/{{ product_id_resolved }}/entries?limit=500&offset=0"
+        # ── chore linked to this product ──────────────────────────────────────────
+        - action: script.zen_dojotools_grocy_advanced
+          response_variable: _ol_chores_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: /objects/chores?limit=500&offset=0
+        # ── extract stock object ──────────────────────────────────────────────────
+        - variables:
+            _ol_stock_obj: >-
+              {{ _ol_stock_raw['result']['content']
+                 if _ol_stock_raw is mapping and 'result' in _ol_stock_raw
+                    and _ol_stock_raw['result']['content'] is mapping
+                 else {} }}
+        - variables:
+            _ol_prod_obj:  "{{ _ol_stock_obj.get('product', {}) if _ol_stock_obj is mapping else {} }}"
+            _ol_amount:    "{{ _ol_stock_obj.get('stock_amount_aggregated', 0) | float(0) }}"
+            _ol_bbd_next:  "{{ _ol_stock_obj.get('next_due_date', none) }}"
+            _ol_qu_name: >-
+              {%- set _qu = _ol_stock_obj.get('quantity_unit_stock', none) -%}
+              {%- if _qu is mapping -%}{{ _qu.get('name', 'unit') }}{%- else -%}unit{%- endif -%}
+        - variables:
+            _ol_prod_name:   "{{ _ol_prod_obj.get('name', '') }}"
+            _ol_description: "{{ _ol_prod_obj.get('description', none) }}"
+            _ol_min_stock:   "{{ _ol_prod_obj.get('min_stock_amount', 0) | float(0) }}"
+            _ol_consume_lid: "{{ _ol_prod_obj.get('default_consume_location_id', none) }}"
+        # ── extract userfields ────────────────────────────────────────────────────
+        - variables:
+            _ol_uf: >-
+              {{ _ol_uf_raw['result']['content']
+                 if _ol_uf_raw is mapping and 'result' in _ol_uf_raw
+                    and _ol_uf_raw['result']['content'] is mapping
+                 else {} }}
+        - variables:
+            _ol_safety_type: "{{ _ol_uf.get('zen_safety_type', none) }}"
+            _ol_asset_type:  "{{ _ol_uf.get('zen_asset_type', none) }}"
+            _ol_hazmat:      "{{ _ol_uf.get('hazmat_class', none) }}"
+            _ol_ha_area:     "{{ _ol_uf.get('homeassistant_area', none) }}"
+            _ol_ha_labels:   "{{ (_ol_uf.get('ha_labels', '') | default('', true)) | string | trim }}"
+        # ── installed / spares split ──────────────────────────────────────────────
+        - variables:
+            _ol_entries: >-
+              {{ _ol_entries_raw['result']['content']
+                 if _ol_entries_raw is mapping and 'result' in _ol_entries_raw
+                    and _ol_entries_raw['result']['content'] is sequence
+                 else [] }}
+        - variables:
+            _ol_installed: >-
+              {%- set _clid = _ol_consume_lid | string if _ol_consume_lid is not none else '' -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in _ol_entries -%}
+                {%- if _clid != '' and e.location_id | string == _clid -%}
+                  {%- set ns.out = ns.out + [{'amount': e.amount, 'best_before': e.best_before_date, 'opened': e.open | bool, 'entry_id': e.id}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+            _ol_spares: >-
+              {%- set _clid = _ol_consume_lid | string if _ol_consume_lid is not none else '' -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in _ol_entries -%}
+                {%- if _clid == '' or e.location_id | string != _clid -%}
+                  {%- set ns.out = ns.out + [{'amount': e.amount, 'location_id': e.location_id, 'best_before': e.best_before_date}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        # ── chore extraction ──────────────────────────────────────────────────────
+        - variables:
+            _ol_chore: >-
+              {%- set _src = _ol_chores_raw['result']['content']
+                             if _ol_chores_raw is mapping and 'result' in _ol_chores_raw
+                                and _ol_chores_raw['result']['content'] is sequence
+                             else [] -%}
+              {%- set ns = namespace(c=none) -%}
+              {%- for c in _src -%}
+                {%- if c.get('product_id') is not none
+                       and c.get('product_id') | string == product_id_resolved | string
+                       and ns.c is none -%}
+                  {%- set ns.c = c -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.c }}
+        # ── container name lookup ─────────────────────────────────────────────────
+        - if: "{{ _ol_consume_lid is not none and _ol_consume_lid | int(-1) > 0 }}"
+          then:
+            - action: script.zen_dojotools_grocy_advanced
+              response_variable: _ol_loc_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/locations/{{ _ol_consume_lid }}"
+          else:
+            - variables:
+                _ol_loc_raw: {}
+        - variables:
+            _ol_loc_name: >-
+              {{ _ol_loc_raw['result']['content'].get('name', none)
+                 if _ol_loc_raw is mapping and 'result' in _ol_loc_raw
+                    and _ol_loc_raw['result']['content'] is mapping
+                 else none }}
+        # ── health scoring ────────────────────────────────────────────────────────
+        - variables:
+            _ol_safety_relevant: "{{ _ol_safety_type is not none or _ol_hazmat is not none }}"
+            _ol_stock_status: >-
+              {%- set _today = now().date().isoformat() -%}
+              {%- set _bbd = _ol_bbd_next -%}
+              {%- set _amt = _ol_amount | float(0) -%}
+              {%- set _min = _ol_min_stock | float(0) -%}
+              {%- if _bbd is not none and _bbd != '2999-12-31' and _bbd[:10] < _today -%}overdue
+              {%- elif _min > 0 and _amt == 0 -%}critical
+              {%- elif _min > 0 and _amt < _min -%}low
+              {%- else -%}ok{%- endif -%}
+            _ol_chore_due: >-
+              {{ _ol_chore is not none and _ol_chore is mapping
+                 and _ol_chore.get('next_execution_date') is not none
+                 and _ol_chore.get('next_execution_date', '2999-12-31')[:10] <= now().date().isoformat() }}
+        - variables:
+            _ol_status: >-
+              {%- if _ol_stock_status == 'critical' or (_ol_safety_relevant and _ol_stock_status == 'overdue') -%}critical
+              {%- elif _ol_stock_status in ['low', 'overdue'] or _ol_chore_due -%}attention
+              {%- else -%}healthy{%- endif -%}
+            _ol_object_type: >-
+              {%- if _ol_safety_type is not none -%}safety
+              {%- elif _ol_asset_type == 'tool' -%}tool
+              {%- elif _ol_asset_type in ['medical', 'prescription'] -%}medication
+              {%- elif _ol_asset_type in ['asset', 'equipment', 'appliance'] -%}asset
+              {%- else -%}consumable{%- endif -%}
+            _ol_criticality: >-
+              {%- if _ol_safety_relevant -%}high
+              {%- elif _ol_asset_type in ['equipment', 'tool', 'appliance'] -%}medium
+              {%- else -%}low{%- endif -%}
+        # ── actions ───────────────────────────────────────────────────────────────
+        - variables:
+            _ol_actions: >-
+              {%- set ns = namespace(a=[]) -%}
+              {%- if _ol_chore is not none and _ol_chore is mapping -%}
+                {%- set ns.a = ns.a + [{'action': 'replace', 'payload': {'tool': 'zen_dojotools_inventory', 'mode': 'chores_execute', 'chore_id': _ol_chore.id}}] -%}
+              {%- else -%}
+                {%- set ns.a = ns.a + [{'action': 'replace', 'payload': {'tool': 'zen_dojotools_inventory', 'mode': 'stock_open_item', 'product_id': product_id_resolved | int}}] -%}
+              {%- endif -%}
+              {%- set ns.a = ns.a + [{'action': 'restock', 'payload': {'tool': 'zen_dojotools_inventory', 'mode': 'shopping_add_product', 'product_id': product_id_resolved | int}}] -%}
+              {%- if _ol_safety_relevant or _ol_chore is not none -%}
+                {%- if _ol_chore is not none and _ol_chore is mapping -%}
+                  {%- set ns.a = ns.a + [{'action': 'inspect', 'payload': {'tool': 'zen_dojotools_inventory', 'mode': 'chores_execute', 'chore_id': _ol_chore.id}}] -%}
+                {%- else -%}
+                  {%- set ns.a = ns.a + [{'action': 'inspect', 'payload': {'note': 'No inspection chore registered — use chores_add to create one'}}] -%}
+                {%- endif -%}
+              {%- endif -%}
+              {{ ns.a }}
+        # ── assemble response ─────────────────────────────────────────────────────
+        - variables:
+            final_response:
+              status: ok
+              mode: object_lens
+              lens:
+                type: product
+                focus: "{{ _ol_prod_name }}"
+                product_id: "{{ product_id_resolved | int }}"
+              object:
+                object_type: "{{ _ol_object_type }}"
+                object_id: "{{ product_id_resolved | int }}"
+                name: "{{ _ol_prod_name }}"
+                status: "{{ _ol_status }}"
+              identity:
+                product_id: "{{ product_id_resolved | int }}"
+                name: "{{ _ol_prod_name }}"
+                description: "{{ _ol_description }}"
+                unit: "{{ _ol_qu_name }}"
+                zen_asset_type: "{{ _ol_asset_type }}"
+                zen_safety_type: "{{ _ol_safety_type }}"
+                ha_labels: "{{ _ol_ha_labels }}"
+              context:
+                area: "{{ _ol_ha_area }}"
+                room: "{{ area_name(_ol_ha_area) if _ol_ha_area is not none and _ol_ha_area | trim != '' else none }}"
+                container_id: "{{ _ol_consume_lid }}"
+                container: "{{ _ol_loc_name }}"
+                criticality: "{{ _ol_criticality }}"
+              stock:
+                in_stock: "{{ _ol_amount }}"
+                installed:
+                  count: "{{ _ol_installed | map(attribute='amount') | sum | float(0) }}"
+                  location_id: "{{ _ol_consume_lid }}"
+                  location: "{{ _ol_loc_name }}"
+                  entries: "{{ _ol_installed }}"
+                spares:
+                  count: "{{ _ol_spares | map(attribute='amount') | sum | float(0) }}"
+                  entries: "{{ _ol_spares }}"
+                threshold: "{{ _ol_min_stock }}"
+                status: "{{ _ol_stock_status }}"
+                best_before_next: "{{ _ol_bbd_next }}"
+              maintenance:
+                chore: "{{ {'id': _ol_chore.id, 'name': _ol_chore.name, 'due': _ol_chore_due, 'next_execution': _ol_chore.get('next_execution_date')} if _ol_chore is not none and _ol_chore is mapping else none }}"
+                cadence_days: "{{ _ol_chore.get('period_days') | int(0) if _ol_chore is not none and _ol_chore is mapping else 0 }}"
+                inspection_required: "{{ _ol_safety_relevant }}"
+              safety:
+                safety_relevant: "{{ _ol_safety_relevant }}"
+                hazmat_class: "{{ _ol_hazmat }}"
+                emergency_visible: "{{ _ol_safety_relevant }}"
+              actions: "{{ _ol_actions }}"
+              tool: "{{ tool_name }}"
+              version: "{{ tool_version }}"
+        - stop: object_lens done
           response_variable: final_response
     - alias: 'tasks_add — create a new Grocy task'
       choose:
@@ -4956,6 +5752,12 @@ script:
               {%- if product_group_id_in is not none -%}
                 {%- set _ns.p = _ns.p | combine({'product_group_id': product_group_id_in | int}) -%}
               {%- endif -%}
+              {%- if move_on_open_in is not none -%}
+                {%- set _ns.p = _ns.p | combine({'move_on_open': 1 if move_on_open_in | bool else 0}) -%}
+              {%- endif -%}
+              {%- if due_days_after_open_in is not none -%}
+                {%- set _ns.p = _ns.p | combine({'default_best_before_days_after_open': due_days_after_open_in | int}) -%}
+              {%- endif -%}
               {%- set _desc_parts = [] -%}
               {%- if has_note -%}{%- set _desc_parts = _desc_parts + [note_in] -%}{%- endif -%}
               {%- if has_brand -%}{%- set _desc_parts = _desc_parts + ['Brand: ' ~ brand] -%}{%- endif -%}
@@ -5034,6 +5836,8 @@ script:
                 {%- if shopping_location_id_resolved is not none -%}{%- set out = out + ['shopping_location_id'] -%}{%- endif -%}
                 {%- if to_location_id_resolved is not none -%}{%- set out = out + ['default_consume_location_id'] -%}{%- endif -%}
                 {%- if product_group_id_in is not none -%}{%- set out = out + ['product_group_id'] -%}{%- endif -%}
+                {%- if move_on_open_in is not none -%}{%- set out = out + ['move_on_open'] -%}{%- endif -%}
+                {%- if due_days_after_open_in is not none -%}{%- set out = out + ['default_best_before_days_after_open'] -%}{%- endif -%}
                 {{ out }}
               tool: "{{ tool_name }}"
               version: "{{ tool_version }}"

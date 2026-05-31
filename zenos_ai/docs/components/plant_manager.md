@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 1.3.1
+**Version:** 1.5.0
 **Script:** `zen_dojotools_plant`
 
 ---
@@ -15,7 +15,8 @@ Key capabilities:
 - Water usage and billing rate
 - Gas consumption (if sensor labeled)
 - HVAC climate units snapshot
-- Mechanical: water heater + sump pump
+- Mechanical: water heater + sump pump + motors
+- Inventory attachment: optional Grocy `room_brief` per load area (`include_inventory=true`)
 - Circuit-level breakdown (by lifetime Wh or live amps)
 - Slot validation report — identify what's wired, what needs a label
 - Utility registry injected from Room Manager household cabinet
@@ -34,7 +35,7 @@ All sections return `available: false` when entities are missing or unavailable.
 | `hvac` | Climate units: mode, setpoint, current temp. Gas utility contact from utility_index. |
 | `water` | Water usage sensor + billing rate + `usage_since` timestamp |
 | `gas` | Live gas sensor if labeled, else graceful N/A + utility contact |
-| `mechanical` | Water heater + sump pump + garage_water subnodes (softener, auto-shutoff, leak sensors) |
+| `mechanical` | Water heater + sump pump + motors + water_management subnodes (softener, auto-shutoff, leak sensors). Optional `include_inventory=true` calls Grocy `room_brief` for each load area. |
 | `thermal` | Thermal-managed loads distinct from HVAC — hot tub, freezers, generic thermal. Not room air. |
 | `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`) |
 | `validate` | Slot resolution report — entity_id, pinned, raw_state, ok |
@@ -89,9 +90,10 @@ Pin a sensor to any slot by applying the matching label. Overrides always take f
 | `zen_plant_hot_tub` | Thermal: hot tub setpoint + temp | `climate.*` (setpoint+temp) or `sensor.*temp*` (read-only) |
 | `zen_plant_freezer` | Thermal: freezer temp (one node per entity) | `sensor.*` |
 | `zen_plant_thermal` | Thermal: generic thermal-managed load | Any — surfaced as `thermal_load` nodes |
-| `zen_plant_water_softener` | Garage water: softener/conditioner sensors | `sensor.*`, `binary_sensor.*` |
-| `zen_plant_auto_shutoff` | Garage water: auto shutoff valve | `binary_sensor.*` or `switch.*` |
-| `zen_plant_leak_sensor` | Garage water: leak detection probes | `binary_sensor.*` |
+| `zen_plant_motor` | Mechanical: motor entity (cover, fan, binary_sensor, etc.) — surfaces in `motors[]` list | Any domain |
+| `zen_plant_water_softener` | Water management: softener/conditioner sensors | `sensor.*`, `binary_sensor.*` |
+| `zen_plant_auto_shutoff` | Water management: auto shutoff valve | `binary_sensor.*` or `switch.*` |
+| `zen_plant_leak_sensor` | Water management: leak detection probes | `binary_sensor.*` |
 
 ---
 
@@ -177,7 +179,7 @@ Write utility_index via `zen_dojotools_room_manager mode=utility utility_action=
 | `hvac{}` | `available`, `units[]`, `count` |
 | `water{}` | `available`, `usage_gal`, `rate_per_1000gal_usd`, `source` |
 | `gas{}` | `available`, `live_consumption_therms`, `note`, `source` |
-| `mechanical{}` | `available`, `water_heater{}`, `sump_pump{}` |
+| `mechanical{}` | `available`, `water_heater{}`, `sump_pump{}`, `motors[]`, `water_management{}` |
 | `utilities` | Full utility_index from household cabinet |
 
 ### electric
@@ -208,7 +210,11 @@ Adds `usage_since` — sensor `last_reset` attribute as ISO timestamp, or `null`
 | `entity_id` | binary_sensor.* entity |
 | `active` | bool — pump running (`on` state) |
 
-### mechanical — garage_water{}
+### mechanical — motors[]
+
+Populated from entities labeled `zen_plant_motor`. Each entry: `{entity_id, name, domain, area, state}`. Empty list if no entities labeled. `available` flag on the mechanical block reflects motor presence.
+
+### mechanical — water_management{}
 
 Present when any `zen_plant_water_softener`, `zen_plant_auto_shutoff`, or `zen_plant_leak_sensor` entity is labeled. Covers the mechanical water infrastructure outside the main distribution path.
 
@@ -218,7 +224,11 @@ Present when any `zen_plant_water_softener`, `zen_plant_auto_shutoff`, or `zen_p
 | `auto_shutoff` | `{entity_id, state}` for the shutoff valve. State `on` = cutoff engaged (normally-open convention). `null` if none labeled. |
 | `leak_sensors` | List of leak probe nodes — `entity_id`, `name`, `state`. `null` if none labeled. |
 
-Grocy chores for garage water maintenance are accessible via `chores_by_area homeassistant_area_id=garage`.
+Grocy chores for water management maintenance are accessible via `chores_by_area homeassistant_area_id=<area>`.
+
+### mechanical — include_inventory
+
+Pass `include_inventory: true` to attach Grocy `room_brief` output to the water heater and hot tub nodes. Calls are made per unique HA area (one call if both share an area, two if separate). Adds `inventory` key to each load node. Requires Grocy to be configured and reachable.
 
 ### mode=thermal — Response
 
@@ -226,7 +236,7 @@ Returns `thermal` block — thermal-managed loads distinct from HVAC (not room a
 
 | Key | Content |
 |-----|---------|
-| `hot_tub` | `{entity_id, name, setpoint, current_temp}` if `zen_plant_hot_tub` labeled, else `null` |
+| `hot_tub` | `{entity_id, name, setpoint, current_temp, area}` if `zen_plant_hot_tub` labeled, else `{available: false, note: ...}` |
 | `freezers` | List of freezer nodes `{entity_id, name, temp}` from `zen_plant_freezer` entities |
 | `other_loads` | List of `{type: thermal_load, entity_id, name, state}` from `zen_plant_thermal` entities |
 

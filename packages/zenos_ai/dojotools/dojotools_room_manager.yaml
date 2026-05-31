@@ -1,5 +1,5 @@
 ###############################################################################
-# zen_dojotools_room_manager v1.47.0 (codename: RoomReg)
+# zen_dojotools_room_manager v1.48.0 (codename: RoomReg)
 # Physical room definition registry — spatial topology, adjacency, portals
 #
 # ── TODO: VAC_SYNC v2 — RE-ENGINEER, DO NOT REMOVE ───────────────────────────
@@ -67,9 +67,9 @@
 
 script:
   zen_dojotools_room_manager:
-    alias: Zen DojoTools Room Manager v1.47.0
+    alias: Zen DojoTools Room Manager
     description: >-
-      Room intelligence hub + household crisis authority (v1.45.0).
+      Room intelligence hub + household crisis authority (v5.1.0).
       mode=get area=X: full room brief — topology, live state, inventory, chores,
       tasks, calendar. context_slices=+inventory,+chores,+tasks,+calendar.
       mode=emergency scenario=fire|burglar|weather|medical area=X: crisis snapshot
@@ -574,12 +574,14 @@ script:
                 response_variable: _grocy_raw
                 continue_on_error: true
                 data:
-                  mode: stock_area_volatile
+                  mode: object_lens
                   homeassistant_area_id: "{{ _area_id }}"
+                  expand: true
+                  per_page: 5
               - variables:
                   _grocy_ctx: >-
                     {%- if _grocy_raw is defined and _grocy_raw is mapping
-                           and _grocy_raw.get('status') == 'success' -%}
+                           and _grocy_raw.get('lens') is mapping -%}
                       {{ _grocy_raw }}
                     {%- else -%}{{ none }}{%- endif -%}
 
@@ -601,7 +603,21 @@ script:
                   _chores_ctx: >-
                     {%- if _chores_raw is defined and _chores_raw is mapping
                            and _chores_raw.get('status') == 'success' -%}
-                      {{ _chores_raw | combine({'chore_actions': {
+                      {%- set ns = namespace(chores=[]) -%}
+                      {%- for c in _chores_raw.get('chores', []) -%}
+                        {%- if c.get('product_id') is not none -%}
+                          {%- set ns.chores = ns.chores + [c | combine({
+                            'replace_action': {
+                              'step_1': {'tool': 'zen_dojotools_inventory', 'mode': 'chores_execute', 'chore_id': c.chore_id},
+                              'step_2': {'tool': 'zen_dojotools_inventory', 'mode': 'stock_open_item', 'product_id': c.product_id},
+                              'note': 'step_1 burns installed unit from slot; step_2 moves next spare to slot and stamps due date'
+                            }
+                          })] -%}
+                        {%- else -%}
+                          {%- set ns.chores = ns.chores + [c] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ _chores_raw | combine({'chores': ns.chores, 'chore_actions': {
                         'execute': {'tool': 'zen_dojotools_inventory', 'mode': 'chores_execute', 'item': '<chore name>'},
                         'edit':    {'tool': 'zen_dojotools_inventory', 'mode': 'chores_edit',    'item': '<chore name>'},
                         'add':     {'tool': 'zen_dojotools_inventory', 'mode': 'chores_add',     'item': '<chore name>', 'period_days': 7}
@@ -834,7 +850,7 @@ script:
                   spa: "{{ 'zen_dojotools_spamaster — SpaMaster. Canonical for all spa intents: chemistry, jets, cover, lights, audio, temperature. area=' ~ _area_id if _spa_in_area else none }}"
                   egress: "No extra call. Filter portals+windows where exit=true or emerg_exit=true. windows.drop_ft=0=ground safe. emerg_exit=true=designated evacuation route."
                   occupant_profile: "occupants[] names → zen_dojotools_profile_editor mode=get."
-                  grocy: "{{ ('zen_dojotools_inventory — anchor=' ~ _get_spatial.grocy_location_id ~ '. stock_list_by_location(location_id=' ~ _get_spatial.grocy_location_id ~ '): all stock in room. locations_find: containers under anchor. Place object: find/create container (locations_add), stock product (stock_buy_product). Find any item: stock_where_is_item(item=name).') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
+                  grocy: "{{ ('zen_dojotools_inventory — context_slices=+inventory: full denormalized room view (object_lens place lens — tagged products, chores, expanded operational objects). anchor=' ~ _get_spatial.grocy_location_id ~ '. Targeted ops: stock_list_by_location(location_id=' ~ _get_spatial.grocy_location_id ~ '), locations_find (containers), stock_where_is_item (find any item). object_lens is the primary read path for room inventory — use it first.') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
                   chores: "{{ ('context_slices=+chores — maintenance chores (product-stocked or area-tagged). anchor=' ~ _get_spatial.grocy_location_id ~ '. Each entry has chore_id, name, is_due, next_execution. context.chores.chore_actions has execute, edit, add call shapes — pass item=<chore name>. add also takes period_days=N.') if (_get_spatial is mapping and (_get_spatial.grocy_location_id | default('',true)) | trim != '') else none }}"
                   tasks: "{{ ('context_slices=+tasks — ' ~ _dr_task_count ~ ' todo list(s) tagged to area labels. Each list has items[] + task_actions{complete, edit, add} — pass items=[<summary>]. Full capability: zen_dojotools_todo mode=help.') if (_dr_task_count | int) > 0 else none }}"
                   calendar: "{{ ('context_slices=+calendar — ' ~ _dr_cal_count ~ ' calendar(s) tagged to area labels. 7-day event window.') if (_dr_cal_count | int) > 0 else none }}"
@@ -1911,6 +1927,139 @@ script:
                 {%- endfor -%}
                 {{ ns.rooms }}
 
+          # Layer 2 — inventory enrichment: confirm stock status for registered safety items
+          # Confirm path: safety[] entries with grocy_product_id → enrich with live stock status
+          # Zero API calls when no entries have grocy_product_id (graceful degradation)
+          - variables:
+              _em_stock_lookup: {}
+              _em_safety_pids: >-
+                {%- set ns = namespace(pids=[]) -%}
+                {%- for aid, sp in _em_topo.items() -%}
+                  {%- if sp is mapping -%}
+                    {%- for s in (sp.get('safety', []) | list) -%}
+                      {%- if s is mapping and s.get('grocy_product_id') is not none -%}
+                        {%- set _k = s.grocy_product_id | string -%}
+                        {%- if _k not in ns.pids -%}
+                          {%- set ns.pids = ns.pids + [_k] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.pids }}
+          - if: >-
+              {{ _em_safety_pids | length > 0
+                 and states('script.zen_dojotools_inventory') not in ['unavailable','unknown'] }}
+            then:
+              - repeat:
+                  for_each: "{{ _em_safety_pids }}"
+                  sequence:
+                    - action: script.zen_dojotools_inventory
+                      continue_on_error: true
+                      response_variable: _em_spd_raw
+                      data:
+                        mode: stock_get_product_details
+                        product_id: "{{ repeat.item | int }}"
+                    - variables:
+                        _em_stock_lookup: >-
+                          {%- set _cur = _em_stock_lookup | default({}) -%}
+                          {%- if _em_spd_raw is mapping
+                                 and _em_spd_raw.get('status') == 'success' -%}
+                            {%- set _r = _em_spd_raw.get('result', {}) -%}
+                            {%- set _k = repeat.item | string -%}
+                            {{ _cur | combine({_k: {
+                              'amount': _r.get('amount_aggregated', 0) | default(0),
+                              'best_before': _r.get('best_before_next_unit_price', none)
+                            }}) }}
+                          {%- else -%}{{ _cur }}{%- endif -%}
+          # Discover path: find Grocy products with zen_safety_type set not already in safety[]
+          - if: >-
+              {{ states('script.zen_dojotools_inventory') not in ['unavailable','unknown'] }}
+            then:
+              - action: script.zen_dojotools_inventory
+                continue_on_error: true
+                response_variable: _em_disc_raw
+                data:
+                  mode: catalog_find_by_tag
+              - variables:
+                  _em_disc_products: >-
+                    {{ _em_disc_raw.get('products', [])
+                       if _em_disc_raw is mapping and _em_disc_raw.get('status') == 'ok'
+                       else [] }}
+                  _em_confirmed_pids: >-
+                    {%- set ns = namespace(pids=[]) -%}
+                    {%- for aid, sp in _em_topo.items() -%}
+                      {%- if sp is mapping -%}
+                        {%- for s in (sp.get('safety', []) | list) -%}
+                          {%- if s is mapping and s.get('grocy_product_id') is not none -%}
+                            {%- set ns.pids = ns.pids + [s.grocy_product_id | string] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.pids }}
+                  _em_discovered: >-
+                    {%- set ns = namespace(items=[]) -%}
+                    {%- for p in _em_disc_products -%}
+                      {%- if p.id | string not in _em_confirmed_pids -%}
+                        {%- set _stype = p.get('zen_safety_type', none) -%}
+                        {%- set _atype = p.get('zen_asset_type', none) -%}
+                        {%- set _haz   = p.get('hazmat_class', none) -%}
+                        {%- set _area  = p.get('homeassistant_area', none) -%}
+                        {%- set _entry = {
+                          'name': p.name, 'type': _stype if _stype is not none else 'other',
+                          'location_note': 'Discovered from Grocy inventory',
+                          'grocy_product_id': p.id,
+                          'homeassistant_area': _area,
+                          'discovered': true,
+                          'zen_asset_type': _atype, 'hazmat_class': _haz
+                        } -%}
+                        {%- set ns.items = ns.items + [_entry] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.items }}
+
+          - variables:
+              _em_safety_enriched: >-
+                {%- set ns = namespace(equip=[], haz=[]) -%}
+                {%- set _lk = _em_stock_lookup | default({}) -%}
+                {%- for s in (_em_safety.safety_equipment | list) -%}
+                  {%- set _pid = s.get('grocy_product_id', none) | string
+                                 if s.get('grocy_product_id') is not none else none -%}
+                  {%- set _st = _lk.get(_pid, none) if _pid is not none else none -%}
+                  {%- if _st is not none -%}
+                    {%- set ns.equip = ns.equip + [s | combine({
+                      'stock_amount': _st.get('amount', 0),
+                      'best_before': _st.get('best_before', none),
+                      'stock_confirmed': true
+                    })] -%}
+                  {%- else -%}
+                    {%- set ns.equip = ns.equip + [s] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for s in (_em_safety.hazards | list) -%}
+                  {%- set _pid = s.get('grocy_product_id', none) | string
+                                 if s.get('grocy_product_id') is not none else none -%}
+                  {%- set _st = _lk.get(_pid, none) if _pid is not none else none -%}
+                  {%- if _st is not none -%}
+                    {%- set ns.haz = ns.haz + [s | combine({
+                      'stock_amount': _st.get('amount', 0),
+                      'best_before': _st.get('best_before', none),
+                      'stock_confirmed': true
+                    })] -%}
+                  {%- else -%}
+                    {%- set ns.haz = ns.haz + [s] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for d in (_em_discovered | default([]) | list) -%}
+                  {%- if d.get('hazmat_class') is not none -%}
+                    {%- set ns.haz = ns.haz + [d] -%}
+                  {%- else -%}
+                    {%- set ns.equip = ns.equip + [d] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'safety_equipment': ns.equip, 'hazards': ns.haz} }}
+
           # from_room — exits in this room + adjacent, nearest shelter (when area= provided)
           - variables:
               _em_from_room: >-
@@ -2005,8 +2154,8 @@ script:
                 from_room: "{{ _em_from_room }}"
                 exits: "{{ _em_exits }}"
                 shelter: "{{ _em_shelter }}"
-                safety_equipment: "{{ _em_safety.safety_equipment }}"
-                hazards: "{{ _em_safety.hazards }}"
+                safety_equipment: "{{ _em_safety_enriched.safety_equipment }}"
+                hazards: "{{ _em_safety_enriched.hazards }}"
                 likely_occupied: "{{ _em_occupied }}"
                 rally_point: "{{ _em_rally }}"
                 utility_cutoffs: >-
@@ -2559,7 +2708,7 @@ script:
               key: room_manager
               friendly_name: Room Manager
               label: room_manager
-              version_semantic: "1.0.0"
+              version_semantic: "5.1.0"
               component_summary: >-
                 Household spatial map — rooms, portals, occupants, live context slices.
                 Consult for any room-centric task.
@@ -2692,7 +2841,7 @@ script:
               climate: "zen_dojotools_climate — pass area_id. spatial.area_sqm in response gives load context."
               egress: "Single room: mode=get area=X exits[] (emerg_exit=true portals+windows, sorted). Whole-home crisis: mode=emergency scenario=fire|burglar|weather|medical — guidance{action,advisory}, exits[], shelter{primary/secondary/avoid with floor_id}, hazards[], safety_equipment[], likely_occupied[]. Add area=X for from_room{room_exits,adjacent_exits,nearest_shelter}."
               occupant_profile: "occupants[] names → zen_dojotools_profile_editor mode=get to load persona and prefs."
-              inventory: "context_slices=+inventory — full denormalized room view: all containers + products + amounts in one call. Or use grocy_location_id anchor for targeted ops (stock_list_by_location, locations_find, stock_where_is_item)."
+              inventory: "context_slices=+inventory — object_lens place lens: tagged products, chores, expanded operational objects per area. Primary read path for room inventory. Or use grocy_location_id anchor for targeted ops (stock_list_by_location, locations_find, stock_where_is_item)."
               chores: "context_slices=+chores — maintenance chores linked to products stocked in this area. Returns chore list + chore_actions{execute, edit, add} at context level — pass item=<chore name>. add also takes period_days=N."
               tasks: "context_slices=+tasks — todo entities labeled with any area label. Label-intersection: area hot_tub_deck (labels: hot_tub, back_yard, …) surfaces any todo entity bearing hot_tub. Tag todo entity with area label to opt in."
               conductor: "context_slices=+conductor — todo entities labeled 'schedule'. The AI conductor queue. Always unfiltered — full list regardless of area."

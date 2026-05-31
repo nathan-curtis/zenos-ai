@@ -121,6 +121,16 @@ Apply `zen_plant_water_rate` or tag a `water_usage` sensor with a name matching 
 
 **`garage_water` binary sensor convention:** normally-open — `ON` means cutoff engaged (valve closed), `OFF` means flowing normally. Correct for most auto-shutoff hardware.
 
+### v1.5.0 additions
+
+| Feature | Detail |
+|---------|--------|
+| `motors[]` in mechanical | New `zen_plant_motor` label — tag any motor entity (cover, fan, binary_sensor). `mode=mechanical` returns `motors[]`: `{entity_id, name, domain, area, state}`. |
+| `include_inventory` field | Pass `include_inventory: true` to attach Grocy `room_brief` to water heater and hot tub load nodes. One call per unique area; separate calls if different areas. |
+| `water_management{}` | Renamed from `garage_water` — covers softener, auto-shutoff, leak sensors. Same schema, more accurate name. |
+| `name` field on thermal loads | `water_heater` and `hot_tub` nodes now include `name`. Missing sump pump returns `{available: false, note: ...}` instead of bare `null`. |
+| `area` on all load nodes | Every load node (`water_heater`, `hot_tub`, `sump_pump`, `freezers`, `motors`, thermal generics) now carries `area` from `area_id(entity_id)`. |
+
 See [Plant Manager reference](../components/plant_manager.md) for the full discovery waterfall and slot reference.
 
 ---
@@ -341,7 +351,7 @@ The old pattern: most tools wrote values directly as raw JSON. Some wrote string
 
 ---
 
-## AutoVac — New (v3.11.0)
+## AutoVac — New (v3.12.0)
 
 Autonomous robotic vacuum management. Room scheduling, consumable ERP loop via Grocy, wear sensor alerting, post-dock map analysis.
 
@@ -388,8 +398,9 @@ Rooms are stored in the `autovac` drawer of the household cabinet. Per-room conf
 | `run` | Schedule-triggered. Evaluates all guards: system_disabled, paused_today, DnD, low battery, vacuum not ready, already-run dedup per schedule entity. |
 | `run_elected` | Runs all elected rooms — bypasses schedule dedup. `dry_run: true` supported. |
 | `clean` | Immediate clean by room slug(s). Vacuum must be docked or idle. |
-| `briefing` | ~30-min pre-run announcement via Postman TTS with "Stop it!" ack action. |
-| `handle_ack` | Processes Postman push ack. `cancel` action → pauses all scheduled runs today, returns vacuum to dock if running. |
+| `briefing` | ~30-min pre-run announcement via Postman TTS. Three action buttons: **"Go now!"** (fires immediately, marks slot done to prevent double-fire), **"Skip this run"** (marks this slot only), **"Pause all day"** (sets `pause_today`, returns to dock if running). Skips silently if system disabled or paused. Gate: `states(schedule) == 'off'` and `next_event.date() == today` — no name-based day filter. |
+| `handle_ack` | Processes Postman push ack. `go_now` → fires vacuum inline using current elected list, marks schedule slot done. `cancel_run` → marks slot only. `pause_day` / legacy `cancel` → `pause_today = true`. `ack_context` format: `prerun_YYYYMMDD\|schedule.entity_id`. |
+| `setup` | Upgraded to full onboarding operator: (1) label audit, (2) cabinet drawer init (`{system, rooms:{}}` if blank — idempotent), (3) KFC dojo deploy via Scribe (seed path: `zen_dojotools_autovac mode=status`; index fallback via `label:autovac`), (4) optional Grocy ERP provision (`config={"provision_inventory":true}`). `dry_run=true` previews all write steps without executing. |
 | `analyze` | Post-dock: updates `last_cleaned`, clears `current_run`, fires `zen_event kind: autovac_run_complete`. Camera map analysis via camera tool if camera is labeled. |
 
 ### Consumables ERP
@@ -419,6 +430,19 @@ Each preset defines SKUs, wear sensor keys, wear thresholds, storage location ca
 ### Integration detection
 
 `integration_entities('roborock')` at runtime — no config flag. Native Roborock integration → `vacuum.clean_area` (area-based). Legacy Xiaomi MiHome → `xiaomi_miio.vacuum_clean_segment` (segment IDs). Both paths fully supported.
+
+### Controller automation
+
+`zen_autovac_controller` is included in `dojotools_autovac.yaml` — consolidates 9 previously separate KFC automations into one. All label/event/time triggers are generic and live in the package. Named-entity triggers (vacuum error state, camera blueprint) stay in the personal KFC file.
+
+| Trigger ID | Trigger | Action |
+|-----------|---------|--------|
+| `dock` | `vacuum.docked` on `label:autovac` | analyze → check_wear → 1min delay → ninja_summarizer → `autovac_docked` event |
+| `schedule_on` | `schedule.turned_on` on `label:autovac_schedule` | `mode=run`; + `mode=morning_reset` if `'morning' in trigger.entity_id` |
+| `briefing_timer` | Template: 30-min window | `mode=briefing` |
+| `nightly` | `time: 00:00:00` | `mode=nightly_reset` |
+| `ack` | `zen_event postman_ack ack_owner=autovac` | `mode=handle_ack` |
+| `ha_start` | `homeassistant: start` | Catch-up `analyze(docked)` if vacuum docked + pending `current_run` in cabinet |
 
 See [AutoVac reference](../components/autovac.md).
 
@@ -489,7 +513,7 @@ When inspecting a `person.*` entity, Inspect now injects a full identity block:
 
 ---
 
-## Grocy — v4.44.0
+## Grocy — v4.44.0 → v4.54.0
 
 Major additions on top of v4.10.0 (which shipped the base of Clue):
 
@@ -517,13 +541,14 @@ Major additions on top of v4.10.0 (which shipped the base of Clue):
 |------|---------|-------------|
 | **Dispatcher** | v1.3.0 | Postman Tier 2, infra escalation hard deny, Covers + Climate Tier 2, security_manager route, spamaster route, autovac route (all 17 fields). v1.3.0: todo route added. |
 | **ZenLux** | v0.6.0 | zen_lm_* hardware role label taxonomy (8 labels + legacy fallback chain), discover/setup/label_suggest/resolve_debug/auto_label modes, prefs_sweep whole-home apply, bleed_threshold param, prefs_apply RM-state auto-detection (Engaged→work, Asleep→sleep) |
-| **Room Manager** | v1.47.0 | `home_overview`: three new opt-in fields — `include_notices` (active ZenOS alerts, HA repairs, persistent notifications, Postman dispatches, pre-built action_queue[]), `include_presence` (hps-labeled tracker block), `presence_mode=filtered\|discover` (discover surfaces all BPS candidates with hint + suggest for labeling guidance). v1.45.0–v1.47.0: `+inventory` now calls `stock_area_volatile` (actual volatile items for the room, not count tree); `mode=setup` preflight uses canon resolver (`states('sensor.zen_dojo_cabinet_resolved')`), returns `{status: error, missing[], action}` if Household Cabinet absent; `area_create` settling delay 1.5s (was 0.5s — back-to-back OOBE calls failed); `mode=set` bifurcated error (cabinet absent vs area omitted now distinct). |
+| **Room Manager** | v1.48.0 | `home_overview`: three new opt-in fields — `include_notices` (active ZenOS alerts, HA repairs, persistent notifications, Postman dispatches, pre-built action_queue[]), `include_presence` (hps-labeled tracker block), `presence_mode=filtered\|discover`. v1.45.0–v1.47.0: `+inventory` → `stock_area_volatile`; `mode=setup` preflight; `area_create` 1.5s settling; `mode=set` bifurcated error. **v1.48.0:** `area_create` pre-flight `area_id()` guard (ServiceValidationError no longer kills conversation agent); `floor_assign` pre-flight `floors()` guard in both `area_create` and `area_update`; `area_update` removes phantom `homeassistant.update_area` calls (Spook has no such service — `ha_ui_advisory` returned instead); `+inventory` → `object_lens` place lens (full operational objects, not just volatile items); per-entity `room_context` slim (summary + `room_area_id` pointer), full payload in `domain_context.room_manager[area_id]`; +chores: `replace_action{step_1: chores_execute, step_2: stock_open_item}` on product-linked chores; emergency mode: safety items with `grocy_product_id` enriched with live stock status. |
 | **Climate Manager** | v1.1.0 | `topology_context` in GET: open doors/windows, area sensors, RM HVAC bleed portals, natural vent advisory |
-| **Grocy** | v4.47.0 | chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW, null-unit doctrine, to_unit_id field. **v4.10.0 shipped with base Clue build.** v4.45.0–v4.47.0: `location_id` field added to volatile slim item projections (overdue/due_soon/expiring) — `i.product.location_id`, default storage location as area membership signal. New `stock_area_volatile` mode: filters whole-house volatile to a HA area via location ID membership. |
-| **Plant Manager** | v1.3.1 | `mode=thermal` — temperature-managed loads: `zen_plant_hot_tub` (climate.* or sensor.*temp*), `zen_plant_freezer`, `zen_plant_thermal` (generic). `mode=mechanical` garage_water subnode: `zen_plant_water_softener`, `zen_plant_auto_shutoff` (ON=cutoff engaged, normally-open), `zen_plant_leak_sensor`. Grocy chores pointer for garage water maintenance. `mode=ignore` / `mode=unignore` — creates `zen_plant_ignore` label on-demand, tags/untags entity. |
-| **Postman** | v1.6.2 | Ack loop — owner deletes log entry after consuming (GC is safety net only). `open_dashboard` injects `homeassistant://navigate/<assist_path>` as `clickAction`/`url` — companion app tap opens Friday's dashboard directly. `assist_path` stored in postman_profile. Race fix: removed step 8.4 (was writing log entry before ack state stable). |
+| **Grocy** | v4.54.0 | chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW, null-unit doctrine. v4.44–v4.47: `stock_area_volatile` mode, `location_id` on volatile projections. v4.48: `room_brief` (chores + stock in one call; three-path chore discovery: area-tagged OR product stocked at area location OR `ha_labels` contains area slug); `chores_tag`, `tasks_add`, `tasks_tag`; `slim_objects` field; product_name enrichment on `shopping_add/remove_product`, `stock_check_item`/`stock_where_is_item`, `stock_entry_update`; userfields bugfixes (sibling key footgun, wrong cabinet resolver, missing FC value unwrap). v4.49–v4.54: `userfields_create` (idempotent); `userentities_list/create/delete`; `userobjects_list/create/delete`; `userentity_values_get/set` — full ERP object substrate for custom domain types (room, vehicle, appliance, etc.). 96 operations total. |
+| **Plant Manager** | v1.5.0 | v1.3.1: `mode=thermal`, `mode=mechanical` garage_water subnode, `mode=ignore/unignore`. v1.5.0: `motors[]` in mechanical (`zen_plant_motor` label); `include_inventory` field (Grocy `room_brief` per load area); `water_management{}` rename from `garage_water`; `name` + `area` fields on all load nodes; sump pump returns `{available: false, note}` instead of null. |
+| **Postman** | v1.6.2 | Ack loop — owner deletes log entry after consuming (GC is safety net only). `open_dashboard` injects `homeassistant://navigate/<assist_path>` as `clickAction`/`url` — companion app tap opens Friday's dashboard directly. `assist_path` stored in postman_profile. Race fix: removed step 8.4. `_duck_players` native list fix — removed `\| tojson` / `\| from_json` pair; HA returns native Python list when value is `[]`, not a JSON string — caused `ValueError: from_json got invalid input '[]'` on TTS duck attempts. |
 | **Ectoplasm** | v4.6.1 | `floor_assign`/`unassign` REST path, `area_id` reserved word fix, error surface improvements |
-| **Index / ZQ-1** | v5.0.1 | `person.*` identity overlay via script call, `person_list` FG-38 from_json guard |
+| **Index / ZQ-1** | v5.0.1 | `person.*` identity overlay via script call, `person_list` FG-38 from_json guard. `+inventory` output field: `object_lens` place lens per entity area — slim per-entity shell (`inventory_summary` + `room_area_id`), full payload in `domain_context.room_manager[area_id].context.inventory`. `+tasks`: `task_actions{complete, edit, add}` per list. `+chores`: `chore_actions{execute, edit, add}` + `replace_action` per product-linked chore. Missing comma in Inspect `help_json` dict fixed (TemplateSyntaxError on restart). |
+| **History** | — | Curly quote (U+2018/U+2019) YAML delimiter on `caller_token` → straight double quotes. Was causing silent data corruption on any call echoing the token. |
 | **ZQ-1 filter engine** (`zen_query.jinja`) | v4.5.7 | `friendly_name_regex` filter — `regex_search()` against `friendly_name` attribute; SEED or FILTER mode. Complements `entity_id_regex` (added v4.6.0). |
 | **Labels** | v4.6.0 | `target_areas` support, `add/remove_label_to_area` |
 | **Camera** | v1.4.0 | `ai_task` gate for look/scan, `sendto` field expansion, **8h result expiry** for look/scan modes (was 24h). Lens pattern: Security Manager + RM +security are complementary, not competing. |
@@ -590,8 +615,8 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 
 | File | Change |
 |------|--------|
-| `dojotools/dojotools_room_manager.yaml` | New — v1.42.0 → v1.47.0. Full spatial topology tool. v1.47.0: `+inventory` → stock_area_volatile, setup preflight canon resolver, area_create 1.5s settling, set error bifurcation, include_notices/include_presence in home_overview. |
-| `dojotools/dojotools_plant.yaml` | New — v1.3.1. Physical plant + energy manager. mode=thermal (hot_tub/freezers/generic loads), mode=mechanical garage_water subnode (softener/auto_shutoff/leak_sensor), mode=ignore/unignore (creates zen_plant_ignore label on-demand). |
+| `dojotools/dojotools_room_manager.yaml` | New — v1.42.0 → v1.48.0. Full spatial topology tool. v1.47.0: `+inventory` → stock_area_volatile, setup preflight, area_create 1.5s settling, include_notices/include_presence. v1.48.0: area_create/area_update guards (ServiceValidationError → clean error), phantom update_area calls removed, +inventory → object_lens (slim per-entity), replace_action on product-linked chores, emergency safety inventory enrichment. |
+| `dojotools/dojotools_plant.yaml` | New — v1.5.0. Physical plant + energy manager. v1.3.1: mode=thermal, mode=mechanical water_management subnode, mode=ignore/unignore. v1.5.0: motors[] (zen_plant_motor label), include_inventory (Grocy room_brief per load area), water_management rename, name+area on all load nodes. |
 | `dojotools/dojotools_media_manager.yaml` | New — v0.7.2. Whole-home media management. |
 | `dojotools/dojotools_security_manager.yaml` | New — v1.2.0. Replaces dojotools_alarm_panel.yaml (deleted). |
 | `dojotools/dojotools_calendar.yaml` | New — v1.11.0. Split from office.yaml. |
@@ -610,7 +635,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_ectoplasm.yaml` | v4.6.1: floor REST path, area_id fix |
 | `dojotools/dojotools_grocy.yaml` | v4.10.0: idempotent units_add, RM integration, chores_by_area |
 | `dojotools/dojotools_identity.yaml` | v4.7.0: presence block, `cabinet`/`person_entity` explicit keys, reverse residents enriched. v4.5.6: FG-07 expansion cabinet fix, VolumeInfo guard. |
-| `dojotools/dojotools_index.yaml` | v5.0.1: +rm pipeline (Room Manager snapshot slices per entity area), area_entities fix, filter_json fix, person.* identity overlay via script call, person_list FG-38 guard. |
+| `dojotools/dojotools_index.yaml` | v5.0.1: +rm pipeline, area_entities fix, filter_json fix, person.* identity overlay, person_list FG-38 guard. +inventory slim pattern: per-entity summary + room_area_id, full data in domain_context. +tasks: task_actions envelopes. +chores: chore_actions + replace_action. Inspect help_json missing-comma fix. |
 | `dojotools/dojotools_labels.yaml` | v4.6.0: target_areas, add/remove_label_to_area |
 | `dojotools/dojotools_manifest.yaml` | FG-05: domain filter on label_entities |
 | `dojotools/dojotools_office.yaml` | v5.0.0: todo + calendar removed |
@@ -621,19 +646,23 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_systemtools.yaml` | v4.5.9: `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`; all four reload modes config-check gated |
 | `dojotools/dojotools_scheduler.yaml` | v4.5.5: `deferred_script_reload` and `deferred_reload_all` event triggers added |
 | `dojotools/dojotools_spa_manager.yaml` | v3.12.0: replaces calderaspas; consumables ERP (provision, status, add_to_shopping, log_replaced, log_purchased); idempotent Grocy chore creation |
-| `dojotools/dojotools_autovac.yaml` | New — v3.11.0. Full autonomous vacuum surface. |
+| `dojotools/dojotools_autovac.yaml` | New — v3.12.0. Full autonomous vacuum surface. v3.12.0: `zen_autovac_controller` automation (9 KFC automations → 1 package automation); briefing 3-button rewrite (Go now / Skip this run / Pause all day); `mode=setup` onboarding (drawer init + KFC deploy + optional ERP provision); time format fix (3 places). |
 | `dojotools/.autovac_presets/*.yaml` | New — 8 Roborock model presets (loaded via `!include`) |
 | `custom_templates/zenos_ai/zen_identity.jinja` | New — v1.1.0. Template-surface identity resolver. |
-| `plugins/grocy/grocy.yaml` | v4.47.0: chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW + null-unit guard, to_unit_id field. v4.45.0–v4.47.0: `location_id` on volatile slim projections; `stock_area_volatile` mode. |
+| `plugins/grocy/grocy.yaml` | v4.54.0: chores_delete/edit, unit_conversions, product_groups, update_product_meta full RMW, null-unit guard. v4.45–v4.47: `location_id` on volatile projections, `stock_area_volatile`. v4.48: `room_brief` (three-path chore discovery), `chores_tag`, `tasks_add/tag`, `slim_objects`, product_name enrichment, userfields_repair bugfixes. v4.49–v4.54: ERP object substrate — `userfields_create`, `userentities_list/create/delete`, `userobjects_list/create/delete`, `userentity_values_get/set`. 96 operations. |
 | `flynn_oobe.yaml` | v4.2.0+: RM-native room setup, persona handoff step, security_camera label. `_oobe_done` check accepts both `_oobe_complete` (current) and legacy `oobe_complete` (no leading underscore) for backward compat. 5_components options dict with tool names. |
-| `zenos_ai/docs/room_manager.md` | New — v1.42.0 full reference |
-| `zenos_ai/docs/plant_manager.md` | v1.3.1: thermal mode, garage_water subnode, ignore/unignore modes, 6 new zen_plant_* labels |
-| `zenos_ai/docs/media_manager.md` | New |
-| `zenos_ai/docs/spamaster.md` | Updated — v3.12.0: consumables mode section added |
-| `zenos_ai/docs/autovac.md` | New — v3.11.0 full reference |
-| `zenos_ai/docs/alertmanager.md` | Updated |
-| `zenos_ai/docs/zenlux.md` | Updated |
-| `zenos_ai/docs/zenshade.md` | New |
+| `zenos_ai/docs/components/` | New subdirectory — 9 component reference docs moved from docs/ root: alertmanager, autovac, media_manager, plant_manager, room_manager, security_manager, spamaster, zenlux, zenshade. All cross-references updated. |
+| `zenos_ai/docs/components/room_manager.md` | v1.48.0: area_create/update guard docs, +inventory object_lens, replace_action, emergency enrichment |
+| `zenos_ai/docs/components/plant_manager.md` | v1.5.0: motors, include_inventory, water_management, area+name fields |
+| `zenos_ai/docs/components/media_manager.md` | New |
+| `zenos_ai/docs/components/spamaster.md` | Updated — v3.12.0: consumables mode section |
+| `zenos_ai/docs/components/autovac.md` | v3.12.0: controller trigger table, 3-button briefing, setup mode, calendar→schedule fix |
+| `zenos_ai/docs/components/alertmanager.md` | Updated |
+| `zenos_ai/docs/components/zenlux.md` | Updated |
+| `zenos_ai/docs/components/zenshade.md` | New |
+| `zenos_ai/docs/getting_started/autovac_quick_start.md` | New — 5-step user guide: schedule creation, model preset guidance, 3-button briefing |
+| `zenos_ai/docs/getting_started/autovac_first_setup.md` | v3.12.0: Step 7 controller wiring, briefing Postman 3-button test, Step 10 corrected (automatic), Step 12 updated buttons |
+| `zenos_ai/docs/plugins/grocy.md` | v4.54.0: 13 new modes in table, userfields schema management section, ERP object substrate concept section with room userentity example |
 | `zenos_ai/docs/scripts/zen_dojotools_identity_readme.md` | v4.7.0: presence block, lens pivot, template surface, RecursionError note |
 | `zenos_ai/docs/scripts/zen_dojotools_inspect_readme.md` | v5.0.1: person.* overlay section, person_list identity enrichment |
 | `plugins/grocy/readme.md` | v4.44.0: new modes, null-unit doctrine, unit conversions, product groups |

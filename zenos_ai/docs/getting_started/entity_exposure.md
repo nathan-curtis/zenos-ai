@@ -145,6 +145,8 @@ Friday gets a compressed, timestamped summary of everything tagged — without t
 
 Some labels feed summaries. Others feed immediate tools. Both are contextable.
 
+**Labels now connect entities to operational context, not just summaries.** When an entity carries a room or area label, Room Manager can surface not just its live state but the full operational picture for that space: inventory held there, chores due there, and pre-built action sequences (`replace_action`, `chore_actions`) for acting on what's found. A wear sensor labeled `autovac_wear` doesn't just feed a Kata — it feeds a live catalog lookup that tells Friday exactly which spare to pull and how to log the replacement. The label is the permission slip; the operational context is what gets built from it.
+
 The best camera example is a fence or driveway camera. Do not expose every camera attribute directly just because it exists. Label the camera with its room/area and role, then let the camera/security tools resolve it when a component needs perception.
 
 Examples:

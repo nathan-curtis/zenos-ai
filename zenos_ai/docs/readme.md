@@ -309,9 +309,9 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 **2026.6.0 'Clue' — Beta (ETA 2026-06-01)**
 
-* Room Manager (RoomReg) v1.47.0 — spatial topology hub, context slices, home_overview; +inventory via stock_area_volatile; setup preflight canon resolver; area_create 1.5s settling
-* Plant Manager v1.3.1 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + garage_water + ignore/unignore modes
-* Grocy v4.47.0 — stock_area_volatile mode; location_id on volatile projections; area inventory getting-started walkthrough
+* Room Manager (RoomReg) v1.48.0 — spatial topology hub, context slices, home_overview; +inventory via `object_lens` place lens (slim per-entity + full in `domain_context`); +chores with `replace_action` envelopes; area_create/area_update guards; emergency mode safety inventory enrichment
+* Plant Manager v1.5.0 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + water_management + motors + ignore/unignore modes; `include_inventory` attaches Grocy room_brief to load nodes
+* Grocy v4.54.0 — `object_lens` place lens; `room_brief` three-path chore discovery; userentities/userobjects/userfields CRUD (ERP object substrate); `slim_objects` flag; product_name enrichment on 4 modes
 * Postman v1.6.2 — full ack lifecycle: clear_tag consumer pattern, open_dashboard companion URI, race fix
 * Todo v2.5.0 — discoverability, bulk complete, MS365 read fix (all_todos attr), structured 404
 * ZenLux v0.6.0 — major rewrite (ZenLux)

@@ -114,8 +114,8 @@ Pass as comma-separated flags to `context_slices=` on `mode=get`. Any combinatio
 | `+climate` | First climate entity in area. `entity_id`, `hvac_mode`, `setpoint`, `current_temp` |
 | `+covers` | `covers[]`, `open[]`, `avg_position` (0–100) |
 | `+media` | Active media player. `entity_id`, `state`, `media_title`, `volume_level`. Returns `active_count: 0` when nothing playing. |
-| `+inventory` | Volatile items (overdue/due_soon/expiring) in this room via `zen_dojotools_grocy mode=stock_area_volatile`. Filters by `homeassistant_area_id` — returns actual items at risk, not a location container tree. Alias: `+grocy` |
-| `+chores` | Maintenance chores linked to products stocked in the area. `is_due`, `next_execution`, `cadence`, `assignee`. `context.chores.chore_actions{execute, edit, add}` — pre-built call shapes; pass `item=<chore name>`. `add` also takes `period_days=N`. |
+| `+inventory` | Grocy `object_lens` place lens for the area — tagged products, chores, expanded operational objects. Full data in `domain_context.room_manager[area_id].context.inventory` only. Per-entity `room_context` carries a slim `inventory_summary: {tagged_products, chores, status}` + `room_area_id` pointer. Alias: `+grocy` |
+| `+chores` | Maintenance chores linked to products stocked in the area. `is_due`, `next_execution`, `cadence`, `assignee`. `context.chores.chore_actions{execute, edit, add}` — pre-built call shapes; pass `item=<chore name>`. `add` also takes `period_days=N`. Chores with a `product_id` also include `replace_action{step_1: chores_execute, step_2: stock_open_item}` — two-step replacement sequence. |
 | `+tasks` | Todo entities whose labels intersect the area's HA labels. Each list entry includes `items[]` and `task_actions{complete, edit, add}` — pass `items=[<summary>]`. See Label-Intersection below. |
 | `+conductor` | Todo entities labeled `schedule` (AI conductor queue). Always unfiltered — full list regardless of area. |
 | `+calendar` | Calendar entities whose labels intersect area labels. 7-day lookahead. |

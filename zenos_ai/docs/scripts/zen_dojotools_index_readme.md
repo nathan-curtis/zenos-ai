@@ -397,9 +397,10 @@ The Zen Index 5.0.1 provides:
 - Pagination via `limit` / `offset`; `dry_run` returns `total_count` for paging loops
 - Auto-cap of 50 on topology/wildcard seeds with `expand_entities: true` and no limit
 - `+history` flag for 24h recorder stats (requires explicit limit)
-- `+rm` output field: Room Manager snapshot per entity area — `topo`, `light`, `climate`, `covers`, `media` slices injected as `room_context` per entity and in `domain_context.room_manager[area_id]`
-- `+chores` output field: Grocy chores per entity area via `chores_by_area`
-- `+tasks` output field: HA todo tasks per entity area via RM `+tasks` slice
+- `+rm` output field: Room Manager spatial + live state snapshot per entity area — `topo`, `light`, `climate`, `covers`, `media` slices injected as `room_context` per entity and in `domain_context.room_manager[area_id]`
+- `+chores` output field: Grocy chores per entity area via `chores_by_area`. Each chore includes `chore_actions{execute, edit, add}` — pre-built call shapes. Chores with `product_id` also include `replace_action{step_1: chores_execute, step_2: stock_open_item}`.
+- `+tasks` output field: HA todo tasks per entity area via RM `+tasks` slice. Each list includes `task_actions{complete, edit, add}`.
+- `+inventory` output field: Grocy `object_lens` place lens per entity area — tagged products, chores, expanded operational objects. **Slim pattern:** per-entity `room_context` carries `inventory_summary{tagged_products, chores, status}` + `room_area_id` pointer only. Full payload lives in `domain_context.room_manager[area_id].context.inventory` — fetched once per unique area, not duplicated per entity.
 - Inspect registry modes: `area_info`, `floor_info`, `device_info`, `area_list`, `floor_list`, `label_list`, `zone_list`, `person_list`, `device_list`, `integration_entities`
 - Optional Zen Inspect expansion with `output_fields` passthrough
 - Label-targeted drawer blurbs via `label_targets` → Inspect → FileCabinet
