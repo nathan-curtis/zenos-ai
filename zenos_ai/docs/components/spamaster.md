@@ -256,10 +256,10 @@ For the shared Grocy inventory contract used by SpaMaster and AutoVac, see [Groc
 
 | Action | Description |
 |--------|-------------|
-| `provision` | Builds parts + chem catalog from a model preset. Creates Grocy products, location, and scheduled chores. Idempotent — safe to re-run; existing chores found by name and reused. |
+| `provision` | Builds parts + chem catalog from a model preset. Creates Grocy products, location, and scheduled chores. Sets `to_location_id` + `move_on_open: true` on each product so `log_replaced` can move the next spare automatically. Idempotent — safe to re-run. |
 | `status` | Returns catalog with current stock levels, last-replaced dates, reorder flags. |
 | `add_to_shopping` | Adds flagged items to a Grocy shopping list. |
-| `log_replaced` | Records a part replacement to the Grocy chore log. Requires `part`. |
+| `log_replaced` | If `chore_id` set: executes chore (handles stock internally). If no chore: consumes installed unit from `storage_location_id`. Always: opens next spare via `stock_open_item` — Grocy moves it to the install slot. Requires `part`. |
 | `log_purchased` | Records a supply purchase (quantity received). Requires `part`. `amount` defaults to 1; decimals supported. |
 
 ### Fields
@@ -281,7 +281,7 @@ mode=consumables  action=provision  model_preset=caldera_utopia_florence_2024
 
 What it does:
 1. Creates a Grocy location matching the HA area name (skips if exists)
-2. Creates products for each part in the preset (brand-generic names; duplicate-safe)
+2. Creates products for each part and chem supply in the preset (brand-generic names; duplicate-safe); sets `to_location_id` + `move_on_open: true` on each so `log_replaced` knows where to move the next spare
 3. Creates scheduled chores for maintenance parts; on-demand chems get `chore_id: null` by design
 4. Stores the full catalog in cabinet key `spa_consumables`
 
