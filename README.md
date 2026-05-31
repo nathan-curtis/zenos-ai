@@ -10,12 +10,13 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Next release: 2026.6.0 'Clue' — Beta** | Stable: 2026.5.0 'Fry's Grandpa'
+> **🔖 Public beta — `feat/2026.6.0`:** This branch is feature-complete and UAT-passing. It's a near-final preview of 2026.6.0 'Clue'. The code is solid enough to run; it's not yet promoted to `main`. This notice will be removed at release. If you find something, file it — we're listening.
+<!-- REMOVE-BEFORE-MERGE -->
 
-> **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
+**Stable: 2026.6.0 'Clue'** | Previous: 2026.5.0 'Fry's Grandpa'
 
-> **⚠️ Beta notice:** 2026.6.0 'Clue' is currently in public beta on the `feat/2026.6.0` branch. If testing passes, GA release is targeted for the **first week of June 2026**. Not recommended for production installs unless you enjoy living on the edge (Nyx does; she's fine).
->
+> **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
+
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
 **What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it.
@@ -30,7 +31,7 @@ And a few things that are.
 - **OOBE v4.2.0** — Room Manager-native first-run room setup.
 - **ZenShade v0.2.2** — cover management with ZenLux sync.
 
-→ [Release Notes — Clue](zenos_ai/docs/releases/clue.md) *(beta)*
+→ [Release Notes — Clue](zenos_ai/docs/releases/clue.md)
 
 ---
 

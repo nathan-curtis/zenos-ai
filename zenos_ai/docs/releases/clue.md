@@ -1,9 +1,12 @@
 # Release Notes — 2026.6.0 'Clue'
 
-**Status:** Beta — Release ETA 2026-06-01
-**Branch:** `feat/2026.6.0`
+<!-- REMOVE-BEFORE-MERGE -->
+> **Public beta — `feat/2026.6.0`:** Near-final. UAT-passing. Not yet promoted to `main`. This notice will be removed at release.
+
+**Status:** Stable — shipped 2026-06-01
+**Branch:** `main` (merged from `feat/2026.6.0`)
 **Base:** 2026.5.0 'Fry's Grandpa'
-**UAT:** Nyx (H:\)
+**UAT:** Nyx (H:\) — ✅ passed
 
 ---
 

@@ -8,15 +8,18 @@
 
 ---
 
-> ### In Progress: 2026.6.0 'Clue' — Beta (ETA 2026-06-01)
+<!-- REMOVE-BEFORE-MERGE -->
+> **Public beta — `feat/2026.6.0`:** Near-final. UAT-passing. Not yet promoted to `main`. This notice will be removed at release.
+
+> ### 2026.6.0 'Clue' — Released
 >
-> **1. Room Manager v1.47.0 + Grocy v4.47.0.** `+inventory` now calls `stock_area_volatile` — actual overdue/due-soon/expiring items per room, not a summary count. Grocy adds `stock_area_volatile` mode and `location_id` on all volatile projections. New [Getting Started — Area Inventory](plugins/grocy.md#getting-started--area-inventory) walkthrough: tag locations → stock products → Room Manager reads automatically.
+> **1. Room Manager v1.48.0 + Grocy v4.54.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
 >
-> **2. Plant Manager v1.3.1.** New modes: `thermal` (hot tub, freezer — temperature-managed objects), `garage_water` (water softener, auto-shutoff valve, leak sensors — NC binary_sensor convention), and `ignore`/`unignore` (entity tagging via `zen_plant_ignore` label).
+> **2. Plant Manager v1.5.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
 >
-> **3. Postman v1.6.2 + AlertManager Postman Integration.** Full ack lifecycle: fire with `response_type` → pm_tag logged → poll `get_response` → `clear_tag` after consuming (owner's responsibility; GC is safety net). `open_dashboard: true` injects `homeassistant://navigate/<assist_path>` — companion app opens Friday's dashboard on tap. New [Postman Integration](components/alertmanager.md#postman-integration) section in AlertManager docs.
+> **3. AutoVac v3.12.0.** Controller automation in package (no per-schedule wiring). 3-button briefing (Go now / Skip / Pause all day). `mode=setup` deploys KFC + inits cabinet in one call.
 >
-> **4. Scribe v1.8.0 + Summarizer v4.6.0.** Scribe gains `repair` mode (wrapper-accumulated drawer corruption up to 5 levels), `republish_kfc` (edit-and-republish without scroll gate), `component_size` feedback, and schedules upsert by `kata_key`. Summarizer adds `zen_action_emission_enabled` operator kill switch and `emission_cooldown_minutes` per-component gate.
+> **4. Postman v1.6.2 + AlertManager Postman Integration + Scribe v1.8.0 + Summarizer v4.6.0.** Full ack lifecycle, `open_dashboard` companion URI. Scribe: `repair`, `republish_kfc`, `component_size`. Summarizer: dual-seed, emission gate.
 >
 > → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](components/room_manager.md) | [Plant Manager](components/plant_manager.md) | [Grocy](plugins/grocy.md)
 
