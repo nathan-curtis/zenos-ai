@@ -1,6 +1,31 @@
 ###############################################################################
 # ZenOS-AI Alert Manager
-# Version: 1.2.0
+# Version: 5.1.0
+#
+# Additions in 1.5.0:
+#   fire: image_entity + response_type fields — passed through to postman.
+#   fire: response_type triggers wait_for_trigger in postman; ack cached to
+#     kata cabinet under alert_response_{key} and re-emitted as
+#     zen_event(kind=alert_response) for any downstream subscriber.
+#   get_response: new mode — reads cached ack for a given alert_key from
+#     kata cabinet. Returns {ack_action, ack_timed_out, ack_device_id,
+#     responded_at} or status: pending if not yet captured.
+#
+# Fixes in 1.4.0:
+#   Tool: all FileCabinet write value: fields now guard with tojson when value
+#     is a native dict (HA ast.literal_eval stores tojson output as Python dict,
+#     which FileCabinet's from_json parser rejects as invalid JSON).
+#   Tool: all stop: actions converted to variables:result + stop: label +
+#     response_variable: result pattern (stop: tojson string was ignored by HA).
+#   Tool: from_json guards on all list/inject/policy variables ([] input guard).
+#   Tool: description rewritten to agent-actionable, PII scrubbed.
+#
+# Additions in 1.3.0:
+#   alert_fire: optional clear_after_minutes → stores expires_at in entry.
+#   TTL sweep: FileCabinet GC (dojotools_core.yaml step 4c) fires alert_clear
+#     for entries whose expires_at is in the past, handling orphaned keys left
+#     by HA restarts that abort the caller's post-fire delay. Permanent alerts
+#     (no expires_at) are never touched by GC.
 #
 # Additions in 1.2.0:
 #   zen_priority_inject_handler — write/clear event handler for _zen_priority_inject
@@ -21,6 +46,7 @@ template:
             {%- set vars = vars if vars is mapping else {} -%}
             {%- set raw  = vars.get('_zen_priority_inject', {}) -%}
             {%- set slot = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+            {%- set slot = slot.get('value', slot) if slot is mapping else {} -%}
             {%- set now_ts = now() -%}
             {%- set ns = namespace(active=0) -%}
             {%- for pid, entry in slot.items() if entry is mapping -%}
@@ -43,6 +69,7 @@ template:
               {%- set vars = vars if vars is mapping else {} -%}
               {%- set raw  = vars.get('_zen_priority_inject', {}) -%}
               {%- set slot = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+              {%- set slot = slot.get('value', slot) if slot is mapping else {} -%}
               {%- set now_ts = now() -%}
               {%- set ns = namespace(n=0) -%}
               {%- for pid, entry in slot.items() if entry is mapping -%}
@@ -59,6 +86,7 @@ template:
               {%- set vars = vars if vars is mapping else {} -%}
               {%- set raw  = vars.get('_zen_priority_inject', {}) -%}
               {%- set slot = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+              {%- set slot = slot.get('value', slot) if slot is mapping else {} -%}
               {%- set now_ts = now() -%}
               {%- set ns = namespace(pids=[]) -%}
               {%- for pid, entry in slot.items() if entry is mapping -%}
@@ -75,6 +103,7 @@ template:
               {%- set vars = vars if vars is mapping else {} -%}
               {%- set raw  = vars.get('_zen_priority_inject', {}) -%}
               {%- set slot = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+              {%- set slot = slot.get('value', slot) if slot is mapping else {} -%}
               {%- set now_ts = now() -%}
               {%- set ns = namespace(has_critical=false, has_urgent=false) -%}
               {%- for pid, entry in slot.items() if entry is mapping -%}
@@ -95,6 +124,7 @@ template:
               {%- set vars = vars if vars is mapping else {} -%}
               {%- set raw  = vars.get('_zen_priority_inject', {}) -%}
               {%- set slot = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+              {%- set slot = slot.get('value', slot) if slot is mapping else {} -%}
               {%- set now_ts = now() -%}
               {%- set ns = namespace(oldest='') -%}
               {%- for pid, entry in slot.items() if entry is mapping -%}
@@ -140,6 +170,13 @@ template:
 # alert_fire with an already-active key → silent no-op (no duplicate).
 # alert_clear with an inactive key → silent no-op.
 # Persistent notifications auto-dismiss on clear.
+#
+# clear_after_minutes behavior:
+#   Omitted or null → defaults to 1440 (24h). GC sweeps it the next daily run.
+#   N > 0           → expires_at = now() + N minutes. Caller fires alert_clear
+#                     after delay; GC is the restart-safety backstop.
+#   0               → no expiry. Alert persists until explicit alert_clear.
+#                     Use for conditions that require manual acknowledgement.
 #
 # notify_target: postman — routes through zen_dojotools_postman authority stack.
 #   severity → urgency: info=3, warn=5, error=8
@@ -205,16 +242,18 @@ automation:
           action_type: read
           volume_entity_id: "{{ _household }}"
           key: _zen_active_alerts
+          force_action: true
           caller_token: zen_alert_manager
         response_variable: _fc_read
 
       - variables:
-          _raw: "{{ _fc_read.get('value', {}) }}"
-          # FG-38 guard: value may be a native dict, a JSON string, or absent
           _alerts: >-
-            {%- set r = _raw -%}
-            {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
-            {{ r }}
+            {%- set r = _fc_read.get('result', {}) -%}
+            {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+            {%- set raw = r.get('_zen_active_alerts', {}) -%}
+            {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+            {%- set v = raw.get('value', raw) if raw is mapping else {} -%}
+            {{ v if v is mapping else (v | from_json if v is string else {}) }}
 
       # ── Route ───────────────────────────────────────────────────────────────
       - choose:
@@ -236,6 +275,8 @@ automation:
                   _notify_target: "{{ _ev.notify_target | default('persistent') | trim }}"
                   _channel_hint:  "{{ _ev.channel_hint | default('', true) | string | trim }}"
                   _image_entity:  "{{ _ev.image_entity | default('', true) | string | trim }}"
+                  _response_type: "{{ _ev.response_type | default('', true) | string | trim }}"
+                  _kata_cab:      "{{ states('sensor.zen_kata_cabinet_resolved') }}"
                   _title:         >-
                     {{ _ev.title | default('ZenOS — ' ~
                       ('Error' if _severity == 'error' else
@@ -243,6 +284,11 @@ automation:
                   _urgency:       >-
                     {{ 8 if _severity == 'error' else
                        5 if _severity == 'warn' else 3 }}
+                  _expires_at:    >-
+                    {%- set cam = _ev.clear_after_minutes | default(1440, true) | int -%}
+                    {%- if cam > 0 -%}
+                      {{ (now() + timedelta(minutes=cam)).isoformat() }}
+                    {%- else -%}{{ '' }}{%- endif -%}
 
               # Fire notification
               - choose:
@@ -264,7 +310,41 @@ automation:
                           urgency: "{{ _urgency }}"
                           channel_hint: "{{ _channel_hint }}"
                           image_entity: "{{ _image_entity }}"
+                          response_type: "{{ _response_type }}"
                           caller_token: "zen_alert_manager/{{ _key }}"
+                        response_variable: _pm_res
+
+                      # Cache response + re-emit for downstream subscribers
+                      - if:
+                          - condition: template
+                            value_template: >-
+                              {{ _response_type not in ['', 'none']
+                                 and _kata_cab not in ['', 'unavailable', 'unknown'] }}
+                        then:
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              action_type: create
+                              volume_entity_id: "{{ _kata_cab }}"
+                              key: "alert_response_{{ _key }}"
+                              set_timestamp: true
+                              value: >-
+                                {{
+                                  {
+                                    'alert_key':     _key,
+                                    'ack_action':    (_pm_res.get('ack_action', '') if _pm_res is mapping else ''),
+                                    'ack_timed_out': (_pm_res.get('ack_timed_out', true) if _pm_res is mapping else true),
+                                    'ack_device_id': (_pm_res.get('ack_device_id', '') if _pm_res is mapping else '')
+                                  } | tojson
+                                }}
+                              caller_token: "zen_alert_manager/{{ _key }}"
+                          - event: zen_event
+                            event_data:
+                              event:
+                                kind:          alert_response
+                                alert_key:     "{{ _key }}"
+                                ack_action:    "{{ _pm_res.get('ack_action', '') if _pm_res is mapping else '' }}"
+                                ack_timed_out: "{{ _pm_res.get('ack_timed_out', true) if _pm_res is mapping else true }}"
+                                ack_device_id: "{{ _pm_res.get('ack_device_id', '') if _pm_res is mapping else '' }}"
 
                 default:
                   - action: "notify.{{ _notify_target }}"
@@ -275,9 +355,10 @@ automation:
               # Write updated _zen_active_alerts
               - variables:
                   _entry:
-                    fired_at: "{{ now().isoformat() }}"
-                    message:  "{{ _message }}"
-                    severity: "{{ _severity }}"
+                    fired_at:   "{{ now().isoformat() }}"
+                    message:    "{{ _message }}"
+                    severity:   "{{ _severity }}"
+                    expires_at: "{{ _expires_at }}"
                   _updated: >-
                     {%- set ns = namespace(d={}) -%}
                     {%- for k, v in _alerts.items() -%}
@@ -288,13 +369,31 @@ automation:
 
               - action: script.zen_dojotools_filecabinet
                 data:
-                  action_type: create
+                  action_type: update
                   force_action: true
                   volume_entity_id: "{{ _household }}"
                   key: _zen_active_alerts
-                  value: "{{ _updated }}"
+                  value: "{{ _updated if _updated is string else (_updated | tojson) }}"
                   no_autoexpire: true
                   caller_token: zen_alert_manager
+                response_variable: _fc_fire_write
+
+              - action: system_log.write
+                data:
+                  message: "zen_alert_manager alert_fire write result: key={{ _key }} household={{ _household }} response={{ _fc_fire_write | tojson }}"
+                  level: warning
+
+              - if:
+                  - condition: template
+                    value_template: "{{ (_fc_fire_write | default({})).get('status', 'MISSING') != 'success' }}"
+                then:
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: alert_manager_error
+                        error: cabinet_write_failed
+                        message: "zen_alert_manager: alert_fire cabinet write failed for key {{ _key }} on {{ _household }} — {{ _fc_fire_write | tojson }}"
+                  - stop: cabinet write failed
 
               # Wire error-severity alerts to priority inject slot
               - if:
@@ -332,13 +431,31 @@ automation:
 
               - action: script.zen_dojotools_filecabinet
                 data:
-                  action_type: create
+                  action_type: update
                   force_action: true
                   volume_entity_id: "{{ _household }}"
                   key: _zen_active_alerts
-                  value: "{{ _updated }}"
+                  value: "{{ _updated if _updated is string else (_updated | tojson) }}"
                   no_autoexpire: true
                   caller_token: zen_alert_manager
+                response_variable: _fc_clear_write
+
+              - action: system_log.write
+                data:
+                  message: "zen_alert_manager alert_clear write result: key={{ _key }} household={{ _household }} response={{ _fc_clear_write | tojson }}"
+                  level: warning
+
+              - if:
+                  - condition: template
+                    value_template: "{{ (_fc_clear_write | default({})).get('status', 'MISSING') != 'success' }}"
+                then:
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: alert_manager_error
+                        error: cabinet_write_failed
+                        message: "zen_alert_manager: alert_clear cabinet write failed for key {{ _key }} on {{ _household }} — {{ _fc_clear_write | tojson }}"
+                  - stop: cabinet write failed
 
               # Clear priority inject entry (no-op if alert wasn't error-level)
               - event: zen_event
@@ -471,13 +588,25 @@ automation:
 
               - action: script.zen_dojotools_filecabinet
                 data:
-                  action_type: create
+                  action_type: update
                   force_action: true
                   volume_entity_id: "{{ _household }}"
                   key: _zen_priority_inject
-                  value: "{{ _updated }}"
+                  value: "{{ _updated if _updated is string else (_updated | tojson) }}"
                   no_autoexpire: true
                   caller_token: zen_priority_inject_handler
+                response_variable: _fc_pi_write
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _fc_pi_write.get('status', '') != 'success' }}"
+                then:
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: alert_manager_error
+                        error: cabinet_write_failed
+                        message: "zen_alert_manager: priority_inject_write failed for {{ _provider }} on {{ _household }} — {{ _fc_pi_write | tojson }}"
 
           # ── Clear path ────────────────────────────────────────────────────────
           - conditions: "{{ _kind == 'clear' }}"
@@ -500,10 +629,590 @@ automation:
 
               - action: script.zen_dojotools_filecabinet
                 data:
-                  action_type: create
+                  action_type: update
                   force_action: true
                   volume_entity_id: "{{ _household }}"
                   key: _zen_priority_inject
-                  value: "{{ _updated }}"
+                  value: "{{ _updated if _updated is string else (_updated | tojson) }}"
                   no_autoexpire: true
                   caller_token: zen_priority_inject_handler
+                response_variable: _fc_pi_clear
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _fc_pi_clear.get('status', '') != 'success' }}"
+                then:
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: alert_manager_error
+                        error: cabinet_write_failed
+                        message: "zen_alert_manager: priority_inject_clear failed for {{ _provider }} on {{ _household }} — {{ _fc_pi_clear | tojson }}"
+
+###############################################################################
+# Zen Alert Manager Tool v1.0.0
+#
+# MCP-facing CRUD interface for _zen_active_alerts + priority inject slot.
+# Modes: list | fire | clear | clear_all | get_policy | set_policy | help
+#
+# fire/clear are async — zen_alert_manager automation handles dedup and
+# persistence. clear_all reads current _zen_active_alerts and emits
+# alert_clear for each key at time of call.
+# set_policy does a single batched FileCabinet write (all targets in one pass).
+###############################################################################
+
+script:
+
+  zen_dojotools_alertmanager:
+    alias: Zen DojoTools Alert Manager
+    icon: mdi:bell-alert
+    description: >-
+      Zen Alert Manager v1.0.2 — Use this when the user asks about active
+      alerts, wants to see what's currently alerting, dismiss a notification,
+      fire a new alert, or manage alert routing. Also use when the user asks
+      why the AI agent is in priority/urgent mode (error-severity alerts
+      write to sensor.zen_priority_context, which the active agent sees).
+
+      FOR FULL TRIAGE (alerts + persistent notifications + repairs + pending
+      updates + recent dispatches with pre-built action_queue): call
+      systemtools tool=notice_dashboard first — it aggregates everything and
+      returns action_queue[]{priority,item,tool,call} ready to fire.
+
+      LIST: read live alert roster + priority inject slot — alerts only.
+      FIRE: raise a new alert by key; dedup means already-active key is a
+      no-op; error-severity also activates sensor.zen_priority_context.
+      Pass image_entity + response_type to attach a snapshot and actionable
+      buttons (postman only). Response cached to kata cabinet + emitted as
+      zen_event(kind=alert_response) for downstream subscribers.
+      GET_RESPONSE: read cached ack for a fired alert — returns ack_action,
+      ack_timed_out, ack_device_id or status:pending if not yet captured.
+      CLEAR: dismiss one alert + its persistent notification + priority slot.
+      CLEAR_ALL: dismiss every active alert at once.
+      POLICY: get/set per-entity or per-label routing overrides
+      (notify_target, channel_hint, suppress_minutes).
+
+      Use mode=help for full field reference, severity pipeline, and GC notes.
+    fields:
+      mode:
+        description: "list | fire | clear | clear_all | get_response | get_policy | set_policy | help"
+        required: true
+        selector:
+          select:
+            options: [list, fire, clear, clear_all, get_response, get_policy, set_policy, help]
+      alert_key:
+        description: "Unique dedup slug in _zen_active_alerts (fire / clear)"
+        selector:
+          text:
+      message:
+        description: "Alert body text delivered to notification target (fire)"
+        selector:
+          text:
+      severity:
+        description: "info | warn | error — error also writes priority context slot"
+        selector:
+          select:
+            options: [info, warn, error]
+      notify_target:
+        description: "Notification target — persistent | mobile | postman (fire)"
+        selector:
+          select:
+            options: [persistent, mobile, postman]
+      channel_hint:
+        description: "Postman dispatch channel — push | tts | teams (fire)"
+        selector:
+          text:
+      image_entity:
+        description: "Camera or image entity to attach snapshot (fire, postman only)"
+        selector:
+          text:
+      response_type:
+        description: "Actionable buttons — none | yes_no | yes_no_ignore | ok_cancel | acknowledge (fire, postman only)"
+        selector:
+          select:
+            options: [none, yes_no, yes_no_ignore, ok_cancel, acknowledge]
+      clear_after_minutes:
+        description: "TTL in minutes; 0=permanent, omit=24h auto-GC (fire)"
+        selector:
+          number:
+            min: 0
+            max: 10080
+      label:
+        description: "HA label slug — targets label_entities() (get/set_policy)"
+        selector:
+          text:
+      target_entity:
+        description: "Single entity ID for get/set_policy; overrides label"
+        selector:
+          text:
+      policy_json:
+        description: "JSON routing override — {notify_target, channel_hint, suppress_minutes}"
+        selector:
+          text:
+      caller_token:
+        description: "Opaque pass-through token — never modified by this script"
+        selector:
+          text:
+    mode: queued
+    max: 5
+    sequence:
+
+      - variables:
+          _mode:         "{{ mode | default('help') | trim }}"
+          _household:    "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          _caller_token: "{{ caller_token | default('') }}"
+
+      - if:
+          - condition: template
+            value_template: >-
+              {{ _mode not in ['help'] and _household in ['', 'unavailable', 'unknown'] }}
+        then:
+          - variables:
+              result:
+                success: false
+                error: household_cabinet_unavailable
+                caller_token: "{{ _caller_token }}"
+          - stop: early_exit
+            response_variable: result
+
+      - choose:
+
+          # ── list ──────────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'list' }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _household }}"
+                  key: _zen_active_alerts
+                  force_action: true
+                  caller_token: zen_dojotools_alertmanager
+                response_variable: _fc_alerts
+
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _household }}"
+                  key: _zen_priority_inject
+                  force_action: true
+                  caller_token: zen_dojotools_alertmanager
+                response_variable: _fc_inject
+
+              - variables:
+                  _alerts: >-
+                    {%- set r = _fc_alerts.get('result', {}) -%}
+                    {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+                    {%- set raw = r.get('_zen_active_alerts', {}) -%}
+                    {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+                    {%- set v = raw.get('value', raw) if raw is mapping else {} -%}
+                    {{ v if v is mapping else (v | from_json if v is string else {}) }}
+                  _inject: >-
+                    {%- set r = _fc_inject.get('result', {}) -%}
+                    {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+                    {%- set raw = r.get('_zen_priority_inject', {}) -%}
+                    {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+                    {%- set v = raw.get('value', raw) if raw is mapping else {} -%}
+                    {{ v if v is mapping else (v | from_json if v is string else {}) }}
+
+              - variables:
+                  _enriched: >-
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for k, v in _alerts.items() if v is mapping -%}
+                      {%- set fired_raw = v.get('fired_at', '') -%}
+                      {%- set fired_dt = fired_raw | as_datetime | default(none, true) if fired_raw != '' else none -%}
+                      {%- set age_min = ((now() - fired_dt).total_seconds() / 60) | round(1) if fired_dt is not none else none -%}
+                      {%- set exp_raw = v.get('expires_at', '') -%}
+                      {%- set exp_dt = exp_raw | as_datetime | default(none, true) if exp_raw != '' else none -%}
+                      {%- set expired = now() > exp_dt if exp_dt is not none else false -%}
+                      {%- set in_inject = ('alert_' ~ k) in _inject -%}
+                      {%- set entry = v | combine({'alert_key': k, 'age_min': age_min, 'expired': expired, 'in_priority_inject': in_inject}) -%}
+                      {%- set ns.out = ns.out + [entry] -%}
+                    {%- endfor -%}
+                    {{ ns.out | tojson }}
+                  _inject_active: >-
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for pid, v in _inject.items() if v is mapping -%}
+                      {%- set exp_raw = v.get('expires', '') -%}
+                      {%- set exp_dt = exp_raw | as_datetime | default(none, true) if exp_raw != '' else none -%}
+                      {%- set active = now() < exp_dt if exp_dt is not none else false -%}
+                      {%- set ns.out = ns.out + [v | combine({'provider_id': pid, 'active': active})] -%}
+                    {%- endfor -%}
+                    {{ ns.out | tojson }}
+                  _priority_state: "{{ states('sensor.zen_priority_context') | default('clear') }}"
+
+              - variables:
+                  _response: >-
+                    {%- set al = _enriched if _enriched is not string else (_enriched | from_json) -%}
+                    {%- set inj = _inject_active if _inject_active is not string else (_inject_active | from_json) -%}
+                    {{ {'mode': 'list', 'active_alerts': al, 'alert_count': al | length,
+                        'priority_context_state': _priority_state,
+                        'priority_inject': inj,
+                        'caller_token': _caller_token} | tojson }}
+
+          # ── fire ──────────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'fire' }}"
+            sequence:
+              - variables:
+                  _key:   "{{ alert_key | default('') | trim }}"
+                  _msg:   "{{ message | default('') | trim }}"
+                  _sev:   "{{ severity | default('warn') | trim }}"
+                  _ntgt:  "{{ notify_target | default('persistent') | trim }}"
+                  _ch:    "{{ channel_hint | default('', true) | string | trim }}"
+                  _img:   "{{ image_entity | default('', true) | string | trim }}"
+                  _rtype: "{{ response_type | default('', true) | string | trim }}"
+                  _cam:   "{{ clear_after_minutes | default(none, true) }}"
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _key == '' or _msg == '' }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        error: alert_key and message required
+                        caller_token: "{{ _caller_token }}"
+                  - stop: fire_validation_error
+                    response_variable: result
+
+              - event: zen_event
+                event_data:
+                  event:
+                    kind: alert_fire
+                    alert_key:           "{{ _key }}"
+                    message:             "{{ _msg }}"
+                    severity:            "{{ _sev }}"
+                    notify_target:       "{{ _ntgt }}"
+                    channel_hint:        "{{ _ch }}"
+                    image_entity:        "{{ _img }}"
+                    response_type:       "{{ _rtype }}"
+                    clear_after_minutes: "{{ _cam }}"
+
+              - variables:
+                  _response: >-
+                    {{ {'mode': 'fire', 'alert_key': _key, 'severity': _sev,
+                        'notify_target': _ntgt, 'queued': true,
+                        'caller_token': _caller_token} | tojson }}
+
+          # ── clear ─────────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'clear' }}"
+            sequence:
+              - variables:
+                  _key: "{{ alert_key | default('') | trim }}"
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _key == '' }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        error: alert_key required
+                        caller_token: "{{ _caller_token }}"
+                  - stop: clear_validation_error
+                    response_variable: result
+
+              - event: zen_event
+                event_data:
+                  event:
+                    kind: alert_clear
+                    alert_key: "{{ _key }}"
+
+              - variables:
+                  _response: >-
+                    {{ {'mode': 'clear', 'alert_key': _key, 'queued': true,
+                        'caller_token': _caller_token} | tojson }}
+
+          # ── clear_all ─────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'clear_all' }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _household }}"
+                  key: _zen_active_alerts
+                  force_action: true
+                  caller_token: zen_dojotools_alertmanager
+                response_variable: _fc_alerts
+
+              - variables:
+                  _alerts: >-
+                    {%- set r = _fc_alerts.get('result', {}) -%}
+                    {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+                    {%- set raw = r.get('_zen_active_alerts', {}) -%}
+                    {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+                    {%- set v = raw.get('value', raw) if raw is mapping else {} -%}
+                    {{ v if v is mapping else (v | from_json if v is string else {}) }}
+                  _keys: "{{ _alerts.keys() | list }}"
+
+              - repeat:
+                  for_each: "{{ _keys }}"
+                  sequence:
+                    - variables:
+                        _ev0: "{{ repeat.item }}"
+                    - event: zen_event
+                      event_data:
+                        event:
+                          kind: alert_clear
+                          alert_key: "{{ _ev0 }}"
+
+              - variables:
+                  _response: >-
+                    {{ {'mode': 'clear_all', 'cleared_count': _keys | length,
+                        'cleared_keys': _keys,
+                        'caller_token': _caller_token} | tojson }}
+
+          # ── get_policy ────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'get_policy' }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _household }}"
+                  key: _alert_policy
+                  caller_token: zen_dojotools_alertmanager
+                response_variable: _fc_policy
+
+              - variables:
+                  _policy_raw:    "{{ _fc_policy.get('value', {}) }}"
+                  _policy: >-
+                    {%- set r = _policy_raw -%}
+                    {{ r if r is mapping else (r | from_json if r is string else {}) }}
+                  _filter_entity: "{{ target_entity | default('', true) | string | trim }}"
+                  _filter_label:  "{{ label | default('', true) | string | trim }}"
+
+              - variables:
+                  _label_ents: >-
+                    {%- if _filter_label != '' -%}
+                      {{ label_entities(_filter_label) | list | tojson }}
+                    {%- else -%}{{ '[]' }}{%- endif -%}
+                  _filter_set: >-
+                    {%- if _filter_entity != '' -%}
+                      {{ [_filter_entity] | tojson }}
+                    {%- elif _filter_label != '' -%}
+                      {{ _label_ents }}
+                    {%- else -%}{{ '[]' }}{%- endif -%}
+
+              - variables:
+                  _filtered: >-
+                    {%- set fs = _filter_set if _filter_set is not string else (_filter_set | from_json) -%}
+                    {%- if fs | length == 0 -%}
+                      {{ _policy | tojson }}
+                    {%- else -%}
+                      {%- set ns = namespace(d={}) -%}
+                      {%- for eid in fs if eid in _policy -%}
+                        {%- set ns.d = dict(ns.d, **{eid: _policy[eid]}) -%}
+                      {%- endfor -%}
+                      {{ ns.d | tojson }}
+                    {%- endif -%}
+                  _response: >-
+                    {{ {'mode': 'get_policy', 'filter_entity': _filter_entity,
+                        'filter_label': _filter_label,
+                        'policy': (_filtered if _filtered is not string else (_filtered | from_json)),
+                        'caller_token': _caller_token} | tojson }}
+
+          # ── set_policy ────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'set_policy' }}"
+            sequence:
+              - variables:
+                  _new_policy: >-
+                    {%- set raw = policy_json | default('{}', true) | string | trim -%}
+                    {%- set raw = raw if raw != '' else '{}' -%}
+                    {{ raw | from_json }}
+                  _tgt_entity: "{{ target_entity | default('', true) | string | trim }}"
+                  _tgt_label:  "{{ label | default('', true) | string | trim }}"
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _tgt_entity == '' and _tgt_label == '' }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        error: target_entity or label required
+                        caller_token: "{{ _caller_token }}"
+                  - stop: set_policy_validation_error
+                    response_variable: result
+
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _household }}"
+                  key: _alert_policy
+                  caller_token: zen_dojotools_alertmanager
+                response_variable: _fc_policy
+
+              - variables:
+                  _policy_raw: "{{ _fc_policy.get('value', {}) }}"
+                  _policy: >-
+                    {%- set r = _policy_raw -%}
+                    {{ r if r is mapping else (r | from_json if r is string else {}) }}
+                  _targets: >-
+                    {%- if _tgt_entity != '' -%}
+                      {{ [_tgt_entity] | tojson }}
+                    {%- else -%}
+                      {{ label_entities(_tgt_label) | list | tojson }}
+                    {%- endif -%}
+
+              - variables:
+                  _updated_policy: >-
+                    {%- set ns = namespace(d={}) -%}
+                    {%- for k, v in _policy.items() -%}
+                      {%- set ns.d = dict(ns.d, **{k: v}) -%}
+                    {%- endfor -%}
+                    {%- for eid in (_targets if _targets is not string else (_targets | from_json)) -%}
+                      {%- set existing = _policy.get(eid, {}) -%}
+                      {%- set merged = existing | combine(_new_policy) -%}
+                      {%- set ns.d = dict(ns.d, **{eid: merged}) -%}
+                    {%- endfor -%}
+                    {{ ns.d | tojson }}
+
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  force_action: true
+                  volume_entity_id: "{{ _household }}"
+                  key: _alert_policy
+                  value: "{{ _updated_policy if _updated_policy is string else (_updated_policy | tojson) }}"
+                  no_autoexpire: true
+                  caller_token: zen_dojotools_alertmanager
+                response_variable: _fc_policy_write
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _fc_policy_write.get('status', '') != 'success' }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        mode: set_policy
+                        error: cabinet_write_failed
+                        detail: "{{ _fc_policy_write | tojson }}"
+                        caller_token: "{{ _caller_token }}"
+                  - stop: set_policy_write_failed
+                    response_variable: result
+
+              - variables:
+                  _response: >-
+                    {{ {'mode': 'set_policy',
+                        'targets_updated': (_targets if _targets is not string else (_targets | from_json)),
+                        'policy_applied': _new_policy,
+                        'caller_token': _caller_token} | tojson }}
+
+          # ── get_response ──────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'get_response' }}"
+            sequence:
+              - variables:
+                  _key:      "{{ alert_key | default('') | trim }}"
+                  _kata_cab: "{{ states('sensor.zen_kata_cabinet_resolved') }}"
+
+              - if:
+                  - condition: template
+                    value_template: "{{ _key == '' }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        error: alert_key required
+                        caller_token: "{{ _caller_token }}"
+                  - stop: get_response_validation_error
+                    response_variable: result
+
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _kata_cab }}"
+                  key: "alert_response_{{ _key }}"
+                  caller_token: "zen_dojotools_alertmanager/get_response"
+                response_variable: _fc_resp
+
+              - variables:
+                  _raw: >-
+                    {%- set r = _fc_resp.get('result', {}) -%}
+                    {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+                    {%- set key = 'alert_response_' ~ _key -%}
+                    {%- set raw = r.get(key, {}) -%}
+                    {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+                    {%- set v = raw.get('value', raw) if raw is mapping else {} -%}
+                    {%- set v = v | from_json if v is string else v -%}
+                    {{ v if v is mapping else {} }}
+                  _response: >-
+                    {%- set v = _raw if _raw is mapping else {} -%}
+                    {%- if v | length == 0 -%}
+                      {{ {'mode': 'get_response', 'alert_key': _key,
+                          'status': 'pending', 'caller_token': _caller_token} | tojson }}
+                    {%- else -%}
+                      {{ {'mode': 'get_response', 'alert_key': _key,
+                          'status': 'captured',
+                          'ack_action':    v.get('ack_action', ''),
+                          'ack_timed_out': v.get('ack_timed_out', true),
+                          'ack_device_id': v.get('ack_device_id', ''),
+                          'caller_token':  _caller_token} | tojson }}
+                    {%- endif -%}
+
+          # ── help ──────────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'help' }}"
+            sequence:
+              - variables:
+                  _response: >-
+                    {{ {'tool': 'zen_dojotools_alertmanager', 'version': '1.0.0',
+                        'modes': {
+                          'list': {
+                            'desc': 'Read active alert roster and priority inject slot.',
+                            'fields': 'none required',
+                            'returns': 'active_alerts[], alert_count, priority_context_state(active|clear), priority_inject[]',
+                            'alert_entry_fields': 'alert_key, fired_at, message, severity, expires_at, age_min(float min), expired(bool), in_priority_inject(bool)'
+                          },
+                          'fire': {
+                            'desc': 'Emit alert_fire zen_event. zen_alert_manager handles dedup — already-active key is silent no-op.',
+                            'required': 'alert_key (unique slug), message',
+                            'optional': 'severity(info|warn|error, default:warn), notify_target(persistent|mobile|postman, default:persistent), channel_hint(push|tts|teams), clear_after_minutes(0=permanent, omit=1440 auto-GC)'
+                          },
+                          'clear': {
+                            'desc': 'Emit alert_clear. Dismisses persistent notification + clears priority inject entry. Inactive key = silent no-op.',
+                            'required': 'alert_key'
+                          },
+                          'clear_all': {
+                            'desc': 'Snapshot _zen_active_alerts keys at call time, emit alert_clear for each. Returns cleared_count and cleared_keys.',
+                            'fields': 'none required'
+                          },
+                          'get_policy': {
+                            'desc': 'Read _alert_policy dict from household cabinet.',
+                            'optional': 'target_entity (single entity ID), label (HA label slug → label_entities). Omit both for full dict.'
+                          },
+                          'set_policy': {
+                            'desc': 'Write alert routing overrides. All targets combined and written in one batched FileCabinet call.',
+                            'required': 'policy_json + (target_entity or label)',
+                            'policy_json_shape': '{notify_target, channel_hint, suppress_minutes}'
+                          }
+                        },
+                        'policy_shape': {
+                          'notify_target': 'persistent | mobile | postman',
+                          'channel_hint': 'push | tts | teams (postman only)',
+                          'suppress_minutes': 'routing policy hint — stored in _alert_policy, not yet enforced by zen_alert_manager'
+                        },
+                        'severity_pipeline': {
+                          'info': 'notify_target only — no priority inject write',
+                          'warn': 'notify_target only — no priority inject write',
+                          'error': 'notify_target + priority_inject_write (provider=alert_{key}, urgency=critical, expires=60min) → sensor.zen_priority_context active → Friday sees it in cortex'
+                        },
+                        'gc_notes': [
+                          'clear_after_minutes omitted → expires_at = now + 1440min. dojotools_core GC sweeps at daily_midnight.',
+                          'clear_after_minutes=0 → no expires_at → permanent until explicit clear or clear_all.',
+                          'GC emits alert_clear for overdue entries — handles orphans from HA restarts mid-timer.'
+                        ],
+                        'cabinet': 'household_cabinet._zen_active_alerts | _zen_priority_inject | _alert_policy',
+                        'caller_token': _caller_token} | tojson }}
+
+        # ── default: unknown mode ─────────────────────────────────────────────
+        default:
+          - variables:
+              result: >-
+                {{ {'success': false, 'error': 'unknown_mode', 'mode': _mode,
+                    'valid_modes': ['list','fire','clear','clear_all','get_policy','set_policy','help'],
+                    'caller_token': _caller_token} | tojson | from_json }}
+          - stop: unknown_mode
+            response_variable: result
+
+      - variables:
+          result: "{{ _response if _response is not string else (_response | from_json) }}"
+      - stop: done
+        response_variable: result

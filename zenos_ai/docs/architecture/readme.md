@@ -1,6 +1,6 @@
 # **ZenOS-AI Architecture Series — Preamble & Orientation**
 
-### *(ZenOS-AI 4.5.5 'Ready Player Two' — Identity subsystem v1.x shipped; Tool-shunt security models targeted for v.next)*
+### *(Architecture record with Clue-era operator notes — originally authored for 4.5.5 'Ready Player Two')*
 
 ---
 
@@ -23,7 +23,7 @@ The goal is not simply to describe the system — but to make its reasoning and 
 
 ## **Scope and Release Notes**
 
-This series documents **ZenOS-AI 4.5.5 'Ready Player Two'**.
+This series is the formal architecture record for ZenOS-AI. Several deep-design chapters were originally written for **4.5.5 'Ready Player Two'** and are preserved as architecture history; the getting-started, scripts, cabinets, sensors, and release-note docs are the canonical operator references for **2026.6.0 'Clue'**.
 
 Two subsystems have explicit release caveats:
 
@@ -38,13 +38,13 @@ The identity framework is fully specified, including:
 * Redaction layers (Squirrel Mode)
 * Cognitive boundaries and access gating
 
-Due to implementation complexity across large Cabinet graphs, **full identity enforcement may ship in v1.5**, but the architecture is documented here for completeness.
+The Clue-era Profile Editor, Identity tool, valid person/family/household structures, and certificate operations are documented in the script and cabinet references. Use those operator docs for exact runtime fields.
 
 ### **Secure Tool-Shunt Model**
 
 Token-gated tool execution and shunted capability routing require deeper privilege separation and interface hardening.
 
-> **GA Status (4.5.5 'Ready Player Two'):** A `caller_token` pass-through field is plumbed across all 15 AI-accessible DojoTools scripts at GA. The `security_policy` drawer in the System Cabinet carries the enforcement configuration. Full enforcement (external auth provider, token validation) activates at SP1 when `security_policy.secure` is set to `true`. The policy plane is in place; the switch is off.
+> **Operator note (2026.6.0 'Clue'):** Treat this security model as an architecture record, not the first-run exposure checklist. Conversation agents should receive the minimum DojoTools surface documented in Getting Started. AdminTools remain admin/recovery plane unless a human explicitly exposes them.
 
 Full external-provider token-shunting is targeted for **SP1**.
 

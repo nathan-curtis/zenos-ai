@@ -1,4 +1,4 @@
-# Zen DojoTools Manifest — 4.5.5 'Ready Player Two'
+# Zen DojoTools Manifest — 2026.6.0 'Clue'
 **File:** `zen_dojotools_manifest_readme.md`  
 **Type:** Technical Documentation  
 

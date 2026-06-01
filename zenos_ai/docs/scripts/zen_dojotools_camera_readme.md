@@ -32,7 +32,7 @@ The recommended pattern: **read → look → scan**. Check the cache first (`rea
 
 ### `look` — Analyze + Cache
 
-Snapshots the camera, sends the frame to the LLM, caches the result to the household cabinet. The LLM receives the live stream via `media-source://camera/<entity>` — the snapshot is a reference copy for human review, not the LLM input.
+Snapshots the camera, sends the frame to the LLM, caches the result to the household cabinet with an `expires_after` of 8 hours. The LLM receives the live stream via `media-source://camera/<entity>` — the snapshot is a reference copy for human review, not the LLM input.
 
 Auto-loads `_default_ctx` from the camera's cache drawer unless `ignore_autocontext: true` is set or an explicit `context_index_call` is passed.
 

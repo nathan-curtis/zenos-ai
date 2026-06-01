@@ -2,7 +2,7 @@
 
 ### *Universal HyperGraph Index for Labels, Entities, Drawers & Metadata*
 
-**Version:** 4.5.5 'Ready Player Two'
+**Version:** 2026.6.0 'Clue'
 **Category:** DojoTools / Indexing
 **Icon:** `mdi:graphql`
 
@@ -32,6 +32,19 @@ HyperIndex is the **first step** in any serious reasoning pipeline:
 * Root graph extraction
 
 If the Cabinet System is the filesystem and the Index System is search, **HyperIndex is the neural attention layer.**
+
+```mermaid
+flowchart LR
+  Inputs["Labels, entities, devices, areas"]
+  SetLogic["Set logic\nAND OR NOT XOR"]
+  ZQ["ZQ-1 filter_json"]
+  Inspect["Inspect expansion"]
+  FileCabinet["FileCabinet drawer blurbs"]
+  Hypergraph["Hypergraph output"]
+
+  Inputs --> SetLogic --> ZQ --> Inspect --> Hypergraph
+  FileCabinet --> Inspect
+```
 
 ---
 
@@ -398,14 +411,14 @@ Unknown fields are silently ignored.
 
 # 🧩 ZQ-1 Filter Schema (What HyperIndex Accepts)
 
-This is the **true schema** implemented in `zenos_ai/zen_query.jinja`, current as of 4.5.5 'Ready Player Two'.
+This is the **true schema** implemented in `zenos_ai/zen_query.jinja`, current for the Clue docs refresh.
 
 ### 🧪 **Every field below is optional.**
 
 All filters apply with **logical AND**.
 
 ```yaml
-# ZQ-1 Filter Schema (4.5.5 'Ready Player Two')
+# ZQ-1 Filter Schema (2026.6.0 'Clue')
 # All fields optional. Unknown fields ignored.
 
 domain:               # string — also used for auto-build if target_entities empty
@@ -594,4 +607,14 @@ So filter_json is essentially:
 * Continue with its reasoning pipeline
 
 Everything stays clean, deterministic, and fully aligned.
+
+---
+
+## Cross-References
+
+- [HyperIndex Overview](../zen_hyperindex/zen_hyperindex_overview.md) — conceptual SELECT -> FILTER -> COMPOSE model
+- [DojoTools Index](zen_dojotools_index_readme.md) — current operational index surface, topology seeds, registry modes, pagination, and camera enrichment
+- [DojoTools FileCabinet](zen_dojotools_filecabinet_readme.md) — drawer storage contract and return path for drawer blurbs
+- [DojoTools Summarizers](zen_dojotools_summarizers_readme.md) — primary scheduled consumer of HyperIndex context
+- [Script Modules](readme.md) — return path to the internal tool map
 

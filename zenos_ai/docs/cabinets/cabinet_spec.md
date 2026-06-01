@@ -22,6 +22,26 @@ A valid Cabinet is composed of:
 
 Everything is managed and normalized by DojoTools.
 
+```mermaid
+flowchart TD
+  Sensor["Cabinet sensor entity"]
+  Variables["attributes.variables mapping"]
+  VolumeInfo["AI_Cabinet_VolumeInfo.value"]
+  Context["_context drawer"]
+  LabelIndex["_label_index.value"]
+  Drawers["Named drawers"]
+  Identity["Identity/profile drawers"]
+  Tools["FileCabinet, Identity, Profile Editor"]
+
+  Sensor --> Variables
+  Variables --> VolumeInfo
+  Variables --> Context
+  Variables --> LabelIndex
+  Variables --> Drawers
+  Drawers --> Identity
+  Tools --> Variables
+```
+
 ---
 
 # **2. Top-Level Anatomy**
@@ -132,9 +152,22 @@ my_drawer:
 ### Drawer Rules:
 
 * Drawer name must be string-safe
-* Drawer value must be a **mapping**
+* Drawer must be a mapping with a `value` field
+* `value` may be a mapping, list, string, number, boolean, or null; profile and identity drawers have stricter mapping shapes
 * Drawer can represent settings, lists, user preferences, or mounted references
 * `always_hide_drawers` (e.g., VolumeInfo) cannot be read or listed
+
+FileCabinet v4.7+ normalizes writes into drawer wrappers. Treat the wrapper as the storage envelope and the nested `value` as the application payload:
+
+```json
+{
+  "value": {},
+  "timestamp": "2026-05-23T12:00:00-05:00",
+  "meta": {
+    "entity_labels": []
+  }
+}
+```
 
 ---
 
@@ -262,6 +295,111 @@ A Cabinet is considered **valid** when:
 * Drawers have correct structure
 * Schema version is <= controller_schema
 * No fatal shape breaks occur
+
+---
+
+# **10.1 Valid Identity Cabinet Shapes**
+
+Identity cabinets are normal cabinets plus role-specific drawers and membership edges. These are the minimum shapes other tools expect.
+
+## Valid Person/User Cabinet
+
+| Requirement | Expected Shape |
+|---|---|
+| Type label | `zen_user` or `zen_user_cabinet` role label on the cabinet entity |
+| VolumeInfo | `AI_Cabinet_VolumeInfo.value.id` non-empty; `flags.user: true` where present |
+| Profile drawer | `_user_profile.value` mapping |
+| Profile identity | At least one usable display field: `name`, `preferred_name`, or `first_name` |
+| Membership | `AI_Cabinet_VolumeInfo.value.default_family_guid` when joined to a family |
+| Family ACL | `AI_Cabinet_VolumeInfo.value.acls.family[]` mirrors family membership |
+| Presence consent | `_user_profile.value.tracking.gps_zone` / `.room` explicitly true before Identity returns those fields |
+
+Minimal profile payload:
+
+```json
+{
+  "_user_profile": {
+    "value": {
+      "name": "Alex Garcia",
+      "preferred_name": "Alex",
+      "role": "head_of_household",
+      "tracking": {
+        "gps_zone": false,
+        "room": false
+      }
+    }
+  }
+}
+```
+
+## Valid Family Cabinet
+
+| Requirement | Expected Shape |
+|---|---|
+| Type label | `zen_family` or family cabinet role label |
+| VolumeInfo | Stable GUID, validation string, family flag where present |
+| Profile drawer | `_family_profile.value` mapping when named metadata exists |
+| Members drawer | `members.value` mapping with `users`, `ai_users`, and `families` lists |
+| Principal slots | `AI_Cabinet_VolumeInfo.value.acls.owner` and optional `acls.partner[]` |
+| Nesting | Sub-families may appear in `members.families`; security resolution follows depth 2 only |
+
+Minimal members payload:
+
+```json
+{
+  "members": {
+    "value": {
+      "users": [],
+      "ai_users": [],
+      "families": []
+    }
+  }
+}
+```
+
+## Valid Household Cabinet
+
+| Requirement | Expected Shape |
+|---|---|
+| Type label | `zen_household` plus `zen_default_household_cabinet` for the default |
+| VolumeInfo | Stable GUID, validation string, household/system flags where present |
+| Profile drawer | `_household_profile.value` mapping with household name/address fields as known |
+| Members drawer | `members.value.users`, `.ai_users`, `.families` lists |
+| Head of Household | `AI_Cabinet_VolumeInfo.value.acls.owner` points to the HoH user cabinet |
+| Prime AI | `AI_Cabinet_VolumeInfo.value.acls.partner[]` contains one `role: prime` AI entry |
+| Manifest | `zen_identity_manifest.value` is rebuilt after membership changes |
+
+Minimal household profile:
+
+```json
+{
+  "_household_profile": {
+    "value": {
+      "household_name": "Garcia House",
+      "timezone": "America/Chicago"
+    }
+  },
+  "members": {
+    "value": {
+      "users": [],
+      "ai_users": [],
+      "families": []
+    }
+  }
+}
+```
+
+## Valid AI User Cabinet
+
+| Requirement | Expected Shape |
+|---|---|
+| Type label | `zen_ai_user` or `zen_ai_user_cabinet` role label |
+| VolumeInfo | Stable GUID, validation string, AI user flag where present |
+| Essence drawer | `zenai_essence.value` in three-layer `core / jacket / companion` shape |
+| Persona name | `zenai_essence.value.jacket.name` non-empty and not the placeholder |
+| Prime/partner links | `AI_Cabinet_VolumeInfo.value.acls.partner[]` for delegation links |
+
+See [Profile Editor](../scripts/zen_dojotools_profile_readme.md) for the canonical writer and [Identity](../scripts/zen_dojotools_identity_readme.md) for membership rules.
 
 ---
 

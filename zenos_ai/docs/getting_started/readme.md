@@ -1,10 +1,38 @@
-# Getting Started — ZenOS-AI 2026.5.0 'Fry's Grandpa'
+# Getting Started — ZenOS-AI 2026.6.0 'Clue'
 
 *From fresh install to live agent*
 
 ---
 
 New to ZenOS-AI? This folder is your onboarding path. Read in order for a clean first-run experience.
+
+The path is intentionally human-scale. You should understand each layer before the next one comes alive:
+
+```text
+installed but inert
+  -> tools exposed to Assist
+  -> rooms and labels confirmed by you
+  -> devices gain meaning
+  -> components can notice useful events
+  -> AlertManager/Postman can ask for human judgment
+  -> full components like AutoVac can run end to end
+```
+
+The "wow, it noticed that" moment should arrive as a clear consent-based loop, not as a surprise. ZenOS-AI only has the tool access and labeled context you give it.
+
+2026.6.0 is not just "install the scripts and talk to the AI." The first-run path builds a home operations graph:
+
+```text
+Room Manager map
+  -> labeled entities and people
+  -> perception tools like Camera
+  -> actors like AutoVac, ZenLux, ZenShade, SpaMaster
+  -> AlertManager attention
+  -> Postman human acknowledgement
+  -> clear, suppress, escalate, or remember
+```
+
+That is the point of onboarding. OOBE teaches ZenOS where things are, labels teach it what things mean, DojoTools give it safe ways to act, and Postman/AlertManager provide the human-in-the-loop layer when the system needs judgment.
 
 ---
 
@@ -17,7 +45,7 @@ Start here. Covers:
 * File drop: `packages/zenos_ai/` and `custom_templates/zenos_ai/` into your HA config
 * `configuration.yaml` setup
 * Pasting the conversation agent system prompt
-* Setting your conversation agent before restart
+* Setting your conversation agent with the friendly `select.zenos_conversation_agent` dropdown once the package has loaded
 * Restarting HA and verifying Flynn initializes cleanly
 * Checking `sensor.zen_agent_health` for first-boot confirmation
 
@@ -30,8 +58,9 @@ Start here. Covers:
 After installation. Covers:
 
 * What Flynn does on first boot (the stepgate sequence)
-* The OOBE conversation flow — naming your AI, seeding the household profile
-* Using the persona selector and input helpers
+* The OOBE conversation flow — naming your AI and building the Room Manager spatial map
+* Mapping cameras, vacuums, locks, and presence into the label graph
+* Using dashboard selectors like `select.zenos_active_persona` instead of raw helper edits
 * Editing profiles after setup
 * Common first-run issues and fixes
 
@@ -41,31 +70,46 @@ After installation. Covers:
 
 After first boot. Covers:
 
-* Enabling `alert_manager` via your AI or prompt_loader
-* Creating a `notify.admin_devices` service
-* Tagging your first entity for monitoring
-* Firing a test summary and checking the kata
-* Getting your first notification
+* Firing a direct AlertManager test alert
+* Seeing fire-once dedup in action
+* Listing active alerts through `zen_dojotools_alertmanager`
+* Testing error-severity priority context
+* Clearing alerts safely
 
-**Do this next — it's the fastest way to see the pipeline working end to end.**
+**Do this next — it's the fastest way to prove ZenOS-AI can get your attention.**
 
 ---
 
 ### 4. `entity_exposure.md` — What to Expose to Your Agent
 
-Before you hand Friday the keys. Covers:
+After the first alert test, use this to clean up what the AI can see and touch. Covers:
 
 * The three-tier model: Actionable vs Contextable vs Invisible
 * What always gets exposed (DojoTools scripts)
 * What never gets exposed (AdminTools, cabinet sensors, credentials)
 * How to use labels instead of direct exposure for high-cardinality data
-* Token efficiency: one label on 50 sensors beats 50 direct reads
+* How labels feed Room Manager, Camera, AutoVac, AlertManager, and summarizers
 
-**Read this before configuring your conversation agent's entity list.**
+**Read this before broadening your conversation agent's entity list.**
 
 ---
 
-### 5. `cabinet_placement.md` — Where Things Go and Why
+### 5. `autovac_first_setup.md` — AutoVac First Setup
+
+The first big integrated component. Covers the whole chain:
+
+* DojoTools exposure and dashboard selectors
+* Room Manager room truth
+* Postman policy seeding and ack test
+* Grocy inventory setup
+* AutoVac labels, schedules, and room configuration
+* Consumables provisioning, wear checks, AlertManager, and final acceptance tests
+
+Use this when you want to prove ZenOS-AI can move from first-run setup to a fully governed automation loop.
+
+---
+
+### 6. `cabinet_placement.md` — Where Things Go and Why
 
 After entity exposure. Covers:
 
@@ -76,19 +120,19 @@ After entity exposure. Covers:
 
 ---
 
-### 6. `oobe.md` — OOBE Walkthrough
+### 7. `oobe.md` — OOBE Walkthrough
 
 The six-step first-boot configuration protocol in detail. Covers:
 
 * What OOBE is and when it fires
 * The conversational path (chatting with your AI to configure it)
-* The fast path (setting helpers directly in Settings → Helpers)
+* The Agent Builder path for invoking the same OOBE protocol
 * How Flynn detects OOBE completion
 * What to do if the OOBE notification won't dismiss
 
 ---
 
-### 7. `troubleshooting.md` — Troubleshooting
+### 8. `troubleshooting.md` — Troubleshooting
 
 When something isn't right. Covers:
 
@@ -105,7 +149,7 @@ When something isn't right. Covers:
 
 ---
 
-### 8. `user_management.md` — User and AI User Management
+### 9. `user_management.md` — User and AI User Management
 
 For adding, removing, and moving identities after initial setup. Covers:
 
@@ -121,7 +165,7 @@ For adding, removing, and moving identities after initial setup. Covers:
 ## Recommended Order
 
 ```
-install.md → first_run.md → first_alert.md → entity_exposure.md → cabinet_placement.md → oobe.md
+install.md -> first_run.md -> first_alert.md -> entity_exposure.md -> autovac_first_setup.md -> cabinet_placement.md -> oobe.md
 ```
 
 Keep `troubleshooting.md` and `user_management.md` open in a tab. You might need them.

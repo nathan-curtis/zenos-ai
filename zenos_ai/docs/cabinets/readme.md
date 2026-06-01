@@ -378,7 +378,7 @@ Redirector probe mode
 
 Summarizer staleness markers
 
-Mount tree visualizer (coming soon™️)
+Cabinet graph view: use `cabinet_manifest`, the Cabinet Spec, and the Hypergraph Model together. There is not a separate Mount Tree Visualizer tool in this release.
 
 
 

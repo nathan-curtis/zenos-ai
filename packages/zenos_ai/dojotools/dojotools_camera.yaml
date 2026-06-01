@@ -1,9 +1,9 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Camera
-# Version: 1.3.0
+# Version: 5.1.0
 #
 # Scripts:
-#   zen_dojotools_camera — Camera analysis, caching, and scanning (v1.2.0)
+#   zen_dojotools_camera — Camera analysis, caching, and scanning (v5.1.0)
 #
 # SUPERSEDES: analyze_camera_with_llm in scripts.yaml
 #
@@ -34,6 +34,11 @@ script:
       analysis tools. The ZenOS Agent's visual surface: analyze any camera with
       LLM vision, retrieve cached scene descriptions without burning an LLM call,
       or sweep an entire labeled camera set in one operation.
+
+      LENS PATTERN: You are in the camera lens. For zone/panel state use
+      zen_dojotools_security_manager (security lens). For per-room spatial context
+      including which cameras are in a given room use zen_dojotools_room_manager
+      mode=get context_slices=+security — returns cameras[] list alongside alarm zones.
 
       MODES: look (analyze + cache single camera) | read (return cached
       description — zero LLM cost) | scan (label-targeted multi-camera sweep,
@@ -226,7 +231,7 @@ script:
           - variables:
               _help_response:
                 help: true
-                version: "1.3.0"
+                version: "5.1.0"
                 tool: zen_dojotools_camera
                 description: >-
                   The ZenOS Agent's visual surface. Analyze any camera with LLM
@@ -234,6 +239,11 @@ script:
                   sweep an entire labeled camera set in one shot. Results are cached
                   to the household cabinet — the agent can read back what was last
                   seen without triggering a new analysis.
+                lens: >-
+                  Camera lens — visual analysis. For zone/panel state use
+                  zen_dojotools_security_manager (security lens). For per-room
+                  spatial context including cameras[] use zen_dojotools_room_manager
+                  mode=get context_slices=+security.
                 recommended_flow: >-
                   1. read first — if cache_age_minutes is acceptable, you're done.
                   2. look to refresh a specific camera on demand.
@@ -296,7 +306,7 @@ script:
                     Household cabinet drawer key = slugified camera entity_id
                     (dots and dashes → underscores). e.g.
                     camera.front_doorbell_camera → camera_front_doorbell_camera.
-                  cache_shape: "{ analysis, cached_at, camera_entity, snapshot_path, _default_ctx, _alert_policy }"
+                  cache_shape: "{ analysis, cached_at, camera_entity, snapshot_path, _default_ctx, clear_after_minutes, _alert_policy }"
                 label_summary:
                   security_camera: >-
                     SCAN SCOPE — controls which cameras are included in scan mode.
@@ -441,6 +451,7 @@ script:
                 snapshot_path: "{{ _raw.get('snapshot_path', '') if _raw is mapping else '' }}"
                 found: "{{ _raw is mapping and _raw != {} }}"
                 caller_token: "{{ _caller_token }}"
+                lens: "Camera lens — visual analysis. zen_dojotools_security_manager for zone/panel state (security lens). zen_dojotools_room_manager +security slice for cameras+zones by room."
           - stop: read
             response_variable: _read_response
 
@@ -545,6 +556,7 @@ script:
                     {%- endif -%}
                     {{ _w | tojson }}
                   label_input: camera, security
+                  expires_after: "{{ (now() + timedelta(hours=8)).isoformat() }}"
                 response_variable: _look_fc_resp
 
           # ── sendto dispatch ──────────────────────────────────────────────
@@ -649,6 +661,12 @@ script:
                     postman_status: "{{ _sendto_postman_resp.get('status', '') if _sendto_postman_resp is mapping else '' }}"
 
           - variables:
+              _cam_spa_master: >-
+                {%- set _by_label = 'hot_tub' in label_entities(_camera_entity) -%}
+                {%- set _by_name  = 'hot_tub' in _camera_entity | lower -%}
+                {{ 'zen_dojotools_spamaster — SpaMaster manages this spa area. Use for chemistry, jets, lights, cover, audio, temperature.'
+                   if (_by_label or _by_name) else '' }}
+          - variables:
               _look_response:
                 mode: look
                 camera_entity: "{{ _camera_entity }}"
@@ -658,6 +676,7 @@ script:
                 cached: "{{ _do_cache }}"
                 fc_confirmed: "{{ (_look_fc_resp.confirmed | default(false)) | bool if _do_cache else false }}"
                 sendto_result: "{{ _sendto_result if _sendto != '' else none }}"
+                spa_master: "{{ _cam_spa_master if _cam_spa_master != '' else none }}"
                 caller_token: "{{ _caller_token }}"
           - stop: look
             response_variable: _look_response
@@ -724,6 +743,7 @@ script:
                           {%- endif -%}
                           {{ _w | tojson }}
                         label_input: camera, security
+                        expires_after: "{{ (now() + timedelta(hours=8)).isoformat() }}"
           - event: zen_event
             event_data:
               event:
@@ -895,7 +915,12 @@ script:
                 {%- set v1 = v1 if v1 is mapping else (v1 | from_json if v1 is string else {}) -%}
                 {{ v1 if v1 is mapping else {} }}
               _sap_new_value: >-
-                {{ (_sap_existing if _sap_existing is mapping else {}) | combine({'_alert_policy': _sap_policy}) | tojson }}
+                {%- set base = (_sap_existing if _sap_existing is mapping else {}) | combine({'_alert_policy': _sap_policy}) -%}
+                {%- set cam_mins = camera_clear_after_minutes | default(none, true) -%}
+                {%- if cam_mins is not none and cam_mins | int(-1) >= 0 -%}
+                  {%- set base = base | combine({'clear_after_minutes': cam_mins | int}) -%}
+                {%- endif -%}
+                {{ base | tojson }}
           - alias: Write _alert_policy to camera drawer
             action: script.zen_dojotools_filecabinet
             data:
@@ -992,11 +1017,26 @@ script:
           first entry whose keywords match wins. notify: false suppresses alert
           for that class. image: true attaches snapshot to push notification.
           urgency 1-10 maps to postman tiers (4-6 = push+tts, 7-8 = high).
-          clear_after_minutes: auto-clears alert so it can re-fire. Default 5.
+          clear_after_minutes (per-entry): overrides the camera-level default for
+          this detection type only. Resolution: per-entry > camera_clear_after_minutes
+          field > hardcoded 15. Pass 0 for permanent (manual-clear-only).
           Example: {"person": {"keywords": ["person","visitor"], "notify": true,
           "urgency": 6, "alert_key": "front_door_visitor", "title": "Visitor",
           "channel_hint": "push", "image": true, "clear_after_minutes": 5},
           "none": {"notify": false}}
+        required: false
+      camera_clear_after_minutes:
+        selector:
+          number:
+            min: 0
+            max: 1440
+            mode: box
+        name: Camera Clear After (minutes)
+        description: >-
+          set_alert_policy only. Camera-level default for how long before an alert
+          auto-clears so it can re-fire. Stored at the camera drawer root; applies
+          to all detection types unless overridden per-entry in alert_policy.
+          Pass 0 for permanent (manual-clear-only). Omit to leave unchanged.
         required: false
       ignore_autocontext:
         selector:

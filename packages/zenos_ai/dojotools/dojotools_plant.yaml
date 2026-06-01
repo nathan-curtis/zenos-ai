@@ -1,0 +1,1091 @@
+###############################################################################
+# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v5.4.0)
+#
+# Script: zen_dojotools_plant
+#
+# mode: overview | electric | water | gas | mechanical | thermal | circuits | managed | help
+#
+# Discovery: label-based with graceful fallbacks.
+# All sections surface available: false if no entities found or unavailable.
+#
+# Electric: whole-home live power (label:utility_main or main_panel) +
+#           utility billing (label:utility_meter or integration labels) +
+#           grid carbon (label:energy_management).
+# Water:    flow sensor (label:water_usage or droplet) + billing rate.
+# Gas:      live sensor if zen_plant_gas labeled, else graceful N/A.
+# Circuits: label:consumed_energy (Wh, sort=energy default) or
+#           label:main_panel/sub_panel *_current sensors (sort=current).
+# Utilities: RM household cabinet utility_index injected into every response.
+# Discovery: zen_plant_* label overrides take first priority in all waterfalls.
+###############################################################################
+
+script:
+
+  zen_dojotools_plant:
+    alias: "Zen DojoTools Plant"
+    description: >
+      Physical plant + energy manager (v5.4.0). Electric: whole-home live watts, utility billing, grid carbon,
+      circuit breakdown. Water: usage + billing. Gas: live sensor or graceful N/A. Utility registry from RM cabinet.
+      mode=overview: top-line all utilities. mode=electric: full electrical. mode=water/gas/mechanical/thermal/circuits: subsystem detail.
+      mode=managed [managed_labels=csv]: universal managed-machine display — all machines provisioned via provision_bom, grouped by ha_labels root label. Returns products[], chores[], stock summary, schema_warnings[]{type,message,next_call}, and top-level advisory[] with exact fix commands. Resolves area via product location → Grocy location homeassistant_area userfield (not product userfield). Chores globally deduped alphabetically — each chore claimed by first machine. Plant is READ-ONLY: never sets labels or locations. Fix schema issues via zen_dojotools_inventory. Call mode=help for quickstart, howto, and managed_guidance.
+      mode=validate: slot resolution report. mode=ignore/unignore: suppress/restore entities from discovery.
+    mode: queued
+    max: 3
+
+    fields:
+
+      mode:
+        name: Mode
+        description: "overview, electric, water, gas, mechanical, thermal, circuits, managed, validate, ignore, unignore, help"
+        default: overview
+        selector:
+          select:
+            options: [overview, electric, hvac, water, gas, mechanical, thermal, circuits, managed, validate, ignore, unignore, help]
+
+      circuit_limit:
+        name: Circuit Limit
+        description: "Max circuits to return in circuits mode. Default 10."
+        default: 10
+        selector:
+          number:
+            min: 1
+            max: 50
+            mode: box
+
+      sort_by:
+        name: Sort By
+        description: "circuits: energy (lifetime Wh, default) or current (live amps)"
+        default: energy
+        selector:
+          select:
+            options: [energy, current]
+
+      target_entity:
+        name: Target Entity
+        description: "Entity ID for mode=ignore / mode=unignore"
+        selector:
+          text:
+
+      caller_token:
+        name: Caller Token
+        description: "Opaque token echoed in response for correlation."
+        selector:
+          text:
+
+      managed_labels:
+        name: Managed Labels
+        description: "mode=managed: CSV of root HA label slugs to scope query (e.g. autovac,spa). Omit for all provisioned machines."
+        selector:
+          text:
+
+      include_inventory:
+        name: Include Inventory
+        description: "Fetch Grocy room_brief for each named load's HA area (opt-in — adds sub-calls)."
+        default: false
+        selector:
+          boolean:
+
+    sequence:
+
+      # ── SETUP ─────────────────────────────────────────────────────────────
+      - variables:
+          _mode: "{{ mode | default('overview') | lower | trim }}"
+          _caller_token: "{{ caller_token | default('') }}"
+          _hh_cabinet: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+
+      # ── HELP ──────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'help' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: help
+                tool: zen_dojotools_plant
+                version: "5.4.0"
+                modes:
+                  overview: "Top-line snapshot: electric, hvac, thermal, water, gas, mechanical, utility registry"
+                  electric: "Live whole-home power + billing + grid carbon + panel status"
+                  hvac: "Climate units (room air): mode, setpoint, current temp. Gas utility contact."
+                  water: "Water usage sensor + billing rate"
+                  gas: "zen_plant_gas sensor if tagged, else graceful N/A + utility contact surfaced"
+                  mechanical: "Water heater + sump pump + motors bucket (zen_plant_motor) + water_management subnodes (water softener, auto shutoff, leak sensors). include_inventory=true fetches Grocy room_brief per load area inline."
+                  thermal: "Thermal-managed loads — distinct from HVAC (not room air). Water heater, hot tub, freezers. Labels: zen_plant_hot_tub, zen_plant_freezer, zen_plant_thermal."
+                  circuits: "Circuit breakdown. Params: circuit_limit (default 10), sort_by (energy|current)"
+                  managed: "All provisioned machines from Grocy — chores due, stock summary, products grouped by label. Any machine bootstrapped via provision_bom appears here automatically. Param: managed_labels (CSV root label slugs, omit=all). Plant is a CONSUMER — it never sets labels. The component that owns the machine (autovac, spa_manager, etc.) is the label authority."
+                  validate: "Resolution report — every slot: entity_id, pinned, raw_state, ok. Run to see what needs labeling."
+                  ignore: "Tag entity with zen_plant_ignore — suppresses from all plant discovery waterfalls. Param: target_entity."
+                  unignore: "Remove zen_plant_ignore tag from entity — restores to plant discovery. Param: target_entity."
+                  help: "This reference"
+                discovery:
+                  override_labels: "zen_plant_* labels take priority — tag any sensor to pin it"
+                  electric_live: "zen_plant_site_power → label:utility_main → label:main_panel *site_power"
+                  electric_billing: "zen_plant_billing_daily/weekly/monthly → label:utility_billing → label:utility_meter"
+                  electric_tariff: "zen_plant_tariff (unit: USD/Wh) → label:utility_billing *tariff|rate|price"
+                  electric_grid_carbon: "zen_plant_grid_carbon → label:energy_management *fossil*"
+                  water: "zen_plant_water → label:water_usage → label:droplet (non-fee sensors)"
+                  water_rate: "zen_plant_water_rate → label:water_usage *fee|rate|cost → none if unlabeled"
+                  gas: "zen_plant_gas (therms) → graceful N/A if unset"
+                  water_heater: "label:water_heater → water_heater.* + sensor.*available* + binary_sensor.*running* + sensor.*power*"
+                  sump_pump: "label:sump_pump → binary_sensor.* running status"
+                  hot_tub: "zen_plant_hot_tub → climate.* (setpoint+temp) or sensor.*temp* (read-only)"
+                  freezer: "zen_plant_freezer → sensor.* (temp reading per unit). Multiple entities = multiple nodes."
+                  thermal_generic: "zen_plant_thermal → any additional thermal-managed entity not covered above"
+                  water_softener: "zen_plant_water_softener → sensors/binary_sensors for softener/conditioner systems (e.g. Kinetico). Chores via Grocy chores_by_area."
+                  auto_shutoff: "zen_plant_auto_shutoff → binary_sensor.* or switch.* for automatic water shutoff valves (e.g. Leak Gopher)"
+                  leak_sensor: "zen_plant_leak_sensor → binary_sensor.* wet/dry leak detection probes and sensors"
+                  motors: "zen_plant_motor → any entity representing a mechanical motor/drive (cover.* garage door, fan.* air handler/range hood, binary_sensor.* washer/dryer/dishwasher running). Multi-entity, returns node list."
+                  grocy_link: "Grocy location.userfields.ha_entity_id links location to controlling HA entity (future: auto-wiring)"
+                  ignore: "zen_plant_ignore → entity suppressed from all waterfalls"
+                  circuits_energy: "label:consumed_energy → sensor.* sorted desc by lifetime Wh"
+                  circuits_current: "label:main_panel+sub_panel → sensor.*_current* (excludes panel-level bus sensors)"
+                fallback: "All sections return available=false when entities are missing or unavailable"
+                utility_registry: "Injected from RM household cabinet utility_index on every response"
+                managed_guidance:
+                  how_it_works: "Products fetched via catalog_find_by_tag. Grouped by ha_labels root (first label in CSV = machine identifier). Area resolved via product location_id → Grocy location → parent chain → homeassistant_area userfield. Chores fetched via room_brief per resolved area. Chores are globally deduped across machines in alphabetical label order — each chore_id assigned to the first machine that claims it."
+                  schema_warnings:
+                    root_label_is_area: "The machine group label resolves to a real HA area_id. Fix: retag the products using a machine-type label (e.g. garage_door, dishwasher) not a room label as the root. Use zen_dojotools_inventory mode=products_tag ha_labels=<machine>,<machine>_part."
+                    no_area_resolved: "All products in this machine group have a Grocy location with no homeassistant_area userfield set. Chores and stock will be empty. Fix: use zen_dojotools_inventory mode=locations_metadata_set location=X area_id=Y to tag the storage location. The area propagates to all child locations automatically."
+                  chore_bleed: "If a machine shows chores clearly belonging to a different appliance (e.g. dishwasher chores appearing under trash_trakker), those chores have no machine group of their own yet. Fix: provision_bom that appliance so it gets its own label group — it will claim its chores before the affected machine processes them. Chore ownership = first alphabetical machine whose product shares the same area."
+                  duplicate_machine_groups: "If the same physical machine appears as two groups, old products were manually tagged with a different root label before provision_bom existed. Fix: retag old products to match the canonical label using products_tag, then delete provision_bom duplicates with catalog_delete_product (check stock first with stock_check_item)."
+                  label_authority: "Plant NEVER sets labels. The owning component (autovac, spa_manager, etc.) defines the canonical label via provision_bom or products_tag. If plant shows a machine you don't recognize, check the ha_labels field in its products[] — that reveals the owning component."
+                  adding_a_machine: "To make a new machine appear in mode=managed: (1) use zen_dojotools_inventory mode=provision_bom with a BOM defining parts[], ha_labels, chore_ha_labels; (2) ensure product storage locations have homeassistant_area set; (3) that's it — plant picks it up on next call."
+                quickstart:
+                  goal: "Get a new machine showing correctly in mode=managed"
+                  step_1: "Tag its Grocy storage location with the HA area: zen_dojotools_inventory mode=locations_metadata_set location='Storage Location Name' area_id='ha_area_id'"
+                  step_2: "Tag its products with a machine-type root label: zen_dojotools_inventory mode=products_tag item='Product Name' ha_labels='machine_type,machine_type_part'"
+                  step_3: "OR do both at once for new machines: zen_dojotools_inventory mode=provision_bom bom='{\"ha_labels\":\"machine_type,machine_type_part\",\"chore_ha_labels\":\"machine_type,machine_type_chore\",\"parts\":[...]}' confirm_action=true"
+                  step_4: "Verify: mode=managed managed_labels=machine_type — check schema_warnings[] is empty and chores/stock look right"
+                  rule: "Plant is read-only. Never ask plant to set labels or locations — use zen_dojotools_inventory for all writes."
+                howto:
+                  fix_no_area_resolved: "zen_dojotools_inventory mode=locations_metadata_set location_id=<id> area_id=<ha_area_id> — child locations inherit the area automatically, no need to set each one."
+                  fix_root_label_is_area: "zen_dojotools_inventory mode=products_tag product_id=<id> ha_labels=<machine_type>,<subtype> — retag each product. Root label must not match an HA area_id (e.g. use 'garage_door' not 'garage')."
+                  fix_duplicate_machines: "Identify canonical product (the one with real stock — use stock_check_item). Run products_merge(keep=canonical, remove=duplicate) to move stock, then catalog_delete_product on the empty shell. Retag canonical with correct labels."
+                  fix_chore_bleed: "Chores from other appliances appear because those appliances have no machine group yet. Run provision_bom for each unmapped appliance (dishwasher, refrigerator, range, etc.) — machines are processed alphabetically, so each claims its own chores before shared-area machines see them."
+                  investigate_machine: "mode=managed managed_labels=<label> — scope to one machine. Check products[].location_id to find storage locations. Check schema_warnings[].next_call for exact fix commands."
+          - stop: help
+            response_variable: _result
+
+      # ── IGNORE ────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'ignore' }}"
+        then:
+          - if: "{{ target_entity | default('') | trim == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    message: "target_entity is required for mode=ignore"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing target_entity
+                response_variable: _result
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: create
+              label_list: ["zen_plant_ignore"]
+              new_description: "Suppress entity from all zen_dojotools_plant discovery waterfalls"
+              new_icon: "mdi:eye-off"
+              confirm: true
+            response_variable: _create_resp
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: tag
+              label_list: ["zen_plant_ignore"]
+              target_entities: "{{ [target_entity | trim] }}"
+              confirm: true
+            response_variable: _tag_resp
+          - variables:
+              _result:
+                status: ok
+                mode: ignore
+                entity_id: "{{ target_entity | trim }}"
+                label: zen_plant_ignore
+                message: "Entity suppressed from all plant discovery waterfalls"
+                caller_token: "{{ _caller_token }}"
+          - stop: ignore
+            response_variable: _result
+
+      # ── UNIGNORE ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'unignore' }}"
+        then:
+          - if: "{{ target_entity | default('') | trim == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    message: "target_entity is required for mode=unignore"
+                    caller_token: "{{ _caller_token }}"
+              - stop: missing target_entity
+                response_variable: _result
+          - action: script.zen_dojotools_labels
+            data:
+              action_type: untag
+              label_list: ["zen_plant_ignore"]
+              target_entities: "{{ [target_entity | trim] }}"
+              confirm: true
+            response_variable: _untag_resp
+          - variables:
+              _result:
+                status: ok
+                mode: unignore
+                entity_id: "{{ target_entity | trim }}"
+                label: zen_plant_ignore
+                message: "Entity restored to plant discovery waterfalls"
+                caller_token: "{{ _caller_token }}"
+          - stop: unignore
+            response_variable: _result
+
+      # ── UTILITY REGISTRY ──────────────────────────────────────────────────
+      - variables:
+          _util_raw: >-
+            {%- if _hh_cabinet == '' -%}{{ {} }}
+            {%- else -%}
+              {%- set _r=(state_attr(_hh_cabinet,'variables')|default({},true)).get('utility_index',none) -%}
+              {%- if _r is none -%}{{ {} }}
+              {%- elif _r is mapping -%}{{ _r.get('value',_r) if 'value' in _r else _r }}
+              {%- elif _r is string and _r|trim not in ['None','none','','null'] -%}
+                {%- set _rd=_r|from_json -%}
+                {{ _rd.get('value',_rd) if _rd is mapping and 'value' in _rd else _rd }}
+              {%- else -%}{{ {} }}
+              {%- endif -%}
+            {%- endif -%}
+
+      # ── IGNORE LIST ───────────────────────────────────────────────────────
+      # Tag any entity with zen_plant_ignore to suppress from all waterfalls.
+      - variables:
+          _zp_ignored: "{{ label_entities('zen_plant_ignore') | list }}"
+
+      # ── ENTITY DISCOVERY ─────────────────────────────────────────────────
+      # Waterfall: standard semantic labels first, integration-specific fallback.
+      # Standard labels any install should apply:
+      #   utility_main  — whole-home power/consumption meter
+      #   utility_meter — HA utility meter virtual sensors (daily/monthly)
+      #   consumed_energy — circuit/load level cumulative energy
+      #   water_usage   — whole-home water consumption sensor
+      # Integration-specific labels (SPAN, CPS Energy, Droplet, etc.) used
+      # as secondary when standard labels return nothing.
+      - variables:
+          _utility_main_sensors: "{{ label_entities('utility_main') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _utility_meter_sensors: "{{ label_entities('utility_meter') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _main_panel_sensors: "{{ label_entities('main_panel') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _utility_billing_sensors: "{{ label_entities('utility_billing') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _utility_billing_binary: "{{ label_entities('utility_billing') | select('match', 'binary_sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _energy_mgmt_sensors: "{{ label_entities('energy_management') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _water_usage_sensors: "{{ label_entities('water_usage') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _droplet_sensors: "{{ label_entities('droplet') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _consumed_energy_sensors: "{{ label_entities('consumed_energy') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _sub_panel_sensors: "{{ label_entities('sub_panel') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+
+      # ── ZEN_PLANT LABEL OVERRIDES ─────────────────────────────────────────
+      # Tag any sensor with a zen_plant_* label to pin it directly.
+      # Overrides take first priority in every waterfall below.
+      # zen_plant_tariff unit convention: USD/Wh (same as CPS integration sensors).
+      # zen_plant_ignore — suppress any entity from all discovery waterfalls.
+      - variables:
+          _zp_site_power: "{{ label_entities('zen_plant_site_power') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_tariff: "{{ label_entities('zen_plant_tariff') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_billing_daily: "{{ label_entities('zen_plant_billing_daily') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_billing_weekly: "{{ label_entities('zen_plant_billing_weekly') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_billing_monthly: "{{ label_entities('zen_plant_billing_monthly') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_grid_carbon: "{{ label_entities('zen_plant_grid_carbon') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_water: "{{ label_entities('zen_plant_water') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_water_rate: "{{ label_entities('zen_plant_water_rate') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_gas: "{{ label_entities('zen_plant_gas') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_hot_tub: "{{ label_entities('zen_plant_hot_tub') | reject('in', _zp_ignored) | list }}"
+          _zp_freezer: "{{ label_entities('zen_plant_freezer') | reject('in', _zp_ignored) | list }}"
+          _zp_thermal: "{{ label_entities('zen_plant_thermal') | reject('in', _zp_ignored) | list }}"
+          _zp_water_softener: "{{ label_entities('zen_plant_water_softener') | reject('in', _zp_ignored) | list }}"
+          _zp_auto_shutoff: "{{ label_entities('zen_plant_auto_shutoff') | reject('in', _zp_ignored) | list }}"
+          _zp_leak_sensor: "{{ label_entities('zen_plant_leak_sensor') | reject('in', _zp_ignored) | list }}"
+          _zp_motor: "{{ label_entities('zen_plant_motor') | reject('in', _zp_ignored) | list }}"
+
+      # ── RESOLVE SPECIFIC ENTITY IDS (zen_plant_* → generic → integration) ─
+      - variables:
+          _site_power_eid: >-
+            {%- if _zp_site_power != '' -%}{{ _zp_site_power }}
+            {%- else -%}
+              {%- set _um = _utility_main_sensors | select('search', 'power|watt') | reject('search', 'produced|reactive|pv') | list | first | default('') -%}
+              {%- set _mp = _main_panel_sensors | select('search', 'site_power') | list | first | default('') -%}
+              {{ _um if _um != '' else _mp }}
+            {%- endif -%}
+          _l1_voltage_eid: "{{ _main_panel_sensors | select('search', 'l1_voltage') | list | first | default('') }}"
+          _l2_voltage_eid: "{{ _main_panel_sensors | select('search', 'l2_voltage') | list | first | default('') }}"
+          _breaker_rating_eid: "{{ _main_panel_sensors | select('search', 'main_breaker_rating') | list | first | default('') }}"
+          _billing_daily_eid: >-
+            {%- if _zp_billing_daily != '' -%}{{ _zp_billing_daily }}
+            {%- else -%}
+              {%- set _c = _utility_billing_sensors | select('search', 'daily') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'daily') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_monthly_eid: >-
+            {%- if _zp_billing_monthly != '' -%}{{ _zp_billing_monthly }}
+            {%- else -%}
+              {%- set _c = _utility_billing_sensors | select('search', 'monthly') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'monthly') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_weekly_eid: >-
+            {%- if _zp_billing_weekly != '' -%}{{ _zp_billing_weekly }}
+            {%- else -%}
+              {%- set _c = _utility_billing_sensors | select('search', 'weekly') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'weekly') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_tariff_eid: >-
+            {%- if _zp_tariff != '' -%}{{ _zp_tariff }}
+            {%- else -%}
+              {%- set _c = _utility_billing_sensors | select('search', 'tariff|rate|price') | list | first | default('') -%}
+              {%- set _u = _utility_meter_sensors | select('search', 'tariff|rate|price') | list | first | default('') -%}
+              {{ _c if _c != '' else _u }}
+            {%- endif -%}
+          _billing_peak_eid: "{{ _utility_billing_binary | list | first | default('') }}"
+          _grid_fossil_eid: >-
+            {%- if _zp_grid_carbon != '' -%}{{ _zp_grid_carbon }}
+            {%- else -%}
+              {{ _energy_mgmt_sensors | select('search', 'fossil') | list | first | default('') }}
+            {%- endif -%}
+          _water_eid: >-
+            {%- if _zp_water != '' -%}{{ _zp_water }}
+            {%- else -%}
+              {%- set _wu = _water_usage_sensors | reject('search', 'fee|rate|cost') | list | first | default('') -%}
+              {%- set _dr = _droplet_sensors | reject('search', 'fee|rate|cost') | list | first | default('') -%}
+              {{ _wu if _wu != '' else _dr }}
+            {%- endif -%}
+          _water_rate_eid: >-
+            {%- if _zp_water_rate != '' -%}{{ _zp_water_rate }}
+            {%- else -%}
+              {{ _water_usage_sensors | select('search', 'fee|rate|cost') | list | first | default('') }}
+            {%- endif -%}
+          _circuit_current_eids: >-
+            {{ (_main_panel_sensors + _sub_panel_sensors)
+               | unique | list
+               | select('search', '_current$')
+               | reject('search', 'upstream|downstream|l1_current|l2_current|breaker_rating')
+               | list }}
+
+      # ── HVAC DISCOVERY ────────────────────────────────────────────────────
+      - variables:
+          _thermostat_sensors: "{{ label_entities('main_thermostat') | select('match', 'climate\\.') | reject('in', _zp_ignored) | list }}"
+          _hvac_sensors: "{{ label_entities('hvac') | select('match', 'climate\\.') | reject('in', _zp_ignored) | list }}"
+
+      - variables:
+          _thermostat_eids: >-
+            {%- set _mt = _thermostat_sensors -%}
+            {%- set _hv = _hvac_sensors -%}
+            {{ (_mt if _mt | count > 0 else _hv) | list }}
+
+      # ── MECHANICAL DISCOVERY ──────────────────────────────────────────────
+      - variables:
+          _wh_entities: "{{ label_entities('water_heater') | reject('in', _zp_ignored) | list }}"
+          _sump_entities: "{{ label_entities('sump_pump') | reject('in', _zp_ignored) | list }}"
+
+      - variables:
+          _wh_eid: "{{ _wh_entities | select('match', 'water_heater\\.') | list | first | default('') }}"
+          _wh_avail_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'available') | list | first | default('') }}"
+          _wh_running_eid: "{{ _wh_entities | select('match', 'binary_sensor\\.') | select('search', 'running') | list | first | default('') }}"
+          _wh_power_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'power') | reject('search', 'today|daily') | list | first | default('') }}"
+          _wh_daily_eid: "{{ _wh_entities | select('match', 'sensor\\.') | select('search', 'power_usage_today|daily') | list | first | default('') }}"
+          _sump_eid: "{{ _sump_entities | select('match', 'binary_sensor\\.') | list | first | default('') }}"
+          # Thermal loads
+          _ht_climate_eid: "{{ _zp_hot_tub | select('match', 'climate\\.') | list | first | default('') }}"
+          _ht_temp_eid: "{{ _zp_hot_tub | select('match', 'sensor\\.') | select('search', 'temp') | list | first | default('') }}"
+          _freezer_eids: "{{ _zp_freezer | list }}"
+          # Garage water subnodes
+          _softener_eids: "{{ _zp_water_softener | list }}"
+          _shutoff_eid: "{{ _zp_auto_shutoff | list | first | default('') }}"
+          _leak_sensor_eids: "{{ _zp_leak_sensor | select('match', 'binary_sensor\\.') | list }}"
+
+      # ── READ SENSOR STATES ────────────────────────────────────────────────
+      - variables:
+          _site_power_w: >-
+            {%- set _s = states(_site_power_eid) if _site_power_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _l1_v: >-
+            {%- set _s = states(_l1_voltage_eid) if _l1_voltage_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _l2_v: >-
+            {%- set _s = states(_l2_voltage_eid) if _l2_voltage_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _breaker_a: >-
+            {%- set _s = states(_breaker_rating_eid) if _breaker_rating_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_daily_wh: >-
+            {%- set _s = states(_billing_daily_eid) if _billing_daily_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_monthly_wh: >-
+            {%- set _s = states(_billing_monthly_eid) if _billing_monthly_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_weekly_wh: >-
+            {%- set _s = states(_billing_weekly_eid) if _billing_weekly_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_tariff_usd_wh: >-
+            {%- set _s = states(_billing_tariff_eid) if _billing_tariff_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _billing_peak: >-
+            {%- set _s = states(_billing_peak_eid) if _billing_peak_eid != '' else 'unavailable' -%}
+            {{ (_s == 'on') if _s not in ['unavailable','unknown',''] else none }}
+          _grid_fossil_pct: >-
+            {%- set _s = states(_grid_fossil_eid) if _grid_fossil_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _water_usage_gal: >-
+            {%- set _s = states(_water_eid) if _water_eid != '' else 'unavailable' -%}
+            {%- set _f = _s | float(none) if _s not in ['unavailable','unknown',''] else none -%}
+            {{ [_f | round(3), 0] | max if _f is not none else none }}
+          _water_rate_usd: >-
+            {%- if _water_rate_eid != '' -%}
+              {%- set _s = states(_water_rate_eid) -%}
+              {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+            {%- else -%}
+              {{ none }}
+            {%- endif -%}
+          _gas_therms: >-
+            {%- if _zp_gas != '' -%}
+              {%- set _s = states(_zp_gas) -%}
+              {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _wh_mode: >-
+            {%- set _s = states(_wh_eid) if _wh_eid != '' else 'unavailable' -%}
+            {{ _s if _s not in ['unavailable','unknown',''] else none }}
+          _wh_current_temp: >-
+            {%- set _v = state_attr(_wh_eid, 'current_temperature') if _wh_eid != '' else none -%}
+            {{ _v | float(none) if _v is not none else none }}
+          _wh_setpoint: >-
+            {%- set _v = state_attr(_wh_eid, 'temperature') if _wh_eid != '' else none -%}
+            {{ _v | float(none) if _v is not none else none }}
+          _wh_avail_pct: >-
+            {%- set _s = states(_wh_avail_eid) if _wh_avail_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _wh_running: >-
+            {%- set _s = states(_wh_running_eid) if _wh_running_eid != '' else 'unavailable' -%}
+            {{ (_s == 'on') if _s not in ['unavailable','unknown',''] else none }}
+          _wh_power_w: >-
+            {%- set _s = states(_wh_power_eid) if _wh_power_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _wh_daily_kwh: >-
+            {%- set _s = states(_wh_daily_eid) if _wh_daily_eid != '' else 'unavailable' -%}
+            {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _sump_active: >-
+            {%- set _s = states(_sump_eid) if _sump_eid != '' else 'unavailable' -%}
+            {{ (_s == 'on') if _s not in ['unavailable','unknown',''] else none }}
+          _ht_setpoint: >-
+            {%- if _ht_climate_eid != '' -%}
+              {%- set _v = state_attr(_ht_climate_eid, 'temperature') -%}
+              {{ _v | float(none) if _v is not none else none }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _ht_temp: >-
+            {%- set _eid = _ht_climate_eid if _ht_climate_eid != '' else _ht_temp_eid -%}
+            {%- if _eid != '' -%}
+              {%- set _s = state_attr(_eid, 'current_temperature') if _ht_climate_eid != '' else states(_eid) -%}
+              {{ _s | float(none) if _s is not none and _s not in ['unavailable','unknown',''] else none }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _ht_mode: >-
+            {%- set _s = states(_ht_climate_eid) if _ht_climate_eid != '' else 'unavailable' -%}
+            {{ _s if _s not in ['unavailable','unknown',''] else none }}
+          _freezer_nodes: >-
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for eid in _freezer_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'temp': _s | float(none) if _s not in ['unavailable','unknown',''] else none, 'unit': state_attr(eid, 'unit_of_measurement') | default('°F', true)}] -%}
+            {%- endfor -%}
+            {{ ns.rows }}
+          _softener_nodes: >-
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for eid in _softener_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'state': _s, 'unit': state_attr(eid, 'unit_of_measurement') | default(none, true)}] -%}
+            {%- endfor -%}
+            {{ ns.rows }}
+          _shutoff_state: >-
+            {%- set _s = states(_shutoff_eid) if _shutoff_eid != '' else 'unavailable' -%}
+            {{ _s if _s not in ['unavailable','unknown',''] else none }}
+          _leak_nodes: >-
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for eid in _leak_sensor_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'wet': (_s == 'on') if _s not in ['unavailable','unknown',''] else none}] -%}
+            {%- endfor -%}
+            {{ ns.rows }}
+
+      # ── LOAD AREA RESOLUTION ─────────────────────────────────────────────
+      - variables:
+          _inc_inv: "{{ include_inventory | default(false) | bool }}"
+          _wh_area: "{{ area_id(_wh_eid) | default('') if _wh_eid != '' else '' }}"
+          _ht_area: >-
+            {%- set _eid = _ht_climate_eid if _ht_climate_eid != '' else _ht_temp_eid -%}
+            {{ area_id(_eid) | default('') if _eid != '' else '' }}
+          _sump_area: "{{ area_id(_sump_eid) | default('') if _sump_eid != '' else '' }}"
+
+      # ── INVENTORY FETCH (opt-in via include_inventory=true) ───────────────
+      - if: "{{ _inc_inv and _wh_area != '' }}"
+        then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: room_brief
+              homeassistant_area_id: "{{ _wh_area }}"
+            response_variable: _wh_inv_resp
+            continue_on_error: true
+
+      - variables:
+          _wh_inv: >-
+            {%- if not _inc_inv or _wh_area == '' -%}{{ none }}
+            {%- else -%}
+              {%- set _r = _wh_inv_resp | default({}) -%}
+              {{ _r if _r is mapping and _r.get('status') in ['success','ok'] else none }}
+            {%- endif -%}
+
+      - if: "{{ _inc_inv and _ht_area != '' and _ht_area != _wh_area }}"
+        then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: room_brief
+              homeassistant_area_id: "{{ _ht_area }}"
+            response_variable: _ht_inv_resp
+            continue_on_error: true
+
+      - variables:
+          _ht_inv: >-
+            {%- if not _inc_inv -%}{{ none }}
+            {%- elif _ht_area == _wh_area -%}{{ _wh_inv }}
+            {%- elif _ht_area == '' -%}{{ none }}
+            {%- else -%}
+              {%- set _r = _ht_inv_resp | default({}) -%}
+              {{ _r if _r is mapping and _r.get('status') in ['success','ok'] else none }}
+            {%- endif -%}
+
+      # ── VALIDATE ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'validate' }}"
+        then:
+          - variables:
+              _val_hvac_eid: "{{ _thermostat_eids | first | default('') }}"
+          - variables:
+              _val_slots: >-
+                {{
+                  {
+                    'site_power':     {'entity_id': _site_power_eid,     'pinned': _zp_site_power != '',     'raw_state': states(_site_power_eid) if _site_power_eid != '' else none,          'ok': _site_power_w is not none},
+                    'tariff':         {'entity_id': _billing_tariff_eid,  'pinned': _zp_tariff != '',          'raw_state': states(_billing_tariff_eid) if _billing_tariff_eid != '' else none,   'ok': _billing_tariff_usd_wh is not none},
+                    'billing_daily':  {'entity_id': _billing_daily_eid,   'pinned': _zp_billing_daily != '',   'raw_state': states(_billing_daily_eid) if _billing_daily_eid != '' else none,     'ok': _billing_daily_wh is not none},
+                    'billing_weekly': {'entity_id': _billing_weekly_eid,  'pinned': _zp_billing_weekly != '',  'raw_state': states(_billing_weekly_eid) if _billing_weekly_eid != '' else none,    'ok': _billing_weekly_wh is not none},
+                    'billing_monthly':{'entity_id': _billing_monthly_eid, 'pinned': _zp_billing_monthly != '', 'raw_state': states(_billing_monthly_eid) if _billing_monthly_eid != '' else none,  'ok': _billing_monthly_wh is not none},
+                    'grid_carbon':    {'entity_id': _grid_fossil_eid,     'pinned': _zp_grid_carbon != '',     'raw_state': states(_grid_fossil_eid) if _grid_fossil_eid != '' else none,          'ok': _grid_fossil_pct is not none},
+                    'water':          {'entity_id': _water_eid,           'pinned': _zp_water != '',           'raw_state': states(_water_eid) if _water_eid != '' else none,                      'ok': _water_usage_gal is not none},
+                    'water_rate':     {'entity_id': _water_rate_eid,      'pinned': _zp_water_rate != '',      'raw_state': states(_water_rate_eid) if _water_rate_eid != '' else none,            'ok': _water_rate_usd is not none},
+                    'gas':            {'entity_id': _zp_gas,              'pinned': _zp_gas != '',             'raw_state': states(_zp_gas) if _zp_gas != '' else none,                            'ok': _gas_therms is not none},
+                    'l1_voltage':     {'entity_id': _l1_voltage_eid,      'pinned': false,                     'raw_state': states(_l1_voltage_eid) if _l1_voltage_eid != '' else none,            'ok': _l1_v is not none},
+                    'l2_voltage':     {'entity_id': _l2_voltage_eid,      'pinned': false,                     'raw_state': states(_l2_voltage_eid) if _l2_voltage_eid != '' else none,            'ok': _l2_v is not none},
+                    'breaker_rating': {'entity_id': _breaker_rating_eid,  'pinned': false,                     'raw_state': states(_breaker_rating_eid) if _breaker_rating_eid != '' else none,    'ok': _breaker_a is not none},
+                    'hvac':           {'entity_id': _val_hvac_eid,        'pinned': false,                     'raw_state': states(_val_hvac_eid) if _val_hvac_eid != '' else none,                'ok': _val_hvac_eid != ''},
+                    'water_heater':   {'entity_id': _wh_eid,              'pinned': false,                     'raw_state': states(_wh_eid) if _wh_eid != '' else none,                             'ok': _wh_eid != ''},
+                    'sump_pump':      {'entity_id': _sump_eid,            'pinned': false,                     'raw_state': states(_sump_eid) if _sump_eid != '' else none,                          'ok': _sump_eid != ''},
+                  }
+                }}
+          - variables:
+              _val_unresolved: >-
+                {%- set ns = namespace(m=[]) -%}
+                {%- for k, v in _val_slots.items() -%}
+                  {%- if not v.ok -%}{%- set ns.m = ns.m + [k] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.m }}
+              _val_ok_count: "{{ _val_slots.values() | selectattr('ok') | list | count }}"
+          - variables:
+              _result:
+                status: ok
+                mode: validate
+                slots: "{{ _val_slots }}"
+                summary:
+                  resolved: "{{ _val_ok_count }}"
+                  unresolved: "{{ _val_unresolved | count }}"
+                  total: "{{ _val_slots | count }}"
+                  unresolved_slots: "{{ _val_unresolved }}"
+                tip: "Tag any sensor with zen_plant_<slot> label to pin it"
+                caller_token: "{{ _caller_token }}"
+          - stop: validate
+            response_variable: _result
+
+      # ── HVAC BLOCK ────────────────────────────────────────────────────────
+      - variables:
+          _hvac_block: >-
+            {%- set ns = namespace(units=[]) -%}
+            {%- for eid in _thermostat_eids -%}
+              {%- set _st = states(eid) -%}
+              {%- if _st not in ['unavailable','unknown',''] -%}
+                {%- set _sp = state_attr(eid,'temperature') -%}
+                {%- set _ct = state_attr(eid,'current_temperature') -%}
+                {%- set _name = state_attr(eid,'friendly_name') | default(eid,true) -%}
+                {%- set ns.units = ns.units + [{'entity_id':eid,'name':_name,'hvac_mode':_st,'setpoint':_sp,'current_temp':_ct}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'available': ns.units | count > 0, 'units': ns.units, 'count': ns.units | count} | tojson }}
+
+      # ── SHARED BLOCKS ─────────────────────────────────────────────────────
+      - variables:
+          _elec_block: >-
+            {%- set _avail = _site_power_w is not none or _billing_daily_wh is not none -%}
+            {{
+              {
+                'available': _avail,
+                'live_power_w': _site_power_w,
+                'live_power_kw': (_site_power_w / 1000) | round(2) if _site_power_w is not none else none,
+                'daily_kwh': (_billing_daily_wh / 1000) | round(2) if _billing_daily_wh is not none else none,
+                'weekly_kwh': (_billing_weekly_wh / 1000) | round(3) if _billing_weekly_wh is not none else none,
+                'monthly_kwh': (_billing_monthly_wh / 1000) | round(2) if _billing_monthly_wh is not none else none,
+                'tariff_usd_kwh': (_billing_tariff_usd_wh | float(0) * 1000) | round(5) if _billing_tariff_usd_wh is not none else none,
+                'peak_billing_month': _billing_peak,
+                'grid_fossil_pct': _grid_fossil_pct,
+                'l1_voltage': _l1_v,
+                'l2_voltage': _l2_v,
+                'main_breaker_amps': _breaker_a,
+                'source': _site_power_eid
+              } | tojson
+            }}
+          _water_block: >-
+            {{
+              {
+                'available': _water_eid != '',
+                'usage_gal': _water_usage_gal,
+                'rate_per_1000gal_usd': _water_rate_usd,
+                'source': _water_eid if _water_eid != '' else 'none'
+              } | tojson
+            }}
+          _gas_block: >-
+            {%- if _zp_gas != '' -%}
+              {{ {'available': _gas_therms is not none, 'live_consumption_therms': _gas_therms, 'note': none, 'source': _zp_gas} | tojson }}
+            {%- else -%}
+              {{ {'available': false, 'live_consumption_therms': none, 'note': 'No live HA gas sensor — normal for utility-metered installations. Gas IS present at this property (see utility registry). Not an error.', 'source': 'none'} | tojson }}
+            {%- endif -%}
+          _thermal_block: >-
+            {%- set ns = namespace(loads=[]) -%}
+            {%- if _wh_eid != '' -%}
+              {%- set _wh_name = state_attr(_wh_eid, 'friendly_name') | default(_wh_eid, true) -%}
+              {%- set ns.loads = ns.loads + [{'type': 'water_heater', 'name': _wh_name, 'entity_id': _wh_eid, 'area': area_name(_wh_area) | default('', true) if _wh_area != '' else '', 'mode': _wh_mode, 'current_temp_f': _wh_current_temp, 'setpoint_f': _wh_setpoint, 'running': _wh_running, 'live_power_w': _wh_power_w, 'available_hot_water_pct': _wh_avail_pct, 'inventory': _wh_inv}] -%}
+            {%- endif -%}
+            {%- if _ht_climate_eid != '' or _ht_temp_eid != '' -%}
+              {%- set _ht_eid = _ht_climate_eid if _ht_climate_eid != '' else _ht_temp_eid -%}
+              {%- set _ht_name = state_attr(_ht_eid, 'friendly_name') | default('hot_tub', true) -%}
+              {%- set ns.loads = ns.loads + [{'type': 'hot_tub', 'name': _ht_name, 'entity_id': _ht_eid, 'area': area_name(_ht_area) | default('', true) if _ht_area != '' else '', 'current_temp': _ht_temp, 'setpoint': _ht_setpoint, 'mode': _ht_mode, 'inventory': _ht_inv}] -%}
+            {%- endif -%}
+            {%- for eid in _freezer_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set _a = area_id(eid) | default('', true) -%}
+              {%- set ns.loads = ns.loads + [{'type': 'freezer', 'entity_id': eid, 'name': _name, 'area': area_name(_a) | default('', true) if _a != '' else '', 'temp': _s | float(none) if _s not in ['unavailable','unknown',''] else none, 'unit': state_attr(eid, 'unit_of_measurement') | default('°F', true) | string}] -%}
+            {%- endfor -%}
+            {%- set _known = ([_wh_eid, _ht_climate_eid, _ht_temp_eid] + _freezer_eids) | select('string') | reject('eq', '') | list -%}
+            {%- for eid in _zp_thermal if eid not in _known -%}
+              {%- set _s = states(eid) -%}
+              {%- set _a = area_id(eid) | default('', true) -%}
+              {%- set ns.loads = ns.loads + [{'type': 'thermal_load', 'entity_id': eid, 'name': state_attr(eid, 'friendly_name') | default(eid, true), 'area': area_name(_a) | default('', true) if _a != '' else '', 'state': _s}] -%}
+            {%- endfor -%}
+            {{ {'available': ns.loads | count > 0, 'note': 'Thermal-managed loads — not room air. Use mode=hvac for climate controls.', 'count': ns.loads | count, 'loads': ns.loads} | tojson }}
+          _mechanical_block: >-
+            {%- set _gw_avail = _softener_eids | count > 0 or _shutoff_eid != '' or _leak_sensor_eids | count > 0 -%}
+            {%- set ns_sw = namespace(rows=[]) -%}
+            {%- for eid in _softener_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns_sw.rows = ns_sw.rows + [{'entity_id': eid, 'name': _name, 'state': _s, 'unit': state_attr(eid, 'unit_of_measurement') | default(none, true)}] -%}
+            {%- endfor -%}
+            {%- set ns_lk = namespace(rows=[]) -%}
+            {%- for eid in _leak_sensor_eids -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set ns_lk.rows = ns_lk.rows + [{'entity_id': eid, 'name': _name, 'wet': (_s == 'on') if _s not in ['unavailable','unknown',''] else none}] -%}
+            {%- endfor -%}
+            {%- set ns_mo = namespace(rows=[]) -%}
+            {%- for eid in _zp_motor -%}
+              {%- set _s = states(eid) -%}
+              {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+              {%- set _dom = eid.split('.')[0] -%}
+              {%- set _a = area_id(eid) | default('', true) -%}
+              {%- set ns_mo.rows = ns_mo.rows + [{'entity_id': eid, 'name': _name, 'domain': _dom, 'area': area_name(_a) | default('', true) if _a != '' else '', 'state': _s}] -%}
+            {%- endfor -%}
+            {{
+              {
+                'available': _wh_eid != '' or _sump_eid != '' or _gw_avail or _zp_motor | count > 0,
+                'water_heater': {
+                  'entity_id': _wh_eid,
+                  'name': state_attr(_wh_eid, 'friendly_name') | default(_wh_eid, true),
+                  'area': area_name(_wh_area) | default('', true) if _wh_area != '' else '',
+                  'mode': _wh_mode,
+                  'current_temp_f': _wh_current_temp,
+                  'setpoint_f': _wh_setpoint,
+                  'available_hot_water_pct': _wh_avail_pct,
+                  'running': _wh_running,
+                  'live_power_w': _wh_power_w,
+                  'daily_kwh': _wh_daily_kwh,
+                  'inventory': _wh_inv
+                } if _wh_eid != '' else none,
+                'sump_pump': {
+                  'entity_id': _sump_eid,
+                  'area': area_name(_sump_area) | default('', true) if _sump_area != '' else '',
+                  'active': _sump_active
+                } if _sump_eid != '' else {'available': false, 'note': 'No sump_pump labeled entity — normal for slab/single-story construction. Not an error. If a sump pump exists, label its binary_sensor with sump_pump.'},
+                'water_management': {
+                  'water_softener': ns_sw.rows if ns_sw.rows | count > 0 else none,
+                  'auto_shutoff': {'entity_id': _shutoff_eid, 'state': _shutoff_state} if _shutoff_eid != '' else none,
+                  'leak_sensors': ns_lk.rows if ns_lk.rows | count > 0 else none,
+                  'grocy_brief': ('zen_dojotools_inventory mode=room_brief homeassistant_area_id=' ~ _wh_area) if _wh_area != '' else none,
+                  'inventory': _wh_inv
+                } if _gw_avail else none,
+                'motors': ns_mo.rows if ns_mo.rows | count > 0 else {'available': false, 'note': 'No zen_plant_motor labeled entities found. Label motor entities (garage doors, fans, appliances) with zen_plant_motor to populate.'}
+              } | tojson
+            }}
+
+      # ── OVERVIEW ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'overview' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: overview
+                electric: "{{ _elec_block | from_json }}"
+                hvac: "{{ _hvac_block | from_json }}"
+                thermal: "{{ _thermal_block | from_json }}"
+                water: "{{ _water_block | from_json }}"
+                gas: "{{ _gas_block | from_json }}"
+                mechanical: "{{ _mechanical_block | from_json }}"
+                utilities: "{{ _util_raw }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: overview
+            response_variable: _result
+
+      # ── ELECTRIC ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'electric' }}"
+        then:
+          - variables:
+              _panel_status: >-
+                {%- set _dsm = _main_panel_sensors | select('search', 'dsm_state$') | list | first | default('') -%}
+                {%- set _relay = _main_panel_sensors | select('search', 'main_relay_state') | list | first | default('') -%}
+                {{
+                  {
+                    'dsm_state': states(_dsm) if _dsm != '' else none,
+                    'relay_state': states(_relay) if _relay != '' else none
+                  }
+                }}
+          - variables:
+              _result:
+                status: ok
+                mode: electric
+                summary: "{{ _elec_block | from_json }}"
+                panel_status: "{{ _panel_status }}"
+                utility: "{{ _util_raw.get('electric', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: electric
+            response_variable: _result
+
+      # ── HVAC ──────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'hvac' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: hvac
+                summary: "{{ _hvac_block | from_json }}"
+                utility: "{{ _util_raw.get('gas', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: hvac
+            response_variable: _result
+
+      # ── WATER ─────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'water' }}"
+        then:
+          - variables:
+              _droplet_reset: >-
+                {%- if _water_eid != '' -%}
+                  {{ state_attr(_water_eid, 'last_reset') | default(none, true) }}
+                {%- else -%}{{ none }}{%- endif -%}
+          - variables:
+              _result:
+                status: ok
+                mode: water
+                summary: "{{ _water_block | from_json }}"
+                usage_since: "{{ _droplet_reset }}"
+                utility: "{{ _util_raw.get('water', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: water
+            response_variable: _result
+
+      # ── GAS ───────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'gas' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: gas
+                summary: "{{ _gas_block | from_json }}"
+                utility: "{{ _util_raw.get('gas', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: gas
+            response_variable: _result
+
+      # ── MECHANICAL ────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'mechanical' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: mechanical
+                summary: "{{ _mechanical_block | from_json }}"
+                utility: "{{ _util_raw.get('water', {}) }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: mechanical
+            response_variable: _result
+
+      # ── THERMAL ───────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'thermal' }}"
+        then:
+          - variables:
+              _result:
+                status: ok
+                mode: thermal
+                summary: "{{ _thermal_block | from_json }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: thermal
+            response_variable: _result
+
+      # ── CIRCUITS ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'circuits' }}"
+        then:
+          - variables:
+              _circ_limit: "{{ circuit_limit | default(10) | int(10) }}"
+              _circ_sort: "{{ sort_by | default('energy') | lower }}"
+          - variables:
+              _circuits: >-
+                {%- if _circ_sort == 'current' -%}
+                  {%- set ns = namespace(rows=[]) -%}
+                  {%- for eid in _circuit_current_eids -%}
+                    {%- set _a = states(eid) | float(-1) -%}
+                    {%- if _a >= 0 -%}
+                      {%- set _v = state_attr(eid, 'voltage') | default(120, true) | int(120) -%}
+                      {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+                      {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'current_a': _a, 'voltage': _v, 'est_power_w': (_a * _v) | round(0)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.rows | sort(attribute='current_a', reverse=true) | list }}
+                {%- else -%}
+                  {%- set ns = namespace(rows=[]) -%}
+                  {%- for eid in _consumed_energy_sensors -%}
+                    {%- set _wh = states(eid) | float(-1) -%}
+                    {%- if _wh >= 0 -%}
+                      {%- set _name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+                      {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': _name, 'lifetime_wh': _wh, 'lifetime_kwh': (_wh / 1000) | round(2)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.rows | sort(attribute='lifetime_wh', reverse=true) | list }}
+                {%- endif -%}
+          - variables:
+              _result:
+                status: ok
+                mode: circuits
+                sort_by: "{{ _circ_sort }}"
+                limit: "{{ _circ_limit }}"
+                total_circuits: "{{ _circuit_current_eids | count if _circ_sort == 'current' else _consumed_energy_sensors | count }}"
+                circuits: "{{ _circuits[:_circ_limit] }}"
+                whole_home_w: "{{ _site_power_w }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: circuits
+            response_variable: _result
+
+      # ── MANAGED ───────────────────────────────────────────────────────────
+      # Label-driven managed-machine view. Any machine bootstrapped via
+      # provision_bom is self-describing: products tagged ha_labels, chores
+      # tagged homeassistant_area. No machine-specific knowledge needed here.
+      - if: "{{ _mode == 'managed' }}"
+        then:
+          - variables:
+              _mgd_labels: "{{ managed_labels | default('', true) | string | trim }}"
+              _mgd_cat_raw: {}
+
+          - if: "{{ states('script.zen_dojotools_inventory') not in ['unavailable', 'unknown'] }}"
+            then:
+              - action: script.zen_dojotools_inventory
+                continue_on_error: true
+                response_variable: _mgd_cat_raw
+                data:
+                  mode: catalog_find_by_tag
+                  ha_labels: "{{ _mgd_labels }}"
+
+          - variables:
+              _mgd_products: >-
+                {{ _mgd_cat_raw.get('products', [])
+                   if _mgd_cat_raw is mapping and _mgd_cat_raw.get('status') in ['ok', 'success']
+                   else [] }}
+
+          # Bulk-fetch Grocy locations to resolve location_id → HA area
+          # (walk parent chain — any stock in a location parented under an HA area belongs to that area)
+          - variables:
+              _mgd_locs_raw: {}
+          - if: "{{ states('script.zen_dojotools_grocy_advanced') not in ['unavailable', 'unknown'] }}"
+            then:
+              - action: script.zen_dojotools_grocy_advanced
+                continue_on_error: true
+                response_variable: _mgd_locs_raw
+                data:
+                  action_type: read
+                  endpoint: /objects/locations?limit=400&offset=0
+
+          - variables:
+              _mgd_loc_map: >-
+                {%- set ns = namespace(m={}) -%}
+                {%- set _src = _mgd_locs_raw['result']['content']
+                               if _mgd_locs_raw is mapping
+                                  and _mgd_locs_raw.get('result', {}) is mapping
+                                  and _mgd_locs_raw['result'].get('content') is sequence
+                               else [] -%}
+                {%- for loc in _src -%}
+                  {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                  {%- set ns.m = ns.m | combine({loc.id | string: {
+                    'parent_id': loc.get('parent_id') | string if loc.get('parent_id') is not none else none,
+                    'ha_area': uf.get('homeassistant_area', none)
+                  }}) -%}
+                {%- endfor -%}
+                {{ ns.m }}
+
+          - variables:
+              _mgd_loc_area: >-
+                {%- set ns = namespace(m={}) -%}
+                {%- for lid, ld in _mgd_loc_map.items() -%}
+                  {%- set rns = namespace(area=ld.get('ha_area'), cur=lid) -%}
+                  {%- for _ in range(6) -%}
+                    {%- if rns.area is none -%}
+                      {%- set _pid = _mgd_loc_map.get(rns.cur, {}).get('parent_id') -%}
+                      {%- if _pid is not none and _pid not in ['', 'None', 'none'] -%}
+                        {%- set rns.cur = _pid -%}
+                        {%- set rns.area = _mgd_loc_map.get(rns.cur, {}).get('ha_area') -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set ns.m = ns.m | combine({lid: rns.area}) -%}
+                {%- endfor -%}
+                {{ ns.m }}
+
+          - variables:
+              _mgd_groups: >-
+                {%- set ns = namespace(groups={}) -%}
+                {%- for p in _mgd_products -%}
+                  {%- set _lbls = p.get('ha_labels', '') | string | trim -%}
+                  {%- set _root = (_lbls.split(',') | first | trim) if _lbls != '' else 'unknown' -%}
+                  {%- set _cur = ns.groups.get(_root, []) -%}
+                  {%- set ns.groups = ns.groups | combine({_root: _cur + [p]}) -%}
+                {%- endfor -%}
+                {{ ns.groups }}
+              _mgd_areas: >-
+                {%- set ns = namespace(areas=[]) -%}
+                {%- for p in _mgd_products -%}
+                  {%- set _lid = p.get('location_id') | string | trim -%}
+                  {%- set _a = _mgd_loc_area.get(_lid) if _lid not in ['', 'None', 'none'] else none -%}
+                  {%- if _a is not none and _a not in ns.areas -%}
+                    {%- set ns.areas = ns.areas + [_a] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.areas }}
+
+          - variables:
+              _mgd_area_briefs: {}
+
+          - if: "{{ _mgd_areas | length > 0 and states('script.zen_dojotools_inventory') not in ['unavailable', 'unknown'] }}"
+            then:
+              - repeat:
+                  for_each: "{{ _mgd_areas }}"
+                  sequence:
+                    - action: script.zen_dojotools_inventory
+                      continue_on_error: true
+                      response_variable: _mgd_rb_raw
+                      data:
+                        mode: room_brief
+                        homeassistant_area_id: "{{ repeat.item }}"
+                    - variables:
+                        _mgd_area_briefs: >-
+                          {%- if _mgd_rb_raw is mapping and _mgd_rb_raw.get('status') == 'success' -%}
+                            {{ _mgd_area_briefs | combine({repeat.item: _mgd_rb_raw}) }}
+                          {%- else -%}{{ _mgd_area_briefs }}{%- endif -%}
+
+          - variables:
+              _mgd_machines: >-
+                {%- set ns = namespace(machines=[], total_due=0, global_chore_ids=[]) -%}
+                {%- for label, prods in _mgd_groups.items() | sort -%}
+                  {%- set pa = namespace(areas=[]) -%}
+                  {%- for p in prods -%}
+                    {%- set _lid = p.get('location_id') | string | trim -%}
+                    {%- set _a = _mgd_loc_area.get(_lid) if _lid not in ['', 'None', 'none'] else none -%}
+                    {%- if _a is not none and _a not in pa.areas -%}
+                      {%- set pa.areas = pa.areas + [_a] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set cn = namespace(chores=[], seen_ids=[], due=0, items=0, unique=0) -%}
+                  {%- for area in pa.areas -%}
+                    {%- set _br = _mgd_area_briefs.get(area, none) -%}
+                    {%- if _br is mapping -%}
+                      {%- for c in (_br.get('chores', []) | list) -%}
+                        {%- set _cid = c.chore_id | string -%}
+                        {%- if _cid not in cn.seen_ids and _cid not in ns.global_chore_ids -%}
+                          {%- set cn.chores = cn.chores + [c] -%}
+                          {%- set cn.seen_ids = cn.seen_ids + [_cid] -%}
+                          {%- if c.get('is_due', false) -%}{%- set cn.due = cn.due + 1 -%}{%- endif -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- set cn.items = cn.items + (_br.get('stock_total_items', 0) | int(0)) -%}
+                      {%- set cn.unique = cn.unique + (_br.get('stock_unique_products', 0) | int(0)) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set ns.global_chore_ids = ns.global_chore_ids + cn.seen_ids -%}
+                  {%- set ns.total_due = ns.total_due + cn.due -%}
+                  {%- set warn = namespace(w=[]) -%}
+                  {%- if area_name(label) | default('', true) | trim != '' -%}
+                    {%- set warn.w = warn.w + [{'type': 'root_label_is_area', 'message': 'Label \'' ~ label ~ '\' resolves to an HA area_id — root label must be a machine type, not a room.', 'next_call': 'zen_dojotools_inventory mode=products_tag product_id=<id> ha_labels=<machine_type>,<machine_type>_part — retag all ' ~ (prods | length | string) ~ ' product(s) with a machine-type root label, then re-run managed.'}] -%}
+                  {%- endif -%}
+                  {%- if pa.areas | length == 0 and prods | length > 0 -%}
+                    {%- set _loc_ids = prods | map(attribute='location_id') | unique | reject('none') | list -%}
+                    {%- set _loc_str = _loc_ids | join(', ') -%}
+                    {%- set _fix_calls = _loc_ids | map('string') | map('regex_replace', '^(.+)$', 'zen_dojotools_inventory mode=locations_metadata_set location_id=\\1 area_id=<ha_area_id>') | list | join(' ; ') -%}
+                    {%- set warn.w = warn.w + [{'type': 'no_area_resolved', 'message': 'All ' ~ (prods | length | string) ~ ' product(s) at Grocy location(s) [' ~ _loc_str ~ '] have no homeassistant_area set — chores and stock are invisible.', 'next_call': _fix_calls ~ ' — replace <ha_area_id> with the HA area slug (e.g. front_hall). Child locations inherit automatically. Re-run managed to verify.'}] -%}
+                  {%- endif -%}
+                  {%- set ns.machines = ns.machines + [{'label': label, 'product_count': prods | length, 'products': prods, 'chores_due': cn.due, 'chores': cn.chores, 'stock_total_items': cn.items, 'stock_unique_products': cn.unique, 'schema_warnings': warn.w}] -%}
+                {%- endfor -%}
+                {{ {'machines': ns.machines, 'total_due': ns.total_due} }}
+
+          - variables:
+              _result:
+                status: ok
+                mode: managed
+                labels_filter: "{{ _mgd_labels if _mgd_labels != '' else none }}"
+                machine_count: "{{ _mgd_machines.machines | length }}"
+                total_chores_due: "{{ _mgd_machines.total_due }}"
+                advisory: >-
+                  {%- set ns = namespace(items=[]) -%}
+                  {%- for m in _mgd_machines.machines -%}
+                    {%- for w in m.get('schema_warnings', []) -%}
+                      {%- set ns.items = ns.items + [{'machine': m.label, 'type': w.get('type'), 'action': w.get('next_call')}] -%}
+                    {%- endfor -%}
+                    {%- if m.get('chores') | length > 0 and m.get('product_count', 0) > 0 -%}
+                      {%- set _ratio = (m.get('chores') | length) / m.get('product_count', 1) -%}
+                      {%- if _ratio > 5 -%}
+                        {%- set _root = m.label -%}
+                        {%- set _own_ns = namespace(own=[], foreign=[]) -%}
+                        {%- for c in m.get('chores', []) -%}
+                          {%- if (_root | lower | replace('_', ' ')) in (c.name | lower) -%}
+                            {%- set _own_ns.own = _own_ns.own + [c.name] -%}
+                          {%- else -%}
+                            {%- set _own_ns.foreign = _own_ns.foreign + [c.name] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {%- set _foreign_preview = _own_ns.foreign[:5] | join('; ') ~ ('...' if _own_ns.foreign | length > 5 else '') -%}
+                        {%- set ns.items = ns.items + [{'machine': m.label, 'type': 'chore_bleed_likely', 'own_chores': _own_ns.own | length, 'foreign_chores': _own_ns.foreign | length, 'foreign_sample': _foreign_preview, 'action': (m.get('chores') | length | string) ~ ' chores claimed, but ~' ~ (_own_ns.foreign | length | string) ~ ' appear unrelated to ' ~ _root ~ ' (sample: ' ~ _foreign_preview ~ '). These belong to unmapped machines sharing the same area. Fix: provision_bom each unmapped machine with its own ha_labels root — it will claim its chores before ' ~ _root ~ ' sees them. Call zen_dojotools_inventory mode=help to review provision_bom syntax.'}] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.items if ns.items | length > 0 else none }}
+                machines: "{{ _mgd_machines.machines }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: managed
+            response_variable: _result
+
+      # ── FALLTHROUGH ───────────────────────────────────────────────────────
+      - variables:
+          _result:
+            status: error
+            message: "Unknown mode '{{ _mode }}'. Use overview, electric, hvac, water, gas, mechanical, thermal, circuits, managed, validate, ignore, unignore, help."
+            caller_token: "{{ _caller_token }}"
+      - stop: unknown mode
+        response_variable: _result

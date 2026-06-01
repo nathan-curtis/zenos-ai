@@ -1,4 +1,4 @@
-# Zen DojoTools Office — 4.5.5 'Ready Player Two'
+# Zen DojoTools Office — 2026.6.0 'Clue'
 
 *Calendar and scheduling tools for Home Assistant*
 

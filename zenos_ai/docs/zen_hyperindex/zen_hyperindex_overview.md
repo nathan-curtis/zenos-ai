@@ -18,6 +18,17 @@ Instead of treating entity selection as a flat list lookup, HyperIndex uses a th
 
 This architecture supports expressive targeting, deterministic outputs, and graph-aware reasoning within ZenOS-AI.
 
+```mermaid
+flowchart LR
+  Labels["Labels, areas, devices, floors, drawers"]
+  Select["SELECT: Index join and set algebra"]
+  Filter["FILTER: ZQ-1 safe filtering"]
+  Compose["COMPOSE: Inspect overlays and drawer expansion"]
+  Graph["Composed hypergraph"]
+  Consumers["Summarizers, planners, tools"]
+
+  Labels --> Select --> Filter --> Compose --> Graph --> Consumers
+```
 
 ---
 
@@ -127,35 +138,61 @@ ZQ-1 guarantees deterministic, JSON-safe results regardless of malformed inputs.
 
 3. Stage Three — COMPOSE
 
-Inspect + Metadata Extraction + Drawer Traversal
+Inspect Overlay Composition + Drawer Traversal
 
-After filtering, the Working Set flows into the Composition Layer, powered by zen_dojotools_inspect.yaml.
+After filtering, the Working Set flows into the Composition Layer, powered by `script.zen_dojotools_inspect`.
 
-This stage extracts truth from Home Assistant and constructs the hypergraph.
+This stage extracts truth from Home Assistant and turns each entity into a layered object. Inspect is not just "metadata." It composes overlays:
+
+| Overlay | What It Contributes |
+|---|---|
+| Base entity | Entity ID, domain, state, friendly name, timestamps |
+| Label overlay | Semantic labels and label descriptions |
+| Device/area overlay | Device ID, area, integration, optional device tree |
+| Cabinet overlay | Header-only cabinet identity for cabinet sensor entities |
+| Person overlay | ZenOS identity/presence block for `person.*` entities |
+| Drawer blurbs | Label-targeted FileCabinet context snippets |
+| Domain overlays | Tool-specific context such as camera cache or Room Manager room context |
 
 Composition performs:
 
-entity attribute extraction
+- entity attribute extraction
+- device metadata extraction
+- registry lookups
+- domain and type mapping
+- area and label resolution
+- attribute normalization
+- cabinet header recognition
+- person identity overlay injection
+- label-targeted drawer blurb retrieval
+- domain overlay injection
+- semantic relationship expansion
+- adjacency list generation
+- cluster formation
+- final graph assembly
 
-device metadata extraction
+```mermaid
+flowchart LR
+  Entity["Working-set entity"]
+  Inspect["Inspect"]
+  Labels["Labels"]
+  Device["Device / area"]
+  Cabinet["Cabinet header"]
+  Person["Person identity"]
+  Drawers["Drawer blurbs"]
+  Domain["Domain overlays"]
+  Graph["Hypergraph node + edges"]
 
-registry lookups
+  Entity --> Inspect
+  Inspect --> Labels --> Graph
+  Inspect --> Device --> Graph
+  Inspect --> Cabinet --> Graph
+  Inspect --> Person --> Graph
+  Inspect --> Drawers --> Graph
+  Inspect --> Domain --> Graph
+```
 
-domain and type mapping
-
-area and label resolution
-
-attribute normalization
-
-deep drawer traversal
-
-semantic relationship expansion
-
-adjacency list generation
-
-cluster formation
-
-final graph assembly
+A cabinet sensor is a useful example. It is a real HA entity, but also a synthetic storage surface. Inspect treats it as an entity with a cabinet header overlay; FileCabinet remains the path for drawer contents. That lets HyperIndex reason that "this is a cabinet" without leaking the cabinet's private drawers into every graph expansion.
 
 
 This stage transforms raw entities into a structured Hypergraph containing:
@@ -195,39 +232,27 @@ The output of Stage Three is the Composed Hypergraph, ready for downstream reaso
 
 Pipeline Overview
 
-┌──────────────────────────────────────────┐
-          │                 STAGE 1                  │
-          │                  SELECT                  │
-          │  Library Index Join + Set Algebra        │
-          │  (Graph-Surface Expansion)               │
-          │  Large Conceptual Universe               │
-          └───────────────────┬──────────────────────┘
-                              ↓
-          ┌──────────────────────────────────────────┐
-          │                 STAGE 2                  │
-          │                  FILTER                  │
-          │           ZQ-1 (ZenQuery Engine)         │
-          │        Working Set Refinement            │
-          └───────────────────┬──────────────────────┘
-                              ↓
-          ┌──────────────────────────────────────────┐
-          │                 STAGE 3                  │
-          │                 COMPOSE                  │
-          │   Inspect + Drawer Expansion + Graphing  │
-          │        Final Hypergraph Output           │
-          └──────────────────────────────────────────┘
+```mermaid
+flowchart TD
+  Stage1["Stage 1: SELECT\nLibrary Index Join + Set Algebra\nLarge conceptual universe"]
+  Stage2["Stage 2: FILTER\nZQ-1 ZenQuery Engine\nWorking set refinement"]
+  Stage3["Stage 3: COMPOSE\nInspect + drawer expansion + graphing\nFinal hypergraph output"]
+
+  Stage1 --> Stage2 --> Stage3
+```
 
 
 ---
 
 Component Summary
 
-Layer	File	Role
-
-Selection Layer	Built into HyperIndex	Large-scale selection using Library Index + set algebra
-Filtering Layer	custom_templates/zenos_ai/zen_query.jinja	ZQ-1 safe filtering engine
-Composition Layer	scripts/zen_dojotools_inspect.yaml	Metadata extraction and drawer-based composition
-Pipeline Orchestrator	scripts/zen_dojotools_hyperIndex.yaml	Executes SELECT → FILTER → COMPOSE
+| Layer | File | Role |
+|---|---|---|
+| Selection Layer | `zen_dojotools_index` / HyperIndex inputs | Large-scale selection using labels, topology seeds, and set algebra |
+| Filtering Layer | `custom_templates/zenos_ai/zen_query.jinja` | ZQ-1 safe filtering engine |
+| Composition Layer | `script.zen_dojotools_inspect` | Overlay composition: labels, devices, person identity, cabinet headers, drawer blurbs, domain context |
+| Cabinet Read Path | `script.zen_dojotools_filecabinet` | Drawer reads and label-targeted context snippets |
+| Pipeline Orchestrator | `script.zen_dojotools_index` / `script.zen_dojotools_hyperindex` | Executes SELECT -> FILTER -> COMPOSE |
 
 
 
@@ -356,3 +381,13 @@ and operate as a true agent within Home Assistant
 
 
 The future evolution of HyperIndex focuses on recursion, inline filtering, single-command composition, and configurability—pushing ZenOS-AI toward increasingly powerful and expressive graph-driven reasoning.
+
+---
+
+## Cross-References
+
+- [DojoTools Index](../scripts/zen_dojotools_index_readme.md) — current operational tool surface for index queries, topology seeds, pagination, camera context, and registry modes
+- [DojoTools HyperIndex](../scripts/zen_dojotools_hyperindex_readme.md) — script-level input/output contract
+- [ZQ-1 Query Patterns](zq1_patterns.md) — filter patterns used in the FILTER stage
+- [DojoTools FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md) — return path for drawer storage and valid drawer structure
+- [Summarizer Overview](../zen_summarizer/readme.md) — primary consumer of composed graph context

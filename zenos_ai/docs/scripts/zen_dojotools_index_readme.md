@@ -1,4 +1,4 @@
-# Zen DojoTools Index — 4.7.1 'Lights, Camera, Action'
+# Zen DojoTools Index — 5.0.1
 **File:** `zen_dojotools_zen_index_readme.md`  
 **Type:** Technical Documentation  
 
@@ -75,10 +75,41 @@ This supports high-intelligence, LLM-originated queries using a structured query
 When `expand_entities: true`, the Zen Index invokes `script.zen_dojotools_inspect`
 with the resolved entity set, passing through `output_fields` and `label_targets`.
 
-Inspect returns enriched entity data plus `drawers` — a dict of label-targeted
+Inspect returns composed entity overlays plus `drawers` — a dict of label-targeted
 blurbs from FileCabinet. Index surfaces both in the result.
 
-This is how Friday walks the entity graph and reads Dojo context in one call.
+This is how Friday walks the entity graph and reads Dojo context in one call. The expansion is layered:
+
+```mermaid
+flowchart LR
+  Set["Resolved entity set"]
+  Inspect["Inspect"]
+  Entity["Base state"]
+  Labels["Labels"]
+  Device["Device / area"]
+  Person["Person identity"]
+  Cabinet["Cabinet header"]
+  Domain["Domain overlays"]
+  Drawers["Drawer blurbs"]
+  Output["result.expanded + domain_context + drawers"]
+
+  Set --> Inspect
+  Inspect --> Entity --> Output
+  Inspect --> Labels --> Output
+  Inspect --> Device --> Output
+  Inspect --> Person --> Output
+  Inspect --> Cabinet --> Output
+  Inspect --> Domain --> Output
+  Drawers --> Output
+```
+
+For example:
+
+- a `person.*` entity can gain a ZenOS identity/presence overlay
+- a cabinet sensor gains a header-only cabinet overlay, while private drawers stay behind FileCabinet
+- a camera entity can gain cached image-analysis context
+- a room-aware entity can gain Room Manager context
+- future domain tools can add their own "Foo" overlay without changing the base set logic
 
 ### 🏷 Label Aggregation & Adjacency
 The Zen Index automatically computes which labels appear across:
@@ -356,7 +387,7 @@ This is the *search brainstem* of ZenOS-AI.
 
 ## Summary
 
-The Zen Index 4.7.1 'Lights, Camera, Action' provides:
+The Zen Index 5.0.1 provides:
 
 - A fully featured, label/entity correlation engine
 - Full topology seed chain per operand: entities > label > device > integration > area > floor
@@ -366,6 +397,10 @@ The Zen Index 4.7.1 'Lights, Camera, Action' provides:
 - Pagination via `limit` / `offset`; `dry_run` returns `total_count` for paging loops
 - Auto-cap of 50 on topology/wildcard seeds with `expand_entities: true` and no limit
 - `+history` flag for 24h recorder stats (requires explicit limit)
+- `+rm` output field: Room Manager spatial + live state snapshot per entity area — `topo`, `light`, `climate`, `covers`, `media` slices injected as `room_context` per entity and in `domain_context.room_manager[area_id]`
+- `+chores` output field: Grocy chores per entity area via `chores_by_area`. Each chore includes `chore_actions{execute, edit, add}` — pre-built call shapes. Chores with `product_id` also include `replace_action{step_1: chores_execute, step_2: stock_open_item}`.
+- `+tasks` output field: HA todo tasks per entity area via RM `+tasks` slice. Each list includes `task_actions{complete, edit, add}`.
+- `+inventory` output field: Grocy `object_lens` place lens per entity area — tagged products, chores, expanded operational objects. **Slim pattern:** per-entity `room_context` carries `inventory_summary{tagged_products, chores, status}` + `room_area_id` pointer only. Full payload lives in `domain_context.room_manager[area_id].context.inventory` — fetched once per unique area, not duplicated per entity.
 - Inspect registry modes: `area_info`, `floor_info`, `device_info`, `area_list`, `floor_list`, `label_list`, `zone_list`, `person_list`, `device_list`, `integration_entities`
 - Optional Zen Inspect expansion with `output_fields` passthrough
 - Label-targeted drawer blurbs via `label_targets` → Inspect → FileCabinet

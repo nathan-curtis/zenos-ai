@@ -1,8 +1,8 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Summarizers Package
-# Version: 4.5.5
+# Version: 5.1.0
 #
-# Migrated from scripts.yaml. Fixes applied (v1.0.0):
+# Migrated from scripts.yaml. Fixes applied (v5.1.0):
 #   - supersummary: active_components namespace() fix (Jinja2 scoping — was always {})
 #   - supersummary: ZEN_SUMMARY → zen_summary key case in prompt_context
 #   - supersummary: event: → action: for event emitter
@@ -12,7 +12,7 @@
 #   - ninja summarizer: event: → action: for event emitter
 #   - both: selector {} deprecation
 #
-# Fixes applied (v1.1.0):
+# Fixes applied (v5.1.0):
 #   - supersummary: hardcoded cabinet entities → label_entities() (consistent w/ ninja)
 #   - supersummary: post_to_kata_cabinet == true → | bool (type-safe gate)
 #   - supersummary: last_summary removed from review_data (duplicate of prompt_context)
@@ -64,6 +64,12 @@
 #   full kata write — media_manager drawer created, verification confirmed ✓
 #   monk output: clean (no stale Plex data), urgency: 1, confidence: 0.9 ✓
 #   config check → go; restart → clean ✓
+#
+# v4.6.0 — label description resolution:
+#   - ninja summarizer: step 3d — when component_summary is empty (Scribe trim_description
+#     path), resolve from base label description via zen_dojotools_labels read.
+#   - ninja summarizer: component_summary injected into query as "Component purpose:" header
+#     when non-empty — gives monk orientation before component_instructions.
 #
 # KNOWN BEHAVIOR:
 #   event_emitter kata/monk excerpt fields depend on LLM returning kata_excerpt /
@@ -254,8 +260,8 @@ script:
             {%- set manifest   = zen.manifest_loader() | from_json -%}
             {%- set capsule    = zen.ai_capsule(idcard_raw) | from_json -%}
             {%- set overview   = states['sensor.home_overview'].attributes | default({}) -%}
-            {%- set kata_vars  = state_attr(kata_cabinet, 'variables') or {} -%}
-            {%- set last_sum   = kata_vars.get('zen_summary', {}) -%}
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set last_sum = CABS.cabinet_drawer_value(kata_cabinet, 'zen_summary', {}) | from_json -%}
             {{
               {
                 "identity":     idcard_raw,
@@ -269,12 +275,19 @@ script:
 
       # ── 4. Load last summary ──────────────────────────────────────────────
       - alias: Load last summary
-        variables:
+        action: script.zen_dojotools_filecabinet
+        data:
+          action_type: read
+          volume_entity_id: "{{ kata_cabinet }}"
+          key: zen_summary
+        response_variable: _zen_sum_fc_read
+      - variables:
           last_summary: >-
-            {%- set _raw = (state_attr(kata_cabinet, 'variables') or {}).get('zen_summary', {}) -%}
-            {%- set _v1 = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
-            {%- set _v2 = _v1 if _v1 is mapping else (_v1 | from_json if _v1 is string else {}) -%}
-            {{ _v2 | tojson }}
+            {%- set r = _zen_sum_fc_read.get('result', {}) -%}
+            {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+            {%- set raw = r.get('zen_summary', {}) -%}
+            {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+            {{ raw.get('value', raw) | tojson if raw is mapping else '{}' }}
 
       # ── 5. Collect active components — direct tier only ──────────────────
       # FIX: was {% set active = {} %} inside for loop — Jinja2 scoping bug,
@@ -552,7 +565,7 @@ script:
       Queues up to 2 concurrent runs. ~15s warm, ~60s cold. (v4.5.x)
     icon: mdi:karate
     mode: queued
-    max: 2
+    max: 5
     fields:
       kung_fu_component_id:
         name: Kung Fu Component ID
@@ -599,6 +612,15 @@ script:
         required: false
         selector:
           text:
+      area_id:
+        name: Area ID
+        description: >-
+          Optional HA area ID. When set and the KFC defines area_seed, the
+          area_seed tool call is used instead of seed or index_call. The
+          {{area_id}} slot in area_seed.params is filled at runtime.
+        required: false
+        selector:
+          text:
       parent_component_id:
         name: Parent Component ID
         description: >-
@@ -636,8 +658,13 @@ script:
               {{ states('input_text.zenos_ai_task_entity') | trim
                  in ['unknown','unavailable','none',''] }}
         then:
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "ai_task_entity_unset",
+                    "component": kung_fu_component_id | slugify,
+                    "caller_token": caller_token | default("")} }}
           - stop: "ai_task entity unset — aborting ninja summarizer"
-            error: true
+            response_variable: final_response
 
       # ── 0b. Start timer + emit summarizer_start ──────────────────────────
       - alias: Capture start time and emit summarizer_start
@@ -676,7 +703,13 @@ script:
 
       - alias: Unpack drawer values
         variables:
-          dojo_drawer_value: "{{ dojo_drawer.value | default({}) }}"
+          _dojo_v1: >-
+            {%- set _r = dojo_drawer -%}
+            {%- set _v1 = _r.get('value', _r) if _r is mapping else {} -%}
+            {{ (_v1 | from_json) if _v1 is string else _v1 }}
+          dojo_drawer_value: >-
+            {%- set _v = _dojo_v1 -%}
+            {{ _v if _v is mapping else ((_v | from_json) if _v is string else {}) }}
           household_drawer_value: "{{ household_drawer.value | default({}) }}"
 
       # ── 2b. FG-38-safe household drawer unwind ────────────────────────────
@@ -734,11 +767,43 @@ script:
               {%- set _ic = _ic if _ic is not none else (dojo_drawer_value.index_call | default(none)) -%}
               {{ _ic if _ic is mapping else {} }}
             {%- endif -%}
+          _kfc_seed: >-
+            {%- set _s = (dojo_drawer.seed | default(none)) -%}
+            {%- set _s = _s if _s is not none else (dojo_drawer_value.seed | default(none)) -%}
+            {{ _s if _s is mapping else {} }}
+          _kfc_area_seed: >-
+            {%- set _s = (dojo_drawer.area_seed | default(none)) -%}
+            {%- set _s = _s if _s is not none else (dojo_drawer_value.area_seed | default(none)) -%}
+            {{ _s if _s is mapping else {} }}
+          _area_id: "{{ area_id | default('', true) | trim }}"
           meta_enabled: >-
             {%- set _meta = (dojo_drawer.meta | default(none)) -%}
             {%- set _meta = _meta if _meta is not none else (dojo_drawer_value.meta | default(none)) -%}
             {%- set _meta = _meta if _meta is mapping else {} -%}
             {{ _meta.get('enabled', true) | bool }}
+
+      # ── 3d. Resolve component_summary from label description if trimmed ───
+      - alias: Resolve component_summary from label description if drawer field empty
+        if:
+          - condition: template
+            value_template: "{{ component_summary | trim == '' and index_command | trim != '' }}"
+        then:
+          - action: script.zen_dojotools_labels
+            continue_on_error: true
+            data:
+              action_type: read
+              label_list:
+                - "{{ index_command }}"
+            response_variable: _label_desc_read
+          - variables:
+              component_summary: >-
+                {%- set _r = _label_desc_read | default({}, true) -%}
+                {%- set _r = _r if _r is mapping else {} -%}
+                {%- set _result = _r.get('result', {}) if _r is mapping else {} -%}
+                {%- set _det = (_result.get('label_details_by_label', {}) if _result is mapping else {}) -%}
+                {%- set _det = _det if _det is mapping else {} -%}
+                {%- set _ld = _det.get(index_command, {}) -%}
+                {{ (_ld.get('description', '') if _ld is mapping else '') | string | trim }}
 
       # ── 3a. Gate on meta.enabled ──────────────────────────────────────────
       - alias: Gate on meta.enabled — skip disabled components
@@ -752,7 +817,14 @@ script:
               component: "{{ component_slug }}"
               reason: meta_disabled
               severity: info
+          - variables:
+              final_response: >-
+                {{ {"status": "skipped", "reason": "meta_disabled",
+                    "component": component_slug,
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
           - stop: "Ninja summarizer skipped — meta.enabled is false for {{ component_slug }}"
+            response_variable: final_response
 
       # ── 3b. Run governor — dedup burnout window ───────────────────────────
       # Reads burnout_seconds from zen_ninja_config drawer in household cabinet.
@@ -770,8 +842,12 @@ script:
             {{ (_v1 | from_json) if _v1 is string else _v1 }}
           _gov_last_ts: >-
             {%- set _d = _gov_last_raw if _gov_last_raw is mapping else {} -%}
-            {%- set _ts_str = _d.get('run_started_at', '') -%}
-            {{ (_ts_str | as_datetime).timestamp() | float(0) if _ts_str | trim != '' else 0 }}
+            {%- set _ts_raw = _d.get('run_started_at', '') | string | trim -%}
+            {%- set _ts_num = _ts_raw | float(-1) -%}
+            {%- if _ts_raw == '' -%}{{ 0 }}
+            {%- elif _ts_num > 0 -%}{{ (_ts_num / 1000000) if _ts_num > 9999999999 else _ts_num }}
+            {%- else -%}{{ (_ts_raw | as_datetime).timestamp() | float(0) }}
+            {%- endif -%}
           _gov_elapsed: "{{ (now().timestamp() - _gov_last_ts) | round(0) | int }}"
           _gov_blocked: "{{ _gov_elapsed < _gov_burnout | int and not (force | default(false) | bool) }}"
       - if:
@@ -787,9 +863,73 @@ script:
                 elapsed_secs: "{{ _gov_elapsed }}"
                 burnout_secs: "{{ _gov_burnout }}"
                 severity: info
+          - variables:
+              final_response: >-
+                {{ {"status": "skipped", "reason": "governor_blocked",
+                    "component": component_slug,
+                    "elapsed_secs": _gov_elapsed | int,
+                    "burnout_secs": _gov_burnout | int,
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
           - stop: >-
               Ninja summarizer governor — {{ component_slug }} ran {{ _gov_elapsed }}s ago
               (< {{ _gov_burnout }}s burnout window). Absorbing duplicate run.
+            response_variable: final_response
+
+      # ── 3c. Seed tool call — location-first or concept-first via KFC seed block
+      - alias: Run seed tool call if KFC defines seed or area_seed
+        if:
+          - condition: template
+            value_template: >-
+              {{ _kfc_seed is mapping and _kfc_seed.get('tool', '') not in ['', none] }}
+        then:
+          - variables:
+              _seed_tool: >-
+                {%- if _area_id != '' and _kfc_area_seed is mapping and _kfc_area_seed.get('tool', '') not in ['', none] -%}
+                  {{ _kfc_area_seed.get('tool') }}
+                {%- else -%}
+                  {{ _kfc_seed.get('tool') }}
+                {%- endif -%}
+              _seed_params: >-
+                {%- if _area_id != '' and _kfc_area_seed is mapping and _kfc_area_seed.get('tool', '') not in ['', none] -%}
+                  {%- set _p = _kfc_area_seed.get('params', {}) -%}
+                  {%- set _p = (_p | from_json) if _p is string else _p -%}
+                  {%- set _p = _p if _p is mapping else {} -%}
+                  {{ dict(_p, **{'area': _area_id}) if '{{area_id}}' in (_p.get('area', '') | string) else _p }}
+                {%- else -%}
+                  {%- set _p = _kfc_seed.get('params', {}) -%}
+                  {%- set _p = (_p | from_json) if _p is string else _p -%}
+                  {{ _p if _p is mapping else {} }}
+                {%- endif -%}
+          - variables:
+              _seed_wl_raw: >-
+                {%- set _sys = states('sensor.zen_system_cabinet_resolved') -%}
+                {%- set _wr = (state_attr(_sys, 'variables') or {}).get('zen_summarizer_seed_whitelist', {}) if _sys != '' else {} -%}
+                {%- set _wv1 = _wr.get('value', _wr) if _wr is mapping else {} -%}
+                {{ (_wv1 | from_json) if _wv1 is string else _wv1 }}
+              _seed_allowed_tools: >-
+                {%- set _w = _seed_wl_raw if _seed_wl_raw is mapping else {} -%}
+                {{ _w.get('allowed_tools', ['zen_dojotools_index']) }}
+              _seed_tool_whitelisted: "{{ _seed_tool in _seed_allowed_tools }}"
+          - if:
+            - condition: template
+              value_template: "{{ _seed_tool_whitelisted }}"
+            then:
+            - action: "script.{{ _seed_tool }}"
+              continue_on_error: true
+              data: "{{ _seed_params }}"
+              response_variable: zen_index_result
+            - variables:
+                _seed_used: true
+            else:
+            - event: zen_event
+              event_data:
+                event:
+                  kind: seed_tool_blocked
+                  component: "{{ component_slug }}"
+                  reason: not_whitelisted
+                  tool: "{{ _seed_tool }}"
+                  severity: warn
 
       # ── 4. Run HyperIndex ─────────────────────────────────────────────────
       - alias: Run HyperIndex using full index_call from KFC drawer
@@ -797,13 +937,15 @@ script:
           - alias: If index_call or fallback label exists
             condition: template
             value_template: >-
-              {{ (index_call is mapping and index_call.keys() | list | length > 0)
-                 or index_command | trim != '' }}
+              {{ not (_seed_used | default(false)) and
+                 ((index_call is mapping and index_call.keys() | list | length > 0)
+                 or index_command | trim != '') }}
         then:
           - choose:
             - conditions: "{{ index_call is mapping and index_call.get('index_command', '') not in ['', none, {}] }}"
               sequence:
                 - action: script.zen_dojotools_index
+                  continue_on_error: true
                   data:
                     index_command: >-
                       {%- set _ic = index_call.get('index_command') -%}
@@ -815,6 +957,7 @@ script:
                   response_variable: zen_index_result
             default:
               - action: script.zen_dojotools_index
+                continue_on_error: true
                 data:
                   label_1:         "{{ index_call.get('label_1', index_command) if index_call is mapping and index_call else index_command }}"
                   label_2:         "{{ index_call.get('label_2', none) if index_call is mapping and index_call else none }}"
@@ -872,7 +1015,10 @@ script:
                     {%- else -%}
                       {{ _all[:_limit] }}
                     {%- endif -%}
-                  output_fields: "+attributes"
+                  output_fields: >-
+                    {%- set _kfc_of = index_call.get('output_fields', '') if index_call is mapping and index_call else '' -%}
+                    {%- set _extra = _kfc_of | replace(' ', ',') | replace(',,', ',') | trim(',') if _kfc_of | trim else '' -%}
+                    {{ '+attributes,' ~ _extra if _extra else '+attributes' }}
                   caller_token: "{{ caller_token }}"
           - wait_for_trigger:
               - trigger: event
@@ -881,7 +1027,7 @@ script:
                   event:
                     kind: dojotool_return
                     correlation_id: "{{ _inspect_cid }}"
-            timeout: "00:00:10"
+            timeout: "00:00:35"
             continue_on_timeout: true
           - variables:
               domain_context: >-
@@ -914,13 +1060,30 @@ script:
                   Add domain_inspect_domains or reduce domain_inspect_limit
                   in this KFC's index_call to limit domain context size.
                 severity: warn
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "summarizer_size_exceeded",
+                    "component": component_slug,
+                    "estimated_bytes": _review_size_estimate | int,
+                    "domain_context_bytes": _domain_ctx_size | int,
+                    "index_bytes": _index_size | int,
+                    "limit_bytes": 262144,
+                    "hint": "Remove +chores from output_fields or add domain_inspect_domains to KFC index_call",
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
           - stop: >-
               review_data size estimate {{ _review_size_estimate }} exceeds safe
               limit (262144). Aborting {{ component_slug }} ninja summarizer run.
               Set index_call.domain_inspect_domains to filter entity domains.
-            error: true
+            response_variable: final_response
 
       # ── 6. Build monk prompt ──────────────────────────────────────────────
+      - alias: Strip component_instructions from drawer copy for prompt
+        variables:
+          _drawer_clean: >-
+            {%- set _d = dojo_drawer_value if dojo_drawer_value is mapping else {} -%}
+            {{ _d | combine({'component_instructions': ''}) }}
+
       - alias: Build monk prompt
         variables:
           default_query: >-
@@ -941,6 +1104,7 @@ script:
             use the error field to request it for future runs.
           query: >-
             {%- set _base = query | default(default_query) -%}
+            {%- set _base = (_base ~ '\n\nComponent purpose: ' ~ component_summary) if component_summary | trim != '' else _base -%}
             {{ (_base ~ '\n\n' ~ component_instructions) if component_instructions | trim != '' else _base }}
           # FG-38-safe kata_template unwind
           kata_template: >-
@@ -962,7 +1126,7 @@ script:
                 "library_data": {
                   "dojo_cabinet":          dojo_cabinet | default(''),
                   "kata_cabinet":          kata_cabinet | default(''),
-                  "drawer":                dojo_drawer | default({}),
+                  "drawer":                _drawer_clean | default({}),
                   "household_prefs":       _hh | default({}),
                   "interpretation":        hh_interpretation | default({}),
                   "policy_overlays":       hh_policy_overlays | default({}),
@@ -1001,14 +1165,89 @@ script:
               | to_json
             }}
 
-      # ── 7. Run monk ───────────────────────────────────────────────────────
+      # ── 6b. Context budget guard ─────────────────────────────────────
+      - alias: Context budget guard — abort if prompt exceeds model context window
+        variables:
+          _ctx_cfg: >-
+            {%- set _hh = states('sensor.zenos_default_household_cabinet') -%}
+            {%- set _cfg_raw = (state_attr(_hh, 'variables') or {}).get('zen_ninja_config', {}) if _hh != '' else {} -%}
+            {%- set _cfg = _cfg_raw.get('value', _cfg_raw) if _cfg_raw is mapping else {} -%}
+            {{ _cfg if _cfg is mapping else {} }}
+          _max_ctx_tokens: "{{ (_ctx_cfg.get('max_context_tokens', 28000) | int(28000)) if _ctx_cfg is mapping else 28000 }}"
+          _prompt_chars: "{{ prompt | length }}"
+          _prompt_tokens_est: "{{ (_prompt_chars | int / 4) | round(0) | int }}"
+          _ctx_overflow: "{{ _prompt_tokens_est | int > _max_ctx_tokens | int }}"
+      - if:
+          - condition: template
+            value_template: "{{ _ctx_overflow }}"
+        then:
+          - event: zen_event
+            event_data:
+              event:
+                kind: ninja_context_overflow
+                component: "{{ component_slug }}"
+                prompt_chars: "{{ _prompt_chars }}"
+                prompt_tokens_est: "{{ _prompt_tokens_est }}"
+                max_context_tokens: "{{ _max_ctx_tokens }}"
+                hint: >-
+                  Reduce domain_inspect_limit or set max_context_tokens in
+                  zen_ninja_config (household cabinet). Current default: 28000.
+                severity: warn
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "ninja_context_overflow",
+                    "component": component_slug,
+                    "prompt_tokens_est": _prompt_tokens_est | int,
+                    "max_context_tokens": _max_ctx_tokens | int,
+                    "hint": "Reduce domain_inspect_limit in KFC index_call or raise max_context_tokens in zen_ninja_config",
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
+          - stop: >-
+              Context budget exceeded for {{ component_slug }}.
+              Estimated {{ _prompt_tokens_est }} tokens > limit {{ _max_ctx_tokens }}.
+              Reduce domain_inspect_limit in KFC index_call or raise
+              max_context_tokens in zen_ninja_config.
+            response_variable: final_response
+
+      # ── 7. Run monk ─────────────────────────────────────────
       - alias: Monk Runner — Perform ai_task
         action: ai_task.generate_data
+        continue_on_error: true
         data:
           task_name: "{{ kung_fu_component_id | title }} Monk"
           instructions: "{{ prompt }}"
           entity_id: "{{ states('input_text.zenos_ai_task_entity') }}"
         response_variable: monk_response
+
+      - alias: Surface monk failure — emit error event if ai_task did not return data
+        if:
+          - condition: template
+            value_template: >-
+              {{ monk_response is not defined
+                 or not (monk_response is mapping)
+                 or monk_response.get('data', none) is none }}
+        then:
+          - event: zen_event
+            event_data:
+              event:
+                kind: monk_failure
+                component: "{{ component_slug }}"
+                prompt_size_chars: "{{ prompt | length }}"
+                monk_response: "{{ monk_response | default('undefined') | string | truncate(500) }}"
+                severity: error
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "monk_failure",
+                    "component": component_slug,
+                    "prompt_size_chars": prompt | length,
+                    "monk_response_excerpt": monk_response | default({}) | string | truncate(500),
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
+          - stop: >-
+              Monk Runner failed for {{ component_slug }}.
+              Prompt {{ prompt | length }} chars. Response:
+              {{ monk_response | default('undefined') | string | truncate(300) }}
+            response_variable: final_response
 
       - alias: Extract kata summary from monk response
         variables:

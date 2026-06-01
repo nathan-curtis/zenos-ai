@@ -1,26 +1,48 @@
-# Zen DojoTools Profile Editor — 4.5.5 'Ready Player Two'
+# Zen DojoTools Profile Editor — 5.0 'Clue'
 
-*Read and write identity profiles for AI personas, households, users, and families*
+*Read, write, sign, restore, and certify ZenOS identity profiles*
 
 ---
 
 ## Overview
 
-`zen_dojotools_profile_editor` is the universal read/write interface for ZenOS-AI identity cabinets. It is **MCP-exposed** and called by Friday during OOBE and on user request.
+`zen_dojotools_profile_editor` is the interactive profile surface for ZenOS-AI identity cabinets. It is **MCP-exposed** and called by Friday during OOBE and on user request.
 
-Five cabinet types are supported:
+Four semantic profile types are supported directly. Expansion cabinets are reached by passing the real cabinet entity in `target` while keeping the semantic type as `ai_user` or `user`.
 
 | Type | What It Stores | Default Cabinet |
 |---|---|---|
 | `ai_user` | AI persona identity — three-layer schema (core / jacket / companion) | `zen_default_ai_user_cabinet` |
-| `secondary_ai_user` | Second AI persona identity | `zen_secondary_ai_user_cabinet` |
 | `household` | Address, timezone, contact info | `zen_default_household_cabinet` |
 | `user` | Household member profiles | `zen_default_user_cabinet` |
-| `family` | Extended family / non-resident profiles | `zen_default_family_cabinet` |
+| `family` | Family container profile; membership lives in the `members` drawer | `zen_default_family_cabinet` |
 
 Writes are **non-destructive by default** — existing field values are never overwritten unless `force: true` is passed. Call `mode: read` before writing to see what's already set.
 
-This tool is intentionally AI-accessible. Expose it to your conversation agent and Friday can help you configure your household, update persona details, and fill in profile fields conversationally — no YAML required. If you don't expose it, all profile edits are manual.
+This tool is intentionally AI-accessible. Expose it to your conversation agent and Friday can help you configure your household, update persona details, sign persona essence after edits, and fill in profile fields conversationally — no YAML required. If you don't expose it, all profile edits are manual.
+
+```mermaid
+flowchart LR
+  OOBE["OOBE or user request"]
+  ProfileEditor["zen_dojotools_profile_editor"]
+  FileCabinet["FileCabinet"]
+  AI["zenai_essence"]
+  Household["_household_profile"]
+  User["_user_profile"]
+  Family["_family_profile"]
+  Certs["zen_ai_certs"]
+  Prev["zenai_essence_prev"]
+
+  OOBE --> ProfileEditor --> FileCabinet
+  FileCabinet --> AI
+  FileCabinet --> Prev
+  FileCabinet --> Certs
+  FileCabinet --> Household
+  FileCabinet --> User
+  FileCabinet --> Family
+```
+
+For identity membership, use [DojoTools Identity](zen_dojotools_identity_readme.md). Profile Editor writes profile drawers; Identity wires people, families, manifests, and expansion slots together.
 
 ---
 
@@ -30,14 +52,16 @@ This tool is intentionally AI-accessible. Expose it to your conversation agent a
 
 | Field | Type | Default | Options | Description |
 |---|---|---|---|---|
-| `mode` | select | `help` | `help`, `read`, `write` | Operation to perform |
-| `target_type` | select | `ai_user` | `ai_user`, `secondary_ai_user`, `household`, `user`, `secondary_user`, `tertiary_user`, `quaternary_user`, `family` | Which cabinet type to target |
+| `mode` | select | `help` | `help`, `read`, `write`, `sign`, `restore`, `cert_grant`, `cert_revoke`, `cert_list` | Operation to perform |
+| `target_type` | select | `ai_user` | `ai_user`, `household`, `user`, `family`, `expansion_1`-`expansion_5` | Which cabinet type to target |
 | `target` | entity (sensor) | — | Any cabinet sensor | Specific cabinet; omit to use the default for `target_type` |
 | `force` | boolean | `false` | — | Overwrite existing field values when `true` |
 
+Use `target_type: ai_user` or `target_type: user` plus an explicit `target: sensor.zenos_expansion_n_cabinet` for provisioned expansion cabinets. The `expansion_1`-`expansion_5` selector values are slot labels, not standalone profile schemas.
+
 ---
 
-### AI User Fields (`target_type: ai_user` / `secondary_ai_user`)
+### AI User Fields (`target_type: ai_user`)
 
 These fields compose the persona's **Essence** — the three-layer identity object Friday reads at inference time. The editor writes `core / jacket / companion` by default and auto-upconverts legacy cabinets on first write.
 
@@ -57,6 +81,14 @@ These fields compose the persona's **Essence** — the three-layer identity obje
 | `familiar_name` | `companion.name` | Companion name (e.g., "Byte") |
 | `familiar_type` | `companion.species` | Companion species/type (e.g., "digital English bulldog") |
 | `familiar_fx` | `companion.visual` | Companion visual mannerism |
+| `room` | `environment.room` | The persona's wake-space room |
+| `env_wake_in` | `environment.wake_in` | What the persona wakes in or on |
+| `env_desk` | `environment.desk` | Desk or workstation |
+| `env_decor` | `environment.decor` | JSON array of room decor |
+| `env_library` | `environment.library` | Library/spatial description |
+| `env_music_genre` | `environment.music.genre` | Ambient music genre |
+| `env_music_mood` | `environment.music.mood` | Ambient music mood |
+| `env_music_riff` | `environment.music.riff` | Ambient music phrase |
 | `essence_patch` | deep-merge into base | JSON object for advanced fields — merged recursively after named fields are resolved |
 
 **Read-only fields returned by `mode: read`:**
@@ -68,6 +100,8 @@ These fields compose the persona's **Essence** — the three-layer identity obje
 | `jacket_id` | `jacket.id` | Jacket revision ID |
 | `signed_by` | `jacket.signed_by` | HoH person entity that last signed the jacket |
 | `signed_at` | `jacket.signed_at` | ISO timestamp of last signature |
+| `signature_status` | detected | `signed`, `pending`, or `unsigned` |
+| `wake_scene_preview` | rendered response field | Preview generated from the current essence |
 
 Patches are **leaf-level** — changing `voice_tone` never touches `voice_style`. `essence_patch` deep-merges any structure not covered by the named fields above.
 
@@ -89,7 +123,7 @@ Patches are **leaf-level** — changing `voice_tone` never touches `voice_style`
 
 ---
 
-### User / Family Fields (`target_type: user` or `family`)
+### User Fields (`target_type: user`)
 
 | Field | Maps To | Description |
 |---|---|---|
@@ -104,7 +138,13 @@ Patches are **leaf-level** — changing `voice_tone` never touches `voice_style`
 | `birthday` | `_user_profile.birthday` | Birthday (YYYY-MM-DD) |
 | `preferences` | `_user_profile.preferences` | JSON object of user preferences — merged, not overwritten |
 
-`read` mode also returns the read-only relationship arrays: `partners`, `ai_partners`, `children`.
+`read` mode also returns the read-only relationship arrays when present: `partners`, `ai_partners`, `children`.
+
+### Family Profile Fields (`target_type: family`)
+
+`target_type: family` writes the family cabinet's `_family_profile` drawer with the same simple fields as a user profile. It does **not** create a new person, allocate an expansion slot, add the person to a family, or rebuild the identity manifest.
+
+For a non-resident family member such as an aunt, grandparent, neighbor, or caregiver, use [DojoTools Identity](zen_dojotools_identity_readme.md) `mode: provision_member`. That path finds an expansion slot, writes the profile payload, adds the new cabinet to the family `members` drawer, and rebuilds the manifest. This distinction matters during first run: profile data alone is not a valid family relationship.
 
 ---
 
@@ -122,7 +162,7 @@ mode: help
 
 ### `read`
 
-Returns the current profile for the specified cabinet type.
+Returns the current profile for the specified cabinet type. For AI personas, it also returns `wake_scene_preview`, `prev_snapshot`, and `prev_snapshot_exists`.
 
 ```yaml
 mode: read
@@ -172,6 +212,46 @@ humor: dry wit
 }
 ```
 
+For AI personas, every write stores the previous `zenai_essence` in `zenai_essence_prev`. A normal write invalidates the current signature and tells you to run `mode: sign`; set `autosign: true` when you want the write and MD5 clear-sign to happen in one call.
+
+### `sign`
+
+Signs a three-layer AI persona essence by calculating MD5 hashes over the canonical `core` and `jacket` blocks, then stores the hashes back in `core.signature` and `jacket.signature`.
+
+```yaml
+mode: sign
+target_type: ai_user
+```
+
+`sign` is deliberately limited to `target_type: ai_user`. It fires a profile editor audit event with `kind: essence_signed` or `kind: essence_resigned`.
+
+### `restore`
+
+Restores `zenai_essence` from `zenai_essence_prev`. Restore does not overwrite the previous snapshot; the next AI-user write will create a fresh one.
+
+```yaml
+mode: restore
+target_type: ai_user
+```
+
+After restore, run `mode: sign` to re-sign the restored essence.
+
+### `cert_list`, `cert_grant`, `cert_revoke`
+
+Certification modes manage the unsigned dynamic `zen_ai_certs` drawer for an AI persona. These modes are separate from `zenai_essence`; they link back to the signed jacket through `jacket_id`.
+
+```yaml
+mode: cert_grant
+target_type: ai_user
+cert_component: grocy_manager
+cert_level: 2
+cert_tool: script.zen_dojotools_grocy
+cert_scope: '["recommend", "log", "add_to_shopping"]'
+cert_constraints: '["purchase_without_confirmation"]'
+```
+
+Certification levels are `1` observer, `2` advisor, `3` operator with confirmation, and `4` autonomous within policy.
+
 ---
 
 ## Write Behavior (AI User)
@@ -182,7 +262,42 @@ humor: dry wit
 
 **Jacket and companion are leaf-merge** — each named field is written independently. Non-empty inputs overwrite the current value if `force: true`, or if the current value is blank.
 
-**`signed_by` is always refreshed** — the jacket's `signed_by` and `signed_at` are stamped on every write using the current HoH entity from the household cabinet.
+**`signed_by` is refreshed on write** — the jacket's `signed_by` and `signed_at` are stamped using the current HoH entity from the household cabinet.
+
+**Writes are snapshot-backed** — before replacing `zenai_essence`, the current value is copied to `zenai_essence_prev`. `restore` can roll back to that prior state.
+
+**Signatures are explicit** — normal writes leave the essence pending re-sign. Use `autosign: true` or call `mode: sign` after reviewing the change.
+
+---
+
+## Valid Profile Structures
+
+The profile editor writes profile drawers. It does not by itself guarantee household/family membership; membership is managed by [Identity](zen_dojotools_identity_readme.md).
+
+| Target Type | Required Cabinet Role | Canonical Drawer | Minimum Useful Fields |
+|---|---|---|---|
+| `ai_user` | AI user cabinet | `zenai_essence` | `jacket.name`; `core.id` is stamped once; `companion` may be empty |
+| `household` | Household cabinet | `_household_profile` | `household_name`; timezone auto-detected on first write |
+| `user` | User cabinet | `_user_profile` | `name` or `preferred_name`; `role`; optional `tracking` consent |
+| `family` | Family cabinet | `_family_profile` | Family display/name fields when needed; membership lives in `members` |
+
+Valid identity state is the combination of profile drawers plus membership drawers and VolumeInfo ACLs:
+
+```mermaid
+flowchart TD
+  Profile["Profile drawer"]
+  VolumeInfo["AI_Cabinet_VolumeInfo"]
+  Members["members drawer"]
+  Manifest["zen_identity_manifest"]
+  Valid["Valid identity surface"]
+
+  Profile --> Valid
+  VolumeInfo --> Valid
+  Members --> Valid
+  Manifest --> Valid
+```
+
+For full structural requirements, see [Cabinet Specification](../cabinets/cabinet_spec.md#101-valid-identity-cabinet-shapes).
 
 ---
 
@@ -197,6 +312,8 @@ humor: dry wit
 **`timezone`** (household) — auto-set on first write, never overwritten.
 
 **Target validation** — if no cabinet resolves for the given `target_type`, the script stops with an error before any write occurs.
+
+**Expansion target validation** — expansion slots are not default-resolved by this script. Pass the actual expansion cabinet sensor in `target`, or use [DojoTools Identity](zen_dojotools_identity_readme.md) `provision_member` when creating a new external person.
 
 ---
 
@@ -283,6 +400,18 @@ role: head_of_household
 pronouns: he/him
 ```
 
+### Update a provisioned expansion user
+
+```yaml
+mode: write
+target_type: user
+target: sensor.zenos_expansion_1_cabinet
+preferred_name: Marianne
+role: extended_family
+```
+
+Do not use this as the first step for a new family member. For first-time external people, call Identity `provision_member` so the cabinet, family membership, and manifest are created together.
+
 ### Overwrite an existing field
 
 ```yaml
@@ -304,8 +433,10 @@ All modes return a consistent JSON envelope:
   "mode": "<mode>",
   "target_type": "<type>",
   "target": "<cabinet entity_id>",
-  "profile": {},    // read mode only
-  "message": "..."  // write and error modes
+  "profile": {},               // read mode only
+  "wake_scene_preview": "...",  // ai_user read mode only
+  "prev_snapshot_exists": true, // ai_user read mode only
+  "message": "..."             // write, sign, restore, and error modes
 }
 ```
 
@@ -316,8 +447,21 @@ All modes return a consistent JSON envelope:
 | Dependency | Purpose |
 |---|---|
 | `script.zen_dojotools_filecabinet` | All cabinet reads and writes |
+| `script.zen_dojotools_event_emitter` | Audit events for sign and restore |
 | `zen_os_1.jinja` | `essence_defaults()` macro — baseline for ai_user essence assembly |
+| `zenos_cabinets.jinja` | Cabinet GUID and VolumeInfo helpers |
 | `zen_default_ai_user_cabinet` label | Default cabinet resolution for `ai_user` |
 | `zen_default_household_cabinet` label | Default cabinet resolution for `household` |
 | `zen_default_user_cabinet` label | Default cabinet resolution for `user` |
 | `zen_default_family_cabinet` label | Default cabinet resolution for `family` |
+
+---
+
+## Cross-References
+
+- [Cabinet Specification](../cabinets/cabinet_spec.md) — valid cabinet and identity drawer shapes
+- [DojoTools Identity](zen_dojotools_identity_readme.md) — household/family membership and ACL relationships
+- [User Management](../getting_started/user_management.md) — operator workflow for adding, moving, and removing people or AI users
+- [Script Modules](readme.md) — return path to the internal tool map
+- [Clue Release Notes](../releases/clue.md) — 2026.6 identity and FileCabinet context
+- [Fry's Grandpa Release Notes](../releases/frys_grandpa.md#profile-editor--write-bug-fixes) — write-gate and second-write merge fixes

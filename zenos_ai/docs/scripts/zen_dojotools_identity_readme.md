@@ -1,6 +1,6 @@
-# Zen DojoTools Identity — 4.5.6 / 5.0
+# Zen DojoTools Identity — 4.7.0 / 5.0
 
-*Identity resolution and household/family group management for ZenOS-AI*
+*Identity resolution, presence, and household/family group management for ZenOS-AI*
 
 ---
 
@@ -40,6 +40,25 @@ System
 These slots fill on first add and block re-entry. Use `set_principal` to transfer them.
 
 **Partner = delegation authority.** `acls.partner[]` records who is authorized to delegate on an entity's behalf. This is a governance relationship, not a social one. No token is issued without an explicit allow — the link records who has delegation authority, it does not grant it automatically. Works for any entity pair (user↔user, user↔AI, AI↔AI).
+
+```mermaid
+flowchart TD
+  Household["Household cabinet\nresidence boundary"]
+  Family["Family cabinet\nbelonging boundary"]
+  SubFamily["Sub-family cabinet\nextended family"]
+  User["User cabinet"]
+  AI["AI user cabinet"]
+  Manifest["zen_identity_manifest"]
+
+  Household --> Family
+  Family --> SubFamily
+  Family --> User
+  Household --> AI
+  Household --> Manifest
+  Family --> Manifest
+  User --> Manifest
+  AI --> Manifest
+```
 
 ---
 
@@ -110,6 +129,48 @@ zen_dojotools_identity:
   mode: resolve
   user_label: primary_user
 ```
+
+**v4.7.0 — Person response additions:**
+
+`cabinet` and `person_entity` are now explicit top-level keys in the person response (previously absent).
+
+A `presence` block is included for all person targets:
+
+```json
+"presence": {
+  "person_entity": "person.<entity_id>",
+  "zone":          "home",
+  "at_home":       true,
+  "area_id":       null,
+  "area_name":     ""
+}
+```
+
+Consent gating — all fields require explicit opt-in in `_user_profile.tracking`:
+
+| Field | Gate |
+|-------|------|
+| `zone`, `at_home` | `tracking.gps_zone: true` |
+| `area_id`, `area_name` | `tracking.room: true` |
+
+When consent is absent the field returns `"consent_required"` — never `null`, never silently dropped.
+
+`area_id` returns `null` when the person's device tracker has no room assignment in the HA device registry. This is a HA configuration gap, not a code gap — assign the tracker to a room and room-level presence goes live with no code changes.
+
+**Tracking consent setup:**
+
+Write to `_user_profile` in the user's cabinet via FileCabinet `action_type: update`:
+
+```json
+"tracking": {
+  "gps_zone": true,
+  "room": true
+}
+```
+
+**Reverse residents (mode=resolve with area target):**
+
+Each resident entry in `_r3b_reverse_residents` now includes `person_entity` and a consent-gated `zone` field.
 
 ---
 
@@ -428,6 +489,31 @@ Flynn bootstrap (`flynn_bootstrap_content`) runs steps 4–7 automatically on fi
 
 ---
 
+## Valid Identity Surface
+
+A valid identity is more than a profile drawer. It requires a cabinet role, profile data, membership edges, and a manifest rebuild.
+
+| Identity Kind | Must Have | Written By |
+|---|---|---|
+| Person/User | User cabinet role label, `_user_profile`, optional HA `person.*`, family ACL when joined | Provisioner, Profile Editor, Identity |
+| Family | Family cabinet role label, optional `_family_profile`, `members` drawer | Provisioner, Profile Editor, Identity |
+| Household | Household cabinet role label, `_household_profile`, `members` drawer, HoH owner, prime AI partner | Flynn, Profile Editor, Identity |
+| AI User | AI user cabinet role label, `zenai_essence`, optional family/partner ACLs | Provisioner, Profile Editor, Identity |
+
+The membership graph is valid when:
+
+- household `members.families[]` contains the family cabinets that belong to the household
+- family `members.users[]`, `members.ai_users[]`, and `members.families[]` reflect current membership
+- member VolumeInfo `acls.family[]` mirrors family membership
+- member VolumeInfo `default_family_guid` is set when a default family exists
+- household VolumeInfo `acls.owner` identifies the Head of Household
+- household VolumeInfo `acls.partner[]` includes one `role: prime` AI partner
+- `zen_identity_manifest` has been rebuilt after membership changes
+
+See [Cabinet Specification](../cabinets/cabinet_spec.md#101-valid-identity-cabinet-shapes) for the drawer-level shapes and [Profile Editor](zen_dojotools_profile_readme.md#valid-profile-structures) for the profile writer.
+
+---
+
 ## Events Reference
 
 | Event | Mode | Key Fields |
@@ -442,6 +528,54 @@ Flynn bootstrap (`flynn_bootstrap_content`) runs steps 4–7 automatically on fi
 
 ---
 
+## Three-Plane Navigation (v4.7.0)
+
+The ZenOS identity cabinet, HA `person.*` entity, and HA area are fully navigable from any direction. This is the "lens pivot" — start anywhere, reach the other two planes.
+
+| Start | Reach |
+|-------|-------|
+| `resolve('<user_label>')` | → `area_id`, `area_name`, `zone`, `at_home`, `person_entity` |
+| `inspect(person.<entity>)` | → full identity overlay with presence block (see Inspect docs) |
+| `resolve` with area target | → residents with `person_entity` + consent-gated `zone` |
+| Inspect `person_list` | → all persons; ZenOS users with full profile + presence |
+
+`identity: null` for persons without a `zen_user_cabinet`-labeled cabinet is correct — provisioning a cabinet lights them up with no further code changes.
+
+---
+
+## Template Surface — `zen_identity.jinja`
+
+A Jinja2-callable identity resolver lives at `custom_templates/zenos_ai/zen_identity.jinja`. Same contract as the script surface but callable from sensors, cortex macros, and command interpreter contexts where `action:` calls are unavailable.
+
+```jinja
+{%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+{%- set person = ID.resolve('<user_label>') | from_json -%}
+{%- if person.is_person -%}...{%- endif -%}
+```
+
+**Always call `| from_json`** — the macro returns a tojson string, not a native dict.
+
+**Mobile note:** On the template surface, the `mobile` block returns `zone` and `battery` only. `entity_id`, `configured`, and `battery_entity` are available on the script surface only (require `state_attr` access not available in all Jinja2 contexts).
+
+**When to use which surface:**
+
+| Surface | Use when |
+|---------|----------|
+| Script (`zen_dojotools_identity`) | Inside scripts, automations, any context that can `action:` |
+| Template (`zen_identity.jinja`) | Inside sensors, cortex macros, command interpreter — Jinja2-only contexts |
+
+---
+
+## Architectural Notes
+
+### RecursionError in Loop Contexts
+
+`zen_identity.jinja` **cannot be imported inside `for_each:` loops** or `variables:` steps that themselves execute inside loop contexts. HA's Jinja2 sandbox raises a RecursionError in nested import chains.
+
+**Fix pattern:** Replace the Jinja2 import with a `script.zen_dojotools_identity` `action:` call inside the loop. The script executes in a separate HA context, bypassing the recursion constraint. This is the pattern used by `zen_dojotools_inspect` when enriching `person.*` entities.
+
+---
+
 ## Dependencies
 
 | Dependency | Purpose |
@@ -450,5 +584,16 @@ Flynn bootstrap (`flynn_bootstrap_content`) runs steps 4–7 automatically on fi
 | `zen_os_1.jinja` → `identity_roster()` | Full household roster — build_identity_manifest |
 | `zen_os_1.jinja` → `identity_manifest_loader()` | Reads `zen_identity_manifest` from household cabinet |
 | `zen_dojotools_filecabinet` | All cabinet reads and writes |
+| `zen_identity.jinja` | Template surface (Jinja2 contexts) — v1.1.0 |
 | Household Cabinet | `members` drawer, `AI_Cabinet_VolumeInfo`, `zen_identity_manifest` |
 | User / AI User / Family Cabinets | `AI_Cabinet_VolumeInfo.acls` — partner, family, owner entries |
+
+---
+
+## Cross-References
+
+- [User Management](../getting_started/user_management.md) — operator workflow for provisioning and teardown
+- [Profile Editor](zen_dojotools_profile_readme.md) — profile drawer writer
+- [Cabinet Specification](../cabinets/cabinet_spec.md) — valid cabinet and identity shapes
+- [Security Model GA](../architecture/security_model_ga.md) — current policy/caller-token status
+- [Script Modules](readme.md) — return path to the internal tool map

@@ -1,0 +1,2953 @@
+###############################################################################
+# ZenOS-AI DojoTools: Zen Spa
+# Version: 5.1.0
+#
+# ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
+#   spa_climate   — Thermostat/climate entity. Setup anchor (device scan root).
+#   spa_power     — Main I-want-to-use-this-now on/off switch (NOT the breaker).
+#   spa_jets_l    — Left/dual-speed jet pump (EcstaSeat + waterfall side).
+#   spa_jets_r    — Right/single-speed jet pump (LumbarSsage side).
+#   spa_jets_all  — Jet group entity (both pumps).
+#   spa_lights    — Light group entity.
+#   spa_audio     — Audio on/off switch.
+#   spa_cover     — Motorized cover entity (may be on separate device).
+#
+# ── SETUP FLOW ───────────────────────────────────────────────────────────────
+#   1. mode=discover  — scan ESPHome device, show entity map + missing roles
+#   2. mode=setup     — create spa_* labels, tag discovered entities, seed cabinet
+#   3. mode=status    — verify all readings live
+#
+#   If status is called with no cabinet config, discover runs inline and
+#   returns the advisory + next_step=setup — no bouncing out.
+#
+# ── CONFIG KEY ───────────────────────────────────────────────────────────────
+#   Household cabinet key: spa_config
+#   Seeded by mode=setup. Contains entities{}, model{}, chem{}, jets{}, temp{}.
+#
+# v1.0.0 2026-05-08: Initial generic engine
+# v2.0.0 2026-05-08: ZenLux-shaped — discover/setup inline, single tool, no sprawl
+# v2.1.0 2026-05-08: Labels authoritative — entity IDs from label+discovery, never stored in cabinet
+# v2.2.0 2026-05-08: Discovery — lights scans switch domain, jets_all drops bad first-candidate fallback
+# v2.3.0 2026-05-09: Preset library — model_preset/config_json in setup, dojotools_spa_presets.yaml ships 2 models
+# v2.4.0 2026-05-09: Split model/chem loads — model_preset→model/jets/temp, chem_preset→chem, chem_profile→active_profile flip
+# v2.5.0 2026-05-09: reset field — wipes spa_config from cabinet (labels/tags preserved)
+# v2.6.0 2026-05-09: cover discovery — domain-validates spa_cover label (rejects update.*), scans cover.* with spa/covana keyword fallback
+# v2.7.0 2026-05-09: additive controller awareness — lights surfaces ZenLux entity+brightness+effect, audio surfaces media_zone, temperature tagged context=spa_water
+# v2.8.0 2026-05-09: camera block in status (hot_tub label + name-pattern); cross-tool: climate/RM/ZenLux/camera all surface spa_master when spa_climate detected in area
+# v3.0.0 2026-05-09: scene mode — survey/define/apply/delete; zero hardcoded state. ZenLux owns lights (HA scenes), MediaManager owns audio, SpaMaster orchestrates + stores combos in cabinet
+# v3.0.1 2026-05-09: scene mode — survey hints ZenLux scene_list for discovery; apply delegates lighting to ZenLux scene_set (RM awareness, transition handling)
+# v3.1.0 2026-05-10: discover verbose=true — full device entity inventory grouped by domain
+# v3.2.0 2026-05-10: audio EQ controls (treble/bass/balance/subwoofer) + playback pointer to MediaManager
+# v3.3.0 2026-05-10: discover pool = device_entities + area_entities(area_id(anchor)) + label_entities(hot_tub) — triple-source, area resolved dynamically, no hardcoded area_id
+# v3.4.0 2026-05-21: consumables mode — provision (parts+chem catalog from preset), status, add_to_shopping, log_replaced, log_purchased; new fields: action, part, amount, force
+# v3.4.1 2026-05-22: fix _cons_amount | int(1) → | float(1.0); add step: 0.01 to amount selector (decimal support)
+# v3.5.0 2026-05-22: provision find-before-create — catalog_find_product by name_suffix before catalog_add_product; remove product_id from preset (runtime data, not config)
+# v3.6.0 2026-05-22: genericize provision product names — Steps 2+3 create/find with name_suffix directly (no brand prefix); remove product_name override field
+# v3.7.0 2026-05-22: provision result — failures[] + resolved count + partial status; fix Step 4 parts name (was brand-prefixed); add_to_shopping — accumulate per-item results with list_id
+# v3.8.0 2026-05-22: provision Steps 2+3 — drop find-before-create (catalog_find_product returns string repr); always call catalog_add_product, dupe guard returns candidate_ids for existing products
+# v3.9.0 2026-05-22: provision Step 1 — create Grocy location if no exact match for HA area name; guard chore creation with _pp_pid/_pc_pid is not none
+# v3.10.0 2026-05-22: fix none-guard footgun — HA renders Python None as string "none" in data templates so "is not none" is unreliable; guards now use | int(-1) > 0 (robust to None/string/zero)
+# v3.11.0 2026-05-22: fix chore creation — product_amount: 0 → 1 (Grocy rejects 0 with consume_product_on_execution: 1); load existing chore_ids from catalog on re-provision to skip already-created chores
+# v3.12.0 2026-05-22: idempotent chore provision — brand-scoped chores_find pre-load before loops; name→ID map used in _pp_cid/_pc_cid init (3rd tier after catalog+preset); add _pc_cid is none to chem guard
+###############################################################################
+
+script:
+  zen_dojotools_spamaster:
+    alias: Zen DojoTools SpaMaster
+    description: "Zen DojoTools SpaMaster (3.12.0) — Full-stack spa management.\n\
+      \nCANONICAL: Use for ALL spa intents. Self-bootstrapping — status works\
+      \ immediately with zero config. Discovers ESPHome device, resolves all\
+      \ entity roles, and creates spa_* labels in one shot if needed.\n\
+      \nChem doctrine aware: FreshWater IQ profiles (watkins_recommended /\
+      \ mps_mode fairy_dust_protocol), post-MPS sensor trust state, dealer\
+      \ band enforcement. Cabinet stores model + chem; labels are authoritative.\n\
+      \nMODES:\n  status      — Live snapshot. Self-bootstraps if not configured.\n\
+      \  scene       — Concierge: survey capabilities, define/apply/delete named moods.\n\
+      \  discover    — Scan device, map entity roles, show missing.\n\
+      \  setup       — Labels + tagging + cabinet seed (reset+confirm to wipe).\n\
+      \  lights      — light_state, color, zone, brightness.\n\
+      \  jets        — jets_state, zone (all/left/right/waterfall), speed.\n\
+      \  audio       — audio_state, volume, source.\n\
+      \  temperature — target_temperature (°F).\n\
+      \  cover       — cover_action (open/close).\n\
+      \  chemistry   — strip readings or live IQ eval with profile doctrine.\n\
+      \  log         — Post-soak: chem eval, oxidizer dose, todos, calendar.\n\
+      \  consumables — ERP surface: provision, status, add_to_shopping, log_replaced, log_purchased.\n\
+      \  help        — help_topic (index/entities/chemistry/actions/models).\n\
+      \nBackward compat: chemistry fields without mode → chemistry path."
+    mode: single
+    icon: mdi:hot-tub
+    fields:
+      mode:
+        name: Mode
+        description: "status (default), scene, discover, setup, lights, jets, audio, temperature, cover, chemistry, log, help"
+        selector:
+          select:
+            options:
+            - status
+            - scene
+            - discover
+            - setup
+            - lights
+            - jets
+            - audio
+            - temperature
+            - cover
+            - chemistry
+            - log
+            - consumables
+            - help
+        required: false
+      anchor:
+        name: Anchor Entity
+        description: "Optional: explicit spa climate entity_id for discover/setup. Auto-detected if omitted."
+        selector:
+          entity:
+            domain: climate
+        required: false
+      verbose:
+        name: Verbose
+        description: "Full device entity inventory grouped by domain (mode: discover). Default: false."
+        selector:
+          boolean:
+        required: false
+      model_preset:
+        name: Model Preset
+        description: "Loads model/jets/temp from preset (mode: setup). e.g. caldera_utopia_florence_2024"
+        selector:
+          text:
+        required: false
+      chem_preset:
+        name: Chem Preset
+        description: "Loads chem profile block only (mode: setup). Same preset keys as model_preset."
+        selector:
+          text:
+        required: false
+      chem_profile:
+        name: Active Chem Profile
+        description: "Switch active profile without reloading ranges (mode: setup). e.g. mps_mode"
+        selector:
+          text:
+        required: false
+      config_json:
+        description: "JSON overrides merged over preset — applied to whichever sections are being loaded. (mode: setup)"
+        selector:
+          text:
+        required: false
+      reset:
+        name: Reset
+        description: "Clear spa_config from cabinet — removes all model, chem, and profile prefs. Labels and entity tags are preserved. Must also pass confirm=true. (mode: setup)"
+        selector:
+          boolean:
+        required: false
+        default: false
+      confirm:
+        name: Confirm
+        description: "Required with reset=true to prevent accidental wipes. (mode: setup)"
+        selector:
+          boolean:
+        required: false
+        default: false
+      log_notes:
+        name: Log Notes
+        description: "Notes for calendar log entry. (mode: log)"
+        selector:
+          text:
+        required: false
+      boost_chlorine:
+        name: Boost Chlorine
+        description: "Fire IQ salt boost — 24h max output. (mode: log)"
+        selector:
+          boolean:
+        required: false
+        default: false
+      close_cover:
+        name: Close Cover
+        description: "Close motorized cover after logging. (mode: log)"
+        selector:
+          boolean:
+        required: false
+        default: false
+      set_hold_temp:
+        name: Set Hold Temperature
+        description: "Set hold/eco temp after soak (°F). (mode: log)"
+        selector:
+          number:
+            min: 80
+            max: 104
+            unit_of_measurement: "°F"
+        required: false
+      soak_persons:
+        name: Number of Bathers
+        description: "Bathers for oxidizer dose calc. (mode: log)"
+        selector:
+          number:
+            min: 1
+            max: 8
+            mode: box
+        required: false
+      soak_duration_hours:
+        name: Soak Duration (hours)
+        description: "Soak hours (e.g. 1.5). (mode: log)"
+        selector:
+          number:
+            min: 0.25
+            max: 8
+            step: 0.25
+            mode: box
+        required: false
+      add_supplies:
+        name: Add Supplies to Shopping List
+        description: "Add needed chemistry to supplies todo. (mode: log)"
+        selector:
+          boolean:
+        required: false
+        default: false
+      help_topic:
+        name: Help Topic
+        description: "index (default), entities, chemistry, actions, models"
+        selector:
+          select:
+            options: [index, entities, chemistry, actions, models]
+        required: false
+      mood:
+        name: Mood / Scene Name
+        description: "Named mood to apply or define (mode: scene). Omit to survey capabilities."
+        selector:
+          text:
+        required: false
+      save_scene:
+        name: Save Scene
+        description: "Define + store this mood to cabinet (mode: scene). Requires mood + scene_entity."
+        selector:
+          boolean:
+        required: false
+        default: false
+      delete_scene:
+        name: Delete Scene
+        description: "Remove stored mood from cabinet (mode: scene). Requires mood."
+        selector:
+          boolean:
+        required: false
+        default: false
+      scene_entity:
+        name: Lighting Scene Entity
+        description: "HA scene entity_id for the lights portion of this mood (mode: scene define). e.g. scene.hot_tub_deep_red"
+        selector:
+          entity:
+            domain: scene
+        required: false
+      scene_note:
+        name: Scene Note
+        description: "Optional note stored with the mood — chemistry reminders, occasion, etc. (mode: scene define)"
+        selector:
+          text:
+        required: false
+      open_cover:
+        name: Open Cover
+        description: "Open motorized cover when setting the scene (mode: scene)."
+        selector:
+          boolean:
+        required: false
+        default: false
+      action:
+        name: Action
+        description: "consumables sub-action: status, add_to_shopping, log_replaced, log_purchased, provision"
+        selector:
+          select:
+            options: [status, add_to_shopping, log_replaced, log_purchased, provision]
+        required: false
+      part:
+        name: Part
+        description: "Part/supply key from spa catalog (consumables: log_replaced, log_purchased)"
+        selector:
+          text:
+        required: false
+      amount:
+        name: Amount
+        description: "Quantity for log_purchased. Default: 1. Decimals supported (e.g. 2.5)."
+        selector:
+          number:
+            min: 0
+            step: 0.01
+        required: false
+      force:
+        name: Force Re-provision
+        description: "Re-run provision even if catalog exists (consumables: provision). Stock preserved."
+        selector:
+          boolean:
+        required: false
+        default: false
+      light_state:
+        name: Light State
+        description: "on / off"
+        selector:
+          select:
+            options: ['on', 'off']
+        required: false
+      light_color:
+        name: Light Color
+        description: "Violet, Blue, Cyan, Green, White, Yellow, Red, Cycle"
+        selector:
+          select:
+            options: [Violet, Blue, Cyan, Green, White, Yellow, Red, Cycle]
+        required: false
+      light_zone:
+        name: Light Zone
+        description: "all (default), underwater, exterior, waterfall, topside"
+        selector:
+          select:
+            options: [all, underwater, exterior, waterfall, topside]
+        required: false
+        default: all
+      light_brightness:
+        name: Light Brightness
+        description: "0–100 (auto-maps to 0–5 intensity scale)"
+        selector:
+          number:
+            min: 0
+            max: 100
+        required: false
+      cycle_speed:
+        name: Cycle Speed
+        description: "Off / Slow / Normal / Fast — when light_color=Cycle"
+        selector:
+          select:
+            options: [Off, Slow, Normal, Fast]
+        required: false
+      jets_state:
+        name: Jets State
+        description: "on / off"
+        selector:
+          select:
+            options: ['on', 'off']
+        required: false
+      jets_zone:
+        name: Jets Zone
+        description: "all (default), left, right, waterfall"
+        selector:
+          select:
+            options: [all, left, right, waterfall]
+        required: false
+        default: all
+      jets_speed:
+        name: Jets Speed
+        description: "low / high — left/dual-speed zone only"
+        selector:
+          select:
+            options: [low, high]
+        required: false
+      audio_state:
+        name: Audio State
+        description: "on / off"
+        selector:
+          select:
+            options: ['on', 'off']
+        required: false
+      audio_volume:
+        name: Audio Volume
+        description: "0–100"
+        selector:
+          number:
+            min: 0
+            max: 100
+        required: false
+      audio_source:
+        name: Audio Source
+        description: "Source name — check status for options"
+        selector:
+          text:
+        required: false
+      treble:
+        name: Treble
+        description: "EQ treble. Check status for device range."
+        selector:
+          number:
+            min: 0
+            max: 100
+        required: false
+      bass:
+        name: Bass
+        description: "EQ bass. Check status for device range."
+        selector:
+          number:
+            min: 0
+            max: 100
+        required: false
+      balance:
+        name: Balance
+        description: "EQ balance. Check status for device range."
+        selector:
+          number:
+            min: 0
+            max: 100
+        required: false
+      subwoofer:
+        name: Subwoofer
+        description: "EQ subwoofer. Check status for device range."
+        selector:
+          number:
+            min: 0
+            max: 100
+        required: false
+      target_temperature:
+        name: Target Temperature
+        description: "Water setpoint °F"
+        selector:
+          number:
+            min: 80
+            max: 104
+            unit_of_measurement: "°F"
+        required: false
+      cover_action:
+        name: Cover Action
+        description: "open / close"
+        selector:
+          select:
+            options: [open, close]
+        required: false
+      salt_ppm:
+        name: Salt (ppm)
+        selector:
+          number:
+            min: 0
+            max: 5000
+            unit_of_measurement: ppm
+            mode: box
+        required: false
+      free_chlorine_ppm:
+        name: Free Chlorine (ppm)
+        selector:
+          number:
+            min: 0
+            max: 10
+            unit_of_measurement: ppm
+            mode: box
+        required: false
+      ph:
+        name: pH Level
+        selector:
+          number:
+            min: 6
+            max: 9
+            step: 0.1
+            mode: box
+        required: false
+      alkalinity_ppm:
+        name: Alkalinity (ppm)
+        selector:
+          number:
+            min: 0
+            max: 300
+            unit_of_measurement: ppm
+            mode: box
+        required: false
+      hardness_ppm:
+        name: Calcium Hardness (ppm)
+        selector:
+          number:
+            min: 0
+            max: 500
+            unit_of_measurement: ppm
+            mode: box
+        required: false
+      hours_since_mps:
+        name: Hours Since MPS Added
+        description: "Hours since fairy dust was last added. Triggers post-MPS sensor distrust mode. Phase 2: auto-read from spa_ops cabinet."
+        selector:
+          number:
+            min: 0
+            max: 48
+            step: 0.5
+            mode: box
+        required: false
+
+    sequence:
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 0. Load cabinet config
+    # ─────────────────────────────────────────────────────────────────────────
+    - variables:
+        _cab: >-
+          {{ label_entities('Zen Household Cabinet')
+             | select('match', 'sensor\\.') | list | first | default('') }}
+        _cfg: >-
+          {{ (state_attr(_cab, 'variables') | default({}, true)).get('spa_config', {}) }}
+        _chem_raw: "{{ _cfg.get('chem', {}) }}"
+        _jets_cfg: "{{ _cfg.get('jets', {}) }}"
+        _model: "{{ _cfg.get('model', {}) }}"
+        _temp_cfg: "{{ _cfg.get('temp', {}) }}"
+        _cfg_ok: "{{ _cfg | length > 0 }}"
+        _mps_strength_pct: "{{ _cfg.get('mps_strength_pct', none) }}"
+        _preset_lib:
+          caldera_utopia_florence_2024: !include .spa_presets/caldera_utopia_florence_2024.yaml
+          hot_spring_highlife_envoy_nxt_2024: !include .spa_presets/hot_spring_highlife_envoy_nxt_2024.yaml
+          watkins_iq_dealer_mps: !include .spa_presets/watkins_iq_dealer_mps.yaml
+
+    # 0b. Resolve active chem profile — watkins_recommended base + profile overrides → flat _chem
+    #     When cabinet is empty, _chem_defaults supplies watkins published ranges so chemistry
+    #     mode always returns valid targets — no setup required for a safe readout.
+    - variables:
+        _chem_defaults:
+          salt_min: 1500
+          salt_max: 2000
+          salt_target: 1750
+          chlorine_min: 1
+          chlorine_max: 5
+          chlorine_target: 3
+          ph_min: 7.2
+          ph_max: 7.8
+          ph_target: 7.4
+          ph_cooldown_hours: 24
+          alk_min: 40
+          alk_max: 120
+          alk_target: 80
+          hard_min: 25
+          hard_max: 75
+          hard_target: 50
+          orp_min: 600
+          iq_hours_warn: 200
+        _profile_name: >-
+          {{ 'watkins_recommended' if not _cfg_ok else
+             _cfg.get('chem_profile_active',
+                _chem_raw.get('active_profile', 'mps_mode')) }}
+        _chem_sys: "{{ _chem_raw.get('system', 'saltwater') }}"
+        _chem_watkins: >-
+          {{ _chem_raw.get('watkins_recommended', _chem_raw)
+             if _chem_raw | length > 0 else _chem_defaults }}
+
+    - variables:
+        _chem_override: >-
+          {{ _chem_raw.get(_profile_name, {})
+             if _profile_name != 'watkins_recommended' else {} }}
+        _profile_authority: >-
+          {{ 'manufacturer_documentation' if _profile_name == 'watkins_recommended' else
+             'dealer_owner_operational_doctrine' if _profile_name == 'mps_mode' else
+             'user_override' }}
+
+    - variables:
+        _chem: "{{ {'system': _chem_sys, 'active_profile': _profile_name, 'authority': _profile_authority} | combine(_chem_watkins) | combine(_chem_override) }}"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 1. Normalize mode (also accept legacy 'action' field)
+    # ─────────────────────────────────────────────────────────────────────────
+    - variables:
+        _mode_raw: "{{ mode | default('', true) | trim }}"
+        _action_raw: "{{ action | default('', true) | trim }}"
+        _verbose: "{{ verbose | default(false, true) | bool }}"
+        _has_chem_fields: >-
+          {{ (salt_ppm is defined and salt_ppm is not none)
+             or (free_chlorine_ppm is defined and free_chlorine_ppm is not none)
+             or (ph is defined and ph is not none)
+             or (alkalinity_ppm is defined and alkalinity_ppm is not none)
+             or (hardness_ppm is defined and hardness_ppm is not none) }}
+    - variables:
+        _mode: >-
+          {%- set m = _mode_raw if _mode_raw != '' else _action_raw -%}
+          {%- set m = m if m != '' else 'status' -%}
+          {{ 'chemistry' if _has_chem_fields | bool and m == 'status' else m }}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 2. Discovery block — runs unconditionally (template-only, no actions)
+    #    Used by: discover mode, setup mode, status no-config advisory
+    # ─────────────────────────────────────────────────────────────────────────
+    - variables:
+        _anchor_field: "{{ anchor | default('', true) | trim }}"
+        _spa_lbl_climate: "{{ label_entities('spa_climate') | list | first | default('') }}"
+        _climate_hotpattern: >-
+          {%- set ns = namespace(found='') -%}
+          {%- for e in states | map(attribute='entity_id') | list -%}
+            {%- if ns.found == '' and e.startswith('climate.') and ('hot_tub' in e or 'spa' in e) -%}
+              {%- set ns.found = e -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.found }}
+        _climate_any: >-
+          {{ states | map(attribute='entity_id') | select('match', 'climate\\..*') | list | first | default('') }}
+
+    - variables:
+        _anchor: >-
+          {{ _anchor_field if _anchor_field != '' else
+             (_spa_lbl_climate if _spa_lbl_climate != '' else
+             (_climate_hotpattern if _climate_hotpattern != '' else
+             _climate_any)) }}
+        _anchor_ok: "{{ _anchor != '' }}"
+
+    - variables:
+        _dev_ents_device: "{{ device_entities(device_id(_anchor)) | list if _anchor_ok else [] }}"
+        _dev_ents_area: >-
+          {%- set _aid = area_id(_anchor) | default('', true) if _anchor_ok else '' -%}
+          {{ area_entities(_aid) | list if _aid != '' else [] }}
+        _dev_ents_label: "{{ label_entities('hot_tub') | list }}"
+        _anchor_source: >-
+          {{ 'explicit_field' if _anchor_field != '' else
+             ('spa_climate_label' if _spa_lbl_climate != '' else
+             ('hot_tub_pattern' if _climate_hotpattern != '' else
+             ('any_climate' if _climate_any != '' else 'none'))) }}
+
+    - variables:
+        _dev_ents: "{{ (_dev_ents_device + _dev_ents_area + _dev_ents_label) | unique | list }}"
+        _pool_breakdown:
+          device: "{{ _dev_ents_device | length }}"
+          area: "{{ _dev_ents_area | length }}"
+          label: "{{ _dev_ents_label | length }}"
+          total: >-
+            {{ (_dev_ents_device + _dev_ents_area + _dev_ents_label) | unique | list | length }}
+
+    # Role classification from device scan
+    - variables:
+        _found_climate: "{{ _anchor }}"
+        _found_power: >-
+          {{ _dev_ents | select('match', 'switch\\..*power.*') | list | first | default('') }}
+        _found_jets_l: >-
+          {%- set _dv = _dev_ents | select('match', 'fan\\..*(jets_left|jets_l[^a-z]).*') | list | first | default('') -%}
+          {%- if _dv != '' %}{{ _dv }}{%- else -%}
+          {%- set _ns = namespace(v='') -%}
+          {%- for e in states.fan | map(attribute='entity_id') | select('match', 'fan\\..*(jet.*left|left.*jet).*') | list -%}
+            {%- if _ns.v == '' -%}{%- set _ns.v = e -%}{%- endif -%}
+          {%- endfor -%}
+          {{ _ns.v }}{%- endif -%}
+        _found_jets_r: >-
+          {%- set _dv = _dev_ents | select('match', 'fan\\..*(jets_right|jets_r[^a-z]).*') | list | first | default('') -%}
+          {%- if _dv != '' %}{{ _dv }}{%- else -%}
+          {%- set _ns = namespace(v='') -%}
+          {%- for e in states.fan | map(attribute='entity_id') | select('match', 'fan\\..*(jet.*right|right.*jet).*') | list -%}
+            {%- if _ns.v == '' -%}{%- set _ns.v = e -%}{%- endif -%}
+          {%- endfor -%}
+          {{ _ns.v }}{%- endif -%}
+        _found_jets_all: >-
+          {%- set _cands = states.fan | map(attribute='entity_id')
+              | select('match', 'fan\\..*jet.*') | list
+              | reject('match', '.*(left|_l[^a-z]|right|_r[^a-z]).*') | list -%}
+          {%- set _ns = namespace(v='') -%}
+          {%- for e in _cands -%}
+            {%- if _ns.v == '' and device_id(e) is none -%}{%- set _ns.v = e -%}{%- endif -%}
+          {%- endfor -%}
+          {%- if _ns.v == '' -%}
+            {%- for e in _cands -%}{%- if _ns.v == '' -%}{%- set _ns.v = e -%}{%- endif -%}{%- endfor -%}
+          {%- endif -%}
+          {{ _ns.v }}
+        _found_lights: >-
+          {{ (_dev_ents | select('match', 'light\\..*') | list
+              + _dev_ents | select('match', 'switch\\..*light.*') | list) | first | default('') }}
+        _found_audio: >-
+          {{ _dev_ents | select('match', 'switch\\..*audio.*') | list | first | default('') }}
+        _found_cover: >-
+          {%- set _lbl = label_entities('spa_cover') | list | first | default('') -%}
+          {%- if _lbl.startswith('cover.') %}{{ _lbl }}{%- else -%}
+          {%- set _dv_cover = _dev_ents | select('match', 'cover\\..*') | list | first | default('') -%}
+          {%- if _dv_cover != '' %}{{ _dv_cover }}{%- else -%}
+          {%- set _ns = namespace(v='') -%}
+          {%- for e in states | map(attribute='entity_id') | select('match', 'cover\\..*') | list -%}
+            {%- if _ns.v == '' and ('hot_tub' in e or 'spa' in e or 'covana' in e) -%}
+              {%- set _ns.v = e -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ _ns.v }}{%- endif -%}{%- endif -%}
+
+    # Supporting entities from device scan
+    - variables:
+        _found_temp_sensor: >-
+          {{ _dev_ents | select('match', 'sensor\\..*current_temp.*') | list | first | default(
+             _dev_ents | select('match', 'sensor\\..*temperature.*') | list | first | default('')) }}
+        _found_active: >-
+          {{ _dev_ents | select('match', 'switch\\..*active.*') | list | first | default('') }}
+        _found_audio_vol: >-
+          {{ _dev_ents | select('match', 'number\\..*volume.*') | list | first | default('') }}
+        _found_audio_src: >-
+          {{ _dev_ents | select('match', 'select\\..*audio_source.*') | list | first | default('') }}
+        _found_song_title: >-
+          {{ _dev_ents | select('match', 'text\\..*song.*') | list | first | default('') }}
+        _found_artist: >-
+          {{ _dev_ents | select('match', 'text\\..*artist.*') | list | first | default('') }}
+        _found_clean_cycle: >-
+          {{ _dev_ents | select('match', 'switch\\..*clean.*') | list | first | default('') }}
+        _found_spa_lock: >-
+          {{ _dev_ents | select('match', 'switch\\..*lock.*') | list | first | default('') }}
+        _found_treble: >-
+          {{ _dev_ents | select('match', 'number\\..*treble.*') | list | first | default('') }}
+        _found_bass: >-
+          {{ _dev_ents | select('match', 'number\\..*bass.*') | list | first | default('') }}
+        _found_balance: >-
+          {{ _dev_ents | select('match', 'number\\..*balance.*') | list | first | default('') }}
+        _found_subwoofer: >-
+          {{ _dev_ents | select('match', 'number\\..*subwoofer.*') | list | first | default('') }}
+        _found_iq_chl: >-
+          {{ _dev_ents | select('match', 'sensor\\..*iq_chlorine.*') | list | first | default('') }}
+        _found_iq_ph: >-
+          {{ _dev_ents | select('match', 'sensor\\..*iq_ph.*') | list | first | default('') }}
+        _found_iq_orp: >-
+          {{ _dev_ents | select('match', 'sensor\\..*iq_orp.*') | list | first | default('') }}
+        _found_iq_salt: >-
+          {{ _dev_ents | select('match', 'sensor\\..*iq_salt.*') | list | reject('match', '.*hour.*') | list | first | default('') }}
+        _found_iq_hours: >-
+          {{ _dev_ents | select('match', 'sensor\\..*iq_hours.*') | list | first | default(
+             _dev_ents | select('match', 'sensor\\..*hours_left.*') | list | first | default('')) }}
+        _found_salt_power: >-
+          {{ _dev_ents | select('match', 'number\\..*salt_power.*') | list | first | default('') }}
+        _found_salt_boost: >-
+          {{ _dev_ents | select('match', 'switch\\..*salt_boost.*') | list | first | default('') }}
+        _found_uw_color: >-
+          {{ _dev_ents | select('match', 'select\\..*color_underwater.*') | list | first | default('') }}
+        _found_uw_int: >-
+          {{ _dev_ents | select('match', 'number\\..*intensity_underwater.*') | list | first | default('') }}
+        _found_ext_color: >-
+          {{ _dev_ents | select('match', 'select\\..*color_exterior.*') | list | first | default('') }}
+        _found_ext_int: >-
+          {{ _dev_ents | select('match', 'number\\..*intensity_exterior.*') | list | first | default('') }}
+        _found_wf_color: >-
+          {{ _dev_ents | select('match', 'select\\..*color_waterfall.*') | list | first | default('') }}
+        _found_wf_int: >-
+          {{ _dev_ents | select('match', 'number\\..*intensity_waterfall.*') | list | first | default('') }}
+        _found_top_color: >-
+          {{ _dev_ents | select('match', 'select\\..*color_topside.*') | list | first | default('') }}
+        _found_top_int: >-
+          {{ _dev_ents | select('match', 'number\\..*intensity_topside.*') | list | first | default('') }}
+        _found_cycle_spd: >-
+          {{ _dev_ents | select('match', 'select\\..*cycle_speed.*') | list | first | default('') }}
+
+    - variables:
+        _discovery_map:
+          anchor: "{{ _anchor }}"
+          anchor_source: "{{ _anchor_source }}"
+          device_entity_count: "{{ _dev_ents | length }}"
+          roles:
+            spa_climate: "{{ _found_climate }}"
+            spa_power: "{{ _found_power }}"
+            spa_jets_l: "{{ _found_jets_l }}"
+            spa_jets_r: "{{ _found_jets_r }}"
+            spa_jets_all: "{{ _found_jets_all }}"
+            spa_lights: "{{ _found_lights }}"
+            spa_audio: "{{ _found_audio }}"
+            spa_cover: "{{ _found_cover }}"
+        _missing_roles: >-
+          {%- set ns = namespace(m=[]) -%}
+          {%- if _found_climate == '' %}  {%- set ns.m = ns.m + ['spa_climate'] -%}{%- endif -%}
+          {%- if _found_power == '' %}    {%- set ns.m = ns.m + ['spa_power'] -%}{%- endif -%}
+          {%- if _found_jets_l == '' %}   {%- set ns.m = ns.m + ['spa_jets_l'] -%}{%- endif -%}
+          {%- if _found_jets_r == '' %}   {%- set ns.m = ns.m + ['spa_jets_r'] -%}{%- endif -%}
+          {%- if _found_jets_all == '' %} {%- set ns.m = ns.m + ['spa_jets_all'] -%}{%- endif -%}
+          {%- if _found_lights == '' %}   {%- set ns.m = ns.m + ['spa_lights'] -%}{%- endif -%}
+          {%- if _found_audio == '' %}    {%- set ns.m = ns.m + ['spa_audio'] -%}{%- endif -%}
+          {{ ns.m }}
+        _discovery_ok: "{{ _anchor_ok and _missing_roles | length == 0 }}"
+
+    # ── Entity resolution: labels authoritative, discovery fallback ────────────────
+    #    Labels applied before cabinet is seeded — label path works without cabinet.
+    #    Cabinet stores prefs only (model/chem/jets/temp), never entity ID arrays.
+    - variables:
+        _e_climate:     "{{ _found_climate }}"
+        _e_power:       "{{ label_entities('spa_power')    | list | first | default('') or _found_power }}"
+        _e_jets_l:      "{{ label_entities('spa_jets_l')   | list | first | default('') or _found_jets_l }}"
+        _e_jets_r:      "{{ label_entities('spa_jets_r')   | list | first | default('') or _found_jets_r }}"
+        _e_jets_all:    "{{ label_entities('spa_jets_all') | list | first | default('') or _found_jets_all }}"
+        _e_lights:      "{{ label_entities('spa_lights')   | list | first | default('') or _found_lights }}"
+        _e_audio:       "{{ label_entities('spa_audio')    | list | first | default('') or _found_audio }}"
+        _e_cover: >-
+          {%- set _lbl = label_entities('spa_cover') | list | first | default('') -%}
+          {{ _lbl if _lbl.startswith('cover.') else _found_cover }}
+        _e_temp_sensor: "{{ _found_temp_sensor }}"
+        _e_active:      "{{ _found_active }}"
+        _e_audio_vol:   "{{ _found_audio_vol }}"
+        _e_audio_src:   "{{ _found_audio_src }}"
+        _e_song_title:  "{{ _found_song_title }}"
+        _e_artist:      "{{ _found_artist }}"
+        _e_clean_cycle: "{{ _found_clean_cycle }}"
+        _e_spa_lock:    "{{ _found_spa_lock }}"
+        _e_iq_chl:      "{{ _found_iq_chl }}"
+        _e_iq_ph:       "{{ _found_iq_ph }}"
+        _e_iq_orp:      "{{ _found_iq_orp }}"
+        _e_iq_salt:     "{{ _found_iq_salt }}"
+        _e_iq_hours:    "{{ _found_iq_hours }}"
+        _e_salt_power:  "{{ _found_salt_power }}"
+        _e_salt_boost:  "{{ _found_salt_boost }}"
+        _e_uw_color:    "{{ _found_uw_color }}"
+        _e_uw_int:      "{{ _found_uw_int }}"
+        _e_ext_color:   "{{ _found_ext_color }}"
+        _e_ext_int:     "{{ _found_ext_int }}"
+        _e_wf_color:    "{{ _found_wf_color }}"
+        _e_wf_int:      "{{ _found_wf_int }}"
+        _e_top_color:   "{{ _found_top_color }}"
+        _e_top_int:     "{{ _found_top_int }}"
+        _e_cycle_spd:   "{{ _found_cycle_spd }}"
+        _e_treble:      "{{ _found_treble }}"
+        _e_bass:        "{{ _found_bass }}"
+        _e_balance:     "{{ _found_balance }}"
+        _e_subwoofer:   "{{ _found_subwoofer }}"
+        _e_media_zone: >-
+          {{ label_entities('hot_tub') | select('match', 'media_player\\..*') | list | first | default('') }}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 3. Route
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── DISCOVER ─────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'discover' }}"
+      then:
+      - variables:
+          _disc_by_domain: >-
+            {%- if _verbose -%}
+              {%- set ns = namespace(d={}) -%}
+              {%- for e in _dev_ents -%}
+                {%- set dom = e.split('.')[0] -%}
+                {%- set ns.d = ns.d | combine({dom: ns.d.get(dom, []) + [e]}) -%}
+              {%- endfor -%}
+              {{ ns.d }}
+            {%- else -%}
+              {{ none }}
+            {%- endif -%}
+      - variables:
+          _result:
+            mode: discover
+            discovery: "{{ _discovery_map }}"
+            missing_roles: "{{ _missing_roles }}"
+            cabinet_config_present: "{{ _cfg_ok }}"
+            ready_for_setup: "{{ _discovery_ok }}"
+            pool_sources: "{{ _pool_breakdown }}"
+            entity_pool: "{{ _disc_by_domain }}"
+            next_step: >-
+              {{ 'Fully configured — labels, roles, and cabinet prefs all present.'
+                 if (_discovery_ok and _cfg_ok) else
+                 ('All roles resolved via labels — spa is operational. Cabinet prefs not yet seeded: mode=setup model_preset=X to add model metadata, custom chem ranges, and jet speed config (optional enrichment).'
+                  if _discovery_ok else
+                  ('No spa device found. Provide anchor= with your climate entity_id.'
+                   if not _anchor_ok else
+                   'Missing roles: ' ~ (_missing_roles | join(', ')) ~
+                   '. Check entity naming or provide anchor=.')) }}
+      - stop: discover complete
+        response_variable: _result
+
+    # ── SETUP ─────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'setup' }}"
+      then:
+      - if: "{{ not _anchor_ok }}"
+        then:
+        - variables:
+            _result:
+              mode: setup
+              status: error
+              error: no_anchor
+              message: "No climate entity found. Provide anchor= with your spa climate entity_id."
+              hint: "Example: anchor=climate.calderaspas_hot_tub_temperature"
+        - stop: setup no anchor
+          response_variable: _result
+
+      # Reset — wipe spa_config from cabinet, skip discovery/tagging
+      - if: "{{ reset | default(false) | bool }}"
+        then:
+        - if: "{{ not (confirm | default(false) | bool) }}"
+          then:
+          - variables:
+              _result:
+                mode: setup
+                status: confirm_required
+                reset: true
+                confirm: false
+                message: "Re-call with confirm=true to wipe spa_config. Labels and entity tags will not be affected."
+                current_config: "{{ _cfg if _cfg_ok else 'empty' }}"
+          - stop: setup reset not confirmed
+            response_variable: _result
+        - if: "{{ _cfg_ok }}"
+          then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _cab }}"
+              key: spa_config
+              value: "{}"
+        - variables:
+            _result:
+              mode: setup
+              status: ok
+              reset: true
+              cabinet_cleared: "spa_config"
+              note: "{{ 'spa_config wiped — cabinet was populated' if _cfg_ok else 'spa_config already empty — nothing to clear' }}"
+              next_step: "Call mode=setup with model_preset + chem_preset to reconfigure"
+        - stop: setup reset complete
+          response_variable: _result
+
+      # Create spa_* label definitions via dispatcher
+      - variables:
+          _cid_create: >-
+            {%- set a=range(0,65535)|random -%}{%- set b=range(0,65535)|random -%}
+            {%- set c=range(0,65535)|random -%}{%- set d=range(0,65535)|random -%}
+            {{ '%04x%04x-%04x-%04x' | format(a,b,c,d) }}
+
+      - event: zen_event
+        event_data:
+          event:
+            kind: dojotool_call
+            tool: zen_dojotools_labels
+            version: "1"
+            correlation_id: "{{ _cid_create }}"
+            payload:
+              action_type: create
+              label_list: ["spa_climate","spa_power","spa_jets_l","spa_jets_r","spa_jets_all","spa_lights","spa_audio","spa_cover"]
+              new_description: "ZenSpa role label — owned by zen_dojotools_spamaster"
+              new_color: "#00B4D8"
+              confirm: true
+
+      - wait_for_trigger:
+          - trigger: event
+            event_type: zen_event
+            event_data:
+              event:
+                kind: dojotool_return
+                correlation_id: "{{ _cid_create }}"
+        timeout: "00:00:15"
+        continue_on_timeout: true
+
+      # Tag discovered entities with their roles
+      - if: "{{ _found_climate != '' }}"
+        then:
+        - action: script.zen_dojotools_labels
+          data:
+            action_type: tag
+            label_list: ["spa_climate"]
+            target_entities: ["{{ _found_climate }}"]
+            confirm: true
+
+      - if: "{{ _found_power != '' }}"
+        then:
+        - action: script.zen_dojotools_labels
+          data:
+            action_type: tag
+            label_list: ["spa_power"]
+            target_entities: ["{{ _found_power }}"]
+            confirm: true
+
+      - if: "{{ _found_jets_l != '' }}"
+        then:
+        - action: script.zen_dojotools_labels
+          data:
+            action_type: tag
+            label_list: ["spa_jets_l"]
+            target_entities: ["{{ _found_jets_l }}"]
+            confirm: true
+
+      - if: "{{ _found_jets_r != '' }}"
+        then:
+        - action: script.zen_dojotools_labels
+          data:
+            action_type: tag
+            label_list: ["spa_jets_r"]
+            target_entities: ["{{ _found_jets_r }}"]
+            confirm: true
+
+      - if: "{{ _found_jets_all != '' }}"
+        then:
+        - action: script.zen_dojotools_labels
+          data:
+            action_type: tag
+            label_list: ["spa_jets_all"]
+            target_entities: ["{{ _found_jets_all }}"]
+            confirm: true
+
+      - if: "{{ _found_lights != '' }}"
+        then:
+        - action: script.zen_dojotools_labels
+          data:
+            action_type: tag
+            label_list: ["spa_lights"]
+            target_entities: ["{{ _found_lights }}"]
+            confirm: true
+
+      - if: "{{ _found_audio != '' }}"
+        then:
+        - action: script.zen_dojotools_labels
+          data:
+            action_type: tag
+            label_list: ["spa_audio"]
+            target_entities: ["{{ _found_audio }}"]
+            confirm: true
+
+      # Build and seed spa_config in household cabinet
+      # model_preset  → model/jets/temp only
+      # chem_preset   → chem block only
+      # chem_profile  → flip active_profile key only (no range reload)
+      # config_json   → overrides applied over whichever sections are loading
+      - variables:
+          _model_key:  "{{ model_preset  | default('', true) | lower | replace(' ', '_') }}"
+          _chem_key:   "{{ chem_preset   | default('', true) | lower | replace(' ', '_') }}"
+          _chem_prof:  "{{ chem_profile  | default('', true) | trim }}"
+          _override: >-
+            {{ config_json | default('', true) | from_json
+               if config_json | default('', true) | length > 0 else {} }}
+
+      - variables:
+          _model_raw:   "{{ _preset_lib.get(_model_key, {}) }}"
+          _chem_raw_in: "{{ _preset_lib.get(_chem_key,  {}) }}"
+
+      - variables:
+          _model_patch: >-
+            {{ {'model': (_model_raw.get('model', {}) | combine(_override.get('model', {}))),
+                'jets':  (_model_raw.get('jets',  {}) | combine(_override.get('jets',  {}))),
+                'temp':  (_model_raw.get('temp',  {}) | combine(_override.get('temp',  {})))}
+               if _model_key != '' else {} }}
+          _chem_patch: >-
+            {{ {'chem': (_chem_raw_in.get('chem', {}) | combine(_override.get('chem', {}), recursive=True))}
+               if _chem_key != '' else {} }}
+          _prof_patch: >-
+            {{ {'chem_profile_active': _chem_prof} if _chem_prof != '' else {} }}
+
+      - variables:
+          _raw_patch: >-
+            {{ _override if (_model_key == '' and _chem_key == '' and _override | length > 0) else {} }}
+          _has_input: "{{ _model_key != '' or _chem_key != '' or _chem_prof != '' or (_override | length > 0) }}"
+          _setup_config: >-
+            {{ (_cfg if _cfg_ok else {})
+               | combine(_model_patch, recursive=True)
+               | combine(_chem_patch, recursive=True)
+               | combine(_prof_patch)
+               | combine(_raw_patch, recursive=True) }}
+
+      - if: "{{ _has_input or not _cfg_ok }}"
+        then:
+        - action: script.zen_dojotools_filecabinet
+          data:
+            action_type: >-
+              {%- set _cv = state_attr(_cab, 'variables') | default({}, true) -%}
+              {{ 'update' if 'spa_config' in _cv else 'create' }}
+            volume_entity_id: "{{ _cab }}"
+            key: spa_config
+            value: "{{ _setup_config | tojson }}"
+
+      - variables:
+          _result:
+            mode: setup
+            status: ok
+            anchor: "{{ _anchor }}"
+            anchor_source: "{{ _anchor_source }}"
+            labels_created: ["spa_climate","spa_power","spa_jets_l","spa_jets_r","spa_jets_all","spa_lights","spa_audio","spa_cover"]
+            entities_tagged: "{{ _discovery_map.roles }}"
+            missing_roles: "{{ _missing_roles }}"
+            cabinet_seeded: >-
+              {{ 'spa_config.' ~ ([('model/jets/temp' if _model_key != '' else none),
+                                   ('chem' if _chem_key != '' else none),
+                                   ('chem_profile_active' if _chem_prof != '' else none)]
+                                  | select('!=', none) | join('+'))
+                 if _has_input else 'spa_config (no changes — no preset or profile provided)' }}
+            next_step: "mode=status to verify live readings"
+            note: "{{ 'Some roles not found — check discover for details' if _missing_roles | length > 0 else 'All roles resolved' }}"
+      - stop: setup complete
+        response_variable: _result
+
+    # ── STATUS ────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'status' }}"
+      then:
+
+      # No config — run discover inline and return advisory
+      - if: "{{ _e_climate == '' }}"
+        then:
+        - variables:
+            _result:
+              mode: status
+              status: not_configured
+              message: "No spa entity resolved — apply spa_* labels or provide anchor=."
+              discovery: "{{ _discovery_map }}"
+              missing_roles: "{{ _missing_roles }}"
+              next_step: >-
+                {{ 'Apply spa_* labels in HA, then call mode=setup to seed prefs.'
+                   if _anchor_ok else
+                   'No spa device found. Provide anchor= with your climate entity_id.' }}
+              setup_ready: "{{ _discovery_ok }}"
+        - stop: status not configured
+          response_variable: _result
+
+      # Full status
+      - variables:
+          _device_ok:   "{{ states(_e_climate) not in ['unavailable', 'unknown'] }}"
+          _cur_temp:    "{{ states(_e_temp_sensor) | float(0) }}"
+          _tgt_temp:    "{{ state_attr(_e_climate, 'temperature') | default('unknown') }}"
+          _hvac_action: "{{ state_attr(_e_climate, 'hvac_action') | default('unknown') }}"
+          _lights_on:   "{{ is_state(_e_lights, 'on') }}"
+          _lights_eff:  "{{ state_attr(_e_lights, 'effect') | default('none', true) }}"
+          _jets_state:  "{{ states(_e_jets_all) }}"
+          _jets_l_pct:  "{{ state_attr(_e_jets_l, 'percentage') | default(0) | int }}"
+          _jets_r_st:   "{{ states(_e_jets_r) }}"
+          _audio_on:    "{{ is_state(_e_audio, 'on') }}"
+          _audio_vol:   "{{ states(_e_audio_vol) | default('unknown', true) }}"
+          _audio_src:   "{{ states(_e_audio_src) | default('unknown', true) }}"
+          _audio_opts:  "{{ state_attr(_e_audio_src, 'options') | default([]) }}"
+          _song:        "{{ states(_e_song_title) | default('', true) }}"
+          _artist:      "{{ states(_e_artist) | default('', true) }}"
+          _cover_st:    "{{ states(_e_cover) }}"
+          _active:      "{{ is_state(_e_active, 'on') }}"
+          _iq_chl:      "{{ states(_e_iq_chl) | default('unknown', true) }}"
+          _iq_ph:       "{{ states(_e_iq_ph) | default('unknown', true) }}"
+          _iq_orp:      "{{ states(_e_iq_orp) | default('unknown', true) }}"
+          _iq_salt:     "{{ states(_e_iq_salt) | default('unknown', true) }}"
+          _iq_hrs:      "{{ states(_e_iq_hours) | default('unknown', true) }}"
+          _salt_pwr:    "{{ states(_e_salt_power) | default('unknown', true) }}"
+          _col_uw:  "{{ states(_e_uw_color) | default('unknown', true) }}"
+          _col_ext: "{{ states(_e_ext_color) | default('unknown', true) }}"
+          _col_wf:  "{{ states(_e_wf_color) | default('unknown', true) }}"
+          _col_top: "{{ states(_e_top_color) | default('unknown', true) }}"
+          _cyc_spd: "{{ states(_e_cycle_spd) | default('Off', true) }}"
+          _int_uw:  "{{ states(_e_uw_int) | default(0) }}"
+          _int_ext: "{{ states(_e_ext_int) | default(0) }}"
+          _int_wf:  "{{ states(_e_wf_int) | default(0) }}"
+          _int_top: "{{ states(_e_top_int) | default(0) }}"
+          # Camera — hot_tub label first, name-pattern fallback (camera may live in adjacent area)
+          _camera_ents: >-
+            {{ (label_entities('hot_tub') | select('match', 'camera\\..*') | list
+                + states | map(attribute='entity_id')
+                  | select('match', 'camera\\..*hot_tub.*') | list) | unique | list }}
+          # ZenLux — prefer light.* from spa_lights label, fall back to first light.* device entity
+          _lux_grp: >-
+            {{ (label_entities('spa_lights') | select('match', 'light\\..*') | list
+                + _dev_ents | select('match', 'light\\..*') | list) | first | default('') }}
+          # ZenLux upgrade hint — light.* entities in hot_tub area but spa_lights pointing at a switch
+          _lux_available: >-
+            {{ label_entities('hot_tub') | select('match', 'light\\..*') | list | first | default('') }}
+          # MediaManager — first media_player in the hot_tub area label
+          _media_zone: >-
+            {{ label_entities('hot_tub') | select('match', 'media_player\\..*') | list | first | default('') }}
+
+      - variables:
+          _lux_on:  "{{ is_state(_lux_grp, 'on') if _lux_grp != '' else none }}"
+          _lux_bri: >-
+            {{ ((state_attr(_lux_grp, 'brightness') | default(0, true) | float) / 2.55) | round(0) | int
+               if _lux_grp != '' else none }}
+          _lux_eff: "{{ state_attr(_lux_grp, 'effect') | default(none, true) if _lux_grp != '' else none }}"
+          _media_zone_st: "{{ states(_media_zone) if _media_zone != '' else none }}"
+
+      - variables:
+          _htb_labeled: "{{ label_entities('hot_tub') }}"
+          _todo_entity: >-
+            {{ _htb_labeled | select('match', 'todo\\..*') | list | first | default('') }}
+          _cal_entity: >-
+            {{ _htb_labeled | select('match', 'calendar\\..*') | list | first | default('') }}
+
+      - if: "{{ _todo_entity != '' }}"
+        then:
+        - action: todo.get_items
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            status: needs_action
+          response_variable: _todo_resp
+
+      - if: "{{ _cal_entity != '' }}"
+        then:
+        - action: calendar.get_events
+          target:
+            entity_id: "{{ _cal_entity }}"
+          data:
+            start_date_time: "{{ (now() - timedelta(days=14)).isoformat() }}"
+            end_date_time: "{{ now().isoformat() }}"
+          response_variable: _cal_resp
+
+      - variables:
+          _open_todos: >-
+            {%- set items = ((_todo_resp | default({})).get(_todo_entity, {}) or {}).get('items', []) -%}
+            {%- set ns = namespace(r=[]) -%}
+            {%- for it in items -%}
+              {%- set s = it.summary | lower -%}
+              {%- if 'hot tub' in s or 'spa' in s or 'ph ' in s or 'salt' in s
+                     or 'chlorine' in s or 'mps' in s or 'oxidizer' in s
+                     or 'alkalinity' in s or 'cartridge' in s -%}
+                {%- set ns.r = ns.r + [it.summary] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.r }}
+          _recent_log: >-
+            {%- set events = ((_cal_resp | default({})).get(_cal_entity, {}) or {}).get('events', []) -%}
+            {%- set ns = namespace(r=[]) -%}
+            {%- for ev in events -%}
+              {%- set s = ev.summary | lower -%}
+              {%- if 'hot tub' in s or 'spa' in s or 'chemistry' in s or 'soak' in s -%}
+                {%- set ns.r = ns.r + [ev.start ~ ' — ' ~ ev.summary] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.r | reverse | list }}
+
+      - variables:
+          _result: >-
+            {{
+              {
+                "mode": "status",
+                "device_online": _device_ok,
+                "model": _model,
+                "power": {"active": _active},
+                "temperature": {
+                  "current_f": _cur_temp, "target_f": _tgt_temp, "heater": _hvac_action,
+                  "range_f": {"min": _temp_cfg.get('min_f', 80), "max": _temp_cfg.get('max_f', 104)},
+                  "context": "spa_water"
+                },
+                "lights": {
+                  "on": _lights_on, "group_effect": _lights_eff,
+                  "zones": {
+                    "underwater": {"color": _col_uw, "intensity_0_5": _int_uw},
+                    "exterior":   {"color": _col_ext, "intensity_0_5": _int_ext},
+                    "waterfall":  {"color": _col_wf,  "intensity_0_5": _int_wf},
+                    "topside":    {"color": _col_top, "intensity_0_5": _int_top}
+                  },
+                  "cycle_speed": _cyc_spd,
+                  "lux_entity": _lux_grp if _lux_grp != '' else none,
+                  "lux_brightness_pct": _lux_bri,
+                  "lux_effect": _lux_eff,
+                  "controller": "zen_dojotools_lights" if _lux_grp != '' else none,
+                  "controller_upgrade_hint": ("Retag spa_lights to " ~ _lux_available ~ " to unlock ZenLux brightness and effects control.")
+                    if (_lux_grp == '' and _lux_available != '') else none
+                },
+                "jets": {
+                  "group_state": _jets_state,
+                  "left": {
+                    "physical_side": _jets_cfg.get('left_side', 'east'),
+                    "pump": _jets_cfg.get('left_pump', ''),
+                    "seat_zone": _jets_cfg.get('left_seat', ''),
+                    "waterfall": _jets_cfg.get('left_waterfall', ''),
+                    "state": "on" if _jets_l_pct > 0 else "off",
+                    "speed": "high" if _jets_l_pct >= 100 else ("low" if _jets_l_pct >= 50 else "off"),
+                    "percentage": _jets_l_pct
+                  },
+                  "right": {
+                    "physical_side": _jets_cfg.get('right_side', 'west'),
+                    "pump": _jets_cfg.get('right_pump', ''),
+                    "seat_zone": _jets_cfg.get('right_seat', ''),
+                    "state": _jets_r_st
+                  }
+                },
+                "audio": {
+                  "on": _audio_on, "volume_0_100": _audio_vol, "source": _audio_src,
+                  "source_options": _audio_opts,
+                  "now_playing": {"title": _song, "artist": _artist},
+                  "media_zone": _media_zone if _media_zone != '' else none,
+                  "media_zone_state": _media_zone_st,
+                  "controller": "zen_dojotools_media_manager" if _media_zone != '' else none
+                },
+                "cover": {"state": _cover_st},
+                "camera": {
+                  "entities": _camera_ents,
+                  "controller": "zen_dojotools_camera" if _camera_ents | length > 0 else none,
+                  "label_hint": "Add 'hot_tub' label to camera entity to improve discovery." if (_camera_ents | length > 0 and label_entities('hot_tub') | select('match', 'camera\\..*') | list | length == 0) else none
+                },
+                "chemistry": {
+                  "iq_chlorine_ppm": _iq_chl, "iq_ph": _iq_ph, "iq_orp_mv": _iq_orp,
+                  "iq_tds_ppm": _iq_salt, "cartridge_hours_remaining": _iq_hrs,
+                  "salt_output": {"raw_value": _salt_pwr, "label": "salt output", "semantics": "controller-specific level, not literal percent"},
+                  "profile": {
+                    "active": _profile_name,
+                    "nickname": _chem.get('nickname', none),
+                    "authority": _profile_authority,
+                    "mps_allowed": _chem.get('mps_allowed', false),
+                    "mps_strength_range_pct": [_chem.get('mps_strength_range_pct_min', none), _chem.get('mps_strength_range_pct_max', none)],
+                    "mps_dose_rule": (_chem.get('mps_dose_tsp_per_bather_per_30min', none) ~ " tsp per bather per 30 min") if _chem.get('mps_dose_tsp_per_bather_per_30min', none) is not none else none
+                  },
+                  "targets": {
+                    "chlorine_ppm": _chem.get('chlorine_min',1) ~ "–" ~ _chem.get('chlorine_max',5),
+                    "ph": _chem.get('ph_min',7.2) ~ "–" ~ _chem.get('ph_max',7.8),
+                    "salt_ppm": _chem.get('salt_min',1500) ~ "–" ~ _chem.get('salt_max',2000),
+                    "orp_mv_min": _chem.get('orp_min',600)
+                  }
+                },
+                "open_todos": {"source": _todo_entity, "items": _open_todos},
+                "recent_log": {"source": _cal_entity, "entries": _recent_log},
+                "setup_advisory": ('Call mode=setup to register model metadata, chem targets, and jet labels — unlocks pump/seat names, personalized chem ranges, and speed config.' if not _cfg_ok else none)
+              }
+            }}
+      - stop: status complete
+        response_variable: _result
+
+    # ── SCENE ─────────────────────────────────────────────────────────────────
+    # SpaMaster is the concierge — it doesn't own light or audio state.
+    # ZenLux (via HA scenes) owns lighting. MediaManager owns audio.
+    # Scene mode reads what those domain managers have built, lets the user
+    # combine them into a named mood, stores the combo in cabinet, and applies
+    # it on recall. No hardcoded colors or sources anywhere.
+    #
+    #   survey  (no mood)       — discover HA scenes in area + audio sources + saved moods
+    #   define  (save_scene=T)  — validate + store {scene_entity, jets, audio} → cabinet
+    #   apply   (mood name)     — recall from cabinet, fire scene.turn_on + jets + audio
+    #   delete  (delete_scene=T)— remove mood from cabinet
+    - if: "{{ _mode == 'scene' }}"
+      then:
+
+      # Step 1: read fields
+      - variables:
+          _sc_mood:     "{{ mood | default('', true) | trim | lower }}"
+          _sc_persons:  "{{ soak_persons | default(0, true) | int(0) }}"
+          _sc_hrs:      "{{ soak_duration_hours | default(0, true) | float(0) }}"
+          _sc_do_cover: "{{ open_cover | default(false, true) | bool }}"
+
+      - variables:
+          _sc_action: >-
+            {{ 'delete' if (delete_scene | default(false, true) | bool) else
+               ('define' if (save_scene | default(false, true) | bool) else
+               ('survey' if _sc_mood == '' else 'apply')) }}
+
+      # ── SURVEY ───────────────────────────────────────────────────────────────
+      # "Here's what ZenLux and MediaManager can do — combine them into a mood?"
+      - if: "{{ _sc_action == 'survey' }}"
+        then:
+        - variables:
+            # ZenLux: HA scenes tagged with hot_tub label
+            _sv_scenes: >-
+              {{ label_entities('hot_tub') | select('match', 'scene\\..*') | list }}
+            # MediaManager: media_player or spa audio source options in area
+            _sv_media: >-
+              {{ label_entities('hot_tub') | select('match', 'media_player\\..*') | list | first | default('') }}
+            _sv_audio_src_opts: >-
+              {{ state_attr(_e_audio_src, 'options') | default([], true) | list }}
+            # Existing saved moods
+            _sv_saved: >-
+              {{ (state_attr(_cab, 'variables') | default({}, true)).get('spa_scenes', {}) }}
+        - variables:
+            _result:
+              mode: scene
+              action: survey
+              lighting:
+                scenes_in_area: "{{ _sv_scenes }}"
+                controller: "zen_dojotools_lights"
+                hint: >-
+                  {{ none if _sv_scenes | length > 0 else
+                     'No lighting scenes found in hot_tub area. Dial in your look with zen_dojotools_lights (brightness_set/rgb_set/color_temp_set), then save it as an HA scene (HA UI: Settings → Scenes → Add Scene) and assign it to the hot_tub area. Browse existing scenes any time: zen_dojotools_lights mode=scene_list search=hot_tub.' }}
+              audio:
+                spa_sources: "{{ _sv_audio_src_opts }}"
+                media_zone: "{{ _sv_media if _sv_media != '' else none }}"
+                controller: "zen_dojotools_media_manager"
+                hint: >-
+                  {{ none if (_sv_audio_src_opts | length > 0 or _sv_media != '') else
+                     'No audio entity found in hot_tub area. Tag your spa audio source select or a media_player with the hot_tub label.' }}
+              jets:
+                zones_available: [left, right, all]
+                speed_note: "Left pump variable (low/high). Right pump single-speed."
+                cabinet_config: "{{ _cfg_ok }}"
+              saved_moods: "{{ _sv_saved }}"
+              next_step: >-
+                {{ 'Found ' ~ (_sv_scenes | length) ~ ' scene(s). Run zen_dojotools_lights mode=scene_list search=hot_tub to browse with entity_ids, then: mode=scene mood=<name> save_scene=true scene_entity=<entity_id> + jets/audio fields.'
+                   if _sv_scenes | length > 0 else
+                   'Run zen_dojotools_lights mode=scene_list search=hot_tub to browse scenes, or create one in HA UI (Settings → Scenes → Add Scene) and assign it to the hot_tub area.' }}
+        - stop: scene survey
+          response_variable: _result
+
+      # ── DEFINE ───────────────────────────────────────────────────────────────
+      # Validate + store {scene_entity + jets + audio} as a named mood in cabinet
+      - if: "{{ _sc_action == 'define' }}"
+        then:
+        - variables:
+            _def_entity:   "{{ scene_entity | default('', true) | trim }}"
+            _def_asrc:     "{{ audio_source | default('', true) | trim }}"
+            _def_avol:     "{{ audio_volume | default(none, true) }}"
+            _def_jzone:    "{{ jets_zone | default('all', true) }}"
+            _def_jspd:     "{{ jets_speed | default('high', true) }}"
+            _def_cover:    "{{ open_cover | default(false, true) | bool }}"
+            _def_note:     "{{ scene_note | default('', true) | trim }}"
+            _def_audio_opts: >-
+              {{ state_attr(_e_audio_src, 'options') | default([], true) | list }}
+
+        - variables:
+            _def_entity_ok: >-
+              {{ _def_entity != '' and _def_entity.startswith('scene.')
+                 and states(_def_entity) not in ['unknown', 'unavailable'] }}
+            _def_asrc_ok: >-
+              {{ _def_asrc == '' or _def_audio_opts | length == 0
+                 or _def_asrc in _def_audio_opts }}
+
+        - if: "{{ not _def_entity_ok }}"
+          then:
+          - variables:
+              _def_scenes_hint: >-
+                {{ label_entities('hot_tub') | select('match', 'scene\\..*') | list }}
+              _result:
+                mode: scene
+                action: define
+                status: error
+                error: scene_entity_required
+                mood: "{{ _sc_mood }}"
+                message: >-
+                  {{ 'scene_entity must be a scene.* entity that exists (got: ' ~ _def_entity ~ ').'
+                     if _def_entity != '' else
+                     'Provide scene_entity=<scene.entity_id> — the HA scene that defines the lighting.' }}
+                scenes_in_area: "{{ _def_scenes_hint }}"
+                hint: "Run mode=scene (no mood) to survey available lighting scenes."
+          - stop: scene define no entity
+            response_variable: _result
+
+        - variables:
+            _def_current: >-
+              {{ (state_attr(_cab, 'variables') | default({}, true)).get('spa_scenes', {}) }}
+            _def_new_entry:
+              scene_entity: "{{ _def_entity }}"
+              jets_zone: "{{ _def_jzone }}"
+              jets_speed: "{{ _def_jspd }}"
+              audio_source: "{{ _def_asrc if _def_asrc_ok else '' }}"
+              audio_volume: "{{ _def_avol }}"
+              open_cover: "{{ _def_cover }}"
+              note: "{{ _def_note }}"
+              created: "{{ now().isoformat() }}"
+
+        - variables:
+            _def_updated: >-
+              {{ _def_current | combine({_sc_mood: _def_new_entry}) }}
+
+        - action: script.zen_dojotools_filecabinet
+          data:
+            action_type: update
+            volume_entity_id: "{{ _cab }}"
+            key: spa_scenes
+            value: "{{ _def_updated | tojson }}"
+
+        - variables:
+            _result:
+              mode: scene
+              action: define
+              status: ok
+              mood: "{{ _sc_mood }}"
+              stored: "{{ _def_new_entry }}"
+              audio_source_warning: >-
+                {{ ('audio_source ' ~ _def_asrc ~ ' not found in entity options ' ~ _def_audio_opts ~ ' — stored empty, will skip on apply.')
+                   if (not _def_asrc_ok and _def_asrc != '') else none }}
+              hint: "Call mode=scene mood={{ _sc_mood }} to apply."
+        - stop: scene define complete
+          response_variable: _result
+
+      # ── DELETE ───────────────────────────────────────────────────────────────
+      - if: "{{ _sc_action == 'delete' }}"
+        then:
+        - variables:
+            _del_current: >-
+              {{ (state_attr(_cab, 'variables') | default({}, true)).get('spa_scenes', {}) }}
+
+        - variables:
+            _del_exists: "{{ _sc_mood in _del_current }}"
+
+        - if: "{{ _del_exists }}"
+          then:
+          - variables:
+              _del_updated: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- for k, v in _del_current.items() -%}
+                  {%- if k != _sc_mood -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.d }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: update
+              volume_entity_id: "{{ _cab }}"
+              key: spa_scenes
+              value: "{{ _del_updated | tojson }}"
+
+        - variables:
+            _result:
+              mode: scene
+              action: delete
+              status: "{{ 'ok' if _del_exists else 'not_found' }}"
+              mood: "{{ _sc_mood }}"
+              message: >-
+                {{ ('Mood ' ~ _sc_mood ~ ' deleted.') if _del_exists else
+                   ('Mood ' ~ _sc_mood ~ ' not found. Saved moods: ' ~ _del_current.keys() | list | join(', ')) }}
+        - stop: scene delete complete
+          response_variable: _result
+
+      # ── APPLY ────────────────────────────────────────────────────────────────
+      # Recall from cabinet and orchestrate: scene.turn_on + jets + audio + cover
+      - variables:
+          _apl_saved: >-
+            {{ (state_attr(_cab, 'variables') | default({}, true)).get('spa_scenes', {}) }}
+
+      - variables:
+          _apl_found: "{{ _sc_mood in _apl_saved }}"
+
+      - if: "{{ not _apl_found }}"
+        then:
+        - variables:
+            _result:
+              mode: scene
+              action: apply
+              status: error
+              error: mood_not_found
+              mood: "{{ _sc_mood }}"
+              saved_moods: "{{ _apl_saved.keys() | list }}"
+              hint: "Call mode=scene (no mood) to survey capabilities, then define a mood with save_scene=true + scene_entity."
+        - stop: scene apply not found
+          response_variable: _result
+
+      - variables:
+          _apl_def:    "{{ _apl_saved[_sc_mood] }}"
+
+      - variables:
+          _apl_entity: "{{ _apl_def.get('scene_entity', '') }}"
+          _apl_jzone:  "{{ _apl_def.get('jets_zone', 'all') }}"
+          _apl_jspd:   "{{ _apl_def.get('jets_speed', 'high') }}"
+          _apl_asrc:   "{{ _apl_def.get('audio_source', '') }}"
+          _apl_avol:   "{{ _apl_def.get('audio_volume', none) }}"
+          _apl_cover:  "{{ _apl_def.get('open_cover', false) | bool }}"
+
+      - variables:
+          _apl_jpct: >-
+            {{ _jets_cfg.get('left_speed_low', 50) | int
+               if _apl_jspd == 'low' else
+               _jets_cfg.get('left_speed_high', 100) | int }}
+
+      # Lights — delegate to ZenLux scene_set (RM awareness, transition handling)
+      - if: "{{ _apl_entity != '' }}"
+        then:
+        - action: script.zen_dojotools_lights
+          data:
+            mode: scene_set
+            scene: "{{ _apl_entity }}"
+
+      # Jets
+      - if: "{{ _apl_jzone == 'all' }}"
+        then:
+        - if: "{{ _e_jets_r != '' }}"
+          then:
+          - action: fan.turn_on
+            target:
+              entity_id: "{{ _e_jets_r }}"
+        - if: "{{ _e_jets_l != '' }}"
+          then:
+          - action: fan.set_percentage
+            target:
+              entity_id: "{{ _e_jets_l }}"
+            data:
+              percentage: "{{ _apl_jpct }}"
+      - if: "{{ _apl_jzone == 'left' and _e_jets_l != '' }}"
+        then:
+        - action: fan.set_percentage
+          target:
+            entity_id: "{{ _e_jets_l }}"
+          data:
+            percentage: "{{ _apl_jpct }}"
+
+      # Audio — on + source + volume (only if entities exist and values stored)
+      - if: "{{ _e_audio != '' }}"
+        then:
+        - action: switch.turn_on
+          target:
+            entity_id: "{{ _e_audio }}"
+      - if: "{{ _e_audio_src != '' and _apl_asrc != '' }}"
+        then:
+        - action: select.select_option
+          target:
+            entity_id: "{{ _e_audio_src }}"
+          data:
+            option: "{{ _apl_asrc }}"
+      - if: "{{ _e_audio_vol != '' and _apl_avol is not none }}"
+        then:
+        - action: number.set_value
+          target:
+            entity_id: "{{ _e_audio_vol }}"
+          data:
+            value: "{{ _apl_avol | int }}"
+
+      # Cover
+      - if: "{{ _apl_cover and _e_cover != '' }}"
+        then:
+        - action: cover.open_cover
+          target:
+            entity_id: "{{ _e_cover }}"
+
+      # MPS dose calc (optional — requires soak_persons + soak_duration_hours)
+      - variables:
+          _apl_mps_rate:    "{{ _chem.get('mps_dose_tsp_per_bather_per_30min', 0.5) | float }}"
+          _apl_mps_allowed: "{{ _chem.get('mps_allowed', false) | bool }}"
+
+      - variables:
+          _apl_oxidizer: >-
+            {{ (_sc_persons * (_sc_hrs * 2) * _apl_mps_rate) | round(1)
+               if (_sc_persons > 0 and _sc_hrs > 0) else 0 }}
+
+      - variables:
+          _result:
+            mode: scene
+            action: apply
+            status: ok
+            mood: "{{ _sc_mood }}"
+            lighting_scene: "{{ _apl_entity }}"
+            applied:
+              jets:
+                zone: "{{ _apl_jzone }}"
+                speed: "{{ _apl_jspd }}"
+              audio:
+                source: "{{ _apl_asrc if _apl_asrc != '' else none }}"
+                volume: "{{ _apl_avol }}"
+                skipped: "{{ _e_audio == '' }}"
+              cover_opened: "{{ _apl_cover and _e_cover != '' }}"
+            chemistry:
+              mps_allowed: "{{ _apl_mps_allowed }}"
+              oxidizer_dose_tsp: "{{ _apl_oxidizer if _sc_persons > 0 else none }}"
+              oxidizer_instruction: >-
+                {{ 'Add ' ~ _apl_oxidizer ~ ' tsp fairy dust (MPS) to skimmer after soak — '
+                   ~ _sc_persons ~ ' bather(s) × ' ~ _sc_hrs ~ 'h. Jets high 15 min.'
+                   if (_sc_persons > 0 and _sc_hrs > 0 and _apl_mps_allowed and _apl_oxidizer > 0) else
+                   'Provide soak_persons + soak_duration_hours for post-soak dose calc.' }}
+              profile_active: "{{ _profile_name }}"
+            note: "{{ _apl_def.get('note', '') if _apl_def.get('note', '') != '' else none }}"
+            next_step: "Run mode=log after your soak to lock in chemistry and post-soak todos."
+      - stop: scene apply complete
+        response_variable: _result
+
+    # ── LIGHTS ────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'lights' }}"
+      then:
+      - variables:
+          _zone:     "{{ light_zone | default('all', true) }}"
+          _color:    "{{ light_color | default(none, true) }}"
+          _state:    "{{ light_state | default(none, true) }}"
+          _bri:      "{{ light_brightness | default(none, true) }}"
+          _cyc_spd:  "{{ cycle_speed | default(none, true) }}"
+          _intensity: >-
+            {{ (_bri | int(0) / 100 * 5) | round(0) | int if _bri is not none else none }}
+          _lights_grp: "{{ _e_lights }}"
+
+      - if: "{{ _state == 'on' and _lights_grp != '' }}"
+        then:
+        - action: light.turn_on
+          target:
+            entity_id: "{{ _lights_grp }}"
+
+      - if: "{{ _state == 'off' and _lights_grp != '' }}"
+        then:
+        - action: light.turn_off
+          target:
+            entity_id: "{{ _lights_grp }}"
+
+      - if: "{{ _color is not none and _zone == 'all' and _lights_grp != '' }}"
+        then:
+        - action: light.turn_on
+          target:
+            entity_id: "{{ _lights_grp }}"
+          data:
+            effect: >-
+              {{ _color if _color != 'Cycle' else
+                 ('Cycle ' ~ (_cyc_spd if _cyc_spd not in [none, 'Off'] else 'Normal')) }}
+
+      - if: "{{ _color is not none and _zone == 'underwater' and _e_uw_color != '' }}"
+        then:
+        - action: select.select_option
+          target:
+            entity_id: "{{ _e_uw_color }}"
+          data:
+            option: "{{ _color }}"
+
+      - if: "{{ _color is not none and _zone == 'exterior' and _e_ext_color != '' }}"
+        then:
+        - action: select.select_option
+          target:
+            entity_id: "{{ _e_ext_color }}"
+          data:
+            option: "{{ _color }}"
+
+      - if: "{{ _color is not none and _zone == 'waterfall' and _e_wf_color != '' }}"
+        then:
+        - action: select.select_option
+          target:
+            entity_id: "{{ _e_wf_color }}"
+          data:
+            option: "{{ _color }}"
+
+      - if: "{{ _color is not none and _zone == 'topside' and _e_top_color != '' }}"
+        then:
+        - action: select.select_option
+          target:
+            entity_id: "{{ _e_top_color }}"
+          data:
+            option: "{{ _color }}"
+
+      - if: "{{ _intensity is not none and _zone == 'all' }}"
+        then:
+        - action: number.set_value
+          target:
+            entity_id: >-
+              {{ [_e_uw_int, _e_ext_int,
+                  _e_wf_int, _e_top_int]
+                 | reject('eq', '') | list }}
+          data:
+            value: "{{ _intensity }}"
+
+      - if: "{{ _intensity is not none and _zone != 'all' }}"
+        then:
+        - variables:
+            _int_ent: >-
+              {{ {'underwater': _e_uw_int, 'exterior': _e_ext_int, 'waterfall': _e_wf_int, 'topside': _e_top_int}.get(_zone, '') }}
+        - if: "{{ _int_ent != '' }}"
+          then:
+          - action: number.set_value
+            target:
+              entity_id: "{{ _int_ent }}"
+            data:
+              value: "{{ _intensity }}"
+
+      - if: "{{ _cyc_spd is not none and _color is none and _e_cycle_spd != '' }}"
+        then:
+        - action: select.select_option
+          target:
+            entity_id: "{{ _e_cycle_spd }}"
+          data:
+            option: "{{ _cyc_spd }}"
+
+      - variables:
+          _result: >-
+            {{ {"mode": "lights", "status": "ok", "zone": _zone, "color": _color,
+                "state": _state, "brightness_0_100": _bri, "intensity_0_5": _intensity,
+                "cycle_speed": _cyc_spd} }}
+      - stop: lights complete
+        response_variable: _result
+
+    # ── JETS ──────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'jets' }}"
+      then:
+      - variables:
+          _jzone_raw: "{{ jets_zone | default('all', true) }}"
+          _jzone:     "{{ 'left' if _jzone_raw == 'waterfall' else _jzone_raw }}"
+          _jstate:    "{{ jets_state | default(none, true) }}"
+          _jspeed:    "{{ jets_speed | default('high', true) }}"
+          _jpct:      "{{ _jets_cfg.get('left_speed_low', 50) | int if _jspeed == 'low' else _jets_cfg.get('left_speed_high', 100) | int }}"
+
+      - if: "{{ _jstate == 'on' and _jzone == 'all' }}"
+        then:
+        - if: "{{ _e_jets_r != '' }}"
+          then:
+          - action: fan.turn_on
+            target:
+              entity_id: "{{ _e_jets_r }}"
+        - if: "{{ _e_jets_l != '' }}"
+          then:
+          - action: fan.set_percentage
+            target:
+              entity_id: "{{ _e_jets_l }}"
+            data:
+              percentage: "{{ _jpct }}"
+
+      - if: "{{ _jstate == 'off' and _jzone == 'all' and _e_jets_all != '' }}"
+        then:
+        - action: fan.turn_off
+          target:
+            entity_id: "{{ _e_jets_all }}"
+
+      - if: "{{ _jstate == 'off' and _jzone == 'all' and _e_jets_all == '' }}"
+        then:
+        - if: "{{ _e_jets_r != '' }}"
+          then:
+          - action: fan.turn_off
+            target:
+              entity_id: "{{ _e_jets_r }}"
+        - if: "{{ _e_jets_l != '' }}"
+          then:
+          - action: fan.turn_off
+            target:
+              entity_id: "{{ _e_jets_l }}"
+
+      - if: "{{ _jstate == 'on' and _jzone == 'left' and _e_jets_l != '' }}"
+        then:
+        - action: fan.set_percentage
+          target:
+            entity_id: "{{ _e_jets_l }}"
+          data:
+            percentage: "{{ _jpct }}"
+
+      - if: "{{ _jstate == 'off' and _jzone == 'left' and _e_jets_l != '' }}"
+        then:
+        - action: fan.turn_off
+          target:
+            entity_id: "{{ _e_jets_l }}"
+
+      - if: "{{ _jstate == 'on' and _jzone == 'right' and _e_jets_r != '' }}"
+        then:
+        - action: fan.turn_on
+          target:
+            entity_id: "{{ _e_jets_r }}"
+
+      - if: "{{ _jstate == 'off' and _jzone == 'right' and _e_jets_r != '' }}"
+        then:
+        - action: fan.turn_off
+          target:
+            entity_id: "{{ _e_jets_r }}"
+
+      - variables:
+          _result: >-
+            {{ {"mode": "jets", "status": "ok", "zone_requested": _jzone_raw,
+                "zone_resolved": _jzone, "waterfall_firing": _jzone in ['left','all'],
+                "state": _jstate, "speed": _jspeed if _jstate == 'on' else 'n/a',
+                "left_zone": _jets_cfg.get('left_side','east') ~ ' / ' ~ _jets_cfg.get('left_seat','') ~ ' + ' ~ _jets_cfg.get('left_waterfall',''),
+                "right_zone": _jets_cfg.get('right_side','west') ~ ' / ' ~ _jets_cfg.get('right_seat','')} }}
+      - stop: jets complete
+        response_variable: _result
+
+    # ── AUDIO ─────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'audio' }}"
+      then:
+      - variables:
+          _astate:  "{{ audio_state | default(none, true) }}"
+          _avol:    "{{ audio_volume | default(none, true) }}"
+          _asrc:    "{{ audio_source | default(none, true) }}"
+          _atreble: "{{ treble | default(none, true) }}"
+          _abass:   "{{ bass | default(none, true) }}"
+          _abal:    "{{ balance | default(none, true) }}"
+          _asub:    "{{ subwoofer | default(none, true) }}"
+
+      - if: "{{ _astate == 'on' and _e_audio != '' }}"
+        then:
+        - action: switch.turn_on
+          target:
+            entity_id: "{{ _e_audio }}"
+
+      - if: "{{ _astate == 'off' and _e_audio != '' }}"
+        then:
+        - action: switch.turn_off
+          target:
+            entity_id: "{{ _e_audio }}"
+
+      - if: "{{ _avol is not none and _e_audio_vol != '' }}"
+        then:
+        - action: number.set_value
+          target:
+            entity_id: "{{ _e_audio_vol }}"
+          data:
+            value: "{{ _avol | int }}"
+
+      - if: "{{ _asrc is not none and _e_audio_src != '' }}"
+        then:
+        - action: select.select_option
+          target:
+            entity_id: "{{ _e_audio_src }}"
+          data:
+            option: "{{ _asrc }}"
+
+      - if: "{{ _atreble is not none and _e_treble != '' }}"
+        then:
+        - action: number.set_value
+          target:
+            entity_id: "{{ _e_treble }}"
+          data:
+            value: "{{ _atreble | int }}"
+
+      - if: "{{ _abass is not none and _e_bass != '' }}"
+        then:
+        - action: number.set_value
+          target:
+            entity_id: "{{ _e_bass }}"
+          data:
+            value: "{{ _abass | int }}"
+
+      - if: "{{ _abal is not none and _e_balance != '' }}"
+        then:
+        - action: number.set_value
+          target:
+            entity_id: "{{ _e_balance }}"
+          data:
+            value: "{{ _abal | int }}"
+
+      - if: "{{ _asub is not none and _e_subwoofer != '' }}"
+        then:
+        - action: number.set_value
+          target:
+            entity_id: "{{ _e_subwoofer }}"
+          data:
+            value: "{{ _asub | int }}"
+
+      - variables:
+          _result:
+            mode: audio
+            status: ok
+            state: "{{ _astate }}"
+            volume: "{{ _avol }}"
+            source: "{{ _asrc }}"
+            eq:
+              treble: "{{ states(_e_treble) | default(none, true) if _e_treble != '' else none }}"
+              bass: "{{ states(_e_bass) | default(none, true) if _e_bass != '' else none }}"
+              balance: "{{ states(_e_balance) | default(none, true) if _e_balance != '' else none }}"
+              subwoofer: "{{ states(_e_subwoofer) | default(none, true) if _e_subwoofer != '' else none }}"
+            playback:
+              controller: zen_dojotools_media_manager
+              zone: "{{ _e_media_zone if _e_media_zone != '' else none }}"
+              hint: >-
+                {{ 'next/prev/pause/play/queue/search → zen_dojotools_media_manager zone=' ~ _e_media_zone
+                   if _e_media_zone != '' else
+                   'Tag a media_player with the hot_tub label to unlock playback controls.' }}
+      - stop: audio complete
+        response_variable: _result
+
+    # ── TEMPERATURE ───────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'temperature' }}"
+      then:
+      - variables:
+          _tgt: "{{ target_temperature | default(none, true) }}"
+
+      - if: "{{ _tgt is not none and _e_climate != '' }}"
+        then:
+        - action: climate.set_temperature
+          target:
+            entity_id: "{{ _e_climate }}"
+          data:
+            temperature: "{{ _tgt | int }}"
+
+      - variables:
+          _result: >-
+            {{ {"mode": "temperature",
+                "status": "ok" if (_tgt is not none and _e_climate != '') else "no_change",
+                "target_f": _tgt,
+                "current_f": states(_e_temp_sensor) | float(0),
+                "range_f": {"min": _temp_cfg.get('min_f',80), "max": _temp_cfg.get('max_f',104)}} }}
+      - stop: temperature complete
+        response_variable: _result
+
+    # ── COVER ─────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'cover' }}"
+      then:
+      - variables:
+          _caction: "{{ cover_action | default(none, true) }}"
+
+      - variables:
+          _cover_st_now: "{{ states(_e_cover) if _e_cover != '' else 'no_entity' }}"
+          _cover_ok: "{{ _e_cover != '' and _cover_st_now not in ['unavailable', 'unknown', 'no_entity'] }}"
+
+      - if: "{{ _caction == 'open' and _cover_ok }}"
+        then:
+        - action: cover.open_cover
+          target:
+            entity_id: "{{ _e_cover }}"
+
+      - if: "{{ _caction == 'close' and _cover_ok }}"
+        then:
+        - action: cover.close_cover
+          target:
+            entity_id: "{{ _e_cover }}"
+
+      - variables:
+          _result: >-
+            {{ {"mode": "cover",
+                "status": "ok" if (_caction is not none and _cover_ok) else
+                          ("entity_unavailable" if _e_cover != '' and not _cover_ok else "no_action"),
+                "cover_action": _caction,
+                "cover_state": _cover_st_now,
+                "cover_entity": _e_cover if _e_cover != '' else none} }}
+      - stop: cover complete
+        response_variable: _result
+
+    # ── CHEMISTRY ─────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'chemistry' }}"
+      then:
+      - variables:
+          _mps_hrs:      "{{ hours_since_mps | default(none, true) }}"
+          _distrust_hrs: "{{ _chem.get('mps_sensor_distrust_hours', 24) | float }}"
+          _s_salt:   "{{ salt_ppm | default(none) }}"
+          _s_chl:    "{{ free_chlorine_ppm | default(none) }}"
+          _s_ph:     "{{ ph | default(none) }}"
+          _s_alk:    "{{ alkalinity_ppm | default(none) }}"
+          _s_hard:   "{{ hardness_ppm | default(none) }}"
+          _c_s_min:  "{{ _chem.get('salt_min', 1500) | float }}"
+          _c_s_max:  "{{ _chem.get('salt_max', 2000) | float }}"
+          _c_cl_min: "{{ _chem.get('chlorine_min', 1) | float }}"
+          _c_cl_max: "{{ _chem.get('chlorine_max', 5) | float }}"
+
+      - variables:
+          _post_mps: >-
+            {{ _mps_hrs is not none and _mps_hrs | float < _distrust_hrs }}
+          _distrust_remaining: >-
+            {{ (_distrust_hrs - _mps_hrs | float) | round(1) if _mps_hrs is not none else 0 }}
+          _c_ph_min: "{{ _chem.get('ph_min', 7.2) | float }}"
+          _c_ph_max: "{{ _chem.get('ph_max', 7.8) | float }}"
+          _c_a_min:  "{{ _chem.get('alk_min', 40) | float }}"
+          _c_a_max:  "{{ _chem.get('alk_max', 120) | float }}"
+          _c_h_min:  "{{ _chem.get('hard_min', 25) | float }}"
+          _c_h_max:  "{{ _chem.get('hard_max', 75) | float }}"
+          _c_orp:    "{{ _chem.get('orp_min', 600) | float }}"
+          _m_chl:    "{{ states(_e_iq_chl) | default('') }}"
+          _m_ph:     "{{ states(_e_iq_ph) | default('') }}"
+          _m_orp:    "{{ states(_e_iq_orp) | float(-1) }}"
+          _m_salt:   "{{ states(_e_iq_salt) | default('') }}"
+          _m_cart:   "{{ states(_e_iq_hours) | float(none) }}"
+          _m_salt_pwr: "{{ states(_e_salt_power) | float(none) }}"
+          _cover_state: "{{ states(_e_cover) if _e_cover != '' else 'no_entity' }}"
+          _cover_hrs: >-
+            {%- if _e_cover != '' and states(_e_cover) not in ['unknown'] -%}
+              {{ ((now() - states[_e_cover].last_changed).total_seconds() / 3600) | round(1) }}
+            {%- else -%}unknown{%- endif -%}
+
+      - variables:
+          _ev_salt: >-
+            {{ _s_salt if _s_salt is not none else
+               (_m_salt | float(none) if _m_salt not in ['', 'unknown', 'unavailable'] else none) }}
+          _ev_chl: >-
+            {{ _s_chl if _s_chl is not none else
+               (_m_chl | float(none) if _m_chl not in ['', 'unknown', 'unavailable'] else none) }}
+          _ev_ph: >-
+            {{ _s_ph if _s_ph is not none else
+               (_m_ph | float(none) if _m_ph not in ['', 'unknown', 'unavailable'] else none) }}
+
+      - variables:
+          _src_salt: >-
+            {{ 'strip' if _s_salt is not none else
+               ('iq_tds_sensor (advisory — post-MPS, ~' ~ _distrust_remaining ~ 'h remaining)' if _post_mps else
+               ('iq_tds_sensor' if _ev_salt is not none else 'none')) }}
+          _src_chl: >-
+            {{ 'strip' if _s_chl is not none else
+               ('iq_sensor (advisory — post-MPS, ~' ~ _distrust_remaining ~ 'h remaining)' if _post_mps else
+               ('sensor' if _ev_chl is not none else 'none')) }}
+          _src_ph:   "{{ 'strip' if _s_ph is not none else ('sensor' if _ev_ph is not none else 'none') }}"
+          _orp_ok:   "{{ _m_orp >= _c_orp }}"
+          _ph_elev:  "{{ _ev_ph is not none and _ev_ph | float(0) >= 7.5 }}"
+          _chl_floor: "{{ _ev_chl is not none and _ev_chl | float(0) <= 1.2 }}"
+          _chloramine: "{{ _orp_ok and _ph_elev and _chl_floor }}"
+          _salt_rec: >-
+            {{ "TDS elevated post-MPS — reading advisory. Do not drain or add salt. Retest in ~" ~ _distrust_remaining ~ "h." if _post_mps else
+               "No reading available — provide strip or verify IQ sensor." if _ev_salt is none else
+               "Add ~" ~ ((_c_s_max - _ev_salt) / 250)|round(1) ~ " cup(s) spa salt to filter. Jets high 5 min, retest." if _ev_salt < _c_s_min else
+               "Salt above dealer band — verify panel high/red and confirm with salt strip before drain/refill." if _ev_salt > _c_s_max and _profile_name == 'mps_mode' else
+               "Salt above Watkins recommended range — confirm with panel/strip before drain/refill." if _ev_salt > _c_s_max else "Salt level is ideal." }}
+          _chl_rec: >-
+            {{ "Chlorine advisory post-MPS — ORP " ~ _m_orp ~ " mV is primary sanitization indicator. Retest in ~" ~ _distrust_remaining ~ "h." if _post_mps else
+               "No reading available — provide strip or verify IQ sensor." if _ev_chl is none else
+               "Chlorine LOW — add 1 cap sanitizer to skimmer, jets high." if _ev_chl < _c_cl_min else
+               "Chlorine HIGH — open cover 15 min, retest." if _ev_chl > _c_cl_max else "Chlorine is ideal." }}
+          _ph_rec: >-
+            {{ "No reading available — provide strip or verify IQ sensor." if _ev_ph is none else
+               "pH LOW — add ~" ~ ((_c_ph_min - _ev_ph) / 0.2)|round(0,'ceil') ~ " tbsp pH Increaser. Don't adjust for 48h after TA correction." if _ev_ph < _c_ph_min else
+               "pH HIGH — add ~" ~ ((_ev_ph - 7.5) * 6)|round(1) ~ " tbsp pH Down to filter, jets high, retest 30 min." if _ev_ph > _c_ph_max else
+               "pH is ideal" ~ (" (IQ sensor — verify with strip monthly)" if _src_ph == 'sensor' else "") ~ "." }}
+          _alk_rec: >-
+            {{ "No strip reading — IQ sensor does not measure alkalinity." if _s_alk is none else
+               "Alkalinity LOW — add ~" ~ ((80 - _s_alk|float) / 10)|round(0,'ceil') ~ " tbsp baking soda. Adjust TA before pH." if _s_alk|float < _c_a_min else
+               "Alkalinity HIGH — reduce with pH Down in increments or partial drain." if _s_alk|float > _c_a_max else "Alkalinity is ideal." }}
+          _hard_rec: >-
+            {{ "No strip reading — IQ sensor does not measure hardness." if _s_hard is none else
+               "Hardness HIGH — use Vanishing Act XL pillow near filter. Retest 24h." if _s_hard|float > _c_h_max else
+               "Hardness LOW — add calcium hardness increaser in small amounts." if _s_hard|float < _c_h_min else "Hardness is acceptable." }}
+          _result: >-
+            {{ {"mode": "chemistry", "model": _model,
+                "profile": {
+                  "active": _profile_name,
+                  "nickname": _chem.get('nickname', none),
+                  "authority": _profile_authority,
+                  "note": "Cabinet not configured — watkins_recommended ranges used. Run mode=setup with model_preset= to load your spa's profile." if not _cfg_ok else none
+                },
+                "sensor_trust_state": "post_mps" if _post_mps else "normal",
+                "sensor_trust_note": ("TDS and chlorine sensors advisory-only — ~" ~ _distrust_remaining ~ "h remaining in " ~ _distrust_hrs | int ~ "h distrust window. ORP and pH primary.") if _post_mps else none,
+                "chloramine_trap": {
+                  "suspected": _chloramine,
+                  "warning": "Suspected chloramine/odor condition (ORP ok but free Cl low + pH elevated) — open cover, vent 30 min, retest. Confirm with DPD total/free test before dosing." if _chloramine else ""
+                },
+                "salt":      {"source": _src_salt, "value": _ev_salt, "target": _c_s_min~"–"~_c_s_max, "recommendation": _salt_rec},
+                "chlorine":  {"source": _src_chl, "value": _ev_chl, "target": _c_cl_min~"–"~_c_cl_max, "recommendation": _chl_rec},
+                "ph":        {"source": _src_ph, "value": _ev_ph, "target": _c_ph_min~"–"~_c_ph_max, "recommendation": _ph_rec},
+                "orp_mv":    {"source": "sensor", "value": _m_orp, "target": ">="~_c_orp, "ok": _orp_ok},
+                "alkalinity":{"source": "strip_only", "value": _s_alk, "target": _c_a_min~"–"~_c_a_max, "recommendation": _alk_rec},
+                "hardness":  {"source": "strip_only", "value": _s_hard, "target": _c_h_min~"–"~_c_h_max, "recommendation": _hard_rec},
+                "time_context": {
+                  "cover_state": _cover_state,
+                  "cover_state_hours": _cover_hrs,
+                  "cover_note": "Covered spa traps CO2 — pH rises faster. Factor into correction math." if _cover_state in ['closed','closing'] else
+                                "Cover open/absent — normal pH drift rate." if _cover_state in ['open','opening'] else
+                                "Cover state unknown — cannot factor into pH drift.",
+                  "cartridge_hours_remaining": _m_cart,
+                  "salt_output": {"raw_value": _m_salt_pwr, "label": "salt output", "semantics": "controller-specific level, not literal percent"},
+                  "salt_output_note": "IQ running at low output — expected when salt is high." if (_m_salt_pwr is not none and _m_salt_pwr | float < 20) else
+                                      "IQ output normal." if _m_salt_pwr is not none else "Salt system output unknown."
+                }} }}
+      - stop: chemistry complete
+        response_variable: _result
+
+    # ── LOG ───────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'log' }}"
+      then:
+      - variables:
+          _chlorine: "{{ states(_e_iq_chl) | float(0) }}"
+          _ph_live:  "{{ states(_e_iq_ph) | float(0) }}"
+          _orp:      "{{ states(_e_iq_orp) | float(0) }}"
+          _salt:     "{{ states(_e_iq_salt) | float(0) }}"
+          _hours:    "{{ states(_e_iq_hours) | float(0) }}"
+          _salt_pwr: "{{ states(_e_salt_power) | float(0) }}"
+          _cur_temp: "{{ states(_e_temp_sensor) | float(0) }}"
+          _tgt_temp: "{{ state_attr(_e_climate, 'temperature') | default(102) }}"
+          _cover_st: "{{ states(_e_cover) }}"
+          _mps_dose_rate: "{{ _chem.get('mps_dose_tsp_per_bather_per_30min', 0.5) | float }}"
+          _mps_allowed:   "{{ _chem.get('mps_allowed', false) | bool }}"
+          _mps_strength_configured: >-
+            {{ _mps_strength_pct not in [none, '', 'unknown', 'unavailable', 'None'] }}
+          _do_boost:    "{{ boost_chlorine | default(false, true) | bool }}"
+          _do_cover:    "{{ close_cover | default(false, true) | bool }}"
+          _hold_t:      "{{ set_hold_temp | default(none, true) }}"
+          _do_supplies: "{{ add_supplies | default(false, true) | bool }}"
+          _notes:       "{{ log_notes | default('', true) | trim }}"
+          _persons:     "{{ soak_persons | default(0, true) | int(0) }}"
+          _soak_hrs:    "{{ soak_duration_hours | default(0, true) | float(0) }}"
+          _ts:       "{{ now().strftime('%Y-%m-%dT%H:%M:%S') }}"
+          _ts_end:   "{{ (now() + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S') }}"
+          _date_str: "{{ now().strftime('%Y-%m-%d %H:%M') }}"
+          _chl_min: "{{ _chem.get('chlorine_min', 1) | float }}"
+          _chl_max: "{{ _chem.get('chlorine_max', 5) | float }}"
+          _ph_min:  "{{ _chem.get('ph_min', 7.2) | float }}"
+          _ph_max:  "{{ _chem.get('ph_max', 7.8) | float }}"
+          _s_min:   "{{ _chem.get('salt_min', 1500) | float }}"
+          _s_max:   "{{ _chem.get('salt_max', 2000) | float }}"
+          _orp_min: "{{ _chem.get('orp_min', 600) | float }}"
+          _hrs_warn: "{{ _chem.get('iq_hours_warn', 200) | float }}"
+
+      - variables:
+          _mps_strength_ok: >-
+            {{ not _mps_strength_configured or
+               (_mps_strength_pct | float >= _chem.get('mps_strength_range_pct_min', 35) | float and
+                _mps_strength_pct | float <= _chem.get('mps_strength_range_pct_max', 45) | float) }}
+
+      - variables:
+          _oxidizer_tsp: >-
+            {{ (_persons * (_soak_hrs * 2) * _mps_dose_rate) | round(1)
+               if (_persons > 0 and _soak_hrs > 0) else 0 }}
+
+      - variables:
+          _do_oxidizer: >-
+            {{ _oxidizer_tsp > 0 and _mps_allowed and _mps_strength_ok }}
+
+      - variables:
+          _ph_low:    "{{ _ph_live > 0 and _ph_live < _ph_min }}"
+          _ph_high:   "{{ _ph_live > _ph_max }}"
+          _chl_low:   "{{ _chlorine > 0 and _chlorine < _chl_min }}"
+          _chl_high:  "{{ _chlorine > _chl_max }}"
+          _salt_low:  "{{ _salt > 0 and _salt < _s_min }}"
+          _salt_high: "{{ _salt > _s_max }}"
+          _orp_warn:  "{{ _orp > 0 and _orp < _orp_min }}"
+          _hrs_low:   "{{ _hours > 0 and _hours < _hrs_warn }}"
+          _htb_labeled: "{{ label_entities('hot_tub') }}"
+          _todo_entity: >-
+            {{ label_entities('hot_tub') | select('match', 'todo\\..*') | list | first | default('') }}
+          _cal_entity: >-
+            {{ label_entities('hot_tub') | select('match', 'calendar\\..*') | list | first | default('') }}
+          _issues: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- if _ph_high %}  {%- set ns.items = ns.items + ['pH ' ~ _ph_live ~ ' HIGH — add pH Down'] -%}{%- endif -%}
+            {%- if _ph_low %}   {%- set ns.items = ns.items + ['pH ' ~ _ph_live ~ ' LOW — add pH Increaser'] -%}{%- endif -%}
+            {%- if _chl_low %}  {%- set ns.items = ns.items + ['Chlorine ' ~ _chlorine ~ ' ppm LOW — dose or boost IQ'] -%}{%- endif -%}
+            {%- if _chl_high %} {%- set ns.items = ns.items + ['Chlorine ' ~ _chlorine ~ ' ppm HIGH — vent cover 15 min'] -%}{%- endif -%}
+            {%- if _salt_low %}  {%- set ns.items = ns.items + ['Salt ' ~ _salt ~ ' ppm LOW — add spa salt'] -%}{%- endif -%}
+            {%- if _salt_high %} {%- set ns.items = ns.items + ['Salt ' ~ _salt ~ ' ppm above band — verify panel high/red, confirm with strip'] -%}{%- endif -%}
+            {%- if _orp_warn %}  {%- set ns.items = ns.items + ['ORP ' ~ _orp ~ ' mV LOW — sanitizer weak'] -%}{%- endif -%}
+            {%- if _hrs_low %}   {%- set ns.items = ns.items + ['IQ cartridge ' ~ _hours ~ ' hrs remaining — order replacement'] -%}{%- endif -%}
+            {{ ns.items }}
+          _all_clear: "{{ _issues | length == 0 }}"
+
+      - if: "{{ _do_boost and _e_salt_boost != '' }}"
+        then:
+        - action: switch.turn_on
+          target:
+            entity_id: "{{ _e_salt_boost }}"
+
+      - if: "{{ _do_cover and _e_cover != '' and _cover_st not in ['closed','unavailable'] }}"
+        then:
+        - action: cover.close_cover
+          target:
+            entity_id: "{{ _e_cover }}"
+
+      - if: "{{ _hold_t is not none and _e_climate != '' }}"
+        then:
+        - action: climate.set_temperature
+          target:
+            entity_id: "{{ _e_climate }}"
+          data:
+            temperature: "{{ _hold_t | int }}"
+
+      - if: "{{ _ph_high and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: "Hot Tub: pH {{ _ph_live }} HIGH — add pH Down to filter, jets high, retest 30 min"
+
+      - if: "{{ _ph_low and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: "Hot Tub: pH {{ _ph_live }} LOW — add pH Increaser, sneak up on it"
+
+      - if: "{{ _chl_low and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: "Hot Tub: Chlorine {{ _chlorine }} ppm LOW — 1 cap to skimmer, jets high; or fire IQ boost"
+
+      - if: "{{ _chl_high and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: "Hot Tub: Chlorine {{ _chlorine }} ppm HIGH — open cover 15 min, retest"
+
+      - if: "{{ _salt_low and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: "Hot Tub: Salt {{ _salt }} ppm LOW — add FreshWater Spa Salt to filter"
+
+      - if: "{{ _salt_high and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: "Hot Tub: Salt {{ _salt }} ppm above band — verify panel high/red, confirm with strip before drain/refill"
+
+      - if: "{{ _hrs_low and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: "Hot Tub: IQ cartridge {{ _hours | int }} hrs remaining — order Watkins FreshWater IQ replacement"
+
+      - if: "{{ _do_oxidizer and _todo_entity != '' }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: "{{ _todo_entity }}"
+          data:
+            item: >-
+              Hot Tub: Add {{ _oxidizer_tsp }} tsp fairy dust (MPS) to skimmer —
+              {{ _persons }} bather(s) × {{ _soak_hrs }}h @ 0.5 tsp per bather per 30 min. Jets high 15 min.
+
+      - if: "{{ _do_supplies and _ph_high }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: todo.mealie_sweetwater_hot_tubs
+          data:
+            item: "pH Down (sodium bisulfate / dry acid)"
+
+      - if: "{{ _do_supplies and _ph_low }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: todo.mealie_sweetwater_hot_tubs
+          data:
+            item: "pH Increaser (sodium carbonate)"
+
+      - if: "{{ _do_supplies and _chl_low }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: todo.mealie_sweetwater_hot_tubs
+          data:
+            item: "Chlorine sanitizer (liquid or granular)"
+
+      - if: "{{ _do_supplies and _salt_low }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: todo.mealie_sweetwater_hot_tubs
+          data:
+            item: "FreshWater Spa Salt"
+
+      - if: "{{ _do_supplies and _hrs_low }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: todo.mealie_sweetwater_hot_tubs
+          data:
+            item: "Watkins FreshWater IQ replacement cartridge ({{ _hours | int }} hrs remaining)"
+
+      - if: "{{ _do_supplies and _do_oxidizer }}"
+        then:
+        - action: todo.add_item
+          target:
+            entity_id: todo.mealie_sweetwater_hot_tubs
+          data:
+            item: "43% potassium peroxymonosulfate oxidizer (fairy dust) — running low"
+
+      - variables:
+          _cal_desc: >-
+            Hot Tub Chemistry Log — {{ _date_str }}
+            {%- if _notes %}
+            Notes: {{ _notes }}
+            {%- endif %}
+
+            READINGS:
+            • Chlorine: {{ _chlorine }} ppm (target {{ _chl_min }}-{{ _chl_max }})
+            • pH: {{ _ph_live }} (target {{ _ph_min }}-{{ _ph_max }})
+            • ORP: {{ _orp }} mV (>{{ _orp_min }} = sanitizer active)
+            • Salt: {{ _salt }} ppm (target {{ _s_min }}-{{ _s_max }})
+            • IQ Cartridge: {{ _hours | int }} hrs remaining
+            • Salt Power: {{ _salt_pwr }}%
+            • Water Temp: {{ _cur_temp }}°F / setpoint {{ _tgt_temp }}°F
+
+            {%- if _issues | length > 0 %}
+
+            ISSUES ({{ _issues | length }}):
+            {%- for i in _issues %}
+            ⚠ {{ i }}
+            {%- endfor %}
+            {%- else %}
+
+            ✓ All parameters in range.
+            {%- endif %}
+
+            {%- if _do_oxidizer %}
+
+            POST-SOAK:
+            • Fairy dust: {{ _oxidizer_tsp }} tsp MPS ({{ _persons }} bather(s) × {{ _soak_hrs }}h @ 0.5 tsp/bather/30 min)
+              Add to skimmer filter housing, jets high 15 min.
+            {%- endif %}
+
+      - if: "{{ _cal_entity != '' }}"
+        then:
+        - action: calendar.create_event
+          target:
+            entity_id: "{{ _cal_entity }}"
+          data:
+            summary: "Hot Tub Chemistry — {{ 'Issues: ' ~ (_issues | length) if not _all_clear else 'All Clear' }} ({{ now().strftime('%m/%d') }})"
+            start_date_time: "{{ _ts }}"
+            end_date_time: "{{ _ts_end }}"
+            description: "{{ _cal_desc }}"
+
+      - variables:
+          _result:
+            mode: log
+            status: ok
+            timestamp: "{{ _ts }}"
+            readings:
+              chlorine_ppm: "{{ _chlorine }}"
+              ph: "{{ _ph_live }}"
+              orp_mv: "{{ _orp }}"
+              salt_ppm: "{{ _salt }}"
+              iq_hours_remaining: "{{ _hours | int }}"
+              salt_output: "{{ _salt_pwr }}"
+              temp_current_f: "{{ _cur_temp }}"
+              temp_setpoint_f: "{{ _tgt_temp }}"
+            chemistry_status: "{{ 'all_clear' if _all_clear else 'issues_found' }}"
+            issues: "{{ _issues }}"
+            todos_created: "{{ _issues | length + (1 if _do_oxidizer else 0) }}"
+            oxidizer_dose:
+              dose_tsp: "{{ _oxidizer_tsp }}"
+              instruction: >-
+                {{ 'Add ' ~ _oxidizer_tsp ~ ' tsp MPS (fairy dust) to skimmer — ' ~ _persons ~ ' bather(s) × ' ~ _soak_hrs ~ 'h @ 0.5 tsp/bather/30 min. Jets high 15 min.' if _do_oxidizer else
+                   ('MPS blocked — active profile (' ~ _profile_name ~ ') does not allow MPS' if not _mps_allowed and _persons > 0 else
+                   ('MPS blocked — configured strength ' ~ _mps_strength_pct ~ '% outside accepted range (' ~ _chem.get('mps_strength_range_pct_min',35) ~ '–' ~ _chem.get('mps_strength_range_pct_max',45) ~ '%)') if not _mps_strength_ok and _persons > 0 else
+                   'no soak data provided') }}
+            calendar_logged: "{{ _cal_entity != '' }}"
+            supplies_added: "{{ _do_supplies }}"
+            actions_taken:
+              boost_chlorine: "{{ _do_boost }}"
+              cover_closed: "{{ _do_cover }}"
+              hold_temp_set: "{{ _hold_t }}"
+      - stop: log complete
+        response_variable: _result
+
+    # ── HELP ──────────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'help' }}"
+      then:
+      - variables:
+          _topic: "{{ help_topic | default('index', true) }}"
+      - choose:
+        - conditions: "{{ _topic == 'index' }}"
+          sequence:
+          - variables:
+              _result:
+                mode: help
+                topics: {index: "this list", entities: "resolved entity IDs", chemistry: "targets + dosing", actions: "full field reference", models: "preset library — named spa configs loadable via mode=setup"}
+                usage: "help_topic: <topic>"
+                overview: >-
+                  zen_dojotools_spamaster controls an ESPHome hot tub. Calling with no args returns a full live
+                  snapshot (mode=status). Entities are resolved via spa_* labels first, then device scan
+                  fallback — no cabinet config required to operate. mode=setup seeds optional cabinet prefs
+                  (model metadata, custom chem targets, jet labels, temp range) which unlock the setup_advisory
+                  fields in status. anchor= overrides the auto-detected climate entity for multi-spa installs.
+          - stop: help index
+            response_variable: _result
+        - conditions: "{{ _topic == 'entities' }}"
+          sequence:
+          - variables:
+              _result:
+                mode: help
+                topic: entities
+                prefs_configured: "{{ _cfg_ok }}"
+                resolved_entities: "{{ {'spa_climate': _e_climate, 'spa_power': _e_power, 'spa_jets_l': _e_jets_l, 'spa_jets_r': _e_jets_r, 'spa_jets_all': _e_jets_all, 'spa_lights': _e_lights, 'spa_audio': _e_audio, 'spa_cover': _e_cover} }}"
+                note: "Entities from labels+discovery. mode=setup seeds prefs (model/chem/jets/temp)."
+          - stop: help entities
+            response_variable: _result
+        - conditions: "{{ _topic == 'chemistry' }}"
+          sequence:
+          - variables:
+              _result:
+                mode: help
+                topic: chemistry
+                system: "{{ _chem.get('system', 'not configured — run mode=setup to register salt/chem system and unlock custom targets') }}"
+                targets:
+                  salt_ppm: "{{ _chem.get('salt_min',1500) ~ '–' ~ _chem.get('salt_max',2000) }}"
+                  chlorine_ppm: "{{ _chem.get('chlorine_min',1) ~ '–' ~ _chem.get('chlorine_max',5) }}"
+                  ph: "{{ _chem.get('ph_min',7.2) ~ '–' ~ _chem.get('ph_max',7.8) }}"
+                  alkalinity_ppm: "{{ _chem.get('alk_min',40) ~ '–' ~ _chem.get('alk_max',120) }}"
+                  hardness_ppm: "{{ _chem.get('hard_min',25) ~ '–' ~ _chem.get('hard_max',75) }}"
+                  orp_mv_min: "{{ _chem.get('orp_min',600) }}"
+                dosing_guidance:
+                  ph_high: "Add pH Down (sodium bisulfate) to skimmer with jets running. Retest 30 min."
+                  ph_low: "Add pH Up (sodium carbonate) to skimmer with jets running. Retest 30 min."
+                  chlorine_low: "Add chlorine granules or check salt system output. Boost via mode=log boost_chlorine=true."
+                  salt_low: "Add salt directly to tub with jets running. Takes 24h to fully dissolve and register."
+                  salt_high: "Verify panel high/red indicator and confirm with salt strip before draining. If confirmed, partial drain and refill — calculate dilution from current vs target ppm."
+                  alkalinity_low: "Add alkalinity increaser (sodium bicarbonate) to skimmer. Adjust pH after."
+                  alkalinity_high: "Aerate with jets and air controls. pH Down can lower alk but affects pH too."
+                  hardness_low: "Add calcium hardness increaser. Low hardness causes foam and etches surfaces."
+                  sequence: "Adjust alkalinity first, then pH, then sanitizer. Salt takes longest to equilibrate."
+                reading_sources:
+                  inline_sensors: "Inline water quality sensors (if present) — real-time readings visible in status"
+                  manual_strip: "Submit via mode=chemistry with strip readings — evaluated vs targets and logged"
+          - stop: help chemistry
+            response_variable: _result
+        - conditions: "{{ _topic == 'actions' }}"
+          sequence:
+          - variables:
+              _result:
+                mode: help
+                topic: actions
+                modes:
+                  status:
+                    fields: none
+                    notes: "Live snapshot. Self-bootstraps via discovery if not configured. Returns setup_advisory when cabinet prefs missing."
+                  scene:
+                    fields:
+                      mood: "omit → survey; or named mood to apply/define/delete"
+                      save_scene: "true → define mood (requires mood + scene_entity)"
+                      delete_scene: "true → delete stored mood (requires mood)"
+                      scene_entity: "scene.* entity for lights — used when save_scene=true"
+                      jets_zone: "all / left — stored with mood"
+                      jets_speed: "high / low — stored with mood"
+                      audio_source: "source name validated against entity options — stored with mood"
+                      audio_volume: "0–max — stored with mood"
+                      open_cover: "true — open cover on apply, stored with mood"
+                      scene_note: "optional note stored with mood (chemistry reminders etc.)"
+                      soak_persons: "optional — bathers for post-soak MPS dose calc on apply"
+                      soak_duration_hours: "optional — hours for dose calc on apply"
+                    notes: "Concierge orchestrator — SpaMaster owns zero light or audio state. Survey discovers HA scenes in hot_tub area (created via ZenLux) + available audio sources. Define links a scene+jets+audio combo under a mood name in cabinet. Apply fires scene.turn_on + jets + audio. Use mode=log after soak to finalize chemistry."
+                  discover:
+                    fields: {anchor: "optional — explicit climate entity_id, auto-detected if omitted"}
+                    notes: "Scans ESPHome device, maps all 8 roles, reports missing. Does not write anything."
+                  setup:
+                    fields:
+                      anchor: "optional — explicit climate entity_id, auto-detected if omitted"
+                      model_preset: "optional — preset key → writes model/jets/temp only. See help_topic=models for keys."
+                      chem_preset: "optional — preset key → writes chem block only (watkins_recommended + mps_mode profiles). Same keys as model_preset."
+                      chem_profile: "optional — switch active profile only, no range reload. e.g. mps_mode, watkins_recommended"
+                      config_json: "optional — JSON overrides merged over whichever sections are loading (model/chem/both/raw)"
+                    notes: "Creates spa_* labels, tags entities, seeds cabinet. Loads are independent: model_preset, chem_preset, chem_profile each touch only their section. Safe to re-run. Bare mode=setup (no preset/profile args) labels entities without writing prefs."
+                  lights:
+                    fields:
+                      light_state: "on / off"
+                      light_color: "color name or Cycle — check status lights.zones for current; valid values from entity options"
+                      light_zone: "all (default), underwater, exterior, waterfall, topside"
+                      light_brightness: "0–100 (maps to 0–5 intensity scale) — omit to keep current"
+                      cycle_speed: "Slow / Normal / Fast — only used when light_color=Cycle"
+                    notes: "light_zone=all sets color+brightness on all four zones simultaneously."
+                  jets:
+                    fields:
+                      jets_state: "on / off — required"
+                      jets_zone: "all (default), left, right, waterfall — waterfall routes to left pump"
+                      jets_speed: "low / high — applies to variable-speed pumps; default high"
+                    notes: "jets_zone=all controls all pumps. jets_speed behavior depends on pump hardware — check cabinet jets config (mode=setup) for which zones support variable speed."
+                  audio:
+                    fields:
+                      audio_state: "on / off"
+                      audio_volume: "0–100"
+                      audio_source: "source name — check status for available options"
+                    notes: "Any combination of fields allowed; omit fields to leave unchanged."
+                  temperature:
+                    fields:
+                      target_temperature: "setpoint °F — required, range 80–104"
+                    notes: "Sets climate entity setpoint. Actual heating follows spa thermostat behavior."
+                  cover:
+                    fields:
+                      cover_action: "open / close — required"
+                    notes: "Controls motorized cover via cover entity. Check status for current cover state before commanding."
+                  chemistry:
+                    fields:
+                      salt_ppm: "Salt (ppm) — from inline sensor or manual test strip"
+                      free_chlorine_ppm: "Free Chlorine (ppm)"
+                      ph: "pH level (6–9)"
+                      alkalinity_ppm: "Total Alkalinity (ppm)"
+                      hardness_ppm: "Calcium Hardness (ppm)"
+                    notes: "Omit any field to skip that parameter. Returns eval against cabinet targets (or defaults if not configured)."
+                  log:
+                    fields:
+                      soak_duration_hours: "Hours in tub (0.25–8)"
+                      soak_persons: "Number of bathers (for oxidizer dose calc)"
+                      log_notes: "Free-text notes added to calendar entry"
+                      boost_chlorine: "true — triggers salt system boost output (if salt system present)"
+                      close_cover: "true — closes motorized cover after logging"
+                      set_hold_temp: "°F — sets hold/eco setpoint after soak (80–104)"
+                      add_supplies: "true — adds needed chemistry to supplies todo list"
+                    notes: "Post-soak wrap-up. Evaluates chemistry, logs to calendar, optionally doses and covers."
+          - stop: help actions
+            response_variable: _result
+        - conditions: "{{ _topic == 'models' }}"
+          sequence:
+          - variables:
+              _result:
+                mode: help
+                topic: models
+                usage: >-
+                  Same preset key works for both loads — they target different sections of spa_config:
+                  model_preset=<key> writes model/jets/temp only.
+                  chem_preset=<key> writes the full chem block (watkins_recommended + mps_mode profiles).
+                  chem_profile=mps_mode switches the active profile without reloading ranges.
+                  config_json= overrides whichever sections are being loaded.
+                preset_keys: "{{ _preset_lib.keys() | list }}"
+                presets: "{{ _preset_lib }}"
+                note: "Presets in spa_presets/*.yaml, !included into engine at load time. Add a file + wire in step 0, then reload scripts."
+          - stop: help models
+            response_variable: _result
+
+        default:
+        - variables:
+            _result:
+              error: unknown_topic
+              valid_topics: [index, entities, chemistry, actions, models]
+        - stop: help unknown
+          response_variable: _result
+
+    # ── CONSUMABLES ──────────────────────────────────────────────────────────────
+    - if: "{{ _mode == 'consumables' }}"
+      then:
+      - variables:
+          _cons_action:  "{{ _action_raw | lower | trim if _action_raw != '' else 'status' }}"
+          _cons_part:    "{{ part | default('', true) | trim }}"
+          _cons_amount:  "{{ amount | default(1, true) | float(1.0) }}"
+          _cons_force:   "{{ force | default(false, true) | bool }}"
+          _gc: "{{ (_cfg.get('value') | from_json if _cfg.get('value') is string else (_cfg.get('value', _cfg) if _cfg.get('value') is mapping else _cfg)).get('grocy_catalog', {}) if _cfg is mapping else {} }}"
+          _gc_parts:     "{{ _gc.get('parts', {}) }}"
+          _gc_chems:     "{{ _gc.get('chem_supplies', {}) }}"
+          _cons_catalog: "{{ _gc_parts | combine(_gc_chems) }}"
+
+      # Gate: not provisioned (except provision action itself)
+      - if: "{{ not _gc_parts and _cons_action != 'provision' }}"
+        then:
+        - variables:
+            _result:
+              mode: consumables
+              result: not_provisioned
+              note: "Run mode=consumables action=provision model_preset=caldera_utopia_florence_2024 first."
+        - stop: spa consumables not provisioned
+          response_variable: _result
+
+      # ── action=provision ────────────────────────────────────────────────────
+      - if: "{{ _cons_action == 'provision' }}"
+        then:
+        - variables:
+            _prov_key:       "{{ model_preset | default('', true) | lower | replace(' ', '_') }}"
+            _prov_preset:    "{{ _preset_lib.get(_prov_key, {}) }}"
+            _prov_parts_def: "{{ _prov_preset.get('parts', {}) }}"
+            _prov_chems_def: "{{ _prov_preset.get('chem_supplies', {}) }}"
+
+        - if: "{{ _prov_key == '' or (_prov_parts_def | length == 0 and _prov_chems_def | length == 0) }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'provision', 'result': 'error',
+                    'note': 'model_preset required. Available: ' ~ (_preset_lib.keys() | list | join(', '))} }}
+          - stop: spa consumables provision no preset
+            response_variable: _result
+
+        - if: "{{ _gc_parts and not _cons_force }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'provision', 'result': 'already_provisioned',
+                    'catalog': _gc,
+                    'note': 'Already provisioned. Pass force=true to re-provision. Stock preserved.'} }}
+          - stop: spa consumables provision already done
+            response_variable: _result
+
+        # Step 1: Find/create Grocy storage location for spa area
+        - variables:
+            _prov_brand:     "{{ _prov_preset.get('model', {}).get('brand', _model.get('brand', 'Spa')) }}"
+            _prov_area_name: "{{ area_name(_e_climate) | default('', true) | string | trim }}"
+            _prov_area_id:   "{{ area_id(_e_climate) | default('', true) }}"
+        - action: script.zen_dojotools_inventory
+          data:
+            mode: locations_find
+            item: "{{ _prov_area_name }}"
+          response_variable: _prov_parent_raw
+        - variables:
+            _prov_area_lid: >-
+              {{ (_prov_parent_raw.get('result', [])
+                  | selectattr('name', 'equalto', _prov_area_name)
+                  | list | first | default({})).get('id', none) | int(none) }}
+        - if: "{{ _prov_area_lid is none and _prov_area_name != '' }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: locations_add
+              item: "{{ _prov_area_name }}"
+            response_variable: _prov_loc_raw
+          - variables:
+              _prov_area_lid: >-
+                {{ (_prov_loc_raw.get('candidate_ids', [none]) | first
+                    or _prov_loc_raw.get('result', {}).get('created_object_id')) | int(none) }}
+        - if: "{{ _prov_area_lid is not none and _prov_area_id != '' }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: locations_metadata_set
+              location_id: "{{ _prov_area_lid }}"
+              homeassistant_area_id: "{{ _prov_area_id }}"
+
+        # Step 2-5: BOM provision for parts + chems (product+chore+label+seed via provision_bom)
+        - variables:
+            _prov_parts_bom: >-
+              {%- set ns = namespace(parts=[]) -%}
+              {%- for pk, pd in _prov_parts_def.items() -%}
+                {%- if pd.get('name_suffix') is not none -%}
+                  {%- set ns.parts = ns.parts + [{
+                    'key':              pk,
+                    'name':             pd.get('name_suffix', pk),
+                    'sku':              pd.get('sku', ''),
+                    'unit':             pd.get('unit', 'each'),
+                    'storage_location_id': _prov_area_lid,
+                    'consume_location_id': _prov_area_lid,
+                    'min_stock':        pd.get('min_stock', 1) | int(1),
+                    'ha_labels':        'spa,spa_part',
+                    'chore_name':       _prov_brand ~ ' — ' ~ pd.get('chore_name_suffix', pk),
+                    'chore_period_days': pd.get('chore_period_days', 90),
+                    'chore_note':       pd.get('chore_note', '')
+                  }] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ {
+                'robot_name':      _prov_brand,
+                'ha_labels':       'spa,spa_part',
+                'chore_ha_labels': 'spa,spa_chore'
+              } | combine({'parts': ns.parts}) | tojson }}
+        - action: script.zen_dojotools_inventory
+          data:
+            mode: provision_bom
+            bom: "{{ _prov_parts_bom }}"
+            confirm_action: true
+          response_variable: _prov_parts_bom_raw
+
+        - variables:
+            _prov_chems_bom: >-
+              {%- set ns = namespace(parts=[]) -%}
+              {%- for ck, cd in _prov_chems_def.items() -%}
+                {%- if cd.get('name_suffix') is not none -%}
+                  {%- set ns.parts = ns.parts + [{
+                    'key':              ck,
+                    'name':             cd.get('name_suffix', ck),
+                    'sku':              cd.get('sku', ''),
+                    'unit':             cd.get('unit', 'each'),
+                    'storage_location_id': _prov_area_lid,
+                    'consume_location_id': _prov_area_lid,
+                    'min_stock':        cd.get('min_stock', 1) | int(1),
+                    'ha_labels':        'spa,spa_chem',
+                    'chore_name':       _prov_brand ~ ' — ' ~ cd.get('chore_name_suffix', ck),
+                    'chore_period_days': cd.get('chore_period_days', 90),
+                    'chore_note':       cd.get('chore_note', '')
+                  }] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ {
+                'robot_name':      _prov_brand,
+                'ha_labels':       'spa,spa_chem',
+                'chore_ha_labels': 'spa,spa_chore'
+              } | combine({'parts': ns.parts}) | tojson }}
+        - action: script.zen_dojotools_inventory
+          data:
+            mode: provision_bom
+            bom: "{{ _prov_chems_bom }}"
+            confirm_action: true
+          response_variable: _prov_chems_bom_raw
+
+        # Step 4: Build catalog from provision_bom results
+        - variables:
+            _prov_bom_parts_catalog: "{{ _prov_parts_bom_raw.get('catalog', {}) }}"
+            _prov_bom_chems_catalog: "{{ _prov_chems_bom_raw.get('catalog', {}) }}"
+        - variables:
+            _prov_catalog_parts: >-
+              {%- set ns = namespace(p={}) -%}
+              {%- for pk, pd in _prov_parts_def.items() -%}
+                {%- set be = _prov_bom_parts_catalog.get(pk, {}) -%}
+                {%- set ns.p = ns.p | combine({pk: {
+                  'name':                be.get('name', pd.get('name_suffix', pk)),
+                  'sku':                 pd.get('sku'),
+                  'category':            pd.get('category', 'filter'),
+                  'product_id':          be.get('product_id'),
+                  'unit_id':             be.get('unit_id'),
+                  'chore_id':            be.get('chore_id'),
+                  'min_stock':           pd.get('min_stock', 1) | int(1),
+                  'storage_location_id': _prov_area_lid
+                }}) -%}
+              {%- endfor -%}
+              {{ ns.p }}
+            _prov_catalog_chems: >-
+              {%- set ns = namespace(c={}) -%}
+              {%- for ck, cd in _prov_chems_def.items() -%}
+                {%- set be = _prov_bom_chems_catalog.get(ck, {}) -%}
+                {%- set ns.c = ns.c | combine({ck: {
+                  'name':                be.get('name', cd.get('name_suffix', ck)),
+                  'sku':                 cd.get('sku'),
+                  'category':            cd.get('category', 'chem'),
+                  'product_id':          be.get('product_id'),
+                  'unit_id':             be.get('unit_id'),
+                  'chore_id':            be.get('chore_id'),
+                  'min_stock':           cd.get('min_stock', 1) | int(1),
+                  'storage_location_id': _prov_area_lid
+                }}) -%}
+              {%- endfor -%}
+              {{ ns.c }}
+        - variables:
+            _prov_catalog:
+              parts: "{{ _prov_catalog_parts }}"
+              chem_supplies: "{{ _prov_catalog_chems }}"
+              spa_entity: "{{ _e_climate }}"
+              preset: "{{ _prov_key }}"
+              provisioned_at: "{{ now().isoformat() }}"
+
+        - variables:
+            _prov_failures: >-
+              {%- set ns = namespace(f=[]) -%}
+              {%- for k, v in _prov_bom_parts_catalog.items() -%}
+                {%- if v.get('product_id') is none -%}
+                  {%- set ns.f = ns.f + [{'key': k, 'name': v.get('name', k), 'reason': 'product_resolve_failed'}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- for k, v in _prov_bom_chems_catalog.items() -%}
+                {%- if v.get('product_id') is none -%}
+                  {%- set ns.f = ns.f + [{'key': k, 'name': v.get('name', k), 'reason': 'product_resolve_failed'}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.f }}
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'provision',
+                  'result': 'partial' if _prov_failures | length > 0 else 'provisioned',
+                  'spa_entity': _e_climate, 'preset': _prov_key,
+                  'resolved': (_prov_bom_parts_catalog.values() | list + _prov_bom_chems_catalog.values() | list) | selectattr('product_id', 'defined') | selectattr('product_id') | list | length,
+                  'failures': _prov_failures,
+                  'catalog': _prov_catalog,
+                  'note': 'Catalog created. One spare seeded per part. Log extra stock: action=log_purchased part=<key> amount=<n>.'} }}
+        - stop: spa consumables provision complete
+          response_variable: _result
+
+      # ── shared stock check (status + add_to_shopping) ──────────────────────
+      - if: "{{ _cons_action in ['status', 'add_to_shopping'] }}"
+        then:
+        - variables:
+            _unique_locs: >-
+              {{ _cons_catalog.values()
+                 | selectattr('storage_location_id', 'defined')
+                 | map(attribute='storage_location_id')
+                 | select('ne', none) | map('int') | unique | list }}
+            _all_entries: []
+
+        - repeat:
+            for_each: "{{ _unique_locs }}"
+            sequence:
+              - action: script.zen_dojotools_inventory
+                data:
+                  mode: stock_list_by_location
+                  location_id: "{{ repeat.item }}"
+                response_variable: _loc_result
+              - variables:
+                  _tagged: >-
+                    {%- set res = _loc_result.get('result', []) | default([], true) -%}
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for e in res -%}
+                      {%- set ns.out = ns.out + [e | combine({'_loc_id': repeat.item | int})] -%}
+                    {%- endfor -%}
+                    {{ ns.out }}
+              - variables:
+                  _all_entries: "{{ _all_entries + _tagged }}"
+
+        - variables:
+            _stock_by_loc: >-
+              {%- set ns = namespace(idx={}) -%}
+              {%- for e in _all_entries -%}
+                {%- set k = e.product_id | string ~ ':' ~ e._loc_id | string -%}
+                {%- set cur = ns.idx.get(k, 0) | int(0) -%}
+                {%- set ns.idx = ns.idx | combine({k: cur + (e.amount | int(0))}) -%}
+              {%- endfor -%}
+              {{ ns.idx }}
+
+        - variables:
+            _consumables_report: >-
+              {%- set ns = namespace(parts=[], shopping=[]) -%}
+              {%- for pk, pv in _cons_catalog.items() -%}
+                {%- if pv.get('product_id') is not none -%}
+                  {%- set pid   = pv.product_id | string -%}
+                  {%- set loc_k = pid ~ ':' ~ (pv.get('storage_location_id', '') | string) -%}
+                  {%- set amt   = _stock_by_loc.get(loc_k, 0) | int(0) -%}
+                  {%- set min_s = pv.get('min_stock', 1) | int(1) -%}
+                  {%- set status = 'ok' if amt >= min_s else ('low' if amt > 0 else 'out') -%}
+                  {%- set ns.parts = ns.parts + [{
+                    'part':      pk,
+                    'name':      pv.get('name', pk),
+                    'sku':       pv.get('sku'),
+                    'category':  pv.get('category', 'part'),
+                    'stock':     amt,
+                    'min_stock': min_s,
+                    'status':    status,
+                    'chore_id':  pv.get('chore_id', none)
+                  }] -%}
+                  {%- if status in ['low', 'out'] -%}
+                    {%- set needed = [min_s - amt, 1] | max -%}
+                    {%- set ns.shopping = ns.shopping + [{
+                      'product_id': pv.product_id,
+                      'product':    pv.get('name', pk),
+                      'sku':        pv.get('sku'),
+                      'needed':     needed
+                    }] -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ {'parts': ns.parts, 'shopping_actions': ns.shopping} }}
+            _cons_status_result: >-
+              {{ 'ok' if _consumables_report.get('shopping_actions', []) | length == 0 else 'needs_reorder' }}
+
+        - if: "{{ _cons_action == 'add_to_shopping' }}"
+          then:
+          - variables:
+              _shop_adds: []
+          - repeat:
+              for_each: "{{ _consumables_report.get('shopping_actions', []) }}"
+              sequence:
+                - action: script.zen_dojotools_inventory
+                  data:
+                    mode: shopping_add_product
+                    product_id: "{{ repeat.item.product_id }}"
+                    amount: "{{ repeat.item.needed | default(1) }}"
+                  response_variable: _shop_add_raw
+                - variables:
+                    _shop_adds: >-
+                      {{ _shop_adds + [{'product': repeat.item.product,
+                         'sku': repeat.item.get('sku'),
+                         'amount': repeat.item.needed | default(1),
+                         'list_id': (_shop_add_raw.get('result', {}).get('shopping_list_id')
+                                     or _shop_add_raw.get('list_id') or 1) | int(1),
+                         'status': 'added' if _shop_add_raw.get('success') else 'error',
+                         'error': _shop_add_raw.get('result', {}).get('error')}] }}
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'add_to_shopping',
+                    'result': 'ok' if _shop_adds | length > 0 else 'nothing_to_add',
+                    'added': _shop_adds,
+                    'shopping_list_id': (_shop_adds | map(attribute='list_id') | list | first | default(1)),
+                    'consumables': _consumables_report.get('parts', [])} }}
+          - stop: spa consumables add_to_shopping done
+            response_variable: _result
+
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'status',
+                  'result': _cons_status_result,
+                  'spa_entity': _e_climate,
+                  'consumables': _consumables_report.get('parts', []),
+                  'shopping_actions': _consumables_report.get('shopping_actions', []),
+                  'note': 'action=add_to_shopping queues all out/low items. action=provision to set up from scratch.'} }}
+        - stop: spa consumables status
+          response_variable: _result
+
+      # ── action=log_replaced ─────────────────────────────────────────────────
+      - if: "{{ _cons_action == 'log_replaced' }}"
+        then:
+        - if: "{{ _cons_part == '' or _cons_part not in _cons_catalog }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'log_replaced', 'result': 'error',
+                    'note': 'part= required. Valid keys: ' ~ (_cons_catalog.keys() | list | join(', '))} }}
+          - stop: spa consumables log_replaced part required
+            response_variable: _result
+        - variables:
+            _lr_part: "{{ _cons_catalog[_cons_part] }}"
+        - if: "{{ _lr_part.get('chore_id') is not none }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: chores_execute
+              chore_id: "{{ _lr_part.chore_id }}"
+            response_variable: _lr_chore_raw
+          else:
+          - if: "{{ _lr_part.get('product_id') is not none }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              data:
+                mode: stock_consume
+                product_id: "{{ _lr_part.product_id }}"
+                amount: 1
+                location_id: "{{ _lr_part.get('storage_location_id') }}"
+              response_variable: _lr_consume_raw
+        - if: "{{ _lr_part.get('product_id') is not none }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: stock_open_item
+              product_id: "{{ _lr_part.product_id }}"
+            response_variable: _lr_open_raw
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'log_replaced', 'result': 'ok',
+                  'part': _cons_part,
+                  'product': _lr_part.get('name', _cons_part),
+                  'sku': _lr_part.get('sku'),
+                  'chore_executed': _lr_part.get('chore_id') is not none,
+                  'note': 'Installed unit consumed from slot. Next spare opened and moved to install location.'} }}
+        - stop: spa consumables log_replaced done
+          response_variable: _result
+
+      # ── action=log_purchased ────────────────────────────────────────────────
+      - if: "{{ _cons_action == 'log_purchased' }}"
+        then:
+        - if: "{{ _cons_part == '' or _cons_part not in _cons_catalog }}"
+          then:
+          - variables:
+              _result: >-
+                {{ {'mode': 'consumables', 'action': 'log_purchased', 'result': 'error',
+                    'note': 'part= required. Valid keys: ' ~ (_cons_catalog.keys() | list | join(', '))} }}
+          - stop: spa consumables log_purchased part required
+            response_variable: _result
+        - variables:
+            _lp_part: "{{ _cons_catalog[_cons_part] }}"
+        - if: "{{ _lp_part.get('unit_id') is none }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            data:
+              mode: stock_get_product_details
+              product_id: "{{ _lp_part.product_id }}"
+            response_variable: _lp_details_raw
+            continue_on_error: true
+          - variables:
+              _lp_unit_id: >-
+                {{ _lp_details_raw.get('result', {}).get('product', {}).get('qu_id_stock') | int(none) }}
+          else:
+          - variables:
+              _lp_unit_id: "{{ _lp_part.get('unit_id') }}"
+        - action: script.zen_dojotools_inventory
+          data:
+            mode: stock_add_purchase
+            product_id: "{{ _lp_part.product_id }}"
+            amount: "{{ _cons_amount }}"
+            location_id: "{{ _lp_part.get('storage_location_id') }}"
+            unit_id: "{{ _lp_unit_id | default(none, true) }}"
+          response_variable: _lp_buy_raw
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'action': 'log_purchased', 'result': 'ok',
+                  'part': _cons_part,
+                  'product': _lp_part.get('name', _cons_part),
+                  'sku': _lp_part.get('sku'),
+                  'amount': _cons_amount,
+                  'stored_at': _lp_part.get('storage_location_id')} }}
+        - stop: spa consumables log_purchased done
+          response_variable: _result
+
+      # ── unknown action fallback ─────────────────────────────────────────────
+      - variables:
+          _result: >-
+            {{ {'mode': 'consumables', 'result': 'error',
+                'note': 'Unknown action: ' ~ _cons_action ~ '. Valid: status, add_to_shopping, log_replaced, log_purchased, provision.'} }}
+      - stop: spa consumables unknown action
+        response_variable: _result
+
+    # ── DEFAULT ───────────────────────────────────────────────────────────────
+    - variables:
+        _result: >-
+          {{ {"error": "unknown_mode", "mode": _mode,
+              "valid_modes": ["status","scene","discover","setup","lights","jets","audio","temperature","cover","chemistry","log","consumables","help"]} }}
+    - stop: unknown mode
+      response_variable: _result

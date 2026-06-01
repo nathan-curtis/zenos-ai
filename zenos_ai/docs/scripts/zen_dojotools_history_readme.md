@@ -1,4 +1,4 @@
-# Zen DojoTools History — 4.5.5 'Ready Player Two'
+# Zen DojoTools History — 2026.6.0 'Clue'
 
 *Recorder statistics query engine for HA long-term statistics*
 

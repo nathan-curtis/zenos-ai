@@ -1,6 +1,6 @@
-# Zen DojoTools Summarizers — 4.7.0 'Lights, Camera, Action'
+# Zen DojoTools Summarizers — v4.6.0
 
-*Ninja Summarizer + SuperSummary — the KF4 action pipeline*
+*Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
 ---
 
@@ -19,17 +19,37 @@ Two scripts ship in this package:
 
 Both scripts are **MCP-exposed** for on-demand runs. The Scheduler drives them automatically.
 
+```mermaid
+flowchart LR
+  Scheduler["Scheduler / force event"]
+  KFC["Dojo KFC drawer"]
+  Seed{"seed or area_seed?"}
+  SeedTool["Whitelisted seed tool"]
+  Index["Index / HyperIndex"]
+  Monk["ai_task.generate_data"]
+  FileCabinet["FileCabinet write"]
+  Kata["Kata drawer"]
+  SuperSummary["SuperSummary"]
+  Prompt["Prompt context"]
+
+  Scheduler --> KFC --> Seed
+  Seed -- "Yes" --> SeedTool --> Monk
+  Seed -- "No" --> Index --> Monk
+  Monk --> FileCabinet --> Kata --> SuperSummary --> Prompt
+```
+
 ---
 
 ## Kill Switches
 
-Three `input_boolean` entities control the pipeline. All default **on**.
+Three `input_boolean` entities control the pipeline. Fresh installs default the master switch **off** so a new user does not accidentally run continuous background inference before choosing a local/background AI task.
 
 | Entity | Default | Purpose |
 |---|---|---|
-| `input_boolean.zen_summarizers_enabled` | on | Master gate — turns off both summarizers immediately |
+| `input_boolean.zen_summarizers_enabled` | off on fresh install | Master gate — turns off both summarizers immediately |
 | `input_boolean.zen_ninja_summarizer_enabled` | on | Ninja Summarizer individual kill switch |
 | `input_boolean.zen_supersummarizer_enabled` | on | SuperSummary individual kill switch |
+| `input_boolean.zen_action_emission_enabled` | off | Allows Ninja to emit `suggested_act_event` kinds onto the event bus. Operator-only — AI cannot write this boolean. `zen_summarizer_act_whitelist` is a separate per-kind gate. |
 
 Master is checked first. If the master is off, both summarizers exit regardless of their individual switches. Turning any switch off is non-destructive — no schedules, automations, or cabinet data are touched.
 
@@ -54,6 +74,7 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 | `post_to_kata_cabinet` | No | Write result to Kata cabinet? Default: `false`. |
 | `supplemental_prompt` | No | Extra data or instructions appended to the monk prompt. |
 | `force` | No | Bypass the run governor (dedup burnout window). For admin overrides or emergency on-demand runs. Default `false`. |
+| `area_id` | No | HA area ID. When set and the KFC defines `area_seed`, the `{{area_id}}` slot in `area_seed.params` is filled at runtime. Used for per-area rollup patterns. |
 | `caller_token` | No | Opaque pass-through token for correlation. |
 
 ### What It Does
@@ -64,15 +85,22 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 4. **Read Dojo drawer** — loads the component's KFC metadata (friendly name, label, command, tool, kata_key)
 5. **`meta.enabled` check** — exits with `reason: meta_disabled` if the component's `meta.enabled` is `false`
 6. **Run governor** — dedup burnout window check (see below). Exits with `reason: dedup_window` if blocked.
-7. **Run HyperIndex** — queries the index using the component's configured index call. Routing:
+7. **Step 3c — Seed tool call (v4.3.0+)** — if the KFC defines `seed` or `area_seed`:
+   - Resolves `_seed_tool`: `area_seed` takes priority when `area_id` input is set; falls back to `seed`.
+   - **Whitelist check**: reads `zen_summarizer_seed_whitelist` from syscab (`allowed_tools` list). Default if drawer missing: `['zen_dojotools_index']`.
+     - Whitelisted → fires `script.{{ _seed_tool }}`, sets `_seed_used: true`, step 8 skipped.
+     - Not whitelisted → emits `seed_tool_blocked` zen_event (warn), falls through to step 8 (HyperIndex runs normally).
+   - If neither `seed` nor `area_seed` is defined: step 3c is skipped, step 8 runs normally.
+7.5. **Step 3d — Resolve component_summary from label description (v4.6.0+)** — if `component_summary` is empty after reading the Dojo drawer (Scribe's `trim_description` path leaves it blank), the summarizer reads the base label description via `zen_dojotools_labels` and uses it as `component_summary`. This means the label description is the authoritative routing signal when the drawer field is trimmed — keep label descriptions accurate.
+8. **Run HyperIndex** — queries the index using the component's configured index call. Skipped if `_seed_used`. Routing:
    - If the Dojo drawer has an `index_command` dict field: emits compound/recursive index call via `zen_indexer_request` event. Supports the full nested DSL: `{operator, index_1: {...}, index_2: {...}}`. Use for components whose context spans multiple independent label sets.
    - If the drawer has a `label` field: standard label-based index call in hypergraph mode.
    - If neither is present: HyperIndex step is skipped.
-8. **Run library command** — if the component has a `command` field, dispatches it through `command_interpreter.jinja`
-9. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions
-10. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
-11. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and monk returned data, writes result to `kata_cabinet[component_slug]`
-12. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
+9. **Run library command** — if the component has a `command` field, dispatches it through `command_interpreter.jinja`
+10. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions
+11. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
+12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and monk returned data, writes result to `kata_cabinet[component_slug]`
+13. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
 
 ### Response
 
@@ -216,6 +244,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | Kill switch `disabled` state | One of the three kill switches is off — intentional. Turn back on; pipeline auto-restarts. |
 | Empty or malformed output | Check inference server logs for context length errors. Models under ~4B parameters are not reliable as summarization backends. |
 | Component not included in SuperSummary | Check `meta.enabled` in its Dojo drawer. Also verify `kata_key` is set and a matching drawer exists in Kata cabinet. |
+| Seed always falls through to HyperIndex / `seed_tool_blocked` events | `zen_summarizer_seed_whitelist` drawer is missing from syscab, or the tool is not in `allowed_tools`. Run `zen_admintools_reset_template` to seed the default whitelist, then add tools via `zen_admintools_summarizer_seed action_type: add tool: <script_name>`. |
 
 ---
 
@@ -236,3 +265,23 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | `zen_os_1.jinja` | `zen_cabinets()`, `manifest_loader()`, `ai_capsule()` (SuperSummary prompt context) |
 | `script.zen_dojotools_event_emitter` | Post-run event emission |
 | `automation.zen_dojotools_scheduler` | Scheduled dispatch |
+
+---
+
+## Cross-References
+
+- [Zen Summarizer Overview](../zen_summarizer/readme.md) — conceptual pipeline from Dojo to prompt
+- [DojoTools Scheduler](zen_dojotools_scheduler_readme.md) — trigger IDs, component subscriptions, and force events
+- [DojoTools Index](zen_dojotools_index_readme.md) — default Ninja context resolver
+- [HyperIndex Overview](../zen_hyperindex/zen_hyperindex_overview.md) — SELECT -> FILTER -> COMPOSE graph model
+- [DojoTools FileCabinet](zen_dojotools_filecabinet_readme.md) — Kata and status drawer writes
+- [Script Modules](readme.md) — return path to the internal tool map
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v4.6.0 | Step 3d — label description resolution: when `component_summary` is empty after reading the Dojo drawer (Scribe `trim_description` path), ninja resolves it from the base label description via `zen_dojotools_labels`. `zen_action_emission_enabled` boolean added (operator-only gate for `suggested_act_event` emission). `emission_cooldown_minutes` Dojo drawer field (default 60 min) gates per-component action event emission; emits `emission_suppressed` on cooldown. FG-38 `from_json` guards on all FileCabinet drawer reads. |
+| v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist gate (`zen_summarizer_seed_whitelist`). Backward compatible — no seed = old behavior. |

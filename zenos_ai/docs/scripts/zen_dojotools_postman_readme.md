@@ -1,4 +1,4 @@
-# Zen DojoTools Postman — v1.0.0 'Lights, Camera, Action'
+# Zen DojoTools Postman — v1.6.2
 
 **File:** `packages/zenos_ai/dojotools/dojotools_postman.yaml`
 **Script:** `zen_dojotools_postman`
@@ -14,6 +14,66 @@ Every send goes through the same pipeline: sleep gate check → urgency tier →
 
 ---
 
+## Dispatch Flow
+
+```mermaid
+flowchart TD
+  Request["Caller: component, alert, or Friday"]
+  Resolve["Postman resolve"]
+  Profiles["Read postman_profile stack"]
+  House["House ceiling: sleep gate, work gate, life safety bypass"]
+  Family["Family floor: escalation policy (SP1 seed)"]
+  User["User preference: push targets, TTS satellite, urgency tiers, away policy"]
+  Decision{"Would dispatch?"}
+  Blocked["Return blocked reason"]
+  Channels["Select channels"]
+  Push["notify.<push target slug>"]
+  TTS["assist_satellite or announce"]
+  Teams["Teams send"]
+  Log["Write zen_postman_log"]
+  Event["Emit audit zen_event"]
+
+  Request --> Resolve --> Profiles
+  Profiles --> House --> Family --> User --> Decision
+  Decision -->|no| Blocked
+  Decision -->|yes| Channels
+  Channels --> Push
+  Channels --> TTS
+  Channels --> Teams
+  Push --> Log
+  TTS --> Log
+  Teams --> Log
+  Log --> Event
+```
+
+`resolve` stops at the decision and returns the audit. `resolve_and_dispatch` continues through channels, log, and event emission.
+
+---
+
+## Action Button Ack Flow
+
+```mermaid
+sequenceDiagram
+  participant Caller
+  participant Postman
+  participant Mobile as Mobile App
+  participant Router as zen_postman_response_router
+  participant EventBus as HA EventBus
+
+  Caller->>Postman: resolve_and_dispatch(response_type=yes_no)
+  Postman->>Postman: generate pm_tag
+  Postman->>Mobile: push with action buttons and tag
+  Postman->>EventBus: wait for zen_event(kind=postman_response, tag)
+  Mobile->>Router: mobile_app_notification_action
+  Router->>EventBus: zen_event(kind=postman_response, tag, action)
+  EventBus-->>Postman: matching response event
+  Postman-->>Caller: ack_action, ack_timed_out, pm_tag
+```
+
+AlertManager uses this same path when `notify_target: postman` and `response_type` is set. Other tools can either wait on Postman's return value or subscribe independently to `zen_event(kind: postman_response)`.
+
+---
+
 ## Modes
 
 | Mode | Dispatches | Logs | Description |
@@ -21,6 +81,7 @@ Every send goes through the same pipeline: sleep gate check → urgency tier →
 | `resolve` | no | no | Evaluate authority stack, return would-dispatch result. Browse and debug. |
 | `resolve_and_dispatch` | yes | yes | Full send — resolve + dispatch + kata log + audit event. |
 | `author_policy` | no (policy write) | no | Write or update a `postman_profile` drawer in any cabinet. |
+| `clear_tag` | no | yes (removes) | Remove a log entry from `zen_postman_log` by `pm_tag`. Requires `tag=<pm_tag>`. Returns `{removed: true/false}`. |
 | `help` | no | no | Return full schema, drawer seeds, and example calls. |
 
 ---
@@ -140,7 +201,7 @@ Other automations can also listen for `zen_event(kind: postman_response)` filter
 | `response_type` | resolve_and_dispatch | `none` | Actionable button preset. |
 | `response_timeout_s` | resolve_and_dispatch | `60` | Seconds to wait for button tap. Range 10–300. |
 | `force_audio` | resolve_and_dispatch | `false` | Bypass urgency >= 9 gate for phone TTS audio attachment. |
-| `open_dashboard` | resolve_and_dispatch | `false` | Navigate to `assist_path` from user profile on tap. |
+| `open_dashboard` | resolve_and_dispatch | `false` | On tap, navigate to `assist_path` from user profile. Injects `clickAction` and `url` as `homeassistant://navigate/<assist_path>` into the notification data — companion app opens the dashboard directly. Has no effect if `assist_path` is unset in the user profile. |
 | `notification_data` | resolve_and_dispatch | — | Raw dict passed to notification data field. See Android fields below. |
 | `kata_input` | resolve_and_dispatch | — | Kata payload dict from ninja pipeline. Derives `title`/`message` from `component`, `period`, `attention`, `suggested_act_desc` when explicit values are not set. |
 | `breakthrough` | resolve_and_dispatch | `false` | If true, bypasses house sleep gate regardless of urgency. Equivalent to urgency >= life_safety_bypass for gate evaluation only. |
@@ -234,7 +295,7 @@ would_dispatch: true          # false if blocked
 blocked_by: null              # or "house_sleep_gate"
 urgency: 5
 tier: medium
-target: person.nathan
+target: person.resident
 person_state: home
 is_away: false
 channel_hint: ""
@@ -347,7 +408,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 6
     kata_input: "{{ monk.data }}"   # full kata dict from ninja output
     notification_data:
@@ -379,7 +440,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve
-    target: person.nathan
+    target: person.resident
     urgency: 5
   response_variable: check
 # check.would_dispatch → proceed or skip
@@ -388,7 +449,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 5
     message: "Front door unlocked."
     title: "Security"
@@ -397,7 +458,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 7
     title: "Motion at front door"
     message: "Someone is at the door. Let them in?"
@@ -416,7 +477,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 5
     message: "Hot tub ready. Open it?"
     image_entity: image.zen_image_canvas
@@ -426,7 +487,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 8
     title: "Security Alert"
     message: "Motion in back yard."
@@ -442,7 +503,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 6
     kata_input: "{{ monk.data }}"
     notification_data:
@@ -452,7 +513,7 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
 - action: script.zen_dojotools_postman
   data:
     mode: resolve_and_dispatch
-    target: person.nathan
+    target: person.resident
     urgency: 5
     breakthrough: true
     title: "Package delivered"

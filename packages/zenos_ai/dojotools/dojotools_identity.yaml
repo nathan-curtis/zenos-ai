@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Identity
-# Version: 4.5.6
+# Version: 5.1.0
 #
 # Scripts:
 #   zen_dojotools_identity — Household identity resolver + family group management
@@ -69,6 +69,27 @@
 #                                    or reverse lookup (which groups is this member in?)
 #   mode: is_member               — depth-2 membership check: is member_entity in family_entity?
 #
+# v4.7.0 — presence block (2026-05-19)
+#   resolve (person): presence { person_entity, zone, at_home, area_id, area_name }
+#   All presence fields consent-gated via tracking.gps_zone / tracking.room
+#   person_entity + cabinet now explicit top-level keys in person response
+#   reverse area_residents: each entry gains person_entity + zone (consent-gated)
+#
+# v4.6.1 — group-type label collision fix
+#   _r3b_entity: when resolved cabinet is ai_user AND normalized is a group-type label
+#   (household/family_group), re-resolve excluding ai_user cabinets. Fixes
+#   user_label=household returning AI persona instead of household group when
+#   AI cabinet carries 'household' as a membership label.
+#
+# v4.6.0 — resolve: spaces injection + reverse area lookup
+#   mode: resolve — response now includes `spaces` (live/work/work_zone from
+#     _user_profile/_family_profile drawer) and `area_labels` (non-zen_ entity
+#     labels on the resolved cabinet).
+#   Reverse area lookup: when normalized is a plain label (no dot) and resolve
+#     returns not_found/empty, falls back to label_entities(label) ∩ zen_cabinet
+#     (non-ai_user only) → returns {result: 'area_residents', area_residents: [...]}
+#     Each resident entry: {entity_id, name, role, spaces}.
+#
 # config check → go; restart → clean ✓
 # ==============================
 ###############################################################################
@@ -79,21 +100,35 @@ script:
     mode: parallel
     max: 10
     description: >
-      Zen DojoTools Identity 4.3.0 — Household identity resolver, prompt inspector, and group management.
+      Zen DojoTools Identity 4.6.1 — Household identity resolver, prompt inspector, group management, and area/space lens.
 
       mode: resolve (default) — resolves identities within the ZenOS-AI household.
-      When called with no target, returns the full redacted roster of all registered
-      users, AI constructs, and cabinets. When a target is provided (person entity_id,
-      cabinet entity_id, label, or UUID), returns the corresponding identity record.
+      No target: full roster. With target: returns identity record with `spaces` (live/work/work_zone
+      from profile drawer) and `area_labels` (room labels on the cabinet entity).
+      Area reverse lookup: if the label resolves to no owner cabinet, returns area_residents —
+      all non-AI cabinets labeled with that area — each with name, role, and spaces.
 
       mode: prompt — renders the compiled prompt capsule for the target construct via
       zen.ai_capsule(). Shows exactly what the model sees for that identity right now.
       Includes the rendered capsule, prompt health signals, and signature status.
       Pass any valid target (label, person entity, cabinet entity, GUID).
 
+      mode: render_prompt — renders the FULL assembled system prompt via zen.render_prompt()
+      exactly as the active agent receives it — all 10 sections (header, system, manifest,
+      index, kata/dojo, capsule, overview, wake, priority_inject). Uses active persona from
+      input_text.zenos_persona_name. No target needed. Pair with ha_reload_templates +
+      re-render for iterative qualitative prompt editing.
+
       mode: build_identity_manifest — rebuilds the zen_identity_manifest drawer in the
       household cabinet from the live identity roster. Run after onboarding or any
       roster change. Same pattern as the library manifest builder.
+
+      mode: provision_member — full orchestration for adding a new family member with no
+      HA person entity. Finds the first free expansion slot, provisions it, wires into the
+      target family, rebuilds manifest. Requires member_name.
+
+      mode: membership — full tree view of principals, members, sub-families to depth 2.
+      Reverse lookup when member_entity is a user/ai_user (returns all groups + roles).
 
       Results are always returned as valid JSON for downstream reasoning.
       Requires zen_os_1.jinja 4.2.0 or newer.
@@ -102,8 +137,9 @@ script:
       mode:
         name: Mode
         description: >
-          resolve = identity record (default).
+          resolve = identity record + spaces + area_labels (default). Area label with no owner → area_residents reverse lookup.
           prompt = rendered capsule for this construct.
+          render_prompt = full assembled prompt as Friday receives it (all sections).
           build_identity_manifest = rebuild zen_identity_manifest in household cabinet.
           household_add_family = wire a family cabinet into a household.
           household_remove_family = detach a family cabinet from a household.
@@ -140,6 +176,7 @@ script:
             options:
               - resolve
               - prompt
+              - render_prompt
               - build_identity_manifest
               - household_add_family
               - household_remove_family
@@ -429,6 +466,29 @@ script:
             - stop: Prompt render complete
               response_variable: response
 
+    # ── Step 3b2: mode = render_prompt → full assembled prompt ───────────────
+    - choose:
+        - conditions: "{{- _mode == 'render_prompt' -}}"
+          sequence:
+            - variables:
+                _full_raw: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+                  {{ zen.render_prompt(states('input_text.zenos_persona_name')) }}
+            - variables:
+                response: >
+                  {{-
+                    {
+                      'mode':        'render_prompt',
+                      'persona':     states('input_text.zenos_persona_name'),
+                      'rendered':    _full_raw | trim | from_json({'raw': _full_raw | trim}) if (_full_raw | trim).startswith('{') else {'raw': _full_raw | trim},
+                      'chars':       _full_raw | trim | length,
+                      'timestamp':   now().isoformat(),
+                      'caller_token': caller_token | default('')
+                    } | tojson
+                  -}}
+            - stop: Full prompt render complete
+              response_variable: response
+
     # ── Step 3c: mode = build_identity_manifest ─────────────────────────────
     - choose:
         - conditions: "{{- _mode == 'build_identity_manifest' -}}"
@@ -601,7 +661,7 @@ script:
                 _hh_members_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
                   {%- set _vi = CABS.cabinet_drawer_value(_hh_cab, 'members', {}) | from_json() -%}
-                  {{- _m | tojson -}}
+                  {{- _vi | tojson -}}
             - variables:
                 _fam_vi: "{{- _fam_vi_raw | from_json if _fam_vi_raw is string else _fam_vi_raw -}}"
                 _fam_guid: >-
@@ -612,7 +672,7 @@ script:
                     {{- _existing -}}
                   {%- else -%}
                     {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                    {{- CABS.cabinet_guid_new() -}}
+                    {{- CABS.cabinet_guid_new() | default('') -}}
                   {%- endif -%}
                 _fam_guid_is_new: >-
                   {%- set _vi = _fam_vi_raw | from_json if _fam_vi_raw is string else _fam_vi_raw -%}
@@ -698,18 +758,18 @@ script:
                 key: members
                 value: "{{- _updated_members -}}"
             - variables:
-                response: >
+                response: >-
                   {{-
                     {
                       'mode':              'household_add_family',
                       'status':            'ok',
                       'household_cabinet': _hh_cab,
                       'family_entity':     family_entity,
-                      'family_guid':       _fam_guid,
-                      'family_name':       _fam_name,
+                      'family_guid':       _fam_guid | default('') | string,
+                      'family_name':       _fam_name | default('') | string,
                       'timestamp':         now().isoformat(),
                       'caller_token':      caller_token | default('')
-                    }
+                    } | tojson
                   -}}
             - action: script.zen_dojotools_identity
               data:
@@ -828,7 +888,7 @@ script:
                   {%- set _existing = _vi.get('id', _vi.get('guid', '')) | string | trim -%}
                   {%- if _existing != '' -%}{{- _existing -}}{%- else -%}
                     {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                    {{- CABS.cabinet_guid_new() -}}
+                    {{- CABS.cabinet_guid_new() | default('') -}}
                   {%- endif -%}
                 _mem_guid_is_new: >-
                   {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
@@ -1255,7 +1315,7 @@ script:
                   {%- set _existing = _vi.get('id', _vi.get('guid', '')) | string | trim -%}
                   {%- if _existing != '' -%}{{- _existing -}}{%- else -%}
                     {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                    {{- CABS.cabinet_guid_new() -}}
+                    {{- CABS.cabinet_guid_new() | default('') -}}
                   {%- endif -%}
                 # @todo - need to modify CABS.cabinet_drawer_value() so it can take a list of keys and return the first one that exists
                 _mem_name: >-
@@ -2228,16 +2288,17 @@ script:
                 - stop: family_entity unresolved
                   response_variable: response
 
-            # Scan expansion slots 1–5 for first available init slot
+            # Scan expansion slots for first available init slot
             - variables:
                 _pm_slot: >-
-                  {%- set _slots = [
-                    'sensor.zenos_expansion_cabinet_1',
-                    'sensor.zenos_expansion_cabinet_2',
-                    'sensor.zenos_expansion_cabinet_3',
-                    'sensor.zenos_expansion_cabinet_4',
-                    'sensor.zenos_expansion_cabinet_5'
-                  ] -%}
+                  {%- set _label_slots = label_entities('expansion_cabinet') | select('match','sensor\\.zenos_expansion_cabinet_') | sort | list -%}
+                  {%- set _ns2 = namespace(s=[]) -%}
+                  {%- if _label_slots | length == 0 -%}
+                    {%- for i in range(1, 6) -%}
+                      {%- set _ns2.s = _ns2.s + ['sensor.zenos_expansion_cabinet_' ~ i] -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {%- set _slots = _label_slots if _label_slots | length > 0 else _ns2.s -%}
                   {%- set ns = namespace(v='') -%}
                   {%- for s in _slots -%}
                     {%- if ns.v == '' and states(s) == 'init' -%}
@@ -2344,12 +2405,369 @@ script:
               response_variable: response
 
     # ── Step 3b: mode = resolve (default) ──────────────────────────────────
+    # Pre-compute: extract cabinet entity, error state, reverse-lookup flag
+    - variables:
+        _r3b_entity: >-
+          {%- set _c = cab | from_json if cab is string else cab -%}
+          {%- set _c = _c if _c is mapping else {} -%}
+          {%- set _eid = _c.get('identity', {}).get('cabinet', '') | trim -%}
+          {%- set _norm = normalized | default('') | string | lower | trim -%}
+          {# Group-type labels collide with AI cabinet membership labels (ai_user cabinet may
+             carry 'household' label as membership, not as group identity). Re-resolve excluding
+             ai_user cabinets when the target is a group-type label. #}
+          {%- if _eid != '' and 'ai_user' in labels(_eid) and _norm in ['household', 'family_group'] -%}
+            {{- label_entities(_norm) | select('in', label_entities('zen_cabinet')) | reject('in', label_entities('ai_user')) | list | first | default('') -}}
+          {%- else -%}
+            {{- _eid -}}
+          {%- endif -%}
+        _r3b_cab_error: >-
+          {%- set _c = cab | from_json if cab is string else cab -%}
+          {%- set _c = _c if _c is mapping else {} -%}
+          {{- _c.get('error', '') -}}
+        _r3b_is_reverse: >-
+          {%- set _c = cab | from_json if cab is string else cab -%}
+          {%- set _c = _c if _c is mapping else {} -%}
+          {%- set _has_err = _c.get('error', '') in ['not_found', 'empty_input'] -%}
+          {%- set _norm = normalized | string | trim -%}
+          {%- set _is_plain = _norm not in ['', 'None', "''"] and '.' not in _norm -%}
+          {{- (_has_err and _is_plain) | bool -}}
+    # Pre-compute: entity type flags (step 1b — depend on _r3b_entity, can't be siblings)
+    - variables:
+        _r3b_is_ai: >-
+          {{- (_r3b_entity != '' and 'ai_user' in labels(_r3b_entity)) | bool -}}
+        _r3b_is_group: >-
+          {{- (_r3b_entity != '' and
+               ('household' in labels(_r3b_entity) or
+                'family_group' in labels(_r3b_entity))) | bool -}}
+        _r3b_group_type: >-
+          {%- if _r3b_entity != '' and 'household' in labels(_r3b_entity) -%}household
+          {%- elif _r3b_entity != '' and 'family_group' in labels(_r3b_entity) -%}family_group
+          {%- else -%}{%- endif -%}
+    # Early exit: ai_user cabinet → persona slice
+    - choose:
+        - conditions: "{{- _r3b_is_ai | bool -}}"
+          sequence:
+            - variables:
+                _ai_raw: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set ent = _r3b_entity | trim -%}
+                  {%- set _e = CABS.cabinet_drawer_value(ent, 'zenai_essence', {}) | from_json() -%}
+                  {%- set _e = _e.get('value', _e) if _e is mapping and 'value' in _e else _e -%}
+                  {{- (_e if _e is mapping else {}) | tojson -}}
+            - variables:
+                response: >-
+                  {%- set _e = _ai_raw | from_json if _ai_raw is string else _ai_raw -%}
+                  {%- set _e = _e if _e is mapping else {} -%}
+                  {%- set _id = _e.get('identity', {}) -%}
+                  {%- set _jk = _e.get('jacket', {}) -%}
+                  {{
+                    {
+                      'result':           'ok',
+                      'is_person':        false,
+                      'is_group':         false,
+                      'is_ai':            true,
+                      'cabinet':          _r3b_entity,
+                      'persona_name':     _id.get('name', ''),
+                      'pronouns':         _id.get('pronouns', ''),
+                      'motif':            _id.get('motif', ''),
+                      'primary_user':     _id.get('primary_user', ''),
+                      'familiarity_level': _jk.get('familiarity_level', 'acquainted'),
+                      'target_normalized': normalized,
+                      'timestamp':        now().isoformat(),
+                      'caller_token':     caller_token | default('')
+                    }
+                  }}
+            - stop: ai_user persona slice
+              response_variable: response
+    # Early exit: group cabinet (household / family_group) → group slice
+    - choose:
+        - conditions: "{{- _r3b_is_group | bool -}}"
+          sequence:
+            - variables:
+                _grp_raw: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set ent = _r3b_entity | trim -%}
+                  {%- set _key = '_household_profile' if _r3b_group_type == 'household' else '_family_profile' -%}
+                  {%- set _g = CABS.cabinet_drawer_value(ent, _key, {}) | from_json() -%}
+                  {%- set _g = _g.get('value', _g) if _g is mapping and 'value' in _g else _g -%}
+                  {{- (_g if _g is mapping else {}) | tojson -}}
+            - variables:
+                response: >-
+                  {%- set _g = _grp_raw | from_json if _grp_raw is string else _grp_raw -%}
+                  {%- set _g = _g if _g is mapping else {} -%}
+                  {%- if _r3b_group_type == 'household' -%}
+                    {%- set _members = label_entities('user') | select('in', label_entities('zen_cabinet')) | list -%}
+                    {%- set _fgroups = label_entities('family_group') | select('in', label_entities('zen_cabinet')) | list -%}
+                    {{
+                      {
+                        'result':               'ok',
+                        'is_person':            false,
+                        'is_group':             true,
+                        'is_ai':                false,
+                        'group_type':           'household',
+                        'cabinet':              _r3b_entity,
+                        'household_name':       _g.get('household_name', ''),
+                        'timezone':             _g.get('timezone', ''),
+                        'address': {
+                          'street':  _g.get('address', ''),
+                          'city':    _g.get('city', ''),
+                          'state':   _g.get('state', ''),
+                          'zip':     _g.get('zip', ''),
+                          'country': _g.get('country', '')
+                        },
+                        'member_cabinets':      _members,
+                        'family_group_cabinets': _fgroups,
+                        'home_mode':            states('sensor.zen_home_mode') | default(states('input_select.zen_home_mode'), true),
+                        'quiet_hours_active':   is_state('binary_sensor.zen_quiet_hours', 'on'),
+                        'target_normalized':    normalized,
+                        'timestamp':            now().isoformat(),
+                        'caller_token':         caller_token | default('')
+                      }
+                    }}
+                  {%- else -%}
+                    {%- set _members = label_entities(normalized) | select('in', label_entities('zen_cabinet')) | reject('in', label_entities('ai_user')) | list -%}
+                    {{
+                      {
+                        'result':            'ok',
+                        'is_person':         false,
+                        'is_group':          true,
+                        'is_ai':             false,
+                        'group_type':        'family_group',
+                        'cabinet':           _r3b_entity,
+                        'family_name':       _g.get('family_name', _g.get('name', '')),
+                        'relationship_type': _g.get('relationship_type', ''),
+                        'member_cabinets':   _members,
+                        'target_normalized': normalized,
+                        'timestamp':         now().isoformat(),
+                        'caller_token':      caller_token | default('')
+                      }
+                    }}
+                  {%- endif -%}
+            - stop: group slice
+              response_variable: response
+    # Pre-compute: spaces block and area labels from resolved cabinet
+    - variables:
+        _r3b_spaces: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {%- set ent = _r3b_entity | trim -%}
+          {%- if ent == '' -%}
+            {{- {} | tojson -}}
+          {%- else -%}
+            {%- set _up = CABS.cabinet_drawer_value(ent, '_user_profile', {}) | from_json() -%}
+            {%- set _fp = CABS.cabinet_drawer_value(ent, '_family_profile', {}) | from_json() -%}
+            {%- set _p = _up if (_up is mapping and _up | length > 0) else (_fp if _fp is mapping else {}) -%}
+            {{- _p.get('spaces', {}) | tojson -}}
+          {%- endif -%}
+        _r3b_area_labels: >-
+          {%- set ent = _r3b_entity | trim -%}
+          {%- if ent == '' -%}
+            {{- [] | tojson -}}
+          {%- else -%}
+            {%- set _all = labels(ent) | default([]) -%}
+            {{- (_all | reject('match', '^zen_') | reject('equalto', 'ai_user') | list) | tojson -}}
+          {%- endif -%}
+    # Pre-compute: reverse area residents (populated only when is_reverse=true)
+    - variables:
+        _r3b_reverse_residents: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {%- if not (_r3b_is_reverse | bool) -%}
+            {{- [] | tojson -}}
+          {%- else -%}
+            {%- set _norm = normalized | string | trim -%}
+            {%- set _ai_cabs = label_entities('ai_user') | list -%}
+            {%- set _area_cabs = label_entities(_norm)
+                | select('match', '^sensor\\.')
+                | select('in', label_entities('zen_cabinet'))
+                | reject('in', _ai_cabs)
+                | list -%}
+            {%- set ns = namespace(residents=[]) -%}
+            {%- for ent in _area_cabs[:10] -%}
+              {%- set _up = CABS.cabinet_drawer_value(ent, '_user_profile', {}) | from_json() -%}
+              {%- set _fp = CABS.cabinet_drawer_value(ent, '_family_profile', {}) | from_json() -%}
+              {%- set _p = _up if (_up is mapping and _up | length > 0) else (_fp if _fp is mapping else {}) -%}
+              {%- set _sp = _p.get('spaces', {}) if _p is mapping else {} -%}
+              {%- set _nm = _p.get('preferred_name', _p.get('name', '')) if _p is mapping else '' -%}
+              {%- set _ro = _p.get('role', '') if _p is mapping else '' -%}
+              {%- set _tr = _p.get('tracking', {}) if _p is mapping else {} -%}
+              {%- set _zone_ok = _tr.get('gps_zone', false) | bool -%}
+              {%- set _area_lbls = labels(ent) | reject('match', '^zen_') | reject('equalto', 'ai_user') | list -%}
+              {%- set ns2 = namespace(person_eid='') -%}
+              {%- for lbl in _area_lbls if ns2.person_eid == '' -%}
+                {%- set _pe = label_entities(lbl) | select('match', '^person\\.') | list | first | default('') -%}
+                {%- if _pe != '' -%}{%- set ns2.person_eid = _pe -%}{%- endif -%}
+              {%- endfor -%}
+              {%- set _zone = states(ns2.person_eid) if _zone_ok and ns2.person_eid != '' else ('consent_required' if ns2.person_eid != '' else none) -%}
+              {%- set ns.residents = ns.residents + [{'entity_id': ent, 'name': _nm, 'role': _ro, 'spaces': _sp, 'person_entity': ns2.person_eid if ns2.person_eid != '' else none, 'zone': _zone}] -%}
+            {%- endfor -%}
+            {{- ns.residents | tojson -}}
+          {%- endif -%}
+    # Pre-compute: tracking consent + primary_mobile entity ID + person entity from profile
+    - variables:
+        _r3b_person_entity: >-
+          {%- set ent = _r3b_entity | trim -%}
+          {%- if ent == '' -%}{{- '' -}}
+          {%- else -%}
+            {%- set _cab_labels = labels(ent) | reject('match', '^zen_') | reject('equalto', 'ai_user') | list -%}
+            {%- set ns = namespace(person_eid='') -%}
+            {%- for lbl in _cab_labels if ns.person_eid == '' -%}
+              {%- set _pe = label_entities(lbl) | select('match', '^person\\.') | list | first | default('') -%}
+              {%- if _pe != '' -%}{%- set ns.person_eid = _pe -%}{%- endif -%}
+            {%- endfor -%}
+            {{- ns.person_eid -}}
+          {%- endif -%}
+        _r3b_tracking: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {%- set ent = _r3b_entity | trim -%}
+          {%- if ent == '' -%}{{- {} | tojson -}}
+          {%- else -%}
+            {%- set _up = CABS.cabinet_drawer_value(ent, '_user_profile', {}) | from_json() -%}
+            {%- set _fp = CABS.cabinet_drawer_value(ent, '_family_profile', {}) | from_json() -%}
+            {%- set _p = _up if (_up is mapping and _up | length > 0) else (_fp if _fp is mapping else {}) -%}
+            {{- _p.get('tracking', {}) | tojson -}}
+          {%- endif -%}
+        _r3b_primary_mobile: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {%- set ent = _r3b_entity | trim -%}
+          {%- if ent == '' -%}{{- '' -}}
+          {%- else -%}
+            {%- set _cab_labels = labels(ent) | reject('match', '^zen_') | reject('equalto', 'ai_user') | list -%}
+            {%- set ns = namespace(tracker='') -%}
+            {%- for lbl in _cab_labels if ns.tracker == '' -%}
+              {%- set _pe = label_entities(lbl) | select('match', '^person\\.') | list | first | default('') -%}
+              {%- if _pe != '' -%}
+                {%- set _src = state_attr(_pe, 'source') | default('') -%}
+                {%- if _src != '' -%}{%- set ns.tracker = _src -%}{%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if ns.tracker == '' -%}
+              {%- set _up = CABS.cabinet_drawer_value(ent, '_user_profile', {}) | from_json() -%}
+              {%- set _fp = CABS.cabinet_drawer_value(ent, '_family_profile', {}) | from_json() -%}
+              {%- set _p = _up if (_up is mapping and _up | length > 0) else (_fp if _fp is mapping else {}) -%}
+              {%- set ns.tracker = _p.get('primary_mobile', '') | trim -%}
+            {%- endif -%}
+            {{- ns.tracker -}}
+          {%- endif -%}
+    # Pre-compute: mobile block — chase device_id → device_entities → filter by label then domain
+    - variables:
+        _r3b_mobile: >-
+          {%- set _mob = _r3b_primary_mobile | trim -%}
+          {%- set _tr = _r3b_tracking | from_json if _r3b_tracking is string else _r3b_tracking -%}
+          {%- set _tr = _tr if _tr is mapping else {} -%}
+          {%- if _mob == '' -%}
+            {{- {'configured': false} | tojson -}}
+          {%- else -%}
+            {%- set _dev = device_id(_mob) | default('') -%}
+            {%- if _dev == '' -%}
+              {{- {'configured': true, 'entity_id': _mob, 'error': 'device_id not found'} | tojson -}}
+            {%- else -%}
+              {%- set _ents = device_entities(_dev) | list -%}
+              {%- set ns = namespace(battery='', activity='', wifi='', geocoded='', sensors=[], binary_sensors=[]) -%}
+              {%- for e in _ents -%}
+                {%- set _lbls = labels(e) | list -%}
+                {%- set _dom = e.split('.')[0] -%}
+                {%- if 'mobile_battery' in _lbls or (ns.battery == '' and 'battery' in e and 'level' in e) -%}
+                  {%- set ns.battery = e -%}
+                {%- endif -%}
+                {%- if 'mobile_activity' in _lbls or (ns.activity == '' and 'activity' in e and _dom == 'sensor') -%}
+                  {%- set ns.activity = e -%}
+                {%- endif -%}
+                {%- if 'mobile_wifi' in _lbls or (ns.wifi == '' and ('ssid' in e or 'wifi_connection' in e) and _dom == 'sensor') -%}
+                  {%- set ns.wifi = e -%}
+                {%- endif -%}
+                {%- if 'mobile_geocoded' in _lbls or (ns.geocoded == '' and 'geocoded' in e and _dom == 'sensor') -%}
+                  {%- set ns.geocoded = e -%}
+                {%- endif -%}
+                {%- if _dom == 'sensor' -%}{%- set ns.sensors = ns.sensors + [e] -%}
+                {%- elif _dom == 'binary_sensor' -%}{%- set ns.binary_sensors = ns.binary_sensors + [e] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set _zone_ok = _tr.get('gps_zone', false) | bool -%}
+              {%- set _gps_ok  = _tr.get('gps_full',  false) | bool -%}
+              {%- set _mob_d = {
+                'configured':       true,
+                'entity_id':        _mob,
+                'device_id':        _dev,
+                'zone':             states(_mob) if _zone_ok else 'consent_required',
+                'battery':          states(ns.battery) | default(none) if ns.battery != '' else none,
+                'battery_entity':   ns.battery if ns.battery != '' else none,
+                'activity':         states(ns.activity) | default(none) if ns.activity != '' else none,
+                'activity_entity':  ns.activity if ns.activity != '' else none,
+                'wifi_ssid':        states(ns.wifi) | default(none) if ns.wifi != '' else none,
+                'wifi_entity':      ns.wifi if ns.wifi != '' else none,
+                'geocoded_entity':  ns.geocoded if ns.geocoded != '' else none,
+                'all_entities':     _ents,
+                'sensors':          ns.sensors,
+                'binary_sensors':   ns.binary_sensors
+              } -%}
+              {%- if _gps_ok -%}
+                {%- set _mob_d = _mob_d | combine({
+                  'latitude':     state_attr(_mob, 'latitude'),
+                  'longitude':    state_attr(_mob, 'longitude'),
+                  'gps_accuracy': state_attr(_mob, 'gps_accuracy')
+                }) -%}
+              {%- endif -%}
+              {{- _mob_d | tojson -}}
+            {%- endif -%}
+          {%- endif -%}
+    # Pre-compute: presence block — person zone + device area (consent-gated)
+    - variables:
+        _r3b_presence: >-
+          {%- set _tr = _r3b_tracking | from_json if _r3b_tracking is string else _r3b_tracking -%}
+          {%- set _tr = _tr if _tr is mapping else {} -%}
+          {%- set _zone_ok = _tr.get('gps_zone', false) | bool -%}
+          {%- set _room_ok = _tr.get('room', false) | bool -%}
+          {%- set _eid = _r3b_person_entity | default('') | trim -%}
+          {%- set _zone = states(_eid) if _zone_ok and _eid != '' else ('consent_required' if _eid != '' else none) -%}
+          {%- set _mob = _r3b_mobile | from_json if _r3b_mobile is string else _r3b_mobile -%}
+          {%- set _mob = _mob if _mob is mapping else {} -%}
+          {%- set _dev = _mob.get('device_id', '') | default('') -%}
+          {%- set _raw_area = area_id(_dev) | default(none) if _dev not in ['', none] else none -%}
+          {%- set _area_id = _raw_area if _room_ok else ('consent_required' if _raw_area is not none else none) -%}
+          {%- set _area_name = area_name(_area_id) | default('') if _room_ok and _area_id is not none else '' -%}
+          {{- {
+            'person_entity': _eid if _eid != '' else none,
+            'zone':          _zone,
+            'at_home':       (states(_eid) == 'home') if _zone_ok and _eid != '' else none,
+            'area_id':       _area_id,
+            'area_name':     _area_name
+          } | tojson -}}
+    # Branch: reverse area lookup (label had no owner cabinet → find residents by area label)
+    - choose:
+        - conditions: "{{- _r3b_is_reverse | bool -}}"
+          sequence:
+            - variables:
+                response: >
+                  {{-
+                    {
+                      'result':            'area_residents',
+                      'is_person':         false,
+                      'is_group':          false,
+                      'is_ai':             false,
+                      'area_label':        normalized,
+                      'area_residents':    _r3b_reverse_residents | from_json if _r3b_reverse_residents is string else _r3b_reverse_residents,
+                      'target_normalized': normalized,
+                      'timestamp':         now().isoformat(),
+                      'caller_token':      caller_token | default('')
+                    }
+                  -}}
+            - stop: Area reverse lookup complete
+              response_variable: response
     - variables:
         response: >
           {{-
             {
               'result':           cab,
+              'is_person':        not (_r3b_is_ai | bool) and not (_r3b_is_group | bool),
+              'is_group':         _r3b_is_group | bool,
+              'is_ai':            _r3b_is_ai | bool,
+              'cabinet':          _r3b_entity,
+              'person_entity':    _r3b_person_entity | default('') | trim,
               'target_normalized': normalized,
+              'spaces':      _r3b_spaces      | from_json if _r3b_spaces      is string else _r3b_spaces,
+              'area_labels': _r3b_area_labels  | from_json if _r3b_area_labels  is string else _r3b_area_labels,
+              'tracking':    _r3b_tracking     | from_json if _r3b_tracking     is string else _r3b_tracking,
+              'mobile':      _r3b_mobile       | from_json if _r3b_mobile       is string else _r3b_mobile,
+              'presence':    _r3b_presence     | from_json if _r3b_presence     is string else _r3b_presence,
               'timestamp':        now().isoformat(),
               'caller_token':     caller_token | default('')
             }

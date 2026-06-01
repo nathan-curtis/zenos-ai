@@ -1,126 +1,378 @@
 # Your First Alert
 
-> **Version:** 2026.5.0 'Fry's Grandpa' | **Last Updated:** May 2026
+> **Version:** 2026.6.0 'Clue' | **Last Updated:** May 2026
 
-*The fastest way to see ZenOS-AI's action pipeline working end to end.*
-
----
-
-You've done first-run setup. Your AI knows your home. Now let's get it to tell you something.
-
-This walkthrough takes you from zero to your first notification using `alert_manager` — ZenOS-AI's built-in alert component. Six steps.
+*The fastest way to prove ZenOS-AI can get your attention.*
 
 ---
 
-## Step 1 — Enable alert_manager
+You've finished first-run setup. Your AI knows the home, Flynn has brought the cabinets online, and now you want one simple thing: make ZenOS-AI raise an alert, show you where it lives, and clear it again.
 
-`alert_manager` ships disabled. Enable it by asking your AI:
+This walkthrough uses the current AlertManager path in 2026.6.0:
 
-> "Enable alert manager"
-
-Or via prompt_loader if you're an admin: set `meta.enabled: true` in the `alert_manager` Dojo drawer using `zen_dojotools_scribe`.
-
-To confirm it's on, ask your AI: *"Is alert_manager enabled?"* It will read the Dojo drawer and tell you.
-
----
-
-## Step 2 — Create a notify.admin_devices service
-
-`alert_manager` sends notifications to `notify.admin_devices`. You need to create this as a notify group in HA pointing at your phone.
-
-In your HA `configuration.yaml` (or a package file):
-
-```yaml
-notify:
-  - name: admin_devices
-    platform: group
-    services:
-      - service: mobile_app_your_phone  # replace with your actual notify service
+```
+alert_fire event -> Zen Alert Manager -> _zen_active_alerts -> notification
 ```
 
-To find your phone's notify service name: **Developer Tools → Services**, filter by `notify.mobile_app_` — it will be something like `notify.mobile_app_pixel_8` or `notify.mobile_app_my_iphone`. Use the part after `notify.` in the config above.
+No `notify.admin_devices` group is required. No Ninja summary is required for this first test. The AlertManager automation is always listening for `zen_event` events, and the MCP-facing tool `zen_dojotools_alertmanager` gives your AI a simple way to fire, list, and clear alerts.
 
-**Restart HA** after adding this (a config reload is not sufficient — `configuration.yaml` changes require a full restart). Confirm `notify.admin_devices` appears in Developer Tools → Services after restart.
+This is the smallest version of the larger ZenOS loop:
+
+```text
+something happens -> decide if it matters -> surface attention -> ask a human if needed -> clear, suppress, or escalate
+```
+
+Later, "something happens" might be a camera analysis, an AutoVac blocker, a water leak, or a utility fault. The same attention layer handles dedup and priority so the system does not shout twice about the same active condition.
+
+The ideal first real-world version feels like this:
+
+```text
+camera/tool sees context
+  -> component decides it may matter
+  -> AlertManager creates one active alert
+  -> Postman routes it using the person's profile
+  -> the person answers: acknowledge, alarm/escalate, cancel, or "he's fine"
+  -> the alert clears or becomes higher priority
+```
+
+For example: the back fence camera sees someone in a hat riding a lawn mower near the fence. The system should not jump straight to panic. A good governed alert is closer to: "I do not think this is an issue, but is this okay?" If JoeUser has quiet hours off and work-hours routing on, Postman can ask JoeUser through the configured channel. When JoeUser says "he's fine," the alert can be acknowledged or cleared instead of escalating.
+
+```mermaid
+flowchart LR
+  Camera["Back fence camera context"]
+  Component["Camera or Security component"]
+  Gate{"Looks attention-worthy?"}
+  AlertManager["AlertManager creates one active alert"]
+  Drawer["_zen_active_alerts drawer"]
+  Postman["Postman applies JoeUser profile"]
+  Question["Ask: Is this okay?"]
+  Choice{"JoeUser response"}
+  Ack["Acknowledge or clear"]
+  Alarm["Escalate alarm"]
+  Cancel["Cancel or suppress"]
+
+  Camera --> Component --> Gate
+  Gate -- "No" --> Cancel
+  Gate -- "Yes" --> AlertManager --> Drawer --> Postman --> Question --> Choice
+  Choice -- "He's fine" --> Ack
+  Choice -- "Alarm" --> Alarm
+  Choice -- "Cancel" --> Cancel
+```
 
 ---
 
-## Step 3 — Tag your first entity
+## What AlertManager Does
 
-Pick one entity you want `alert_manager` to watch. A good first choice: a smoke detector, door sensor, or any binary sensor where "on" means something's wrong.
+AlertManager is a fire-once alert system.
 
-In HA's entity registry, add two labels to that entity:
+When an alert fires, it stores the alert key in the household cabinet drawer `_zen_active_alerts`. If the same key fires again while it is still active, AlertManager suppresses the duplicate. When the condition clears, the key is removed and that same alert can fire again later.
 
-1. **`Alert Manager`** — puts the entity in scope
-2. An **`alert_when_*`** modifier — tells the AI which direction is the alert condition:
-   - `alert_when_on` — ON is bad (leak sensors, smoke detectors, fault flags)
-   - `alert_when_off` — OFF is bad (pumps, valves, services that must stay running)
-   - `alert_when_not_off` — any non-off state is bad (multi-state sensors)
-   - `alert_when_under_N` — numeric value below N is bad (e.g. `alert_when_under_24` for salt lbs)
+Severity controls how much attention the alert gets:
 
-Without a modifier label, the entity is treated as informational context — the AI reads it but won't flag it as a deviation.
+| Severity | Notification | Priority context |
+|---|---|---|
+| `info` | Sent to the chosen target | No |
+| `warn` | Sent to the chosen target | No |
+| `error` | Sent to the chosen target | Yes — writes priority context for the AI |
 
-No code needed. The HyperIndex resolves labels automatically — Step 4 fires the first run manually so you don't have to wait for a scheduled sweep.
+By default, alerts expire after 24 hours. Use `clear_after_minutes: 0` only for alerts that should stay active until someone explicitly clears them.
 
 ---
 
-## Step 4 — Fire a test summary
+## Step 1 — Confirm AlertManager Exists
 
-Ask your AI to run a summary now:
+After installing or upgrading to 2026.6.0, AlertManager should be present as:
 
-> "Run alert manager summary"
+- `automation.zen_alert_manager`
+- `script.zen_dojotools_alertmanager`
+- `sensor.zen_priority_context`
 
-Or fire a `zen_event` directly from Developer Tools:
+Ask your AI:
+
+> "List active alerts."
+
+It should call `zen_dojotools_alertmanager` with `mode=list`. A clean system returns zero active alerts. If the tool is missing after first install, fully restart Home Assistant once. New script entities do not always appear in the conversation agent tool schema after a script reload.
+
+You can also check directly in HA:
+
+1. Open **Developer Tools -> States**
+2. Search for `sensor.zen_priority_context`
+3. It should usually read `clear`
+
+---
+
+## Step 2 — Fire a Test Alert
+
+The easiest path is conversational:
+
+> "Fire a test ZenOS alert called first_alert_test. Make it a warning and send it as a persistent notification."
+
+Your AI should call `script.zen_dojotools_alertmanager` with these fields:
+
+```yaml
+mode: fire
+alert_key: first_alert_test
+message: "ZenOS first alert test."
+severity: warn
+notify_target: persistent
+clear_after_minutes: 30
+```
+
+If you are calling it yourself from **Developer Tools -> Actions**, use:
+
+```yaml
+action: script.zen_dojotools_alertmanager
+data:
+  mode: fire
+  alert_key: first_alert_test
+  message: "ZenOS first alert test."
+  severity: warn
+  notify_target: persistent
+  clear_after_minutes: 30
+```
+
+What should happen:
+
+- HA shows a persistent notification
+- `_zen_active_alerts` gets a `first_alert_test` entry
+- `sensor.zen_priority_context` stays `clear` because this is only a warning
+
+If you prefer Developer Tools, fire the event directly:
 
 ```yaml
 event: zen_event
 event_data:
   event:
-    kind: summary_force
-    component: alert_manager
+    kind: alert_fire
+    alert_key: first_alert_test
+    message: "ZenOS first alert test."
+    severity: warn
+    notify_target: persistent
+    clear_after_minutes: 30
 ```
 
-The Ninja Summarizer runs, reads your labeled entity, interprets the state against the `alert_manager` component spec, and writes a Kata to the Kata Cabinet.
+---
+
+## Step 3 — Prove Dedup Works
+
+Fire the exact same alert again:
+
+> "Fire first_alert_test again."
+
+You should not get a second notification. That is the point. AlertManager treats `alert_key` as the dedup key, so a still-active key is a no-op.
+
+This behavior is what keeps a noisy sensor from sending the same alert over and over while the underlying condition remains true.
 
 ---
 
-## Step 5 — Check the kata
+## Step 4 — List Active Alerts
 
-Ask your AI:
+Ask:
 
-> "What did alert manager find?"
+> "List active alerts."
 
-Or read the `alert_manager` drawer in the Kata Cabinet directly. You should see a compact, structured summary of the entity you tagged — state, attention flag, urgency score.
+The result should include:
 
-If the kata is empty or the entity isn't mentioned, double-check the label name. It must match exactly: `Alert Manager` (case-sensitive).
+- `alert_key: first_alert_test`
+- `message`
+- `severity: warn`
+- `fired_at`
+- `expires_at`
+- `age_min`
+- `in_priority_inject: false`
+
+This comes from the household cabinet drawer `_zen_active_alerts`. You normally do not need to read that drawer yourself; the tool is the safer front door.
 
 ---
 
-## Step 6 — Get the notification
+## Step 5 — Try an Error Alert
 
-For a notification to fire, the entity needs to be in its alert state — door open, sensor on, whatever "bad" looks like for your entity. If it's currently healthy, `action_required` comes back false and nothing is sent. **Trigger the alert state now** if you want to test the full path.
+Now test the priority context path:
 
-Once the kata has `action_required: true`, the notification router fires on the next emission cycle (the scheduler runs at minimum every hour when enabled). To test it right now without waiting:
+> "Fire a test error alert called first_error_test. Use persistent notification."
 
-> "Send me the alert manager summary"
+Expected tool fields:
 
-Your AI will dispatch a notification to `notify.admin_devices` via `zen_dojotools_postman`.
+```yaml
+mode: fire
+alert_key: first_error_test
+message: "ZenOS first error alert test."
+severity: error
+notify_target: persistent
+clear_after_minutes: 30
+```
 
-Check your phone. That's the pipeline — all the way through.
+Developer Tools -> Actions form:
 
-> **Notification not arriving?** ZenOS routes through Postman, which reads a delivery policy from your cabinets. If you haven't seeded the policy yet, nothing gets dispatched. See **[Notification Routing](notification_routing.md)** for the one-time setup.
+```yaml
+action: script.zen_dojotools_alertmanager
+data:
+  mode: fire
+  alert_key: first_error_test
+  message: "ZenOS first error alert test."
+  severity: error
+  notify_target: persistent
+  clear_after_minutes: 30
+```
+
+What should change:
+
+- HA shows a persistent notification
+- `_zen_active_alerts` gets `first_error_test`
+- `_zen_priority_inject` gets a matching priority entry
+- `sensor.zen_priority_context` changes to `active`
+
+This is the part your AI sees in its context frame. Error alerts are not just notifications; they become situational awareness.
+
+---
+
+## Step 6 — Clear the Alerts
+
+Clear each test alert:
+
+> "Clear first_alert_test and first_error_test."
+
+Expected tool fields:
+
+```yaml
+mode: clear
+alert_key: first_alert_test
+```
+
+```yaml
+mode: clear
+alert_key: first_error_test
+```
+
+Then ask:
+
+> "List active alerts."
+
+You should see no active alerts, and `sensor.zen_priority_context` should return to `clear`.
+
+If you are testing and want to wipe all active alerts:
+
+```yaml
+action: script.zen_dojotools_alertmanager
+data:
+  mode: clear_all
+```
+
+Use `clear_all` carefully on a live home, since it clears real alerts too.
+
+---
+
+## Notification Targets
+
+For a first test, use `notify_target: persistent`. It works without extra setup and proves the AlertManager pipeline.
+
+Other targets:
+
+| Target | Use when |
+|---|---|
+| `persistent` | You want an HA persistent notification. Best first test. |
+| `postman` | You have Postman profiles configured and want push, TTS, or Teams routing. |
+| `mobile` | Legacy/simple mobile path if supported by your install. |
+
+For Postman routing, include `channel_hint`:
+
+```yaml
+action: script.zen_dojotools_alertmanager
+data:
+  mode: fire
+  alert_key: first_postman_test
+  message: "Testing Postman alert routing."
+  severity: warn
+  notify_target: postman
+  channel_hint: push
+```
+
+If the persistent test works but Postman does not, the problem is in Postman/profile routing, not AlertManager.
+
+---
+
+## Turning Real Conditions Into Alerts
+
+The test above proves the alert pipeline. Real sensors still need an automation, KFC, or tool to decide when to fire and clear alerts.
+
+For a simple smoke detector example:
+
+```yaml
+automation:
+  - id: zenos_smoke_alert_example
+    alias: ZenOS Smoke Alert Example
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.your_smoke_detector
+        to: "on"
+        for:
+          seconds: 5
+    actions:
+      - event: zen_event
+        event_data:
+          event:
+            kind: alert_fire
+            alert_key: smoke_detector_alarm
+            message: "Smoke detector is alarming."
+            severity: error
+            notify_target: persistent
+            clear_after_minutes: 0
+
+  - id: zenos_smoke_clear_example
+    alias: ZenOS Smoke Clear Example
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.your_smoke_detector
+        to: "off"
+        for:
+          seconds: 10
+    actions:
+      - event: zen_event
+        event_data:
+          event:
+            kind: alert_clear
+            alert_key: smoke_detector_alarm
+```
+
+Replace the entity ID before using this. Do not copy a safety automation blindly; test it with a harmless binary sensor first.
+
+The older `alert_manager` KFC and `alert_when_*` labels still describe one summarizer-driven monitoring pattern, but they are not required for the direct AlertManager test in this guide.
+
+---
+
+## Troubleshooting
+
+**I fired the same alert twice and only got one notification.**
+Good. That means dedup is working. Clear the alert before firing it again.
+
+**`sensor.zen_priority_context` did not change for a warning.**
+Correct. Only `severity: error` writes priority context.
+
+**The tool says queued but I do not see the alert immediately.**
+The tool emits an event, and the automation handles the event asynchronously. Wait a moment, then run `mode=list`.
+
+**The tool is missing from my AI's tool list.**
+Fully restart Home Assistant once. New script entities may not appear in MCP/tool schemas after script reload alone.
+
+**Persistent notification works, but phone push does not.**
+AlertManager is working. Check Postman routing, mobile app notify services, and any sleep/away gates.
 
 ---
 
 ## What's Next
 
-You've just seen the full KF4 action pipeline: entity → label → Ninja → kata → notification.
+You've just seen the current 2026.6.0 alert path:
 
-Every other Kung Fu Component works the same way. To add more:
+```
+event or tool -> AlertManager -> active alert drawer -> notification -> optional AI priority context
+```
 
-- **[Understanding KF4](../kung_fu/understanding_kf4.md)** — how to write a component from scratch
-- **[Alert Manager guide](../kung_fu/alert_manager.md)** — severity triage, debounce, wiring more entities
-- **[Entity Exposure](entity_exposure.md)** — what to show your AI and why
+Next reads:
+
+- **[AlertManager reference](../components/alertmanager.md)** — full current behavior, TTL, priority context, and tool modes
+- **[Understanding KF4](../kung_fu/understanding_kf4.md)** — how summarizer-driven components fit beside direct event alerts
+- **[Entity Exposure](entity_exposure.md)** — what to expose to your AI and what to keep behind tools
 
 ---
 
-→ **[Back to Getting Started](readme.md)**
+-> **[Back to Getting Started](readme.md)**

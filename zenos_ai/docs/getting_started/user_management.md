@@ -1,4 +1,4 @@
-# User and AI User Management — ZenOS-AI 2026.5.0 'Fry's Grandpa'
+# User and AI User Management — ZenOS-AI 2026.6.0 'Clue'
 
 *Provisioning, deprovisioning, moving, and repairing identity cabinets for people and AI constructs*
 
@@ -218,6 +218,22 @@ System
             └─ Sub-family (extended family — not on-premises)
 ```
 
+```mermaid
+flowchart TD
+  System["ZenOS system"]
+  Household["Household\noccupancy: lives here"]
+  Family["Family\nbelonging: part of this unit"]
+  SubFamily["Sub-family\nextended family"]
+  User["User cabinet"]
+  AI["AI user cabinet"]
+
+  System --> Household
+  Household --> Family
+  Family --> SubFamily
+  Family --> User
+  Household --> AI
+```
+
 **Household membership = residence.** Being in the household's `members` list means you occupy that space.
 
 **Family membership = belonging.** Being in a family means you're part of that unit. Inviting your AI into a family is a special act — it fires a `family_member_joined` event with `prompt_profile_update: true` so the AI can surface naming and profile suggestions.
@@ -240,6 +256,20 @@ When provisioning a fresh system, the recommended sequence:
 6. **Add AI to household** — first AI fills the `prime` partner slot
 7. **Link user and AI** — bidirectional partner link
 8. **Optionally invite AI into family** — explicit invite required; fires join event
+
+```mermaid
+flowchart LR
+  Household["Mint household"]
+  Family["Add family to household"]
+  User["Mint user"]
+  UserFamily["Add user to family"]
+  AI["Mint AI user"]
+  AIHouse["Add AI to household"]
+  Partner["Link user and AI"]
+  Manifest["Rebuild manifest"]
+
+  Household --> Family --> User --> UserFamily --> AI --> AIHouse --> Partner --> Manifest
+```
 
 ---
 
@@ -559,3 +589,13 @@ After the nuclear sequence completes, re-provision each identity cabinet via the
 | Reset label assignments | `zen_dojotools_labels` | `reset` |
 | Rebuild identity manifest | `zen_dojotools_identity` | `build_identity_manifest` |
 | Full nuke | See [Troubleshooting](troubleshooting.md) | Steps 5–7 |
+
+---
+
+## Related Docs
+
+- [DojoTools Identity](../scripts/zen_dojotools_identity_readme.md) — mode reference and membership graph rules
+- [DojoTools Profile Editor](../scripts/zen_dojotools_profile_readme.md) — profile drawer writer
+- [Cabinet Specification](../cabinets/cabinet_spec.md) — valid cabinet/person/family/household/AI-user shapes
+- [Troubleshooting](troubleshooting.md) — graduated repair sequence and nuclear reset path
+- [Getting Started Overview](readme.md) — return path to the first-run suite

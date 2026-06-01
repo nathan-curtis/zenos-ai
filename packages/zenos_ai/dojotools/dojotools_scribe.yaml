@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scribe
-# Version: 1.3.0
+# Version: 5.1.0
 #
 # Purpose:
 #   Guided authoring and maintenance for KF4 artifacts.
@@ -57,6 +57,60 @@
 #   - Fixed:  publish_kfc payload now preserves schedules array — was silently dropped
 #             because the explicit payload dict did not include the schedules key
 #
+# Changelog vs 1.8.0:
+#   - Feature: component_size feedback on publish_kfc + republish_kfc responses.
+#             Reports component_instructions chars, ~token estimate (chars/4), and
+#             % of 16KB FileCabinet drawer limit. size_tier: ok/advisory/warning/danger.
+#             Full payload chars + tokens also included. Feedback string summarizes
+#             the context budget trade-off: heavier instructions = less room for domain data.
+#
+# Changelog vs 1.7.0:
+#   - Feature: republish_kfc mode — edit-and-republish path for existing KFCs.
+#             Reads current KFC from dojo, merges optional changes, fires full trim block
+#             (label create-then-update, chonk warning, inline field blank). No artifact_state
+#             guard — operates directly on dojo entries. Use after patch when label sync needed,
+#             or standalone to just sync the label description without changing any fields.
+#
+# Changelog vs 1.6.0:
+#   - Feature: publish_kfc label upsert — create label if absent (sets icon from KFC
+#             icon field), then always update description. Replaces update-only path
+#             that silently failed on first publish of a new label.
+#   - Feature: icon field added to KFC schema and _kfc_payload.
+#   - Feature: description chonk warning — warns if component_summary > 150 chars.
+#             label_description_chars + label_description_warning in result.
+#   - Clarified: component_summary = routing signal only, ~100 chars ideal.
+#   - Fixed: dojo_loader now reads label_description(label) first, falls back to
+#             component_summary in dojo drawer (zen_os_1.jinja line ~1253).
+#
+# Changelog vs 1.5.4:
+#   - Reverted: removed _kfc_descriptions kata cabinet write from trim block. HA label
+#             description IS the authority — no secondary cache needed. Scribe writes to
+#             label on publish; consumers read via Labels tool (script) or Scribe mode=read.
+#
+# Changelog vs 1.5.3:
+#   - Fixed:  removed set_timestamp: true hack from _kfc_descriptions FC write. cabinet_drawer_value
+#             macro already handles raw format via drawer.get('value', drawer if drawer else fallback).
+#             set_timestamp controls metadata presence, not storage format — wrong tool for the job.
+#
+# Changelog vs 1.5.2:
+#   - Wrong:  _kfc_descriptions FC write used set_timestamp: true as a hack to force wrapped storage.
+#             Root cause was misdiagnosed — macro already handles raw. See v1.5.4 for correct fix.
+#
+# Changelog vs 1.5.1:
+#   - Fixed:  _kfc_descriptions FC write now uses force_action: true (upsert). update alone
+#             silently fails when the drawer doesn't exist yet — first publish never landed.
+#
+# Changelog vs 1.5.0:
+#   - Fixed:  trim_description _kfc_payload blank now happens at parent scope (after if/then).
+#             HA variables: inside then: don't propagate out — blank was silently lost and
+#             component_summary was written to dojo with full text. Moved to sibling step.
+#
+# Changelog vs 1.4.0:
+#   - Added:  trim_description param (default true) on publish_kfc — writes component_summary
+#             (≤255 chars) to the KFC base label description, then blanks the inline field.
+#             Ensures all KFC labels carry a meaningful HA description. Readers resolve from
+#             label when drawer field is empty. Opt-out: trim_description: false.
+#
 # Assumptions:
 #   - thoughts, scrolls, and drafts may exist in any cabinet
 #   - published KFCs are normally pressed to the Dojo
@@ -77,12 +131,18 @@ script:
       Defaults to mode=help when no actionable input is provided. Manages
       thought (mutable draft), scroll (formal read-only artifact), and kfc
       (published KF4 component). Supports help, read, new_thought, patch,
-      replace, clear_field, delete, formalize_scroll, publish_kfc, dry_run,
-      list_triggers, and repair (flatten wrapper-accumulated drawers). Preserves existing content by default. Replace,
-      clear, or delete only when explicitly requested. Supports bounded scope
-      authoring through label_1 + label_2 + operator + filter_json +
-      expand_entities + output_fields. Echoes caller_token for audit and
-      future SP1 enforcement.
+      replace, clear_field, delete, formalize_scroll, publish_kfc,
+      republish_kfc (edit existing KFC + sync label — REQUIRES changes: dict,
+      same as patch; direct field args are ignored for content),
+      dry_run, list_triggers, and repair (flatten wrapper-accumulated drawers).
+      CONTENT UPDATES always require changes: {field: value} dict — both patch
+      and republish_kfc use changes: for merging. Direct field args (e.g.
+      component_instructions=) are NOT auto-merged. patch: update fields only.
+      republish_kfc: update fields + sync label description from component_summary.
+      Preserves existing content by default. Replace, clear, or delete only when
+      explicitly requested. Supports bounded scope authoring through label_1 +
+      label_2 + operator + filter_json + expand_entities + output_fields.
+      Echoes caller_token for audit and future SP1 enforcement.
 
     fields:
       mode:
@@ -101,6 +161,7 @@ script:
               - delete
               - formalize_scroll
               - publish_kfc
+              - republish_kfc
               - dry_run
               - list_triggers
               - repair
@@ -232,11 +293,18 @@ script:
 
       component_summary:
         name: Component Summary
-        description: one-line operational description
+        description: "Routing signal — what domain this owns and when to call it. ~100 chars ideal, 255 max. Operational policy and thresholds go in component_instructions."
         required: false
         selector:
           text:
             multiline: true
+
+      icon:
+        name: Icon
+        description: "mdi:icon-name for the KFC label (set on first publish, preserved on update)"
+        required: false
+        selector:
+          icon:
 
       component_instructions:
         name: Component Instructions
@@ -488,6 +556,26 @@ script:
         selector:
           text:
 
+      seed:
+        name: Seed (JSON)
+        description: >-
+          Concept-first context call. JSON string: {"tool": "zen_dojotools_index",
+          "params": {"query": "..."}}. When present, replaces index_call as the
+          context-fetch step. Preserved on update if already set and not overridden.
+        required: false
+        selector:
+          text:
+
+      area_seed:
+        name: Area Seed (JSON)
+        description: >-
+          Location-first variant. JSON string: {"tool": "zen_dojotools_room_manager",
+          "params": {"mode": "get", "area": "{{area_id}}", "context_slices": "..."}}.
+          Used instead of seed when area_id is passed at runtime. {{area_id}} filled dynamically.
+        required: false
+        selector:
+          text:
+
       tool:
         name: Tool
         description: tool breadcrumb or source
@@ -497,7 +585,7 @@ script:
 
       changes:
         name: Changes JSON
-        description: structured patch or replace payload
+        description: "Required for all content updates (patch + republish_kfc). Pass as dict: {field: value}. Direct top-level field args are NOT merged — only changes: dict is applied."
         required: false
         selector:
           object:
@@ -530,6 +618,14 @@ script:
         description: required to publish as kfc
         required: false
         default: false
+        selector:
+          boolean:
+
+      trim_description:
+        name: Trim to Label Description
+        description: write summary to label desc and blank inline field (default true)
+        required: false
+        default: true
         selector:
           boolean:
 
@@ -604,6 +700,7 @@ script:
           _replace_confirm: "{{ replace_confirm | default(false) | bool }}"
           _delete_confirm: "{{ delete_confirm | default(false) | bool }}"
           _publish_confirm: "{{ publish_confirm | default(false) | bool }}"
+          _trim_description: "{{ trim_description | default(true) | bool }}"
           _prevent_self_indexing: "{{ prevent_self_indexing | default(true) | bool }}"
           _suppress_drawer_feedback: "{{ suppress_drawer_feedback | default(true) | bool }}"
           _target_household: "{{ target_household | default('', true) | string | trim }}"
@@ -756,7 +853,7 @@ script:
                 "mode": "help",
                 "caller_id": caller_id,
                 "caller_token": caller_token,
-                "description": "Scribe authors and maintains KF4 artifacts. Thought is mutable draft. Scroll is formal RO. KFC is published truth. Use base label for durable corpus identity, and Index for bounded scope discovery.",
+                "description": "Scribe authors and maintains KF4 artifacts. Thought is mutable draft. Scroll is formal RO. KFC is published truth. Supports index-first (label scope), spatial-first (Room Manager area seed), and per-area rollup patterns for ambient awareness.",
                 "thinking_guide": [
                   "Thought is writable draft. Scroll is formal RO. KFC is published truth.",
                   "Drawer name equals prime index_key. Artifact class is semantics, not key prefix.",
@@ -770,8 +867,57 @@ script:
                   "One corpus may host parent context plus one or more component views.",
                   "Parent and subcomponents may share one clock, one trigger set, and one labelset.",
                   "Use component_key for the published view and primary_index_key for shared corpus identity.",
-                  "publish_kfc requires source to be artifact_state=formal (run formalize_scroll first)."
+                  "publish_kfc requires source to be artifact_state=formal (run formalize_scroll first).",
+                  "CONTEXT SOURCE CHOICE: index_call is concept-first (what label do I query?). seed/area_seed is tool-first (what tool do I call, with what params?). Use seed when the context source is richer than a label query — e.g. Room Manager returns topology + live state + domain routing in one call.",
+                  "AMBIENT vs REACTIVE: Ambient KFCs run on schedule and synthesize home state continuously. Reactive KFCs fire on triggers (state change, alert, event). Ambient needs loose governors (long cooldown, moderate drift threshold). Reactive needs tight debounce (short delay_seconds) and low drift threshold to catch fast-moving situations.",
+                  "SPATIAL KFCs: When awareness is room-scoped, use area_seed with zen_dojotools_room_manager. Pass area_id at trigger time. One KFC per room fires independently; parent KFC rolls up across rooms. This is the per-area rollup pattern."
                 ],
+                "context_source_guide": {
+                  "index_call": "Concept-first. Best for global/cross-home domains (alerts, energy, grocy, security posture). Query by label, get entity list + inspect detail.",
+                  "seed": "Tool-first, concept-scoped. Replaces index_call when the context source is a richer tool. Set tool + params. Pipeline calls it directly — no label resolution step.",
+                  "area_seed": "Tool-first, location-scoped. Like seed but {{area_id}} slot in params is filled at runtime. Use zen_dojotools_room_manager with context_slices matching the domain. Best for: lighting, climate, media, tasks, covers — anything where room topology or live state matters.",
+                  "when_to_use_rm": "Choose Room Manager area_seed when: (1) the KFC synthesizes awareness for a specific space, (2) you need open sensors / active lights / climate / media in context, (3) the domain tool (ZenLux, Climate, Media) takes area_id as input. RM returns topology + live slices in one call — no secondary index needed.",
+                  "recommended_rm_slices": {
+                    "lighting_kfc": "+light,+topo",
+                    "climate_kfc": "+climate,+topo",
+                    "media_kfc": "+media,+light",
+                    "room_awareness_kfc": "+topo,+light,+climate,+media,+tasks",
+                    "security_kfc": "+topo"
+                  }
+                },
+                "per_area_rollup_pattern": {
+                  "description": "One KFC per room fires with area_id injected at trigger time. Each synthesizes room-scoped awareness independently. A parent KFC rolls up across all rooms for home-wide view.",
+                  "structure": "Parent KFC: index_call or seed scoped to whole-home. Child KFCs: area_seed with room_manager, one per area. Parent component_key = shared parent_component_key on children.",
+                  "scheduler_integration": "Scheduler fires child KFCs per-area by passing area_id in the sub-run payload. index_call_override or area_id field on ninja_summarizer carries the area scope.",
+                  "example_child_seed": "{\"tool\": \"zen_dojotools_room_manager\", \"params\": {\"mode\": \"get\", \"area\": \"{{area_id}}\", \"context_slices\": \"+light,+topo,+climate\"}}",
+                  "note": "Real-world tuning for this pattern is in progress. Values below are provisional starting points — update after experiments."
+                },
+                "tuning_guide": {
+                  "delay_seconds": {
+                    "purpose": "Debounce window after trigger fires before synthesis runs. Absorbs rapid state churn.",
+                    "ambient_schedule": 0,
+                    "reactive_state_change": "30–120 — wait for state to settle before synthesizing",
+                    "reactive_alert": "0–15 — alerts are already debounced upstream by AlertManager TTL",
+                    "note": "delay_seconds applies per KFC trigger subscription, not per schedule slot."
+                  },
+                  "drift_threshold": {
+                    "purpose": "Urgency score at or above this value forces a SuperSummary synthesis. Lower = more sensitive.",
+                    "ambient_low_stakes": "7–9 — only escalate on genuinely high urgency",
+                    "reactive_safety_critical": "3–5 — escalate early on fast-moving situations",
+                    "default": 7
+                  },
+                  "emission_cooldown_minutes": {
+                    "purpose": "Minimum gap between urgency/action emissions for this component. Prevents spam if urgency stays elevated.",
+                    "ambient": "60–120 — one emission per synthesis window is enough",
+                    "reactive_high_frequency": "15–30 — allow re-emission if situation evolves",
+                    "default": 60
+                  },
+                  "governor_burnout_seconds": {
+                    "purpose": "Per-component dedup window. Absorbs duplicate trigger firings within the window. Set in zen_ninja_config household drawer, not per-KFC.",
+                    "typical": "300 (5 min) — matches scheduler cadence for most ambient KFCs"
+                  },
+                  "tuning_philosophy": "Ambient KFCs should run quietly and only surface via SuperSummary when drift crosses threshold. Reactive KFCs should fire fast and emit early. Per-area spatial KFCs run frequently but each is cheap — keep cooldown short and drift threshold moderate."
+                },
                 "modes": {
                   "help": "show doctrine and contract",
                   "read": "read existing thought, scroll, or kfc",
@@ -782,6 +928,7 @@ script:
                   "delete": "delete drawer explicitly",
                   "formalize_scroll": "mark thought formal and read-only",
                   "publish_kfc": "publish validated scroll to Dojo as KFC (requires artifact_state=formal)",
+                  "republish_kfc": "edit existing KFC and sync label description — no formal scroll required. REQUIRES changes: dict for content updates (same as patch). Direct field args are ignored.",
                   "dry_run": "preview scope and guidance without publishing",
                   "list_triggers": "return normalized trigger options",
                   "repair": "detect and flatten wrapper-accumulated drawer (dry_run: true default — set false to write)"
@@ -806,6 +953,7 @@ script:
                 },
                 "examples": [
                   {
+                    "description": "Concept-first KFC — global domain, index_call (existing pattern)",
                     "mode": "new_thought",
                     "artifact_class": "thought",
                     "cabinet_entity_id": "sensor.zen_dojo_cabinet_resolved",
@@ -823,10 +971,24 @@ script:
                     "operator": "AND"
                   },
                   {
+                    "description": "Spatial KFC — room-scoped, area_seed with Room Manager",
+                    "mode": "new_thought",
+                    "artifact_class": "thought",
+                    "cabinet_entity_id": "sensor.zen_dojo_cabinet_resolved",
+                    "key": "living_room_awareness",
+                    "label": "Room Awareness",
+                    "trigger_subscriptions": "quarter_hour,home_mode_updates",
+                    "drift_threshold": 5,
+                    "emission_cooldown_minutes": 30,
+                    "seed": "{\"tool\": \"zen_dojotools_room_manager\", \"params\": {\"mode\": \"get\", \"area\": \"living_room\", \"context_slices\": \"+topo,+light,+climate,+media\"}}",
+                    "area_seed": "{\"tool\": \"zen_dojotools_room_manager\", \"params\": {\"mode\": \"get\", \"area\": \"{{area_id}}\", \"context_slices\": \"+topo,+light,+climate,+media\"}}"
+                  },
+                  {
+                    "description": "Tune governor fields on an existing KFC",
                     "mode": "patch",
                     "artifact_class": "kfc",
                     "key": "water_manager",
-                    "changes": {"delay_seconds": 90}
+                    "changes": {"delay_seconds": 90, "drift_threshold": 5, "emission_cooldown_minutes": 30}
                   }
                 ]
               } | tojson
@@ -1063,6 +1225,8 @@ script:
                           "domain_inspect_domains": _domain_inspect_domains,
                           "domain_inspect_limit": _domain_inspect_limit
                         },
+                        "seed": (seed | from_json) if (seed | default('', true) | trim) != '' else none,
+                        "area_seed": (area_seed | from_json) if (area_seed | default('', true) | trim) != '' else none,
                         "scope_summary": _index_summary,
                         "scope_safety": {
                           "prevent_self_indexing": _prevent_self_indexing,
@@ -1680,7 +1844,10 @@ script:
                           "domain_inspect_domains": _domain_inspect_domains,
                           "domain_inspect_limit": _domain_inspect_limit
                         }),
+                        "seed": ((seed | from_json) if (seed | default('', true) | trim) != '' else none) if (seed | default('', true) | trim) != '' else base.get('seed', none),
+                        "area_seed": ((area_seed | from_json) if (area_seed | default('', true) | trim) != '' else none) if (area_seed | default('', true) | trim) != '' else base.get('area_seed', none),
                         "component_summary": base.get('component_summary', component_summary | default('', true)),
+                        "icon": base.get('icon', icon | default('', true)),
                         "component_instructions": base.get('component_instructions', component_instructions | default('', true)),
                         "more_info": base.get('more_info', more_info | default('', true)),
                         "tool": base.get('tool', tool | default('', true)),
@@ -1709,6 +1876,49 @@ script:
                         }
                       } | tojson
                     }}
+              - variables:
+                  _trim_summary: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {%- set _p = _p if _p is mapping else {} -%}
+                    {{ (_p.get('component_summary', '') | string | trim)[:255] }}
+                  _trim_label: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p if _p is mapping else {}).get('label', _base_label) | string | trim }}
+                  _trim_icon: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p if _p is mapping else {}).get('icon', '') | string | trim }}
+              - variables:
+                  _desc_chonky: "{{ (_trim_summary | trim | length) > 150 }}"
+              - if:
+                  - condition: template
+                    value_template: >-
+                      {{ _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' }}
+                then:
+                  # Create label if absent — sets icon on first publish, noop if already exists
+                  - action: script.zen_dojotools_labels
+                    data:
+                      action_type: create
+                      label_list:
+                        - "{{ _trim_label }}"
+                      new_description: "{{ _trim_summary }}"
+                      new_icon: "{{ _trim_icon }}"
+                      confirm: true
+                  # Always update description — Labels tool preserves existing icon if new_icon absent
+                  - action: script.zen_dojotools_labels
+                    data:
+                      action_type: update
+                      label_list:
+                        - "{{ _trim_label }}"
+                      new_description: "{{ _trim_summary }}"
+                      confirm: true
+              - variables:
+                  _kfc_payload: >-
+                    {%- if _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' -%}
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p | combine({'component_summary': ''})) | tojson }}
+                    {%- else -%}
+                    {{ _kfc_payload }}
+                    {%- endif -%}
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: update
@@ -1726,6 +1936,19 @@ script:
                   caller_token: "{{ caller_token }}"
                 response_variable: _publish_write
               - variables:
+                  _ci_chars: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p if _p is mapping else {}).get('component_instructions', '') | string | length }}
+                  _payload_chars: "{{ _kfc_payload | string | length }}"
+              - variables:
+                  _ci_tokens_est: "{{ (_ci_chars | int / 4) | round | int }}"
+                  _payload_tokens_est: "{{ (_payload_chars | int / 4) | round | int }}"
+                  _ci_pct_drawer: "{{ (_ci_chars | int / 16384 * 100) | round(1) }}"
+                  _payload_pct_drawer: "{{ (_payload_chars | int / 16384 * 100) | round(1) }}"
+                  _size_tier: >-
+                    {%- set c = _ci_chars | int -%}
+                    {%- if c > 8192 -%}danger{%- elif c > 4096 -%}warning{%- elif c > 2048 -%}advisory{%- else -%}ok{%- endif -%}
+              - variables:
                   result:
                     ok: true
                     tool: zen_dojotools_scribe
@@ -1739,8 +1962,191 @@ script:
                       {%- set _pw = _publish_write | default({}, true) -%}
                       {%- set _pw = _pw if _pw is mapping else {} -%}
                       {{ _pw | tojson | from_json }}
-                    message: Scroll published as KFC.
+                    label_description_chars: "{{ _trim_summary | trim | length }}"
+                    label_description_warning: "{{ 'component_summary is ' ~ (_trim_summary | trim | length) ~ ' chars — aim for ~100, 255 max. Operational details belong in component_instructions.' if _desc_chonky else '' }}"
+                    message: "{{ 'Scroll published as KFC. ⚠ Description chonk: ' ~ (_trim_summary | trim | length) ~ ' chars.' if _desc_chonky else 'Scroll published as KFC.' }}"
+                    component_size: >-
+                      {{ {"instructions_chars": _ci_chars | int, "instructions_tokens_est": _ci_tokens_est | int, "instructions_pct_of_16kb": _ci_pct_drawer, "payload_chars": _payload_chars | int, "payload_tokens_est": _payload_tokens_est | int, "payload_pct_of_16kb": _payload_pct_drawer, "size_tier": _size_tier, "feedback": "component_instructions = " ~ _ci_chars ~ " chars (~" ~ _ci_tokens_est ~ " tokens, " ~ _ci_pct_drawer ~ "% of 16KB limit). Full payload " ~ _payload_chars ~ " chars (~" ~ _payload_tokens_est ~ " tokens). Heavier instructions = less room for domain data."} }}
               - stop: publish_kfc
+                response_variable: result
+
+          # ================================================================
+          # REPUBLISH KFC
+          # ================================================================
+          - alias: Republish KFC
+            conditions:
+              - condition: template
+                value_template: "{{ _mode == 'republish_kfc' }}"
+            sequence:
+              - if:
+                  - condition: template
+                    value_template: "{{ _storage_key == '' }}"
+                then:
+                  - variables:
+                      result:
+                        ok: false
+                        tool: zen_dojotools_scribe
+                        mode: republish_kfc
+                        caller_token: "{{ caller_token }}"
+                        error: missing_required
+                        message: key (and artifact_class=kfc) required for republish_kfc.
+                  - stop: republish_kfc_error
+                    response_variable: result
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ _dojo_cab }}"
+                  key: "{{ _storage_key }}"
+                  caller_token: "{{ caller_token }}"
+                response_variable: _repub_read
+              - variables:
+                  _r0: >-
+                    {%- set raw = _repub_read.result | default({}, true) -%}
+                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+              - variables:
+                  _r1: >-
+                    {%- set _keyed = _r0 if _r0 is mapping else {} -%}
+                    {%- if _storage_key in _keyed -%}
+                      {%- set _d = _keyed.get(_storage_key, {}) -%}
+                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                    {%- else -%}
+                      {{ _r0 }}
+                    {%- endif -%}
+              - variables:
+                  _r2: >-
+                    {%- set _v = _r1.get('value', _r1) if _r1 is mapping else _r1 -%}
+                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+              - variables:
+                  _r3: >-
+                    {%- set _a = _r2 if _r2 is mapping else {} -%}
+                    {%- set _keys = _a.keys() | list -%}
+                    {%- set _is_shell = (
+                      _keys | length <= 3
+                      and 'value' in _keys
+                      and not _a.get('artifact_class')
+                      and not _a.get('index_call')
+                      and not _a.get('component_summary')
+                    ) -%}
+                    {%- if _is_shell -%}
+                      {%- set _inner = _a.get('value', {}) -%}
+                      {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
+                    {%- else -%}
+                      {{ _a }}
+                    {%- endif -%}
+              - variables:
+                  _kfc_payload: >-
+                    {%- set base = _r3 if _r3 is mapping else {} -%}
+                    {%- if _changes != {} -%}
+                      {%- set _inc_sched = _changes.get('schedules', none) -%}
+                      {%- if _inc_sched is sequence and _inc_sched is not string and _inc_sched is not none -%}
+                        {%- set _exist = base.get('schedules', []) -%}
+                        {%- set _new_keys = _inc_sched | map(attribute='kata_key') | list -%}
+                        {%- set ns = namespace(merged=[]) -%}
+                        {%- for s in _exist -%}
+                          {%- if s.get('kata_key', '') not in _new_keys -%}
+                            {%- set ns.merged = ns.merged + [s] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {%- set ns.merged = ns.merged + _inc_sched -%}
+                        {%- set _no_sched = dict(_changes.items() | rejectattr('0', 'equalto', 'schedules')) -%}
+                        {{ base | combine(_no_sched, recursive=true) | combine({'schedules': ns.merged}) | tojson }}
+                      {%- else -%}
+                        {{ base | combine(_changes, recursive=true) | tojson }}
+                      {%- endif -%}
+                    {%- else -%}
+                      {{ base | tojson }}
+                    {%- endif -%}
+              - variables:
+                  _trim_summary: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {%- set _p = _p if _p is mapping else {} -%}
+                    {{ (_p.get('component_summary', '') | string | trim)[:255] }}
+                  _trim_label: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p if _p is mapping else {}).get('label', _base_label) | string | trim }}
+                  _trim_icon: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p if _p is mapping else {}).get('icon', '') | string | trim }}
+              - variables:
+                  _desc_chonky: "{{ (_trim_summary | trim | length) > 150 }}"
+              - if:
+                  - condition: template
+                    value_template: >-
+                      {{ _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' }}
+                then:
+                  - action: script.zen_dojotools_labels
+                    data:
+                      action_type: create
+                      label_list:
+                        - "{{ _trim_label }}"
+                      new_description: "{{ _trim_summary }}"
+                      new_icon: "{{ _trim_icon }}"
+                      confirm: true
+                  - action: script.zen_dojotools_labels
+                    data:
+                      action_type: update
+                      label_list:
+                        - "{{ _trim_label }}"
+                      new_description: "{{ _trim_summary }}"
+                      confirm: true
+              - variables:
+                  _kfc_payload: >-
+                    {%- if _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' -%}
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p | combine({'component_summary': ''})) | tojson }}
+                    {%- else -%}
+                    {{ _kfc_payload }}
+                    {%- endif -%}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  show_hidden_volumes: false
+                  force_action: true
+                  set_timestamp: true
+                  volume_entity_id:
+                    - "{{ _dojo_cab }}"
+                  key: "{{ _storage_key }}"
+                  value: "{{ _kfc_payload }}"
+                  label_input: "kfc, zen, {{ _trim_label }}"
+                  no_autoexpire: true
+                  no_autorecycle: true
+                  description: Published KF4 component definition.
+                  caller_token: "{{ caller_token }}"
+                response_variable: _repub_write
+              - variables:
+                  _ci_chars: >-
+                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                    {{ (_p if _p is mapping else {}).get('component_instructions', '') | string | length }}
+                  _payload_chars: "{{ _kfc_payload | string | length }}"
+              - variables:
+                  _ci_tokens_est: "{{ (_ci_chars | int / 4) | round | int }}"
+                  _payload_tokens_est: "{{ (_payload_chars | int / 4) | round | int }}"
+                  _ci_pct_drawer: "{{ (_ci_chars | int / 16384 * 100) | round(1) }}"
+                  _payload_pct_drawer: "{{ (_payload_chars | int / 16384 * 100) | round(1) }}"
+                  _size_tier: >-
+                    {%- set c = _ci_chars | int -%}
+                    {%- if c > 8192 -%}danger{%- elif c > 4096 -%}warning{%- elif c > 2048 -%}advisory{%- else -%}ok{%- endif -%}
+              - variables:
+                  result:
+                    ok: true
+                    tool: zen_dojotools_scribe
+                    mode: republish_kfc
+                    caller_token: "{{ caller_token }}"
+                    artifact_class: kfc
+                    cabinet_entity_id: "{{ _dojo_cab }}"
+                    key: "{{ _storage_key }}"
+                    write: >-
+                      {%- set _pw = _repub_write | default({}, true) -%}
+                      {%- set _pw = _pw if _pw is mapping else {} -%}
+                      {{ _pw | tojson | from_json }}
+                    label_description_chars: "{{ _trim_summary | trim | length }}"
+                    label_description_warning: "{{ 'component_summary is ' ~ (_trim_summary | trim | length) ~ ' chars — aim for ~100, 255 max. Operational details belong in component_instructions.' if _desc_chonky else '' }}"
+                    message: "{{ 'KFC republished. ⚠ Description chonk: ' ~ (_trim_summary | trim | length) ~ ' chars.' if _desc_chonky else 'KFC republished. Label description synced.' }}"
+                    component_size: >-
+                      {{ {"instructions_chars": _ci_chars | int, "instructions_tokens_est": _ci_tokens_est | int, "instructions_pct_of_16kb": _ci_pct_drawer, "payload_chars": _payload_chars | int, "payload_tokens_est": _payload_tokens_est | int, "payload_pct_of_16kb": _payload_pct_drawer, "size_tier": _size_tier, "feedback": "component_instructions = " ~ _ci_chars ~ " chars (~" ~ _ci_tokens_est ~ " tokens, " ~ _ci_pct_drawer ~ "% of 16KB limit). Full payload " ~ _payload_chars ~ " chars (~" ~ _payload_tokens_est ~ " tokens). Heavier instructions = less room for domain data."} }}
+              - stop: republish_kfc
                 response_variable: result
 
           # ================================================================

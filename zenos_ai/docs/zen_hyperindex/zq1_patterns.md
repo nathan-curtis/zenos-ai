@@ -330,3 +330,5 @@ feed is the missing third leg.
 | `exclude_label` | string or list | Drop all entities carrying an HA label. Stage 8d. Slug-normalized. |
 | `exclude_integration` | string or list | Drop all entities from an integration. Stage 8e. Uses `integration_entities()`. |
 | `exclude_device` | string or list | Drop all entities on specific device_ids. Stage 8f. |
+| `entity_id_regex` | string | `regex_search()` against entity_id. If pipe is empty acts as SEED (iterates all states). If pipe has content, acts as FILTER. |
+| `friendly_name_regex` | string | `regex_search()` against `friendly_name` attribute. SEED or FILTER, same as `entity_id_regex`. Use `(?i)` prefix for case-insensitive: `"(?i)living room"`. |

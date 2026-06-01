@@ -1,4 +1,4 @@
-# Zen DojoTools Inspect — 4.6.2 'Ectoplasm'
+# Zen DojoTools Inspect — 5.0.1
 **File:** `zen_dojotools_inspect_readme.md`  
 **Type:** Technical Documentation  
 
@@ -21,7 +21,30 @@ Cabinet volumes are identified and surfaced via **header-only metadata**,
 ensuring agents like Friday or Veronica can *recognize* cabinets  
 without being able to tamper with them (that stays the job of FileCabinet).
 
-Inspect is the **eyes** of ZenOS-AI.
+Inspect is the **eyes** of ZenOS-AI, but it is more than a state reader. It composes safe overlays onto an entity so higher-level tools can reason about what the entity means:
+
+```mermaid
+flowchart LR
+  Entity["HA entity"]
+  Snapshot["State snapshot"]
+  Labels["Label overlay"]
+  Device["Device / area overlay"]
+  Cabinet["Cabinet header overlay"]
+  Person["Person identity overlay"]
+  Domain["Domain overlays\ncamera, room, future Foo"]
+  Drawers["Label-targeted drawer blurbs"]
+  Result["Composed Inspect result"]
+
+  Entity --> Snapshot --> Result
+  Entity --> Labels --> Result
+  Entity --> Device --> Result
+  Entity --> Cabinet --> Result
+  Entity --> Person --> Result
+  Entity --> Domain --> Result
+  Drawers --> Result
+```
+
+That is why Inspect is the COMPOSE stage behind Index/HyperIndex. It turns "this entity exists" into a layered, LLM-safe object: raw state, labels, device/area context, identity context when the entity is a person, cabinet header context when the entity is a cabinet, and domain-specific overlays when a tool knows more.
 
 ---
 
@@ -55,7 +78,7 @@ Inspect can detect Cabinet entities by signature:
 
 ```
 
-AI_Cabinet_VolumeInfo → validation == "ALLYOURBASEBELONGTOUS"
+AI_Cabinet_VolumeInfo -> validation == "ALLYOURBASEAREBELONGTOUS"
 
 ```
 
@@ -84,6 +107,8 @@ No label indexes
 
 Cabinet internals remain hidden by design —  
 LLMs must use FileCabinet or Manifest for that.
+
+A cabinet sensor is effectively a synthetic Home Assistant entity: the entity exists so HA can store and expose the cabinet, but its real semantic payload lives in structured drawers. Inspect exposes only the cabinet's header overlay. FileCabinet is the safe path for drawer reads/writes, and Manifest is the safe path for whole-cabinet inventory.
 
 ---
 
@@ -207,7 +232,7 @@ When `mode` is set to a registry mode, Inspect bypasses the entity loop entirely
 | `floor_list` | — | All floors: count, floors[]{floor_id, name, area_ids, area_count} |
 | `label_list` | — | All labels: count, labels[]{label_id, entity_count, area_count} |
 | `zone_list` | — | All zones: count, zones[]{entity_id, name, lat, lon, radius, passive, icon} |
-| `person_list` | — | All persons: count, persons[]{entity_id, name, state, user_id, device_trackers, source, lat, lon} |
+| `person_list` | — | All persons: count, persons[]{entity_id, name, state, user_id, device_trackers, source, lat, lon, identity} — `identity` is populated for persons with a `zen_user_cabinet`-labeled cabinet; null otherwise |
 | `device_list` | — | All devices (large installs: very large responses — use floor_list → area_info → device_info drill-down for AI workflows) |
 | `integration_entities` | `integration` domain slug (required) | integration, entity_ids, entity_count |
 | `help` | — | Full schema, contract, and examples |
@@ -233,6 +258,24 @@ multi-integration deep-walk inspection flows.
 
 Default: `60s`  
 Valid range: 30–300 seconds
+
+---
+
+## Overlay Model
+
+Inspect composes overlays in a fixed, safe order:
+
+| Overlay | Applies To | What It Adds |
+|---|---|---|
+| Base entity | Every entity | `entity_id`, friendly name, domain, state, timestamps |
+| Label overlay | Every entity | `{label_slug: description}` semantic tags |
+| Device/area overlay | Entities with device metadata | Device ID, area, integration, optional device tree |
+| Cabinet overlay | Cabinet sensor entities | Header-only VolumeInfo metadata; no drawers |
+| Person overlay | `person.*` entities | ZenOS identity/presence block via `zen_dojotools_identity` |
+| Drawer blurbs | Calls with `label_targets` | Brief FileCabinet context snippets keyed by drawer |
+| Domain overlays | Supported domains | Camera cache, Room Manager context, and future tool-specific overlays |
+
+Domain overlays are deliberately extensible. Camera cache and Room Manager context already follow the pattern: build a domain map, inject per-entity context, and also expose a `domain_context.<domain>` map for batch consumers. A future "Foo" tool can use the same shape without changing the base entity contract.
 
 ---
 
@@ -295,6 +338,27 @@ Inspect outputs a unified, LLM-safe envelope:
 ```
 
 All entities appear in the order provided.
+
+---
+
+## Identity Overlay for `person.*` Entities (v5.0.1)
+
+When inspecting a `person.*` entity, Inspect automatically enriches the result with a full ZenOS identity block.
+
+**How it works:**
+
+1. Detect `person.*` entity_id prefix
+2. Walk the entity's non-zen labels; find the one whose entities intersect `zen_user_cabinet`
+3. Call `script.zen_dojotools_identity` (separate HA execution context — avoids RecursionError from nested Jinja2 imports)
+4. Inject the full identity response as `entity.identity`
+
+`entity.identity` is `null` when no `zen_user_cabinet`-labeled cabinet is found for the person — correct behavior, not an error.
+
+**Why a script call, not a Jinja2 import:** `zen_identity.jinja` raises a RecursionError when imported inside the `for_each:` loop that Inspect uses for entity iteration. The script call runs in a separate HA execution context, bypassing this constraint.
+
+**`person_list` identity enrichment:**
+
+`person_list` reads each person's cabinet and extracts `_user_profile` / `_family_profile`. FileCabinet stores drawer `value` as a **JSON-encoded string** — a `| from_json` guard is applied after `.get('value')` (FG-38). Without this guard, the profile silently evaluates as `{}` and all identity fields fall back to empty / `consent_required`.
 
 ---
 
@@ -429,7 +493,7 @@ it's because Inspect told her what it is — safely.
 
 ## Summary
 
-The Zen DojoTools Inspect 4.6.2 'Ectoplasm' provides:
+The Zen DojoTools Inspect 5.0.1 provides:
 
 - multi-entity snapshot (default `mode: inspect`)
 - caller-controlled output fields (`output_fields`)
@@ -441,6 +505,8 @@ The Zen DojoTools Inspect 4.6.2 'Ectoplasm' provides:
 - label-targeted drawer blurbs via FileCabinet (`label_targets`)
 - inline label descriptions via `{slug: description}` dict on every entity
 - HA registry modes: `area_info`, `floor_info`, `device_info`, `area_list`, `floor_list`, `label_list`, `zone_list`, `person_list`, `device_list`, `integration_entities`
+- `person.*` entity identity overlay — full ZenOS presence block injected via script call
+- `person_list` identity enrichment — profile + presence for ZenOS-provisioned persons
 - JSON-compatible, LLM-stable outputs
 - strict no-write behavior
 - guaranteed safety against HA quirks

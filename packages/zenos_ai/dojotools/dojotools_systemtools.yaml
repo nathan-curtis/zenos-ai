@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 4.5.6
+# Version: 5.1.0
 #
 # Consolidated from: dojotools_ha_api.yaml + dojotools_system.yaml
 # Contains: zen_log_* shell_commands, ha_api rest_commands,
@@ -8,10 +8,37 @@
 #           zen_dojotools_ha_log_viewer (MCP), zen_dojotools_event_emitter (MCP)
 #
 # CHANGELOG:
-#   4.6.0 (2026-05-02) — zen_dojotools_systemtools: added cabinet_schema_upgrade (v1.7.0).
+#   4.8.0 (2026-05-20) — zen_dojotools_systemtools: repairs + notice dashboard (v5.1.0).
+#     repairs_list — GET /api/repairs/issues, structured issue list (issue_id, domain, severity, is_fixable).
+#     repair_fix — POST /api/repairs/issues/fix, confirm required, repair_domain + issue_id fields.
+#     notice_dashboard — aggregate: ZenOS active alerts + persistent notifications + HA repairs in one call.
+#     allowed_paths += repairs/issues (ha_api internal whitelist).
+#   4.7.0 (2026-05-19) — zen_dojotools_systemtools: persistent notification management (v5.1.0).
+#     pnotif_list, pnotif_raise, pnotif_edit, pnotif_dismiss. Fields: notif_id, notif_title, notif_message.
+#   4.6.0 (2026-05-19) — zen_dojotools_systemtools: prompt inspection suite (v5.1.0).
+#     render_dojo: live render of dojo_loader() — KFC section as the active agent sees it.
+#     render_system: live render of prompt_system() — purpose/directives/cortex.
+#     prompt_health: prompt_health_check() + prompt_length_audit() + guidance pointer.
+#     No target needed — all three auto-resolve active persona.
+#   4.5.9 (2026-05-18) — zen_dojotools_systemtools: all reload modes now config-check
+#     gated. ha_reload_scripts, ha_reload_automations, ha_reload_templates each call
+#     check_config first — nogo blocks the reload and returns errors. Matches the
+#     existing gate on ha_reload_all and ha_restart. All reload responses now include
+#     config_check: passed on success.
+#   4.5.8 (2026-05-18) — zen_dojotools_systemtools: ha_reload_scripts + ha_reload_all
+#     now deferred via zen_event (kind: deferred_script_reload / deferred_reload_all).
+#     Scheduler dispatches from automation context — no more self-destruct
+#     InvalidStateError. Tool version bumped to 1.9.5. Scheduler 4.5.5 gets
+#     two new triggers + dispatch branches for both deferred reload kinds.
+#   4.5.7 (2026-05-18) — zen_dojotools_systemtools: added tool=pipeline (v5.1.0).
+#     Ninja summarizer pipeline monitor — logbook ingestion, per-component
+#     freshness, scheduler history, queue depth, dynamic flags, and static
+#     KFC trigger pattern recommendations. Default 3h window, optional 24h,
+#     paginated (page_size=20).
+#   4.6.0 (2026-05-02) — zen_dojotools_systemtools: added cabinet_schema_upgrade (v5.1.0).
 #     Passthrough to zen_admintools_cabinetadmin op: flip_schema_version (schema_version: 1).
 #     Exposes pre-RC2 → current schema migration as an MCP-callable tool.
-#   4.2.0 (2026-03-19) — zen_dojotools_systemtools: added zen_health_report (v1.6.0).
+#   4.2.0 (2026-03-19) — zen_dojotools_systemtools: added zen_health_report (v5.1.0).
 #     Reads all three health sensors, returns overall ok/issues_found + per-sensor
 #     diagnosis string. Voice-ready. Migrated from admintools namespace.
 #   4.1.0 (2026-03-15) — zen_dojotools_systemtools: added ha_reload_all,
@@ -135,11 +162,11 @@ script:
   zen_dojotools_ha_api:
     alias: Zen DojoTools HA API
     description: >-
-      Home Assistant system-level API wrapper. Tokenless at call-time — auth
-      handled inside rest_command. System reads: check_config (go/nogo),
-      error_log, supervisor_logs, events, services, config, health, supervisor,
+      Home Assistant system-level API wrapper. Tokenless at call-time —
+      auth handled inside rest_command. Provides config check (go/nogo),
+      core logs, supervisor logs, events, services, system health, and
       whitelisted GET. No /states, no cabinet sensors, no templates.
-      Kernel primitive — no domain service calls or config registry writes.
+      Use action_type=check_config for pre-restart YAML validation.
     mode: parallel
     icon: mdi:api
     fields:
@@ -467,7 +494,7 @@ script:
       - conditions:
         - alias: 'Error: Action Not Confirmed'
           condition: template
-          value_template: '{{tool == ''ha_restart'' and not confirm}}'
+          value_template: "{{ (tool in ['ha_restart', 'repair_fix']) and not confirm }}"
         sequence:
         - variables:
             response: "{{\n  {\n    \"tool\": tool | default('N/A'),\n    \"confirm\":
@@ -607,7 +634,83 @@ script:
                   }
                 }}"
           default:
-          - action: homeassistant.reload_all
+          - variables:
+              response: "{{
+                {
+                  'tool': tool,
+                  'result': 'success',
+                  'config_check': 'passed',
+                  'message': 'Config check passed. Reload all queued — fires from scheduler immediately after this response.'
+                }
+              }}"
+          - event: zen_event
+            event_data:
+              event:
+                kind: deferred_reload_all
+      - conditions:
+        - alias: Reload Scripts
+          condition: template
+          value_template: '{{ tool == ''ha_reload_scripts'' }}'
+        sequence:
+        - action: script.zen_dojotools_ha_api
+          data:
+            action_type: check_config
+          response_variable: check_result
+        - choose:
+          - conditions:
+            - alias: Config check failed — block reload
+              condition: template
+              value_template: '{{ check_result.result != ''go'' }}'
+            sequence:
+            - variables:
+                response: "{{
+                  {
+                    'tool': tool,
+                    'result': 'nogo',
+                    'errors': check_result.errors,
+                    'message': 'Reload BLOCKED — config check failed. Fix errors before reloading.'
+                  }
+                }}"
+          default:
+          - variables:
+              response: "{{
+                {
+                  'tool': tool,
+                  'result': 'success',
+                  'config_check': 'passed',
+                  'message': 'Config check passed. Script reload queued — fires from scheduler immediately after this response.'
+                }
+              }}"
+          - event: zen_event
+            event_data:
+              event:
+                kind: deferred_script_reload
+      - conditions:
+        - alias: Reload Automations
+          condition: template
+          value_template: '{{ tool == ''ha_reload_automations'' }}'
+        sequence:
+        - action: script.zen_dojotools_ha_api
+          data:
+            action_type: check_config
+          response_variable: check_result
+        - choose:
+          - conditions:
+            - alias: Config check failed — block reload
+              condition: template
+              value_template: '{{ check_result.result != ''go'' }}'
+            sequence:
+            - variables:
+                response: "{{
+                  {
+                    'tool': tool,
+                    'result': 'nogo',
+                    'errors': check_result.errors,
+                    'message': 'Reload BLOCKED — config check failed. Fix errors before reloading.'
+                  }
+                }}"
+          default:
+          - action: automation.reload
             data: {}
           - variables:
               response: "{{
@@ -615,54 +718,45 @@ script:
                   'tool': tool,
                   'result': 'success',
                   'config_check': 'passed',
-                  'message': 'Config check passed. Reload all complete — automations, scripts, scenes, helpers, custom templates, themes, and core config reloaded.'
+                  'message': 'Config check passed. Automations reloaded. Note: any in-flight automation actions were stopped.'
                 }
               }}"
-      - conditions:
-        - alias: Reload Scripts
-          condition: template
-          value_template: '{{ tool == ''ha_reload_scripts'' }}'
-        sequence:
-        - action: script.reload
-          data: {}
-        - variables:
-            response: "{{
-              {
-                'tool': tool,
-                'result': 'success',
-                'message': 'Scripts reloaded from YAML.'
-              }
-            }}"
-      - conditions:
-        - alias: Reload Automations
-          condition: template
-          value_template: '{{ tool == ''ha_reload_automations'' }}'
-        sequence:
-        - action: automation.reload
-          data: {}
-        - variables:
-            response: "{{
-              {
-                'tool': tool,
-                'result': 'success',
-                'message': 'Automations reloaded from YAML. Note: any currently running automation actions were stopped.'
-              }
-            }}"
       - conditions:
         - alias: Reload Custom Templates
           condition: template
           value_template: '{{ tool == ''ha_reload_templates'' }}'
         sequence:
-        - action: homeassistant.reload_custom_templates
-          data: {}
-        - variables:
-            response: "{{
-              {
-                'tool': tool,
-                'result': 'success',
-                'message': 'Custom Jinja templates reloaded. Changes take effect on next template render.'
-              }
-            }}"
+        - action: script.zen_dojotools_ha_api
+          data:
+            action_type: check_config
+          response_variable: check_result
+        - choose:
+          - conditions:
+            - alias: Config check failed — block reload
+              condition: template
+              value_template: '{{ check_result.result != ''go'' }}'
+            sequence:
+            - variables:
+                response: "{{
+                  {
+                    'tool': tool,
+                    'result': 'nogo',
+                    'errors': check_result.errors,
+                    'message': 'Reload BLOCKED — config check failed. Fix errors before reloading.'
+                  }
+                }}"
+          default:
+          - action: homeassistant.reload_custom_templates
+            data: {}
+          - variables:
+              response: "{{
+                {
+                  'tool': tool,
+                  'result': 'success',
+                  'config_check': 'passed',
+                  'message': 'Config check passed. Custom Jinja templates reloaded. Changes take effect on next template render.'
+                }
+              }}"
       - conditions:
         - alias: Help
           condition: template
@@ -673,13 +767,13 @@ script:
               {
                 'tool': 'help',
                 'result': 'info',
-                'version': '1.6.0',
-                'reload_response_contract': 'ha_reload_all and ha_reload_scripts reload the script domain and kill the running script before it can report back. No response = success. Nogo from config check is the only case this tool speaks. Silence after a passing preflight = reload fired. ha_reload_automations and ha_reload_templates do return responses (different domain). Treat all reloads as fire-and-done.',
+                'version': '2.1.0',
+                'reload_response_contract': 'ha_reload_all and ha_reload_scripts now return a response immediately — reload is deferred via zen_event to the scheduler, which fires it from automation context. No self-destruct. ha_reload_automations and ha_reload_templates also return responses (different domain). All reloads respond with result: success when queued/complete.',
                 'reload_tools': {
-                  'ha_reload_all': 'All YAML domains: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, homeassistant: core block. Explicit config check runs first — blocked on nogo. DEFAULT CHOICE.',
-                  'ha_reload_scripts': 'Scripts only. Use when automations are running and you do not want to stop them.',
-                  'ha_reload_automations': 'Automations only. WARNING: stops all currently in-flight automation action sequences.',
-                  'ha_reload_templates': 'config/custom_templates/ Jinja files only. Changes take effect on next render.'
+                  'ha_reload_all': 'All YAML domains: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, homeassistant: core block. Config check runs first — blocked on nogo. Deferred via scheduler. DEFAULT CHOICE.',
+                  'ha_reload_scripts': 'Scripts only. Config check runs first — blocked on nogo. Deferred via scheduler. Use when automations are running and you do not want to stop them.',
+                  'ha_reload_automations': 'Automations only. Config check runs first — blocked on nogo. WARNING: stops all currently in-flight automation action sequences.',
+                  'ha_reload_templates': 'config/custom_templates/ Jinja files only. Config check runs first — blocked on nogo. Changes take effect on next render.'
                 },
                 'restart_required': 'auth_providers/auth_mfa_modules changes, http: block (port/SSL/CORS/trusted_proxies), recorder: block (db_url/include/exclude), adding net-new integrations never bootstrapped, logger: YAML block. Use logger.set_level service for runtime log level changes — no restart needed.',
                 'other_tools': {
@@ -930,6 +1024,416 @@ script:
               result: success
               message: "Cabinet schema upgraded to v1 (mount-aware). Run zen_health_report to verify."
               caller_token: "{{ caller_token | default('') }}"
+      - conditions:
+        - alias: Pipeline Monitor
+          condition: template
+          value_template: "{{ tool == 'pipeline' }}"
+        sequence:
+        - variables:
+            _hours: "{{ [[period_hours | default(3) | int, 1] | max, 24] | min }}"
+            _page: "{{ [page | default(1) | int, 1] | max }}"
+            _page_size: 20
+            _now: "{{ now().isoformat() }}"
+            _lb_start: "{{ (now() - timedelta(hours=_hours | int)).strftime('%Y-%m-%dT%H:%M:%S') }}"
+        - variables:
+            _kata: "{{ states('sensor.zen_kata_cabinet_resolved') }}"
+            _dojo: "{{ states('sensor.zen_dojo_cabinet_resolved') }}"
+        - variables:
+            _kata_vars: >-
+              {{ state_attr(_kata, 'variables') | default({}, true)
+                 if _kata not in ['unknown','unavailable','none',''] else {} }}
+            _dojo_vars: >-
+              {{ state_attr(_dojo, 'variables') | default({}, true)
+                 if _dojo not in ['unknown','unavailable','none',''] else {} }}
+        - variables:
+            _sched_raw: >-
+              {%- set _r = _kata_vars.get('zen_scheduler', {}) -%}
+              {%- set _v = _r.get('value', _r) if _r is mapping else (_r | from_json if _r is string else {}) -%}
+              {{ _v if _v is mapping else {} }}
+        - variables:
+            _recent_runs: >-
+              {{ _sched_raw.get('recent_runs', []) if _sched_raw is mapping else [] }}
+            _sched_ts: "{{ _sched_raw.get('timestamp', '') if _sched_raw is mapping else '' }}"
+            _sched_age_min: >-
+              {%- if _sched_ts and _sched_ts != '' -%}
+                {{ ((now() - as_datetime(_sched_ts)).total_seconds() / 60) | round(1) }}
+              {%- else -%}none{%- endif -%}
+        - action: rest_command.ha_api_get
+          data:
+            path: "logbook/{{ _lb_start }}?entity_id=script.zen_dojotools_ninja_summarizer"
+          response_variable: _lb_raw
+        - variables:
+            _lb_count: >-
+              {%- set _c = _lb_raw.content | default('[]') -%}
+              {%- set _entries = _c | from_json if _c is string else (_c if _c is iterable else []) -%}
+              {{ _entries | selectattr('state', 'eq', 'on') | selectattr('name', 'eq', 'Zen DojoTools Ninja Summarizer') | list | length }}
+        - variables:
+            _lb_page_start: "{{ ((_page | int) - 1) * (_page_size | int) }}"
+            _lb_total_pages: >-
+              {{ ((_lb_count | int) / (_page_size | int)) | round(0, 'ceil') | int }}
+        - variables:
+            _lb_page: >-
+              {%- set _c = _lb_raw.content | default('[]') -%}
+              {%- set _entries = _c | from_json if _c is string else (_c if _c is iterable else []) -%}
+              {%- set _ninja_on = _entries | selectattr('state', 'eq', 'on') | selectattr('name', 'eq', 'Zen DojoTools Ninja Summarizer') | list -%}
+              {%- set _start = _lb_page_start | int -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for e in _ninja_on[_start : _start + _page_size | int] -%}
+                {%- set _ns.out = _ns.out + [{'when': e.get('when', e.get('last_changed', '')), 'state': 'on'}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            _ninja_attr: "{{ state_attr('script.zen_dojotools_ninja_summarizer', 'current') | default(0) }}"
+            _ninja_last: "{{ state_attr('script.zen_dojotools_ninja_summarizer', 'last_triggered') | default('') }}"
+            _super_attr: "{{ state_attr('script.zen_dojotools_supersummary', 'current') | default(0) }}"
+        - variables:
+            _direct_kfc_components:
+            - camera
+            - trapper_keeper
+            - laundry
+            - dishwasher
+            - autovac
+            _dual_path_components:
+            - laundry
+            - camera_security
+        - variables:
+            _subs_list: >-
+              {%- set _ns = namespace(l=[]) -%}
+              {%- set _protected = ['AI_Cabinet_VolumeInfo', 'kfc_template', 'zen_library_manifest', 'zen_identity_manifest', '_context'] -%}
+              {%- if _dojo_vars is mapping -%}
+                {%- for slug, drawer in _dojo_vars.items() -%}
+                  {%- if not slug.startswith('_') and slug not in _protected -%}
+                    {%- set _sub_d = drawer.get('value', drawer) if drawer is mapping else (drawer | from_json if drawer is string else {}) -%}
+                    {%- set _sub_d = _sub_d if _sub_d is mapping else {} -%}
+                    {%- if _sub_d.get('trigger_subscriptions', []) | length > 0 -%}
+                      {%- set _source = 'direct_kfc' if slug in _direct_kfc_components else ('dual_path' if slug in _dual_path_components else 'scheduler') -%}
+                      {%- set _last_raw = _kata_vars.get('zen_ninja_last_run_' ~ slug, {}) -%}
+                      {%- set _last_v = _last_raw.get('value', _last_raw) if _last_raw is mapping else (_last_raw | from_json if _last_raw is string else {}) -%}
+                      {%- set _last_d = _last_v if _last_v is mapping else (_last_v | from_json if _last_v is string else {}) -%}
+                      {%- set _last_d = _last_d if _last_d is mapping else {} -%}
+                      {%- set _ran_at = _last_d.get('run_started_at', '') -%}
+                      {%- set _dur = _last_d.get('duration_seconds', none) -%}
+                      {%- set _age = ((now() - as_datetime(_ran_at)).total_seconds() / 60) | round(1) if _ran_at and _ran_at != '' else none -%}
+                      {%- set _fresh = 'ok' if _age is not none and _age | float < 20 else ('stale' if _age is not none and _age | float < 60 else 'very_stale') -%}
+                      {%- set _ns.l = _ns.l + [{'slug': slug, 'tier': _sub_d.get('pipeline_tier', _sub_d.get('tier', 'unknown')), 'source': _source, 'triggers': _sub_d.get('trigger_subscriptions', []), 'last_ran_at': _ran_at, 'age_min': _age, 'freshness': _fresh, 'duration_sec': _dur}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {{ _ns.l }}
+        - variables:
+            _flags: >-
+              {%- set _ns = namespace(f=[]) -%}
+              {%- if _ninja_attr | int >= 2 -%}
+                {%- set _ns.f = _ns.f + [{'flag': 'queue_backlog', 'severity': 'warn', 'detail': 'Ninja queue at capacity (' ~ _ninja_attr ~ '/2). New invocations are queuing.'}] -%}
+              {%- endif -%}
+              {{ _ns.f }}
+            _known_issues: []
+        - variables:
+            response:
+              tool: pipeline
+              generated: "{{ _now }}"
+              window_hours: "{{ _hours }}"
+              queue:
+                ninja_running: "{{ _ninja_attr }}"
+                ninja_last_triggered: "{{ _ninja_last }}"
+                super_running: "{{ _super_attr }}"
+              scheduler:
+                last_run_at: "{{ _sched_ts }}"
+                age_min: "{{ _sched_age_min }}"
+                recent_runs: "{{ _recent_runs }}"
+              components: "{{ _subs_list }}"
+              logbook:
+                total_invocations: "{{ _lb_count }}"
+                window_hours: "{{ _hours }}"
+                page: "{{ _page }}"
+                total_pages: "{{ _lb_total_pages }}"
+                page_size: "{{ _page_size }}"
+                entries: "{{ _lb_page }}"
+              flags: "{{ _flags }}"
+              known_issues: "{{ _known_issues }}"
+              caller_token: "{{ caller_token }}"
+      - conditions:
+        - alias: Render Dojo
+          condition: template
+          value_template: "{{ tool == 'render_dojo' }}"
+        sequence:
+        - variables:
+            _dojo_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {{ zen.dojo_loader() }}
+        - variables:
+            response:
+              tool: render_dojo
+              result: success
+              chars: "{{ _dojo_raw | trim | length }}"
+              dojo: "{{ _dojo_raw | trim | from_json if (_dojo_raw | trim).startswith('{') else {} }}"
+              caller_token: "{{ caller_token }}"
+      - conditions:
+        - alias: Render System
+          condition: template
+          value_template: "{{ tool == 'render_system' }}"
+        sequence:
+        - variables:
+            _idcard_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {{ zen.identity_resolve_source(states('sensor.zen_default_ai_user_cabinet_resolved')) }}
+        - variables:
+            _system_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {%- set _id = _idcard_raw | trim | from_json if (_idcard_raw | trim).startswith('{') else {} -%}
+              {{ zen.prompt_system(_id) }}
+        - variables:
+            response:
+              tool: render_system
+              result: success
+              chars: "{{ _system_raw | trim | length }}"
+              system: "{{ _system_raw | trim | from_json if (_system_raw | trim).startswith('{') else {} }}"
+              caller_token: "{{ caller_token }}"
+      - conditions:
+        - alias: Prompt Health
+          condition: template
+          value_template: "{{ tool == 'prompt_health' }}"
+        sequence:
+        - variables:
+            _health_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {{ zen.prompt_health_check() }}
+            _audit_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {{ zen.prompt_length_audit() }}
+        - variables:
+            response:
+              tool: prompt_health
+              result: success
+              health: "{{ _health_raw | trim | from_json if (_health_raw | trim).startswith('{') else {} }}"
+              length_audit: "{{ _audit_raw | trim | from_json if (_audit_raw | trim).startswith('{') else {} }}"
+              how_to_see_full_prompt: "Call Identity tool with mode=render_prompt to see the complete rendered prompt as the active agent receives it. Edit zen_os_1.jinja or component instructions → ha_reload_templates → render_prompt again."
+              caller_token: "{{ caller_token }}"
+      - conditions:
+        - alias: pnotif_list
+          condition: template
+          value_template: "{{ tool == 'pnotif_list' }}"
+        sequence:
+        - variables:
+            _notifs: >-
+              {%- set ns = namespace(n=[]) -%}
+              {%- for e in states.persistent_notification -%}
+                {%- set _id = e.entity_id | replace('persistent_notification.', '') -%}
+                {%- set ns.n = ns.n + [{'notification_id': _id, 'title': e.attributes.get('title', ''), 'message': e.attributes.get('message', e.state), 'created_at': e.attributes.get('created_at', '')}] -%}
+              {%- endfor -%}
+              {{ ns.n }}
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: ok
+              count: "{{ _notifs | count }}"
+              notifications: "{{ _notifs }}"
+              read_caveat: "Reads states.persistent_notification — HA 2025.x+ may store notifications outside the state machine. count=0 does not guarantee the HA panel is clear. Verify in UI if suspicious."
+      - conditions:
+        - alias: pnotif_raise
+          condition: template
+          value_template: "{{ tool == 'pnotif_raise' }}"
+        sequence:
+        - action: persistent_notification.create
+          data:
+            title: "{{ notif_title | default('') }}"
+            message: "{{ notif_message | default('') }}"
+            notification_id: "{{ notif_id | default('') }}"
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: ok
+              notification_id: "{{ notif_id | default('') }}"
+              message: "Notification raised."
+      - conditions:
+        - alias: pnotif_edit
+          condition: template
+          value_template: "{{ tool == 'pnotif_edit' }}"
+        sequence:
+        - action: persistent_notification.create
+          data:
+            title: "{{ notif_title | default('') }}"
+            message: "{{ notif_message | default('') }}"
+            notification_id: "{{ notif_id | default('') }}"
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: ok
+              notification_id: "{{ notif_id | default('') }}"
+              message: "Notification updated (re-raised with same id)."
+      - conditions:
+        - alias: pnotif_dismiss
+          condition: template
+          value_template: "{{ tool == 'pnotif_dismiss' }}"
+        sequence:
+        - action: persistent_notification.dismiss
+          data:
+            notification_id: "{{ notif_id | default('') }}"
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: ok
+              notification_id: "{{ notif_id | default('') }}"
+              message: "Notification dismissed."
+      - conditions:
+        - alias: repairs_list
+          condition: template
+          value_template: "{{ tool == 'repairs_list' }}"
+        sequence:
+        - variables:
+            _issues: >-
+              {%- set ns = namespace(l=[]) -%}
+              {%- for eid in integration_entities('repairs') | list -%}
+                {%- set _d   = state_attr(eid, 'domain')      | default('', true) -%}
+                {%- set _iid = state_attr(eid, 'issue_id')    | default('', true) -%}
+                {%- set _ttl = state_attr(eid, 'title')       | default(state_attr(eid, 'translation_key') | default('', true), true) -%}
+                {%- set _sev = state_attr(eid, 'severity')    | default('warning', true) -%}
+                {%- set _fix = state_attr(eid, 'is_fixable')  | default(false, true) -%}
+                {%- set _ign = state_attr(eid, 'ignored')     | default(false, true) -%}
+                {%- set ns.l = ns.l + [{'entity_id': eid, 'issue_id': _iid, 'domain': _d, 'severity': _sev, 'is_fixable': _fix, 'ignored': _ign, 'title': _ttl}] -%}
+              {%- endfor -%}
+              {{ ns.l }}
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: ok
+              count: "{{ _issues | count }}"
+              issues: "{{ _issues }}"
+              hint: "Fixable issues: use ectoplasm action_type=repair_remove or repair_ignore_all. Spook-created issues have domain=zenos."
+      - conditions:
+        - alias: repair_fix
+          condition: template
+          value_template: "{{ tool == 'repair_fix' and confirm }}"
+        sequence:
+        - action: script.zen_dojotools_ectoplasm
+          data:
+            action_type: repair_remove
+            issue_id: "{{ issue_id | default('') }}"
+            domain: "{{ repair_domain | default('') }}"
+            confirm_action: true
+            caller_token: "{{ caller_token }}"
+          response_variable: _ecto_fix
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: "{{ _ecto_fix.status | default('unknown') }}"
+              repair_domain: "{{ repair_domain | default('') }}"
+              issue_id: "{{ issue_id | default('') }}"
+              message: "{{ _ecto_fix.message | default('') }}"
+      - conditions:
+        - alias: notice_dashboard
+          condition: template
+          value_template: "{{ tool == 'notice_dashboard' }}"
+        sequence:
+        - variables:
+            _household: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        - variables:
+            _hh_vars: >-
+              {{ state_attr(_household, 'variables') | default({}, true)
+                 if _household not in ['unknown','unavailable','none',''] else {} }}
+        - variables:
+            _alerts_drawer: >-
+              {%- set r = (_hh_vars.get('_zen_active_alerts', {}) if _hh_vars is mapping else {}) -%}
+              {%- set v = r.get('value', r) if r is mapping else (r | from_json if r is string else {}) -%}
+              {{ v if v is mapping else (v | from_json if v is string else {}) }}
+        - variables:
+            _alert_list: >-
+              {%- set ns = namespace(l=[]) -%}
+              {%- set _d = _alerts_drawer if _alerts_drawer is mapping else {} -%}
+              {%- for key, a in _d.items() if a is mapping -%}
+                {%- set ns.l = ns.l + [{'alert_key': key, 'severity': a.get('severity', ''), 'title': a.get('title', ''), 'message': (a.get('message', '') | string)[:200], 'fired_at': a.get('fired_at', ''), 'clear_after_minutes': a.get('clear_after_minutes', '')}] -%}
+              {%- endfor -%}
+              {{ ns.l }}
+        - variables:
+            _pnotifs: >-
+              {%- set ns = namespace(n=[]) -%}
+              {%- for e in states.persistent_notification -%}
+                {%- set _id = e.entity_id | replace('persistent_notification.', '') -%}
+                {%- set ns.n = ns.n + [{'notification_id': _id, 'title': e.attributes.get('title', ''), 'message': e.attributes.get('message', e.state), 'created_at': e.attributes.get('created_at', '')}] -%}
+              {%- endfor -%}
+              {{ ns.n }}
+        - variables:
+            _rep_issues: >-
+              {%- set ns = namespace(l=[]) -%}
+              {%- for eid in integration_entities('repairs') | list -%}
+                {%- set _d   = state_attr(eid, 'domain')      | default('', true) -%}
+                {%- set _iid = state_attr(eid, 'issue_id')    | default('', true) -%}
+                {%- set _ttl = state_attr(eid, 'title')       | default(state_attr(eid, 'translation_key') | default('', true), true) -%}
+                {%- set _sev = state_attr(eid, 'severity')    | default('warning', true) -%}
+                {%- set _fix = state_attr(eid, 'is_fixable')  | default(false, true) -%}
+                {%- set _ign = state_attr(eid, 'ignored')     | default(false, true) -%}
+                {%- set ns.l = ns.l + [{'entity_id': eid, 'issue_id': _iid, 'domain': _d, 'severity': _sev, 'is_fixable': _fix, 'ignored': _ign, 'title': _ttl}] -%}
+              {%- endfor -%}
+              {{ ns.l }}
+        - variables:
+            _nd_lb_start: "{{ (now() - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S') }}"
+        - action: rest_command.ha_api_get
+          data:
+            path: "logbook/{{ _nd_lb_start }}?entity_id=script.zen_dojotools_postman"
+          response_variable: _nd_lb_raw
+        - variables:
+            _recent_dispatches: >-
+              {%- set _c = _nd_lb_raw.content | default([]) -%}
+              {%- set _entries = _c | from_json if _c is string else (_c if _c is iterable else []) -%}
+              {%- set ns = namespace(postman=0, announce=0, last_at='') -%}
+              {%- for e in _entries if e is mapping and e.get('state', '') == 'on' -%}
+                {%- set _eid = e.get('entity_id', '') -%}
+                {%- if 'postman' in _eid -%}{%- set ns.postman = ns.postman + 1 -%}{%- endif -%}
+                {%- if 'announce' in _eid -%}{%- set ns.announce = ns.announce + 1 -%}{%- endif -%}
+                {%- set _w = e.get('when', '') -%}
+                {%- if _w and (ns.last_at == '' or _w > ns.last_at) -%}{%- set ns.last_at = _w -%}{%- endif -%}
+              {%- endfor -%}
+              {{ {'postman': ns.postman, 'announce': ns.announce, 'last_at': ns.last_at[:16] if ns.last_at else 'none', 'window_hours': 1} }}
+        - variables:
+            _pending_updates: >-
+              {%- set ns = namespace(l=[]) -%}
+              {%- for e in states.update if e.state == 'on' -%}
+                {%- set _utitle = e.attributes.get('title') or e.name -%}
+                {%- set _installable = (e.attributes.get('supported_features', 0) | int) | bitwise_and(1) == 1 -%}
+                {%- set ns.l = ns.l + [{'entity_id': e.entity_id, 'title': _utitle, 'installed': e.attributes.get('installed_version', ''), 'latest': e.attributes.get('latest_version', ''), 'skipped': e.attributes.get('skipped_version', none) is not none, 'installable': _installable}] -%}
+              {%- endfor -%}
+              {{ ns.l }}
+        - variables:
+            _action_queue: >-
+              {%- set ns = namespace(q=[]) -%}
+              {%- for a in _alert_list if a is mapping -%}
+                {%- set ns.q = ns.q + [{'priority': a.get('severity', 'warn'), 'item': a.get('title', a.get('alert_key', '')), 'tool': 'alertmanager', 'call': {'mode': 'clear', 'alert_key': a.get('alert_key', '')}}] -%}
+              {%- endfor -%}
+              {%- for p in _pnotifs if p is mapping -%}
+                {%- set ns.q = ns.q + [{'priority': 'info', 'item': p.get('title', p.get('notification_id', '')), 'tool': 'systemtools', 'call': {'tool': 'pnotif_dismiss', 'notif_id': p.get('notification_id', '')}}] -%}
+              {%- endfor -%}
+              {%- for r in _rep_issues if r is mapping and not r.get('ignored', false) -%}
+                {%- set ns.q = ns.q + [{'priority': r.get('severity', 'warning'), 'item': r.get('title', r.get('issue_id', '')), 'tool': 'systemtools', 'call': {'tool': 'repair_fix', 'repair_domain': r.get('domain', ''), 'issue_id': r.get('issue_id', '')}}] -%}
+              {%- endfor -%}
+              {%- for u in _pending_updates if u is mapping and not u.get('skipped', false) -%}
+                {%- if u.get('installable', false) -%}
+                  {%- set ns.q = ns.q + [{'priority': 'info', 'item': u.get('title', ''), 'installed': u.get('installed', ''), 'latest': u.get('latest', ''), 'tool': 'systemtools', 'call': {'tool': 'ha_update_install', 'entity_id': u.get('entity_id', '')}}] -%}
+                {%- else -%}
+                  {%- set ns.q = ns.q + [{'priority': 'fyi', 'item': u.get('title', ''), 'installed': u.get('installed', ''), 'latest': u.get('latest', ''), 'note': 'update managed externally — no HA action available'}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.q }}
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: ok
+              generated: "{{ now().isoformat() }}"
+              alerts:
+                count: "{{ _alert_list | count }}"
+                active: "{{ _alert_list }}"
+              persistent_notifications:
+                count: "{{ _pnotifs | count }}"
+                items: "{{ _pnotifs }}"
+                read_caveat: "{{ 'states.persistent_notification may be incomplete on HA 2025.x+ — verify panel if count seems wrong' if _pnotifs | count == 0 else '' }}"
+              repairs:
+                count: "{{ _rep_issues | count }}"
+                issues: "{{ _rep_issues }}"
+              pending_updates:
+                count: "{{ _pending_updates | count }}"
+                items: "{{ _pending_updates }}"
+              recent_dispatches: "{{ _recent_dispatches }}"
+              action_queue: "{{ _action_queue }}"
       default:
       - variables:
           response: "{{\n  {\n    \"tool\": tool | default('N/A'),\n    \"confirm\":
@@ -940,17 +1444,34 @@ script:
     - stop: return
       response_variable: response
     alias: Zen DojoTools SystemTools
-    description: "Zen DojoTools SystemTools (1.7.0)\n\
+    description: "Zen DojoTools SystemTools (2.2.0)\n\
       \nHEALTH: zen_health_report — reads all 5 health sensors + 7 resolver states.\n\
       \nReturns overall ok/issues_found, resolver all_ok, timestamps, monk_status, schema_ok, kill switches, diagnosis.\n\
-      \nRELOAD RESPONSE: ha_reload_all/ha_reload_scripts kill the running script —\n\
-      \nno response = success. Only nogo from preflight config check speaks.\n\
-      \nSilence = reload fired. Trust the preflight.\n\
+      \nPIPELINE: pipeline — ninja summarizer pipeline monitor. Queue depth, per-component\n\
+      \nfreshness, scheduler history, logbook invocations (period_hours, paginated),\n\
+      \ndynamic flags, and static KFC trigger pattern recommendations.\n\
+      \nPROMPT INSPECTION (no target needed — uses active persona):\n\
+      \  render_dojo — renders live dojo/KFC section as the active agent receives it. Qualitative review.\n\
+      \  render_system — renders system cabinet section (purpose + directives + cortex).\n\
+      \  prompt_health — health signals + per-section char counts. Points to Identity render_prompt for full view.\n\
+      \nNOTIFICATIONS:\n\
+      \  pnotif_list — list all active persistent notifications.\n\
+      \  pnotif_raise — create a notification (notif_id, notif_title, notif_message).\n\
+      \  pnotif_edit — update an existing notification by id (re-raises with same id).\n\
+      \  pnotif_dismiss — dismiss a notification by id (notif_id required).\n\
+      \nREPAIRS & NOTICE:\n\
+      \  repairs_list — list all HA repair issues (issue_id, domain, severity, is_fixable, description).\n\
+      \  repair_fix — remove a repair issue via ectoplasm (repair_domain, issue_id, confirm required).\n\
+      \  notice_dashboard — ZenOS alerts + persistent notifications + repairs + pending updates + recent dispatches.\n\
+      \    Returns pre-built action_queue[]{priority,item,tool,call} — iterate and fire. Start here for triage.\n\
+      \nRELOAD RESPONSE: ha_reload_all/ha_reload_scripts return immediately —\n\
+      \nreload fires deferred via scheduler. All reload modes are config-checked:\n\
+      \nnogo blocks the reload and returns errors. Silence = reload fired.\n\
       \nRELOAD (no restart):\n\
-      \  ha_reload_all — all YAML domains, config-checked. DEFAULT.\n\
-      \  ha_reload_scripts — scripts only.\n\
-      \  ha_reload_automations — automations only; STOPS in-flight actions.\n\
-      \  ha_reload_templates — custom_templates/ Jinja only.\n\
+      \  ha_reload_all — all YAML domains, config-checked. Deferred. DEFAULT.\n\
+      \  ha_reload_scripts — scripts only. Config-checked. Deferred.\n\
+      \  ha_reload_automations — automations only. Config-checked. STOPS in-flight actions.\n\
+      \  ha_reload_templates — custom_templates/ Jinja only. Config-checked.\n\
       \nRESTART REQUIRED:\n\
       \  auth_providers, http:, recorder:, new unbootstrapped integrations,\n\
       \  logger: YAML block. (Use logger.set_level for runtime log changes.)\n\
@@ -975,6 +1496,17 @@ script:
             - ha_update_skip
             - ha_update_clear_skipped
             - cabinet_schema_upgrade
+            - pipeline
+            - render_dojo
+            - render_system
+            - prompt_health
+            - pnotif_list
+            - pnotif_raise
+            - pnotif_edit
+            - pnotif_dismiss
+            - repairs_list
+            - repair_fix
+            - notice_dashboard
       confirm_action:
         selector:
           boolean:
@@ -990,6 +1522,47 @@ script:
         name: Backup before Install
         description: Flag backup before install or change, Default off - ask the end
           user.
+      period_hours:
+        name: Period Hours
+        description: Lookback window in hours (1–24). Default 3.
+        selector:
+          number:
+            min: 1
+            max: 24
+        default: 3
+      page:
+        name: Page
+        description: Logbook page number (page_size=20). Default 1.
+        selector:
+          number:
+            min: 1
+            max: 50
+        default: 1
+      notif_id:
+        name: Notification ID
+        description: ID for pnotif_raise/edit/dismiss. Slug-style, no spaces.
+        selector:
+          text:
+      notif_title:
+        name: Notification Title
+        description: Title for pnotif_raise or pnotif_edit.
+        selector:
+          text:
+      notif_message:
+        name: Notification Message
+        description: Body text for pnotif_raise or pnotif_edit.
+        selector:
+          text:
+      repair_domain:
+        name: Repair Domain
+        description: Handler domain for repair_fix (e.g. homeassistant). From repairs_list.
+        selector:
+          text:
+      issue_id:
+        name: Repair Issue ID
+        description: issue_id for repair_fix. From repairs_list response.
+        selector:
+          text:
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.

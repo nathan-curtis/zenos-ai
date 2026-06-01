@@ -1,22 +1,24 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.5.0 | **Last Updated:** May 2026 | **License:** MIT
+> **Version:** 2026.6.0 | **Last Updated:** May 2026 | **License:** MIT
 >
-> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.5.0` is the May release 'Fry's Grandpa'. A new month resets to `.0`.*
+> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.6.0` is the June release 'Clue'. A new month resets to `.0`.*
 
 → [Project Overview & Install](../../README.md)
 
 ---
 
-> ### What's New in 2026.5.0 'Fry's Grandpa'
+> ### 2026.6.0 'Clue' — Released
 >
-> **1. Priority Inject — AI situational awareness.** Error and life-safety alerts now land in `_zen_priority_inject` (5 slots), surface via the always-live `zen_priority_context` sensor, and appear in every AI prompt NOTIFICATIONS block. The AI enters every conversation already knowing what's wrong.
+> **1. Room Manager v5.1.0 + Grocy v5.2.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
 >
-> **2. Alertmanager v1.2.0 + Camera v1.3.0.** Alertmanager wires into priority inject automatically; postman is now the primary notify target (`notification_router` deprecated). Camera gains `set_alert_policy` mode, `sendto sensor.*` for dynamic cabinet routing, and preserves `_default_ctx`/`_alert_policy` across look/scan cycles.
+> **2. Plant Manager — v5.4.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
 >
-> **3. Identity `provision_member` + ZQ-1 v4.6.0.** Provision an external family member (no HA account) into an expansion slot and register them in one call. ZQ-1 corrects `regex` to `regex_search()`, adds `entity_id_regex` (step 10b), and adds `stats_eligible` filter.
+> **3. AutoVac — v5.1.0.** Controller automation in package (no per-schedule wiring). 3-button briefing (Go now / Skip / Pause all day). `mode=setup` deploys KFC + inits cabinet in one call.
 >
-> → [Full Release Notes — Fry's Grandpa](releases/frys_grandpa.md)
+> **4. Postman + AlertManager + Scribe + Summarizer — v5.1.0.** Full ack lifecycle, `open_dashboard` companion URI. Scribe: `repair`, `republish_kfc`, `component_size`. Summarizer: dual-seed, emission gate.
+>
+> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](components/room_manager.md) | [Plant Manager](components/plant_manager.md) | [Grocy](plugins/grocy.md)
 
 ---
 
@@ -26,11 +28,32 @@ ZenOS-AI turns **Home Assistant** into a real agentic, persona-aware operating s
 
 If you're building an AI construct, designing a DojoTool, wiring the action pipeline, or just trying to understand how Friday thinks, this directory is your guide.
 
+```mermaid
+flowchart LR
+  HomeAssistant["Home Assistant state"]
+  Labels["Labels and Room Manager"]
+  HyperIndex["Index / HyperIndex"]
+  FileCabinet["FileCabinet + Cabinets"]
+  Summarizers["Ninja + SuperSummary"]
+  Prompt["Live Prompt"]
+  Tools["DojoTools"]
+  People["Postman / Human ack"]
+
+  HomeAssistant --> Labels --> HyperIndex
+  HyperIndex --> Summarizers
+  FileCabinet --> Summarizers
+  Summarizers --> FileCabinet
+  Summarizers --> Prompt
+  Prompt --> Tools
+  Tools --> FileCabinet
+  Tools --> People
+```
+
 ---
 
 # 📚 **Included Documentation**
 
-This directory contains **11 documentation suites**, each aligned with a major subsystem in ZenOS-AI.
+This directory contains **12 documentation suites**, each aligned with a major subsystem in ZenOS-AI.
 
 ---
 
@@ -43,6 +66,8 @@ New to ZenOS-AI? Start here.
 * `install.md` — File copy, configuration.yaml setup, conversation agent prompt, set conversation agent before restart, restart, health verification
 * `first_run.md` — First boot walkthrough, OOBE conversation, persona selector, editing profiles, troubleshooting
 * `entity_exposure.md` — What to expose to your conversation agent: actionable vs contextable vs invisible, the three-tier model
+* `autovac_first_setup.md` — Full AutoVac commissioning: rooms, labels, schedules, Postman policy, Grocy inventory, consumables, wear checks, AlertManager
+* `autovac_quick_start.md` — New user 5-step overview: schedule setup, model preset selection, 3-button briefing walkthrough, first run
 * `cabinet_placement.md` — Where things go and why: Dojo vs Kata, drawer vs KFC, the quick-reference placement table. Read after entity_exposure.
 * `oobe.md` — OOBE walkthrough: the six-step first-boot configuration protocol to your conversation agent: actionable vs contextable vs invisible, the three-tier model
 * `troubleshooting.md` — Gauges → Kill Switches → Repair Tools. Health sensor quick-reads, summarizer kill switches, and a seven-step graduated repair sequence (resolver refresh → reseed → label reset → nuclear cabinet reset)
@@ -52,7 +77,26 @@ If you just installed ZenOS-AI and want to know what to do next, start here.
 
 ---
 
-## 🧠 **1. Architecture**
+## 🛠️ **1. Tool Reference**
+
+**Folder:** `docs/components/`
+
+Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, parameters, and response shape.
+
+* `components/room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
+* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate
+* `components/media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
+* `components/autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
+* `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
+* `components/alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
+* `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
+* `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
+* `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
+* `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
+
+---
+
+## 🧠 **2. Architecture**
 
 **Folder:** `docs/architecture/`
 
@@ -124,6 +168,9 @@ Each Kung Fu component is a discipline: a subsystem Friday loads at runtime.
 Documents:
 
 * `understanding_kf4.md` — **Start here.** Plain-language guide to the Dojo, Kung Fu Components, and the KF4 action pipeline. How to add a new component in five steps, no code required.
+* `building_a_kfc.md` — Step-by-step build guide with worked example.
+* `alert_manager.md` — AlertManager KFC: severity labels, fire-once dedup, TTL, priority inject wiring.
+* `taskmaster.md` — Taskmaster KFC: AI conductor queue, task lifecycle, Abbot dispatch.
 * `readme.md` — Technical spec: drawer schema, trigger ID reference, command strip migration notes.
 
 This is Friday’s skill tree.
@@ -176,6 +223,10 @@ Includes:
 * `zen_dojotools_index_readme.md`
 * `zen_dojotools_hyperindex_readme.md`
 * `zen_dojotools_query_readme.md`
+* `zen_dojotools_camera_readme.md` — Camera: ai_task gate, look/scan, dynamic cabinet routing, Security Manager lens pattern
+* `zen_dojotools_postman_readme.md` — Postman: ack loop, clear_tag consumer pattern, open_dashboard companion URI, actionable notifications, image support
+* `zen_dojotools_todo_readme.md` — Todo: HA todo + MS365 tasks, bulk complete, discoverability
+* `zen_dojotools_calendar_readme.md` — Calendar: full CRUD, MS365 native APIs, label-targeted reads, wildcard discovery
 * `zen_dojotools_office_readme.md`
 * `zen_dojotools_event_emitter_readme.md`
 * `readme.md` – Overview
@@ -256,6 +307,30 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 ## 🗺️ **12. Roadmap**
 
 **File:** `docs/roadmap.md`
+
+**2026.6.0 'Clue' — Beta (ETA 2026-06-01)**
+
+* Room Manager (RoomReg) v1.48.0 — spatial topology hub, context slices, home_overview; +inventory via `object_lens` place lens (slim per-entity + full in `domain_context`); +chores with `replace_action` envelopes; area_create/area_update guards; emergency mode safety inventory enrichment
+* Plant Manager v5.4.0 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + water_management + motors + ignore/unignore modes; `include_inventory` attaches Grocy room_brief to load nodes; `mode=managed` universal machine rollup
+* AutoVac v3.12.0 — autonomous vacuum scheduling: room election, schedule-aware runs, controller automation in package (no per-schedule wiring), 3-button briefing (Go now / Skip / Pause all day), `mode=setup` one-call onboarding, consumables ERP via Grocy, wear sensor alerting, calendar-gate support
+* Grocy v5.2.0 — `object_lens` place lens; `room_brief` three-path chore discovery; userentities/userobjects/userfields CRUD (ERP object substrate); `provision_bom` 3-tier product resolution; null-unit guard
+* Postman v1.6.2 — full ack lifecycle: clear_tag consumer pattern, open_dashboard companion URI, race fix
+* Todo v2.5.0 — discoverability, bulk complete, MS365 read fix (all_todos attr), structured 404
+* ZenLux v0.6.0 — major rewrite (ZenLux)
+* Scribe v1.8.0 — repair mode, republish_kfc, component_size feedback, schedules upsert by kata_key
+* Ninja Summarizer v4.6.0 — emission gate (zen_action_emission_enabled + emission_cooldown_minutes)
+* FileCabinet v4.7.2 — key='*' preserved through slugify; wildcard routing fix
+* Index v5.0.1 — +rm pipeline (Room Manager snapshot per entity area), area_entities fix
+* AlertManager v1.5.0 — Postman integration documented; ack lifecycle + open_dashboard pattern
+* OOBE — _oobe_done backward compat (checks both _oobe_complete and legacy oobe_complete); 5-component options dict with tool names
+* Media Manager (NyxMau5) v0.7.2 — whole-home media management and intent routing
+* Security Manager v1.2.0 — replaces alarm_panel; room-aware zone inventory via RM +security slice
+* ZenShade v0.2.2 — cover management, tilt support, ZenLux sync
+* SpaMaster v3.12.0 — replaces calderaspas entirely; ESPHome hot tub management, ESPHome device discovery, scene/chemistry/log modes, preset library; consumables ERP via `provision_bom` (idempotent Grocy product + chore provisioning)
+
+See: [Release Notes — Clue](releases/clue.md)
+
+---
 
 **2026.5.0 'Fry's Grandpa' — Shipped (2026-05-03)**
 

@@ -6,9 +6,33 @@
 
 ## Overview
 
-OOBE is the guided first-run workflow that configures your ZenOS-AI install through conversation. Your AI assistant leads you through six steps — naming the household, mapping rooms, adding people, linking integrations, activating components, and sealing the install.
+OOBE is the guided first-run workflow that configures your ZenOS-AI install through conversation. Your AI assistant leads you through six steps — naming the household, mapping rooms, adding people, optionally seeding the AI persona, linking integrations, activating components, and sealing the install.
 
-OOBE runs once. When complete, it stamps `_oobe_complete` in the AI user cabinet and the flag is never set again unless explicitly reset.
+OOBE runs once. When complete, it stamps `_oobe_complete` in the AI user cabinet and the flag is never set again unless explicitly reset. The OOBE detection check (`_oobe_done`) accepts both `_oobe_complete` (current) and the legacy `oobe_complete` key (no leading underscore) for backward compatibility with pre-v1.0 installs.
+
+The output is a usable operating graph, not just stored preferences. OOBE establishes:
+
+| Layer | What OOBE creates |
+|---|---|
+| Place | Room Manager topology: rooms, portals, exits, rally point, safety equipment |
+| Meaning | HA labels that connect devices to rooms, people, and tool scopes |
+| Actors | Tool-ready surfaces for cameras, vacuums, locks, spa, energy, and other components |
+| Attention | Component activation and AlertManager/Postman paths for events that need a person |
+| Memory | Cabinet drawers that preserve the household profile and first operational defaults |
+
+```mermaid
+flowchart TD
+  Household["Household profile"]
+  Rooms["Rooms and exits"]
+  People["People and identities"]
+  Integrations["Cameras, vacuums, locks, presence"]
+  Components["Optional components"]
+  Close["Index rebuild and OOBE complete"]
+
+  Persona["AI Persona (optional)"]
+
+  Household --> Rooms --> People --> Persona --> Integrations --> Components --> Close
+```
 
 ---
 
@@ -41,18 +65,25 @@ Collects your household's name and address. The AI writes these to the household
 
 ### Step 2 — Rooms
 
-Maps your home's physical layout into the ZenOS label graph.
+Maps your home's physical layout into the Room Manager spatial topology store.
 
-The AI first queries your existing HA areas (`zen_dojotools_index` or `zen_dojotools_inspect`). For each area you confirm:
+The AI:
 
-1. Adjacent rooms are noted
-2. Notable features are recorded
-3. A label is created if one doesn't exist (`zen_dojotools_labels`)
-4. A room drawer is written to the household cabinet with `{area_label, adjacent, features, notes}`
+1. **Deploys the Room Manager KFC** — `zen_dojotools_room_manager mode=setup confirm_action=true` (one-time, safe to re-run)
+2. **Discovers existing HA areas** — queries the compact index and `mode=list` to see which areas are already RM-registered
+3. **Presents the list** — confirms what it found, asks what's missing or in the wrong place
+4. **Creates missing rooms** — for areas not yet in HA, calls `mode=area_create area_name='Room Name'` — creates the HA area, applies the `room_layout` label, and initializes topology in one call
+5. **Registers each room** — `mode=set area=X description='...'` — auto-applies `room_layout`; no separate label step needed
+6. **Links adjacency** — for each room, asks what it connects to directly; calls `mode=link area=X area_b=Y portal_type=door|archway|passage` — `adjacent[]` is derived automatically from portals, never built by hand
+7. **Maps exterior exits** — doors/windows to outside get `exterior: true exit: true`; emergency exits get `emerg_exit: true`
+8. **Collects rally point** — `mode=set rally_point='...' address='...' zip_code='...'` for emergency location data
+9. **Records safety equipment** — fire extinguishers, first aid kits, AEDs written via `mode=set area=X safety=[...]`
 
-If you mention suite groupings (e.g., a master suite), a suite drawer is written as well.
+Suite or zone groupings are modeled as a cluster of linked rooms — no separate container object needed.
 
-> The AI confirms entity placement with you before labeling. It will never silently guess which room a device belongs to.
+> `room_layout` is applied automatically by `mode=set` and `mode=area_create`. No manual HA UI labeling step.
+
+Why this matters: later tools use this map to avoid guessing. A camera alert can be tied to the correct exterior boundary, ZenLux can account for light bleed through an archway, Security Manager can group cameras by area, and AutoVac can reason about which rooms are due or blocked.
 
 ---
 
@@ -69,6 +100,20 @@ Extended family (non-residents who matter to the household context) are written 
 
 ---
 
+### Step 3a — AI Persona (Optional Quick-Start)
+
+Seeds the minimum AI persona fields via `zen_dojotools_persona_editor` before moving to integration mapping. Optional — if `persona_name` is already set, this step is skipped.
+
+**What gets set here:**
+- `persona_name` — the agent's name (e.g. `Friday`)
+- `primary_user` — the head of household `person.*` entity or name
+
+**What to defer:** Full persona identity (voice, environment, familiar, pronouns beyond basics) is the live agent's job in its first conversation. Do not over-configure in OOBE.
+
+> Use `zen_dojotools_persona_editor` for all AI user writes. `zen_dojotools_profile_editor` no longer accepts `target_type: ai_user`.
+
+---
+
 ### Step 4 — Integration Mapping
 
 Links your HA integrations into the ZenOS label graph.
@@ -77,12 +122,16 @@ The AI only offers categories where relevant integrations exist — no vacuum pr
 
 | Category | Domain / Device Class | What Gets Tagged |
 |---|---|---|
-| Cameras | `camera` | Room label + `camera` label |
-| Vacuums | `vacuum` | `autovac` label + room coverage order |
-| Locks | `lock` | `security` label + room label |
-| Presence | device_class: `presence` | Mapped to person from Step 3 |
+| Cameras | `camera` | Room label + `security_camera` label for Room Manager +security, Security Manager, and camera perception flows |
+| Vacuums | `vacuum` | `autovac` label + room coverage order for AutoVac election and scheduling |
+| Locks | `lock` | `security` label + room/portal context |
+| Presence | device_class: `presence` | Person or room mapping for occupancy and human routing |
 
 Nothing is labeled without your confirmation.
+
+This is the step that lets later workflows say "the fence camera saw a person near the exterior boundary" instead of "camera.back_yard detected something." The label graph connects raw HA entities to the physical map and to the right tool.
+
+That wording matters for first-time users. A camera is not "watching you" in the abstract. It is an entity you confirmed, assigned to a place, labeled for a purpose, and connected to a governed flow. If you do not confirm that meaning, ZenOS-AI should treat it as unknown context, not as an authority.
 
 ---
 
@@ -91,13 +140,26 @@ Nothing is labeled without your confirmation.
 Opt-in activation of available KFC components. The AI presents only the components that make sense given your integrations.
 
 Options offered (if applicable):
-- Security alerts
-- Vacuum scheduler
-- Hot tub / spa manager
-- Trash day reminders
-- Energy monitoring
+
+| Option | Condition | Tool |
+|--------|-----------|------|
+| Security alerts | `lock` or `alarm_control_panel` domain found | `zen_dojotools_security_manager` |
+| Vacuum scheduler | `vacuum` domain found | `zen_dojotools_autovac` |
+| Spa manager | User mentions a hot tub or spa | `zen_dojotools_spa_manager` |
+| Trash reminders | Always offered | `zen_dojotools_todo` — creates recurring reminder items |
+| Energy monitoring | `sensor` with `device_class: energy` found | No dedicated tool — surfaced via `zen_dojotools_index` or `zen_dojotools_history` |
 
 Activation preferences are written to the system cabinet.
+
+Think of activation as enabling governed loops:
+
+| Component | Loop it enables |
+|---|---|
+| Security / Camera | Perception -> classification -> alert or human check |
+| AutoVac | Room election -> readiness gates -> clean -> analyze -> consumables |
+| Energy / Plant | Utility state -> attention signals -> troubleshooting context |
+| SpaMaster | Spa status -> scene/chemistry/logging -> optional consumables |
+| AlertManager + Postman | Dedup -> route by profile -> collect acknowledgement -> clear or escalate |
 
 > **Optional — Kung Fu System Switch**
 > Each active KFC component can have a paired `input_boolean` in HA labeled `Kung Fu System Switch`. When present, the boolean overrides the component's `meta.enabled` drawer flag — useful for toggling a component on/off without editing the Dojo. No switch is required; if absent, `meta.enabled` governs. Create one at any time by making an `input_boolean` whose entity ID contains the component's `kata_key` and assigning it the `Kung Fu System Switch` label.
@@ -107,9 +169,11 @@ Activation preferences are written to the system cabinet.
 ### Step 6 — Close Out
 
 The AI:
-1. Rebuilds the compact index (`zen_dojotools_index`, mode: `build_compact_index`)
-2. Writes the OOBE completion flag (`zen_flynn_oobe`, mode: `complete`)
-3. Tells you the system is ready
+1. **Spatial sanity check** — `zen_dojotools_room_manager mode=home_overview` to verify rooms are registered and key connections are present before sealing
+2. **Rebuilds the compact index** — `zen_dojotools_index mode=build_compact_index`
+3. **Writes the OOBE completion flag** — `zen_flynn_oobe mode=complete` (also dismisses the setup notification)
+4. **Tells you the system is ready** — one sentence
+5. **Instructs persona handoff** — choose the agent name just configured from `select.zenos_active_persona`, then start a fresh conversation to hand off to the real AI persona. Manual fallback: set `input_text.zenos_persona_name` directly.
 
 After Step 6, Flynn's Gate 3.5 will no longer fire the OOBE notification. The system is live.
 
@@ -168,6 +232,6 @@ Or call `zen_flynn_oobe` with `mode: complete` to re-stamp the flag after manual
 ## Related
 
 - [Flynn Stepgate Sentinel](../scripts/zen_flynn_readme.md) — Gate 3.5 OOBE detection
+- [Room Manager](../components/room_manager.md) — spatial topology store, modes, setup reference
 - [Profile Editor](../scripts/zen_dojotools_profile_readme.md) — household/user profile writes
-- [Labels](../scripts/zen_dojotools_labels_readme.md) — label creation during room/integration mapping
 - [Install Guide](install.md) — prerequisites before first boot

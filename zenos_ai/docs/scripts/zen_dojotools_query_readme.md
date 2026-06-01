@@ -2,7 +2,7 @@
 
 ### **Deterministic Entity Selector for Home Assistant**
 
-**Version:** 4.5.5 'Ready Player Two'
+**Version:** 4.5.7
 **Namespace:** `script.zen_dojotools_query`
 **Icon:** `mdi:filter-cog`
 
@@ -121,6 +121,8 @@ numeric_above:      # float threshold
 numeric_below:      # float threshold
 
 regex:              # string, matched against STATE STRING
+entity_id_regex:    # regex_search() against entity_id — SEED if pipe empty, FILTER if pipe has content
+friendly_name_regex: # regex_search() against friendly_name attribute — SEED or FILTER. Use (?i) prefix for case-insensitive.
 
 shortcuts:
   numeric:          # require numeric state
@@ -159,8 +161,10 @@ ZQ-1 executes filters in deterministic order:
 8. Filter: state_equals
 9. Filter: include_states
 10. Filter: exclude_states
+10b. Filter: entity_id_regex (SEED if pipe empty, FILTER if not)
+10c. Filter: friendly_name_regex (SEED if pipe empty, FILTER if not)
 11. Filter: numeric_above / numeric_below
-12. Filter: regex
+12. Filter: regex (state string)
 13. Filter: shortcuts (all must match)
 14. Sort (optional)
 ```
@@ -301,5 +305,7 @@ It is one of the most critical primitives in Project Friday’s internal reasoni
 
 | Version | Change |
 |---|---|
+| 4.5.7 | `friendly_name_regex` filter — `regex_search()` against `friendly_name` attribute; SEED or FILTER mode |
+| 4.6.0 | `entity_id_regex` filter — `regex_search()` against entity_id; SEED or FILTER mode. `regex` corrected to use `regex_search()`. `stats_eligible` shortcut added. |
 | 4.5.0 | `output_fields` param added (reserved, no-op) — field shaping reserved for future release |
 | 4.5.0 | GA release |

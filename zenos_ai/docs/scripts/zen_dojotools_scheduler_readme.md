@@ -1,4 +1,4 @@
-# Zen DojoTools Scheduler — 4.5.5 'Ready Player Two'
+# Zen DojoTools Scheduler — 2026.6.0 'Clue'
 
 **File:** `packages/zenos_ai/dojotools/dojotools_scheduler.yaml`
 **Automation:** `automation.zen_dojotools_scheduler`

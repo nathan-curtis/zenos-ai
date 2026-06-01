@@ -1,0 +1,190 @@
+###############################################################################
+# ZenOS-AI: zen_identity.jinja
+# Version: 1.1.0
+#
+# Template-callable identity resolver. Same contract as zen_dojotools_identity
+# mode=resolve but callable from Jinja2 context (sensors, cortex prompt, macros).
+#
+# Usage:
+#   {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+#   {%- set person = ID.resolve('nathan') | from_json -%}
+#   {%- if person.is_person -%}...{%- endif -%}
+#
+# Returns tojson string. Always call | from_json after.
+#
+# Response keys (all types):
+#   is_person, is_group, is_ai  — type discriminators (binary)
+#   result                      — 'ok' or 'error'
+#   cabinet                     — resolved cabinet entity_id
+#
+# Person keys (is_person=true):
+#   name, role, spaces, tracking, area_labels, person_entity, mobile, presence
+#   mobile: {configured, entity_id, zone, battery, battery_entity}
+#   presence: {person_entity, zone, at_home, area_id, area_name}
+#   zone/at_home gated on tracking.gps_zone; area_id/area_name gated on tracking.room
+#
+# AI keys (is_ai=true):
+#   persona_name, pronouns, motif, primary_user, familiarity_level
+#
+# Group keys (is_group=true):
+#   group_type ('household'|'family_group')
+#   household: household_name, timezone, address, member_cabinets,
+#              family_group_cabinets, home_mode, quiet_hours_active
+#   family_group: family_name, relationship_type, member_cabinets
+#
+# Mobile note: template surface returns zone + battery only.
+#   Full sensor suite: zen_dojotools_identity mode=resolve (script surface).
+###############################################################################
+
+{%- macro resolve(target) -%}
+  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+
+  {# ── Normalize ─────────────────────────────────────────────────────────── #}
+  {%- set _raw  = target | string | trim -%}
+  {%- set _norm = _raw | lower | replace(' ', '_') -%}
+
+  {# ── Find cabinet ──────────────────────────────────────────────────────── #}
+  {%- set ns = namespace(ent='') -%}
+  {%- if _raw | match('^sensor\\.') -%}
+    {%- set ns.ent = _raw -%}
+  {%- elif _raw | match('^person\\.') -%}
+    {%- for lbl in labels(_raw) | reject('match', '^zen_') | list if ns.ent == '' -%}
+      {%- set _c = label_entities(lbl) | select('in', label_entities('zen_cabinet')) | list | first | default('') -%}
+      {%- if _c != '' -%}{%- set ns.ent = _c -%}{%- endif -%}
+    {%- endfor -%}
+  {%- else -%}
+    {%- set ns.ent = label_entities(_norm) | select('in', label_entities('zen_cabinet')) | list | first | default('') -%}
+  {%- endif -%}
+
+  {%- if ns.ent == '' -%}
+    {{- {'result': 'error', 'is_person': false, 'is_group': false, 'is_ai': false,
+         'error': 'not_found', 'target': target} | tojson -}}
+  {%- else -%}
+    {# ── Type detection ──────────────────────────────────────────────────── #}
+    {%- set _lbls    = labels(ns.ent) | list -%}
+    {%- set _is_ai   = 'ai_user'      in _lbls -%}
+    {%- set _is_hh   = 'household'    in _lbls -%}
+    {%- set _is_fg   = 'family_group' in _lbls -%}
+    {%- set _is_grp  = _is_hh or _is_fg -%}
+
+    {# ── AI persona ──────────────────────────────────────────────────────── #}
+    {%- if _is_ai -%}
+      {%- set _e = CABS.cabinet_drawer_value(ns.ent, 'zenai_essence', {}) | from_json() -%}
+      {%- set _e = _e.get('value', _e) if _e is mapping and 'value' in _e else _e -%}
+      {%- set _e = _e if _e is mapping else {} -%}
+      {%- set _id = _e.get('identity', {}) -%}
+      {%- set _jk = _e.get('jacket', {}) -%}
+      {{- {
+        'result': 'ok', 'is_person': false, 'is_group': false, 'is_ai': true,
+        'cabinet': ns.ent,
+        'persona_name':      _id.get('name', ''),
+        'pronouns':          _id.get('pronouns', ''),
+        'motif':             _id.get('motif', ''),
+        'primary_user':      _id.get('primary_user', ''),
+        'familiarity_level': _jk.get('familiarity_level', 'acquainted')
+      } | tojson -}}
+
+    {# ── Group (household / family_group) ────────────────────────────────── #}
+    {%- elif _is_grp -%}
+      {%- set _gtype = 'household' if _is_hh else 'family_group' -%}
+      {%- set _gkey  = '_household_profile' if _is_hh else '_family_profile' -%}
+      {%- set _g = CABS.cabinet_drawer_value(ns.ent, _gkey, {}) | from_json() -%}
+      {%- set _g = _g.get('value', _g) if _g is mapping and 'value' in _g else _g -%}
+      {%- set _g = _g if _g is mapping else {} -%}
+      {%- if _is_hh -%}
+        {%- set _mbrs  = label_entities('user')         | select('in', label_entities('zen_cabinet')) | list -%}
+        {%- set _fgrps = label_entities('family_group') | select('in', label_entities('zen_cabinet')) | list -%}
+        {{- {
+          'result': 'ok', 'is_person': false, 'is_group': true, 'is_ai': false,
+          'group_type': 'household', 'cabinet': ns.ent,
+          'household_name':        _g.get('household_name', ''),
+          'timezone':              _g.get('timezone', ''),
+          'address': {
+            'street':  _g.get('address', ''), 'city':    _g.get('city', ''),
+            'state':   _g.get('state',   ''), 'zip':     _g.get('zip',  ''),
+            'country': _g.get('country', '')
+          },
+          'member_cabinets':       _mbrs,
+          'family_group_cabinets': _fgrps,
+          'home_mode':             states('sensor.zen_home_mode') | default(states('input_select.zen_home_mode'), true),
+          'quiet_hours_active':    is_state('binary_sensor.zen_quiet_hours', 'on')
+        } | tojson -}}
+      {%- else -%}
+        {%- set _mbrs = label_entities(_norm) | select('in', label_entities('zen_cabinet')) | reject('in', label_entities('ai_user')) | list -%}
+        {{- {
+          'result': 'ok', 'is_person': false, 'is_group': true, 'is_ai': false,
+          'group_type': 'family_group', 'cabinet': ns.ent,
+          'family_name':       _g.get('family_name', _g.get('name', '')),
+          'relationship_type': _g.get('relationship_type', ''),
+          'member_cabinets':   _mbrs
+        } | tojson -}}
+      {%- endif -%}
+
+    {# ── Person ──────────────────────────────────────────────────────────── #}
+    {%- else -%}
+      {%- set _up = CABS.cabinet_drawer_value(ns.ent, '_user_profile',   {}) | from_json() -%}
+      {%- set _fp = CABS.cabinet_drawer_value(ns.ent, '_family_profile', {}) | from_json() -%}
+      {%- set _p  = _up if (_up is mapping and _up | length > 0) else (_fp if _fp is mapping else {}) -%}
+      {%- set _tracking   = _p.get('tracking', {}) if _p is mapping else {} -%}
+      {%- set _spaces     = _p.get('spaces',   {}) if _p is mapping else {} -%}
+      {%- set _area_lbls  = _lbls | reject('match', '^zen_') | reject('equalto', 'ai_user') | list -%}
+
+      {# Walk person.* → source for tracker; fall back to profile.primary_mobile #}
+      {%- set ns2 = namespace(person_eid='', tracker='') -%}
+      {%- for lbl in _area_lbls if ns2.person_eid == '' -%}
+        {%- set _pe = label_entities(lbl) | select('match', '^person\\.') | list | first | default('') -%}
+        {%- if _pe != '' -%}{%- set ns2.person_eid = _pe -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if ns2.person_eid != '' -%}
+        {%- set _src = state_attr(ns2.person_eid, 'source') | default('') -%}
+        {%- if _src != '' -%}{%- set ns2.tracker = _src -%}{%- endif -%}
+      {%- endif -%}
+      {%- if ns2.tracker == '' -%}
+        {%- set ns2.tracker = _p.get('primary_mobile', '') | trim if _p is mapping else '' -%}
+      {%- endif -%}
+
+      {# Mobile — zone + battery only (template surface) #}
+      {%- set _zone_ok  = _tracking.get('gps_zone', false) | bool -%}
+      {%- set _room_ok  = _tracking.get('room', false) | bool -%}
+      {%- set ns3 = namespace(mob={'configured': ns2.tracker != ''}) -%}
+      {%- if ns2.tracker != '' -%}
+        {%- set _dev = device_id(ns2.tracker) | default('') -%}
+        {%- set _zone_val = states(ns2.tracker) if _zone_ok else 'consent_required' -%}
+        {%- set ns3.mob = ns3.mob | combine({'entity_id': ns2.tracker, 'zone': _zone_val}) -%}
+        {%- if _dev != '' -%}
+          {%- set _bat = device_entities(_dev) | select('search', 'battery.*level|battery_level') | list | first | default('') -%}
+          {%- if _bat != '' -%}
+            {%- set ns3.mob = ns3.mob | combine({'battery': states(_bat) | default(none), 'battery_entity': _bat}) -%}
+          {%- endif -%}
+        {%- endif -%}
+      {%- endif -%}
+
+      {# Presence — person zone (consent-gated) + device area #}
+      {%- set _p_zone = states(ns2.person_eid) if _zone_ok and ns2.person_eid != '' else ('consent_required' if ns2.person_eid != '' else none) -%}
+      {%- set _p_dev = device_id(ns2.tracker) | default('') if ns2.tracker != '' else '' -%}
+      {%- set _raw_area = area_id(_p_dev) | default(none) if _p_dev != '' else none -%}
+      {%- set _p_area_id   = _raw_area if _room_ok else ('consent_required' if _raw_area is not none else none) -%}
+      {%- set _p_area_name = area_name(_p_area_id) | default('') if _room_ok and _p_area_id is not none else '' -%}
+
+      {{- {
+        'result': 'ok', 'is_person': true, 'is_group': false, 'is_ai': false,
+        'cabinet':        ns.ent,
+        'target_normalized': _norm,
+        'name':           _p.get('preferred_name', _p.get('name', '')) if _p is mapping else '',
+        'role':           _p.get('role', '') if _p is mapping else '',
+        'spaces':         _spaces,
+        'tracking':       _tracking,
+        'area_labels':    _area_lbls,
+        'person_entity':  ns2.person_eid,
+        'mobile':         ns3.mob,
+        'presence': {
+          'person_entity': ns2.person_eid if ns2.person_eid != '' else none,
+          'zone':          _p_zone,
+          'at_home':       (states(ns2.person_eid) == 'home') if _zone_ok and ns2.person_eid != '' else none,
+          'area_id':       _p_area_id,
+          'area_name':     _p_area_name
+        }
+      } | tojson -}}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro -%}

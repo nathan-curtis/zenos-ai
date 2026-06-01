@@ -1,6 +1,6 @@
-# Zen DojoTools Scribe — 4.6.0 'Ectoplasm'
+# Zen DojoTools Scribe — v1.8.0
 
-*Guided authoring and lifecycle management for KF4 artifacts*
+*Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
 
 ---
 
@@ -48,6 +48,7 @@ in different states.
 | `delete` | Delete the drawer entirely. Requires `delete_confirm: true`. |
 | `formalize_scroll` | Lock the artifact as formal and read-only (`artifact_state: formal`). Applies `zen_scroll` label — hard RO via FileCabinet. |
 | `publish_kfc` | Press a formal scroll to the Dojo as a live KFC. Requires `artifact_state == formal` and `publish_confirm: true`. |
+| `republish_kfc` | Edit-and-republish an existing KFC without going through the formal scroll gate. Reads the current KFC from the Dojo, merges any supplied field changes, runs the full trim block (label create-or-update, `icon` sync, chonk warning). Use after `patch` when label sync is needed, or standalone to sync only the label description. |
 | `dry_run` | Preview scope discovery and authoring guidance without writing anything. |
 | `list_triggers` | Return all available scheduler trigger IDs. |
 | `enable` | Shorthand — patch `meta.enabled: true` without a full rewrite. |
@@ -125,6 +126,7 @@ Use this when one domain (e.g., `water_manager`) needs multiple summarizer views
 | Field | Purpose |
 |---|---|
 | `component_summary` | One-line operational description (what Friday sees) |
+| `icon` | MDI icon for the KFC label (e.g. `mdi:water`). Set on first publish via label create; preserved on subsequent updates. |
 | `component_instructions` | Monk guidance for the Ninja Summarizer |
 | `more_info` | Extra rationale, references, design notes |
 | `what_it_does` | Plain-English description of the collection's purpose |
@@ -158,6 +160,22 @@ Use this when one domain (e.g., `water_manager`) needs multiple summarizer views
 | `output_fields` | Inspect field shaping when `expand_scope: true` |
 | `domain_inspect_domains` | Comma-separated HA domains to restrict step-4b domain inspect (e.g. `"todo,calendar"`). Empty = all entities from index result (default). |
 | `domain_inspect_limit` | Max entity count for step-4b domain inspect. Default 25. |
+
+### Seed (v1.4.0+)
+
+`seed` and `area_seed` let a KFC define its context source as a direct tool call instead of a label-based index query.
+
+| Field | Purpose |
+|---|---|
+| `seed` | JSON string. Concept-first tool call: `{"tool": "zen_dojotools_room_manager", "params": {...}}`. When present, Ninja Summarizer calls this tool instead of running HyperIndex. |
+| `area_seed` | JSON string. Location-first variant. `{{area_id}}` slot in params is filled at runtime when `area_id` is passed to the Ninja Summarizer. Used for per-area rollup patterns. |
+
+When publishing a KFC, `seed` and `area_seed` are preserved in the Dojo drawer. When inputs are blank on patch/publish, existing seed values are left untouched.
+
+**Choosing between index_call and seed:**
+- `label_1`/`label_2`/`index_call` — concept-first, entity set is the context. Right for most components.
+- `seed` — tool-first, tool output is the context. Right when Room Manager, Plant, or a domain tool returns richer context than a label query.
+- `area_seed` — like `seed` but spatial. One KFC definition fires per-room with `{{area_id}}` injected. Right for room-scoped ambient awareness.
 
 ### Safety
 
@@ -287,7 +305,15 @@ Scribe is non-destructive by default:
 
 ## Notes
 
-- `zen_dojotools_kungfu_writer` has been retired. Scribe is the replacement — richer schema,
-  full lifecycle management, and LLM-native authoring flow.
-- Scribe is fully MCP-exposed. Friday can use it as a first-class tool.
-- For admin-only cabinet repair and system-level operations, see [AdminTools](zen_dojotools_admintools_readme.md).
+- `zen_dojotools_kungfu_writer` has been retired. Scribe is the replacement — richer schema, full lifecycle management, and LLM-native authoring flow.
+- **Scribe is fully MCP-exposed.** Friday can use it as a first-class tool.
+- For admin-only cabinet repair and system-level operations, see [AdminTools](zen_dojotools_admintools_readme.md). AdminTools is not MCP-exposed.
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. `component_size` feedback on `publish_kfc`/`republish_kfc` responses — reports component_instructions chars, token estimate (~chars/4), % of 16KB FileCabinet drawer limit, and size_tier (ok/advisory/warning/danger). `schedules_summary` field on read responses (count + kata_keys). Patch mode merges `schedules[]` by `kata_key` (upsert) instead of replacing the full array. `publish_kfc` preserves schedules array. `repair` mode — detect and flatten wrapper-accumulated drawer corruption up to 5 levels deep (dry_run default). |
+| v1.7.0 | `icon` field added to KFC schema; set on first publish (label create), preserved on update. `publish_kfc` label upsert — creates label if absent, always updates description. Component summary chonk warning (>150 chars). |
+| v1.4.0 | `seed` and `area_seed` input fields; parsed into draft and publish payloads. |
+| v1.3.0 | Initial release as Scribe. Replaces `zen_dojotools_kungfu_writer`. Full lifecycle management, LLM-native authoring, component group model. |

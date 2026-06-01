@@ -1,4 +1,4 @@
-# Zen DojoTools AdminTools — 4.6.0 'Ectoplasm'
+# Zen DojoTools AdminTools — v5.1.0
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -8,7 +8,9 @@
 
 AdminTools is the **Ring-2 administrative layer** of ZenOS-AI. It handles tasks that fall outside normal runtime behavior: repairing cabinets, pressing schema templates, and loading the AI's identity substrate.
 
-All tools in this module are **admin-only** — they are not exposed to the AI agent and should not be called by Friday during normal operation. For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe` — it is a DojoTools script (fully MCP-exposed) and is the correct tool for Friday and operators alike.
+**All tools in this module are admin-only — not MCP-exposed.** They are not accessible to the AI agent and should not be called by Friday during normal operation. Run them via HA Developer Tools → Services.
+
+For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe` — it is a DojoTools script, **MCP-exposed**, and the correct tool for both Friday and operators.
 
 ---
 
@@ -16,13 +18,13 @@ All tools in this module are **admin-only** — they are not exposed to the AI a
 
 | Script | Version | MCP-Exposed | Purpose |
 |---|---|---|---|
-| `zen_admintools_reset_template` | 1.1.0 | No | Press zen_template and kfc_template into cabinets |
+| `zen_admintools_reset_template` | 1.1.0 | **No** | Press zen_template and kfc_template into cabinets |
 | `zen_admintools_reset_labels` | 4.5.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild |
 | `zen_admintools_cabinetadmin` | 4.5.0 | No | Inspect, restore, reset, hammer, init, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_zenos_prompt_loader` | 4.6.0 | No | Load versioned Cortex, Directives, and Purpose (v32 = True Voice (default/latest), v30 = Living Index, v29 = Ninja Fusion, v27 = RC2) |
-| `zen_admintools_run_repair` | 4.5.6 | No | Human-confirmed passthrough to versioned maint/ repair scripts |
+| `zen_admintools_prompt_loader` | 5.1.0 | No | Load versioned Cortex, Directives, and Purpose (v42 = The Answer (default/latest), v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist` and `zen_summarizer_seed_whitelist` via `mode=whitelist`. |
+| `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
 
@@ -236,9 +238,9 @@ Only needed if you are importing KFC drawers that were written before KF4 RC2. N
 
 ---
 
-## zen_admintools_zenos_prompt_loader
+## zen_admintools_prompt_loader
 
-Loads the AI's identity substrate: **Cortex**, **Directives**, and **Purpose**. These three variables define how Friday reasons, what she prioritizes, and how she accesses the knowledge graph.
+Loads the AI's identity substrate: **Cortex**, **Directives**, and **Purpose**. Also manages the summarizer act and seed whitelists via `mode=whitelist`. These three variables define how Friday reasons, what she prioritizes, and how she accesses the knowledge graph.
 
 **Not MCP-exposed.** This is a configuration and prompt-engineering tool, not a runtime script. The loaded values persist in the AI cabinet and are read by the prompt engine at inference time.
 
@@ -268,25 +270,60 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `cortex_version` | select | `latest` | `latest` or `32` = True Voice (GA default). `30` = Living Index. `29` = Ninja Fusion. `27` = RC2 |
-| `ship_zen_system` | boolean | `true` | Write the `zen_system` KFC to the Dojo after loading. Default `true` — this is the proof-of-concept KFC and ships on every load. |
-| `ship_alert_manager` | boolean | `false` | Write the `alert_manager` KFC (v1.3.0) to the Dojo. Monitors active alerts, alert_when_off entities, and persistent notifications. Default `false`. |
-| `ship_taskmaster` | boolean | `false` | Write the `taskmaster` KFC (v1.3.1) to the Dojo. Monitors task load, calendar, and bed/occupancy context via the conductor pattern. Default `false`. |
+| `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
+| `cortex_version` | select | `latest` | `latest` or `42` = The Answer (default). `40` = Room First. `38` = Kata First. Only used when `mode=load`. |
+| `ship_zen_system` | boolean | `true` | Write the `zen_system` KFC to the Dojo after loading. |
+| `ship_alert_manager` | boolean | `false` | Write the `alert_manager` KFC to the Dojo. |
+| `ship_taskmaster` | boolean | `false` | Write the `taskmaster` KFC to the Dojo. |
+| `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
+| `action_type` | select | `list` | `mode=whitelist` only. `list` \| `add` \| `remove` \| `reset`. |
+| `item` | text | — | `mode=whitelist add/remove` only. Event kind string (act) or script name (seed). |
 
 Use the `cortex_version` field to select which version to load. The three primitives (Purpose, Directives, Cortex) are versioned together as a set:
 
 | Version | Codename | Notes |
 |---|---|---|
-| `27` | Quiet Fusion (RC2) | 2026 RC2 — 4.2.x series |
-| `29` | Ninja Fusion | 2026 GA — Context Resolution directive and scope-aware context stack |
-| `30` | Living Index | Label policy, memory policy, expanded audit schema, `zen_dojotools_labels` as core tool. Requires Friday Memory Delta Spec. |
-| `32` / `latest` | True Voice | 4.5.5 GA default — signal frame, environment schema, native wake path |
+| `38` | Kata First | Kata/supersummary hierarchy first. INDEX FIRST elevated. GetLiveContext last resort. |
+| `40` | Room First | Room Manager `home_overview` as spatial map before any room-aware task. |
+| `42` / `latest` | The Answer | v10.0.0. INSTALLATION OVERRIDE (GetLiveContext blocked). WHO/WHAT/WHEN/WHERE/WHY/HOW tool map. MANAGED MACHINES directive. `inventory` replaces `grocy_helper` in core and domain tools. |
 
-Selecting `latest` or passing no `cortex_version` loads v32.
+Selecting `latest` or passing no `cortex_version` loads v42.
+
+### Whitelist Management
+
+`mode=whitelist` manages the summarizer act and seed whitelists in syscab. Replaces the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts.
+
+```yaml
+# Add Room Manager as a seed source
+action: script.zen_admintools_prompt_loader
+data:
+  mode: whitelist
+  whitelist_type: seed
+  action_type: add
+  item: zen_dojotools_room_manager
+```
+
+### KFC Schema v1.4.0 and Seed Whitelist
+
+`zen_admintools_reset_template` now presses the v1.4.0 `kfc_template` seed into the Dojo cabinet **and** seeds `zen_summarizer_seed_whitelist` into the System cabinet if the drawer is missing (idempotent). Both are seeded at Flynn gate-3 on boot.
+
+`kfc_template` changes from v1.3.x:
+
+- `seed` field added — optional. Tool-first context descriptor: `{"tool": "...", "params": {...}}`. When defined in a KFC, the Ninja Summarizer calls this tool directly instead of running HyperIndex.
+- `area_seed` field added — optional. Location-first variant of `seed`. `{{area_id}}` slot in params is filled at runtime by the Ninja Summarizer's `area_id` input. Used for per-area rollup patterns with Room Manager.
+- `schema_version` bumped to `"1.4.0"`.
+
+Flynn redeploys the template on next warmup when the version guard detects a stale `kfc_template` drawer. Existing KFCs are unaffected — both fields are optional and absent by default.
 
 ### Custom Prompt Material
 
 If you want to ship completely custom Purpose, Directives, or Cortex content, copy the prompt loader script, make your changes, and fire it. The loader is a standard HA script — there's nothing special about it beyond the version-select logic. Custom forks are your own maintenance surface; ZenOS ships the versioned canonical set and that's the extent of it.
+
+---
+
+## zen_admintools_summarizer_seed / zen_admintools_summarizer_act
+
+> **Removed in v5.1.0.** Both standalone scripts have been deleted. Whitelist management is now consolidated into `zen_admintools_prompt_loader mode=whitelist`. Use `whitelist_type=seed` for the seed whitelist and `whitelist_type=act` for the act whitelist.
 
 ---
 
@@ -327,3 +364,13 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 | Zen Dojo Cabinet | KFC component registry |
 | Zen Kata Cabinet | Summary template storage |
 | `sensor.zen_*_cabinet` (Ring-0 set) | cabinetadmin targets |
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v5.1.0 | Cortex v42 "The Answer" (v10.0.0) added as latest. Trimmed to 3 version slots: v42/v40/v38. `mode=whitelist` added to prompt_loader — absorbs `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` (both deleted). Dispatcher compat shim routes legacy `summarizer_act` calls to `prompt_loader mode=whitelist type=act`. |
+| v4.6.1 | KFC schema v1.4.0: `seed` and `area_seed` fields. `reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab. |
+| v4.6.0 | Cortex v39 (Home First). Dispatcher spamaster route. |

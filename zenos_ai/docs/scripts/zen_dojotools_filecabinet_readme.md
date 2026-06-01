@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — 4.5.5 'Ready Player Two'
+# Zen DojoTools FileCabinet — v4.7.2
 **File:** `zen_dojotools_filecabinet_readme.md`  
 **Type:** Technical Documentation  
 
@@ -35,6 +35,22 @@ It coordinates:
 - health validation
 
 If it writes, moves, or deletes a drawer, it came from here.
+
+```mermaid
+flowchart LR
+  Caller["AI, automation, or tool"]
+  FileCabinet["zen_dojotools_filecabinet"]
+  Health{"Cabinet health OK?"}
+  Parse["Parse and normalize JSON"]
+  Write["Write drawer wrapper"]
+  Verify["Re-read and verify"]
+  Index["_label_index maintenance"]
+  Cabinet["Cabinet variables"]
+
+  Caller --> FileCabinet --> Health
+  Health -- "No" --> Stop["Return structured error"]
+  Health -- "Yes" --> Parse --> Write --> Cabinet --> Verify --> Index
+```
 
 ---
 
@@ -147,6 +163,36 @@ All outputs follow a consistent envelope:
 }
 
 ```
+
+---
+
+## Valid Drawer Contract
+
+FileCabinet treats a cabinet as valid only when the target cabinet passes the Cabinet Specification and the requested drawer can be represented as a wrapper with a `value` field.
+
+```json
+{
+  "drawer_name": {
+    "value": {},
+    "timestamp": "2026-05-23T12:00:00-05:00",
+    "meta": {
+      "entity_labels": ["profile"]
+    }
+  }
+}
+```
+
+The nested `value` may be an object, array, string, number, boolean, or null. Higher-level tools impose stricter shapes:
+
+| Drawer Kind | Expected Payload |
+|---|---|
+| `_user_profile` | Mapping with person/profile fields |
+| `_family_profile` | Mapping with family display metadata |
+| `_household_profile` | Mapping with household name/address/timezone fields |
+| `members` | Mapping with `users`, `ai_users`, and `families` lists |
+| `zenai_essence` | AI persona essence in `core / jacket / companion` shape |
+
+For the full cabinet validity rules, see [Cabinet Specification](../cabinets/cabinet_spec.md). For identity-specific drawer shapes, see [Profile Editor](zen_dojotools_profile_readme.md) and [Identity](zen_dojotools_identity_readme.md).
 
 ---
 
@@ -374,4 +420,23 @@ The Zen DojoTools FileCabinet provides:
 
 If it reads like a filesystem, feels like a KV store, smells like a structured persistence layer, and behaves like a transactional controller?
 
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v4.7.2 | `key='*'` preserved through slugify; both `'*'` and `''` route to directory listing without erroring. |
+| v4.7.1 | **Write-lockout hotfix.** `mode: queued / max: 2` prevents single-slot deadlock. Event dispatch `\| tojson` on CREATE + UPDATE (`value` and `_label_index`). Verification comparison `\| tojson` on both sides — type-safe JSON string comparison. Root cause: v4.7.0 stored raw Python repr in cabinets; wait_template type mismatch caused 30s timeout → "Already running" floods → all writes dropped. v4.7.0 must not be deployed. |
+| v4.7.0 | Global normalization. `set_timestamp` defaults to `true`. All writes produce `{value, timestamp, meta}` struct. `_` prefix reads no longer silently strip the underscore when `force_action` is omitted. |
+
 Yeah. That’s FileCabinet.
+
+---
+
+## Cross-References
+
+- [Cabinet Specification](../cabinets/cabinet_spec.md) — valid cabinet, drawer, person, family, household, and AI-user shapes
+- [HyperIndex Overview](../zen_hyperindex/zen_hyperindex_overview.md) — how indexed entities and drawer blurbs feed graph reasoning
+- [DojoTools Index](zen_dojotools_index_readme.md) — search/correlation layer that can request drawer blurbs through Inspect
+- [DojoTools Inspect](zen_dojotools_inspect_readme.md) — expansion layer that asks FileCabinet for label-targeted drawer context

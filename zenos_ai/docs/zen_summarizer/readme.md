@@ -1,9 +1,6 @@
-# ✅ **ZenOS-AI Summarization Pipeline**
+# ZenOS-AI Summarization Pipeline
 
-### *(Ninja Summarizer Edition: Expanded Scope)*
-
-# ZenOS-AI Summarization Pipeline  
-### From Dojo + Home Kung Fu → Kata → Zen Summary → Live Prompt
+*From Dojo + Home Kung Fu -> Kata -> Zen Summary -> Live Prompt*
 
 This document explains the **entire cognitive flow** of how ZenOS-AI processes information, transforms raw Home Assistant events into structured reasoning packets, and feeds them into Friday’s live prompt.
 
@@ -14,6 +11,25 @@ This is the core architecture that enables Friday to be:
 - role-driven  
 - narrative-consistent  
 - and more human than a stack of YAML has any right to be
+
+```mermaid
+flowchart LR
+  Dojo["Dojo KFC drawers"]
+  Scheduler["Scheduler trigger"]
+  Ninja["Ninja Summarizer"]
+  HyperIndex["Index / HyperIndex"]
+  Monk["Local AI task monk"]
+  Kata["Per-component Kata drawer"]
+  SuperSummary["SuperSummary"]
+  ZenSummary["ZEN_SUMMARY drawer"]
+  Prompt["Live prompt context"]
+
+  Dojo --> Ninja
+  Scheduler --> Ninja
+  Ninja --> HyperIndex --> Ninja
+  Ninja --> Monk --> Kata
+  Kata --> SuperSummary --> ZenSummary --> Prompt
+```
 
 Let’s walk through the pipeline step by step.
 
@@ -219,20 +235,20 @@ It’s a real-time **synthesis of the entire home and Friday’s whole self**.
 
 Here’s the full flow:
 
-```
+```text
 Dojo + Home Kung Fu
-       ↓
+       ->
 Ninja Summarizer (Stage 1)
-       ↓
+       ->
 Katas
-       ↓
+       ->
 SuperSummary (Stage 2)
-       ↓
+       ->
 Zen Summary
-       ↓
+       ->
 Live Prompt Loader
-       ↓
-Friday’s Active Cognition
+       ->
+Friday's Active Cognition
 ```
 
 Or the short version:
@@ -258,7 +274,7 @@ A mindful system:
 
 # 🔌 Pipeline Kill Switches
 
-Three `input_boolean` entities provide non-destructive on/off control over the summarization pipeline. All default to `on`.
+Three `input_boolean` entities provide non-destructive on/off control over the summarization pipeline. Fresh installs ship with the master switch off; enable the pipeline only after `input_text.zenos_ai_task_entity` points at the intended local/background AI task.
 
 | Entity | Scope |
 |---|---|
@@ -274,6 +290,16 @@ Use cases:
 - Kill the full pipeline during a cabinet reset/rebuild sequence
 
 Toggle from **Settings → Helpers** or any dashboard card.
+
+---
+
+# Related Docs
+
+- [DojoTools Summarizers](../scripts/zen_dojotools_summarizers_readme.md) — current script contract, kill switches, seed whitelist, run governor, and Scheduler integration
+- [DojoTools Index](../scripts/zen_dojotools_index_readme.md) — HyperIndex operational surface used by Ninja
+- [HyperIndex Overview](../zen_hyperindex/zen_hyperindex_overview.md) — SELECT -> FILTER -> COMPOSE mental model
+- [DojoTools FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md) — where Kata and `ZEN_SUMMARY` writes land
+- [Script Modules](../scripts/readme.md) — return path to the internal tool map
 
 ---
 

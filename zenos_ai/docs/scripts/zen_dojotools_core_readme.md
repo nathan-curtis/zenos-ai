@@ -1,4 +1,4 @@
-# Zen DojoTools Core — 4.5.5 'Ready Player Two'
+# Zen DojoTools Core — 2026.6.0 'Clue'
 
 *FileCabinet garbage collector — drawer lifecycle management*
 
@@ -91,6 +91,8 @@ dry_run: true
 ```
 
 After a real run with evictions, GC optionally fires `script.zen_dojotools_supersummary` to update the active summary with post-eviction state. Controlled by `post_supersummary` (default `true`).
+
+**Postman log GC (step 4d):** The `gc` run also sweeps `zen_postman_log` in the kata cabinet. Each log entry carries a `ttl_s` field — entries older than their TTL are evicted. Pending entries that were never acknowledged (orphaned by an HA restart mid-call) are marked `ack_timed_out: true` rather than deleted, so the caller can detect the timeout on the next `get_response` check.
 
 ---
 
