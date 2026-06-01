@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.1.0
+**Version:** 5.3.0
 **Script:** `zen_dojotools_plant`
 
 ---
@@ -38,6 +38,7 @@ All sections return `available: false` when entities are missing or unavailable.
 | `mechanical` | Water heater + sump pump + motors + water_management subnodes (softener, auto-shutoff, leak sensors). Optional `include_inventory=true` calls Grocy `room_brief` for each load area. |
 | `thermal` | Thermal-managed loads distinct from HVAC — hot tub, freezers, generic thermal. Not room air. |
 | `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`) |
+| `managed` | All Grocy-provisioned machines — chores due, stock summary, products grouped by `ha_labels` root. Any machine bootstrapped via `provision_bom` appears automatically. `managed_labels` scopes to specific machines (CSV). |
 | `validate` | Slot resolution report — entity_id, pinned, raw_state, ok |
 | `ignore` | Tag entity with `zen_plant_ignore` (creates label if missing). Param: `target_entity`. |
 | `unignore` | Remove `zen_plant_ignore` from entity. Param: `target_entity`. |
