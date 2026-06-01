@@ -19,7 +19,9 @@ And a few things that are.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-**What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it.
+**What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it. And now she knows exactly which tool answers every question.
+
+- **Cortex v42 — The Answer** — Friday's new worldview. Every question has a tool. WHO: Room Manager `home_overview`. WHAT: index + kata. WHEN: history + calendar. WHERE: Room Manager. WHY: index + domain context. HOW: library + help. MANAGED MACHINES: `plant mode=managed`. 42 is the answer. Now she knows where to look.
 
 - **Room Manager v5.1.0** — full spatial topology: portals, adjacency, exits, safety equipment, emergency routing. Context slices now carry action envelopes — `replace_action`, `chore_actions`, `task_actions` embedded in the response so the AI knows what to do, not just what exists.
 - **AutoVac v5.1.0** — autonomous vacuum management: room election, schedule-aware runs, consumables ERP via Grocy, wear sensor alerting, post-dock map analysis. `mode=setup` deploys the KFC dojo entry and inits the cabinet drawer in one call. Controller automation included in the package — no per-schedule automations to wire up.

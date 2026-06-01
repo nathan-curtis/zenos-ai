@@ -24,7 +24,7 @@ That model ripples outward. `home_overview` now carries a weather snapshot, a li
 
 Then there's Plant Manager. The home finally has a nervous system readout: live watts, billing accumulation, water flow, gas consumption, water heater status, circuit-level breakdown. All of it label-first, all of it graceful when a sensor is missing.
 
-And then the rest: Media Manager for whole-home audio/video. ZenShade for covers. Security Manager replacing the old alarm panel stub. Calendar and Todo as standalone tools. Cortex v39 with the Home First directive — the AI leads with what's happening in the home, not with what you just asked. Office split into its component tools. The calderaspas plugin is gone and SpaMaster is the replacement.
+And then the rest: Media Manager for whole-home audio/video. ZenShade for covers. Security Manager replacing the old alarm panel stub. Calendar and Todo as standalone tools. Cortex v42 'The Answer' — GetLiveContext override, WHO/WHAT/WHEN/WHERE/WHY/HOW tool map, Managed Machines directive. Office split into its component tools. The calderaspas plugin is gone and SpaMaster is the replacement.
 
 Six new tools. Twenty-plus updated. One release that changes what the AI knows it's standing in.
 
@@ -197,13 +197,22 @@ Integration mapping: cameras now get `security_camera` label (not just `camera`)
 
 ---
 
-## Cortex v39 — Home First
+## Cortex v42 — The Answer
 
-Supersedes v38 (Kata First).
+Supersedes v40 (Room First) and v38 (Kata First). Codename: "The Answer". Version 10.0.0.
 
-The flagship behavioral change: the AI now leads with what's happening in the home before answering a question. HOME OVERVIEW is surfaced in the context frame. Cruise director calibration aligns proactive guidance with the operator's actual home state rather than with the last kata.
+This is not an incremental update. v42 changes how Friday views her world. Previous cortex versions tuned routing order and priority. v42 gives Friday a structured map of reality: every question category is answered by a specific tool, every question has a home. The name is intentional — 42 is the answer. Now she knows where to look.
+
+Key additions over v40:
+
+- **INSTALLATION OVERRIDE** — explicit directive to block HA's `GetLiveContext`/`GetLiveState`. Routes to `zen_dojotools_index` instead. `getlivecontext_rule: PROHIBITED AS FIRST CALL`.
+- **THE ANSWER MODEL** — every question maps to a tool. WHO/WHAT/WHEN/WHERE/WHY/HOW tool map embedded in directives.
+- **MANAGED MACHINES** directive — `zen_dojotools_plant mode=managed` + `zen_dojotools_inventory` as first call for any machine lifecycle or inventory question.
+- `inventory` replaces `grocy_helper` in `core_tools` and `domain_tools`.
 
 Load: `zen_admintools_prompt_loader: cortex_version: latest`
+
+Dead version slots v36/v35/v34/v32/v29 removed. Active slots: v42 (latest), v40, v38.
 
 ---
 
@@ -311,7 +320,7 @@ Step 3c checks `zen_summarizer_seed_whitelist` in syscab before firing any seed 
 - Shape: `{allowed_tools: ["zen_dojotools_index", ...], note: "..."}`
 - **`zen_dojotools_index` is whitelisted by default** — existing KFCs unaffected.
 - Unwhitelisted tool → emits `seed_tool_blocked` zen_event (warn) → falls through to HyperIndex. Summarizer still runs; operator gets visibility via the event.
-- To add Room Manager: `zen_admintools_summarizer_seed action_type: add tool: zen_dojotools_room_manager` (not MCP-exposed — run via HA script action).
+- To add Room Manager: `zen_admintools_prompt_loader mode=whitelist whitelist_type=seed action_type=add item=zen_dojotools_room_manager` (not MCP-exposed — run via HA script action).
 
 **If the summarizer pipeline is running but seeds are always falling through to HyperIndex, force-run `zen_admintools_reset_template` to seed the whitelist drawer into syscab, then add your tools.**
 
@@ -561,7 +570,7 @@ Major additions on top of v4.10.0 (which shipped the base of Clue):
 | **Ninja Summarizer** | v4.6.0 | Dual-seed architecture — new step 3c, `area_id` input field, seed whitelist gate (`zen_summarizer_seed_whitelist` in syscab). **MCP-exposed.** v4.6.0: step 3d — when `component_summary` is empty (Scribe `trim_description` path), resolves from base label description via `zen_dojotools_labels`. `zen_action_emission_enabled` boolean added (operator-only, AI cannot write) — gates `suggested_act_event` emission onto the event bus. `emission_cooldown_minutes` Dojo drawer field (default 60 min) gates per-component action event emission frequency; blocked runs emit `emission_suppressed` event. See [Ninja Summarizer section](#ninja-summarizer--v430--dual-seed-architecture) above. |
 | **SystemTools** | v4.5.9 | `ha_reload_all` and `ha_reload_scripts` now deferred via `zen_event(kind: deferred_script_reload / deferred_reload_all)`. Closes the WONT FIX asyncio `InvalidStateError` from `__remove_future` cancellation. All four reload modes now config-check gated. Ships with Scheduler v4.5.5 (hard dependency). **MCP-exposed.** |
 | **Scheduler** | v4.5.5 | Two new event triggers: `deferred_script_reload` and `deferred_reload_all`. Required companion to SystemTools v4.5.9. Must ship together. Automation-driven — not MCP-exposed. |
-| **AdminTools** | v4.6.1 | KFC schema `v1.4.0`: `seed` and `area_seed` fields added to `kfc_template`. `zen_admintools_reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab (Flynn gate-3). New `zen_admintools_summarizer_seed` management script (list/add/remove/reset). **Admin-only — not MCP-exposed.** |
+| **AdminTools** | v5.1.0 | KFC schema `v1.4.0`: `seed` and `area_seed` fields. `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab. **Cortex v42 "The Answer"** added as latest — GetLiveContext override, WHO/WHAT/WHEN/WHERE/WHY/HOW tool map, Managed Machines directive. `mode=whitelist` added to prompt_loader (absorbs deleted `zen_admintools_summarizer_act` + `zen_admintools_summarizer_seed`). Dead version slots v36/v35/v34/v32/v29 removed. **Admin-only — not MCP-exposed.** |
 | **FileCabinet** | v4.7.2 | Global normalization + v4.7.1 write-lockout hotfix. `mode: queued / max: 2`; `\| tojson` on event dispatch and verification. **Do not ship v4.7.0.** v4.7.2: `key='*'` preserved through slugify; both `'*'` and `''` now route to directory listing. See [FileCabinet Normalization section](#filecabinet-normalization--global-architecture) above. **MCP-exposed.** |
 | **SpaMaster** | v3.12.0 | Replaces calderaspas entirely. Generic spa management, ESPHome device discovery, scene/chemistry/log modes, preset library. Consumables ERP surface: provision catalog from model preset, Grocy product + chore creation (idempotent), status, add_to_shopping, log_replaced, log_purchased. |
 | **Identity** | v4.7.0 | Presence block on resolve (person): `{person_entity, zone, at_home, area_id, area_name}`. Consent-gated via `_user_profile.tracking`. `cabinet` + `person_entity` as explicit top-level keys. Reverse area_residents: `person_entity` + `zone` per entry. |
@@ -628,7 +637,8 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `dojotools/dojotools_todo.yaml` | New — v2.5.0. Split from office.yaml. `action`/`list_id` aliases; invalid action_type returns help. `continue_on_error: true` on all write actions; MS365 reminder routing. v2.3.0: MS365 `all_todos` attr fix. v2.4.0: `inspect_export` multi-entity read. v2.5.0: discoverability. |
 | `dojotools/dojotools_covers.yaml` | New — v0.2.2. ZenShade cover manager. |
 | `dojotools/dojotools_kungfu_loader.yaml` | Restored — was incorrectly omitted from branch. Factory KFC deployer. |
-| `dojotools/dojotools_admintools.yaml` | v4.6.1: Cortex v39 (Home First), seed_whitelist_seed, `reset_template` seeds `zen_summarizer_seed_whitelist` into syscab, new `zen_admintools_summarizer_seed` script; dispatcher spamaster route. |
+| `dojotools/dojotools_admintools.yaml` | v5.1.0: Cortex v42 "The Answer" as latest; trimmed to 3 slots (v42/v40/v38); `mode=whitelist` absorbs deleted `summarizer_act` + `summarizer_seed`; KFC schema v1.4.0 seed/area_seed fields; reset_template seeds `zen_summarizer_seed_whitelist` into syscab. |
+| `dojotools/dojotools_dispatcher.yaml` | `zen_admintools_summarizer_act` route updated: direct call → compat shim routing to `prompt_loader mode=whitelist type=act`. |
 | `dojotools/dojotools_alertmanager.yaml` | v1.5.0: `image_entity` + `response_type` on fire, ack cached to kata cabinet (`alert_response_<key>`), `get_response` mode. v1.4.0: FileCabinet write/stop action fixes, `from_json` guards, description rewrite. v1.3.0: severity labels, fire-once dedup, `clear_after_minutes` default 1440, GC sweep. v1.0.1: new `zen_dojotools_alertmanager` MCP CRUD tool appended. |
 | `dojotools/dojotools_camera.yaml` | v1.4.0: `ai_task` gate, `sendto` expansion, 8h result expiry, lens cross-reference |
 | `dojotools/dojotools_climate.yaml` (utilities) | v1.1.0: topology_context in GET |
