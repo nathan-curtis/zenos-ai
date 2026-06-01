@@ -8,9 +8,6 @@
 
 ---
 
-<!-- REMOVE-BEFORE-MERGE -->
-> **Public beta — `feat/2026.6.0`:** Near-final. UAT-passing. Not yet promoted to `main`. This notice will be removed at release.
-
 > ### 2026.6.0 'Clue' — Released
 >
 > **1. Room Manager v5.1.0 + Grocy v5.2.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.

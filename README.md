@@ -10,9 +10,6 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-> **🔖 Public beta — `feat/2026.6.0`:** This branch is feature-complete and UAT-passing. It's a near-final preview of 2026.6.0 'Clue'. The code is solid enough to run; it's not yet promoted to `main`. This notice will be removed at release. If you find something, file it — we're listening.
-<!-- REMOVE-BEFORE-MERGE -->
-
 **Stable: 2026.6.0 'Clue'** | Previous: 2026.5.0 'Fry's Grandpa'
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
