@@ -21,15 +21,15 @@ And a few things that are.
 
 **What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it.
 
-- **Room Manager v1.48.0** — full spatial topology: portals, adjacency, exits, safety equipment, emergency routing. Context slices now carry action envelopes — `replace_action`, `chore_actions`, `task_actions` embedded in the response so the AI knows what to do, not just what exists.
-- **AutoVac v3.12.0** — autonomous vacuum management: room election, schedule-aware runs, consumables ERP via Grocy, wear sensor alerting, post-dock map analysis. `mode=setup` deploys the KFC dojo entry and inits the cabinet drawer in one call. Controller automation included in the package — no per-schedule automations to wire up.
-- **Grocy v4.54.0** — full ERP stack: 96 operations. New: `object_lens` place lens, three-path chore discovery (`room_brief`), userentities/userobjects/userfields CRUD — custom domain objects (rooms, vehicles, appliances) as first-class Grocy assets.
-- **Identity v4.7.0** — presence block on every person resolve (zone, at_home, area — consent-gated), new `zen_identity.jinja` template resolver, three-plane navigation: cabinet ↔ person ↔ area from any direction.
-- **Plant Manager v1.5.0** — electric, water, gas, HVAC, sump, circuits, motors, validation. `include_inventory` attaches Grocy room context to mechanical load nodes.
-- **Media Manager v0.7.2** — whole-home media discovery and intent routing.
-- **Security Manager v1.2.0** — room-aware zone inventory, replaces alarm_panel.
-- **OOBE v4.2.0** — Room Manager-native first-run room setup.
-- **ZenShade v0.2.2** — cover management with ZenLux sync.
+- **Room Manager v5.1.0** — full spatial topology: portals, adjacency, exits, safety equipment, emergency routing. Context slices now carry action envelopes — `replace_action`, `chore_actions`, `task_actions` embedded in the response so the AI knows what to do, not just what exists.
+- **AutoVac v5.1.0** — autonomous vacuum management: room election, schedule-aware runs, consumables ERP via Grocy, wear sensor alerting, post-dock map analysis. `mode=setup` deploys the KFC dojo entry and inits the cabinet drawer in one call. Controller automation included in the package — no per-schedule automations to wire up.
+- **Grocy v5.1.0** — full ERP stack: 96 operations. New: `object_lens` place lens, three-path chore discovery (`room_brief`), userentities/userobjects/userfields CRUD — custom domain objects (rooms, vehicles, appliances) as first-class Grocy assets.
+- **Identity v5.1.0** — presence block on every person resolve (zone, at_home, area — consent-gated), new `zen_identity.jinja` template resolver, three-plane navigation: cabinet ↔ person ↔ area from any direction.
+- **Plant Manager v5.1.0** — electric, water, gas, HVAC, sump, circuits, motors, validation. `include_inventory` attaches Grocy room context to mechanical load nodes.
+- **Media Manager v5.1.0** — whole-home media discovery and intent routing.
+- **Security Manager v5.1.0** — room-aware zone inventory, replaces alarm_panel.
+- **OOBE v5.1.0** — Room Manager-native first-run room setup.
+- **ZenShade v5.1.0** — cover management with ZenLux sync.
 
 → [Release Notes — Clue](zenos_ai/docs/releases/clue.md)
 
