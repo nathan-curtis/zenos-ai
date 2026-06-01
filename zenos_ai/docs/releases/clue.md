@@ -34,7 +34,7 @@ In Clue, the whole game is figuring out which room. We're done figuring.
 
 ---
 
-## Room Manager (RoomReg) — New (v1.42.0 → v1.47.0)
+## Room Manager (RoomReg) — v5.1.0 (New)
 
 The spatial intelligence hub. Everything room-aware in ZenOS-AI reads from here.
 
@@ -88,7 +88,7 @@ See [Room Manager reference](../components/room_manager.md) for the full schema.
 
 ---
 
-## Plant Manager — New (v1.3.1)
+## Plant Manager — v5.1.0 (New)
 
 Physical plant + energy manager. Every utility in the home, surfaced in one tool.
 
@@ -138,7 +138,7 @@ See [Plant Manager reference](../components/plant_manager.md) for the full disco
 
 ---
 
-## Media Manager (NyxMau5) — New (v0.7.2)
+## Media Manager (NyxMau5) — v5.1.0 (New)
 
 Whole-home media management. Discovers all `media_player.*` entities, resolves source lists, handles intent routing (play/pause/stop/volume/source), and applies user preference profiles.
 
@@ -148,7 +148,7 @@ See [Media Manager reference](../components/media_manager.md).
 
 ---
 
-## Security Manager — New (v1.2.0)
+## Security Manager — v5.1.0 (New)
 
 Replaces `zen_dojotools_alarm_panel`. Renamed to match manager convention.
 
@@ -164,7 +164,7 @@ Per-room zone inventory via RM `+security` context slice.
 
 ---
 
-## ZenShade (Covers) — New (v0.2.2)
+## ZenShade (Covers) — v5.1.0 (New)
 
 Cover management with tilt support and ZenLux sync.
 
@@ -177,7 +177,7 @@ See [ZenShade reference](../components/zenshade.md).
 
 ---
 
-## OOBE — v4.2.0
+## OOBE — v5.1.0
 
 Room setup is now RM-native. The old pattern (one filecabinet drawer per room) is gone.
 
@@ -207,7 +207,7 @@ Load: `zen_admintools_prompt_loader: cortex_version: latest`
 
 ---
 
-## AlertManager — v1.3.0
+## AlertManager — v5.1.0
 
 - **Severity labels** — alerts now carry a severity tag in the label namespace. Alert discovery queries include severity filtering.
 - **Fire-once dedup** — `_zen_active_alerts` drawer tracks active alert keys. Duplicate fires for the same key are suppressed until cleared.
@@ -216,7 +216,7 @@ Load: `zen_admintools_prompt_loader: cortex_version: latest`
 
 ---
 
-## AlertManager Tool — v1.5.0
+## AlertManager Tool — v5.1.0
 
 `zen_dojotools_alertmanager` — MCP-facing CRUD script. Friday can manage the alert system directly: query active alerts, fire, clear, read/set notify policy, and poll for interactive responses.
 
@@ -270,7 +270,7 @@ This is the agent-accessible complement to the automation-side AlertManager. The
 
 ---
 
-## Ninja Summarizer — v4.3.0 — Dual-Seed Architecture
+## Ninja Summarizer — v5.1.0 — Dual-Seed Architecture
 
 KFCs can now define their own context source, bypassing HyperIndex when a richer tool gives better data.
 
@@ -354,7 +354,7 @@ The old pattern: most tools wrote values directly as raw JSON. Some wrote string
 
 ---
 
-## AutoVac — New (v3.12.0)
+## AutoVac — v5.1.0 (New)
 
 Autonomous robotic vacuum management. Room scheduling, consumable ERP loop via Grocy, wear sensor alerting, post-dock map analysis.
 
@@ -387,6 +387,7 @@ Autonomous robotic vacuum management. Room scheduling, consumable ERP loop via G
 | `autovac_water_low` | `binary_sensor.*` | Water tank low sensor |
 | `autovac_schedule` | Schedule entities | One per run slot |
 | `autovac_wear` | Roborock wear sensors | Wired to catalog at provision time |
+| `autovac_calendar` | `calendar.*` | Events with "AUTOVAC HOLD" in summary/description block runs in the 4-hour window; other events surface as soft warnings in briefing |
 | `autovac_current_room` | `sensor.*` | Live current-room sensor (optional) |
 | `Zen Household Cabinet` | `sensor.*` | Shared household cabinet |
 
@@ -443,6 +444,7 @@ Each preset defines SKUs, wear sensor keys, wear thresholds, storage location ca
 | `dock` | `vacuum.docked` on `label:autovac` | analyze → check_wear → 1min delay → ninja_summarizer → `autovac_docked` event |
 | `schedule_on` | `schedule.turned_on` on `label:autovac_schedule` | `mode=run`; + `mode=morning_reset` if `'morning' in trigger.entity_id` |
 | `briefing_timer` | Template: 30-min window | `mode=briefing` |
+| `briefing_manual` | `zen_event kind: autovac_prerun_briefing` | `mode=briefing` |
 | `nightly` | `time: 00:00:00` | `mode=nightly_reset` |
 | `ack` | `zen_event postman_ack ack_owner=autovac` | `mode=handle_ack` |
 | `ha_start` | `homeassistant: start` | Catch-up `analyze(docked)` if vacuum docked + pending `current_run` in cabinet |
@@ -451,7 +453,7 @@ See [AutoVac reference](../components/autovac.md).
 
 ---
 
-## Identity + Inspect — v4.7.0 / v5.0.1
+## Identity + Inspect — v5.1.0
 
 ### Identity — v4.7.0 Presence Block
 
@@ -516,7 +518,7 @@ When inspecting a `person.*` entity, Inspect now injects a full identity block:
 
 ---
 
-## Grocy — v4.44.0 → v4.54.0
+## Grocy — v5.1.0
 
 Major additions on top of v4.10.0 (which shipped the base of Clue):
 
@@ -544,7 +546,7 @@ Major additions on top of v4.10.0 (which shipped the base of Clue):
 |------|---------|-------------|
 | **Dispatcher** | v1.3.0 | Postman Tier 2, infra escalation hard deny, Covers + Climate Tier 2, security_manager route, spamaster route, autovac route (all 17 fields). v1.3.0: todo route added. |
 | **ZenLux** | v0.6.0 | zen_lm_* hardware role label taxonomy (8 labels + legacy fallback chain), discover/setup/label_suggest/resolve_debug/auto_label modes, prefs_sweep whole-home apply, bleed_threshold param, prefs_apply RM-state auto-detection (Engaged→work, Asleep→sleep) |
-| **Room Manager** | v1.48.0 | `home_overview`: three new opt-in fields — `include_notices` (active ZenOS alerts, HA repairs, persistent notifications, Postman dispatches, pre-built action_queue[]), `include_presence` (hps-labeled tracker block), `presence_mode=filtered\|discover`. v1.45.0–v1.47.0: `+inventory` → `stock_area_volatile`; `mode=setup` preflight; `area_create` 1.5s settling; `mode=set` bifurcated error. **v1.48.0:** `area_create` pre-flight `area_id()` guard (ServiceValidationError no longer kills conversation agent); `floor_assign` pre-flight `floors()` guard in both `area_create` and `area_update`; `area_update` removes phantom `homeassistant.update_area` calls (Spook has no such service — `ha_ui_advisory` returned instead); `+inventory` → `object_lens` place lens (full operational objects, not just volatile items); per-entity `room_context` slim (summary + `room_area_id` pointer), full payload in `domain_context.room_manager[area_id]`; +chores: `replace_action{step_1: chores_execute, step_2: stock_open_item}` on product-linked chores; emergency mode: safety items with `grocy_product_id` enriched with live stock status. |
+| **Room Manager** | v5.1.0 | `home_overview`: three new opt-in fields — `include_notices` (active ZenOS alerts, HA repairs, persistent notifications, Postman dispatches, pre-built action_queue[]), `include_presence` (hps-labeled tracker block), `presence_mode=filtered\|discover`. v1.45.0–v1.47.0: `+inventory` → `stock_area_volatile`; `mode=setup` preflight; `area_create` 1.5s settling; `mode=set` bifurcated error. **v1.48.0:** `area_create` pre-flight `area_id()` guard (ServiceValidationError no longer kills conversation agent); `floor_assign` pre-flight `floors()` guard in both `area_create` and `area_update`; `area_update` removes phantom `homeassistant.update_area` calls (Spook has no such service — `ha_ui_advisory` returned instead); `+inventory` → `object_lens` place lens (full operational objects, not just volatile items); per-entity `room_context` slim (summary + `room_area_id` pointer), full payload in `domain_context.room_manager[area_id]`; +chores: `replace_action{step_1: chores_execute, step_2: stock_open_item}` on product-linked chores; emergency mode: safety items with `grocy_product_id` enriched with live stock status. **Emergency mode fixes (2026-05-31):** `_em_topo` 3-step FileCabinet unwrap (was iterating wrapper keys — showed 2 rooms instead of full topology); Grocy discovery gated on `zen_safety_type or hazmat_class` (was pulling all products into safety_equipment); `topology_coverage{}` new response field — total/configured/sparse room counts + advisory. |
 | **Climate Manager** | v1.1.0 | `topology_context` in GET: open doors/windows, area sensors, RM HVAC bleed portals, natural vent advisory |
 | **Grocy** | v4.54.0 | chores_delete/edit, unit_conversions_add/list/delete, product_groups_list/find, update_product_meta full RMW, null-unit doctrine. v4.44–v4.47: `stock_area_volatile` mode, `location_id` on volatile projections. v4.48: `room_brief` (chores + stock in one call; three-path chore discovery: area-tagged OR product stocked at area location OR `ha_labels` contains area slug); `chores_tag`, `tasks_add`, `tasks_tag`; `slim_objects` field; product_name enrichment on `shopping_add/remove_product`, `stock_check_item`/`stock_where_is_item`, `stock_entry_update`; userfields bugfixes (sibling key footgun, wrong cabinet resolver, missing FC value unwrap). v4.49–v4.54: `userfields_create` (idempotent); `userentities_list/create/delete`; `userobjects_list/create/delete`; `userentity_values_get/set` — full ERP object substrate for custom domain types (room, vehicle, appliance, etc.). 96 operations total. |
 | **Plant Manager** | v1.5.0 | v1.3.1: `mode=thermal`, `mode=mechanical` garage_water subnode, `mode=ignore/unignore`. v1.5.0: `motors[]` in mechanical (`zen_plant_motor` label); `include_inventory` field (Grocy `room_brief` per load area); `water_management{}` rename from `garage_water`; `name` + `area` fields on all load nodes; sump pump returns `{available: false, note}` instead of null. |
@@ -618,7 +620,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 
 | File | Change |
 |------|--------|
-| `dojotools/dojotools_room_manager.yaml` | New — v1.42.0 → v1.48.0. Full spatial topology tool. v1.47.0: `+inventory` → stock_area_volatile, setup preflight, area_create 1.5s settling, include_notices/include_presence. v1.48.0: area_create/area_update guards (ServiceValidationError → clean error), phantom update_area calls removed, +inventory → object_lens (slim per-entity), replace_action on product-linked chores, emergency safety inventory enrichment. |
+| `dojotools/dojotools_room_manager.yaml` | New — v5.1.0. Full spatial topology tool. v1.47.0: `+inventory` → stock_area_volatile, setup preflight, area_create 1.5s settling, include_notices/include_presence. v1.48.0: area_create/area_update guards (ServiceValidationError → clean error), phantom update_area calls removed, +inventory → object_lens (slim per-entity), replace_action on product-linked chores, emergency safety inventory enrichment. 2026-05-31: emergency `_em_topo` 3-step unwrap fix, Grocy discovery safety gate, `topology_coverage{}` new field. |
 | `dojotools/dojotools_plant.yaml` | New — v1.5.0. Physical plant + energy manager. v1.3.1: mode=thermal, mode=mechanical water_management subnode, mode=ignore/unignore. v1.5.0: motors[] (zen_plant_motor label), include_inventory (Grocy room_brief per load area), water_management rename, name+area on all load nodes. |
 | `dojotools/dojotools_media_manager.yaml` | New — v0.7.2. Whole-home media management. |
 | `dojotools/dojotools_security_manager.yaml` | New — v1.2.0. Replaces dojotools_alarm_panel.yaml (deleted). |
@@ -672,7 +674,7 @@ Full audit of all 64 YAML files in `packages/zenos_ai/`.
 | `zenos_ai/docs/getting_started/oobe.md` | v4.2.0 RM-native room setup; security_camera label; persona handoff |
 | `zenos_ai/docs/getting_started/first_run.md` | v2026.6.0; Room Manager in rooms step; persona handoff; security_camera |
 | `zenos_ai/docs/readme.md` | v2026.6.0; Tool Reference section; 2026.6.0 What's New; roadmap entry |
-| `zenos_ai/docs/_index.json` | v10: tools section, 7 releases, 2 scripts, 3 kung_fu, 1 custom_templates |
+| `zenos_ai/docs/_index.json` | v15: tools section updated to `components/` paths; autovac_quick_start added to getting_started; generated date updated |
 | `dojotools/dojotools_lights.yaml` | v0.6.0: zen_lm_* label taxonomy, discover/setup/label_suggest, prefs_sweep, bleed_threshold. v0.5.1: sync_shades, burnout timer, RM hold gate. FG-05: area_entities() pre-scan. |
 | `custom_templates/zenos_ai/zenos_cabinets.jinja` | identity_roster() macro, safe_parse_json_string, safe_get_nested (identity v4.7.0 bridge) |
 | `custom_templates/zenos_ai/zen_os_1.jinja` | zen_drawer refactor: explicit kata_cab param, meta.enabled, desc from label_description; purpose/directives migrated to cabinet_drawer_value |

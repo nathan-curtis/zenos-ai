@@ -1,6 +1,6 @@
 # ZenOS-AI AlertManager
 
-**Version:** 1.5.0
+**Version:** 5.1.0
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**

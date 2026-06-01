@@ -1,6 +1,6 @@
 # ZenOS-AI ZenLux — Lighting Manager
 
-**Version:** 0.6.0
+**Version:** 5.1.0
 **Script:** `zen_dojotools_lights`
 **Codename:** ZenLux
 

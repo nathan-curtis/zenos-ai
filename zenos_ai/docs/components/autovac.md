@@ -1,6 +1,6 @@
 # ZenOS-AI AutoVac
 
-**Version:** 3.12.0
+**Version:** 5.1.0
 **Script:** `zen_dojotools_autovac`
 
 ---

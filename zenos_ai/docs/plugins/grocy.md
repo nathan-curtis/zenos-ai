@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 4.54.0  
+**Version:** 5.1.0  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
 **Internal REST dispatcher:** `zen_dojotools_grocy_advanced`

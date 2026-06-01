@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 1.48.0
+**Version:** 5.1.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -230,6 +230,7 @@ mode=emergency  scenario=fire  area=kitchen
 | `likely_occupied[]` | Rooms with lights on or motion/occupancy/presence sensor active. |
 | `location{}` | `name` (from `input_text.zenos_household_name`), `address`, `zip_code`, `gps{lat,lon}` (live from `zone.home`). |
 | `rally_point` | Rally point string from household profile. |
+| `topology_coverage{}` | `total_rooms` (all HA areas), `configured_rooms` (rooms in topology), `sparse_rooms[]` (rooms with no portal or window data), `complete` (bool), `advisory` (populated when sparse rooms exist — lists room names). |
 
 ### Scenario Guidance Summary
 

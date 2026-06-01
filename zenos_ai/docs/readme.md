@@ -13,13 +13,13 @@
 
 > ### 2026.6.0 'Clue' — Released
 >
-> **1. Room Manager v1.48.0 + Grocy v4.54.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
+> **1. Room Manager + Grocy — v5.1.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
 >
-> **2. Plant Manager v1.5.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
+> **2. Plant Manager — v5.1.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
 >
-> **3. AutoVac v3.12.0.** Controller automation in package (no per-schedule wiring). 3-button briefing (Go now / Skip / Pause all day). `mode=setup` deploys KFC + inits cabinet in one call.
+> **3. AutoVac — v5.1.0.** Controller automation in package (no per-schedule wiring). 3-button briefing (Go now / Skip / Pause all day). `mode=setup` deploys KFC + inits cabinet in one call.
 >
-> **4. Postman v1.6.2 + AlertManager Postman Integration + Scribe v1.8.0 + Summarizer v4.6.0.** Full ack lifecycle, `open_dashboard` companion URI. Scribe: `repair`, `republish_kfc`, `component_size`. Summarizer: dual-seed, emission gate.
+> **4. Postman + AlertManager + Scribe + Summarizer — v5.1.0.** Full ack lifecycle, `open_dashboard` companion URI. Scribe: `repair`, `republish_kfc`, `component_size`. Summarizer: dual-seed, emission gate.
 >
 > → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](components/room_manager.md) | [Plant Manager](components/plant_manager.md) | [Grocy](plugins/grocy.md)
 
@@ -70,6 +70,7 @@ New to ZenOS-AI? Start here.
 * `first_run.md` — First boot walkthrough, OOBE conversation, persona selector, editing profiles, troubleshooting
 * `entity_exposure.md` — What to expose to your conversation agent: actionable vs contextable vs invisible, the three-tier model
 * `autovac_first_setup.md` — Full AutoVac commissioning: rooms, labels, schedules, Postman policy, Grocy inventory, consumables, wear checks, AlertManager
+* `autovac_quick_start.md` — New user 5-step overview: schedule setup, model preset selection, 3-button briefing walkthrough, first run
 * `cabinet_placement.md` — Where things go and why: Dojo vs Kata, drawer vs KFC, the quick-reference placement table. Read after entity_exposure.
 * `oobe.md` — OOBE walkthrough: the six-step first-boot configuration protocol to your conversation agent: actionable vs contextable vs invisible, the three-tier model
 * `troubleshooting.md` — Gauges → Kill Switches → Repair Tools. Health sensor quick-reads, summarizer kill switches, and a seven-step graduated repair sequence (resolver refresh → reseed → label reset → nuclear cabinet reset)
@@ -314,6 +315,7 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 * Room Manager (RoomReg) v1.48.0 — spatial topology hub, context slices, home_overview; +inventory via `object_lens` place lens (slim per-entity + full in `domain_context`); +chores with `replace_action` envelopes; area_create/area_update guards; emergency mode safety inventory enrichment
 * Plant Manager v1.5.0 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + water_management + motors + ignore/unignore modes; `include_inventory` attaches Grocy room_brief to load nodes
+* AutoVac v3.12.0 — autonomous vacuum scheduling: room election, schedule-aware runs, controller automation in package (no per-schedule wiring), 3-button briefing (Go now / Skip / Pause all day), `mode=setup` one-call onboarding, consumables ERP via Grocy, wear sensor alerting, calendar-gate support
 * Grocy v4.54.0 — `object_lens` place lens; `room_brief` three-path chore discovery; userentities/userobjects/userfields CRUD (ERP object substrate); `slim_objects` flag; product_name enrichment on 4 modes
 * Postman v1.6.2 — full ack lifecycle: clear_tag consumer pattern, open_dashboard companion URI, race fix
 * Todo v2.5.0 — discoverability, bulk complete, MS365 read fix (all_todos attr), structured 404
@@ -327,7 +329,7 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 * Media Manager (NyxMau5) v0.7.2 — whole-home media management and intent routing
 * Security Manager v1.2.0 — replaces alarm_panel; room-aware zone inventory via RM +security slice
 * ZenShade v0.2.2 — cover management, tilt support, ZenLux sync
-* calderaspas retired — SpaMaster v3.3.0 is the replacement
+* SpaMaster v3.12.0 — replaces calderaspas entirely; ESPHome hot tub management, ESPHome device discovery, scene/chemistry/log modes, preset library; consumables ERP via `provision_bom` (idempotent Grocy product + chore provisioning)
 
 See: [Release Notes — Clue](releases/clue.md)
 

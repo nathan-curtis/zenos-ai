@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 1.5.0
+**Version:** 5.1.0
 **Script:** `zen_dojotools_plant`
 
 ---

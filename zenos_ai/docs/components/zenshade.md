@@ -1,6 +1,6 @@
 # ZenOS-AI ZenShade — Cover Manager
 
-**Version:** 0.2.2
+**Version:** 5.1.0
 **Script:** `zen_dojotools_covers`
 **Codename:** ZenShade
 
