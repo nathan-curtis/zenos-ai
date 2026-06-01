@@ -13,9 +13,9 @@
 
 > ### 2026.6.0 'Clue' — Released
 >
-> **1. Room Manager + Grocy — v5.1.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
+> **1. Room Manager v5.1.0 + Grocy v5.2.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
 >
-> **2. Plant Manager — v5.1.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
+> **2. Plant Manager — v5.4.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
 >
 > **3. AutoVac — v5.1.0.** Controller automation in package (no per-schedule wiring). 3-button briefing (Go now / Skip / Pause all day). `mode=setup` deploys KFC + inits cabinet in one call.
 >
@@ -87,7 +87,7 @@ If you just installed ZenOS-AI and want to know what to do next, start here.
 Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, parameters, and response shape.
 
 * `components/room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
-* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, validate
+* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate
 * `components/media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
 * `components/autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
@@ -314,9 +314,9 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 **2026.6.0 'Clue' — Beta (ETA 2026-06-01)**
 
 * Room Manager (RoomReg) v1.48.0 — spatial topology hub, context slices, home_overview; +inventory via `object_lens` place lens (slim per-entity + full in `domain_context`); +chores with `replace_action` envelopes; area_create/area_update guards; emergency mode safety inventory enrichment
-* Plant Manager v1.5.0 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + water_management + motors + ignore/unignore modes; `include_inventory` attaches Grocy room_brief to load nodes
+* Plant Manager v5.4.0 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + water_management + motors + ignore/unignore modes; `include_inventory` attaches Grocy room_brief to load nodes; `mode=managed` universal machine rollup
 * AutoVac v3.12.0 — autonomous vacuum scheduling: room election, schedule-aware runs, controller automation in package (no per-schedule wiring), 3-button briefing (Go now / Skip / Pause all day), `mode=setup` one-call onboarding, consumables ERP via Grocy, wear sensor alerting, calendar-gate support
-* Grocy v4.54.0 — `object_lens` place lens; `room_brief` three-path chore discovery; userentities/userobjects/userfields CRUD (ERP object substrate); `slim_objects` flag; product_name enrichment on 4 modes
+* Grocy v5.2.0 — `object_lens` place lens; `room_brief` three-path chore discovery; userentities/userobjects/userfields CRUD (ERP object substrate); `provision_bom` 3-tier product resolution; null-unit guard
 * Postman v1.6.2 — full ack lifecycle: clear_tag consumer pattern, open_dashboard companion URI, race fix
 * Todo v2.5.0 — discoverability, bulk complete, MS365 read fix (all_todos attr), structured 404
 * ZenLux v0.6.0 — major rewrite (ZenLux)
