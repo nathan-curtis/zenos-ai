@@ -200,10 +200,32 @@ zen_dojotools_autovac:
   mode: consumables
   action: provision
   model_preset: roborock_s8_pro_ultra
-  config: '{"robot_name": "Swiffer", "storage_location_dock_parts": 80, "storage_location_wear_parts": 81}'
+  config: '{"robot_name": "Swiffer", "spare_storage_location": "Kitchen - Cabinet Left of Dishwasher"}'
 ```
 
 `force: true` in config skips the idempotency check and re-provisions (existing stock untouched).
+
+### Storage vs Consume Locations
+
+Two distinct location types must be understood when provisioning:
+
+| Location type | What it is | How it's set |
+|---------------|-----------|--------------|
+| **Spare storage** | Where uninstalled spare parts physically live (e.g. a kitchen cabinet) | `spare_storage_location` in config — **always pass this** |
+| **Consume / installed** | Where parts are consumed from when in use (robot bin, dock bins) | Auto-created from `area_id(vacuum_entity)` — no config needed |
+
+Per-category overrides are available if dock parts and wear parts live in different places:
+
+```yaml
+config: '{
+  "robot_name": "Rosie",
+  "spare_storage_location": "Kitchen - Cabinet Left of Dishwasher",
+  "storage_location_dock_parts": <grocy_location_id>,
+  "storage_location_wear_parts": <grocy_location_id>
+}'
+```
+
+If `spare_storage_location` is omitted, all parts default to the dock location. This causes Plant `mode=managed` to show wrong storage and can produce false chore bleed from co-located machines.
 
 ### Model Presets
 
