@@ -1,6 +1,6 @@
 ###############################################################################
 # DojoTools — Autovac
-# zen_dojotools_autovac (v5.1.0)
+# zen_dojotools_autovac (v5.2.0)
 #
 # Full vacuum control surface. All room state stored in the household cabinet
 # ('autovac' drawer). Zero hardcoded entity IDs — all discovery via HA labels.
@@ -81,6 +81,7 @@ script:
               - handle_ack
               - nightly_reset
               - morning_reset
+              - tool_manifest
       caller_token:
         name: Caller Token
         description: "Optional governance token — echoed in all responses."
@@ -466,7 +467,7 @@ script:
                   key: autovac
                   friendly_name: Autovac
                   label: autovac
-                  version_semantic: "5.1.0"
+                  version_semantic: "5.2.0"
                   seed: >-
                     {"tool": "zen_dojotools_autovac", "params": {"mode": "status"}}
                   component_summary: >-
@@ -617,7 +618,11 @@ script:
             {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
             {%- set l_weekday = label_entities('autovac_weekday') | list -%}
             {%- set l_weekend = label_entities('autovac_weekend') | list -%}
-            {%- set l_any_day = (l_today + l_weekday + l_weekend) | unique | list -%}
+            {%- set _ns_ld = namespace(all=[]) -%}
+            {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
+              {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
+            {%- endfor -%}
+            {%- set l_any_day = (_ns_ld.all + l_weekday + l_weekend) | unique | list -%}
             {%- set ns = namespace(entity='', secs=999999, label='', priority=99) -%}
             {%- for s in schedules -%}
               {%- set np = namespace(p=99) -%}
@@ -1350,7 +1355,7 @@ script:
               # This creates the two-way link: cabinet knows machine_product_id, Grocy knows entity_id.
               - if: "{{ _prov_mpid is not none }}"
                 then:
-                  - action: script.zen_dojotools_grocy_advanced
+                  - action: script.zen_sutra_grocy
                     data:
                       action_type: put
                       endpoint: "/userfields/products/{{ _prov_mpid }}"
@@ -1617,6 +1622,11 @@ script:
                     response_variable: response
               - variables:
                   _lr_part: "{{ _cons_catalog[_cons_part] }}"
+              # Two-path contract: chore execute handles maintenance logging and
+              # consumes the old installed unit (via product_amount on the chore).
+              # stock_consume is the fallback when no chore is registered.
+              # stock_open_item always fires — opens the next spare regardless of
+              # which consume path ran. These are complementary: consume old, open new.
               - if: "{{ _lr_part.get('chore_id') is not none }}"
                 then:
                   - action: script.zen_dojotools_inventory
@@ -1762,7 +1772,7 @@ script:
                         _sw_pv:         "{{ repeat.item.part }}"
                         _sw_wear_pct:   "{{ repeat.item.wear_pct }}"
                         _sw_product_id: "{{ repeat.item.part.product_id | int(none) }}"
-                    - action: script.zen_dojotools_grocy_advanced
+                    - action: script.zen_sutra_grocy
                       data:
                         action_type: read
                         endpoint: "stock/products/{{ _sw_product_id }}"
@@ -1846,7 +1856,7 @@ script:
               _cw_wear_pct:   "{{ states(_cw_entity) | int(-1) }}"
               _cw_product_id: "{{ _cw_part.get('product_id') | int(none) }}"
 
-          - action: script.zen_dojotools_grocy_advanced
+          - action: script.zen_sutra_grocy
             data:
               action_type: read
               endpoint: "stock/products/{{ _cw_product_id }}"
@@ -2339,16 +2349,35 @@ script:
           - variables:
               _current_run: "{{ _av_system.get('current_run', {}) | default({}, true) }}"
           - variables:
+              # Parse the LLM verdict from the analysis title prefix (contract: "AutoVac: Success|Fail|Attention").
+              # FAIL suppresses last_cleaned stamp so the room re-enters election immediately.
+              # ATTENTION (partial coverage) still stamps — some cleaning occurred.
+              # No camera = always stamp.
+              _cam_verdict: >-
+                {%- set _ca = camera_response.get('analysis', '') | upper -%}
+                {%- if 'AUTOVAC: FAIL' in _ca -%}fail
+                {%- elif 'AUTOVAC: ATTENTION' in _ca -%}attention
+                {%- elif 'AUTOVAC: SUCCESS' in _ca -%}success
+                {%- else -%}unknown{%- endif -%}
+              _stamp_last_cleaned: "{{ _cam_ent == '' or _cam_verdict != 'fail' }}"
+          - variables:
               _run_rooms: "{{ _current_run.get('rooms', []) }}"
               _updated_rooms: >-
                 {%- set ns = namespace(r=_av_rooms) -%}
                 {%- for rn in _run_rooms -%}
                   {%- if rn in ns.r -%}
-                    {%- set ns.r = ns.r | combine({rn: ns.r[rn] | combine({
-                        'last_cleaned': now().strftime('%Y-%m-%d'),
-                        'is_ready': false,
-                        'queued': false
-                    })}) -%}
+                    {%- if _stamp_last_cleaned -%}
+                      {%- set ns.r = ns.r | combine({rn: ns.r[rn] | combine({
+                          'last_cleaned': now().strftime('%Y-%m-%d'),
+                          'is_ready': false,
+                          'queued': false
+                      })}) -%}
+                    {%- else -%}
+                      {%- set ns.r = ns.r | combine({rn: ns.r[rn] | combine({
+                          'is_ready': false,
+                          'queued': false
+                      })}) -%}
+                    {%- endif -%}
                   {%- endif -%}
                 {%- endfor -%}
                 {{ ns.r }}
@@ -2361,6 +2390,26 @@ script:
                   key: autovac
                   value: >-
                     {{ {'rooms': _updated_rooms, 'system': _av_system | combine({'current_run': {}})} | tojson }}
+            else:
+              - alias: Clear stale current_run when no rooms were tracked
+                action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                  value: >-
+                    {{ {'rooms': _av_rooms, 'system': _av_system | combine({'current_run': {}})} | tojson }}
+              - alias: Warn — vacuum docked but run not tracked
+                action: script.zen_dojotools_postman
+                data:
+                  mode: resolve_and_dispatch
+                  message: >-
+                    Autovac docked but no rooms were tracked for this run — last_cleaned stamps not updated.
+                    If the vacuum was started manually, run mode=mark_cleaned room=<slug> for each cleaned room.
+                  urgency: 6
+                  channel_hint: push
+                  title: "Autovac — Rooms Not Tracked"
+                  tag: autovac_untracked_run
           - alias: Broadcast run-complete event for downstream consumers
             event: zen_event
             event_data:
@@ -2371,12 +2420,16 @@ script:
                 last_clean_area_m2: "{{ states(_last_area_ent) | float(0) if _last_area_ent != '' else 0 }}"
                 last_clean_duration_s: "{{ states(_last_dur_ent) | int(0) if _last_dur_ent != '' else 0 }}"
                 analysis: "{{ camera_response.get('analysis', '') }}"
+                camera_verdict: "{{ _cam_verdict }}"
+                last_cleaned_stamped: "{{ _stamp_last_cleaned }}"
           - variables:
               response: >-
                 {{ {'mode': 'analyze', 'result': 'ok', 'caller_token': _caller_token,
                     'status': ('error' if _trigger_id == 'error' else 'complete'),
                     'rooms_cleaned': _run_rooms,
                     'camera_used': _cam_ent != '',
+                    'camera_verdict': _cam_verdict,
+                    'last_cleaned_stamped': _stamp_last_cleaned,
                     'analysis': camera_response.get('analysis', '')} }}
           - stop: "autovac analyze complete"
             response_variable: response
@@ -2395,6 +2448,18 @@ script:
                     } }}
               - stop: "autovac briefing skipped"
                 response_variable: response
+          - if: "{{ _vacuum_state in ['cleaning', 'returning', 'paused'] }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {
+                      'mode': 'briefing', 'result': 'skipped',
+                      'caller_token': _caller_token,
+                      'reason': 'vacuum_active',
+                      'vacuum_state': _vacuum_state
+                    } }}
+              - stop: "autovac briefing skipped — vacuum active"
+                response_variable: response
           - alias: Find cascade-winning schedule firing in ~30 min
             variables:
               _schedule_entity: >-
@@ -2404,7 +2469,11 @@ script:
                 {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
                 {%- set l_weekday = label_entities('autovac_weekday') | list -%}
                 {%- set l_weekend = label_entities('autovac_weekend') | list -%}
-                {%- set l_any_day = (l_today + l_weekday + l_weekend) | unique | list -%}
+                {%- set _ns_ld = namespace(all=[]) -%}
+                {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
+                  {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
+                {%- endfor -%}
+                {%- set l_any_day = (_ns_ld.all + l_weekday + l_weekend) | unique | list -%}
                 {%- set ns = namespace(found='', best_p=99) -%}
                 {%- for s in schedules -%}
                   {%- set np = namespace(p=99) -%}
@@ -2455,7 +2524,7 @@ script:
                     {%- for evt in evts | default([]) -%}
                       {%- set summ = evt.get('summary', '') | default('', true) | upper -%}
                       {%- set desc = evt.get('description', '') | default('', true) | upper -%}
-                      {%- if 'AUTOVAC HOLD' in summ or 'AUTOVAC HOLD' in desc -%}
+                      {%- if (summ | trim == 'AUTOVAC HOLD' or summ | trim | regex_match('^AUTOVAC HOLD[: ]')) or (desc | trim == 'AUTOVAC HOLD' or desc | trim | regex_match('^AUTOVAC HOLD[: ]')) -%}
                         {%- set ns.hold = true -%}
                         {%- set ns.event = evt.get('summary', 'Calendar event') -%}
                       {%- endif -%}
@@ -2812,6 +2881,32 @@ script:
           - stop: "autovac morning_reset complete"
             response_variable: response
 
+      # ---- tool_manifest -------------------------------------------------------
+      - if: "{{ _mode == 'tool_manifest' }}"
+        then:
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_autovac',
+                display_name='Autovac',
+                tier='dojotools',
+                version='5.2.0',
+                health='sensor.zen_autovac_health',
+                required_labels=['autovac'],
+                optional_labels=['autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room'],
+                consumes=['household_cabinet:autovac'],
+                returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear results',
+                failure_policy='return error shape',
+                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','analyze','briefing','handle_ack','nightly_reset','morning_reset','tool_manifest'],
+                icon='mdi:robot-vacuum',
+                color='teal',
+
+                caller_token='{{ _caller_token }}'
+              ) | from_json -}}
+        - stop: autovac tool manifest
+          response_variable: result
+
       # -- 7 Build status response (status + queue/dequeue/skip/unskip/clear/pause/unpause/clean/configure) --
       - variables:
           _op_result: >-
@@ -3029,7 +3124,11 @@ automation:
           {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
           {%- set l_weekday = label_entities('autovac_weekday') | list -%}
           {%- set l_weekend = label_entities('autovac_weekend') | list -%}
-          {%- set l_any_day = (l_today + l_weekday + l_weekend) | unique | list -%}
+          {%- set _ns_ld = namespace(all=[]) -%}
+          {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
+            {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
+          {%- endfor -%}
+          {%- set l_any_day = (_ns_ld.all + l_weekday + l_weekend) | unique | list -%}
           {%- set ns = namespace(hit=false) -%}
           {%- for s in schedules -%}
             {%- set np = namespace(p=99) -%}
@@ -3114,7 +3213,12 @@ automation:
                   _l_today:   "{{ label_entities('autovac_' ~ _today_abbr) | list }}"
                   _l_weekday: "{{ label_entities('autovac_weekday') | list }}"
                   _l_weekend: "{{ label_entities('autovac_weekend') | list }}"
-                  _l_any_day: "{{ (_l_today + _l_weekday + _l_weekend) | unique | list }}"
+                  _l_any_day: >-
+                    {%- set _ns_ld = namespace(all=[]) -%}
+                    {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
+                      {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
+                    {%- endfor -%}
+                    {{ (_ns_ld.all + _l_weekday + _l_weekend) | unique | list }}
               - variables:
                   _sched_p: >-
                     {%- if _s in _l_today -%}1
@@ -3159,7 +3263,7 @@ automation:
                         {%- for evt in evts | default([]) -%}
                           {%- set s2 = evt.get('summary','') | default('',true) | upper -%}
                           {%- set d2 = evt.get('description','') | default('',true) | upper -%}
-                          {%- if 'AUTOVAC HOLD' in s2 or 'AUTOVAC HOLD' in d2 -%}{%- set ns.hold = true -%}{%- endif -%}
+                          {%- if (s2 | trim == 'AUTOVAC HOLD' or s2 | trim | regex_match('^AUTOVAC HOLD[: ]')) or (d2 | trim == 'AUTOVAC HOLD' or d2 | trim | regex_match('^AUTOVAC HOLD[: ]')) -%}{%- set ns.hold = true -%}{%- endif -%}
                         {%- endfor -%}
                       {%- endfor -%}
                     {%- endif -%}

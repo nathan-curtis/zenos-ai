@@ -114,7 +114,7 @@ Reloads all YAML domains: automations, scripts, scenes, groups, helpers, timers,
 
 **Config check runs first** — blocked on nogo. **Deferred via scheduler** — script fires `zen_event(kind: deferred_reload_all)` and exits; the Scheduler automation handles the actual reload from automation context. This avoids the `asyncio.InvalidStateError` that occurs when a script calls `homeassistant.reload_all` directly after a `response_variable` child call. Returns immediately with `result: success` and `config_check: passed` when queued.
 
-**Default choice for most reloads.**
+**LAST RESORT ONLY** — use targeted reload modes (`ha_reload_scripts`, `ha_reload_automations`, etc.) whenever possible. `ha_reload_all` reloads every domain and should only be used when targeted reloads cannot resolve the issue.
 
 ---
 

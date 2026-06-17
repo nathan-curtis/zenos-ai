@@ -10,33 +10,29 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Stable: 2026.6.0 'Clue'** | Previous: 2026.5.0 'Fry's Grandpa'
+**Beta: 2026.7.0 'Neo'** | Stable: 2026.6.0 'Clue'
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-**What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it. And now she knows exactly which tool answers every question.
+**What's in Neo:** *I know Kung Fu.* The cabinet is a graph. Every drawer is a node. Every node has meta, labels, and children. Tools are wired to talk to each other by design. Friday composed her own executive dashboard from live-mounted drawers without being asked.
 
-- **Cortex v42.1 — The Answer** — Friday's new worldview. Every question has a tool. WHO: Room Manager `home_overview`. WHAT: index + kata. WHEN: history + calendar. WHERE: Room Manager. WHY: index + domain context. HOW: library + help. MANAGED MACHINES: `plant mode=managed`. 42 is the answer. Now she knows where to look. (The 0.1 makes it smaller!)
+- **CabCeption — FileCabinet v6.2.0** — nested drawer trees via `/` path separator. VirtualDrawer (softlink to another path), LiveDrawer (KF4 schema absorbed into FC — fires a tool call on read, warm cache, auto-expiring cold cache, never empty). Drawers are first-class entities: meta + labels + children at every level.
+- **Tool Manifest** — `zenos_manifest.jinja` + `MF.tool_manifest()`. Every compliant tool self-describes. Manifest broker v6.0.0 aggregates by namespace discovery. The system knows what it is.
+- **Cortex 43 — Rule Zero** — DojoTools supersede all HA built-ins. Not preference. Authority. GetLiveContext overridden. Domain routing table in directives. Successor to v42 'The Answer'.
+- **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter. The manifest replaced the static surface.
+- **Lens Bus `stack=` routing** — Library v5.5.0 routes generic verbs to registered providers. `zen_stack_radar` v1.0.0 wires Zammad service desk as a Lens stack provider.
+- **Intentional tool topology** — tools wired to talk to each other by design. FC is the wiki surface. Library routes to radar routes to servicedesk. The manifest discovers tools by namespace. LiveDrawers fire tool calls on read.
+- **ZenZork v1.1.0** — text adventure engine using live Room Manager topology as the dungeon. Narrator styles: `zork` (dry/sardonic), `dungeon` (DUNGEONMIND — BORANT's corporate dungeon AI, IBM AT since 1984), `straight`. Quest system, setup commissioning, portal disambiguation.
 
-- **Room Manager v5.1.0** — full spatial topology: portals, adjacency, exits, safety equipment, emergency routing. Context slices now carry action envelopes — `replace_action`, `chore_actions`, `task_actions` embedded in the response so the AI knows what to do, not just what exists.
-- **AutoVac v5.1.0** — autonomous vacuum management: room election, schedule-aware runs, consumables ERP via Grocy, wear sensor alerting, post-dock map analysis. `mode=setup` deploys the KFC dojo entry and inits the cabinet drawer in one call. Controller automation included in the package — no per-schedule automations to wire up.
-- **Grocy v5.2.0** — full ERP stack: 96 operations. New: `object_lens` place lens, three-path chore discovery (`room_brief`), userentities/userobjects/userfields CRUD — custom domain objects (rooms, vehicles, appliances) as first-class Grocy assets. `provision_bom` 3-tier product resolution.
-- **Identity v5.1.0** — presence block on every person resolve (zone, at_home, area — consent-gated), new `zen_identity.jinja` template resolver, three-plane navigation: cabinet ↔ person ↔ area from any direction.
-- **Plant Manager v5.4.0** — electric, water, gas, HVAC, sump, circuits, motors, validation. `include_inventory` attaches Grocy room context to mechanical load nodes. `mode=managed` surfaces all provision_bom machines with chores, stock, and fix-command advisories.
-- **Media Manager v5.1.0** — whole-home media discovery and intent routing.
-- **Security Manager v5.1.0** — room-aware zone inventory, replaces alarm_panel.
-- **OOBE v5.1.0** — Room Manager-native first-run room setup.
-- **ZenShade v5.1.0** — cover management with ZenLux sync.
-
-→ [Release Notes — Clue](zenos_ai/docs/releases/clue.md)
+→ [Release Notes — Neo](zenos_ai/docs/releases/neo.md)
 
 ---
 
-**Stable: 2026.5.0 'Fry's Grandpa'** — shipped 2026-05-03. Priority inject system, Alertmanager v1.2.0, Camera v1.3.0, Identity `provision_member`, ZQ-1 v4.6.0, profile editor read fix.
+**Stable: 2026.6.0 'Clue'** — shipped 2026-06-01. Room Manager spatial topology, AutoVac, Grocy v5.2.0, Identity presence block, Plant Manager v5.4.0, Media Manager, Security Manager, ZenShade, Cortex v42 'The Answer'.
 
-Release notes: [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights, Camera, Action](zenos_ai/docs/releases/lights_camera_action.md) | [Action Jackson 2](zenos_ai/docs/releases/action_jackson_2.md) | [Action Jackson](zenos_ai/docs/releases/action_jackson.md) | [Ectoplasm](zenos_ai/docs/releases/ectoplasm.md) | [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md)
+Release notes: [Clue](zenos_ai/docs/releases/clue.md) | [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights, Camera, Action](zenos_ai/docs/releases/lights_camera_action.md) | [Action Jackson 2](zenos_ai/docs/releases/action_jackson_2.md) | [Action Jackson](zenos_ai/docs/releases/action_jackson.md) | [Ectoplasm](zenos_ai/docs/releases/ectoplasm.md) | [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md)
 
 ---
 
@@ -260,6 +256,7 @@ packages/zenos_ai/
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
     dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
+    dojotools_zenzork.yaml        — ZenZork v1.1.0 — text adventure on live RM topology, DUNGEONMIND narrator, quests
 
     — Productivity —
     dojotools_office.yaml      — Office integrations (Teams, mail)
@@ -280,7 +277,13 @@ packages/zenos_ai/
   plugins/                     — Optional — install only what you need
     grocy/grocy.yaml
     mealie/mealie.yaml
-    kitchen_sync/kitchen_sync.yaml
+    mealie/kitchen_sync.yaml   — companion to mealie
+    zammad/zammad.yaml
+    wiki_js/dojotools_wikijs.yaml
+    paperless_ngx/paperless_ngx.yaml
+    twenty/twenty.yaml
+    firefly_iii/firefly_iii.yaml
+    project/project.yaml
 
 custom_templates/zenos_ai/
   zen_os_1.jinja               — Prompt engine and macro library

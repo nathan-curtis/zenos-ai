@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.1.0
+**Version:** 5.3.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -17,7 +17,7 @@ Key capabilities:
 * Physical room topology storage (portals, adjacency, transmission)
 * Egress and evacuation routing (exits[], emergency exits, drop heights)
 * Safety equipment inventory (fire extinguishers, AED, hazmat)
-* Live context slices (+light, +topo, +climate, +media, +inventory, +chores, +tasks, +calendar)
+* Live context slices (+light, +topo, +climate, +media, +inventory, +chores, +tasks, +calendar, +wiki, +tickets)
 * Whole-house situational awareness via `home_overview`
 * Crisis snapshot via `mode=emergency` — scenario-aware guidance, shelter classification, hazards, rally point, dispatch address
 * Household profile store (address, zip_code, rally_point) via `mode=set`
@@ -119,6 +119,8 @@ Pass as comma-separated flags to `context_slices=` on `mode=get`. Any combinatio
 | `+tasks` | Todo entities whose labels intersect the area's HA labels. Each list entry includes `items[]` and `task_actions{complete, edit, add}` — pass `items=[<summary>]`. See Label-Intersection below. |
 | `+conductor` | Todo entities labeled `schedule` (AI conductor queue). Always unfiltered — full list regardless of area. |
 | `+calendar` | Calendar entities whose labels intersect area labels. 7-day lookahead. |
+| `+wiki` | Wiki pages tagged with the area's ID via Lens Bus (`zen_dojotools_lens_dispatch` anchor_type=area_id). Returns `pages[]` with title/path/tags, `count`, `anchor`. Tag room wiki pages with the area slug to surface here. |
+| `+tickets` | Open Zammad service desk tickets anchored to the area's ID (via `zen_dojotools_servicedesk mode=tickets_by_anchor`). Returns `tickets[]`, `count`, `anchor`. Tag tickets with the area slug to link them to this room. |
 
 ### Label-Intersection Discovery
 

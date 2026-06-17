@@ -1,5 +1,5 @@
 ZenOS-AI Template Engine: Zen Query Engine (ZQ-1) Technical Specification  
-Version: 4.6.0 "Fry's Grandpa"  
+Version: 4.9.0 "Fry's Grandpa"  
 Status: Stable and required for all Zen DojoTools Query flows  
 
 ---
@@ -95,11 +95,11 @@ ZQ-1 is strictly sequential and deterministic.
 
    The macro pulls known fields from `f`:
 
-   * Selection fields: `domain`, `label`, `area`, `device_id`, `device_class`
+   * Selection fields: `domain`, `label`, `label_regex`, `area`, `areas`, `device_id`, `device_class`
    * State filters: `state_equals`, `include_states`, `exclude_states`
    * Exclusion suite (ZQ-1 ACL filters): `exclude_entity_ids`, `exclude_domain`, `exclude_label`, `exclude_integration`, `exclude_device`
    * Numeric filters: `numeric_above`, `numeric_below`
-   * Regex filters: `regex` (state match), `entity_id_regex` (entity ID match)
+   * Regex filters: `regex` (state match), `entity_id_regex` (entity ID match), `friendly_name_regex` (friendly name match), `label_regex` (label match)
    * Sort configuration: `sort` (mapping)
    * Shortcuts pack: `shortcuts` (mapping, default `{}`)
    * Paging: `limit`, `offset`
@@ -131,7 +131,8 @@ ZQ-1 is strictly sequential and deterministic.
 
    1. Domain filter
    2. Label filter
-   3. Area filter
+   2b. Label-regex filter (`label_regex`)
+   3. Area / multi-area filter (`area` / `areas`)
    4. Device id filter
    5. Device class filter
    6. `state_equals`
@@ -145,7 +146,8 @@ ZQ-1 is strictly sequential and deterministic.
    9. Numeric filters
    10. `regex` — state string match
    10b. `entity_id_regex` — entity ID string match
-   10c. `stats_eligible` — recorder-eligibility filter
+   10c. `friendly_name_regex` — friendly name match
+   10d. `stats_eligible` — recorder-eligibility filter
 
    Each step builds a new list and replaces `pipe.ids`. If any step produces an empty list, later steps still run but have no effect. Exclusion stages (8b–8f) run after all inclusion filters — they cannot bring entities back in, making them safe for ACL injection.
 
@@ -199,15 +201,42 @@ No expansion happens here. If the label resolves to no entities, the result beco
 
 ---
 
-### `area` (string)
+### `label_regex` (string) — v4.8.0
+
+* Filters entities by applying `regex_search()` to each HA label on the entity.
+* Applied after the `label` intersection filter (step 4.1).
+* An entity is kept if **any** of its labels matches the pattern.
+* Useful for targeting a naming-convention subset within a domain without requiring an exact label name.
+
+Unlike `label`, which requires an exact slug match, `label_regex` supports partial and pattern matching across all labels an entity carries.
+
+Pairs well with `label` for compound queries:
+
+```json
+{"label": "alert_manager", "label_regex": "^alert_when_"}
+```
+
+When no `domain`, `label`, or `areas` is set and the entity list is empty, `label` (not `label_regex`) is used as the auto-seed.
+
+---
+
+### `area` / `areas` (string or list of strings) — `areas` added v4.7.0
 
 * Filters by Home Assistant area.
+* `area` accepts a single string. `areas` accepts a string or a list of strings for multi-area queries.
+* When both keys are absent and the entity list is empty, `areas` can seed the pipeline the same way `domain` does — collecting all entities across the listed areas.
 
-Execution path:
+Execution path (single area):
 
 1. Slugify the input.
 2. Resolve `area_id(normalized)`.
 3. Call `area_entities(aid)` and intersect the result with the current pipeline.
+
+Multi-area example:
+
+```json
+{"areas": ["living room", "kitchen"]}
+```
 
 ---
 
@@ -378,6 +407,27 @@ Example — all Zigbee motion sensors by naming convention:
 
 ```json
 {"domain": "binary_sensor", "device_class": "motion", "entity_id_regex": ".*_zigbee_.*"}
+```
+
+---
+
+### `friendly_name_regex` (string) — v4.9.0
+
+* Filters entities by applying `regex_search()` to the `friendly_name` attribute.
+* Applied after `entity_id_regex`.
+* When the entity list is empty and no `domain`, `label`, or `areas` is set, `friendly_name_regex` can seed the pipeline by scanning all states.
+
+Useful when entities are named consistently in the UI but have inconsistent `entity_id` values.
+
+Rules:
+
+* Entities with no `friendly_name` attribute are skipped (treated as non-match).
+* Pattern is matched against the full `friendly_name` string.
+
+Example — all sensors whose friendly name contains "Temperature":
+
+```json
+{"domain": "sensor", "friendly_name_regex": "Temperature"}
 ```
 
 ---

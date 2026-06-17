@@ -1,0 +1,1315 @@
+###############################################################################
+# ZenOS-AI Plugin: WikiJS — Sutra + DojoTool
+# Version: 0.4.0
+#
+# zen_sutra_wikijs  ← internal stewardship layer + lens bus stack adapter (NOT MCP-exposed)
+# zen_dojotools_wikijs        ← MCP-facing surface (expose this to MCP)
+#
+# Layer stack:
+#   zen_dojotools_wikijs (DojoTool, MCP face)
+#     → zen_sutra_wikijs (Sutra, business logic + stewardship + lens provider)
+#       → zen_dojotools_wikijs_root (Root, GraphQL transport)
+#         → WikiJS GraphQL API
+#
+# Lens Bus: Sutra implements full Lens Contract v0.2.0 (stacks_by_anchor, register,
+#   unregister, inspect, health, audit). Consumes: label, concept, area_id, zone, person.
+#   Returns: article_evidence. security_act: r only. failure_policy: soft.
+#
+# CONFIG:
+#   household cabinet: integrations_config.wikijs.url
+#   Run zen_dojotools_wikijs_root action_type=configure to bootstrap.
+#
+# SECRETS:
+#   wikijs_token_bearer: "Bearer YOUR_WIKIJS_API_TOKEN"
+#
+# ROOM PAGE TAGGING CONVENTION (area_id anchor):
+#   For a wiki page to surface via stacks_by_anchor anchor_type=area_id, the page
+#   must be: (1) tagged with the HA area_id slug (e.g. "office", "kitchen",
+#   "water_heater_closet") and (2) published (isPublished=true).
+#   Tag via zen_dojotools_wikijs mode=relabel, publish via mode=set_published.
+#   Room Manager context_slices=+wiki queries this anchor — tag+publish room pages to link them.
+###############################################################################
+
+script:
+
+  ##############################################################################
+  # SUTRA — Internal stewardship layer. NOT MCP-exposed.
+  ##############################################################################
+  zen_sutra_wikijs:
+    alias: Zen DojoTools WikiJS Sutra (Internal)
+    description: >
+      Internal WikiJS stewardship layer. NOT MCP-exposed. Implements CRUD
+      operations with read-modify-write, surgical diff guard, and tag merge.
+      Called only by zen_dojotools_wikijs.
+    mode: parallel
+    icon: mdi:book-edit-outline
+    fields:
+      action:
+        name: Action
+        description: "Core: get|create|update|delete|list|search|stacks_by_anchor|health. mode=help."
+        selector:
+          select:
+            options:
+            - get
+            - create
+            - update
+            - upsert
+            - delete
+            - move
+            - copy
+            - relabel
+            - list
+            - search
+            - stacks_by_anchor
+            - register
+            - unregister
+            - inspect
+            - health
+            - audit
+            - mount_cabinet
+            - dismount_cabinet
+            - set_mount
+            - remove_mount
+            - set_cabinet_ro
+            - clone
+            - set_expiry
+            - set_published
+        default: get
+      page_id:
+        name: Page ID
+        description: Numeric WikiJS page ID (required for get, update, delete).
+        selector:
+          number:
+            min: 1
+      path:
+        name: Path
+        description: "Page path — used for create/upsert (required) or to identify a page by path instead of page_id."
+        selector:
+          text:
+      title:
+        name: Title
+        description: Page title (required for create/upsert).
+        selector:
+          text:
+      description:
+        name: Description
+        description: Short page description/summary.
+        selector:
+          text:
+      content:
+        name: Content
+        description: Markdown content (required for create, update, upsert).
+        selector:
+          text:
+            multiline: true
+      mode:
+        name: Edit Mode
+        description: replace (overwrite) or merge (append, default).
+        selector:
+          select:
+            options:
+            - replace
+            - merge
+        default: merge
+      tags_json:
+        name: Tags JSON
+        description: JSON array of tag strings. Merged with existing tags on update.
+        selector:
+          text:
+      destination_path:
+        name: Destination Path
+        description: Target path for move or copy action.
+        selector:
+          text:
+      path_prefix:
+        name: Path Prefix
+        description: Filter list results to pages whose path starts with this prefix (e.g. zenai/).
+        selector:
+          text:
+      query:
+        name: Search Query
+        description: Search term for action=search.
+        selector:
+          text:
+      anchor_type:
+        name: Anchor Type
+        description: "Lens anchor type: label | concept | area_id | zone | person | product | ticket | document | company | household"
+        selector:
+          select:
+            options:
+            - label
+            - concept
+            - area_id
+            - zone
+            - person
+            - product
+            - ticket
+            - document
+            - company
+            - household
+        default: label
+      anchor_ids:
+        name: Anchor IDs
+        description: Comma-separated or JSON array of anchor IDs for stacks_by_anchor.
+        selector:
+          text:
+      is_published:
+        name: Is Published
+        description: "true | false | toggle. For set_published. Optional on create (default true) and update (default preserve existing)."
+        selector:
+          text:
+      caller_token:
+        name: Caller Token
+        selector:
+          text:
+
+    sequence:
+    - variables:
+        _action: "{{ action | default('get') | string | trim | lower }}"
+        _page_id: "{{ page_id | default(0) | int(0) }}"
+        _path: "{{ path | default('', true) | string | trim | regex_replace('^/', '') }}"
+        _title: "{{ title | default('', true) | string | trim }}"
+        _description: "{{ description | default('', true) | string | trim }}"
+        _content: "{{ content | default('', true) | string | trim }}"
+        _mode: "{{ mode | default('merge') | string | trim | lower }}"
+        _query_str: "{{ query | default('', true) | string | trim }}"
+        _dest_path: "{{ destination_path | default('', true) | string | trim | regex_replace('^/', '') }}"
+        _path_prefix: "{{ path_prefix | default('', true) | string | trim | regex_replace('^/', '') }}"
+        _caller_token: "{{ caller_token | default('') }}"
+        _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        _anchor_type: "{{ anchor_type | default('label') | string | trim | lower }}"
+        _anchor_ids_raw: >-
+          {%- set raw = anchor_ids | default('', true) -%}
+          {%- if raw is sequence and raw is not string -%}{{ raw | list }}
+          {%- else -%}
+            {%- set rs = raw | string | trim -%}
+            {%- if rs == '' or rs == '[]' -%}{{ [] }}
+            {%- elif rs[:1] == '[' -%}{{ rs | from_json | default([]) }}
+            {%- else -%}{{ rs.split(',') | map('trim') | select | list }}{%- endif -%}
+          {%- endif -%}
+        _tags_raw: >-
+          {%- set raw = tags_json | default('', true) -%}
+          {%- if raw is sequence and raw is not string -%}{{ raw | list }}
+          {%- else -%}
+            {%- set rs = raw | string | trim -%}
+            {%- if rs == '' or rs == '[]' -%}{{ [] }}
+            {%- elif rs[:1] == '[' -%}{{ rs | from_json | default([]) }}
+            {%- else -%}{{ rs.split(',') | map('trim') | select | list }}{%- endif -%}
+          {%- endif -%}
+        _is_published_raw: "{{ is_published | default('', true) | string | trim | lower }}"
+
+    - action: script.zen_dojotools_filecabinet
+      response_variable: _ic_fc_raw
+      continue_on_error: true
+      data:
+        action_type: get
+        stack: cabinet
+        volume_entity_id: "{{ _hh }}"
+        path: integrations_config
+    - variables:
+        _base_url: >-
+          {%- set _ic = _ic_fc_raw.get('value', {}) if _ic_fc_raw is mapping and _ic_fc_raw.get('status') == 'success' else {} -%}
+          {%- set _ic = _ic if _ic is mapping else {} -%}
+          {{ _ic.get('wikijs', {}).get('url', '') | string | trim }}
+
+    # --- NO-OPS: stack-type declaration (wiki has no volume/mount/TTL/clone concepts) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action in ['mount_cabinet', 'dismount_cabinet', 'set_mount', 'remove_mount', 'set_cabinet_ro', 'clone', 'set_expiry'] }}"
+        sequence:
+        - variables:
+            result:
+              status: not_supported
+              tool: zen_sutra_wikijs
+              action: "{{ _action }}"
+              stack_type: wiki
+              reason: >-
+                {%- if _action in ['mount_cabinet', 'dismount_cabinet', 'set_mount', 'remove_mount'] -%}
+                  Wiki stack has no volume mounting — pages exist at paths, no cabinet mount concept.
+                {%- elif _action == 'set_cabinet_ro' -%}
+                  Wiki stack has no read-only flag — access control is managed at the WikiJS server level.
+                {%- elif _action == 'clone' -%}
+                  Wiki stack has no volume-level clone — use copy to duplicate an individual page.
+                {%- elif _action == 'set_expiry' -%}
+                  Wiki stack has no TTL — pages are persistent; use delete for explicit removal.
+                {%- else -%}Not supported for wiki stack type.{%- endif -%}
+              trace:
+                caller_token: "{{ _caller_token }}"
+        - stop: wikijs sutra noop
+          response_variable: result
+
+    # --- Path resolution: if path provided but no page_id, resolve before action ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _page_id == 0 and _path != '' and _action in ['get', 'update', 'delete', 'move', 'relabel'] }}"
+        sequence:
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _pr_raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{ pages { list(orderBy: TITLE) { id path } } }"
+        - variables:
+            _pr_pages: >-
+              {%- set _d = _pr_raw.get('result', {}).get('data', {}) if _pr_raw is mapping else {} -%}
+              {{ _d.get('pages', {}).get('list', []) if _d is mapping else [] }}
+        - variables:
+            _page_id: >-
+              {%- set _match = (_pr_pages | selectattr('path', 'equalto', _path) | list) if _pr_pages is sequence else [] -%}
+              {{ _match[0].get('id', 0) | int(0) if _match | length > 0 else 0 }}
+
+    # --- GET ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'get' }}"
+        sequence:
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{{ '{ pages { single(id: ' ~ _page_id ~ ') { id path title content render description tags { tag } createdAt updatedAt isPublished } } }' }}"
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- set _page = _d.get('pages', {}).get('single', {}) if _d is mapping else {} -%}
+              {{
+                {
+                  'status': 'success' if (_ok and _page is mapping and _page.get('id') is not none) else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'get',
+                  'page': _page if _page is mapping else {},
+                  'stewardship': {'mode': 'n/a', 'surgical_check': 'skipped', 'tags_merged': false, 'warnings': []},
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra get done
+          response_variable: result
+
+    # --- LIST (optional tag filter) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'list' }}"
+        sequence:
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: >-
+              {%- if _tags_raw | length > 0 -%}
+                {{ '{ pages { list(orderBy: TITLE, tags: ' ~ (_tags_raw | tojson) ~ ') { id path title tags } } }' }}
+              {%- else -%}
+                { pages { list(orderBy: TITLE) { id path title tags } } }
+              {%- endif -%}
+        - variables:
+            _all_pages: >-
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {{ _d.get('pages', {}).get('list', []) if _d is mapping else [] }}
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set ns = namespace(pages=_all_pages if _all_pages is sequence else []) -%}
+              {%- if _path_prefix != '' -%}
+                {%- set ns2 = namespace(filtered=[]) -%}
+                {%- for p in ns.pages -%}
+                  {%- if (p.get('path', '') | string).startswith(_path_prefix) -%}
+                    {%- set ns2.filtered = ns2.filtered + [p] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns.pages = ns2.filtered -%}
+              {%- endif -%}
+              {{
+                {
+                  'status': 'success' if _ok else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'list',
+                  'pages': ns.pages,
+                  'count': ns.pages | length,
+                  'tag_filter': _tags_raw,
+                  'path_prefix': _path_prefix,
+                  'stewardship': {'mode': 'n/a', 'surgical_check': 'skipped', 'tags_merged': false, 'warnings': []},
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra list done
+          response_variable: result
+
+    # --- SEARCH ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'search' }}"
+        sequence:
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{{ '{ pages { search(query: ' ~ (_query_str | tojson) ~ ') { results { id path title } } } }' }}"
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- set _results = _d.get('pages', {}).get('search', {}).get('results', []) if _d is mapping else [] -%}
+              {{
+                {
+                  'status': 'success' if _ok else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'search',
+                  'query': _query_str,
+                  'results': _results if _results is sequence else [],
+                  'count': (_results | length) if _results is sequence else 0,
+                  'stewardship': {'mode': 'n/a', 'surgical_check': 'skipped', 'tags_merged': false, 'warnings': []},
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra search done
+          response_variable: result
+
+    # --- CREATE ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'create' }}"
+        sequence:
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: >-
+              mutation CreatePage($path: String!, $title: String!, $content: String!, $description: String!, $tags: [String]!, $editor: String!, $isPublished: Boolean!, $isPrivate: Boolean!, $locale: String!) {
+                pages {
+                  create(path: $path, title: $title, content: $content, description: $description, tags: $tags, editor: $editor, isPublished: $isPublished, isPrivate: $isPrivate, locale: $locale) {
+                    responseResult { succeeded errorCode message }
+                    page { id path title }
+                  }
+                }
+              }
+            variables_json: >-
+              {%- set _pub = false if _is_published_raw in ['false', '0', 'no'] else true -%}
+              {%- set _content_str = _content | tojson if _content is mapping else _content | string -%}
+              {{ {'path': _path, 'title': _title, 'content': _content_str, 'description': _description, 'tags': _tags_raw, 'editor': 'markdown', 'isPublished': _pub, 'isPrivate': false, 'locale': 'en'} | tojson }}
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- set _cr = _d.get('pages', {}).get('create', {}) if _d is mapping else {} -%}
+              {%- set _rr = _cr.get('responseResult', {}) if _cr is mapping else {} -%}
+              {%- set _page = _cr.get('page', {}) if _cr is mapping else {} -%}
+              {%- set _succeeded = _rr.get('succeeded', false) if _rr is mapping else false -%}
+              {{
+                {
+                  'status': 'success' if (_ok and _succeeded) else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'create',
+                  'page': _page if _page is mapping else {},
+                  'response_result': _rr if _rr is mapping else {},
+                  'stewardship': {'mode': 'n/a', 'surgical_check': 'skipped', 'tags_merged': (_tags_raw | length) > 0, 'warnings': []},
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra create done
+          response_variable: result
+
+    # --- UPDATE (Stewardship Engine) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'update' }}"
+        sequence:
+        # Step 1: Read existing page for RMW
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _existing_raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{{ '{ pages { single(id: ' ~ _page_id ~ ') { content tags { tag } isPublished } } }' }}"
+        - variables:
+            _existing_page: >-
+              {%- set _d = _existing_raw.get('result', {}).get('data', {}) if _existing_raw is mapping else {} -%}
+              {{ _d.get('pages', {}).get('single', {}) if _d is mapping else {} }}
+        - variables:
+            _existing_content: "{{ _existing_page.get('content', '') | string if _existing_page is mapping else '' }}"
+            _existing_tags: >-
+              {%- set raw = _existing_page.get('tags', []) if _existing_page is mapping else [] -%}
+              {%- if raw is sequence and raw | length > 0 and raw[0] is mapping -%}
+                {{ raw | map(attribute='tag') | list }}
+              {%- else -%}
+                {{ raw | list }}
+              {%- endif -%}
+            _existing_is_published: "{{ _existing_page.get('isPublished', true) | bool if _existing_page is mapping else true }}"
+        - variables:
+            _final_is_published: >-
+              {%- if _is_published_raw in ['', 'none', 'null'] -%}{{ _existing_is_published | bool }}
+              {%- else -%}{{ _is_published_raw in ['true', '1', 'yes'] }}{%- endif -%}
+        # Step 2: Compute final content
+        - variables:
+            _final_content: >-
+              {%- if _mode == 'replace' -%}{{ _content }}
+              {%- elif _content != '' -%}{{ _existing_content ~ '\n\n' ~ _content }}
+              {%- else -%}{{ _existing_content }}{%- endif -%}
+        # Step 3: Merge tags (namespace pattern — list.append is a no-op in Jinja2)
+        - variables:
+            _merged_tags: >-
+              {%- set ns = namespace(tags=_existing_tags | list) -%}
+              {%- for tag in _tags_raw -%}
+                {%- if tag not in ns.tags -%}{%- set ns.tags = ns.tags + [tag] -%}{%- endif -%}
+              {%- endfor -%}
+              {{ ns.tags }}
+        # Step 4: Surgical guard — diff ratio > 50% on merge = warn, don't write
+        - variables:
+            _old_len: "{{ _existing_content | length | int(0) }}"
+            _new_len: "{{ _final_content | length | int(0) }}"
+            _diff_ratio: >-
+              {%- set old = _existing_content | length | int(0) -%}
+              {%- if old > 0 -%}{{ ((_final_content | length | int(0) - old) | abs / old) | float | round(3) }}
+              {%- else -%}1.0{%- endif -%}
+            _surgical_fail: "{{ (_diff_ratio | float) > 0.5 and _mode == 'merge' }}"
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _surgical_fail | bool }}"
+            sequence:
+            - variables:
+                result:
+                  status: warning
+                  tool: zen_sutra_wikijs
+                  action: update
+                  page: {}
+                  stewardship:
+                    mode: "{{ _mode }}"
+                    surgical_check: failed
+                    diff_ratio: "{{ _diff_ratio }}"
+                    tags_merged: false
+                    warnings:
+                    - >-
+                      Merge would change {{ (_diff_ratio | float * 100) | round(0) | int }}% of document
+                      (old={{ _old_len }} chars, new={{ _new_len }} chars).
+                      Use mode=replace to confirm full overwrite, or reduce the content delta.
+                  trace:
+                    availability: "{{ _existing_raw.get('availability', {}) if _existing_raw is mapping else {} }}"
+                    graphql_errors: []
+                    caller_token: "{{ _caller_token }}"
+            - stop: wikijs sutra surgical guard
+              response_variable: result
+        # Step 5: Execute update
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: >-
+              mutation UpdatePage($id: Int!, $content: String!, $tags: [String]!, $isPublished: Boolean!) {
+                pages {
+                  update(id: $id, content: $content, tags: $tags, isPublished: $isPublished) {
+                    responseResult { succeeded errorCode message }
+                  }
+                }
+              }
+            variables_json: "{{ {'id': _page_id | int, 'content': (_final_content | tojson if _final_content is mapping else _final_content | string), 'tags': _merged_tags, 'isPublished': _final_is_published | bool} | tojson }}"
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- set _rr = _d.get('pages', {}).get('update', {}).get('responseResult', {}) if _d is mapping else {} -%}
+              {%- set _succeeded = _rr.get('succeeded', false) if _rr is mapping else false -%}
+              {{
+                {
+                  'status': 'success' if (_ok and _succeeded) else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'update',
+                  'page_id': _page_id,
+                  'response_result': _rr if _rr is mapping else {},
+                  'stewardship': {
+                    'mode': _mode,
+                    'surgical_check': 'passed',
+                    'diff_ratio': _diff_ratio,
+                    'tags_merged': (_tags_raw | length) > 0,
+                    'warnings': []
+                  },
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra update done
+          response_variable: result
+
+    # --- DELETE ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'delete' }}"
+        sequence:
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{{ 'mutation { pages { delete(id: ' ~ _page_id ~ ') { responseResult { succeeded errorCode message } } } }' }}"
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- set _rr = _d.get('pages', {}).get('delete', {}).get('responseResult', {}) if _d is mapping else {} -%}
+              {%- set _succeeded = _rr.get('succeeded', false) if _rr is mapping else false -%}
+              {{
+                {
+                  'status': 'success' if (_ok and _succeeded) else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'delete',
+                  'page_id': _page_id,
+                  'deleted': _succeeded,
+                  'response_result': _rr if _rr is mapping else {},
+                  'stewardship': {'mode': 'n/a', 'surgical_check': 'skipped', 'tags_merged': false, 'warnings': []},
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra delete done
+          response_variable: result
+
+    # --- COPY (duplicate page to new path) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'copy' }}"
+        sequence:
+        - variables:
+            _missing: >-
+              {%- if _page_id <= 0 and _path == '' -%}page_id or path
+              {%- elif _dest_path == '' -%}destination_path
+              {%- else -%}{%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _missing | trim != '' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_wikijs
+                  action: copy
+                  message: "Missing required field: {{ _missing | trim }}"
+            - stop: wikijs sutra copy missing input
+              response_variable: result
+        # Read source
+        - action: script.zen_sutra_wikijs
+          response_variable: _src_raw
+          continue_on_error: true
+          data:
+            action: get
+            page_id: "{{ _page_id }}"
+            path: "{{ _path }}"
+            caller_token: "{{ _caller_token }}"
+        - variables:
+            _src_page: >-
+              {%- set _s = _src_raw if _src_raw is mapping else {} -%}
+              {{ _s.get('page', {}) if _s is mapping else {} }}
+        - variables:
+            _src_ok: "{{ _src_page is mapping and _src_page.get('id') is not none }}"
+            _src_content: "{{ _src_page.get('content', '') | string if _src_page is mapping else '' }}"
+            _src_title: "{{ _src_page.get('title', '') | string if _src_page is mapping else '' }}"
+            _src_desc: "{{ _src_page.get('description', '') | string if _src_page is mapping else '' }}"
+            _src_tags_raw: >-
+              {%- set raw = _src_page.get('tags', []) if _src_page is mapping else [] -%}
+              {%- if raw is sequence and raw | length > 0 and raw[0] is mapping -%}
+                {{ raw | map(attribute='tag') | list }}
+              {%- else -%}
+                {{ raw | list }}
+              {%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ not _src_ok }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_wikijs
+                  action: copy
+                  message: "Source page not found."
+            - stop: wikijs sutra copy source not found
+              response_variable: result
+        # Create at destination
+        - action: script.zen_sutra_wikijs
+          response_variable: _copy_raw
+          continue_on_error: true
+          data:
+            action: create
+            path: "{{ _dest_path }}"
+            title: "{{ _title if _title != '' else _src_title }}"
+            description: "{{ _description if _description != '' else _src_desc }}"
+            content: "{{ _src_content }}"
+            tags_json: "{{ (_tags_raw if _tags_raw | length > 0 else _src_tags_raw) | tojson }}"
+            caller_token: "{{ _caller_token }}"
+        - variables:
+            result: >-
+              {%- set _s = _copy_raw if _copy_raw is mapping else {} -%}
+              {{ _s | combine({'action': 'copy', 'from_path': _path, 'to_path': _dest_path}) }}
+        - stop: wikijs sutra copy done
+          response_variable: result
+
+    # --- RELABEL (update tags only, preserve content) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'relabel' }}"
+        sequence:
+        - variables:
+            _missing: >-
+              {%- if _page_id <= 0 and _path == '' -%}page_id or path
+              {%- elif _tags_raw | length == 0 -%}tags
+              {%- else -%}{%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _missing | trim != '' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_wikijs
+                  action: relabel
+                  message: "Missing required field: {{ _missing | trim }}"
+            - stop: wikijs sutra relabel missing input
+              response_variable: result
+        # Read existing content so update doesn't change it
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _rl_raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{{ '{ pages { single(id: ' ~ _page_id ~ ') { content } } }' }}"
+        - variables:
+            _rl_content: >-
+              {%- set _d = _rl_raw.get('result', {}).get('data', {}) if _rl_raw is mapping else {} -%}
+              {%- set _pg = (_d.get('pages', {}).get('single') or {}) if _d is mapping else {} -%}
+              {{ _pg.get('content', '') if _pg is mapping else '' }}
+        # Update with existing content + new tags
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: >-
+              mutation UpdatePage($id: Int!, $content: String!, $tags: [String]!) {
+                pages {
+                  update(id: $id, content: $content, tags: $tags) {
+                    responseResult { succeeded errorCode message }
+                  }
+                }
+              }
+            variables_json: "{{ {'id': _page_id | int, 'content': _rl_content, 'tags': _tags_raw} | tojson }}"
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- set _rr = _d.get('pages', {}).get('update', {}).get('responseResult', {}) if _d is mapping else {} -%}
+              {%- set _succeeded = _rr.get('succeeded', false) if _rr is mapping else false -%}
+              {{
+                {
+                  'status': 'success' if (_ok and _succeeded) else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'relabel',
+                  'page_id': _page_id,
+                  'tags': _tags_raw,
+                  'response_result': _rr if _rr is mapping else {},
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra relabel done
+          response_variable: result
+
+    # --- UPSERT (create-or-update by path) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'upsert' }}"
+        sequence:
+        - variables:
+            _missing: >-
+              {%- if _path == '' -%}path
+              {%- elif _title == '' -%}title
+              {%- elif _content == '' -%}content
+              {%- else -%}{%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _missing | trim != '' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_wikijs
+                  action: upsert
+                  message: "Missing required field: {{ _missing | trim }}"
+            - stop: wikijs sutra upsert missing input
+              response_variable: result
+        # Resolve path to ID
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _up_raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{ pages { list(orderBy: TITLE) { id path } } }"
+        - variables:
+            _up_pages: >-
+              {%- set _d = _up_raw.get('result', {}).get('data', {}) if _up_raw is mapping else {} -%}
+              {{ _d.get('pages', {}).get('list', []) if _d is mapping else [] }}
+        - variables:
+            _up_id: >-
+              {%- set _match = (_up_pages | selectattr('path', 'equalto', _path) | list) if _up_pages is sequence else [] -%}
+              {{ _match[0].get('id', 0) | int(0) if _match | length > 0 else 0 }}
+        # Branch: update if found, create if not
+        - action: script.zen_sutra_wikijs
+          response_variable: _upsert_raw
+          continue_on_error: true
+          data:
+            action: "{{ 'update' if _up_id > 0 else 'create' }}"
+            page_id: "{{ _up_id }}"
+            path: "{{ _path }}"
+            title: "{{ _title }}"
+            description: "{{ _description }}"
+            content: "{{ _content }}"
+            mode: "{{ _mode }}"
+            tags_json: "{{ _tags_raw | tojson }}"
+            caller_token: "{{ _caller_token }}"
+        - variables:
+            result: >-
+              {%- set _s = _upsert_raw if _upsert_raw is mapping else {} -%}
+              {{ _s | combine({'action': 'upsert', 'upsert_op': 'update' if _up_id > 0 else 'create', 'path': _path}) }}
+        - stop: wikijs sutra upsert done
+          response_variable: result
+
+    # --- MOVE ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'move' }}"
+        sequence:
+        - variables:
+            _missing: >-
+              {%- if _page_id <= 0 and _path == '' -%}page_id or path
+              {%- elif _dest_path == '' -%}destination_path
+              {%- else -%}{%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _missing | trim != '' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_wikijs
+                  action: move
+                  message: "Missing required field: {{ _missing | trim }}"
+            - stop: wikijs sutra move missing input
+              response_variable: result
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: >-
+              mutation MovePage($id: Int!, $destinationPath: String!, $destinationLocale: String!) {
+                pages {
+                  move(id: $id, destinationPath: $destinationPath, destinationLocale: $destinationLocale) {
+                    responseResult { succeeded errorCode message }
+                  }
+                }
+              }
+            variables_json: "{{ {'id': _page_id | int, 'destinationPath': _dest_path, 'destinationLocale': 'en'} | tojson }}"
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- set _rr = _d.get('pages', {}).get('move', {}).get('responseResult', {}) if _d is mapping else {} -%}
+              {%- set _succeeded = _rr.get('succeeded', false) if _rr is mapping else false -%}
+              {{
+                {
+                  'status': 'success' if (_ok and _succeeded) else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'move',
+                  'page_id': _page_id,
+                  'from_path': _path,
+                  'to_path': _dest_path,
+                  'response_result': _rr if _rr is mapping else {},
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'graphql_errors': _raw.get('result', {}).get('errors', []) if _raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra move done
+          response_variable: result
+
+    # --- STACKS_BY_ANCHOR (Lens Bus Provider) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'stacks_by_anchor' }}"
+        sequence:
+        - variables:
+            _anchor_query: "{{ _anchor_ids_raw | join(' ') | trim }}"
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _anchor_query == '' }}"
+            sequence:
+            - variables:
+                result:
+                  status: success
+                  tool: zen_sutra_wikijs
+                  action: stacks_by_anchor
+                  evidence: []
+                  count: 0
+                  anchor_type: "{{ _anchor_type }}"
+                  anchor_ids: "{{ _anchor_ids_raw }}"
+            - stop: wikijs stacks_by_anchor empty
+              response_variable: result
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: >-
+              {%- if _anchor_type in ['label', 'area_id'] -%}
+                {{ '{ pages { list(orderBy: TITLE, tags: ' ~ (_anchor_ids_raw | tojson) ~ ') { id path title tags } } }' }}
+              {%- else -%}
+                {{ '{ pages { search(query: ' ~ (_anchor_query | tojson) ~ ') { results { id path title } } } }' }}
+              {%- endif -%}
+        - variables:
+            _results: >-
+              {%- set _d = _raw.get('result', {}).get('data', {}) if _raw is mapping else {} -%}
+              {%- if _anchor_type in ['label', 'area_id'] -%}
+                {{ _d.get('pages', {}).get('list', []) if _d is mapping else [] }}
+              {%- else -%}
+                {{ _d.get('pages', {}).get('search', {}).get('results', []) if _d is mapping else [] }}
+              {%- endif -%}
+        - variables:
+            _evidence: >-
+              {%- set _ids = _anchor_ids_raw if _anchor_ids_raw is sequence else [] -%}
+              {%- set _atype = _anchor_type -%}
+              {%- set ns = namespace(ev=[], anchors=[]) -%}
+              {%- for r in (_results if _results is sequence else []) -%}
+                {%- set ns.anchors = [] -%}
+                {%- for aid in _ids -%}
+                  {%- set ns.anchors = ns.anchors + [{'type': _atype, 'id': aid, 'confidence': 'search_match'}] -%}
+                {%- endfor -%}
+                {%- set _entry = {
+                  'evidence_id': 'wiki_js:article:' ~ (r.get('id', '') | string),
+                  'provider': 'wiki_js',
+                  'object_type': 'article',
+                  'title': r.get('title', ''),
+                  'path': r.get('path', ''),
+                  'anchor_contexts': ns.anchors,
+                  'content_redacted': true
+                } -%}
+                {%- set ns.ev = ns.ev + [_entry] -%}
+              {%- endfor -%}
+              {{ ns.ev }}
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {{
+                {
+                  'status': 'success' if _ok else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'stacks_by_anchor',
+                  'anchor_type': _anchor_type,
+                  'anchor_ids': _anchor_ids_raw,
+                  'evidence': _evidence if _evidence is sequence else [],
+                  'count': (_evidence | length) if _evidence is sequence else 0,
+                  'trace': {
+                    'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs stacks_by_anchor done
+          response_variable: result
+
+    # --- REGISTER (Lens Bus Provider Registration) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'register' }}"
+        sequence:
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _reg_fc_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            stack: cabinet
+            volume_entity_id: "{{ _hh }}"
+            path: lens_registry
+        - variables:
+            _reg_raw: >-
+              {%- if _reg_fc_raw is mapping and _reg_fc_raw.get('status') == 'success' -%}
+                {{ _reg_fc_raw.get('value', {}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _registry: >-
+              {%- if _reg_raw is mapping -%}{{ _reg_raw }}
+              {%- elif _reg_raw is string and (_reg_raw | trim)[:1] == '{' -%}
+                {{ _reg_raw | from_json | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _entry:
+              provider: wiki_js
+              tool: zen_sutra_wikijs
+              mode: stacks_by_anchor
+              consumes: [label, concept, area_id, zone, person]
+              returns: [article_evidence]
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              failure_policy: soft
+        - variables:
+            _new_registry: "{{ (_registry if _registry is mapping else {}) | combine({'wiki_js': _entry}) }}"
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _fc_raw
+          continue_on_error: true
+          data:
+            action_type: update
+            volume_entity_id: "{{ _hh }}"
+            key: lens_registry
+            value: "{{ _new_registry | tojson }}"
+            force_action: true
+        - event: lens.provider_registered
+          event_data:
+            provider: wiki_js
+            tool: zen_sutra_wikijs
+        - variables:
+            result: >-
+              {%- set _ok = _fc_raw is mapping and _fc_raw.get('status') == 'success' -%}
+              {{
+                {
+                  'status': 'success' if _ok else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'register',
+                  'provider': 'wiki_js',
+                  'registry_entry': _entry,
+                  'trace': {
+                    'fc_status': _fc_raw.get('status', 'unknown') if _fc_raw is mapping else 'no_response',
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs register done
+          response_variable: result
+
+    # --- UNREGISTER ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'unregister' }}"
+        sequence:
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _reg_fc_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            stack: cabinet
+            volume_entity_id: "{{ _hh }}"
+            path: lens_registry
+        - variables:
+            _reg_raw: >-
+              {%- if _reg_fc_raw is mapping and _reg_fc_raw.get('status') == 'success' -%}
+                {{ _reg_fc_raw.get('value', {}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _registry: >-
+              {%- if _reg_raw is mapping -%}{{ _reg_raw }}
+              {%- elif _reg_raw is string and (_reg_raw | trim)[:1] == '{' -%}
+                {{ _reg_raw | from_json | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _new_registry: >-
+              {%- set ns = namespace(reg={}) -%}
+              {%- for k, v in (_registry if _registry is mapping else {}).items() -%}
+                {%- if k != 'wiki_js' -%}{%- set ns.reg = ns.reg | combine({k: v}) -%}{%- endif -%}
+              {%- endfor -%}
+              {{ ns.reg }}
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _fc_raw
+          continue_on_error: true
+          data:
+            action_type: update
+            volume_entity_id: "{{ _hh }}"
+            key: lens_registry
+            value: "{{ _new_registry | tojson }}"
+            force_action: true
+        - variables:
+            result:
+              status: success
+              tool: zen_sutra_wikijs
+              action: unregister
+              provider: wiki_js
+              trace:
+                fc_status: "{{ _fc_raw.get('status', 'unknown') if _fc_raw is mapping else 'no_response' }}"
+                caller_token: "{{ _caller_token }}"
+        - stop: wikijs unregister done
+          response_variable: result
+
+    # --- INSPECT ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'inspect' }}"
+        sequence:
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _reg_fc_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            stack: cabinet
+            volume_entity_id: "{{ _hh }}"
+            path: lens_registry
+        - variables:
+            _reg_raw: >-
+              {%- if _reg_fc_raw is mapping and _reg_fc_raw.get('status') == 'success' -%}
+                {{ _reg_fc_raw.get('value', {}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _registry: >-
+              {%- if _reg_raw is mapping -%}{{ _reg_raw }}
+              {%- elif _reg_raw is string and (_reg_raw | trim)[:1] == '{' -%}
+                {{ _reg_raw | from_json | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            result: >-
+              {%- set _reg = _registry if _registry is mapping else {} -%}
+              {%- set _entry = _reg.get('wiki_js', {}) -%}
+              {{
+                {
+                  'status': 'success',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'inspect',
+                  'registered': 'wiki_js' in _reg,
+                  'registry_entry': _entry if _entry is mapping else {},
+                  'base_url': _base_url,
+                  'trace': {'caller_token': _caller_token}
+                }
+              }}
+        - stop: wikijs inspect done
+          response_variable: result
+
+    # --- HEALTH ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'health' }}"
+        sequence:
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            action_type: availability_probe
+            base_url: "{{ _base_url }}"
+        - variables:
+            result: >-
+              {%- set _ok = _raw is mapping and _raw.get('status') == 'success' -%}
+              {{
+                {
+                  'status': 'ok' if _ok else 'degraded',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'health',
+                  'provider': 'wiki_js',
+                  'base_url': _base_url,
+                  'availability': _raw.get('availability', {}) if _raw is mapping else {},
+                  'trace': {'caller_token': _caller_token}
+                }
+              }}
+        - stop: wikijs health done
+          response_variable: result
+
+    # --- AUDIT ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'audit' }}"
+        sequence:
+        - variables:
+            result:
+              status: success
+              tool: zen_sutra_wikijs
+              action: audit
+              provider: wiki_js
+              policy:
+                consumes: [label, concept, area_id, zone, person]
+                returns: [article_evidence]
+                security_act:
+                  model: rwxda
+                  required: r
+                  allowed: [r]
+                  denied: [w, x, d, a]
+                failure_policy: soft
+                content_redacted: true
+              trace:
+                caller_token: "{{ _caller_token }}"
+        - stop: wikijs audit done
+          response_variable: result
+
+
+    # --- SET_PUBLISHED ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'set_published' }}"
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _page_id == 0 and _path == '' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_wikijs
+                  action: set_published
+                  message: "Missing required field: page_id or path"
+                  caller_token: "{{ _caller_token }}"
+            - stop: wikijs sutra set_published missing id
+              response_variable: result
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _page_id == 0 and _path != '' }}"
+            sequence:
+            - action: script.zen_dojotools_wikijs_root
+              response_variable: _pr_raw
+              continue_on_error: true
+              data:
+                action_type: graphql_query
+                base_url: "{{ _base_url }}"
+                query: "{{ '{ pages { single(path: \"' ~ _path ~ '\") { id } } }' }}"
+            - variables:
+                _page_id: >-
+                  {%- set _pd = _pr_raw.get('result', {}).get('data', {}) if _pr_raw is mapping else {} -%}
+                  {{ (_pd.get('pages', {}).get('single') or {}).get('id', 0) | int(0) }}
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _sp_existing_raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: "{{ '{ pages { single(id: ' ~ _page_id ~ ') { content tags { tag } isPublished } } }' }}"
+        - variables:
+            _sp_page: >-
+              {%- set _d = _sp_existing_raw.get('result', {}).get('data', {}) if _sp_existing_raw is mapping else {} -%}
+              {{ (_d.get('pages', {}).get('single') or {}) if _d is mapping else {} }}
+        - variables:
+            _sp_content: "{{ _sp_page.get('content', '') if _sp_page is mapping else '' }}"
+            _sp_tags: >-
+              {%- set raw = _sp_page.get('tags', []) if _sp_page is mapping else [] -%}
+              {%- if raw is sequence and raw | length > 0 and raw[0] is mapping -%}{{ raw | map(attribute='tag') | list }}
+              {%- else -%}{{ raw | list }}{%- endif -%}
+            _sp_was_published: "{{ _sp_page.get('isPublished', true) | bool if _sp_page is mapping else true }}"
+        - variables:
+            _sp_new_published: >-
+              {%- if _is_published_raw in ['toggle', '', 'none', 'null'] -%}
+                {{ not _sp_was_published | bool }}
+              {%- else -%}
+                {{ _is_published_raw in ['true', '1', 'yes'] }}
+              {%- endif -%}
+        - action: script.zen_dojotools_wikijs_root
+          response_variable: _sp_raw
+          continue_on_error: true
+          data:
+            action_type: graphql_query
+            base_url: "{{ _base_url }}"
+            query: >-
+              mutation UpdatePage($id: Int!, $content: String!, $tags: [String]!, $isPublished: Boolean!) {
+                pages {
+                  update(id: $id, content: $content, tags: $tags, isPublished: $isPublished) {
+                    responseResult { succeeded errorCode message }
+                  }
+                }
+              }
+            variables_json: "{{ {'id': _page_id | int, 'content': (_sp_content | tojson if _sp_content is mapping else _sp_content | string), 'tags': _sp_tags, 'isPublished': _sp_new_published | bool} | tojson }}"
+        - variables:
+            result: >-
+              {%- set _ok = _sp_raw is mapping and _sp_raw.get('status') == 'success' -%}
+              {%- set _d = _sp_raw.get('result', {}).get('data', {}) if _sp_raw is mapping else {} -%}
+              {%- set _rr = _d.get('pages', {}).get('update', {}).get('responseResult', {}) if _d is mapping else {} -%}
+              {%- set _succeeded = _rr.get('succeeded', false) if _rr is mapping else false -%}
+              {{
+                {
+                  'status': 'success' if (_ok and _succeeded) else 'error',
+                  'tool': 'zen_sutra_wikijs',
+                  'action': 'set_published',
+                  'page_id': _page_id,
+                  'is_published_before': _sp_was_published | bool,
+                  'is_published_after': _sp_new_published | bool,
+                  'toggled': (_sp_was_published | bool) != (_sp_new_published | bool),
+                  'response_result': _rr if _rr is mapping else {},
+                  'stewardship': {'mode': 'n/a', 'surgical_check': 'skipped', 'tags_merged': false, 'warnings': []},
+                  'trace': {
+                    'availability': _sp_raw.get('availability', {}) if _sp_raw is mapping else {},
+                    'graphql_errors': _sp_raw.get('result', {}).get('errors', []) if _sp_raw is mapping else [],
+                    'caller_token': _caller_token
+                  }
+                }
+              }}
+        - stop: wikijs sutra set_published done
+          response_variable: result
+
+    # --- Unknown action fallback ---
+    - variables:
+        result:
+          status: error
+          tool: zen_sutra_wikijs
+          action: "{{ _action }}"
+          message: "Unknown action: {{ _action }}. Use get | create | update | upsert | delete | set_published | move | list | search | stacks_by_anchor | register | unregister | inspect | health | audit."
+    - stop: wikijs sutra unknown action
+      response_variable: result
+

@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.1.0
+# Version: 5.1.1
 #
 # Consolidated from: dojotools_ha_api.yaml + dojotools_system.yaml
 # Contains: zen_log_* shell_commands, ha_api rest_commands,
@@ -156,6 +156,7 @@ rest_command:
       authorization: !secret ha_bearer
       content-type: 'application/json'
     payload: "{{ payload | default('{}') }}"
+    timeout: 90
 
 script:
 
@@ -490,6 +491,35 @@ script:
     - variables:
         tool: '{{ tool | default('''') }}'
         confirm: '{{ confirm_action | default(false) }}'
+    # --- tool_manifest ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{- tool == 'tool_manifest' -}}"
+        sequence:
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_systemtools',
+                display_name='SystemTools - ZenOS Platform Kernel',
+                tier='dojotools',
+                version='5.1.1',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools'],
+                optional_labels=['system_monitor', 'system_status'],
+                consumes=['tool', 'entity_id', 'confirm_action'],
+                returns=['health_report', 'config_check', 'reload_result', 'log_result'],
+                failure_policy='hard',
+                modes={'health': 'zen_health_report', 'reload': 'ha_reload_all', 'restart': 'ha_restart', 'manifest': 'tool_manifest'},
+                icon='mdi:wrench',
+                color='grey',
+
+                caller_token=caller_token | default('')
+              ) | from_json -}}
+        - stop: systemtools tool manifest
+          response_variable: result
+
     - choose:
       - conditions:
         - alias: 'Error: Action Not Confirmed'
@@ -640,7 +670,7 @@ script:
                   'tool': tool,
                   'result': 'success',
                   'config_check': 'passed',
-                  'message': 'Config check passed. Reload all queued — fires from scheduler immediately after this response.'
+                  'message': 'Config check passed. Reload all queued — fires from scheduler immediately after this response. WARNING: reload_all takes ~2 minutes to fully stabilize. Do NOT call other tools until HA is back. To confirm: use zen_dojotools_ha_log_viewer mode=search pattern=flynn_boot_warmup — wait until Flynn boot warmup entries appear (they fire on homeassistant_started). Alternatively search for flynn_stepgate_sentinel. Timeout ~3 min. Only proceed after Flynn is confirmed alive.'
                 }
               }}"
           - event: zen_event
@@ -770,7 +800,7 @@ script:
                 'version': '2.1.0',
                 'reload_response_contract': 'ha_reload_all and ha_reload_scripts now return a response immediately — reload is deferred via zen_event to the scheduler, which fires it from automation context. No self-destruct. ha_reload_automations and ha_reload_templates also return responses (different domain). All reloads respond with result: success when queued/complete.',
                 'reload_tools': {
-                  'ha_reload_all': 'All YAML domains: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, homeassistant: core block. Config check runs first — blocked on nogo. Deferred via scheduler. DEFAULT CHOICE.',
+                  'ha_reload_all': 'LAST RESORT ONLY — use ha_reload_scripts, ha_reload_automations, or ha_reload_templates first. ha_reload_all takes ~2 minutes and disrupts all in-flight actions. Only use it when the domain you need is NOT covered by one of the targeted reload tools. Covers: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, homeassistant: core block. Config check runs first — blocked on nogo. Deferred via scheduler.',
                   'ha_reload_scripts': 'Scripts only. Config check runs first — blocked on nogo. Deferred via scheduler. Use when automations are running and you do not want to stop them.',
                   'ha_reload_automations': 'Automations only. Config check runs first — blocked on nogo. WARNING: stops all currently in-flight automation action sequences.',
                   'ha_reload_templates': 'config/custom_templates/ Jinja files only. Config check runs first — blocked on nogo. Changes take effect on next render.'
@@ -1049,7 +1079,7 @@ script:
             _sched_raw: >-
               {%- set _r = _kata_vars.get('zen_scheduler', {}) -%}
               {%- set _v = _r.get('value', _r) if _r is mapping else (_r | from_json if _r is string else {}) -%}
-              {{ _v if _v is mapping else {} }}
+              {{ (_v | from_json(none)) if _v is string and _v | trim not in ['', 'null'] else (_v if _v is mapping else none) }}
         - variables:
             _recent_runs: >-
               {{ _sched_raw.get('recent_runs', []) if _sched_raw is mapping else [] }}
@@ -1202,12 +1232,34 @@ script:
             _audit_raw: >-
               {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
               {{ zen.prompt_length_audit() }}
+            _agent_raw: >-
+              {%- set _active = states('input_text.zenos_conversation_agent') -%}
+              {%- set _all = (states.conversation | list) + (states.ai_task | list) -%}
+              {%- set ns = namespace(active={}, conv_count=0, ai_count=0) -%}
+              {%- for s in _all -%}
+                {%- if s.entity_id.startswith('conversation.') -%}{%- set ns.conv_count = ns.conv_count + 1 -%}{%- endif -%}
+                {%- if s.entity_id.startswith('ai_task.') -%}{%- set ns.ai_count = ns.ai_count + 1 -%}{%- endif -%}
+                {%- if s.entity_id == _active -%}
+                  {%- set _entry = config_entry_id(s.entity_id) -%}
+                  {%- set _model = device_attr(s.entity_id, 'model_id') or device_attr(s.entity_id, 'model') -%}
+                  {%- set _state_str = config_entry_attr(_entry, 'state') | string if _entry else '' -%}
+                  {%- set ns.active = {
+                    'entity_id': s.entity_id,
+                    'model': _model if _model else 'unspecified',
+                    'provider': device_attr(s.entity_id, 'manufacturer') or 'unspecified',
+                    'integration': config_entry_attr(_entry, 'domain') if _entry else 'unspecified',
+                    'canon_ok': _active != '' and _active not in ['unknown', 'unavailable'] and 'LOADED' in _state_str
+                  } -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.active | combine({'conversation_count': ns.conv_count, 'ai_task_count': ns.ai_count}) | tojson }}
         - variables:
             response:
               tool: prompt_health
               result: success
               health: "{{ _health_raw | trim | from_json if (_health_raw | trim).startswith('{') else {} }}"
               length_audit: "{{ _audit_raw | trim | from_json if (_audit_raw | trim).startswith('{') else {} }}"
+              agent: "{{ _agent_raw | trim | from_json if (_agent_raw | trim).startswith('{') else {} }}"
               how_to_see_full_prompt: "Call Identity tool with mode=render_prompt to see the complete rendered prompt as the active agent receives it. Edit zen_os_1.jinja or component instructions → ha_reload_templates → render_prompt again."
               caller_token: "{{ caller_token }}"
       - conditions:
@@ -1507,6 +1559,7 @@ script:
             - repairs_list
             - repair_fix
             - notice_dashboard
+            - tool_manifest
       confirm_action:
         selector:
           boolean:
@@ -1595,6 +1648,7 @@ script:
             - full
             - summary
             - page
+            - tool_manifest
         default: tail
       pattern:
         selector:
@@ -1642,6 +1696,35 @@ script:
           {%- set _raw = pattern | default('', true) | string | trim -%}
           {%- set _safe = _raw | replace("'", "") | replace('"', "") | replace(';', "") | replace('`', "") -%}
           {{ _safe }}
+    # --- tool_manifest ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{- m == 'tool_manifest' -}}"
+        sequence:
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_ha_log_viewer',
+                display_name='HA Log Viewer - Core Log Inspector',
+                tier='dojotools',
+                version='1.1.0',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools'],
+                optional_labels=[],
+                consumes=['mode', 'pattern', 'lines', 'start', 'count'],
+                returns=['log_text', 'line_count'],
+                failure_policy='soft',
+                modes={'tail': 'tail', 'search': 'search', 'full': 'full', 'summary': 'summary', 'page': 'page', 'manifest': 'tool_manifest'},
+                icon='mdi:text-box-search',
+                color='blue-grey',
+
+                caller_token=caller_token | default('')
+              ) | from_json -}}
+        - stop: ha_log_viewer tool manifest
+          response_variable: result
+
     # ===== LOG GUARD (Veronica/ZenOS-AI spec, HA 2025.11+ journal behavior) =====
     - action: shell_command.zen_log_check
       response_variable: log_check
@@ -1801,14 +1884,18 @@ script:
 
   zen_dojotools_event_emitter:
     alias: Zen DojoTools Event Emitter
-    description: "Zen DojoTools Event Emitter (v4.5.x). Advanced mode for Zen!\nEmits
+    description: "Zen DojoTools Event Emitter (v4.5.1). Advanced mode for Zen!\nEmits
       structured ZenOS-AI events or returns a dictionary of canonical event shapes.
       Used for breadcrumbs, observability, and trace reconstruction by Zen Constructs
       and the Monastery.\nModes:\n  emit → send a zen_event to the HA EventBus\n  help
       → return well-known event templates (Zen Event Lexicon)\n\nFields:\n  timestamp,
-      component, severity, kind, summary, metadata, kata, monk.\n\nPayloads must remain
-      small; avoid logs or large arrays. This tool never alters system state—only emits
-      events or returns definitions.\n"
+      component, severity, kind, summary, metadata, kata, monk.\n\nFIRED EVENT SHAPE
+      (trigger.event.data.event):\n  timestamp, component, severity, kind, summary,
+      metadata — ALL six keys present on the bus. kata and monk are NOT included in
+      the fired event (internal log only). Automation consumers: access via\n
+      trigger.event.data['event']['metadata']['your_key'] | default('').\n\nPayloads
+      must remain small; avoid logs or large arrays. This tool never alters system
+      state—only emits events or returns definitions.\n"
     fields:
       mode:
         selector:
@@ -1816,6 +1903,7 @@ script:
             options:
             - emit
             - help
+            - tool_manifest
         default: emit
         description: 'Operation mode. emit = send event. help = return canonical event
           shapes.
@@ -1891,6 +1979,35 @@ script:
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
 
+    # --- tool_manifest ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{- mode | default('') == 'tool_manifest' -}}"
+        sequence:
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_event_emitter',
+                display_name='Event Emitter - ZenOS Event Bus',
+                tier='dojotools',
+                version='1.0.0',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools'],
+                optional_labels=[],
+                consumes=['component', 'severity', 'kind', 'summary', 'metadata'],
+                returns=['event_id'],
+                failure_policy='soft',
+                modes={'emit': 'emit', 'help': 'help', 'manifest': 'tool_manifest'},
+                icon='mdi:lightning-bolt',
+                color='amber',
+
+                caller_token=caller_token | default('')
+              ) | from_json -}}
+        - stop: event_emitter tool manifest
+          response_variable: result
+
     - choose:
       - conditions:
         - condition: template
@@ -1929,6 +2046,7 @@ script:
           severity: '{{ severity }}'
           kind: '{{ kind }}'
           summary: '{{ summary }}'
+          metadata: '{{ metadata | default({}) }}'
     - data:
         message: 'zen_event {{ evt.component }} | {{ evt.kind }} | {{ evt.severity }}
           | summary="{{ evt.summary }}" | meta={{ evt.metadata | tojson }}

@@ -1,10 +1,24 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.6.0 | **Last Updated:** May 2026 | **License:** MIT
+> **Version:** 2026.7.0 'Neo' | **Last Updated:** Jun 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.6.0` is the June release 'Clue'. A new month resets to `.0`.*
 
 → [Project Overview & Install](../../README.md)
+
+---
+
+> ### 2026.7.0 'Neo' — Beta (ETA 1 Jul 2026)
+>
+> **1. CabCeption — FileCabinet v6.2.0.** Nested drawer trees via `/` path separator. VirtualDrawer (softlink), LiveDrawer (KF4 schema absorbed into a drawer — fires a tool call on read, warm/cold cache, never empty). Every drawer is a node with meta, labels, and children.
+>
+> **2. Cortex 43 — Rule Zero.** DojoTools supersede all HA built-ins. Not preference — authority. Domain routing table in directives. Successor to v42 'The Answer'.
+>
+> **3. Tool Manifest + Lens Bus.** `zenos_manifest.jinja` + `MF.tool_manifest()`. Manifest broker v6.0.0 discovers tools by namespace. Library v5.5.0 `stack=` routing. `zen_stack_radar` v1.0.0 wires Zammad as a Lens provider.
+>
+> **4. ZenZork v1.1.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — BORANT's corporate dungeon AI, IBM AT since 1984. Quest system. Setup commissioning. Portal disambiguation.
+>
+> → [Full Release Notes — Neo](releases/neo.md) | [ZenZork](scripts/zen_dojotools_zenzork_readme.md)
 
 ---
 
@@ -215,7 +229,8 @@ Includes:
 * `zen_dojotools_admintools_readme.md` — AdminTools: KungFu Writer, cabinet repair, template press, prompt loader, nuclear label reset, reset_all cabinet sequence
 * `zen_dojotools_scheduler_readme.md` — Scheduler: trigger IDs, Dojo-driven dispatch, component subscription, force events, hardware trigger pattern
 * `zen_dojotools_summarizers_readme.md` — Ninja Summarizer + SuperSummary: kill switches, active component selection, monk pipeline
-* `zen_dojotools_library_readme.md` — Library: command interpreter dispatch, hash_md5, slugify
+* `zen_dojotools_library_readme.md` — Library: Lens Bus `stack=` routing, generic verbs, hash_md5, slugify (`~commands~` interface removed in 2026.7.0)
+* `zen_dojotools_zenzork_readme.md` — ZenZork v1.1.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, quest system, setup commissioning
 * `zen_home_mode_readme.md` — Home Mode: 8-state machine, schedule anchors, quiet/work hours, scheduler trigger IDs
 * `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`
@@ -307,6 +322,20 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 ## 🗺️ **12. Roadmap**
 
 **File:** `docs/roadmap.md`
+
+**2026.7.0 'Neo' — Beta (ETA 2026-07-01)**
+
+* CabCeption — FileCabinet v6.2.0: nested drawer trees, VirtualDrawer, LiveDrawer (KF4 schema absorbed into FC)
+* Tool Manifest — `zenos_manifest.jinja`, namespace discovery broker v6.0.0, every tool self-describes
+* Cortex 43 — Rule Zero: DojoTools supersede all HA built-ins, domain routing table in directives
+* Wake sequence rewrite — `~commands~` dropped, ~2,000 chars lighter
+* Lens Bus `stack=` routing — Library v5.5.0, `zen_stack_radar` v1.0.0 (Zammad service desk)
+* ZenZork v1.1.0 — text adventure on live RM topology, DUNGEONMIND narrator, quest system, setup, disambiguation
+* New plugins: wiki_js, paperless_ngx, twenty, zammad, firefly_iii, mealie v5.8.0
+
+See: [Release Notes — Neo](releases/neo.md)
+
+---
 
 **2026.6.0 'Clue' — Beta (ETA 2026-06-01)**
 

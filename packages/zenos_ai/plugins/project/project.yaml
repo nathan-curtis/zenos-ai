@@ -1,0 +1,929 @@
+###############################################################################
+# ZenOS-AI Plugin: Project Cost Tracker
+# Version: 0.1.0 — bones
+#
+# Backed by: Grocy (materials/assets/ERP) + Firefly III (spend ledger)
+# + FileCabinet (manifest + saga log)
+#
+# BACKING STORE MODEL
+#
+# FileCabinet (household cabinet):
+#   project_{project_id}_manifest   — project graph root (phases, IDs, config)
+#   project_{project_id}_events     — idempotency/saga log {md5_key: {status, ids}}
+#
+# Grocy:
+#   product_groups                  — phases (one per phase)
+#   products                        — materials + assets (assigned to phase group)
+#   stock_entries                   — material receipts (price + vendor + date)
+#   userentity: project_contract    — contractor agreements
+#   userentity: project_invoice     — labor/contractor invoices
+#   userentity: project_change_order — scope changes with cost delta
+#
+# Grocy userfields on products:
+#   project_id, project_phase, cost_estimate, asset_tag, install_date
+#
+# Firefly III:
+#   transactions                    — actual spend (tagged by project + phase)
+#   categories                      — one per project
+#
+# SETUP (run once per project):
+#   1. zen_dojotools_project mode=run case=project_setup project_id=X project_name=Y
+#   2. Add phases via phase_id + phase_name + phase_budget fields in setup
+#   3. Set input_text.firefly_url and input_text.grocy_url already done
+#
+# CONTAINER STATUS:
+#   Grocy    — live on <grocy-host>:<port>
+#   Firefly  — live on <firefly-host>:<port>
+#   CRM      — pending (Twenty vs EspoCRM bake-off)
+#   Zammad   — later (service desk volume not yet justified)
+###############################################################################
+
+script:
+
+  zen_dojotools_project:
+    alias: Zen DojoTools Project
+    description: >
+      Project cost tracker (v0.1.0). Grocy + Firefly backed. Receipt logging,
+      budget vs actual, phase summaries. mode=help for full case catalog.
+      project_receipt_log is the primary write path — one call creates material
+      receipt in Grocy + transaction in Firefly with saga safety.
+    mode: queued
+    max: 5
+    icon: mdi:hammer-wrench
+    fields:
+      mode:
+        selector:
+          select:
+            options: [help, run, tool_manifest]
+        default: help
+      case:
+        selector:
+          select:
+            options:
+            - project_list
+            - project_setup
+            - project_receipt_log
+            - project_add_contract
+            - project_add_invoice
+            - project_add_change_order
+            - project_budget_vs_actual
+            - project_phase_summary
+            - project_reconcile
+      project_id:
+        description: Snake_case project slug (e.g. backyard_2026)
+        selector:
+          text:
+      project_name:
+        description: Human display name for the project
+        selector:
+          text:
+      phase_id:
+        description: Snake_case phase slug (e.g. deck_framing)
+        selector:
+          text:
+      phase_name:
+        description: Phase display name
+        selector:
+          text:
+      phase_budget:
+        description: Estimated budget for this phase
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+      phases_json:
+        description: JSON list of phase dicts [{id,name,budget}] for project_setup
+        selector:
+          text:
+            multiline: true
+      vendor:
+        description: Vendor or contractor name
+        selector:
+          text:
+      product_label:
+        description: Material or asset name (resolves to Grocy product)
+        selector:
+          text:
+      product_unit:
+        description: Unit of measure (default each)
+        selector:
+          text:
+      quantity:
+        description: Quantity purchased
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+        default: 1
+      unit_cost:
+        description: Cost per unit
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+      amount:
+        description: Total amount (invoices, contracts, change orders)
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+      source_account:
+        description: Firefly account name for transaction_add
+        selector:
+          text:
+      description:
+        description: Transaction or item description
+        selector:
+          text:
+      date:
+        description: Date YYYY-MM-DD (default today)
+        selector:
+          text:
+      receipt_ref:
+        description: FileCabinet ref, URL, or photo path for the receipt
+        selector:
+          text:
+      contract_scope:
+        description: Scope description for a contract
+        selector:
+          text:
+            multiline: true
+      draw_schedule_json:
+        description: JSON list of draw amounts/dates [{amount,date,note}]
+        selector:
+          text:
+            multiline: true
+      invoice_number:
+        description: Invoice number or reference
+        selector:
+          text:
+      change_order_description:
+        description: Description of scope change
+        selector:
+          text:
+      cost_delta:
+        description: Cost impact of change order (positive = increase)
+        selector:
+          number:
+            step: 0.01
+            mode: box
+      item_id:
+        description: Grocy product ID or userobject ID (skips name resolution)
+        selector:
+          text:
+      confirm_action:
+        selector:
+          boolean:
+        default: false
+
+    sequence:
+    - if: "{{ (mode | default('') | lower) == 'tool_manifest' }}"
+      then:
+      - variables:
+          result: >-
+            {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+            {{ MF.tool_manifest(
+                tool='zen_dojotools_project',
+                display_name='Project',
+                tier='dojotools',
+                version='0.1.0',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools'],
+                optional_labels=['project'],
+                consumes=['project_request'],
+                returns=['project_data'],
+                icon='mdi:clipboard-list',
+                color='blue',
+
+                caller_token=caller_token | default('')
+            ) | from_json }}
+      - stop: tool_manifest
+        response_variable: result
+    - variables:
+        tool_name: Zen DojoTools Project
+        tool_version: 0.1.0
+        mode_norm: '{{ mode | default("help") | string | trim | lower }}'
+        case_norm: '{{ case | default("") | string | trim | lower }}'
+        project_id_norm: '{{ project_id | default("") | string | trim | lower | replace(" ", "_") }}'
+        project_name_norm: '{{ project_name | default("") | string | trim }}'
+        phase_id_norm: '{{ phase_id | default("") | string | trim | lower | replace(" ", "_") }}'
+        phase_name_norm: '{{ phase_name | default("") | string | trim }}'
+        vendor_norm: '{{ vendor | default("") | string | trim }}'
+        product_label_norm: '{{ product_label | default("") | string | trim }}'
+        product_unit_norm: '{{ product_unit | default("each") | string | trim }}'
+        qty_norm: '{{ quantity | default(1) | float(1) }}'
+        unit_cost_norm: '{{ unit_cost | default(0) | float(0) | round(2) }}'
+        amount_norm: '{{ amount | default(0) | float(0) | round(2) }}'
+        date_norm: '{{ date | default(now().strftime("%Y-%m-%d")) | string | trim }}'
+        src_acct_norm: '{{ source_account | default("") | string | trim }}'
+        desc_norm: '{{ description | default("") | string | trim }}'
+        receipt_ref_norm: '{{ receipt_ref | default("") | string | trim }}'
+        invoice_num_norm: '{{ invoice_number | default("") | string | trim }}'
+        cases:
+          project_list:
+            intent: List all active projects in the household cabinet.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'project_list'}"
+          project_setup:
+            intent: Create project manifest, Grocy product groups per phase, Grocy userentities, userfields on products. Idempotent.
+            needs: [project_id, project_name]
+            optional: [phases_json]
+            example: "{'mode':'run','case':'project_setup','project_id':'backyard_2026','project_name':'Backyard Upgrade 2026','phases_json':'[{\"id\":\"deck_demo\",\"name\":\"Deck Demo\",\"budget\":2000}]'}"
+          project_receipt_log:
+            intent: Dual-write — Grocy stock purchase + Firefly transaction + saga log. The primary receipt path.
+            needs: [project_id, phase_id, vendor, product_label]
+            optional: [quantity, unit_cost, amount, source_account, date, receipt_ref, description]
+            example: "{'mode':'run','case':'project_receipt_log','project_id':'backyard_2026','phase_id':'deck_framing','vendor':'Home Depot','product_label':'Pressure-treated 2x8x12','quantity':8,'unit_cost':23.43,'source_account':'USAA Checking'}"
+          project_add_contract:
+            intent: Create a contractor contract userobject in Grocy.
+            needs: [project_id, phase_id, vendor, amount]
+            optional: [contract_scope, draw_schedule_json, date]
+            example: "{'mode':'run','case':'project_add_contract','project_id':'backyard_2026','phase_id':'deck_framing','vendor':'Bob Deck Co','amount':12500}"
+          project_add_invoice:
+            intent: Create a contractor invoice userobject. Optionally log Firefly transaction.
+            needs: [project_id, phase_id, vendor, amount]
+            optional: [invoice_number, date, source_account, receipt_ref, description]
+            example: "{'mode':'run','case':'project_add_invoice','project_id':'backyard_2026','phase_id':'deck_framing','vendor':'Bob Deck Co','amount':4000,'invoice_number':'INV-001'}"
+          project_add_change_order:
+            intent: Record a scope change with cost delta against a phase.
+            needs: [project_id, phase_id, change_order_description, cost_delta]
+            optional: [vendor, date, confirm_action]
+            example: "{'mode':'run','case':'project_add_change_order','project_id':'backyard_2026','phase_id':'deck_framing','change_order_description':'Found rot — sister joists required','cost_delta':1400}"
+          project_budget_vs_actual:
+            intent: Aggregate estimated vs actual spend across Grocy stock entries + invoices + change orders per phase.
+            needs: [project_id]
+            optional: [phase_id]
+            example: "{'mode':'run','case':'project_budget_vs_actual','project_id':'backyard_2026'}"
+          project_phase_summary:
+            intent: Phase-level rollup — open work, spend, blockers, documents.
+            needs: [project_id, phase_id]
+            optional: []
+            example: "{'mode':'run','case':'project_phase_summary','project_id':'backyard_2026','phase_id':'deck_framing'}"
+          project_reconcile:
+            intent: Find saga events in pending or reconcile_needed state. Returns unmatched receipts and orphan transactions.
+            needs: [project_id]
+            optional: []
+            example: "{'mode':'run','case':'project_reconcile','project_id':'backyard_2026'}"
+
+    # ── mode=help ─────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "help" }}'
+        sequence:
+        - variables:
+            help_json:
+              status: info
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: help
+              description: >-
+                Project cost tracker over Grocy + Firefly III. Receipt logging,
+                budget vs actual, phase summaries. Grocy = materials/ERP.
+                Firefly = spend ledger. FileCabinet = manifest + saga log.
+              cases: '{{ cases }}'
+        - stop: return
+          response_variable: help_json
+
+    # ── Resolve household cabinet (needed by most cases) ──────────────────────
+    - variables:
+        _hh: '{{ states("sensor.zen_default_household_cabinet_resolved") }}'
+
+    # ── case: project_list ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_list" }}'
+        sequence:
+        - variables:
+            _pl_all: >-
+              {%- set vars = state_attr(_hh, 'variables') | default({}, true) -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for k in vars.keys() -%}
+                {%- if k.endswith('_manifest') and k.startswith('project_') -%}
+                  {%- set raw = vars[k] -%}
+                  {%- set val = raw.get('value', raw) if raw is mapping else {} -%}
+                  {%- set val = (val | from_json) if val is string else val -%}
+                  {%- if val is mapping -%}
+                    {%- set _ns.out = _ns.out + [{'project_id': val.get('project_id',''), 'display_name': val.get('display_name',''), 'status': val.get('status',''), 'phase_count': val.get('phases', []) | length}] -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_list
+              result:
+                projects: '{{ _pl_all }}'
+                count: '{{ _pl_all | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_setup ───────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_setup" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ project_id_norm == "" or project_name_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: project_setup
+                  error: project_id and project_name are required
+            - stop: return
+              response_variable: final_response
+
+        # Load phases from phases_json field
+        - variables:
+            _ps_phases_raw: >-
+              {%- if phases_json is defined and phases_json | default('') | trim != '' -%}
+                {%- set p = phases_json | trim -%}
+                {{ p | from_json if p is string else p }}
+              {%- else -%}{{ [] }}{%- endif -%}
+            _ps_manifest_key: 'project_{{ project_id_norm }}_manifest'
+
+        # Check for existing manifest
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _ps_existing_resp
+          continue_on_error: true
+          data:
+            action_type: read
+            volume_entity_id: '{{ _hh }}'
+            key: '{{ _ps_manifest_key }}'
+
+        - variables:
+            _ps_existing_raw: >-
+              {%- if _ps_existing_resp is mapping and _ps_existing_resp.get('status') == 'success' -%}
+                {%- set r = _ps_existing_resp.get('result', '') -%}
+                {%- set r = (r | from_json) if r is string else r -%}
+                {%- set r = r.get('value', r) if r is mapping else {} -%}
+                {{ (r | from_json) if r is string else r }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _ps_has_existing: '{{ _ps_existing_raw is mapping and _ps_existing_raw.get("project_id", "") != "" }}'
+
+        # Ensure Grocy userentities exist (project_contract, project_invoice, project_change_order, project_event)
+        - action: script.zen_dojotools_inventory
+          response_variable: _ps_ue_list
+          continue_on_error: true
+          data:
+            mode: userentities_list
+
+        - variables:
+            _ps_existing_ues: >-
+              {%- if _ps_ue_list is mapping and _ps_ue_list.get('status') == 'ok' -%}
+                {{ _ps_ue_list.get('userentities', []) }}
+              {%- else -%}{{ [] }}{%- endif -%}
+            _ps_ue_names: '{{ _ps_existing_ues | map(attribute="name") | list }}'
+
+        # Create missing userentities
+        - repeat:
+            for_each:
+            - {name: project_contract, caption: 'Project Contract'}
+            - {name: project_invoice, caption: 'Project Invoice'}
+            - {name: project_change_order, caption: 'Project Change Order'}
+            - {name: project_event, caption: 'Project Saga Event'}
+            sequence:
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ repeat.item.name not in _ps_ue_names }}'
+                sequence:
+                - action: script.zen_dojotools_inventory
+                  continue_on_error: true
+                  data:
+                    mode: userentities_create
+                    item: '{{ repeat.item.name }}'
+                    field_caption: '{{ repeat.item.caption }}'
+
+        # Ensure userfields on products entity exist
+        - repeat:
+            for_each:
+            - {field_name: project_id, caption: 'Project ID'}
+            - {field_name: project_phase, caption: 'Project Phase'}
+            - {field_name: cost_estimate, caption: 'Cost Estimate'}
+            - {field_name: asset_tag, caption: 'Asset Tag'}
+            - {field_name: install_date, caption: 'Install Date'}
+            sequence:
+            - action: script.zen_dojotools_inventory
+              continue_on_error: true
+              data:
+                mode: userfields_create
+                entity: products
+                field_name: '{{ repeat.item.field_name }}'
+                field_caption: '{{ repeat.item.caption }}'
+
+        # Build phase result list with firefly tags
+        # (Grocy product group creation deferred to v0.2.0 — no inventory case exists yet)
+        - variables:
+            _ps_phase_results: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for ph in _ps_phases_raw -%}
+                {%- set _ns.out = _ns.out + [ph | combine({
+                  'firefly_tag': (project_id_norm ~ '-' ~ ph.get('id', ph.get('name', 'phase') | lower | replace(' ', '-')))
+                })] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        # Refresh userentity list to get IDs
+        - action: script.zen_dojotools_inventory
+          response_variable: _ps_ue_final
+          continue_on_error: true
+          data:
+            mode: userentities_list
+
+        - variables:
+            _ps_ue_id_map: >-
+              {%- set ues = (_ps_ue_final.get('userentities', []) if _ps_ue_final is mapping else []) -%}
+              {%- set _ns = namespace(m={}) -%}
+              {%- for ue in ues -%}
+                {%- set _ns.m = _ns.m | combine({ue.get('name', ''): ue.get('id', none)}) -%}
+              {%- endfor -%}
+              {{ _ns.m }}
+
+        # Write project manifest to FileCabinet
+        - variables:
+            _ps_manifest:
+              project_id: '{{ project_id_norm }}'
+              display_name: '{{ project_name_norm }}'
+              created_at: '{{ now().isoformat() }}'
+              status: active
+              phases: '{{ _ps_phase_results }}'
+              userentity_ids:
+                project_contract: '{{ _ps_ue_id_map.get("project_contract", none) }}'
+                project_invoice: '{{ _ps_ue_id_map.get("project_invoice", none) }}'
+                project_change_order: '{{ _ps_ue_id_map.get("project_change_order", none) }}'
+                project_event: '{{ _ps_ue_id_map.get("project_event", none) }}'
+
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _ps_write_resp
+          continue_on_error: true
+          data:
+            action_type: update
+            force_action: true
+            volume_entity_id: '{{ _hh }}'
+            key: '{{ _ps_manifest_key }}'
+            value: '{{ _ps_manifest | tojson }}'
+            set_timestamp: true
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: >-
+                {{ not (_ps_write_resp is mapping
+                   and (_ps_write_resp.get('success') == true
+                        or (_ps_write_resp.get('status','') | lower) == 'success')) }}
+            sequence:
+            - action: script.zen_dojotools_filecabinet
+              continue_on_error: true
+              data:
+                action_type: create
+                volume_entity_id: '{{ _hh }}'
+                key: '{{ _ps_manifest_key }}'
+                value: '{{ _ps_manifest | tojson }}'
+                set_timestamp: true
+                label_input: project, zen_household
+
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_setup
+              result:
+                manifest: '{{ _ps_manifest }}'
+                was_existing: '{{ _ps_has_existing }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_receipt_log ─────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_receipt_log" }}'
+        sequence:
+        # Guard: required fields
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ project_id_norm == "" or phase_id_norm == "" or vendor_norm == "" or product_label_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: project_receipt_log
+                  error: project_id, phase_id, vendor, and product_label are all required
+            - stop: return
+              response_variable: final_response
+
+        # Load manifest
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _rl_manifest_resp
+          continue_on_error: true
+          data:
+            action_type: read
+            volume_entity_id: '{{ _hh }}'
+            key: 'project_{{ project_id_norm }}_manifest'
+
+        - variables:
+            _rl_manifest: >-
+              {%- if _rl_manifest_resp is mapping and _rl_manifest_resp.get('status') == 'success' -%}
+                {%- set r = _rl_manifest_resp.get('result', '') -%}
+                {%- set r = (r | from_json) if r is string else r -%}
+                {%- set r = r.get('value', r) if r is mapping else {} -%}
+                {{ (r | from_json) if r is string else r }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        # Compute total amount (quantity × unit_cost if amount not provided)
+        - variables:
+            _rl_total: >-
+              {%- if amount_norm > 0 -%}{{ amount_norm }}
+              {%- else -%}{{ (qty_norm * unit_cost_norm) | round(2) }}{%- endif -%}
+
+        # Compute idempotency key
+        - variables:
+            _rl_idem_key: '{{ (project_id_norm ~ "|" ~ phase_id_norm ~ "|" ~ vendor_norm ~ "|" ~ date_norm ~ "|" ~ _rl_total | string ~ "|" ~ product_label_norm) | md5 }}'
+            _rl_events_key: 'project_{{ project_id_norm }}_events'
+
+        # Load saga event log
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _rl_events_resp
+          continue_on_error: true
+          data:
+            action_type: read
+            volume_entity_id: '{{ _hh }}'
+            key: '{{ _rl_events_key }}'
+
+        - variables:
+            _rl_events: >-
+              {%- if _rl_events_resp is mapping and _rl_events_resp.get('status') == 'success' -%}
+                {%- set r = _rl_events_resp.get('result', '') -%}
+                {%- set r = (r | from_json) if r is string else r -%}
+                {%- set r = r.get('value', r) if r is mapping else {} -%}
+                {{ (r | from_json) if r is string else r }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rl_existing_event: '{{ (_rl_events.get(_rl_idem_key, {})) if _rl_events is mapping else {} }}'
+
+        # Idempotency check — return early if already logged
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rl_existing_event is mapping and _rl_existing_event.get("status") == "complete" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: already_logged
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: project_receipt_log
+                  result: '{{ _rl_existing_event }}'
+                  idempotency_key: '{{ _rl_idem_key }}'
+            - stop: return
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ _rl_existing_event is mapping and _rl_existing_event.get("status") == "pending" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: reconcile_needed
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: project_receipt_log
+                  result: '{{ _rl_existing_event }}'
+                  idempotency_key: '{{ _rl_idem_key }}'
+                  message: Previous attempt left saga in pending state. Inspect cross-refs and resolve manually or use project_reconcile.
+            - stop: return
+              response_variable: final_response
+
+        # Write pending saga event
+        - variables:
+            _rl_event_pending: >-
+              {{ _rl_events | combine({_rl_idem_key: {'status': 'pending', 'started_at': now().isoformat(), 'project_id': project_id_norm, 'phase_id': phase_id_norm, 'vendor': vendor_norm, 'product': product_label_norm, 'amount': _rl_total, 'date': date_norm}}) | tojson }}
+
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          data:
+            action_type: update
+            force_action: true
+            volume_entity_id: '{{ _hh }}'
+            key: '{{ _rl_events_key }}'
+            value: '{{ _rl_event_pending }}'
+            set_timestamp: true
+
+        # Resolve phase product_group_id from manifest
+        - variables:
+            _rl_pg_id: >-
+              {%- set phases = _rl_manifest.get('phases', []) if _rl_manifest is mapping else [] -%}
+              {%- set _ns = namespace(found=none) -%}
+              {%- for ph in phases -%}
+                {%- if ph.get('id', '') == phase_id_norm -%}{%- set _ns.found = ph.get('grocy_product_group_id', none) -%}{%- endif -%}
+              {%- endfor -%}
+              {{ _ns.found }}
+            _rl_firefly_tag: '{{ project_id_norm ~ "-" ~ phase_id_norm }}'
+
+        # Step 1: Find or create Grocy product
+        - action: script.zen_dojotools_inventory
+          response_variable: _rl_find_resp
+          continue_on_error: true
+          data:
+            mode: catalog_find_product
+            item: '{{ product_label_norm }}'
+            report_inventory: false
+
+        - variables:
+            _rl_grocy_product_id: >-
+              {%- if _rl_find_resp is mapping and _rl_find_resp.get('status') == 'success' -%}
+                {%- set results = _rl_find_resp.get('result', []) -%}
+                {%- set _ns = namespace(found=none) -%}
+                {%- for r in results | selectattr('name', 'defined') | list -%}
+                  {%- if (r.get('name', '') | lower) == (product_label_norm | lower) -%}{%- set _ns.found = r.get('id') | string -%}{%- endif -%}
+                {%- endfor -%}
+                {{ _ns.found }}
+              {%- else -%}{{ none }}{%- endif -%}
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rl_grocy_product_id is none }}'
+            sequence:
+            - action: script.zen_dojotools_inventory
+              response_variable: _rl_create_resp
+              continue_on_error: true
+              data:
+                mode: catalog_add_product
+                item: '{{ product_label_norm }}'
+                location: Pantry
+                unit: '{{ product_unit_norm }}'
+            - variables:
+                _rl_grocy_product_id: >-
+                  {%- if _rl_create_resp is mapping and _rl_create_resp.get('status') == 'success' -%}
+                    {{ _rl_create_resp.get('result', {}).get('product_id', none) if _rl_create_resp.get('result') is mapping else none }}
+                  {%- else -%}{{ none }}{%- endif -%}
+
+        # Step 2: Log Grocy stock purchase
+        - variables:
+            _rl_grocy_ok: false
+            _rl_grocy_entry_id: none
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rl_grocy_product_id is not none }}'
+            sequence:
+            - action: script.zen_dojotools_inventory
+              response_variable: _rl_stock_resp
+              continue_on_error: true
+              data:
+                mode: stock_buy_product
+                item: '{{ product_label_norm }}'
+                amount: '{{ qty_norm }}'
+                price: '{{ unit_cost_norm if unit_cost_norm > 0 else (_rl_total / qty_norm) | round(4) }}'
+                store: '{{ vendor_norm }}'
+            - variables:
+                _rl_grocy_ok: '{{ _rl_stock_resp is mapping and _rl_stock_resp.get("status") == "success" }}'
+
+        # Step 3: Log Firefly transaction
+        - variables:
+            _rl_ff_ok: false
+            _rl_ff_txn_id: none
+
+        - action: script.zen_dojotools_finance
+          response_variable: _rl_ff_resp
+          continue_on_error: true
+          data:
+            mode: run
+            case: transaction_add
+            description: '{{ desc_norm if desc_norm != "" else (product_label_norm ~ " — " ~ vendor_norm) }}'
+            amount: '{{ _rl_total }}'
+            source_account: '{{ src_acct_norm }}'
+            category: '{{ _rl_manifest.get("display_name", project_id_norm) if _rl_manifest is mapping else project_id_norm }}'
+            tags: '{{ _rl_firefly_tag }}'
+            date: '{{ date_norm }}'
+            transaction_type: withdrawal
+
+        - variables:
+            _rl_ff_ok: '{{ _rl_ff_resp is mapping and _rl_ff_resp.get("status") == "success" }}'
+            _rl_ff_txn_id: >-
+              {%- if _rl_ff_resp is mapping and _rl_ff_resp.get('result') is mapping -%}
+                {{ _rl_ff_resp['result'].get('id', none) }}
+              {%- else -%}{{ none }}{%- endif -%}
+
+        # Step 4: Write complete saga event
+        - variables:
+            _rl_saga_status: >-
+              {%- if _rl_grocy_ok and _rl_ff_ok -%}complete
+              {%- elif not _rl_grocy_ok and not _rl_ff_ok -%}failed
+              {%- else -%}reconcile_needed{%- endif -%}
+
+        - variables:
+            _rl_event_final: >-
+              {{ _rl_events | combine({_rl_idem_key: {
+                'status': _rl_saga_status,
+                'started_at': now().isoformat(),
+                'completed_at': now().isoformat(),
+                'project_id': project_id_norm,
+                'phase_id': phase_id_norm,
+                'vendor': vendor_norm,
+                'product': product_label_norm,
+                'amount': _rl_total,
+                'date': date_norm,
+                'grocy_product_id': _rl_grocy_product_id,
+                'grocy_ok': _rl_grocy_ok,
+                'firefly_transaction_id': _rl_ff_txn_id,
+                'firefly_ok': _rl_ff_ok,
+                'receipt_ref': receipt_ref_norm
+              }}) | tojson }}
+
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          data:
+            action_type: update
+            force_action: true
+            volume_entity_id: '{{ _hh }}'
+            key: '{{ _rl_events_key }}'
+            value: '{{ _rl_event_final }}'
+            set_timestamp: true
+
+        - variables:
+            final_response:
+              status: '{{ _rl_saga_status }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_receipt_log
+              result:
+                idempotency_key: '{{ _rl_idem_key }}'
+                product: '{{ product_label_norm }}'
+                vendor: '{{ vendor_norm }}'
+                amount: '{{ _rl_total }}'
+                grocy_product_id: '{{ _rl_grocy_product_id }}'
+                grocy_ok: '{{ _rl_grocy_ok }}'
+                firefly_transaction_id: '{{ _rl_ff_txn_id }}'
+                firefly_ok: '{{ _rl_ff_ok }}'
+                saga_status: '{{ _rl_saga_status }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_add_contract ────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_add_contract" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: not_implemented
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_add_contract
+              message: Coming in v0.2.0 — uses Grocy userentity project_contract via zen_dojotools_inventory userobjects_create + userentity_values_set
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_add_invoice ─────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_add_invoice" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: not_implemented
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_add_invoice
+              message: Coming in v0.2.0 — userobjects_create under project_invoice + optional Firefly transaction_add
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_add_change_order ────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_add_change_order" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: not_implemented
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_add_change_order
+              message: Coming in v0.2.0 — userobjects_create under project_change_order; cost_delta adjusts phase budget in manifest
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_budget_vs_actual ────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_budget_vs_actual" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: not_implemented
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_budget_vs_actual
+              message: Coming in v0.3.0 — aggregates saga events log + userobject invoices + change_order deltas per phase
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_phase_summary ───────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_phase_summary" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: not_implemented
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_phase_summary
+              message: Coming in v0.3.0 — phase rollup from manifest + saga events
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_reconcile ───────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_reconcile" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ project_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: project_reconcile
+                  error: project_id is required
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _rec_events_resp
+          continue_on_error: true
+          data:
+            action_type: read
+            volume_entity_id: '{{ _hh }}'
+            key: 'project_{{ project_id_norm }}_events'
+        - variables:
+            _rec_events: >-
+              {%- if _rec_events_resp is mapping and _rec_events_resp.get('status') == 'success' -%}
+                {%- set r = _rec_events_resp.get('result', '') -%}
+                {%- set r = (r | from_json) if r is string else r -%}
+                {%- set r = r.get('value', r) if r is mapping else {} -%}
+                {{ (r | from_json) if r is string else r }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rec_pending: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for k, v in (_rec_events.items() if _rec_events is mapping else []) -%}
+                {%- if v.get('status', '') in ['pending', 'reconcile_needed', 'failed'] -%}
+                  {%- set _ns.out = _ns.out + [v | combine({'key': k})] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_reconcile
+              result:
+                project_id: '{{ project_id_norm }}'
+                total_events: '{{ _rec_events | length if _rec_events is mapping else 0 }}'
+                needs_attention: '{{ _rec_pending }}'
+                attention_count: '{{ _rec_pending | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── default: unknown case ─────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: error
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          case: '{{ case_norm }}'
+          error: 'Unknown case "{{ case_norm }}". Call mode=help for available cases.'
+    - stop: return
+      response_variable: final_response

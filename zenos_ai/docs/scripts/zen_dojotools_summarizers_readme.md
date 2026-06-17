@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — v4.6.0
+# Zen DojoTools Summarizers — v5.1.0
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
@@ -283,5 +283,6 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| v5.1.0 | Namespace scoping fix on `active_components` iteration. `ZEN_SUMMARY` key case fix. Event→action migration. `library_console` rename. Kata cabinet variable fix. |
 | v4.6.0 | Step 3d — label description resolution: when `component_summary` is empty after reading the Dojo drawer (Scribe `trim_description` path), ninja resolves it from the base label description via `zen_dojotools_labels`. `zen_action_emission_enabled` boolean added (operator-only gate for `suggested_act_event` emission). `emission_cooldown_minutes` Dojo drawer field (default 60 min) gates per-component action event emission; emits `emission_suppressed` on cooldown. FG-38 `from_json` guards on all FileCabinet drawer reads. |
 | v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist gate (`zen_summarizer_seed_whitelist`). Backward compatible — no seed = old behavior. |

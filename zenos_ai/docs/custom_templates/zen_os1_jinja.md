@@ -2,7 +2,7 @@ ZenOS-AI Template Engine: zen_os_1.jinja
 
 Technical Specification & Prompt Loader Requirements
 
-Version: 2026.4.0 'Ectoplasm'
+Version: 4.5.5
 Status: Stable & Required for All Front-Line Agents
 
 
@@ -246,7 +246,7 @@ All drawer reads use `zenos_cabinets.jinja` macros internally — `CABS.cabinet_
 
 | Import | Alias | Purpose |
 |--------|-------|---------|
-| `zenos_ai/command_interpreter.jinja` | `command_interpreter` | `~COMMANDS~` dispatch engine (retiring) |
+| `zenos_ai/command_interpreter.jinja` | `command_interpreter` | `~COMMANDS~` dispatch engine — **retired** in 4.5.5; replaced by `zen_dojotools_library` + KFC. Import retained for compatibility only. |
 | `zenos_ai/flynn_onboarding.jinja` | `flynn` | Flynn persistent notification surface |
 | `zenos_ai/zenos_cabinets.jinja` | `CABS` | All cabinet drawer I/O — the canonical safe-read layer |
 

@@ -1,4 +1,4 @@
-# Zen DojoTools Identity — 4.7.0 / 5.0
+# Zen DojoTools Identity — 5.1.0
 
 *Identity resolution, presence, and household/family group management for ZenOS-AI*
 

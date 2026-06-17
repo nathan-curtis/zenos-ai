@@ -1,4 +1,4 @@
-# Zen DojoTools Profile Editor — 5.0 'Clue'
+# Zen DojoTools Profile Editor — 5.1.0
 
 *Read, write, sign, restore, and certify ZenOS identity profiles*
 

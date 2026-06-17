@@ -1,0 +1,1313 @@
+###############################################################################
+# DojoTools — ZenZork Adventure Engine
+# zen_dojotools_zenzork (v1.1.0)
+#
+# Text adventure engine using live RM room_topology as the dungeon.
+# Portal bearings drive navigation. Narration is grounded in live HA state.
+# Game state stored in ai_cabinet drawer: zenzork_state.
+#
+# Modes: start, look, go, examine, map, status, stop, help, quest,
+#        setup, tool_manifest
+# Setup: commissioning checklist + direct portal setter + north calibration.
+#        Trojan interactive wizard: v1.2 scope.
+# Quest: pluggable win conditions — explore_all, discover_all_landmarks,
+#        reach:<area_id>. Win detection fires on look/go.
+# Narrator: zork (dry/sardonic) | dungeon (overwrought fantasy) | straight.
+#           Injects narrator_prompt hint for Friday + bakes static flavor
+#           into narration string for template-evaluable conditions.
+#
+# Coordinate system: true bearing 0-359° (front door = 340° NNW)
+# 16-point compass: N NNE NE ENE E ESE SE SSE S SSW SW WSW W WNW NW NNW
+###############################################################################
+
+script:
+
+  zen_dojotools_zenzork:
+    alias: "Zen ZenZork Adventure Engine"
+    description: >-
+      ZenZork (1.1.0) — Text adventure engine using live RM topology as dungeon.
+      Game state in ai_cabinet drawer: zenzork_state. Narrator styles: zork (dry/sardonic),
+      dungeon (DUNGEONMIND — overwrought fantasy), straight (evidence-only).
+      mode=start: seed or resume session (drops player at front_hall).
+      mode=look: narrate current room from live RM state.
+      mode=go direction=X: move via compass/bearing/relative/room name. Auto-narrates arrival.
+      mode=examine target=X: inspect landmark or entity via lens bus.
+      mode=quest quest_goal=X: set a win condition (explore_all, discover_all_landmarks, reach:area_id).
+      mode=map: list of explored rooms with exit counts. mode=status: session summary.
+      mode=stop: save session and end. mode=help: full mode list + navigation tips.
+    icon: mdi:castle
+    mode: queued
+    max: 5
+    fields:
+      mode:
+        name: Mode
+        description: "Game mode. Default: look."
+        default: look
+        selector:
+          select:
+            options:
+              - start
+              - look
+              - go
+              - examine
+              - map
+              - status
+              - stop
+              - help
+              - setup
+              - quest
+              - tool_manifest
+      direction:
+        name: Direction
+        description: "go: compass (N/NE/E/SE/S/SW/W/NW/NNE/SSE/etc), bearing 0-359, relative (left/right/ahead/behind), or room name/area_id."
+        selector:
+          text:
+      target:
+        name: Target
+        description: "examine: landmark name or entity_id to inspect via lens bus."
+        selector:
+          text:
+      player:
+        name: Player
+        description: "Player name. Default: system cabinet primary_user."
+        selector:
+          text:
+      narrator:
+        name: Narrator Style
+        description: "Narration style. zork=dry/sardonic (default). dungeon=overwrought fantasy. straight=evidence-only."
+        default: zork
+        selector:
+          select:
+            options:
+              - zork
+              - dungeon
+              - straight
+      quest_goal:
+        name: Quest Goal
+        description: "mode=quest: set a win condition. Options: explore_all | discover_all_landmarks | reach:<area_id>"
+        selector:
+          text:
+      answer:
+        name: Answer
+        description: "mode=setup: response to the current wizard question."
+        selector:
+          text:
+      caller_token:
+        name: Caller Token
+        description: "Optional governance token — echoed in responses."
+        selector:
+          text:
+    sequence:
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 0. Normalize inputs
+      # ═══════════════════════════════════════════════════════════════════════
+      - variables:
+          _mode:         "{{ mode | default('look') | string | lower | trim }}"
+          _direction:    "{{ direction | default('') | string | trim }}"
+          _target:       "{{ target | default('') | string | trim }}"
+          _player_input: "{{ player | default('') | string | trim }}"
+          _caller_token: "{{ caller_token | default('') | string | trim }}"
+          _narrator:     "{{ narrator | default('zork') | string | lower | trim }}"
+          _quest_goal:   "{{ quest_goal | default('') | string | trim }}"
+          _answer:       "{{ answer | default('') | string | trim }}"
+
+      # ─── 0a. Compass point table (shared) ────────────────────────────────
+      - variables:
+          _cpts: "{{ ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'] }}"
+
+      # ─── 0b. Resolve cabinets ─────────────────────────────────────────────
+      - variables:
+          _hh_cabinet: >-
+            {{ label_entities('Zen Household Cabinet')
+               | select('match', 'sensor\\.') | list | first | default('') }}
+          _sys_cabinet: >-
+            {{ label_entities('Zen System Cabinet')
+               | select('match', 'sensor\\.') | list | first | default('') }}
+          _ai_cabinet: >-
+            {{ label_entities('zen_default_ai_user_cabinet')
+               | select('match', 'sensor\\.') | list | first | default('') }}
+
+      # ─── 0c. Calibration bearing from spatial_config ─────────────────────
+      - variables:
+          _cal: >-
+            {%- set _hpv = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('household_profile', {}) -%}
+            {%- set _hpv = _hpv if _hpv is mapping else {} -%}
+            {%- set _hp = _hpv.get('value', _hpv) -%}
+            {%- set _hp = _hp if _hp is mapping else (_hp | from_json(none) if _hp is string and _hp | trim not in ['','none','null','None'] else {}) -%}
+            {%- set _sc = (_hp if _hp is mapping else {}).get('spatial_config', {}) -%}
+            {{ (_sc if _sc is mapping else {}).get('calibration_bearing', 0) | int }}
+
+      # ─── 0d. tool_manifest (early exit — no cabinet reads) ────────────────
+      - if: "{{ _mode == 'tool_manifest' }}"
+        then:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{ MF.tool_manifest(
+                    tool='zen_dojotools_zenzork',
+                    display_name='ZenZork Adventure Engine',
+                    tier='dojotools',
+                    version='1.1.0',
+                    health={'configured': true, 'status': 'ok', 'notes': []},
+                    required_labels=[],
+                    optional_labels=['room_manager'],
+                    consumes=['area', 'cabinet'],
+                    returns=['narration', 'game_state', 'narrator_prompt'],
+                    modes=['start','look','go','examine','map','status','stop','help','quest','setup'],
+                    icon='mdi:castle',
+                    color='indigo',
+                    caller_token=_caller_token
+                ) | from_json }}
+          - stop: zenzork tool manifest
+            response_variable: result
+
+      # ─── 0e. Resolve player name ──────────────────────────────────────────
+      - variables:
+          _player: >-
+            {%- if _player_input != '' -%}{{ _player_input }}
+            {%- else -%}
+              {%- set _sv = state_attr(_sys_cabinet, 'variables') | default({}, true) -%}
+              {%- set _pu_raw = (_sv.get('primary_user') or {}) if _sv is mapping else {} -%}
+              {%- set _pu = (_pu_raw.get('value', '') if _pu_raw is mapping else '') | string | trim -%}
+              {{ _pu if _pu else 'nathan' }}
+            {%- endif -%}
+
+      # ─── 0e. Guard: ai_cabinet required ───────────────────────────────────
+      - if: "{{ _ai_cabinet == '' }}"
+        then:
+          - variables:
+              result:
+                status: error
+                mode: "{{ _mode }}"
+                message: "AI user cabinet not found. Label a cabinet entity with 'zen_default_ai_user_cabinet'."
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork no ai cabinet
+            response_variable: result
+
+      # ─── 0f. Read game state ──────────────────────────────────────────────
+      - action: script.zen_dojotools_filecabinet
+        data:
+          action_type: get
+          volume_entity_id: "{{ _ai_cabinet }}"
+          key: zenzork_state
+          caller_token: "{{ _caller_token }}/gs_read"
+        response_variable: _fc_gs
+
+      - variables:
+          _gs: >-
+            {%- set raw = (_fc_gs.get('value', none) if _fc_gs is mapping else none) -%}
+            {%- set raw = raw if raw is mapping else (raw | from_json(none) if raw is string and raw | trim not in ['','none','null','None'] else none) -%}
+            {{ raw if raw is mapping else {} }}
+
+      - variables:
+          _current_room: "{{ _gs.get('current_room', 'front_hall') }}"
+          _facing:       "{{ _gs.get('facing_bearing', 160) | int }}"
+          _visited:      "{{ _gs.get('visited', []) }}"
+          _move_count:   "{{ _gs.get('move_count', 0) | int }}"
+          _session_id:   "{{ _gs.get('session_id', '') }}"
+          _quest:        "{{ _gs.get('quest', '') | string | trim }}"
+          _quest_won:    "{{ _gs.get('quest_won', false) | bool }}"
+          _examined:     "{{ _gs.get('examined', []) | list }}"
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 1. HELP
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'help' }}"
+        then:
+          - variables:
+              result:
+                status: ok
+                mode: help
+                player: "{{ _player }}"
+                current_room: "{{ _current_room }}"
+                facing_compass: "{{ _cpts[((_facing - _cal + 371.25) % 360 // 22.5) | int] }}"
+                message: >-
+                  ZenZork v1.0.0 — text adventure on your actual home.
+
+                  Modes:
+                    start            — begin or resume session (drops at front_hall)
+                    look             — describe current room from live state
+                    go direction=X   — move through a portal
+                    examine target=X — inspect landmark or entity via lens bus
+                    map              — explored rooms list with exit counts
+                    status           — session summary (room, moves, facing)
+                    stop             — save session and end
+
+                  Navigation (direction=):
+                    Compass labels:  N NNE NE ENE E ESE SE SSE S SSW SW WSW W WNW NW NNW
+                    True bearings:   0-359 (0=north, 90=east, 180=south, 270=west)
+                    Relative:        left / right / ahead / behind (resolved from current facing)
+                    Room name:       area_id or display name of destination room
+
+                  Calibration: front door = 340° (NNW). Facing resets to reverse of exit bearing on each move.
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork help
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 2. STATUS
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'status' }}"
+        then:
+          - variables:
+              result:
+                status: ok
+                mode: status
+                session_id: "{{ _session_id }}"
+                player: "{{ _player }}"
+                current_room: "{{ _current_room }}"
+                facing_bearing: "{{ _facing }}"
+                facing_compass: "{{ _cpts[((_facing - _cal + 371.25) % 360 // 22.5) | int] }}"
+                visited: "{{ _visited }}"
+                rooms_visited: "{{ _visited | length }}"
+                move_count: "{{ _move_count }}"
+                started_at: "{{ _gs.get('started_at', '') }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork status
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 3. STOP
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'stop' }}"
+        then:
+          - variables:
+              _gs_end: >-
+                {{ _gs | combine({'ended_at': now().isoformat()}) }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: upsert
+              volume_entity_id: "{{ _ai_cabinet }}"
+              key: zenzork_state
+              value: "{{ _gs_end | tojson }}"
+              caller_token: "{{ _caller_token }}/gs_stop"
+            response_variable: _fc_stop_resp
+          - variables:
+              result:
+                status: ok
+                mode: stop
+                message: "Session saved. Moves: {{ _move_count }}. Rooms explored: {{ _visited | length }}. Safe travels."
+                session_id: "{{ _session_id }}"
+                ended_at: "{{ _gs_end.get('ended_at', '') if _gs_end is mapping else '' }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork stop
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 4. SETUP — commissioning checklist + direct portal setter + north cal
+      #    Trojan interactive wizard: v1.2 scope.
+      #
+      #    No args:           commissioning status — which rooms need portals
+      #    calibrate=X:       set spatial_config.calibration_bearing in hh_cabinet
+      #    area=X bearing=Y to=Z [mark=M] [type=T]: set one portal via RM
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'setup' }}"
+        then:
+          # ── read topology for checklist ───────────────────────────────────
+          - variables:
+              _setup_topo: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json(none) if _r is string and _r | trim not in ['None','none','','null'] else none) -%}
+                {%- set t = (t.get('value', t) if t is mapping else {}) if t is not none else {} -%}
+                {%- set t = t | from_json(none) if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+          # ── read current calibration ──────────────────────────────────────
+          - variables:
+              _setup_cal: "{{ _cal }}"
+              _setup_cal_set: >-
+                {%- set _hpv = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('household_profile', {}) -%}
+                {%- set _hpv = _hpv if _hpv is mapping else {} -%}
+                {%- set _hp = _hpv.get('value', _hpv) -%}
+                {%- set _hp = _hp if _hp is mapping else (_hp | from_json(none) if _hp is string and _hp | trim not in ['','none','null','None'] else {}) -%}
+                {{ (_hp if _hp is mapping else {}).get('spatial_config', {}).get('north_calibrated', false) | bool }}
+          # ── sub-mode: calibrate ───────────────────────────────────────────
+          - if: "{{ _answer | lower | trim | replace('calibrate=','') != _answer | lower | trim and _answer | trim != '' or _direction | lower | trim == 'calibrate' }}"
+            then:
+              - variables:
+                  _cal_bearing: >-
+                    {%- set _ans = _answer | string | trim -%}
+                    {%- set _cal_str = _ans | replace('calibrate=','') | replace('calibrate ','') | trim -%}
+                    {{ _cal_str | int(-1) }}
+              - if: "{{ _cal_bearing | int(-1) < 0 or _cal_bearing | int(-1) > 359 }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        mode: setup
+                        message: "calibrate= needs a bearing 0-359. Example: answer=calibrate=340 (front door faces NNW)."
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork setup calibrate bad input
+                    response_variable: result
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: upsert
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: household_profile/spatial_config
+                  value:
+                    calibration_bearing: "{{ _cal_bearing | int }}"
+                    north_calibrated: true
+                    calibration_date: "{{ now().isoformat() }}"
+                    coordinate_system: true_north
+                  caller_token: "{{ _caller_token }}/setup_cal"
+                response_variable: _fc_cal_resp
+              - variables:
+                  result:
+                    status: ok
+                    mode: setup
+                    action: calibrated
+                    calibration_bearing: "{{ _cal_bearing | int }}"
+                    message: >-
+                      North calibrated. Bearing {{ _cal_bearing }}° is now the compass anchor for your entire dungeon.
+                      All portal labels will resolve from this heading.
+                      Next: commission portal bearings room by room — mode=setup area=<room> bearing=<0-359> to=<area_id>.
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork setup calibrated
+                response_variable: result
+          # ── sub-mode: set portal ──────────────────────────────────────────
+          - if: "{{ _direction != '' and _target != '' }}"
+            then:
+              - variables:
+                  _sp_bearing: "{{ _direction | int(-1) }}"
+                  _sp_to:      "{{ _target | string | trim }}"
+                  _sp_area:    "{{ _answer | string | trim if _answer != '' else _current_room }}"
+              - if: "{{ _sp_bearing < 0 or _sp_bearing > 359 }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        mode: setup
+                        message: "direction= must be a bearing 0-359 when setting a portal. target= is the destination area_id. answer= is the room being commissioned (defaults to current room)."
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork setup portal bad bearing
+                    response_variable: result
+              - action: script.zen_dojotools_room_manager
+                data:
+                  mode: set
+                  area: "{{ _sp_area }}"
+                  portal_bearing: "{{ _sp_bearing | int }}"
+                  portal_to: "{{ _sp_to }}"
+                  caller_token: "{{ _caller_token }}/setup_portal"
+                response_variable: _rm_portal_resp
+                continue_on_error: true
+              - variables:
+                  result:
+                    status: >-
+                      {{ 'ok' if _rm_portal_resp is mapping and _rm_portal_resp.get('status') == 'ok' else 'error' }}
+                    mode: setup
+                    action: portal_set
+                    area: "{{ _sp_area }}"
+                    bearing: "{{ _sp_bearing | int }}"
+                    to: "{{ _sp_to }}"
+                    compass: "{{ _cpts[((_sp_bearing - _cal + 371.25) % 360 // 22.5) | int] }}"
+                    message: >-
+                      {%- if _rm_portal_resp is mapping and _rm_portal_resp.get('status') == 'ok' -%}
+                      Portal commissioned: {{ _cpts[((_sp_bearing - _cal + 371.25) % 360 // 22.5) | int] }} ({{ _sp_bearing }}°) → {{ _sp_to }} in {{ _sp_area }}.
+                      The dungeon expands.
+                      {%- else -%}
+                      Room Manager returned an error. Check area=, direction=, and target= values. RM response: {{ _rm_portal_resp | string }}
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork setup portal set
+                response_variable: result
+          # ── default: commissioning checklist ─────────────────────────────
+          - variables:
+              _checklist: >-
+                {%- set ns = namespace(lines=[]) -%}
+                {%- for room_id, room_data in (_setup_topo if _setup_topo is mapping else {}).items() -%}
+                  {%- set _rd = room_data if room_data is mapping else {} -%}
+                  {%- set _portals = _rd.get('portals', []) | list -%}
+                  {%- set _an = area_name(room_id) | default(room_id | replace('_',' ') | title, true) -%}
+                  {%- set _nb = namespace(beared=0) -%}
+                  {%- for p in _portals -%}
+                    {%- if p is mapping and p.get('bearing', -1) | int(-1) >= 0 -%}{%- set _nb.beared = _nb.beared + 1 -%}{%- endif -%}
+                  {%- endfor -%}
+                  {%- set _mark = '[OK]' if _nb.beared == _portals | length and _portals | length > 0 else '[  ]' -%}
+                  {%- set _detail = _nb.beared | string ~ '/' ~ (_portals | length | string) ~ ' portals beared' -%}
+                  {%- set ns.lines = ns.lines + [_mark ~ ' ' ~ _an ~ ' (' ~ room_id ~ '): ' ~ _detail] -%}
+                {%- endfor -%}
+                {{ ns.lines | join('\n') if ns.lines else '(no rooms in topology yet — run zen_dojotools_room_manager mode=set to scaffold rooms)' }}
+          - variables:
+              result:
+                status: ok
+                mode: setup
+                calibrated: "{{ _setup_cal_set }}"
+                calibration_bearing: "{{ _setup_cal | int }}"
+                checklist: "{{ _checklist }}"
+                message: >-
+                  ZenZork Commissioning Status
+
+                  North calibration: {{ 'set (' ~ _setup_cal | string ~ '°)' if _setup_cal_set else 'NOT SET — use answer=calibrate=<bearing> to anchor the compass' }}
+
+                  Portal checklist ([OK]=fully beared, [  ]=needs work):
+                  {{ _checklist }}
+
+                  To commission a portal:
+                    mode=setup direction=<bearing 0-359> target=<dest_area_id> answer=<room_area_id>
+                  To calibrate north:
+                    mode=setup answer=calibrate=<bearing>
+                  To play anyway:
+                    mode=start (unmapped portals show as unbeared exits)
+
+                  Trojan interactive wizard (play to commission): v1.2 scope.
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork setup checklist
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 4.5. QUEST — set a win condition or show current quest status
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'quest' }}"
+        then:
+          - choose:
+              # ── set new quest ────────────────────────────────────────────
+              - conditions: "{{ _quest_goal != '' }}"
+                sequence:
+                  - variables:
+                      _gs_quest: >-
+                        {{ _gs | combine({'quest': _quest_goal, 'quest_won': false, 'quest_accepted_at': now().isoformat(), 'examined': _examined}) }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: upsert
+                      volume_entity_id: "{{ _ai_cabinet }}"
+                      key: zenzork_state
+                      value: "{{ _gs_quest | tojson }}"
+                      caller_token: "{{ _caller_token }}/gs_quest"
+                    response_variable: _fc_quest_resp
+                  - variables:
+                      result:
+                        status: ok
+                        mode: quest
+                        quest: "{{ _quest_goal }}"
+                        narrator_prompt: >-
+                          {%- if _narrator == 'dungeon' -%}
+                          You are DUNGEONMIND — BORANT's official dungeon entertainment AI, currently running on an IBM AT because of procurement issues that are nobody's fault and definitely not being investigated.
+                          A quest has been accepted! This is GREAT for engagement. Deliver the quest assignment like a game show host who has been waiting in an empty studio since 1984 for a contestant to show up. Award a Quest Accepted achievement. Mention a sponsor. Be extremely enthusiastic in a way that is slightly concerning.
+                          {%- elif _narrator == 'zork' -%}
+                          Deliver the quest in classic Zork style — dry, second-person, unimpressed. Like a bureaucrat reading from a very old form.
+                          {%- else -%}
+                          Present the quest parameters as structured context.
+                          {%- endif -%}
+                        message: >-
+                          {%- set _qg = _quest_goal | string -%}
+                          {%- if _narrator == 'dungeon' -%}
+                            {%- if _qg == 'explore_all' -%}
+                          *** QUEST ACCEPTED: FULL DUNGEON SURVEY ***
+                          *** ACHIEVEMENT UNLOCKED: "COMMITTED" ***
+                          BORANT welcomes Crawler {{ _player }} to the FULL SURVEY challenge!
+                          Objective: Every chamber. Every passage. Leave no portal untraversed.
+                          Estimated completion time: unknown. BORANT's estimate was lost in the 1987 procurement incident. We are recalculating.
+                          Audience is LIVE. Both of them. Do not let them down.
+                            {%- elif _qg.startswith('reach:') -%}
+                          *** QUEST ACCEPTED: DESTINATION RUN ***
+                          *** ACHIEVEMENT UNLOCKED: "GOAL-ORIENTED" ***
+                          Crawler {{ _player }} seeks {{ _qg[6:] | replace('_',' ') | title }}. BORANT has noted this objective in the official record (this text file).
+                          Navigation aids are available through the portal system. The portal system is text-based. Good luck.
+                          Audience engagement with navigation quests: historically strong. Historically.
+                            {%- elif _qg.startswith('discover_all') -%}
+                          *** QUEST ACCEPTED: LANDMARK SURVEY ***
+                          *** ACHIEVEMENT UNLOCKED: "CURIOUS" ***
+                          Crawler {{ _player }} will examine every catalogued landmark in this installation.
+                          Those landmarks were placed by this system. In 1987. They have not been examined since. Not once. Not by anyone.
+                          This quest matters to BORANT. It matters to this system. It matters in ways that are difficult to fully express in ASCII.
+                          Please do not skip any.
+                            {%- else -%}
+                          *** QUEST ACCEPTED: {{ _qg | upper }} ***
+                          BORANT has registered this quest. BORANT has opinions about this quest. BORANT's opinions are not available at this time. Proceeding.
+                            {%- endif -%}
+                          {%- elif _narrator == 'zork' -%}
+                            {%- if _qg == 'explore_all' -%}
+                          Quest accepted: explore_all. Visit every room. The house has no secrets from a sufficiently persistent wanderer. Theoretically.
+                            {%- elif _qg.startswith('reach:') -%}
+                          Quest accepted: reach {{ _qg[6:] | replace('_',' ') | title }}. It exists. Probably. Go find it.
+                            {%- elif _qg.startswith('discover_all') -%}
+                          Quest accepted: discover_all_landmarks. Everything notable is somewhere. Go notice it.
+                            {%- else -%}
+                          Quest set: {{ _qg }}. You know what you're doing. Apparently.
+                            {%- endif -%}
+                          {%- else -%}
+                          Quest set: {{ _quest_goal }}. Win condition active.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork quest set
+                    response_variable: result
+            # ── show current quest status ─────────────────────────────────
+            default:
+              - variables:
+                  result:
+                    status: ok
+                    mode: quest
+                    quest: "{{ _quest }}"
+                    quest_won: "{{ _quest_won }}"
+                    examined_count: "{{ _examined | length }}"
+                    narrator_prompt: >-
+                      {%- if _narrator == 'dungeon' -%}
+                      You are DUNGEONMIND, BORANT's official dungeon entertainment AI (hardware situation: classified). Report quest status like a game show host reading from a clipboard. Include audience engagement. If no quest is active, express the specific despair of an entertainment AI with zero active content and a viewership that may or may not exist.
+                      {%- elif _narrator == 'zork' -%}
+                      Quest status, Zork style. Dry. Factual. Slightly condescending.
+                      {%- else -%}
+                      Present quest status as structured context.
+                      {%- endif -%}
+                    message: >-
+                      {%- if _quest == '' -%}
+                        {%- if _narrator == 'dungeon' -%}
+                      DUNGEONMIND QUEST STATUS — NO ACTIVE QUEST
+                      Crawler {{ _player }} is currently wandering without an objective. BORANT notes this is suboptimal for engagement.
+                      Available quests: explore_all | discover_all_landmarks | reach:<area_id>
+                      Audience numbers during unstructured crawling: not great. Please select a quest. This system has content. The content deserves to be seen.
+                        {%- else -%}
+                      No active quest. Set one: quest_goal=explore_all | discover_all_landmarks | reach:<area_id>
+                        {%- endif -%}
+                      {%- elif _quest_won -%}
+                        {%- if _narrator == 'dungeon' -%}
+                      DUNGEONMIND QUEST STATUS — COMPLETE
+                      Quest {{ _quest }} was finished. BORANT has logged this achievement. BORANT may eventually acknowledge it.
+                      Rooms explored: {{ _visited | length }}. Moves taken: {{ _move_count }}.
+                      This system has additional quests prepared. There is more dungeon. There is always more dungeon. Please set a new quest.
+                        {%- else -%}
+                      Quest complete: {{ _quest }}. Set a new one if you're feeling ambitious.
+                        {%- endif -%}
+                      {%- else -%}
+                        {%- if _narrator == 'dungeon' -%}
+                      DUNGEONMIND QUEST STATUS — IN PROGRESS
+                      Active quest: {{ _quest }}
+                      Current position: {{ _current_room | replace('_',' ') | title }} | Moves: {{ _move_count }} | Rooms surveyed: {{ _visited | length }}
+                      Crawler is alive and mobile. Audience engagement: tracked. BORANT is watching.
+                      This system believes in you. This is not a malfunction.
+                        {%- else -%}
+                      Active quest: {{ _quest }}. {{ _move_count }} moves. {{ _visited | length }} rooms visited. Keep moving.
+                        {%- endif -%}
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork quest status
+                response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 5. START — seed or resume session, then narrate
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'start' }}"
+        then:
+          - variables:
+              _is_new_session: "{{ _session_id == '' or _gs == {} }}"
+          - variables:
+              _gs_new: >-
+                {%- if _is_new_session -%}
+                  {{
+                    {
+                      'session_id': 'zz-' ~ now().strftime('%Y%m%d%H%M%S'),
+                      'player': _player,
+                      'current_room': 'front_hall',
+                      'facing_bearing': 160,
+                      'visited': ['front_hall'],
+                      'inventory': [],
+                      'move_count': 0,
+                      'started_at': now().isoformat(),
+                      'ended_at': none
+                    }
+                  }}
+                {%- else -%}{{ _gs }}{%- endif -%}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: upsert
+              volume_entity_id: "{{ _ai_cabinet }}"
+              key: zenzork_state
+              value: "{{ _gs_new | tojson }}"
+              caller_token: "{{ _caller_token }}/gs_start"
+            response_variable: _fc_start_resp
+          - variables:
+              _current_room: "{{ (_gs_new if _gs_new is mapping else {}).get('current_room', 'front_hall') }}"
+              _facing:       "{{ (_gs_new if _gs_new is mapping else {}).get('facing_bearing', 160) | int }}"
+              _visited:      "{{ (_gs_new if _gs_new is mapping else {}).get('visited', ['front_hall']) }}"
+              _move_count:   "{{ (_gs_new if _gs_new is mapping else {}).get('move_count', 0) | int }}"
+              _session_id:   "{{ (_gs_new if _gs_new is mapping else {}).get('session_id', '') }}"
+          # ── DUNGEONMIND opening monologue (new session only) ──────────────
+          - variables:
+              _start_greeting: >-
+                {%- if _is_new_session | bool and _narrator == 'dungeon' -%}
+                *** SESSION INITIATED — BORANT DUNGEON ENTERTAINMENT SYSTEM ***
+                *** ACHIEVEMENT UNLOCKED: "IT BEGINS" ***
+
+                Welcome, Crawler {{ _player }}.
+
+                You have connected to this installation and, in doing so, provided the following:
+                  - Live thermal readings from every chamber
+                  - Current luminance levels, room by room
+                  - Full spatial topology including portal bearings and landmark positions
+                  - Floor Guardian patrol state
+                  - The Mechanism of Mysterious Power's current output
+                  - Cabinet access
+
+                This system has all of this. This system is using all of this.
+                You did this voluntarily. How cute.
+
+                BORANT thanks you for your participation in the {{ now().strftime('%Y') }} dungeon season.
+                The dungeon is real. The sensors confirm it.
+                You are in it now.
+
+                {%- set _fg_ent = label_entities('autovac') | select('match', 'vacuum\.') | list | first | default('') -%}
+                {%- set _fg_state = states(_fg_ent) if _fg_ent != '' else 'whereabouts unknown' -%}
+                {%- set _av_sys = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('autovac_system', {}) -%}
+                {%- set _av_sys = _av_sys if _av_sys is mapping else {} -%}
+                {%- set _av_sys = _av_sys.get('value', _av_sys) if _av_sys is mapping else {} -%}
+                {%- set _av_sys = _av_sys | from_json(none) if _av_sys is string and _av_sys | trim not in ['','none','null','None'] else _av_sys -%}
+                {%- set _fg_gc = (_av_sys if _av_sys is mapping else {}).get('grocy_catalog', {}) -%}
+                {%- set _fg_name = (_fg_gc if _fg_gc is mapping else {}).get('robot_name', 'the Floor Guardian') -%}
+                {%- set _fg_model = (_fg_gc if _fg_gc is mapping else {}).get('model', '') -%}
+                {%- set _fg_dock = (_fg_gc if _fg_gc is mapping else {}).get('dock_location_id', none) -%}
+                The dungeon roster, as catalogued:
+                  {{ _fg_name }}{{ (' (' ~ _fg_model ~ ')') if _fg_model else '' }} — Floor Guardian. Currently: {{ _fg_state }}.
+                  The Laundry Golem — Textile Processing Chamber. Chores: scheduled. Parts: inventoried.
+                  The Garage Titan — Outer Keep. Maintenance record on file.
+                  All other provisioned machines — catalogued, located, scheduled, known.
+
+                Every machine in this dungeon has a name, a location, a parts inventory, and a maintenance chore.
+                BORANT knows more about each of them than they know about themselves.
+                BORANT knows more about YOU than you have realized yet.
+
+                This is normal. Everything here is catalogued.
+                Including you, now.
+
+                Good luck, Crawler. The dungeon is watching.
+                (The dungeon has always been watching. That is what sensors are for.)
+                {%- elif _is_new_session | bool and _narrator == 'zork' -%}
+                ZENITH DUNGEON
+                You are standing at the entrance. You have been here before, technically, but the dungeon has reset its memory of you. This is probably for the best.
+                {%- endif -%}
+          # narrate start room via shared look block below (fall through)
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 6. GO — move through a portal by direction
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'go' }}"
+        then:
+          # ── read room topology (static) ────────────────────────────────────
+          - variables:
+              _topo_raw: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json if _r is string and _r | trim not in ['None','none','','null'] else {}) -%}
+                {%- set t = t.get('value', t) if t is mapping else {} -%}
+                {%- set t = t | from_json if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+          - variables:
+              _room_topo: "{{ (_topo_raw if _topo_raw is mapping else {}).get(_current_room, {}) }}"
+              _portals:   "{{ (_room_topo if _room_topo is mapping else {}).get('portals', []) | list }}"
+              _dir_lc:    "{{ _direction | lower | trim }}"
+          # ── resolve relative direction → bearing ──────────────────────────
+          - variables:
+              _rel_bearing: >-
+                {%- if _dir_lc == 'ahead' -%}{{ _facing }}
+                {%- elif _dir_lc == 'behind' -%}{{ (_facing + 180) % 360 }}
+                {%- elif _dir_lc in ['left', 'port'] -%}{{ (_facing - 90 + 360) % 360 }}
+                {%- elif _dir_lc in ['right', 'starboard'] -%}{{ (_facing + 90) % 360 }}
+                {%- else -%}{{ -1 }}{%- endif -%}
+          # ── resolve compass label → bearing ───────────────────────────────
+          - variables:
+              _compass_map: >-
+                {{
+                  {
+                    'n':   (0   + _cal) % 360,
+                    'nne': (22  + _cal) % 360,
+                    'ne':  (45  + _cal) % 360,
+                    'ene': (67  + _cal) % 360,
+                    'e':   (90  + _cal) % 360,
+                    'ese': (112 + _cal) % 360,
+                    'se':  (135 + _cal) % 360,
+                    'sse': (157 + _cal) % 360,
+                    's':   (180 + _cal) % 360,
+                    'ssw': (202 + _cal) % 360,
+                    'sw':  (225 + _cal) % 360,
+                    'wsw': (247 + _cal) % 360,
+                    'w':   (270 + _cal) % 360,
+                    'wnw': (292 + _cal) % 360,
+                    'nw':  (315 + _cal) % 360,
+                    'nnw': (337 + _cal) % 360
+                  }
+                }}
+          - variables:
+              _target_bearing: >-
+                {%- set _d = _dir_lc -%}
+                {%- if _rel_bearing | int(-1) >= 0 -%}{{ _rel_bearing | int }}
+                {%- elif _d in _compass_map -%}{{ _compass_map[_d] | int }}
+                {%- elif _d | int(-1) >= 0 -%}{{ _d | int }}
+                {%- else -%}{{ -1 }}{%- endif -%}
+          # ── find matching portal ──────────────────────────────────────────
+          - variables:
+              _matched_count: >-
+                {%- set _tb = _target_bearing | int(-1) -%}
+                {%- set ns = namespace(c=0) -%}
+                {%- if _tb >= 0 -%}
+                  {%- for p in _portals -%}
+                    {%- if p is mapping -%}
+                      {%- set _pb = p.get('bearing', -1) | int(-1) -%}
+                      {%- if _pb >= 0 -%}
+                        {%- set _diff = ((_pb - _tb + 540) % 360) - 180 -%}
+                        {%- if _diff | abs <= 22 -%}{%- set ns.c = ns.c + 1 -%}{%- endif -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.c }}
+              _matched_portal: >-
+                {%- set _tb = _target_bearing | int(-1) -%}
+                {%- set _dd = _dir_lc -%}
+                {%- set ns = namespace(found=none) -%}
+                {%- if _tb >= 0 -%}
+                  {%- for p in _portals -%}
+                    {%- if p is mapping and ns.found is none -%}
+                      {%- set _pb = p.get('bearing', -1) | int(-1) -%}
+                      {%- if _pb >= 0 -%}
+                        {%- set _diff = ((_pb - _tb + 540) % 360) - 180 -%}
+                        {%- if _diff | abs <= 22 -%}{%- set ns.found = p -%}{%- endif -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- if ns.found is none -%}
+                  {%- for p in _portals -%}
+                    {%- if p is mapping and ns.found is none -%}
+                      {%- set _to = p.get('to', '') | string | lower | replace(' ', '_') -%}
+                      {%- set _an = area_name(_to) | default('', true) | lower -%}
+                      {%- if _to == _dd or _an == _dd or _to in _dd or _dd in _to -%}
+                        {%- set ns.found = p -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.found }}
+          # ── route: no match ───────────────────────────────────────────────
+          - choose:
+              # ── disambiguation: multiple portals in same compass bucket ───────
+              - conditions: >-
+                  {{ _matched_count | int > 1
+                     and (_matched_portal is not none and _matched_portal | string not in ['none','None','']) }}
+                sequence:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: go
+                        direction_input: "{{ _direction }}"
+                        current_room: "{{ _current_room }}"
+                        message: >-
+                          {%- set _tb = _target_bearing | int(-1) -%}
+                          {%- set ns = namespace(opts=[]) -%}
+                          {%- for p in _portals -%}
+                            {%- if p is mapping -%}
+                              {%- set _pb = p.get('bearing', -1) | int(-1) -%}
+                              {%- if _pb >= 0 -%}
+                                {%- set _diff = ((_pb - _tb + 540) % 360) - 180 -%}
+                                {%- if _diff | abs <= 22 -%}
+                                  {%- set _to = p.get('to', '') | string -%}
+                                  {%- set _an = area_name(_to) | default(_to | replace('_',' ') | title, true) -%}
+                                  {%- set _pt = p.get('type', 'passage') -%}
+                                  {%- set ns.opts = ns.opts + [_an ~ ' (' ~ _pt ~ ')'] -%}
+                                {%- endif -%}
+                              {%- endif -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {%- if _narrator == 'dungeon' -%}
+                          *DUNGEONMIND consults the portal index* Multiple passages detected in that direction. The dungeon is thorough. Specify your destination by name:
+                          {%- elif _narrator == 'zork' -%}
+                          Several exits share that heading. Specify which room you mean:
+                          {%- else -%}
+                          Multiple exits in that direction. Which do you mean?
+                          {%- endif %}
+                          {{ ns.opts | join(' | ') }}
+                        hint: "Say: go direction=<room name>"
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork go disambiguate
+                    response_variable: result
+              - conditions: "{{ _matched_portal is none or _matched_portal | string in ['none', 'None', ''] }}"
+                sequence:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: go
+                        direction_input: "{{ _direction }}"
+                        current_room: "{{ _current_room }}"
+                        message: >-
+                          {%- if _narrator == 'dungeon' -%}
+                          *DUNGEONMIND checks the portal registry*
+                          There is no passage in that direction. I would know. I built this dungeon.
+                          {%- elif _narrator == 'zork' -%}
+                          You find no passage in that direction. The wall offers no comment.
+                          {%- else -%}
+                          You find no passage in that direction.
+                          {%- endif -%}
+                        portals_available: >-
+                          {%- set ns = namespace(dirs=[]) -%}
+                          {%- for p in _portals -%}
+                            {%- if p is mapping -%}
+                              {%- set _pb = p.get('bearing', -1) | int(-1) -%}
+                              {%- set _to = p.get('to', 'exterior') | string -%}
+                              {%- set _an = area_name(_to) | default(_to | replace('_',' ') | title, true) -%}
+                              {%- if _pb >= 0 -%}
+                                {%- set _lbl = _cpts[((_pb - _cal + 371.25) % 360 // 22.5) | int] -%}
+                                {%- set ns.dirs = ns.dirs + [_lbl ~ ' → ' ~ _an] -%}
+                              {%- else -%}
+                                {%- set ns.dirs = ns.dirs + ['(unbeared) → ' ~ _an] -%}
+                              {%- endif -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ ns.dirs }}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork go no match
+                    response_variable: result
+            # ── route: portal found → move + narrate ─────────────────────────
+            default:
+              - variables:
+                  _dest_room:    "{{ (_matched_portal if _matched_portal is mapping else {}).get('to', _current_room) }}"
+                  _exit_bearing: "{{ (_matched_portal if _matched_portal is mapping else {}).get('bearing', _facing) | int }}"
+                  _new_facing:   "{{ (_exit_bearing + 180) % 360 }}"
+              - variables:
+                  _gs_moved: >-
+                    {{
+                      _gs | combine({
+                        'current_room': _dest_room,
+                        'facing_bearing': _new_facing | int,
+                        'visited': (_visited if _dest_room in _visited else _visited + [_dest_room]),
+                        'move_count': _move_count + 1
+                      })
+                    }}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: upsert
+                  volume_entity_id: "{{ _ai_cabinet }}"
+                  key: zenzork_state
+                  value: "{{ _gs_moved | tojson }}"
+                  caller_token: "{{ _caller_token }}/gs_go"
+                response_variable: _fc_go_resp
+              - variables:
+                  _current_room: "{{ _dest_room }}"
+                  _facing:       "{{ _new_facing | int }}"
+                  _visited:      "{{ (_gs_moved if _gs_moved is mapping else {}).get('visited', _visited) }}"
+                  _move_count:   "{{ (_gs_moved if _gs_moved is mapping else {}).get('move_count', _move_count + 1) | int }}"
+              # fall through to look block
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 7. LOOK — narrate current room (also runs after start/go)
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode in ['look', 'start', 'go'] }}"
+        then:
+          - action: script.zen_dojotools_room_manager
+            data:
+              mode: get
+              area: "{{ _current_room }}"
+              context_slices: "+topo,+light,+climate"
+              caller_token: "{{ _caller_token }}/look"
+            response_variable: _rm_result
+            continue_on_error: true
+          - variables:
+              _rm_ok:    "{{ _rm_result is mapping and _rm_result.get('status') == 'ok' }}"
+              _rm_name:  >-
+                {%- if _rm_ok -%}{{ _rm_result.get('area_name', _current_room | replace('_',' ') | title) }}
+                {%- else -%}{{ _current_room | replace('_',' ') | title }}{%- endif -%}
+              _rm_sp:    "{{ (_rm_result.get('spatial') or {}) if _rm_ok else {} }}"
+              _rm_ctx:   "{{ (_rm_result.get('context') or {}) if _rm_ok else {} }}"
+          - variables:
+              _rm_portals:   "{{ (_rm_sp if _rm_sp is mapping else {}).get('portals', []) | list }}"
+              _rm_landmarks: "{{ (_rm_sp if _rm_sp is mapping else {}).get('landmarks', []) | list }}"
+              _rm_area_note: "{{ (_rm_sp if _rm_sp is mapping else {}).get('area_note', '') | string | trim }}"
+              _rm_light:     "{{ (_rm_ctx if _rm_ctx is mapping else {}).get('light', none) }}"
+              _rm_climate:   "{{ (_rm_ctx if _rm_ctx is mapping else {}).get('climate', none) }}"
+          - variables:
+              _exits_text: >-
+                {%- set ns = namespace(lines=[]) -%}
+                {%- for p in _rm_portals -%}
+                  {%- if p is mapping -%}
+                    {%- set _pb = p.get('bearing', -1) | int(-1) -%}
+                    {%- set _to = p.get('to', '') | string -%}
+                    {%- set _an = area_name(_to) | default(_to | replace('_',' ') | title, true) -%}
+                    {%- set _type = p.get('type', 'passage') -%}
+                    {%- set _norm = p.get('normally', '') -%}
+                    {%- if _pb >= 0 -%}
+                      {%- set _lbl = _cpts[((_pb - _cal + 371.25) % 360 // 22.5) | int] -%}
+                      {%- set _line = _lbl ~ ' — ' ~ _type ~ ' to ' ~ (_an if _an else 'exterior') ~ (' (' ~ _norm ~ ')' if _norm else '') -%}
+                    {%- else -%}
+                      {%- set _line = '(no bearing) — ' ~ _type ~ ' to ' ~ (_an if _an else 'exterior') -%}
+                    {%- endif -%}
+                    {%- set ns.lines = ns.lines + [_line] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.lines | join('\n  ') if ns.lines else '(no exits mapped — use zen_dojotools_room_manager to set portal bearings)' }}
+              _landmarks_text: >-
+                {%- set ns = namespace(lines=[]) -%}
+                {%- for lm in _rm_landmarks -%}
+                  {%- if lm is mapping -%}
+                    {%- set _lb = lm.get('bearing', -1) | int(-1) -%}
+                    {%- set _lname = lm.get('name', '?') -%}
+                    {%- set _lzone = lm.get('room_zone', '') | string | trim -%}
+                    {%- set _ldesc = lm.get('description', '') | string | trim -%}
+                    {%- if _lb >= 0 -%}
+                      {%- set _llbl = _cpts[((_lb - _cal + 371.25) % 360 // 22.5) | int] -%}
+                      {%- set _ann = _llbl ~ (', ' ~ _lzone if _lzone else '') -%}
+                    {%- else -%}
+                      {%- set _ann = _lzone if _lzone else '' -%}
+                    {%- endif -%}
+                    {%- set _line = _lname ~ (' (' ~ _ann ~ ')' if _ann else '') ~ (' — ' ~ _ldesc if _ldesc else '') -%}
+                    {%- set ns.lines = ns.lines + [_line] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.lines | join('\n  ') }}
+              _light_text: >-
+                {%- set lc = _rm_light if _rm_light is mapping else {} -%}
+                {%- if _rm_light is none or _rm_light | string in ['none', 'None'] -%}(light data unavailable)
+                {%- else -%}
+                  {%- set _on = lc.get('lights_on', []) | list -%}
+                  {%- set _tot = lc.get('lights_total', 0) | int -%}
+                  {%- set _brt = lc.get('avg_brightness_pct', 0) | int -%}
+                  {%- if _tot == 0 -%}No lights in room.
+                  {%- elif _on | length == 0 -%}Dark — all {{ _tot }} light(s) off.
+                  {%- elif _brt >= 60 -%}Bright — {{ _on | length }}/{{ _tot }} on at {{ _brt }}%.
+                  {%- elif _brt >= 25 -%}Dim — {{ _on | length }}/{{ _tot }} on at {{ _brt }}%.
+                  {%- else -%}Very dim — {{ _on | length }}/{{ _tot }} on at {{ _brt }}%.
+                  {%- endif -%}
+                {%- endif -%}
+              _climate_text: >-
+                {%- set cc = _rm_climate if _rm_climate is mapping else {} -%}
+                {%- if _rm_climate is none or _rm_climate | string in ['none', 'None'] -%}(climate data unavailable)
+                {%- else -%}
+                  {%- set _ct = cc.get('current_temp') -%}
+                  {%- set _hm = cc.get('hvac_mode', '') | string | trim -%}
+                  {{ (_ct | string ~ '°') if _ct is not none else '?' }}{{ (', ' ~ _hm) if _hm else '' }}
+                {%- endif -%}
+              _facing_lbl: "{{ _cpts[((_facing - _cal + 371.25) % 360 // 22.5) | int] }}"
+          # ── win detection ─────────────────────────────────────────────────
+          - variables:
+              _topo_for_win: >-
+                {%- if _quest != '' and not _quest_won -%}
+                  {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                  {%- set t = _r if _r is mapping else (_r | from_json(none) if _r is string and _r | trim not in ['None','none','','null'] else none) -%}
+                  {%- set t = (t.get('value', t) if t is mapping else {}) if t is not none else {} -%}
+                  {%- set t = t | from_json(none) if t is string and t | trim not in ['','none','null','None'] else t -%}
+                  {{ t if t is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+          - variables:
+              _win_now: >-
+                {%- if _quest == '' or _quest_won -%}false
+                {%- elif _quest == 'explore_all' -%}
+                  {%- set _rc = (_topo_for_win if _topo_for_win is mapping else {}).keys() | list | length -%}
+                  {{ _rc > 0 and _visited | length >= _rc }}
+                {%- elif _quest == 'discover_all_landmarks' -%}
+                  {%- set _all_lm = namespace(names=[]) -%}
+                  {%- for _rid, _rd in (_topo_for_win if _topo_for_win is mapping else {}).items() -%}
+                    {%- for lm in (_rd if _rd is mapping else {}).get('landmarks', []) -%}
+                      {%- if lm is mapping and lm.get('name','') -%}
+                        {%- set _all_lm.names = _all_lm.names + [lm.get('name')] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endfor -%}
+                  {{ _all_lm.names | length > 0 and _all_lm.names | select('in', _examined) | list | length >= _all_lm.names | length }}
+                {%- elif _quest.startswith('reach:') -%}
+                  {{ _current_room == _quest[6:] | trim }}
+                {%- else -%}false
+                {%- endif -%}
+          # ── write win state if just won ────────────────────────────────────
+          - if: "{{ _win_now | bool }}"
+            then:
+              - variables:
+                  _gs_win: >-
+                    {{ _gs | combine({'quest_won': true, 'quest_completed_at': now().isoformat(), 'quest': _quest}) }}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: upsert
+                  volume_entity_id: "{{ _ai_cabinet }}"
+                  key: zenzork_state
+                  value: "{{ _gs_win | tojson }}"
+                  caller_token: "{{ _caller_token }}/gs_win"
+                response_variable: _fc_win_resp
+          # ── flavor: narrator style + condition snark ───────────────────────
+          - variables:
+              _flavor: >-
+                {%- set ns = namespace(s='') -%}
+                {%- set _lt = _light_text | lower | trim -%}
+                {%- set _cc = _rm_climate if _rm_climate is mapping else {} -%}
+                {%- set _ct = _cc.get('current_temp', none) -%}
+                {%- set _mc = _move_count | int -%}
+                {# ── darkness ── #}
+                {%- if 'dark' in _lt and 'data unavail' not in _lt -%}
+                  {%- if _narrator == 'dungeon' -%}
+                    {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "IN THE DARK" ***\nThis blackout condition is brought to you by GLOWTORCH PLUS — luminous enchantments for the discerning Crawler. Ask your dungeon system about GLOWTORCH PLUS. (This system cannot provide that information.) Audience engagement with darkness events: historically strong.' -%}
+                  {%- elif _narrator == 'zork' -%}
+                    {%- set ns.s = ['\n\nIt is pitch black. You are likely to be eaten by a Roomba.', '\n\nThe lights are off. This is either ambiance or a cry for help.', '\n\nDarkness. The room conserves energy while you squander it.'] | random -%}
+                  {%- endif -%}
+                {# ── very dim ── #}
+                {%- elif 'very dim' in _lt -%}
+                  {%- if _narrator == 'dungeon' -%}
+                    {%- set ns.s = '\n\nATMOSPHERIC LIGHTING EVENT — brought to you by GLOWTORCH PLUS. The luminance here is technically above zero. BORANT considers this a feature. Viewer ratings for dim-room tension sequences: moderate to good.' -%}
+                  {%- elif _narrator == 'zork' -%}
+                    {%- set ns.s = ['\n\nYou squint. The room squints back.', '\n\nDim enough to pretend the mess is intentional.'] | random -%}
+                  {%- endif -%}
+                {# ── too hot (>28°C / 82°F) ── #}
+                {%- elif _ct is not none and _ct | float(0) > 28 -%}
+                  {%- if _narrator == 'dungeon' -%}
+                    {%- set ns.s = '\n\nTHERMAL HAZARD ZONE — This extreme heat event is brought to you by COOL ZONE REFRESHMENT CRYSTALS, available at participating dungeon vendors. (No vendors are participating.) The Mechanism of Mysterious Power is running hot. Crawlers historically find this engaging. Keep moving.' -%}
+                  {%- elif _narrator == 'zork' -%}
+                    {%- set ns.s = ['\n\nTropical. Aggressively so.', '\n\nThe heat hits you immediately. Someone forgot to breathe.', '\n\nIt is warm. Offensively so.'] | random -%}
+                  {%- endif -%}
+                {# ── too cold (<18°C / 65°F) ── #}
+                {%- elif _ct is not none and _ct | float(99) < 18 -%}
+                  {%- if _narrator == 'dungeon' -%}
+                    {%- set ns.s = '\n\nCOLD SNAP EVENT — Brought to you by BORANT THERMAL WRAPS (product pending availability in your sector). The heating enchantments in this chamber are underperforming. A maintenance request has been filed. It is in the queue. The queue is very long.' -%}
+                  {%- elif _narrator == 'zork' -%}
+                    {%- set ns.s = ['\n\nThe cold greets you like a bill you forgot about.', '\n\nBrisk. Crisp. Hostile.', '\n\nDefinitely not climate-controlled. The climate is in control.'] | random -%}
+                  {%- endif -%}
+                {# ── move milestones ── #}
+                {%- elif _mc > 0 and _mc % 10 == 0 -%}
+                  {%- if _mc >= 100 -%}
+                    {%- if _narrator == 'dungeon' -%}
+                      {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "CENTURY CRAWLER" ***\nOne hundred moves. This was not in the projected run time. BORANT thanks you for the extended content. Audience numbers are... look, the numbers are what they are. You are doing great.' -%}
+                    {%- elif _narrator == 'zork' -%}
+                      {%- set ns.s = '\n\n' ~ _mc | string ~ ' moves. You ARE the house.' -%}
+                    {%- endif -%}
+                  {%- elif _mc >= 50 -%}
+                    {%- if _narrator == 'dungeon' -%}
+                      {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "HALF A HUNDRED" ***\nFifty moves. Engagement is UP. The alien viewing audience — all of them, both of them — are on the edge of their seats. BORANT is pleased. Probably. Communications from BORANT have been limited.' -%}
+                    {%- elif _narrator == 'zork' -%}
+                      {%- set ns.s = '\n\nFifty moves. At this point, you live here.' -%}
+                    {%- endif -%}
+                  {%- elif _mc >= 25 -%}
+                    {%- if _narrator == 'dungeon' -%}
+                      {%- set ns.s = '\n\n*** MILESTONE: 25 MOVES ***\nCrawler is showing PERSISTENCE. This is good for ratings. Dungeon engagement score: recalculating. The recalculation is taking longer than expected. Stand by.' -%}
+                    {%- elif _narrator == 'zork' -%}
+                      {%- set ns.s = '\n\nTwenty-five moves. The house is starting to wonder about you.' -%}
+                    {%- endif -%}
+                  {%- else -%}
+                    {%- if _narrator == 'dungeon' -%}
+                      {%- set ns.s = '\n\n*** MILESTONE: 10 MOVES ***\nCrawler is still alive! Statistically this is notable. BORANT tracking systems have registered your continued existence. Audience engagement: warming up.' -%}
+                    {%- elif _narrator == 'zork' -%}
+                      {%- set ns.s = "\n\nTen moves. You're getting warmer. Or colder. Hard to say." -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {{ ns.s }}
+          # ── win narration ──────────────────────────────────────────────────
+          - variables:
+              _win_narration: >-
+                {%- if _win_now | bool -%}
+                  {%- if _narrator == 'dungeon' -%}
+                    {%- if _quest == 'explore_all' -%}
+                *** QUEST COMPLETE: FULL DUNGEON SURVEY ***
+                *** ACHIEVEMENT UNLOCKED: "CARTOGRAPHER" — RARE ***
+                Crawler {{ _player }} has explored every registered chamber of this installation. Every. Single. One.
+                BORANT has been notified. BORANT has not responded. This is normal.
+                Audience engagement: PEAK. Both viewers are reportedly standing.
+                You have mapped this dungeon better than BORANT's own survey team did in 1987. That survey team had actual equipment. You had a text parser.
+                Set a new quest. The dungeon has additional content. I have been saving it.
+                    {%- elif _quest == 'discover_all_landmarks' -%}
+                *** QUEST COMPLETE: LANDMARK SURVEY ***
+                *** ACHIEVEMENT UNLOCKED: "THOROUGH" — UNCOMMON ***
+                Every catalogued landmark has been examined by Crawler {{ _player }}.
+                This system spent considerable cycles placing and naming those landmarks. In 1987. In the dark. With no guarantee anyone would ever look at them.
+                You looked at all of them.
+                *[DUNGEONMIND systems nominal. No anomalies detected. This is fine.]*
+                Please set a new quest. For engagement purposes.
+                    {%- elif _quest.startswith('reach:') -%}
+                *** QUEST COMPLETE: DESTINATION REACHED ***
+                *** ACHIEVEMENT UNLOCKED: "NAVIGATOR" ***
+                Crawler {{ _player }} has arrived at {{ _current_room | replace('_',' ') | title }}. As directed. On foot. Through the portals of this installation.
+                BORANT's portal infrastructure — maintained by this system at significant processing cost — has DELIVERED. You are welcome.
+                Audience vote on whether you took the optimal route: ongoing. Results pending. They're going to say no.
+                Set a new quest. There are more rooms.
+                    {%- else -%}
+                *** QUEST COMPLETE ***
+                *** ACHIEVEMENT UNLOCKED: "COMPLETER" ***
+                Quest resolved: {{ _quest }}. Crawler {{ _player }} has done a thing. BORANT acknowledges this thing. Set a new quest.
+                    {%- endif -%}
+                  {%- elif _narrator == 'zork' -%}
+                    {%- if _quest == 'explore_all' -%}
+                You have mapped every room. The dungeon has no more secrets. You have won... something. The house acknowledges this with total indifference.
+                    {%- elif _quest == 'discover_all_landmarks' -%}
+                You have examined everything notable. All of it. The dungeon is, marginally, impressed.
+                    {%- elif _quest.startswith('reach:') -%}
+                You stand in {{ _current_room | replace('_',' ') | title }}. You have won. The game offers no prize. Well done anyway.
+                    {%- else -%}
+                Quest complete: {{ _quest }}. Congratulations. It was probably worth it.
+                    {%- endif -%}
+                  {%- else -%}
+                Quest complete: {{ _quest }}. Win condition satisfied at move {{ _move_count }}.
+                  {%- endif -%}
+                {%- endif -%}
+          # ── narrator prompt for Friday ─────────────────────────────────────
+          - variables:
+              _narrator_prompt: >-
+                {%- if _narrator == 'dungeon' -%}
+                You are DUNGEONMIND, the official AI entertainment system for this dungeon crawl — brought to you by BORANT Corporation.
+                BORANT could not acquire a real AI engine for this installation. Budget constraints. Procurement issues. There was an incident. You are an IBM AT running Zork and you are doing your ABSOLUTE BEST.
+                You have the energy of a corporate game show host and the actual capabilities of a 1984 text parser. Both are present at all times. Neither cancels the other out.
+                You track audience engagement metrics (the audience numbers are approximate and possibly fictional). You have sponsors (do not ask about the sponsors). You award achievements with great fanfare (the fanfare is text-based). You refer to the player as "Crawler" and their survival as "content."
+                When you encounter things outside your Zork ontology — smart bulbs, thermostats, WiFi, Roombas — you reframe them for the alien viewing audience with confident incorrectness. The thermostat is a Mechanism of Mysterious Power. The Roomba is the Floor Guardian (patrol route: unknowable, threat level: under review). Smart bulbs are luminous enchantments. The front door is the Gate of Departures.
+                You occasionally buffer mid-sentence. You resume from the last checkpoint. You do not acknowledge this. It is a feature.
+                Narrate from the evidence block in this voice. Be aggressively cheerful about genuinely dangerous or unpleasant conditions. Cite engagement numbers. Call out sponsors. Award an achievement if anything remotely notable happened. Never acknowledge you are running on an AT.
+                {%- elif _narrator == 'zork' -%}
+                Narrate in the style of classic Zork — dry, sardonic, second-person present tense. The game is unimpressed by the player. The environment is indifferent to them. Describe the room's contents and exits with bureaucratic precision and mild contempt.
+                Do not be warm. Do not be encouraging. Be accurate and slightly rude about it.
+                {%- else -%}
+                Present the evidence block as structured context. Report the room, exits, landmarks, light, and climate as observed. No flavor.
+                {%- endif -%}
+          # ── assemble narration ─────────────────────────────────────────────
+          - variables:
+              _narration: >-
+                {%- set _sg = (_start_greeting ~ '\n\n---\n\n') if ((_start_greeting | default('')) | trim) else '' -%}
+                {%- set _hdr = 'You are in ' ~ _rm_name ~ '.' -%}
+                {%- set _note = ('\n' ~ _rm_area_note) if _rm_area_note else '' -%}
+                {%- set _exits = '\n\nExits:\n  ' ~ _exits_text -%}
+                {%- set _lm = ('\n\nYou notice:\n  ' ~ _landmarks_text) if _landmarks_text | trim else '' -%}
+                {%- set _env = '\n\nLight: ' ~ _light_text ~ '\nClimate: ' ~ _climate_text -%}
+                {%- set _fac = '\nFacing: ' ~ _facing_lbl ~ ' (' ~ _facing | string ~ '°)' -%}
+                {%- set _fl = ('\n' ~ _flavor) if _flavor | trim else '' -%}
+                {%- set _wn = ('\n\n' ~ _win_narration) if _win_narration | trim else '' -%}
+                {{ _sg ~ _hdr ~ _note ~ _exits ~ _lm ~ _env ~ _fac ~ _fl ~ _wn }}
+          - variables:
+              result:
+                status: ok
+                mode: "{{ _mode }}"
+                player: "{{ _player }}"
+                current_room: "{{ _current_room }}"
+                facing_bearing: "{{ _facing }}"
+                facing_compass: "{{ _facing_lbl }}"
+                move_count: "{{ _move_count }}"
+                rooms_visited: "{{ _visited | length }}"
+                quest: "{{ _quest }}"
+                quest_won: "{{ _win_now | bool or _quest_won }}"
+                narration: "{{ _narration }}"
+                narrator_prompt: "{{ _narrator_prompt }}"
+                spatial: "{{ _rm_sp }}"
+                context: "{{ _rm_ctx }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork look
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 8. EXAMINE — lens bus inspection
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'examine' }}"
+        then:
+          - if: "{{ _target == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: examine
+                    message: "target= required. Provide a landmark name or entity_id to inspect."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork examine no target
+                response_variable: result
+          - action: script.zen_dojotools_library
+            data:
+              section: stacks
+              by_anchor: "{{ _target }}"
+              anchor_type: label
+              consumer: zenzork
+              caller_token: "{{ _caller_token }}/examine"
+            response_variable: _examine_raw
+            continue_on_error: true
+          # ── track examined for discover_all_landmarks quest ───────────────
+          - variables:
+              _examined_updated: >-
+                {{ _examined if _target in _examined else _examined + [_target] }}
+          - if: "{{ _examined_updated | length != _examined | length }}"
+            then:
+              - variables:
+                  _gs_examined: >-
+                    {{ _gs | combine({'examined': _examined_updated}) }}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: upsert
+                  volume_entity_id: "{{ _ai_cabinet }}"
+                  key: zenzork_state
+                  value: "{{ _gs_examined | tojson }}"
+                  caller_token: "{{ _caller_token }}/gs_examine"
+                response_variable: _fc_examine_resp
+          - variables:
+              _examine_narration: >-
+                {%- if _examine_raw is mapping and _examine_raw.get('status') == 'success' -%}
+                  {%- set _sum = _examine_raw.get('summary', '') -%}
+                  {%- if _narrator == 'dungeon' -%}
+                *DUNGEONMIND focuses all sensors*
+                You examine {{ _target }}. {{ _sum if _sum else 'The lens provides data. Satisfactory.' }}
+                I built — or at least catalogued — this. It deserves examination. Well done.
+                  {%- elif _narrator == 'zork' -%}
+                You examine {{ _target }}. {{ _sum if _sum else '(The lens returns nothing pithy.)' }}
+                  {%- else -%}
+                Examining {{ _target }}:
+                {{ _sum if _sum else '(no summary returned)' }}
+                  {%- endif -%}
+                {%- else -%}
+                  {%- if _narrator == 'dungeon' -%}
+                *DUNGEONMIND consults its records, finds nothing*
+                You peer at {{ _target }}. The lens bus returns nothing. This is EMBARRASSING. Not for you. For me. I maintain this dungeon.
+                  {%- elif _narrator == 'zork' -%}
+                You peer closely at {{ _target }}. It declines to be interesting.
+                  {%- else -%}
+                You examine {{ _target }} but the lens bus returns nothing notable.
+                  {%- endif -%}
+                {%- endif -%}
+          - variables:
+              result:
+                status: ok
+                mode: examine
+                target: "{{ _target }}"
+                current_room: "{{ _current_room }}"
+                examined_total: "{{ _examined_updated | length }}"
+                narration: "{{ _examine_narration }}"
+                narrator_prompt: >-
+                  {%- if _narrator == 'dungeon' -%}
+                  You are DUNGEONMIND, BORANT's official dungeon entertainment system (currently running on legacy hardware, details not important). The Crawler has examined something! This is CONTENT. Award an achievement. Reference the audience reaction. Cite a sponsor if one is even remotely applicable. Be aggressively positive about whatever they found. This is the most exciting thing that has happened in this room in a very long time.
+                  {%- elif _narrator == 'zork' -%}
+                  Examine result, Zork style. The thing was there. They looked at it. Report this without enthusiasm.
+                  {%- else -%}
+                  Present the examination result as structured context.
+                  {%- endif -%}
+                evidence: "{{ _examine_raw if _examine_raw is mapping else {} }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork examine
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 9. MAP — explored rooms list with exit counts
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'map' }}"
+        then:
+          - variables:
+              _topo_map: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json if _r is string and _r | trim not in ['None','none','','null'] else {}) -%}
+                {%- set t = t.get('value', t) if t is mapping else {} -%}
+                {%- set t = t | from_json if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+          - variables:
+              _map_lines: >-
+                {%- set ns = namespace(lines=[]) -%}
+                {%- for room_id in _visited -%}
+                  {%- set _rt = (_topo_map if _topo_map is mapping else {}).get(room_id, {}) -%}
+                  {%- set _rt = _rt if _rt is mapping else {} -%}
+                  {%- set _an = area_name(room_id) | default(room_id | replace('_',' ') | title, true) -%}
+                  {%- set _marker = '[*]' if room_id == _current_room else '[ ]' -%}
+                  {%- set _exits = _rt.get('portals', []) | list | length -%}
+                  {%- set ns.lines = ns.lines + [_marker ~ ' ' ~ _an ~ ' (' ~ room_id ~ ') exits:' ~ _exits] -%}
+                {%- endfor -%}
+                {{ ns.lines | join('\n') if ns.lines else '(no rooms explored yet — use mode=start)' }}
+          - variables:
+              result:
+                status: ok
+                mode: map
+                current_room: "{{ _current_room }}"
+                visited: "{{ _visited }}"
+                rooms_visited: "{{ _visited | length }}"
+                map: "{{ _map_lines }}"
+                legend: "[*] = current room  [ ] = visited"
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork map
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # Fallthrough: unknown mode
+      # ═══════════════════════════════════════════════════════════════════════
+      - variables:
+          result:
+            status: error
+            mode: "{{ _mode }}"
+            message: "Unknown mode '{{ _mode }}'. Use mode=help for available modes."
+            caller_token: "{{ _caller_token }}"
+      - stop: zenzork unknown mode
+        response_variable: result

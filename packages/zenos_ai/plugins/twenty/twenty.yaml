@@ -1,0 +1,3717 @@
+###############################################################################
+# ZenOS-AI Plugin: Twenty CRM
+# Version: 1.7.0 — vendor_link: schema-level Grocy↔CRM company binding
+#
+# Two-layer adapter (same pattern as Finance/Grocy/Kitchen):
+#   zen_sutra_twenty  ← internal REST broker (NOT MCP-exposed)
+#   zen_dojotools_rolodex              ← MCP-facing helper (IS exposed)
+#
+# Twenty CRM. REST base: {integrations_config.twenty.url}/rest/{entity}
+# Note: /rest/core/ prefix is WRONG — use /rest/{entity} for both list and single record
+# OpenAPI spec: GET /open-api/core (response too large for HA template engine)
+#
+# REST response shapes (confirmed live):
+#   list:   { "data": { "companies": [...] }, "pageInfo": {...}, "totalCount": N }
+#   single: { "data": { ... } }
+#   create: { "data": { ... } }
+# Filter syntax: name[ilike]:%value%  (unencoded — do NOT urlencode brackets)
+#
+# URL RESOLUTION ORDER (rest_commands):
+#   1. household cabinet: integrations_config.twenty.url
+#   2. input_text.twenty_url (legacy fallback — stays until configure is run)
+#
+# CRM ROUTING (calendar/todo fan-out):
+#   household cabinet: crm_config.{stays,appointments,reminders,tasks}_label
+#   label_entities(label) at call time → discovers actual calendar/todo entity
+#   Defaults: crm_stays / crm_appointments / crm_reminders / crm_tasks
+#
+# SETUP:
+#   1. In secrets.yaml add:
+#        twenty_bearer: "Bearer YOUR_TWENTY_API_KEY"
+#   2. Run: zen_dojotools_rolodex mode=run case=configure config_json='{"url":"http://your-twenty-host:3000"}'
+#   3. Label a calendar entity with crm_stays, crm_appointments
+#      Label a todo entity with crm_reminders, crm_tasks
+###############################################################################
+
+input_text:
+  twenty_url:
+    name: Twenty CRM URL
+    icon: mdi:account-group
+
+rest_command:
+  twenty_rest_get:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}/rest/{{ endpoint }}
+    method: GET
+    headers:
+      Authorization: !secret twenty_bearer
+      Accept: application/json
+    verify_ssl: false
+    timeout: 30
+
+  twenty_rest_post:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}/rest/{{ endpoint }}
+    method: POST
+    headers:
+      Authorization: !secret twenty_bearer
+      Content-Type: application/json
+      Accept: application/json
+    payload: '{{ payload }}'
+    verify_ssl: false
+    timeout: 30
+
+  twenty_rest_patch:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}/rest/{{ endpoint }}
+    method: PATCH
+    headers:
+      Authorization: !secret twenty_bearer
+      Content-Type: application/json
+      Accept: application/json
+    payload: '{{ payload }}'
+    verify_ssl: false
+    timeout: 30
+
+  twenty_rest_meta:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}/metadata
+    method: POST
+    headers:
+      Authorization: !secret twenty_bearer
+      Content-Type: application/json
+      Accept: application/json
+    payload: '{{ payload }}'
+    verify_ssl: false
+    timeout: 30
+
+script:
+
+  zen_sutra_twenty:
+    alias: Zen DojoTools Twenty Advanced (Internal)
+    description: Internal REST broker for Twenty CRM. NOT MCP-exposed.
+    mode: queued
+    max: 5
+    fields:
+      action_type:
+        description: get / post / patch / meta (GraphQL metadata API)
+        selector:
+          select:
+            options: [get, post, patch, meta]
+      endpoint:
+        description: REST path after /rest/ (include query params for GET)
+        selector:
+          text:
+      payload:
+        description: JSON payload for post/patch
+        selector:
+          text:
+            multiline: true
+
+    sequence:
+    - variables:
+        _at: '{{ action_type | default("get") | lower }}'
+        _ep: '{{ endpoint | default("") | string | trim }}'
+        _pl: '{{ payload | default("{}") | string | trim }}'
+        _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+    - action: script.zen_dojotools_filecabinet
+      response_variable: _ic_fc_raw
+      continue_on_error: true
+      data:
+        action_type: get
+        volume_entity_id: "{{ _hh }}"
+        path: integrations_config
+    - variables:
+        _integrations_config: >-
+          {%- set _ic = _ic_fc_raw.get('value', {}) if _ic_fc_raw is mapping and _ic_fc_raw.get('status') == 'success' else {} -%}
+          {{ _ic if _ic is mapping else {} }}
+
+    - variables:
+        _twenty_cfg: "{{ _integrations_config.get('twenty', {}) if _integrations_config is mapping else {} }}"
+
+    - variables:
+        _base: >-
+          {%- set url = (_twenty_cfg.get('url', '') | string | trim) if _twenty_cfg is mapping else '' -%}
+          {%- if not url -%}{%- set url = states('input_text.twenty_url') | default('') | trim -%}{%- endif -%}
+          {{ url | regex_replace('/$','') }}
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ _base == "" }}'
+        sequence:
+        - delay:
+            seconds: 2
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _ic_fc_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            volume_entity_id: "{{ _hh }}"
+            path: integrations_config
+        - variables:
+            _integrations_config: >-
+              {%- set _ic = _ic_fc_raw.get('value', {}) if _ic_fc_raw is mapping and _ic_fc_raw.get('status') == 'success' else {} -%}
+              {{ _ic if _ic is mapping else {} }}
+        - variables:
+            _twenty_cfg: "{{ _integrations_config.get('twenty', {}) if _integrations_config is mapping else {} }}"
+        - variables:
+            _base: >-
+              {%- set url = (_twenty_cfg.get('url', '') | string | trim) if _twenty_cfg is mapping else '' -%}
+              {%- if not url -%}{%- set url = states('input_text.twenty_url') | default('') | trim -%}{%- endif -%}
+              {{ url | regex_replace('/$','') }}
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ _base == "" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: not_configured
+              tool: Zen DojoTools Twenty Advanced
+              message: 'Twenty CRM URL not configured. Run zen_dojotools_rolodex mode=run case=configure to set up.'
+              availability:
+                ok: false
+                class: not_configured
+                human: Twenty CRM is not set up yet. Run Rolodex configure with the Twenty URL.
+                operator_hint: Configure integrations_config.twenty.url in the household cabinet.
+              config:
+                url_configured: false
+        - stop: twenty not configured
+          response_variable: final_response
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ _at == "post" }}'
+        sequence:
+        - action: rest_command.twenty_rest_post
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            base_url: '{{ _base }}'
+            endpoint: '{{ _ep }}'
+            payload: '{{ _pl }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ _at == "patch" }}'
+        sequence:
+        - action: rest_command.twenty_rest_patch
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            base_url: '{{ _base }}'
+            endpoint: '{{ _ep }}'
+            payload: '{{ _pl }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ _at == "meta" }}'
+        sequence:
+        - action: rest_command.twenty_rest_meta
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            base_url: '{{ _base }}'
+            payload: '{{ _pl }}'
+      default:
+        - action: rest_command.twenty_rest_get
+          response_variable: _raw
+          continue_on_error: true
+          data:
+            base_url: '{{ _base }}'
+            endpoint: '{{ _ep }}'
+
+    - variables:
+        _raw_ok: '{{ _raw is defined and _raw is mapping }}'
+        _http: '{{ _raw["status"] | int(0) if _raw is defined and _raw is mapping else 0 }}'
+
+    - variables:
+        _content: >-
+          {%- if _raw is defined and _raw is mapping -%}
+            {%- set c = _raw["content"] | default(none) -%}
+            {%- set cs = c | trim if c is string else '' -%}
+            {%- if c is string and cs != '' and cs[:1] in ['{', '['] -%}
+              {{ c | from_json | default({}) }}
+            {%- elif c is mapping or (c is sequence and c is not string) -%}
+              {{ c }}
+            {%- else -%}{{ {} }}{%- endif -%}
+          {%- else -%}{{ {} }}{%- endif -%}
+        _content_class: >-
+          {%- set c = _raw["content"] | default(none) if _raw_ok else none -%}
+          {%- set cs = c | trim if c is string else '' -%}
+          {%- if c is mapping or (c is sequence and c is not string) or (c is string and cs[:1] in ['{', '[']) -%}json
+          {%- elif c is string and cs != '' -%}non_json
+          {%- else -%}empty{%- endif -%}
+        _availability: >-
+          {%- set h = _http | int(0) -%}
+          {%- if h in [0, 200, 201, 202, 204] and _raw_ok and _content_class != 'non_json' -%}
+            {{ {'ok': true, 'class': 'available', 'human': 'Twenty CRM is reachable.', 'operator_hint': 'No action needed.'} }}
+          {%- elif h in [0, 200, 201, 202, 204] and _raw_ok and _content_class == 'non_json' -%}
+            {{ {'ok': false, 'class': 'non_json_response', 'human': 'Twenty CRM answered, but not with API JSON. This usually means a login page, proxy page, or wrong REST path.', 'operator_hint': 'Check the base URL, /rest path, reverse proxy auth bypass, and bearer token header.'} }}
+          {%- elif not _raw_ok or h == 0 -%}
+            {{ {'ok': false, 'class': 'network_error', 'human': 'Twenty CRM did not answer. It is probably DNS, routing, reverse proxy, or the service is down.', 'operator_hint': 'Check the configured base URL, DNS name, network route, container/service health, and reverse proxy.'} }}
+          {%- elif h == 400 -%}
+            {{ {'ok': false, 'class': 'bad_request', 'human': 'Twenty CRM says the request shape or object path is wrong.', 'operator_hint': 'Check the REST object name, endpoint syntax, filters, and UUIDs.'} }}
+          {%- elif h == 401 -%}
+            {{ {'ok': false, 'class': 'auth_failed', 'human': 'Twenty CRM rejected the token. The token may be expired, revoked, or malformed.', 'operator_hint': 'Check twenty_bearer in secrets.yaml and confirm the API key is still valid.'} }}
+          {%- elif h == 403 -%}
+            {{ {'ok': false, 'class': 'forbidden', 'human': 'Twenty CRM says the caller is not allowed through that door.', 'operator_hint': 'Confirm the API key has permission for this object and endpoint.'} }}
+          {%- elif h == 404 -%}
+            {{ {'ok': false, 'class': 'not_found', 'human': 'Twenty CRM answered, but that endpoint or object is not here.', 'operator_hint': 'Check the base URL, /rest path, object UUID, and DNS alias.'} }}
+          {%- elif h >= 500 -%}
+            {{ {'ok': false, 'class': 'server_error', 'human': 'Twenty CRM is borked server-side right now. Try again later after checking service logs.', 'operator_hint': 'Check Twenty server logs, database health, and worker/container status.'} }}
+          {%- else -%}
+            {{ {'ok': false, 'class': 'unknown_error', 'human': 'Twenty CRM returned an unexpected HTTP status.', 'operator_hint': 'Check http_status, endpoint, token, and service logs.'} }}
+          {%- endif -%}
+
+    - variables:
+        final_response:
+          status: "{{ 'success' if _availability is mapping and _availability.get('ok', false) else 'error' }}"
+          http_status: '{{ _http }}'
+          availability: '{{ _availability }}'
+          result:
+            content: '{{ _content }}'
+
+    - stop: return
+      response_variable: final_response
+
+  zen_stack_crm:
+    alias: Zen Stack Provider - CRM / Twenty (Internal)
+    description: >
+      Internal lens provider handler for CRM/Twenty. Accepts the standard
+      mode + input_json stack-provider shape and delegates to Rolodex.
+    mode: parallel
+    max: 10
+    fields:
+      mode:
+        name: Mode
+        description: Stack operation, e.g. stacks_by_anchor or tool_manifest.
+        selector:
+          text:
+      input_json:
+        name: Input JSON
+        description: Structured JSON payload for the Stack operation.
+        selector:
+          text:
+            multiline: true
+      caller_token:
+        name: Caller Token
+        description: Opaque token passed through for correlation.
+        selector:
+          text:
+    sequence:
+    - variables:
+        _stack_mode: "{{ mode | default('help') | string | trim | lower }}"
+        _stack_input: >-
+          {%- set raw = input_json | default('{}', true) -%}
+          {%- if raw is mapping -%}{{ raw }}
+          {%- elif raw is string and raw | trim != '' -%}{{ raw | from_json({}) }}
+          {%- else -%}{{ {} }}{%- endif -%}
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _stack_mode == 'tool_manifest' }}"
+        sequence:
+        - variables:
+            _manifest:
+              status: success
+              provider: crm
+              display_name: CRM / Twenty
+              schema_version: "1.0.0"
+              tool: zen_stack_crm
+              lookup_mode: stacks_by_anchor
+              consumes: [company, person]
+              returns: [company_evidence, contact_evidence]
+              failure_policy: soft
+              content_policy: redacted_by_default
+              risk_class: read_redacted
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              modes:
+                lookup: stacks_by_anchor
+                manifest: tool_manifest
+              limitations:
+                - Lookup requires stable Twenty company/person UUID anchors.
+                - Lens output is redacted and does not include raw note bodies.
+              caller_token: "{{ caller_token | default('') }}"
+        - stop: crm lens manifest complete
+          response_variable: _manifest
+      - conditions:
+        - condition: template
+          value_template: "{{ _stack_mode == 'stacks_by_anchor' }}"
+        sequence:
+        - variables:
+            _anchor_type: "{{ _stack_input.get('anchor_type', '') | string | lower | trim if _stack_input is mapping else '' }}"
+            _anchor_ids: >-
+              {%- set ids = _stack_input.get('anchor_ids', []) if _stack_input is mapping else [] -%}
+              {%- if ids is sequence and ids is not string -%}{{ ids }}
+              {%- elif _stack_input is mapping and _stack_input.get('anchor_id', '') | string | trim != '' -%}{{ [_stack_input.get('anchor_id') | string | trim] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+            _crm_docs: []
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _anchor_type not in ['company', 'person'] }}"
+            sequence:
+            - variables:
+                _unsupported:
+                  status: success
+                  provider: crm
+                  result:
+                    count: 0
+                    documents: []
+                    content_redacted: true
+                    miss_reason: anchor_type_unsupported
+                  caller_token: "{{ caller_token | default('') }}"
+            - stop: crm lens unsupported anchor
+              response_variable: _unsupported
+        - repeat:
+            for_each: "{{ _anchor_ids }}"
+            sequence:
+            - action: script.zen_dojotools_rolodex
+              response_variable: _crm_anchor_raw
+              continue_on_error: true
+              data:
+                mode: run
+                case: stacks_by_anchor
+                anchor_type: "{{ _anchor_type }}"
+                item_id: "{{ repeat.item }}"
+                caller_token: "{{ caller_token | default('') }}"
+            - variables:
+                _crm_anchor_outer: "{{ _crm_anchor_raw.get('result', _crm_anchor_raw) if _crm_anchor_raw is mapping else {} }}"
+                _crm_anchor_result: "{{ _crm_anchor_outer.get('result', {}) if _crm_anchor_outer is mapping else {} }}"
+                _crm_docs: >-
+                  {%- set docs = _crm_docs if _crm_docs is sequence and _crm_docs is not string else [] -%}
+                  {%- if _anchor_type == 'company' and _crm_anchor_result is mapping and _crm_anchor_result.get('company', {}) is mapping and _crm_anchor_result.get('company', {}).get('id', '') != '' -%}
+                    {%- set co = _crm_anchor_result.get('company', {}) -%}
+                    {{ docs + [{
+                      'id': co.get('id', repeat.item),
+                      'title': '',
+                      'title_redacted': true,
+                      'summary': 'CRM company evidence',
+                      'content_redacted': true,
+                      'crm': {'company_id': co.get('id', repeat.item), 'name_redacted': true},
+                      'stack': {'provider': 'crm', 'object_type': 'company', 'source_id': co.get('id', repeat.item), 'evidence_id': 'crm:company:' ~ (co.get('id', repeat.item) | string), 'lens_mode': 'stacks_by_anchor'},
+                      'anchor_contexts': [{'type': 'company', 'id': repeat.item | string, 'confidence': 'explicit', 'source': 'twenty', 'provider': 'crm'}],
+                      'matched_anchor_ids': [repeat.item | string]
+                    }] }}
+                  {%- elif _anchor_type == 'person' and _crm_anchor_result is mapping and _crm_anchor_result.get('contact', {}) is mapping and _crm_anchor_result.get('contact', {}).get('id', '') != '' -%}
+                    {%- set p = _crm_anchor_result.get('contact', {}) -%}
+                    {{ docs + [{
+                      'id': p.get('id', repeat.item),
+                      'title': '',
+                      'title_redacted': true,
+                      'summary': 'CRM contact evidence',
+                      'content_redacted': true,
+                      'crm': {'contact_id': p.get('id', repeat.item), 'name_redacted': true, 'company_id': p.get('company_id', ''), 'company_redacted': true},
+                      'stack': {'provider': 'crm', 'object_type': 'contact', 'source_id': p.get('id', repeat.item), 'evidence_id': 'crm:contact:' ~ (p.get('id', repeat.item) | string), 'lens_mode': 'stacks_by_anchor'},
+                      'anchor_contexts': [{'type': 'person', 'id': repeat.item | string, 'confidence': 'explicit', 'source': 'twenty', 'provider': 'crm'}],
+                      'matched_anchor_ids': [repeat.item | string]
+                    }] }}
+                  {%- else -%}
+                    {{ docs }}
+                  {%- endif -%}
+        - variables:
+            _crm_response:
+              status: success
+              provider: crm
+              result:
+                count: "{{ _crm_docs | length }}"
+                documents: "{{ _crm_docs }}"
+                content_redacted: true
+              caller_token: "{{ caller_token | default('') }}"
+        - stop: crm stack provider complete
+          response_variable: _crm_response
+    - variables:
+        _crm_help:
+          status: success
+          provider: crm
+          modes: [stacks_by_anchor, tool_manifest]
+          message: CRM stack provider accepts mode=stacks_by_anchor with input_json anchor_type company/person and anchor_ids.
+          caller_token: "{{ caller_token | default('') }}"
+    - stop: crm stack provider help
+      response_variable: _crm_help
+
+  zen_dojotools_rolodex:
+    alias: Zen DojoTools Rolodex
+    description: >
+      Zen DojoTools Rolodex "Rolodex Prime" — Organization is the right of all sentient beings.
+      Contact/company CRM via Twenty REST + property-ops via HA calendar and todo.
+      Contacts: find, get, create, note. Companies: find, get, create.
+      Tag contacts/companies with ZenOS HA labels (ha_labels); search by label.
+      Stays + appointments on AI assistant calendar. Reminders + tasks in Friday's task list.
+      Vendor service history. Timeline aggregation across all sources.
+      vendor_link: schema-level Grocy↔CRM binding (shopping_lists + shopping_locations).
+      Run configure to bootstrap routing. mode=help for full case docs.
+    mode: queued
+    max: 5
+    icon: mdi:card-account-details
+    fields:
+      mode:
+        selector:
+          select:
+            options:
+            - configure
+            - contact_find
+            - contact_get
+            - contact_create
+            - contact_note
+            - company_find
+            - company_get
+            - company_create
+            - recent_activity
+            - stays_create
+            - stays_list
+            - appointment_create
+            - appointments_list
+            - reminder_set
+            - reminders_list
+            - task_link
+            - tasks_list
+            - vendor_history
+            - timeline
+            - tag_contact
+            - tag_company
+            - contacts_by_label
+            - companies_by_label
+            - provision_schema
+            - area_vendors
+            - person_link
+            - contact_link
+            - people_home
+            - stacks_by_anchor
+            - vendor_link
+            - help
+            - tool_manifest
+      item:
+        description: Person name, email, or company name for search/create
+        selector:
+          text:
+      item_id:
+        description: Twenty UUID — bypasses name resolution
+        selector:
+          text:
+      first_name:
+        description: Contact first name
+        selector:
+          text:
+      last_name:
+        description: Contact last name
+        selector:
+          text:
+      email:
+        description: Contact email address
+        selector:
+          text:
+      phone:
+        description: Contact phone number
+        selector:
+          text:
+      company:
+        description: Company name to link to contact
+        selector:
+          text:
+      company_id:
+        description: Twenty company UUID — bypasses company name resolution
+        selector:
+          text:
+      note_title:
+        description: Note title (auto-generated from date if omitted)
+        selector:
+          text:
+      note_body:
+        description: Note body text — supports multi-line
+        selector:
+          text:
+            multiline: true
+      note_target_type:
+        description: "Target entity type for note: person (default) or company"
+        selector:
+          select:
+            options:
+              - person
+              - company
+      limit:
+        description: Max results returned (default 20, max 100)
+        selector:
+          number:
+            min: 1
+            max: 100
+            mode: box
+        default: 20
+      start_date:
+        description: ISO date or datetime — event start or range filter start
+        selector:
+          text:
+      end_date:
+        description: ISO date or datetime — event end or range filter end
+        selector:
+          text:
+      summary:
+        description: Event title (stays/appointments) or todo item name (reminders/tasks)
+        selector:
+          text:
+      tags:
+        description: 'Comma-separated ZenOS label slugs to apply (e.g. plumber,vendor,active)'
+        selector:
+          text:
+      config_json:
+        description: 'JSON dict for configure — keys: url, stays_label, appointments_label, reminders_label, tasks_label'
+        selector:
+          text:
+            multiline: true
+      area_id:
+        description: HA area ID — area_vendors source, or tags a stay to a room
+        selector:
+          text:
+      zone:
+        description: HA zone name filter for people_home (default=home)
+        selector:
+          text:
+      person_entity_id:
+        description: HA person entity ID — e.g. person.nathan (used in person_link)
+        selector:
+          text:
+      role:
+        description: Job title / relationship role for contact_link (e.g. Mechanic, Electrician)
+        selector:
+          text:
+      anchor_type:
+        description: Lens anchor type — company or person (for stacks_by_anchor)
+        selector:
+          text:
+      grocy_entity:
+        description: 'Grocy entity for vendor_link — shopping_lists or shopping_locations'
+        selector:
+          text:
+      grocy_id:
+        description: Grocy record ID for vendor_link (integer)
+        selector:
+          number:
+            min: 1
+            max: 9999
+            mode: box
+
+    sequence:
+    - variables:
+        tool_name: Zen DojoTools Rolodex
+        tool_version: 1.7.0
+        crm_schema_version: '1.1.0'
+        case_norm: '{{ mode | default("help") | string | trim | lower }}'
+        item_norm: '{{ item | default("") | string | trim }}'
+        item_id_norm: '{{ item_id | default("") | string | trim }}'
+        first_name_norm: '{{ first_name | default("") | string | trim }}'
+        last_name_norm: '{{ last_name | default("") | string | trim }}'
+        email_norm: '{{ email | default("") | string | trim | lower }}'
+        phone_norm: '{{ phone | default("") | string | trim }}'
+        company_norm: '{{ company | default("") | string | trim }}'
+        company_id_norm: '{{ company_id | default("") | string | trim }}'
+        note_title_norm: '{{ note_title | default("") | string | trim }}'
+        note_body_norm: '{{ note_body | default("") | string | trim }}'
+        limit_norm: '{{ limit | default(20) | int(20) }}'
+        start_date_norm: '{{ start_date | default("") | string | trim }}'
+        end_date_norm: '{{ end_date | default("") | string | trim }}'
+        summary_norm: '{{ summary | default("") | string | trim }}'
+        tags_norm: '{{ tags | default("") | string | trim }}'
+        config_json_norm: >-
+          {%- set _cjv = config_json | default('') -%}
+          {%- if _cjv is mapping -%}{{ _cjv | tojson }}{%- else -%}{{ _cjv | string | trim }}{%- endif -%}
+        area_id_norm: '{{ area_id | default("") | string | trim }}'
+        zone_norm: '{{ zone | default("home") | string | trim | lower }}'
+        note_target_type_norm: '{{ note_target_type | default("person") | string | trim | lower }}'
+        person_entity_id_norm: '{{ person_entity_id | default("") | string | trim }}'
+        role_norm: '{{ role | default("") | string | trim }}'
+        anchor_type_norm: '{{ anchor_type | default("") | string | lower | trim }}'
+        grocy_entity_norm: '{{ grocy_entity | default("") | string | trim | lower }}'
+        grocy_id_norm: '{{ grocy_id | default(0) | int(0) }}'
+        cases:
+          contact_find:
+            intent: Search people by name or email
+            needs: [item]
+            optional: [limit]
+            example: "{'mode':'contact_find','item':'Jane Smith'}"
+          contact_get:
+            intent: Full contact record + recent notes
+            needs: [item_id]
+            optional: []
+            example: "{'mode':'contact_get','item_id':'uuid-here'}"
+          contact_create:
+            intent: Create a new contact
+            needs: [first_name]
+            optional: [last_name, email, phone, company_id]
+            example: "{'mode':'contact_create','first_name':'Jane','last_name':'Doe','email':'jane@example.com'}"
+          contact_note:
+            intent: Add a note to a contact
+            needs: [item_id, note_body]
+            optional: [note_title]
+            example: "{'mode':'contact_note','item_id':'uuid-here','note_body':'Discussed timeline.'}"
+          company_find:
+            intent: Search companies by name
+            needs: [item]
+            optional: [limit]
+            example: "{'mode':'company_find','item':'Acme'}"
+          company_get:
+            intent: Company record + people list
+            needs: [item_id]
+            optional: []
+            example: "{'mode':'company_get','item_id':'uuid-here'}"
+          company_create:
+            intent: Create a new company
+            needs: [item]
+            optional: []
+            example: "{'mode':'company_create','item':'New Vendor LLC'}"
+          recent_activity:
+            intent: Recent notes across all contacts
+            needs: []
+            optional: [limit]
+            example: "{'mode':'recent_activity','limit':10}"
+          configure:
+            intent: Set Twenty URL + CRM routing labels in cabinet; inspect current config if no config_json
+            needs: []
+            optional: [config_json]
+            example: "{'mode':'configure','config_json':'{\"url\":\"http://your-twenty-host:3000\"}'}"
+          stays_create:
+            intent: Create a guest stay event on the crm_stays calendar
+            needs: [summary, start_date]
+            optional: [end_date, item_id, note_body, area_id]
+            example: "{'mode':'stays_create','summary':'Guest: Jane','start_date':'2026-06-10','end_date':'2026-06-12','area_id':'guest_room'}"
+          stays_list:
+            intent: List stay events from the crm_stays calendar; filter by area_id if provided
+            needs: []
+            optional: [start_date, end_date, area_id]
+            example: "{'mode':'stays_list','start_date':'2026-06-01','end_date':'2026-06-30'}"
+          appointment_create:
+            intent: Create a booking/appointment on the crm_appointments calendar
+            needs: [summary, start_date]
+            optional: [end_date, item_id, note_body]
+            example: "{'mode':'appointment_create','summary':'Plumber visit','start_date':'2026-06-15T10:00:00'}"
+          appointments_list:
+            intent: List appointments from the crm_appointments calendar
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'appointments_list'}"
+          reminder_set:
+            intent: Create a reminder todo linked to a contact/company
+            needs: [summary]
+            optional: [item_id, start_date]
+            example: "{'mode':'reminder_set','summary':'Follow up re: quote','item_id':'uuid'}"
+          reminders_list:
+            intent: List reminders; optionally filter by linked contact/company id
+            needs: []
+            optional: [item_id, limit]
+            example: "{'mode':'reminders_list','item_id':'uuid'}"
+          task_link:
+            intent: Create a task todo linked to a contact/company
+            needs: [summary]
+            optional: [item_id, start_date]
+            example: "{'mode':'task_link','summary':'Send contract','item_id':'uuid'}"
+          tasks_list:
+            intent: List tasks; optionally filter by linked contact/company id
+            needs: []
+            optional: [item_id, limit]
+            example: "{'mode':'tasks_list'}"
+          tag_contact:
+            intent: Apply ZenOS HA label slugs to a contact (haLabels field). Each slug dep-checked against HA label index. Run provision_schema first to create the field.
+            needs: [item_id, tags]
+            optional: []
+            example: "{'mode':'tag_contact','item_id':'uuid','tags':'plumber,vendor'}"
+          tag_company:
+            intent: Apply ZenOS HA label slugs to a company (haLabels field). Each slug dep-checked against HA label index. Run provision_schema first to create the field.
+            needs: [item_id, tags]
+            optional: []
+            example: "{'mode':'tag_company','item_id':'uuid','tags':'electrical,active_vendor'}"
+          contacts_by_label:
+            intent: Find contacts by HA label slug stored in ha_labels field
+            needs: [item]
+            optional: [limit]
+            example: "{'mode':'contacts_by_label','item':'plumber'}"
+          companies_by_label:
+            intent: Find companies by HA label slug stored in ha_labels field
+            needs: [item]
+            optional: [limit]
+            example: "{'mode':'companies_by_label','item':'active_vendor'}"
+          provision_schema:
+            intent: Idempotent deploy of ZenOS CRM schema to Twenty. Creates haLabels (TEXT) on People+Companies and haPersonId (TEXT) on People if missing. Stamps crm_schema to cabinet. Safe to run again.
+            needs: []
+            optional: []
+            example: "{'mode':'provision_schema'}"
+          area_vendors:
+            intent: Find vendor companies + contacts associated with an HA area via haLabels matching. Resolves area labels via inspect, then fans out to Twenty.
+            needs: [area_id]
+            optional: [item, limit]
+            example: "{'mode':'area_vendors','area_id':'kitchen'}"
+          person_link:
+            intent: Link a Twenty contact to an HA person entity ID — stores haPersonId on the contact for live presence enrichment. Run provision_schema first.
+            needs: [item_id, person_entity_id]
+            optional: []
+            example: "{'mode':'person_link','item_id':'uuid','person_entity_id':'person.nathan'}"
+          contact_link:
+            intent: Wire a person to a company with optional role + note in one call. "My mechanic at X" pattern — replaces three separate API calls.
+            needs: [item_id, company_id]
+            optional: [role, note_body]
+            example: "{'mode':'contact_link','item_id':'person-uuid','company_id':'company-uuid','role':'Mechanic','note_body':'Primary contact for vehicle service.'}"
+          people_home:
+            intent: List HA persons in a zone (default=home); enriched with linked Twenty contact where haPersonId matches.
+            needs: []
+            optional: [zone]
+            example: "{'mode':'people_home','zone':'home'}"
+          stacks_by_anchor:
+            intent: >-
+              Lens bus provider entry point — return bounded CRM evidence for a company or person anchor.
+              Consumed by zen_dojotools_lens_dispatch. content_redacted always true. anchor_type: company or person.
+            needs: [item_id, anchor_type]
+            optional: []
+            example: "{'mode':'stacks_by_anchor','anchor_type':'company','item_id':'company-uuid'}"
+          vendor_history:
+            intent: List notes for a vendor/company (service history)
+            needs: [item_id]
+            optional: [limit]
+            example: "{'mode':'vendor_history','item_id':'company-uuid','limit':20}"
+          timeline:
+            intent: Aggregated view — stays, appointments, notes, reminders, tasks sorted by date
+            needs: []
+            optional: [item_id, start_date, end_date, limit]
+            example: "{'mode':'timeline','start_date':'2026-06-01','end_date':'2026-06-30'}"
+          vendor_link:
+            intent: Link a CRM company UUID to a Grocy shopping_list or shopping_location via crm_company_id userfield. Makes the vendor chain schema-level and permanent.
+            needs: [item_id, grocy_entity, grocy_id]
+            optional: []
+            example: "{'mode':'vendor_link','item_id':'company-uuid','grocy_entity':'shopping_lists','grocy_id':8}"
+
+    # ── mode=tool_manifest ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "tool_manifest" }}'
+        sequence:
+        - variables:
+            _tm_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        - variables:
+            _tm_url: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set _ic = CABS.cabinet_drawer_value(_tm_hh, 'integrations_config', {}) -%}
+              {%- set url = _ic.get('twenty', {}).get('url', '') | string | trim -%}
+              {%- if url == '' -%}{{ states('input_text.twenty_url') | default('') | trim }}{%- else -%}{{ url }}{%- endif -%}
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {%- set _health = {'configured': _tm_url != '', 'status': 'ok' if _tm_url != '' else 'warn', 'notes': [] if _tm_url != '' else ['Twenty URL not configured — run mode=configure']} -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_rolodex',
+                display_name='Rolodex — Contact & Company CRM',
+                tier='dojotools',
+                version='1.7.0',
+                health=_health,
+                required_labels=['crm'],
+                optional_labels=['crm', 'contacts', 'companies', 'vendors'],
+                consumes=['person', 'company', 'label', 'area_id', 'zone'],
+                returns=['contact_evidence', 'company_evidence', 'timeline_evidence'],
+                failure_policy='soft',
+                content_policy='redacted_by_default',
+                risk_class='read_redacted',
+                modes={'lookup': 'contact_find', 'manifest': 'tool_manifest'},
+                icon='mdi:contacts',
+                color='indigo',
+
+                caller_token=caller_token | default('')
+              ) | from_json -}}
+        - stop: rolodex tool manifest
+          response_variable: result
+
+    # ── mode=help ─────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "help" }}'
+        sequence:
+        - variables:
+            _help:
+              status: info
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: help
+              description: >-
+                Rolodex Prime — Organization is the right of all sentient beings.
+                Contact + company CRM via Twenty. Property-ops: stays, appointments,
+                reminders, tasks, vendor history, timeline. configure to bootstrap routing.
+              cases: '{{ cases }}'
+              api_quirks:
+                noteTarget_fields: >-
+                  Twenty noteTarget uses targetPersonId / targetCompanyId /
+                  targetOpportunityId — NOT personId / companyId. Bare POST to
+                  /noteTargets creates the record; set target via PATCH or inline
+                  in /notes creation payload using the target* prefixed names.
+                note_body_field: >-
+                  Note body is bodyV2 (RICH_TEXT) — pass as
+                  {blocknote: null, markdown: "text"}. The legacy "body" field
+                  does not exist on this object.
+        - stop: return
+          response_variable: _help
+
+    # ── case: contact_find ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "contact_find" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: contact_find
+                  error: item (name or email) is required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _cf_filter: >-
+              {%- set parts = item_norm.split(' ', 1) -%}
+              {%- if '@' in item_norm -%}
+                emails.primaryEmail[eq]:{{ item_norm }}
+              {%- elif parts | length > 1 -%}
+                or(name.firstName[ilike]:%{{ parts[0] }}%,name.lastName[ilike]:%{{ parts[1] }}%)
+              {%- else -%}
+                or(name.firstName[ilike]:%{{ item_norm }}%,name.lastName[ilike]:%{{ item_norm }}%)
+              {%- endif -%}
+
+        - action: script.zen_sutra_twenty
+          response_variable: _cf_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'people?filter={{ _cf_filter }}&limit={{ limit_norm }}'
+
+        - variables:
+            _cf_ok: '{{ _cf_adv is mapping and _cf_adv.get("status") == "success" }}'
+            _cf_body: >-
+              {%- if _cf_adv is mapping and "result" in _cf_adv and "content" in _cf_adv["result"] -%}
+                {{ _cf_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _cf_list: >-
+              {{ _cf_body.get('data', {}).get('people', []) if _cf_body is mapping else [] }}
+
+        - variables:
+            _cf_contacts: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for p in _cf_list -%}
+                {%- if p is mapping -%}
+                  {%- set nm = p.get('name', {}) if p.get('name') is mapping else {} -%}
+                  {%- set em = p.get('emails', {}) if p.get('emails') is mapping else {} -%}
+                  {%- set ph = p.get('phones', {}) if p.get('phones') is mapping else {} -%}
+                  {%- set co = p.get('company', {}) if p.get('company') is mapping else {} -%}
+                  {%- set _ns.out = _ns.out + [{
+                    'id': p.get('id', ''),
+                    'name': ((nm.get('firstName','') ~ ' ' ~ nm.get('lastName','')) | trim),
+                    'email': em.get('primaryEmail',''),
+                    'phone': ph.get('primaryPhoneNumber',''),
+                    'company': co.get('name',''),
+                    'company_id': co.get('id',''),
+                    'created_at': p.get('createdAt','')
+                  }] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _cf_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: contact_find
+              result:
+                contacts: '{{ _cf_contacts }}'
+                count: '{{ _cf_contacts | length }}'
+                query: '{{ item_norm }}'
+              error: '{{ none if _cf_ok else ("broker error — HTTP " ~ _cf_adv.get("http_status","?") ~ " — check twenty_url + twenty_bearer") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: contact_get ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "contact_get" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: contact_get
+                  error: item_id required. Use contact_find first.
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _cg_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'people/{{ item_id_norm }}'
+
+        - variables:
+            _cg_ok: '{{ _cg_adv is mapping and _cg_adv.get("status") == "success" }}'
+            _cg_body: >-
+              {%- if _cg_adv is mapping and "result" in _cg_adv and "content" in _cg_adv["result"] -%}
+                {{ _cg_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _cg_p: >-
+              {{ _cg_body.get('data', {}).get('person', _cg_body.get('data', {})) if _cg_body is mapping else {} }}
+
+        - variables:
+            _cg_nm: '{{ _cg_p.get("name", {}) if _cg_p is mapping and _cg_p.get("name") is mapping else {} }}'
+            _cg_em: '{{ _cg_p.get("emails", {}) if _cg_p is mapping and _cg_p.get("emails") is mapping else {} }}'
+            _cg_ph: '{{ _cg_p.get("phones", {}) if _cg_p is mapping and _cg_p.get("phones") is mapping else {} }}'
+            _cg_company_id: '{{ _cg_p.get("companyId", "") if _cg_p is mapping else "" }}'
+            _cg_ha_person_id: '{{ _cg_p.get("haPersonId", "") if _cg_p is mapping else "" }}'
+
+        # fetch company name if companyId is set
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cg_company_id != "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _cg_co_adv
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'companies/{{ _cg_company_id }}'
+            - variables:
+                _cg_co_body: >-
+                  {%- if _cg_co_adv is mapping and "result" in _cg_co_adv and "content" in _cg_co_adv["result"] -%}
+                    {{ _cg_co_adv["result"]["content"] }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                _cg_company_name: '{{ _cg_co_body.get("data", {}).get("company", {}).get("name", "") if _cg_co_body is mapping else "" }}'
+
+        - variables:
+            _cg_ha_presence: >-
+              {%- if _cg_ha_person_id != "" -%}
+                {{ {'entity_id': _cg_ha_person_id, 'zone': states(_cg_ha_person_id), 'state': states(_cg_ha_person_id)} }}
+              {%- else -%}{{ none }}{%- endif -%}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _cg_ok and _cg_p else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: contact_get
+              result:
+                id: '{{ _cg_p.get("id","") if _cg_p is mapping else "" }}'
+                name: '{{ ((_cg_nm.get("firstName","") ~ " " ~ _cg_nm.get("lastName","")) | trim) }}'
+                email: '{{ _cg_em.get("primaryEmail","") }}'
+                phone: '{{ _cg_ph.get("primaryPhoneNumber","") }}'
+                job_title: '{{ _cg_p.get("jobTitle","") if _cg_p is mapping else "" }}'
+                company: '{{ _cg_company_name | default("") }}'
+                company_id: '{{ _cg_company_id }}'
+                ha_labels: '{{ _cg_p.get("haLabels","") if _cg_p is mapping else "" }}'
+                ha_person_id: '{{ _cg_ha_person_id }}'
+                ha_presence: '{{ _cg_ha_presence }}'
+                created_at: '{{ _cg_p.get("createdAt","") if _cg_p is mapping else "" }}'
+              error: '{{ none if (_cg_ok and _cg_p) else ("not found — HTTP " ~ _cg_adv.get("http_status","?") if _cg_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: contact_create ──────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "contact_create" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ first_name_norm == "" and last_name_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: contact_create
+                  error: first_name or last_name is required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _cc_payload: >-
+              {%- set d = {'name': {'firstName': first_name_norm, 'lastName': last_name_norm}} -%}
+              {%- if email_norm != '' -%}{%- set d = d | combine({'emails': {'primaryEmail': email_norm}}) -%}{%- endif -%}
+              {%- if phone_norm != '' -%}{%- set d = d | combine({'phones': {'primaryPhoneNumber': phone_norm}}) -%}{%- endif -%}
+              {%- if company_id_norm != '' -%}{%- set d = d | combine({'companyId': company_id_norm}) -%}{%- endif -%}
+              {{ d | tojson }}
+
+        - action: script.zen_sutra_twenty
+          response_variable: _cc_adv
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: people
+            payload: '{{ _cc_payload }}'
+
+        - variables:
+            _cc_ok: '{{ _cc_adv is mapping and _cc_adv.get("status") == "success" }}'
+            _cc_body: >-
+              {%- if _cc_adv is mapping and "result" in _cc_adv and "content" in _cc_adv["result"] -%}
+                {{ _cc_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _cc_p: >-
+              {{ _cc_body.get('data', {}).get('createPerson', _cc_body.get('data', {})) if _cc_body is mapping else {} }}
+
+        - variables:
+            _cc_nm: '{{ _cc_p.get("name", {}) if _cc_p is mapping and _cc_p.get("name") is mapping else {} }}'
+            _cc_em: '{{ _cc_p.get("emails", {}) if _cc_p is mapping and _cc_p.get("emails") is mapping else {} }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _cc_ok and _cc_p is mapping and _cc_p.get("id","") != "" else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: contact_create
+              result:
+                id: '{{ _cc_p.get("id","") if _cc_p is mapping else "" }}'
+                name: '{{ ((_cc_nm.get("firstName","") ~ " " ~ _cc_nm.get("lastName","")) | trim) }}'
+                email: '{{ _cc_em.get("primaryEmail","") }}'
+              error: '{{ none if (_cc_ok and _cc_p is mapping and _cc_p.get("id","") != "") else ("create failed — HTTP " ~ _cc_adv.get("http_status","?") if _cc_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: contact_note ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "contact_note" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or note_body_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: contact_note
+                  error: item_id and note_body are required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _cn_title: '{{ note_title_norm if note_title_norm != "" else ("Note — " ~ now().strftime("%Y-%m-%d")) }}'
+
+        - variables:
+            _cn_payload: >-
+              {{ {'title': _cn_title, 'bodyV2': {'blocknote': none, 'markdown': note_body_norm}} | tojson }}
+
+        - action: script.zen_sutra_twenty
+          response_variable: _cn_adv
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: notes
+            payload: '{{ _cn_payload }}'
+
+        - variables:
+            _cn_ok: '{{ _cn_adv is mapping and _cn_adv.get("status") == "success" }}'
+            _cn_body: >-
+              {%- if _cn_adv is mapping and "result" in _cn_adv and "content" in _cn_adv["result"] -%}
+                {{ _cn_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _cn_note_id: >-
+              {%- if _cn_body is mapping -%}
+                {{ (_cn_body.get('data', {}).get('createNote') or _cn_body).get('id', '') }}
+              {%- else -%}{%- endif -%}
+
+        # step 2: link note to target via /noteTargets (person or company)
+        - if: "{{ _cn_ok and _cn_note_id != '' }}"
+          then:
+          - variables:
+              _cn_target_payload: >-
+                {%- if note_target_type_norm == 'company' -%}
+                  {{ {'noteId': _cn_note_id, 'targetCompanyId': item_id_norm} | tojson }}
+                {%- else -%}
+                  {{ {'noteId': _cn_note_id, 'targetPersonId': item_id_norm} | tojson }}
+                {%- endif -%}
+          - action: script.zen_sutra_twenty
+            response_variable: _cn_nt_adv
+            continue_on_error: true
+            data:
+              action_type: post
+              endpoint: noteTargets
+              payload: '{{ _cn_target_payload }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _cn_ok and _cn_note_id != "" else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: contact_note
+              result:
+                note_id: '{{ _cn_note_id }}'
+                title: '{{ ((_cn_body.get("data",{}).get("createNote") or _cn_body).get("title","")) if _cn_body is mapping else "" }}'
+                contact_id: '{{ item_id_norm }}'
+              error: '{{ none if (_cn_ok and _cn_note_id != "") else ("create failed — HTTP " ~ _cn_adv.get("http_status","?") if _cn_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: company_find ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "company_find" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: company_find
+                  error: item (company name) is required
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _compf_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'companies?filter=name[ilike]:%{{ item_norm }}%&limit={{ limit_norm }}'
+
+        - variables:
+            _compf_ok: '{{ _compf_adv is mapping and _compf_adv.get("status") == "success" }}'
+            _compf_body: >-
+              {%- if _compf_adv is mapping and "result" in _compf_adv and "content" in _compf_adv["result"] -%}
+                {{ _compf_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _compf_list: >-
+              {{ _compf_body.get('data', {}).get('companies', []) if _compf_body is mapping else [] }}
+
+        - variables:
+            _compf_results: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for co in _compf_list -%}
+                {%- if co is mapping -%}
+                  {%- set dom = co.get('domainName', {}) if co.get('domainName') is mapping else {} -%}
+                  {%- set _ns.out = _ns.out + [{'id': co.get('id',''), 'name': co.get('name',''), 'domain': dom.get('primaryLinkUrl',''), 'employees': co.get('employees', none), 'created_at': co.get('createdAt','')}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _compf_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: company_find
+              result:
+                companies: '{{ _compf_results }}'
+                count: '{{ _compf_results | length }}'
+              error: '{{ none if _compf_ok else ("broker error — HTTP " ~ _compf_adv.get("http_status","?") if _compf_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: company_get ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "company_get" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: company_get
+                  error: item_id required. Use company_find first.
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _compg_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'companies/{{ item_id_norm }}'
+
+        - variables:
+            _compg_ok: '{{ _compg_adv is mapping and _compg_adv.get("status") == "success" }}'
+            _compg_body: >-
+              {%- if _compg_adv is mapping and "result" in _compg_adv and "content" in _compg_adv["result"] -%}
+                {{ _compg_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _compg_co: '{{ _compg_body.get("data", {}).get("company", _compg_body.get("data", {})) if _compg_body is mapping else {} }}'
+
+        - variables:
+            _compg_dom: '{{ _compg_co.get("domainName", {}) if _compg_co is mapping and _compg_co.get("domainName") is mapping else {} }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _compg_ok and _compg_co else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: company_get
+              result:
+                id: '{{ _compg_co.get("id","") if _compg_co is mapping else "" }}'
+                name: '{{ _compg_co.get("name","") if _compg_co is mapping else "" }}'
+                domain: '{{ _compg_dom.get("primaryLinkUrl","") }}'
+                employees: '{{ _compg_co.get("employees",none) if _compg_co is mapping else none }}'
+                ha_labels: '{{ _compg_co.get("haLabels","") if _compg_co is mapping else "" }}'
+                created_at: '{{ _compg_co.get("createdAt","") if _compg_co is mapping else "" }}'
+              error: '{{ none if (_compg_ok and _compg_co) else ("not found — HTTP " ~ _compg_adv.get("http_status","?") if _compg_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: company_create ──────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "company_create" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: company_create
+                  error: item (company name) is required
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _compc_adv
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: companies
+            payload: '{{ {"name": item_norm} | tojson }}'
+
+        - variables:
+            _compc_ok: '{{ _compc_adv is mapping and _compc_adv.get("status") == "success" }}'
+            _compc_body: >-
+              {%- if _compc_adv is mapping and "result" in _compc_adv and "content" in _compc_adv["result"] -%}
+                {{ _compc_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _compc_result: '{{ _compc_body.get("data", {}).get("createCompany", _compc_body.get("data", {})) if _compc_body is mapping else {} }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _compc_ok and _compc_result is mapping and _compc_result.get("id","") != "" else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: company_create
+              result:
+                id: '{{ _compc_result.get("id","") if _compc_result is mapping else "" }}'
+                name: '{{ _compc_result.get("name","") if _compc_result is mapping else "" }}'
+              error: '{{ none if (_compc_ok and _compc_result is mapping and _compc_result.get("id","") != "") else ("create failed — HTTP " ~ _compc_adv.get("http_status","?") if _compc_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: recent_activity ─────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "recent_activity" }}'
+        sequence:
+        - action: script.zen_sutra_twenty
+          response_variable: _ra_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'notes?order_by=createdAt[DescNullsLast]&limit={{ limit_norm }}'
+
+        - variables:
+            _ra_ok: '{{ _ra_adv is mapping and _ra_adv.get("status") == "success" }}'
+            _ra_body: >-
+              {%- if _ra_adv is mapping and "result" in _ra_adv and "content" in _ra_adv["result"] -%}
+                {{ _ra_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _ra_list: >-
+              {{ _ra_body.get('data', {}).get('notes', []) if _ra_body is mapping else [] }}
+
+        - variables:
+            _ra_notes: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for n in _ra_list -%}
+                {%- if n is mapping -%}
+                  {%- set _ns.out = _ns.out + [{'id': n.get('id',''), 'title': n.get('title',''), 'body': n.get('body',''), 'created_at': n.get('createdAt','')}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _ra_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: recent_activity
+              result:
+                notes: '{{ _ra_notes }}'
+                count: '{{ _ra_notes | length }}'
+              error: '{{ none if _ra_ok else ("broker error — HTTP " ~ _ra_adv.get("http_status","?") if _ra_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: configure ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "configure" }}'
+        sequence:
+        - variables:
+            _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+
+        - variables:
+            _cfg_integrations: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'integrations_config', {}) }}
+            _cfg_crm: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        # inspect path — no config_json provided
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ config_json_norm == "" }}'
+            sequence:
+            - variables:
+                _cfg_inspect:
+                  integrations_config: '{{ _cfg_integrations }}'
+                  crm_config: '{{ _cfg_crm }}'
+            - variables:
+                final_response:
+                  status: info
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: configure
+                  result: '{{ _cfg_inspect }}'
+                  message: Pass config_json to write config. e.g. config_json='{"url":"http://your-twenty-host:3000"}'
+            - stop: return
+              response_variable: final_response
+
+        # write path — parse config_json (handle dict or string input)
+        - variables:
+            _cfg_in: >-
+              {%- set raw = config_json_norm -%}
+              {%- if raw is mapping -%}
+                {{ raw }}
+              {%- elif raw is string and raw | trim != '' -%}
+                {{ raw | from_json({}) }}
+              {%- else -%}
+                {{ {} }}
+              {%- endif -%}
+
+        - variables:
+            _cfg_url: '{{ _cfg_in.get("url", "") | trim if _cfg_in is mapping else "" }}'
+            _cfg_stays: '{{ _cfg_in.get("stays_label", "") | trim if _cfg_in is mapping else "" }}'
+            _cfg_appts: '{{ _cfg_in.get("appointments_label", "") | trim if _cfg_in is mapping else "" }}'
+            _cfg_reminders: '{{ _cfg_in.get("reminders_label", "") | trim if _cfg_in is mapping else "" }}'
+            _cfg_tasks: '{{ _cfg_in.get("tasks_label", "") | trim if _cfg_in is mapping else "" }}'
+
+        # test-connect if url provided
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cfg_url != "" }}'
+            sequence:
+            - action: rest_command.twenty_rest_get
+              response_variable: _cfg_test_raw
+              continue_on_error: true
+              data:
+                base_url: '{{ _cfg_url | regex_replace("/$","") }}'
+                endpoint: 'people?limit=1'
+            - variables:
+                _cfg_connected: '{{ _cfg_test_raw is defined and _cfg_test_raw.get("status", 0) | int(0) in [0, 200, 201] }}'
+          default:
+            - variables:
+                _cfg_connected: false
+
+        # read existing integrations_config
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _ic_read
+          continue_on_error: true
+          data:
+            action_type: read
+            show_hidden_volumes: false
+            volume_entity_id:
+              - '{{ _hh_cab }}'
+            key: integrations_config
+
+        - variables:
+            _ic_raw: >-
+              {%- set r = _ic_read.get('result', {}) if _ic_read is mapping else {} -%}
+              {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+              {%- set v = r.get('integrations_config', {}) -%}
+              {%- set v = v.get('value', v) if v is mapping else {} -%}
+              {{ v if v is mapping else (v | from_json if v is string else {}) }}
+            _ic_exists: >-
+              {%- set r = _ic_read.get('result', {}) if _ic_read is mapping else {} -%}
+              {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+              {{ 'integrations_config' in r }}
+
+        # build twenty entry
+        - variables:
+            _twenty_entry: >-
+              {%- set existing = _ic_raw.get('twenty', {}) if _ic_raw is mapping else {} -%}
+              {%- set upd = {} -%}
+              {%- if _cfg_url != '' -%}{%- set upd = upd | combine({'url': _cfg_url}) -%}{%- endif -%}
+              {%- if _cfg_connected -%}{%- set upd = upd | combine({'status': 'ok', 'tested_at': now().isoformat()}) -%}{%- endif -%}
+              {{ existing | combine(upd, recursive=true) }}
+
+        # write integrations_config
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cfg_url != "" }}'
+            sequence:
+            - action: script.zen_dojotools_filecabinet
+              response_variable: _ic_write
+              continue_on_error: true
+              data:
+                action_type: "{{ 'update' if _ic_exists else 'create' }}"
+                force_action: true
+                set_timestamp: true
+                show_hidden_volumes: false
+                volume_entity_id:
+                  - '{{ _hh_cab }}'
+                key: integrations_config
+                value: "{{ _ic_raw | combine({'twenty': _twenty_entry}, recursive=true) | tojson }}"
+
+        # read + write crm_config if any labels provided
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cfg_stays != "" or _cfg_appts != "" or _cfg_reminders != "" or _cfg_tasks != "" }}'
+            sequence:
+            - action: script.zen_dojotools_filecabinet
+              response_variable: _cc_read
+              continue_on_error: true
+              data:
+                action_type: read
+                show_hidden_volumes: false
+                volume_entity_id:
+                  - '{{ _hh_cab }}'
+                key: crm_config
+
+            - variables:
+                _cc_raw: >-
+                  {%- set r = _cc_read.get('result', {}) if _cc_read is mapping else {} -%}
+                  {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+                  {%- set v = r.get('crm_config', {}) -%}
+                  {%- set v = v.get('value', v) if v is mapping else {} -%}
+                  {{ v if v is mapping else (v | from_json if v is string else {}) }}
+                _cc_exists: >-
+                  {%- set r = _cc_read.get('result', {}) if _cc_read is mapping else {} -%}
+                  {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+                  {{ 'crm_config' in r }}
+
+            - variables:
+                _cc_upd: >-
+                  {%- set upd = {} -%}
+                  {%- if _cfg_stays != '' -%}{%- set upd = upd | combine({'stays_label': _cfg_stays}) -%}{%- endif -%}
+                  {%- if _cfg_appts != '' -%}{%- set upd = upd | combine({'appointments_label': _cfg_appts}) -%}{%- endif -%}
+                  {%- if _cfg_reminders != '' -%}{%- set upd = upd | combine({'reminders_label': _cfg_reminders}) -%}{%- endif -%}
+                  {%- if _cfg_tasks != '' -%}{%- set upd = upd | combine({'tasks_label': _cfg_tasks}) -%}{%- endif -%}
+                  {{ _cc_raw | combine(upd, recursive=true) }}
+
+            - action: script.zen_dojotools_filecabinet
+              response_variable: _cc_write
+              continue_on_error: true
+              data:
+                action_type: "{{ 'update' if _cc_exists else 'create' }}"
+                force_action: true
+                set_timestamp: true
+                show_hidden_volumes: false
+                volume_entity_id:
+                  - '{{ _hh_cab }}'
+                key: crm_config
+                value: "{{ _cc_upd | tojson }}"
+
+        # Register CRM provider through the central lens registry writer.
+        - variables:
+            _lr_crm_entry:
+              provider: crm
+              display_name: CRM / Twenty
+              configured_by: crm
+              department: crm
+              enabled: true
+              status: available
+              tool: zen_stack_crm
+              mode: stacks_by_anchor
+              manifest_mode: tool_manifest
+              consumes: [company, person]
+              returns: [company_evidence, contact_evidence]
+              failure_policy: soft
+              content_policy: redacted_by_default
+              risk_class: read_redacted
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              more_info:
+                tool: zen_stack_crm
+                mode: tool_manifest
+
+        - action: script.zen_admintools_prompt_loader
+          response_variable: _lr_write
+          continue_on_error: true
+          data:
+            mode: lens_registry
+            action_type: register
+            item: crm
+            payload_json: "{{ _lr_crm_entry | tojson }}"
+            caller_token: "{{ caller_token | default('crm_configure_lens_register') }}"
+
+        - variables:
+            _lr_write_status: >-
+              {%- set r = _lr_write if _lr_write is mapping else {} -%}
+              {%- set inner = r.get('result', r) if r is mapping else {} -%}
+              {{ inner.get('status', r.get('status', 'error')) if inner is mapping else 'error' }}
+            _lr_write_ok: "{{ _lr_write_status in ['success', 'ok', 'warning'] }}"
+            final_response:
+              status: "{{ 'success' if _lr_write_ok else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: configure
+              result:
+                twenty_connected: '{{ _cfg_connected }}'
+                url_stored: '{{ _cfg_url != "" }}'
+                labels_stored: '{{ _cfg_stays != "" or _cfg_appts != "" or _cfg_reminders != "" or _cfg_tasks != "" }}'
+                lens_registered: "{{ _lr_write_ok }}"
+                lens_registry_write: "{{ _lr_write }}"
+              error: "{{ none if _lr_write_ok else 'lens registry registration failed' }}"
+        - stop: return
+          response_variable: final_response
+
+    # ── shared cabinet read (used by all routing cases) ───────────────────────
+    # NOTE: each routing case reads cabinet inline — no shared step before choose
+
+    # ── case: stays_create ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "stays_create" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ summary_norm == "" or start_date_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: stays_create
+                  error: summary and start_date are required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _crm_cfg_s: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _stays_label: "{{ _crm_cfg_s.get('stays_label', 'crm_stays') }}"
+            _stays_cal: "{{ label_entities(_stays_label) | select('match', 'calendar\\.') | list | first | default('') }}"
+            _stays_end: "{{ end_date_norm if end_date_norm != '' else (start_date_norm ~ 'T23:59:00' if 'T' not in start_date_norm else start_date_norm) }}"
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _stays_cal == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: stays_create
+                  error: 'No calendar labeled ''{{ _stays_label }}''. Label a calendar entity or run configure with stays_label.'
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _stays_desc: >-
+              {%- set _ns = namespace(parts=[]) -%}
+              {%- if note_body_norm != "" -%}{%- set _ns.parts = _ns.parts + [note_body_norm] -%}{%- endif -%}
+              {%- if item_id_norm != "" -%}{%- set _ns.parts = _ns.parts + ['crm_link:' ~ item_id_norm] -%}{%- endif -%}
+              {%- if area_id_norm != "" -%}{%- set _ns.parts = _ns.parts + ['ha_area:' ~ area_id_norm] -%}{%- endif -%}
+              {{ _ns.parts | join(' | ') }}
+
+        - action: script.zen_dojotools_calendar
+          response_variable: _stays_cal_res
+          continue_on_error: true
+          data:
+            action_type: create
+            calendar_name: '{{ _stays_cal }}'
+            summary: '{{ summary_norm }}'
+            start: '{{ start_date_norm }}'
+            end: '{{ _stays_end }}'
+            description: '{{ _stays_desc }}'
+
+        # optionally add a note in Twenty if item_id (contact) provided
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm != "" and note_body_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _stays_note_adv
+              continue_on_error: true
+              data:
+                action_type: post
+                endpoint: notes
+                payload: >-
+                  {{ {'title': summary_norm, 'bodyV2': {'blocknote': none, 'markdown': note_body_norm}} | tojson }}
+            - action: script.zen_sutra_twenty
+              continue_on_error: true
+              data:
+                action_type: post
+                endpoint: noteTargets
+                payload: >-
+                  {{ {'noteId': ((_stays_note_adv.get('result', {}) or {}).get('content', {}) or {}).get('id', ''), 'targetPersonId': item_id_norm} | tojson }}
+
+        - variables:
+            _stays_ok: '{{ _stays_cal_res is mapping and _stays_cal_res.get("status") in ["ok", "success"] }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _stays_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: stays_create
+              result:
+                calendar: '{{ _stays_cal }}'
+                summary: '{{ summary_norm }}'
+                start: '{{ start_date_norm }}'
+                end: '{{ _stays_end }}'
+                contact_id: '{{ item_id_norm }}'
+              error: '{{ none if _stays_ok else "calendar create failed — check crm_stays label and calendar entity" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: stays_list ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "stays_list" }}'
+        sequence:
+        - variables:
+            _crm_cfg_sl: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _sl_label: "{{ _crm_cfg_sl.get('stays_label', 'crm_stays') }}"
+            _sl_cal: "{{ label_entities(_sl_label) | select('match', 'calendar\\.') | list | first | default('') }}"
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _sl_cal == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: stays_list
+                  error: 'No calendar labeled ''{{ _sl_label }}''. Label a calendar entity or run configure.'
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _sl_start: "{{ start_date_norm if start_date_norm != '' else now().strftime('%Y-%m-%d') }}"
+            _sl_end: "{{ end_date_norm if end_date_norm != '' else (now() + timedelta(days=90)).strftime('%Y-%m-%d') }}"
+
+        - action: script.zen_dojotools_calendar
+          response_variable: _sl_res
+          continue_on_error: true
+          data:
+            action_type: read
+            calendar_name: '{{ _sl_cal }}'
+            start: '{{ _sl_start }}'
+            end: '{{ _sl_end }}'
+
+        - variables:
+            _sl_items: >-
+              {%- if _sl_res is mapping -%}
+                {%- set _rs = _sl_res.get('results', []) -%}
+                {{ (_rs | first).get('events', []) if (_rs | length) > 0 else [] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _sl_res is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: stays_list
+              result:
+                stays: '{{ _sl_items }}'
+                count: '{{ _sl_items | length if _sl_items is sequence else 0 }}'
+                calendar: '{{ _sl_cal }}'
+              error: '{{ none if _sl_res is mapping else "calendar read failed" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: appointment_create ──────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "appointment_create" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ summary_norm == "" or start_date_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: appointment_create
+                  error: summary and start_date are required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _crm_cfg_ac: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _ac_label: "{{ _crm_cfg_ac.get('appointments_label', 'crm_appointments') }}"
+            _ac_cal: "{{ label_entities(_ac_label) | select('match', 'calendar\\.') | list | first | default('') }}"
+            _ac_end: "{{ end_date_norm if end_date_norm != '' else (start_date_norm ~ 'T23:59:00' if 'T' not in start_date_norm else start_date_norm) }}"
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ac_cal == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: appointment_create
+                  error: 'No calendar labeled ''{{ _ac_label }}''. Label a calendar entity or run configure.'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_dojotools_calendar
+          response_variable: _ac_cal_res
+          continue_on_error: true
+          data:
+            action_type: create
+            calendar_name: '{{ _ac_cal }}'
+            summary: '{{ summary_norm }}'
+            start: '{{ start_date_norm }}'
+            end: '{{ _ac_end }}'
+            description: '{{ note_body_norm if note_body_norm != "" else ("crm_link:" ~ item_id_norm if item_id_norm != "" else "") }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm != "" and note_body_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ac_note_adv
+              continue_on_error: true
+              data:
+                action_type: post
+                endpoint: notes
+                payload: >-
+                  {{ {'title': summary_norm, 'bodyV2': {'blocknote': none, 'markdown': note_body_norm}} | tojson }}
+            - action: script.zen_sutra_twenty
+              continue_on_error: true
+              data:
+                action_type: post
+                endpoint: noteTargets
+                payload: >-
+                  {{ {'noteId': ((_ac_note_adv.get('result', {}) or {}).get('content', {}) or {}).get('id', ''), 'targetPersonId': item_id_norm} | tojson }}
+
+        - variables:
+            _ac_ok: '{{ _ac_cal_res is mapping and _ac_cal_res.get("status") in ["ok", "success"] }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _ac_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: appointment_create
+              result:
+                calendar: '{{ _ac_cal }}'
+                summary: '{{ summary_norm }}'
+                start: '{{ start_date_norm }}'
+                end: '{{ _ac_end }}'
+                contact_id: '{{ item_id_norm }}'
+              error: '{{ none if _ac_ok else "calendar create failed — check crm_appointments label" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: appointments_list ───────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "appointments_list" }}'
+        sequence:
+        - variables:
+            _crm_cfg_al: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _al_label: "{{ _crm_cfg_al.get('appointments_label', 'crm_appointments') }}"
+            _al_cal: "{{ label_entities(_al_label) | select('match', 'calendar\\.') | list | first | default('') }}"
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _al_cal == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: appointments_list
+                  error: 'No calendar labeled ''{{ _al_label }}''. Label a calendar entity or run configure.'
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _al_start: "{{ start_date_norm if start_date_norm != '' else now().strftime('%Y-%m-%d') }}"
+            _al_end: "{{ end_date_norm if end_date_norm != '' else (now() + timedelta(days=90)).strftime('%Y-%m-%d') }}"
+
+        - action: script.zen_dojotools_calendar
+          response_variable: _al_res
+          continue_on_error: true
+          data:
+            action_type: read
+            calendar_name: '{{ _al_cal }}'
+            start: '{{ _al_start }}'
+            end: '{{ _al_end }}'
+
+        - variables:
+            _al_items: >-
+              {%- if _al_res is mapping -%}
+                {%- set _rs = _al_res.get('results', []) -%}
+                {{ (_rs | first).get('events', []) if (_rs | length) > 0 else [] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _al_res is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: appointments_list
+              result:
+                appointments: '{{ _al_items }}'
+                count: '{{ _al_items | length if _al_items is sequence else 0 }}'
+                calendar: '{{ _al_cal }}'
+              error: '{{ none if _al_res is mapping else "calendar read failed" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: reminder_set ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "reminder_set" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ summary_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reminder_set
+                  error: summary is required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _crm_cfg_rs: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _rs_label: "{{ _crm_cfg_rs.get('reminders_label', 'crm_reminders') }}"
+            _rs_todo: "{{ label_entities(_rs_label) | select('match', 'todo\\.') | list | first | default('') }}"
+            _rs_desc: '{{ ("crm_link:" ~ item_id_norm) if item_id_norm != "" else "" }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rs_todo == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: reminder_set
+                  error: 'No todo list labeled ''{{ _rs_label }}''. Label a todo entity or run configure.'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_dojotools_todo
+          response_variable: _rs_res
+          continue_on_error: true
+          data:
+            action_type: create
+            list_name: '{{ _rs_todo }}'
+            items: ['{{ summary_norm }}']
+            description: '{{ _rs_desc }}'
+            due_date: '{{ start_date_norm }}'
+
+        - variables:
+            _rs_ok: '{{ _rs_res is mapping and _rs_res.get("status") == "success" }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _rs_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: reminder_set
+              result:
+                list: '{{ _rs_todo }}'
+                summary: '{{ summary_norm }}'
+                contact_id: '{{ item_id_norm }}'
+                due_date: '{{ start_date_norm }}'
+              error: '{{ none if _rs_ok else "todo create failed — check crm_reminders label" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: reminders_list ──────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "reminders_list" }}'
+        sequence:
+        - variables:
+            _crm_cfg_rl: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _rl_label: "{{ _crm_cfg_rl.get('reminders_label', 'crm_reminders') }}"
+            _rl_todo: "{{ label_entities(_rl_label) | select('match', 'todo\\.') | list | first | default('') }}"
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rl_todo == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: reminders_list
+                  error: 'No todo list labeled ''{{ _rl_label }}''. Label a todo entity or run configure.'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_dojotools_todo
+          response_variable: _rl_res
+          continue_on_error: true
+          data:
+            action_type: read
+            list_name: '{{ _rl_todo }}'
+
+        - variables:
+            _rl_all: >-
+              {%- if _rl_res is mapping -%}
+                {{ _rl_res.get('result', {}).get('items', _rl_res.get('items', [])) }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+        - variables:
+            _rl_filtered: >-
+              {%- if item_id_norm != '' -%}
+                {{ _rl_all | selectattr('description', 'defined') | selectattr('description', 'search', 'crm_link:' ~ item_id_norm) | list }}
+              {%- else -%}
+                {{ _rl_all }}
+              {%- endif -%}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _rl_res is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: reminders_list
+              result:
+                reminders: '{{ _rl_filtered }}'
+                count: '{{ _rl_filtered | length if _rl_filtered is sequence else 0 }}'
+                filtered_by: '{{ item_id_norm }}'
+              error: '{{ none if _rl_res is mapping else "todo read failed" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: task_link ───────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "task_link" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ summary_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: task_link
+                  error: summary is required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _crm_cfg_tl: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _tl_label: "{{ _crm_cfg_tl.get('tasks_label', 'crm_tasks') }}"
+            _tl_todo: "{{ label_entities(_tl_label) | select('match', 'todo\\.') | list | first | default('') }}"
+            _tl_desc: '{{ ("crm_link:" ~ item_id_norm) if item_id_norm != "" else "" }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tl_todo == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: task_link
+                  error: 'No todo list labeled ''{{ _tl_label }}''. Label a todo entity or run configure.'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_dojotools_todo
+          response_variable: _tl_res
+          continue_on_error: true
+          data:
+            action_type: create
+            list_name: '{{ _tl_todo }}'
+            items: ['{{ summary_norm }}']
+            description: '{{ _tl_desc }}'
+            due_date: '{{ start_date_norm }}'
+
+        - variables:
+            _tl_ok: '{{ _tl_res is mapping and _tl_res.get("status") == "success" }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _tl_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: task_link
+              result:
+                list: '{{ _tl_todo }}'
+                summary: '{{ summary_norm }}'
+                contact_id: '{{ item_id_norm }}'
+                due_date: '{{ start_date_norm }}'
+              error: '{{ none if _tl_ok else "todo create failed — check crm_tasks label" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: tasks_list ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "tasks_list" }}'
+        sequence:
+        - variables:
+            _crm_cfg_tsl: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _tsl_label: "{{ _crm_cfg_tsl.get('tasks_label', 'crm_tasks') }}"
+            _tsl_todo: "{{ label_entities(_tsl_label) | select('match', 'todo\\.') | list | first | default('') }}"
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tsl_todo == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: not_configured
+                  tool: '{{ tool_name }}'
+                  case: tasks_list
+                  error: 'No todo list labeled ''{{ _tsl_label }}''. Label a todo entity or run configure.'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_dojotools_todo
+          response_variable: _tsl_res
+          continue_on_error: true
+          data:
+            action_type: read
+            list_name: '{{ _tsl_todo }}'
+
+        - variables:
+            _tsl_all: >-
+              {%- if _tsl_res is mapping -%}
+                {{ _tsl_res.get('result', {}).get('items', _tsl_res.get('items', [])) }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+        - variables:
+            _tsl_filtered: >-
+              {%- if item_id_norm != '' -%}
+                {{ _tsl_all | selectattr('description', 'defined') | selectattr('description', 'search', 'crm_link:' ~ item_id_norm) | list }}
+              {%- else -%}
+                {{ _tsl_all }}
+              {%- endif -%}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _tsl_res is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: tasks_list
+              result:
+                tasks: '{{ _tsl_filtered }}'
+                count: '{{ _tsl_filtered | length if _tsl_filtered is sequence else 0 }}'
+                filtered_by: '{{ item_id_norm }}'
+              error: '{{ none if _tsl_res is mapping else "todo read failed" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: vendor_history ──────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "vendor_history" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: vendor_history
+                  error: item_id (company UUID) is required
+            - stop: return
+              response_variable: final_response
+
+        # step 1: query noteTargets junction to get noteIds for this company
+        - action: script.zen_sutra_twenty
+          response_variable: _vh_nt_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'noteTargets?filter=targetCompanyId[eq]:{{ item_id_norm }}&limit=50'
+
+        - variables:
+            _vh_nt_body: >-
+              {%- if _vh_nt_adv is mapping and "result" in _vh_nt_adv and "content" in _vh_nt_adv["result"] -%}
+                {{ _vh_nt_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _vh_nt_list: >-
+              {{ _vh_nt_body.get('data', {}).get('noteTargets', []) if _vh_nt_body is mapping else [] }}
+            _vh_note_ids: >-
+              {%- set _ns = namespace(ids=[]) -%}
+              {%- for nt in _vh_nt_list -%}
+                {%- if nt is mapping and nt.get('noteId','') != '' -%}
+                  {%- set _ns.ids = _ns.ids + [nt.get('noteId')] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.ids }}
+
+        # no noteTargets for this company — return empty cleanly
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ (_vh_note_ids | length) == 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: success
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: vendor_history
+                  result:
+                    notes: []
+                    count: 0
+                    company_id: '{{ item_id_norm }}'
+                    via: noteTargets
+                  error: ~
+            - stop: return
+              response_variable: final_response
+
+        # step 2: fetch the notes whose IDs we found via noteTargets
+        - action: script.zen_sutra_twenty
+          response_variable: _vh_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'notes?filter=id[in]:{{ _vh_note_ids | tojson }}&order_by=createdAt[DescNullsLast]&limit={{ limit_norm }}'
+
+        - variables:
+            _vh_ok: '{{ _vh_adv is mapping and _vh_adv.get("status") == "success" }}'
+            _vh_body: >-
+              {%- if _vh_adv is mapping and "result" in _vh_adv and "content" in _vh_adv["result"] -%}
+                {{ _vh_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _vh_list: >-
+              {{ _vh_body.get('data', {}).get('notes', []) if _vh_body is mapping else [] }}
+
+        - variables:
+            _vh_notes: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for n in _vh_list -%}
+                {%- if n is mapping -%}
+                  {%- set _ns.out = _ns.out + [{'id': n.get('id',''), 'title': n.get('title',''), 'body': n.get('body',''), 'created_at': n.get('createdAt','')}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _vh_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: vendor_history
+              result:
+                notes: '{{ _vh_notes }}'
+                count: '{{ _vh_notes | length }}'
+                company_id: '{{ item_id_norm }}'
+                via: noteTargets
+              error: '{{ none if _vh_ok else ("broker error — HTTP " ~ _vh_adv.get("http_status","?") if _vh_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: timeline ────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "timeline" }}'
+        sequence:
+        - variables:
+            _crm_cfg_tm: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'crm_config', {}) }}
+
+        - variables:
+            _tm_stays_label: "{{ _crm_cfg_tm.get('stays_label', 'crm_stays') }}"
+            _tm_appts_label: "{{ _crm_cfg_tm.get('appointments_label', 'crm_appointments') }}"
+            _tm_rem_label: "{{ _crm_cfg_tm.get('reminders_label', 'crm_reminders') }}"
+            _tm_tasks_label: "{{ _crm_cfg_tm.get('tasks_label', 'crm_tasks') }}"
+
+        - variables:
+            _tm_stays_cal: "{{ label_entities(_tm_stays_label) | select('match', 'calendar\\.') | list | first | default('') }}"
+            _tm_appts_cal: "{{ label_entities(_tm_appts_label) | select('match', 'calendar\\.') | list | first | default('') }}"
+            _tm_rem_todo: "{{ label_entities(_tm_rem_label) | select('match', 'todo\\.') | list | first | default('') }}"
+            _tm_tasks_todo: "{{ label_entities(_tm_tasks_label) | select('match', 'todo\\.') | list | first | default('') }}"
+            _tm_sources_ok: []
+            _tm_sources_failed: []
+
+        # fan-out — all continue_on_error
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tm_stays_cal != "" }}'
+            sequence:
+            - action: script.zen_dojotools_calendar
+              response_variable: _tm_stays_res
+              continue_on_error: true
+              data:
+                action_type: read
+                calendar_name: '{{ _tm_stays_cal }}'
+                start: '{{ start_date_norm }}'
+                end: '{{ end_date_norm }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tm_appts_cal != "" }}'
+            sequence:
+            - action: script.zen_dojotools_calendar
+              response_variable: _tm_appts_res
+              continue_on_error: true
+              data:
+                action_type: read
+                calendar_name: '{{ _tm_appts_cal }}'
+                start: '{{ start_date_norm }}'
+                end: '{{ end_date_norm }}'
+
+        - action: script.zen_sutra_twenty
+          response_variable: _tm_notes_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: >-
+              {%- if item_id_norm != '' -%}
+                notes?filter=noteTargets.targetPersonId[eq]:{{ item_id_norm }}&order_by=createdAt[DescNullsLast]&limit={{ limit_norm }}
+              {%- else -%}
+                notes?order_by=createdAt[DescNullsLast]&limit={{ limit_norm }}
+              {%- endif -%}
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tm_rem_todo != "" }}'
+            sequence:
+            - action: script.zen_dojotools_todo
+              response_variable: _tm_rem_res
+              continue_on_error: true
+              data:
+                action_type: read
+                list_name: '{{ _tm_rem_todo }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tm_tasks_todo != "" }}'
+            sequence:
+            - action: script.zen_dojotools_todo
+              response_variable: _tm_tasks_res
+              continue_on_error: true
+              data:
+                action_type: read
+                list_name: '{{ _tm_tasks_todo }}'
+
+        # extract + tag each source
+        - variables:
+            _tm_stays_items: >-
+              {%- if _tm_stays_res is defined and _tm_stays_res is mapping -%}
+                {%- set _ns = namespace(out=[]) -%}
+                {%- for e in (_tm_stays_res.get('result', _tm_stays_res.get('events', [])) | default([])) -%}
+                  {%- if e is mapping -%}
+                    {%- set _d = e.get('start', e.get('start_time', e.get('date', ''))) -%}
+                    {%- set _ns.out = _ns.out + [e | combine({'source': 'stay', 'date': _d})] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ _ns.out }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+            _tm_appts_items: >-
+              {%- if _tm_appts_res is defined and _tm_appts_res is mapping -%}
+                {%- set _ns = namespace(out=[]) -%}
+                {%- for e in (_tm_appts_res.get('result', _tm_appts_res.get('events', [])) | default([])) -%}
+                  {%- if e is mapping -%}
+                    {%- set _d = e.get('start', e.get('start_time', e.get('date', ''))) -%}
+                    {%- set _ns.out = _ns.out + [e | combine({'source': 'appointment', 'date': _d})] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ _ns.out }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+            _tm_notes_items: >-
+              {%- if _tm_notes_adv is defined and _tm_notes_adv is mapping and _tm_notes_adv.get('status') == 'success' -%}
+                {%- set body = _tm_notes_adv.get('result', {}).get('content', {}) -%}
+                {%- set notes = body.get('data', {}).get('notes', []) if body is mapping else [] -%}
+                {%- set _ns = namespace(out=[]) -%}
+                {%- for n in notes -%}
+                  {%- if n is mapping -%}
+                    {%- set _ns.out = _ns.out + [{'id': n.get('id',''), 'title': n.get('title',''), 'body': n.get('body',''), 'date': n.get('createdAt',''), 'source': 'note'}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ _ns.out }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+            _tm_rem_items: >-
+              {%- if _tm_rem_res is defined and _tm_rem_res is mapping -%}
+                {%- set _ns = namespace(out=[]) -%}
+                {%- for t in (_tm_rem_res.get('result', {}).get('items', _tm_rem_res.get('items', [])) | default([])) -%}
+                  {%- if t is mapping -%}
+                    {%- set _d = t.get('due', t.get('due_date', t.get('date', ''))) -%}
+                    {%- set _ns.out = _ns.out + [t | combine({'source': 'reminder', 'date': _d})] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ _ns.out }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+            _tm_tasks_items: >-
+              {%- if _tm_tasks_res is defined and _tm_tasks_res is mapping -%}
+                {%- set _ns = namespace(out=[]) -%}
+                {%- for t in (_tm_tasks_res.get('result', {}).get('items', _tm_tasks_res.get('items', [])) | default([])) -%}
+                  {%- if t is mapping -%}
+                    {%- set _d = t.get('due', t.get('due_date', t.get('date', ''))) -%}
+                    {%- set _ns.out = _ns.out + [t | combine({'source': 'task', 'date': _d})] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ _ns.out }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+        - variables:
+            _tm_all: >-
+              {{ (_tm_stays_items + _tm_appts_items + _tm_notes_items + _tm_rem_items + _tm_tasks_items)
+                 | sort(attribute='date') | reverse | list }}
+
+        - variables:
+            _tm_sources_ok: >-
+              {%- set _ns = namespace(ok=[]) -%}
+              {%- if _tm_stays_res is defined and _tm_stays_res is mapping -%}{%- set _ns.ok = _ns.ok + ['stays'] -%}{%- endif -%}
+              {%- if _tm_appts_res is defined and _tm_appts_res is mapping -%}{%- set _ns.ok = _ns.ok + ['appointments'] -%}{%- endif -%}
+              {%- if _tm_notes_adv is defined and _tm_notes_adv is mapping and _tm_notes_adv.get('status') == 'success' -%}{%- set _ns.ok = _ns.ok + ['notes'] -%}{%- endif -%}
+              {%- if _tm_rem_res is defined and _tm_rem_res is mapping -%}{%- set _ns.ok = _ns.ok + ['reminders'] -%}{%- endif -%}
+              {%- if _tm_tasks_res is defined and _tm_tasks_res is mapping -%}{%- set _ns.ok = _ns.ok + ['tasks'] -%}{%- endif -%}
+              {{ _ns.ok }}
+            _tm_sources_failed: >-
+              {%- set _ns = namespace(failed=[]) -%}
+              {%- if _tm_stays_cal != '' and (_tm_stays_res is not defined or _tm_stays_res is not mapping) -%}{%- set _ns.failed = _ns.failed + ['stays'] -%}{%- endif -%}
+              {%- if _tm_appts_cal != '' and (_tm_appts_res is not defined or _tm_appts_res is not mapping) -%}{%- set _ns.failed = _ns.failed + ['appointments'] -%}{%- endif -%}
+              {%- if _tm_notes_adv is not defined or _tm_notes_adv.get('status') != 'success' -%}{%- set _ns.failed = _ns.failed + ['notes'] -%}{%- endif -%}
+              {%- if _tm_rem_todo != '' and (_tm_rem_res is not defined or _tm_rem_res is not mapping) -%}{%- set _ns.failed = _ns.failed + ['reminders'] -%}{%- endif -%}
+              {%- if _tm_tasks_todo != '' and (_tm_tasks_res is not defined or _tm_tasks_res is not mapping) -%}{%- set _ns.failed = _ns.failed + ['tasks'] -%}{%- endif -%}
+              {{ _ns.failed }}
+
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: timeline
+              result:
+                timeline: '{{ _tm_all }}'
+                count: '{{ _tm_all | length }}'
+                sources_ok: '{{ _tm_sources_ok }}'
+                sources_failed: '{{ _tm_sources_failed }}'
+              error: null
+        - stop: return
+          response_variable: final_response
+
+    # ── case: tag_contact ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "tag_contact" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or tags_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: tag_contact
+                  error: item_id and tags are required. tags = comma-separated ZenOS label slugs.
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _tc_tags_list: >-
+              {{ tags_norm.split(',') | map('trim') | select | list }}
+            _tc_all_labels: '{{ labels() | list }}'
+
+        - variables:
+            _tc_bad_tags: >-
+              {%- set _ns = namespace(bad=[]) -%}
+              {%- for t in _tc_tags_list -%}
+                {%- if t not in _tc_all_labels -%}{%- set _ns.bad = _ns.bad + [t] -%}{%- endif -%}
+              {%- endfor -%}
+              {{ _ns.bad }}
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tc_bad_tags | length > 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: tag_contact
+                  error: 'Tags not in ZenOS label index: {{ _tc_bad_tags | join(", ") }}. Create the HA label first or check spelling.'
+                  bad_tags: '{{ _tc_bad_tags }}'
+                  available_sample: '{{ _tc_all_labels[:20] }}'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _tc_adv
+          continue_on_error: true
+          data:
+            action_type: patch
+            endpoint: 'people/{{ item_id_norm }}'
+            payload: '{{ {"haLabels": tags_norm} | tojson }}'
+
+        - variables:
+            _tc_ok: '{{ _tc_adv is mapping and _tc_adv.get("status") == "success" }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _tc_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: tag_contact
+              result:
+                contact_id: '{{ item_id_norm }}'
+                ha_labels: '{{ tags_norm }}'
+                tags_applied: '{{ _tc_tags_list }}'
+              error: '{{ none if _tc_ok else ("patch failed — HTTP " ~ _tc_adv.get("http_status","?") ~ " — run provision_schema first to create haLabels field") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: tag_company ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "tag_company" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or tags_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: tag_company
+                  error: item_id and tags are required. tags = comma-separated ZenOS label slugs.
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _tco_tags_list: >-
+              {{ tags_norm.split(',') | map('trim') | select | list }}
+            _tco_all_labels: '{{ labels() | list }}'
+
+        - variables:
+            _tco_bad_tags: >-
+              {%- set _ns = namespace(bad=[]) -%}
+              {%- for t in _tco_tags_list -%}
+                {%- if t not in _tco_all_labels -%}{%- set _ns.bad = _ns.bad + [t] -%}{%- endif -%}
+              {%- endfor -%}
+              {{ _ns.bad }}
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tco_bad_tags | length > 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: tag_company
+                  error: 'Tags not in ZenOS label index: {{ _tco_bad_tags | join(", ") }}. Create the HA label first or check spelling.'
+                  bad_tags: '{{ _tco_bad_tags }}'
+                  available_sample: '{{ _tco_all_labels[:20] }}'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _tco_adv
+          continue_on_error: true
+          data:
+            action_type: patch
+            endpoint: 'companies/{{ item_id_norm }}'
+            payload: '{{ {"haLabels": tags_norm} | tojson }}'
+
+        - variables:
+            _tco_ok: '{{ _tco_adv is mapping and _tco_adv.get("status") == "success" }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _tco_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: tag_company
+              result:
+                company_id: '{{ item_id_norm }}'
+                ha_labels: '{{ tags_norm }}'
+                tags_applied: '{{ _tco_tags_list }}'
+              error: '{{ none if _tco_ok else ("patch failed — HTTP " ~ _tco_adv.get("http_status","?") ~ " — run provision_schema first to create haLabels field") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: contacts_by_label ───────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "contacts_by_label" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: contacts_by_label
+                  error: item (label slug) is required
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _cbl_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'people?filter=haLabels[ilike]:%{{ item_norm }}%&limit={{ limit_norm }}'
+
+        - variables:
+            _cbl_ok: '{{ _cbl_adv is mapping and _cbl_adv.get("status") == "success" }}'
+            _cbl_body: >-
+              {%- if _cbl_adv is mapping and "result" in _cbl_adv and "content" in _cbl_adv["result"] -%}
+                {{ _cbl_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _cbl_list: >-
+              {{ _cbl_body.get('data', {}).get('people', []) if _cbl_body is mapping else [] }}
+
+        - variables:
+            _cbl_contacts: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for p in _cbl_list -%}
+                {%- if p is mapping -%}
+                  {%- set nm = p.get('name', {}) if p.get('name') is mapping else {} -%}
+                  {%- set em = p.get('emails', {}) if p.get('emails') is mapping else {} -%}
+                  {%- set co = p.get('company', {}) if p.get('company') is mapping else {} -%}
+                  {%- set _ns.out = _ns.out + [{
+                    'id': p.get('id',''),
+                    'name': ((nm.get('firstName','') ~ ' ' ~ nm.get('lastName','')) | trim),
+                    'email': em.get('primaryEmail',''),
+                    'company': co.get('name',''),
+                    'company_id': co.get('id',''),
+                    'ha_labels': p.get('haLabels','')
+                  }] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _cbl_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: contacts_by_label
+              result:
+                contacts: '{{ _cbl_contacts }}'
+                count: '{{ _cbl_contacts | length }}'
+                label: '{{ item_norm }}'
+              error: '{{ none if _cbl_ok else ("broker error — HTTP " ~ _cbl_adv.get("http_status","?") ~ " — run provision_schema first to create haLabels field on People") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: companies_by_label ──────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "companies_by_label" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: companies_by_label
+                  error: item (label slug) is required
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _cobl_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'companies?filter=haLabels[ilike]:%{{ item_norm }}%&limit={{ limit_norm }}'
+
+        - variables:
+            _cobl_ok: '{{ _cobl_adv is mapping and _cobl_adv.get("status") == "success" }}'
+            _cobl_body: >-
+              {%- if _cobl_adv is mapping and "result" in _cobl_adv and "content" in _cobl_adv["result"] -%}
+                {{ _cobl_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _cobl_list: >-
+              {{ _cobl_body.get('data', {}).get('companies', []) if _cobl_body is mapping else [] }}
+
+        - variables:
+            _cobl_results: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for co in _cobl_list -%}
+                {%- if co is mapping -%}
+                  {%- set dom = co.get('domainName', {}) if co.get('domainName') is mapping else {} -%}
+                  {%- set _ns.out = _ns.out + [{
+                    'id': co.get('id',''),
+                    'name': co.get('name',''),
+                    'domain': dom.get('primaryLinkUrl',''),
+                    'employees': co.get('employees',none),
+                    'ha_labels': co.get('haLabels',''),
+                    'created_at': co.get('createdAt','')
+                  }] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _cobl_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: companies_by_label
+              result:
+                companies: '{{ _cobl_results }}'
+                count: '{{ _cobl_results | length }}'
+                label: '{{ item_norm }}'
+              error: '{{ none if _cobl_ok else ("broker error — HTTP " ~ _cobl_adv.get("http_status","?") ~ " — run provision_schema first to create haLabels field on Companies") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: provision_schema ───────────────────────────────────────────────
+    # Canonical ZenOS CRM schema (bump crm_schema_version when adding fields)
+    # Fields: ha_labels on person + company
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "provision_schema" }}'
+        sequence:
+        - variables:
+            _hh_cab_ps: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+
+        # Step 1: query metadata objects (filtered to person + company)
+        - action: script.zen_sutra_twenty
+          response_variable: _ps_obj_raw
+          continue_on_error: true
+          data:
+            action_type: meta
+            payload: >-
+              {%- set q = '{ objects { edges { node { id nameSingular } } } }' -%}
+              {{ {'query': q} | tojson }}
+
+        - variables:
+            _ps_obj_ok: >-
+              {%- set _r = _ps_obj_raw if _ps_obj_raw is mapping else {} -%}
+              {%- set _c = _r.get('result', {}).get('content', {}) -%}
+              {{ _r.get('status') == 'success' and _c is mapping and 'errors' not in _c and 'data' in _c }}
+            _ps_obj_body: >-
+              {%- if _ps_obj_raw is mapping and "result" in _ps_obj_raw and "content" in _ps_obj_raw["result"] -%}
+                {{ _ps_obj_raw["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _ps_obj_ok }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: provision_schema
+                  error: 'Metadata API unreachable — HTTP {{ _ps_obj_raw.get("http_status","?") if _ps_obj_raw is mapping else "?" }}. Ensure Twenty URL is configured (run configure first).'
+            - stop: return
+              response_variable: final_response
+
+        # Step 2: extract person + company object IDs
+        - variables:
+            _ps_edges: >-
+              {%- set d = _ps_obj_body if _ps_obj_body is mapping else {} -%}
+              {{ d.get('data', {}).get('objects', {}).get('edges', []) }}
+
+        - variables:
+            _ps_person_id: >-
+              {%- set _ns = namespace(id='') -%}
+              {%- for e in _ps_edges -%}
+                {%- if e is mapping and e.get('node', {}).get('nameSingular','') == 'person' -%}
+                  {%- set _ns.id = e.get('node', {}).get('id', '') -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.id }}
+            _ps_company_id: >-
+              {%- set _ns = namespace(id='') -%}
+              {%- for e in _ps_edges -%}
+                {%- if e is mapping and e.get('node', {}).get('nameSingular','') == 'company' -%}
+                  {%- set _ns.id = e.get('node', {}).get('id', '') -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.id }}
+
+        # Step 3: check existing fields on person
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_person_id != "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_pf_raw
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'query { fields(filter: {objectMetadataId: {eq: "' ~ _ps_person_id ~ '"}, isCustom: {is: true}}) { edges { node { id name type isCustom } } } }' -%}
+                  {{ {'query': q} | tojson }}
+
+        # Step 4: check existing fields on company
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_company_id != "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_cf_raw
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'query { fields(filter: {objectMetadataId: {eq: "' ~ _ps_company_id ~ '"}, isCustom: {is: true}}) { edges { node { id name type isCustom } } } }' -%}
+                  {{ {'query': q} | tojson }}
+
+        # Step 5: determine which fields are missing
+        - variables:
+            _ps_person_fields: >-
+              {%- if _ps_pf_raw is defined and _ps_pf_raw is mapping -%}
+                {%- set body = _ps_pf_raw.get('result', {}).get('content', {}) -%}
+                {{ body.get('data', {}).get('fields', {}).get('edges', []) if body is mapping else [] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+            _ps_company_fields: >-
+              {%- if _ps_cf_raw is defined and _ps_cf_raw is mapping -%}
+                {%- set body = _ps_cf_raw.get('result', {}).get('content', {}) -%}
+                {{ body.get('data', {}).get('fields', {}).get('edges', []) if body is mapping else [] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+        - variables:
+            _ps_person_has_hl: >-
+              {%- set _ns = namespace(found=false) -%}
+              {%- for e in _ps_person_fields -%}
+                {%- if e is mapping and e.get('node', {}).get('name','') == 'haLabels' -%}
+                  {%- set _ns.found = true -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.found }}
+            _ps_company_has_hl: >-
+              {%- set _ns = namespace(found=false) -%}
+              {%- for e in _ps_company_fields -%}
+                {%- if e is mapping and e.get('node', {}).get('name','') == 'haLabels' -%}
+                  {%- set _ns.found = true -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.found }}
+            _ps_person_has_pi: >-
+              {%- set _ns = namespace(found=false) -%}
+              {%- for e in _ps_person_fields -%}
+                {%- if e is mapping and e.get('node', {}).get('name','') == 'haPersonId' -%}
+                  {%- set _ns.found = true -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.found }}
+            _ps_skipped: []
+            _ps_created: []
+            _ps_failed: []
+
+        # Step 6a: create ha_labels on person if missing
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_person_id != "" and not _ps_person_has_hl }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_p
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_person_id, 'type': 'TEXT', 'name': 'haLabels', 'label': 'HA Labels', 'description': 'ZenOS HA label slugs — comma-separated. Dep-checked against HA label index on write.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_created: >-
+                  {%- if _ps_create_p is mapping and _ps_create_p.get('status') == 'success' -%}
+                    {{ _ps_created + ['person.ha_labels'] }}
+                  {%- else -%}
+                    {{ _ps_created }}
+                  {%- endif -%}
+                _ps_failed: >-
+                  {%- if not (_ps_create_p is mapping and _ps_create_p.get('status') == 'success') -%}
+                    {{ _ps_failed + ['person.ha_labels'] }}
+                  {%- else -%}
+                    {{ _ps_failed }}
+                  {%- endif -%}
+          default:
+            - variables:
+                _ps_skipped: '{{ _ps_skipped + (["person.ha_labels"] if _ps_person_id != "" else []) }}'
+
+        # Step 6b: create ha_labels on company if missing
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_company_id != "" and not _ps_company_has_hl }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_c
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_company_id, 'type': 'TEXT', 'name': 'haLabels', 'label': 'HA Labels', 'description': 'ZenOS HA label slugs — comma-separated. Dep-checked against HA label index on write.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_created: >-
+                  {%- if _ps_create_c is mapping and _ps_create_c.get('status') == 'success' -%}
+                    {{ _ps_created + ['company.ha_labels'] }}
+                  {%- else -%}
+                    {{ _ps_created }}
+                  {%- endif -%}
+                _ps_failed: >-
+                  {%- if not (_ps_create_c is mapping and _ps_create_c.get('status') == 'success') -%}
+                    {{ _ps_failed + ['company.ha_labels'] }}
+                  {%- else -%}
+                    {{ _ps_failed }}
+                  {%- endif -%}
+          default:
+            - variables:
+                _ps_skipped: '{{ _ps_skipped + (["company.ha_labels"] if _ps_company_id != "" else []) }}'
+
+        # Step 6c: create haPersonId on person if missing (person only — not applicable to companies)
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_person_id != "" and not _ps_person_has_pi }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_pi
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_person_id, 'type': 'TEXT', 'name': 'haPersonId', 'label': 'HA Person ID', 'description': 'ZenOS HA person entity ID — e.g. person.nathan. Links contact to live HA presence tracking.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_created: >-
+                  {%- if _ps_create_pi is mapping and _ps_create_pi.get('status') == 'success' -%}
+                    {{ _ps_created + ['person.haPersonId'] }}
+                  {%- else -%}
+                    {{ _ps_created }}
+                  {%- endif -%}
+                _ps_failed: >-
+                  {%- if not (_ps_create_pi is mapping and _ps_create_pi.get('status') == 'success') -%}
+                    {{ _ps_failed + ['person.haPersonId'] }}
+                  {%- else -%}
+                    {{ _ps_failed }}
+                  {%- endif -%}
+          default:
+            - variables:
+                _ps_skipped: '{{ _ps_skipped + (["person.haPersonId"] if _ps_person_id != "" else []) }}'
+
+        # Step 7: stamp crm_schema to household cabinet
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _hh_cab_ps != "" and _ps_failed | length == 0 }}'
+            sequence:
+            - action: script.zen_dojotools_filecabinet
+              response_variable: _ps_cab_write
+              continue_on_error: true
+              data:
+                action_type: "{{ 'update' if (state_attr(_hh_cab_ps, 'variables') | default({}, true)).get('crm_schema') is not none else 'create' }}"
+                key: crm_schema
+                volume_entity_id:
+                  - '{{ _hh_cab_ps }}'
+                value: "{{ {'schema_version': crm_schema_version, 'deployed_at': now().isoformat(), 'field_count': 3} | tojson }}"
+
+        - variables:
+            final_response:
+              status: '{{ "ok" if _ps_failed | length == 0 else "partial" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: provision_schema
+              result:
+                schema_version: '{{ crm_schema_version }}'
+                person_id: '{{ _ps_person_id }}'
+                company_id: '{{ _ps_company_id }}'
+                created: '{{ _ps_created }}'
+                skipped: '{{ _ps_skipped }}'
+                failed: '{{ _ps_failed }}'
+              error: '{{ none if _ps_failed | length == 0 else ("Failed to create: " ~ _ps_failed | join(", ") ~ " — check Twenty API logs") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: person_link ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "person_link" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or person_entity_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: person_link
+                  error: item_id (Twenty contact UUID) and person_entity_id (HA person entity ID) are both required
+            - stop: return
+              response_variable: final_response
+
+        # validate entity exists and is a person domain entity
+        - variables:
+            _plink_state: '{{ states(person_entity_id_norm) }}'
+            _plink_valid: '{{ person_entity_id_norm.startswith("person.") and states(person_entity_id_norm) not in ["unknown", "unavailable", ""] }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _plink_valid }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: person_link
+                  error: 'HA person entity "{{ person_entity_id_norm }}" not found or not in person.* domain. Use inspect mode=person_list to see available person entities.'
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _plink_adv
+          continue_on_error: true
+          data:
+            action_type: patch
+            endpoint: 'people/{{ item_id_norm }}'
+            payload: '{{ {"haPersonId": person_entity_id_norm} | tojson }}'
+
+        - variables:
+            _plink_ok: '{{ _plink_adv is mapping and _plink_adv.get("status") == "success" }}'
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _plink_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: person_link
+              result:
+                contact_id: '{{ item_id_norm }}'
+                ha_person_id: '{{ person_entity_id_norm }}'
+                ha_zone: '{{ _plink_state }}'
+                linked: '{{ _plink_ok }}'
+              error: '{{ none if _plink_ok else ("patch failed — HTTP " ~ _plink_adv.get("http_status","?") ~ " — run provision_schema first to create haPersonId field") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: contact_link ───────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "contact_link" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or company_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: contact_link
+                  error: item_id (person UUID) and company_id (company UUID) are both required
+            - stop: return
+              response_variable: final_response
+
+        - variables:
+            _cl_patch: >-
+              {%- set d = {'companyId': company_id_norm} -%}
+              {%- if role_norm != '' -%}{%- set d = d | combine({'jobTitle': role_norm}) -%}{%- endif -%}
+              {{ d | tojson }}
+
+        - action: script.zen_sutra_twenty
+          response_variable: _cl_adv
+          continue_on_error: true
+          data:
+            action_type: patch
+            endpoint: 'people/{{ item_id_norm }}'
+            payload: '{{ _cl_patch }}'
+
+        - variables:
+            _cl_ok: '{{ _cl_adv is mapping and _cl_adv.get("status") == "success" }}'
+            _cl_note_id: ''
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cl_ok and note_body_norm != "" }}'
+            sequence:
+            - variables:
+                _cl_note_title: '{{ ("Linked — " ~ role_norm) if role_norm != "" else ("Note — " ~ now().strftime("%Y-%m-%d")) }}'
+            - action: script.zen_sutra_twenty
+              response_variable: _cl_note_adv
+              continue_on_error: true
+              data:
+                action_type: post
+                endpoint: notes
+                payload: >-
+                  {{ {'title': _cl_note_title, 'bodyV2': {'blocknote': none, 'markdown': note_body_norm}} | tojson }}
+            - variables:
+                _cl_note_id: >-
+                  {{ ((_cl_note_adv.get('result', {}) or {}).get('content', {}) or {}).get('id', '') if _cl_note_adv is mapping else '' }}
+            - action: script.zen_sutra_twenty
+              continue_on_error: true
+              data:
+                action_type: post
+                endpoint: noteTargets
+                payload: "{{ {'noteId': _cl_note_id, 'targetPersonId': item_id_norm} | tojson }}"
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _cl_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: contact_link
+              result:
+                person_id: '{{ item_id_norm }}'
+                company_id: '{{ company_id_norm }}'
+                role: '{{ role_norm }}'
+                linked: '{{ _cl_ok }}'
+                note_id: '{{ _cl_note_id }}'
+              error: '{{ none if _cl_ok else ("patch failed — HTTP " ~ _cl_adv.get("http_status","?") if _cl_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: people_home ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "people_home" }}'
+        sequence:
+        # Step 1: enumerate HA person entities by zone
+        - variables:
+            _ph_home: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for s in states.person -%}
+                {%- if s.state == zone_norm -%}
+                  {%- set _ns.out = _ns.out + [{'entity_id': s.entity_id, 'name': s.name, 'zone': s.state}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _ph_away: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for s in states.person -%}
+                {%- if s.state != zone_norm -%}
+                  {%- set _ns.out = _ns.out + [{'entity_id': s.entity_id, 'name': s.name, 'zone': s.state}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        # Step 2: query Twenty for all contacts with haPersonId linking to HA
+        - action: script.zen_sutra_twenty
+          response_variable: _ph_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'people?filter=haPersonId[ilike]:%person.%&limit=100'
+
+        - variables:
+            _ph_linked: >-
+              {%- set body = _ph_adv.get('result', {}).get('content', {}) if _ph_adv is mapping else {} -%}
+              {{ body.get('data', {}).get('people', []) if body is mapping else [] }}
+
+        # Step 3: cross-reference home persons with linked contacts
+        - variables:
+            _ph_home_enriched: >-
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for p in _ph_home -%}
+                {%- set eid = p.get('entity_id', '') -%}
+                {%- set _cns = namespace(contact=none) -%}
+                {%- for c in _ph_linked -%}
+                  {%- if c is mapping and c.get('haPersonId', '') == eid -%}
+                    {%- set nm = c.get('name', {}) if c.get('name') is mapping else {} -%}
+                    {%- set em = c.get('emails', {}) if c.get('emails') is mapping else {} -%}
+                    {%- set _cns.contact = {'id': c.get('id',''), 'name': ((nm.get('firstName','') ~ ' ' ~ nm.get('lastName','')) | trim), 'email': em.get('primaryEmail',''), 'ha_labels': c.get('haLabels','')} -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set _ns.out = _ns.out + [p | combine({'contact': _cns.contact})] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: people_home
+              result:
+                zone: '{{ zone_norm }}'
+                home: '{{ _ph_home_enriched }}'
+                home_count: '{{ _ph_home_enriched | length }}'
+                away: '{{ _ph_away }}'
+                away_count: '{{ _ph_away | length }}'
+                linked_contacts_found: '{{ _ph_linked | length }}'
+              error: null
+        - stop: return
+          response_variable: final_response
+
+    # ── case: stacks_by_anchor ─────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "stacks_by_anchor" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or anchor_type_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: stacks_by_anchor
+                  error: item_id and anchor_type (company or person) are required
+            - stop: return
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ anchor_type_norm == "company" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _sba_co_adv
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'companies/{{ item_id_norm }}'
+            - variables:
+                _sba_co_body: >-
+                  {%- if _sba_co_adv is mapping and "result" in _sba_co_adv and "content" in _sba_co_adv["result"] -%}
+                    {{ _sba_co_adv["result"]["content"] }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+            - variables:
+                _sba_co: >-
+                  {{ _sba_co_body.get('data', {}).get('company', {}) if _sba_co_body is mapping else {} }}
+            - action: script.zen_sutra_twenty
+              response_variable: _sba_nt_adv
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'noteTargets?filter=targetCompanyId[eq]:{{ item_id_norm }}&limit=5'
+            - variables:
+                _sba_nt_body: >-
+                  {%- if _sba_nt_adv is mapping and "result" in _sba_nt_adv and "content" in _sba_nt_adv["result"] -%}
+                    {{ _sba_nt_adv["result"]["content"] }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+            - variables:
+                _sba_note_ids: >-
+                  {%- set _ns = namespace(ids=[]) -%}
+                  {%- for nt in (_sba_nt_body.get('data', {}).get('noteTargets', []) if _sba_nt_body is mapping else []) -%}
+                    {%- if nt is mapping and nt.get('noteId','') != '' -%}
+                      {%- set _ns.ids = _ns.ids + [nt.get('noteId')] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.ids }}
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ (_sba_note_ids | length) > 0 }}'
+                sequence:
+                - action: script.zen_sutra_twenty
+                  response_variable: _sba_notes_adv
+                  continue_on_error: true
+                  data:
+                    action_type: get
+                    endpoint: 'notes?filter=id[in]:{{ _sba_note_ids | tojson }}&order_by=createdAt[DescNullsLast]&limit=5'
+                - variables:
+                    _sba_notes_body: >-
+                      {%- if _sba_notes_adv is mapping and "result" in _sba_notes_adv and "content" in _sba_notes_adv["result"] -%}
+                        {{ _sba_notes_adv["result"]["content"] }}
+                      {%- else -%}{{ {} }}{%- endif -%}
+                - variables:
+                    _sba_notes_list: >-
+                      {{ _sba_notes_body.get('data', {}).get('notes', []) if _sba_notes_body is mapping else [] }}
+              default:
+              - variables:
+                  _sba_notes_list: []
+            - variables:
+                final_response:
+                  status: success
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: stacks_by_anchor
+                  result:
+                    anchor_type: company
+                    anchor_id: '{{ item_id_norm }}'
+                    content_redacted: true
+                    company:
+                      id: '{{ _sba_co.get("id","") if _sba_co is mapping else "" }}'
+                      name: '{{ _sba_co.get("name","") if _sba_co is mapping else "" }}'
+                      domain: >-
+                        {{ _sba_co.get("domainName",{}).get("primaryLinkUrl","") if _sba_co is mapping and _sba_co.get("domainName") is mapping else "" }}
+                    notes: >-
+                      {%- set _ns = namespace(out=[]) -%}
+                      {%- for n in _sba_notes_list -%}
+                        {%- if n is mapping -%}
+                          {%- set _ns.out = _ns.out + [{'id': n.get('id',''), 'title': n.get('title',''), 'created_at': n.get('createdAt','')}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ _ns.out }}
+                    note_count: '{{ _sba_notes_list | length }}'
+                  error: null
+            - stop: return
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ anchor_type_norm == "person" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _sba_p_adv
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'people/{{ item_id_norm }}'
+            - variables:
+                _sba_p_body: >-
+                  {%- if _sba_p_adv is mapping and "result" in _sba_p_adv and "content" in _sba_p_adv["result"] -%}
+                    {{ _sba_p_adv["result"]["content"] }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+            - variables:
+                _sba_p: >-
+                  {{ _sba_p_body.get('data', {}).get('person', {}) if _sba_p_body is mapping else {} }}
+                _sba_p_company_id: '{{ _sba_p_body.get("data", {}).get("person", {}).get("companyId", "") if _sba_p_body is mapping else "" }}'
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ _sba_p_company_id != "" }}'
+                sequence:
+                - action: script.zen_sutra_twenty
+                  response_variable: _sba_pco_adv
+                  continue_on_error: true
+                  data:
+                    action_type: get
+                    endpoint: 'companies/{{ _sba_p_company_id }}'
+                - variables:
+                    _sba_pco_body: >-
+                      {%- if _sba_pco_adv is mapping and "result" in _sba_pco_adv and "content" in _sba_pco_adv["result"] -%}
+                        {{ _sba_pco_adv["result"]["content"] }}
+                      {%- else -%}{{ {} }}{%- endif -%}
+                - variables:
+                    _sba_pco_name: >-
+                      {{ _sba_pco_body.get('data', {}).get('company', {}).get('name', '') if _sba_pco_body is mapping else '' }}
+              default:
+              - variables:
+                  _sba_pco_name: ''
+            - variables:
+                _sba_nm: '{{ _sba_p.get("name", {}) if _sba_p is mapping and _sba_p.get("name") is mapping else {} }}'
+            - variables:
+                final_response:
+                  status: success
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: stacks_by_anchor
+                  result:
+                    anchor_type: person
+                    anchor_id: '{{ item_id_norm }}'
+                    content_redacted: true
+                    contact:
+                      id: '{{ _sba_p.get("id","") if _sba_p is mapping else "" }}'
+                      name: >-
+                        {{ ((_sba_nm.get("firstName","") ~ " " ~ _sba_nm.get("lastName","")) | trim) if _sba_nm is mapping else "" }}
+                      email: >-
+                        {{ _sba_p.get("emails",{}).get("primaryEmail","") if _sba_p is mapping and _sba_p.get("emails") is mapping else "" }}
+                      phone: >-
+                        {{ _sba_p.get("phones",{}).get("primaryPhoneNumber","") if _sba_p is mapping and _sba_p.get("phones") is mapping else "" }}
+                      job_title: '{{ _sba_p.get("jobTitle","") if _sba_p is mapping else "" }}'
+                      company_id: '{{ _sba_p_company_id }}'
+                      company: '{{ _sba_pco_name }}'
+                  error: null
+            - stop: return
+              response_variable: final_response
+          default:
+          - variables:
+              final_response:
+                status: error
+                tool: '{{ tool_name }}'
+                case: stacks_by_anchor
+                error: '{{ "unsupported anchor_type: " ~ anchor_type_norm ~ ". Supported: company, person" }}'
+          - stop: return
+            response_variable: final_response
+
+    # ── case: area_vendors ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "area_vendors" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ area_id_norm == "" and item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: area_vendors
+                  error: area_id (HA area ID) or item (label slug) is required
+            - stop: return
+              response_variable: final_response
+
+        # If area_id provided, get area labels via inspect
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ area_id_norm != "" }}'
+            sequence:
+            - action: script.zen_dojotools_inspect
+              response_variable: _av_inspect
+              continue_on_error: true
+              data:
+                mode: area_info
+                target_area_id: '{{ area_id_norm }}'
+
+        - variables:
+            _av_area_labels_raw: >-
+              {%- if area_id_norm != "" and _av_inspect is defined and _av_inspect is mapping -%}
+                {%- set r = _av_inspect.get('result', _av_inspect) -%}
+                {{ r.get('labels', []) if r is mapping else [] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+
+        # Merge area labels + explicit item label (if provided)
+        - variables:
+            _av_labels: >-
+              {%- set _ns = namespace(out=_av_area_labels_raw if _av_area_labels_raw is sequence else []) -%}
+              {%- if item_norm != "" and item_norm not in _ns.out -%}
+                {%- set _ns.out = _ns.out + [item_norm] -%}
+              {%- endif -%}
+              {{ _ns.out if _ns.out | length > 0 else ([item_norm] if item_norm != "" else []) }}
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _av_labels | length == 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: area_vendors
+                  error: 'Could not resolve labels for area_id="{{ area_id_norm }}". Check area_id or pass item=label_slug directly.'
+            - stop: return
+              response_variable: final_response
+
+        # Build OR filter string for Twenty query
+        - variables:
+            _av_filter: >-
+              {%- set _ns = namespace(parts=[]) -%}
+              {%- for lbl in _av_labels -%}
+                {%- set _ns.parts = _ns.parts + ['haLabels[ilike]:%' ~ lbl ~ '%'] -%}
+              {%- endfor -%}
+              {%- if _ns.parts | length == 1 -%}
+                {{ _ns.parts[0] }}
+              {%- else -%}
+                or({{ _ns.parts | join(',') }})
+              {%- endif -%}
+
+        - action: script.zen_sutra_twenty
+          response_variable: _av_comp_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'companies?filter={{ _av_filter }}&limit={{ limit_norm }}'
+
+        - action: script.zen_sutra_twenty
+          response_variable: _av_cont_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'people?filter={{ _av_filter }}&limit={{ limit_norm }}'
+
+        - variables:
+            _av_comp_body: >-
+              {%- if _av_comp_adv is mapping and "result" in _av_comp_adv and "content" in _av_comp_adv["result"] -%}
+                {{ _av_comp_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _av_cont_body: >-
+              {%- if _av_cont_adv is mapping and "result" in _av_cont_adv and "content" in _av_cont_adv["result"] -%}
+                {{ _av_cont_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+
+        - variables:
+            _av_companies: >-
+              {%- set list = _av_comp_body.get('data', {}).get('companies', []) if _av_comp_body is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for co in list -%}
+                {%- if co is mapping -%}
+                  {%- set dom = co.get('domainName', {}) if co.get('domainName') is mapping else {} -%}
+                  {%- set _ns.out = _ns.out + [{'id': co.get('id',''), 'name': co.get('name',''), 'domain': dom.get('primaryLinkUrl',''), 'ha_labels': co.get('haLabels','')}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _av_contacts: >-
+              {%- set list = _av_cont_body.get('data', {}).get('people', []) if _av_cont_body is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for p in list -%}
+                {%- if p is mapping -%}
+                  {%- set nm = p.get('name', {}) if p.get('name') is mapping else {} -%}
+                  {%- set em = p.get('emails', {}) if p.get('emails') is mapping else {} -%}
+                  {%- set _ns.out = _ns.out + [{'id': p.get('id',''), 'name': ((nm.get('firstName','') ~ ' ' ~ nm.get('lastName','')) | trim), 'email': em.get('primaryEmail',''), 'ha_labels': p.get('haLabels','')}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+
+        - variables:
+            _av_area_name: >-
+              {%- if _av_inspect is defined and _av_inspect is mapping -%}
+                {%- set r = _av_inspect.get('result', _av_inspect) -%}
+                {{ r.get('name', area_id_norm) if r is mapping else area_id_norm }}
+              {%- else -%}{{ area_id_norm }}{%- endif -%}
+
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: area_vendors
+              result:
+                area_id: '{{ area_id_norm }}'
+                area_name: '{{ _av_area_name }}'
+                labels_checked: '{{ _av_labels }}'
+                companies: '{{ _av_companies }}'
+                contacts: '{{ _av_contacts }}'
+                companies_count: '{{ _av_companies | length }}'
+                contacts_count: '{{ _av_contacts | length }}'
+              error: null
+        - stop: return
+          response_variable: final_response
+
+    # ── case: vendor_link ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "vendor_link" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or grocy_entity_norm == "" or grocy_id_norm == 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: vendor_link
+                  error: item_id (CRM company UUID), grocy_entity (shopping_lists or shopping_locations), and grocy_id (integer) are all required
+            - stop: return
+              response_variable: final_response
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ grocy_entity_norm not in ["shopping_lists", "shopping_locations"] }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: vendor_link
+                  error: '{{ "grocy_entity must be shopping_lists or shopping_locations, got: " ~ grocy_entity_norm }}'
+            - stop: return
+              response_variable: final_response
+
+        # zen_sutra_grocy called directly (not via zen_dojotools_inventory) — intentional sutra
+        # exception: vendor_link writes a raw userfield (crm_company_id) that inventory doesn't expose.
+        - action: script.zen_sutra_grocy
+          response_variable: _vl_put_raw
+          continue_on_error: true
+          data:
+            action_type: update
+            endpoint: 'userfields/{{ grocy_entity_norm }}/{{ grocy_id_norm }}'
+            payload: '{{ {"crm_company_id": item_id_norm} | tojson }}'
+
+        - variables:
+            _vl_ok: '{{ _vl_put_raw is mapping and _vl_put_raw.get("status","") == "success" }}'
+            _vl_http: >-
+              {%- if _vl_put_raw is mapping and _vl_put_raw.get('result') is not none -%}
+                {{ _vl_put_raw['result'].status | default(0) | int(0) }}
+              {%- else -%}0{%- endif -%}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _vl_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: vendor_link
+              result:
+                entity: '{{ grocy_entity_norm }}'
+                record_id: '{{ grocy_id_norm }}'
+                crm_company_id: '{{ item_id_norm }}'
+                linked: '{{ _vl_ok }}'
+                http_status: '{{ _vl_http }}'
+              error: >-
+                {%- if not _vl_ok -%}
+                  Grocy PUT failed{{ (" (http " ~ _vl_http ~ ")") if _vl_http > 0 else "" }}{{ (": " ~ _vl_put_raw.get("message","")) if _vl_put_raw is mapping and _vl_put_raw.get("message","") != "" else "" }}
+                {%- else -%}{{ none }}{%- endif -%}
+        - stop: return
+          response_variable: final_response
+
+    # ── default: unknown case ─────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: error
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          case: '{{ case_norm }}'
+          error: 'Unknown case "{{ case_norm }}". Call mode=help for available cases.'
+    - stop: return
+      response_variable: final_response
