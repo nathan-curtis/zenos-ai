@@ -283,7 +283,6 @@ packages/zenos_ai/
     paperless_ngx/paperless_ngx.yaml
     twenty/twenty.yaml
     firefly_iii/firefly_iii.yaml
-    project/project.yaml
 
 custom_templates/zenos_ai/
   zen_os_1.jinja               — Prompt engine and macro library
