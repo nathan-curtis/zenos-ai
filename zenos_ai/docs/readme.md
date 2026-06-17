@@ -2,7 +2,7 @@
 
 > **Version:** 2026.7.0 'Neo' | **Last Updated:** Jun 2026 | **License:** MIT
 >
-> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.6.0` is the June release 'Clue'. A new month resets to `.0`.*
+> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 
 → [Project Overview & Install](../../README.md)
 
@@ -167,7 +167,8 @@ Files:
 
 * `zen_os1_jinja.md` — Core prompt assembly engine
 * `zen_query_jinja.md` — ZQ-1 filter engine
-* `zenos_cabinets_jinja.md` — Cabinet macro library (new in 2026.4.0): canonical safe drawer I/O, FG-38 normalization encapsulated
+* `zenos_cabinets_jinja.md` — Cabinet macro library: canonical safe drawer I/O, FG-38 normalization encapsulated
+* `zenos_manifest_jinja.md` — Tool manifest macro (`MF.tool_manifest()`): every compliant tool self-describes via this contract
 
 This suite defines how Friday constructs her thoughts.
 

@@ -218,7 +218,7 @@ packages/zenos_ai/
 
   dojotools/
     — Core infrastructure —
-    dojotools_filecabinet.yaml — FileCabinet v4 — typed drawer I/O
+    dojotools_filecabinet.yaml — FileCabinet v6.2.0 — CabCeption nested drawer trees, VirtualDrawer, LiveDrawer
     dojotools_core.yaml        — Core operations + FileCabinet GC
     dojotools_scheduler.yaml   — Scheduled automation triggers
     dojotools_manifest.yaml    — Manifest engine
@@ -290,15 +290,20 @@ custom_templates/zenos_ai/
   zen_query.jinja              — ZenQuery filter engine
   zenos_cabinets.jinja         — Cabinet macro library (safe drawer I/O, FG-38 normalization)
   zen_identity.jinja           — Template-surface identity resolver (Jinja2 contexts, sensors, cortex macros)
+  zenos_manifest.jinja         — Tool manifest macro: MF.tool_manifest() — every tool self-describes
+  zenos_health.jinja           — Health template surface
+  flynn_onboarding.jinja       — Flynn first-boot onboarding flow
   library_index.jinja          — Library index
   conversation_agent_prompt_template.yaml — Paste into conversation agent system prompt
 ```
 
 ---
 
-# FileCabinet v4
+# FileCabinet v6.2.0
 
 FileCabinet provides the **structured storage interface** for ZenOS-AI. Every memory slot accessible to AI agents is stored as a **Drawer** within a **Cabinet** — typed, described, and garbage-collected on a 15-minute cycle. Drawers follow a Unix-style visibility model: active (`foo`), hidden (`.foo`), system-protected (`_foo`). Described drawers receive full context access; undescribed drawers are truncated.
+
+v6.2.0 introduces **CabCeption** — nested drawer trees via `/` path separator. A drawer is now a node in a graph: it carries meta, labels, and children at every level. Three drawer types compose the graph: **StaticDrawer** (key-value, as before), **VirtualDrawer** (softlink to another cabinet path), and **LiveDrawer** (KF4 schema absorbed into a drawer — fires a tool call on read, warm cache auto-expiring, never returns empty).
 
 → **[FileCabinet Reference](zenos_ai/docs/scripts/zen_dojotools_filecabinet_readme.md)**
 
