@@ -5,6 +5,8 @@
 **Primary script:** `zen_dojotools_finance`  
 **Internal REST dispatcher:** `zen_sutra_firefly`
 
+> **v.next:** This plugin ships with standard DojoTools patterns (tool_manifest, caller_token, from_json guards, sutra dispatcher). A deeper refactor is queued for v.next — endpoint coverage, cabinet-backed config, and Lens Bus integration.
+
 ---
 
 ## Overview
