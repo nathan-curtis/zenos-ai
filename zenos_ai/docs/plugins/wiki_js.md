@@ -1,10 +1,12 @@
 # ZenOS-AI Wiki.js Plugin
 
-**Version:** 0.4.0
-**Package:** `packages/zenos_ai/plugins/wiki_js/dojotools_wikijs.yaml`
-**Public surface:** `zen_dojotools_filecabinet` with `stack=wiki`
-**Internal sutra:** `zen_sutra_wikijs` (not MCP-exposed)
+**Version:** 0.4.1  
+**Package:** `packages/zenos_ai/plugins/wiki_js/dojotools_wikijs.yaml`  
+**Public surface:** `zen_dojotools_filecabinet` with `stack=wiki`  
+**Internal sutra:** `zen_sutra_wikijs` (provider_key: `wiki_js`, not MCP-exposed)  
 **Internal GraphQL broker:** `zen_dojotools_wikijs_root` (not MCP-exposed)
+
+> **Auto-registration (2026.7.0):** `zen_sutra_wikijs` now participates in Lens Bus bootstrap registration. On every HA boot, `zen_dojotools_manifest mode=bootstrap_stacks` discovers and registers it automatically. See [Lens Bus Auto-Registration](lens_bus_autoreg.md).
 
 ---
 

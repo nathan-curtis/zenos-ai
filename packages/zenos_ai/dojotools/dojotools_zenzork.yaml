@@ -1,13 +1,13 @@
 ###############################################################################
 # DojoTools — ZenZork Adventure Engine
-# zen_dojotools_zenzork (v1.1.0)
+# zen_dojotools_zenzork (v1.5.0)
 #
 # Text adventure engine using live RM room_topology as the dungeon.
 # Portal bearings drive navigation. Narration is grounded in live HA state.
 # Game state stored in ai_cabinet drawer: zenzork_state.
 #
-# Modes: start, look, go, examine, map, status, stop, help, quest,
-#        setup, tool_manifest
+# Modes: start, look, go, face/turn, wait, again/g, examine, map,
+#        status/score, stop, help, quest, setup, tool_manifest
 # Setup: commissioning checklist + direct portal setter + north calibration.
 #        Trojan interactive wizard: v1.2 scope.
 # Quest: pluggable win conditions — explore_all, discover_all_landmarks,
@@ -25,16 +25,21 @@ script:
   zen_dojotools_zenzork:
     alias: "Zen ZenZork Adventure Engine"
     description: >-
-      ZenZork (1.1.0) — Text adventure engine using live RM topology as dungeon.
+      ZenZork (1.5.0) — Text adventure engine using live RM topology as dungeon.
       Game state in ai_cabinet drawer: zenzork_state. Narrator styles: zork (dry/sardonic),
       dungeon (DUNGEONMIND — overwrought fantasy), straight (evidence-only).
-      mode=start: seed or resume session (drops player at front_hall).
-      mode=look: narrate current room from live RM state.
+      mode=start: seed or resume session. mode=look: narrate current room.
       mode=go direction=X: move via compass/bearing/relative/room name. Auto-narrates arrival.
+      mode=face direction=X: turn to face a direction without moving (alias: turn).
+      mode=wait: re-narrate current room (time passes).
+      mode=again: repeat last go or face command (alias: g).
+      mode=take target=X: pick up a landmark item (alias: get). mode=drop target=X: drop item.
+      mode=inventory: list carried items (alias: i).
+      mode=open/close target=X: interact with portal or entity landmark. mode=use target=X: entity dispatcher — light/cover/switch by domain, examine fallback.
       mode=examine target=X: inspect landmark or entity via lens bus.
       mode=quest quest_goal=X: set a win condition (explore_all, discover_all_landmarks, reach:area_id).
-      mode=map: list of explored rooms with exit counts. mode=status: session summary.
-      mode=stop: save session and end. mode=help: full mode list + navigation tips.
+      mode=map: explored rooms. mode=status/score: session summary.
+      mode=stop: save and end. mode=help: full mode list + navigation tips.
     icon: mdi:castle
     mode: queued
     max: 5
@@ -49,9 +54,22 @@ script:
               - start
               - look
               - go
+              - face
+              - wait
+              - again
+              - take
+              - drop
+              - inventory
+              - open
+              - close
+              - use
+              - put
+              - push
+              - pull
               - examine
               - map
               - status
+              - score
               - stop
               - help
               - setup
@@ -92,6 +110,37 @@ script:
         description: "mode=setup: response to the current wizard question."
         selector:
           text:
+      game_mode:
+        name: Game Mode
+        description: "start: free_roam (default), treasure_hunt, timed_treasure_hunt."
+        selector:
+          select:
+            options:
+              - free_roam
+              - treasure_hunt
+              - timed_treasure_hunt
+      move_limit:
+        name: Move Limit
+        description: "timed_treasure_hunt: max moves before game over. Default 20."
+        selector:
+          number:
+            min: 5
+            max: 100
+            step: 5
+      harassment_freq:
+        name: Harassment Frequency
+        description: "Moves between taunts. 0=off, 3=brutal, 5=default, 10=gentle."
+        selector:
+          number:
+            min: 0
+            max: 20
+            step: 1
+      difficulty:
+        name: Difficulty
+        description: "start: treasure placement distance. easy=1+ hops, normal=2+ hops, hard=3+ hops."
+        selector:
+          select:
+            options: [easy, normal, hard]
       caller_token:
         name: Caller Token
         description: "Optional governance token — echoed in responses."
@@ -103,14 +152,26 @@ script:
       # 0. Normalize inputs
       # ═══════════════════════════════════════════════════════════════════════
       - variables:
-          _mode:         "{{ mode | default('look') | string | lower | trim }}"
+          _mode:         >-
+            {%- set _m = mode | default('look') | string | lower | trim -%}
+            {%- if _m == 'turn' -%}face
+            {%- elif _m == 'g' -%}again
+            {%- elif _m == 'get' -%}take
+            {%- elif _m == 'i' -%}inventory
+            {%- elif _m == 'unlock' -%}open
+            {%- elif _m in ['lock', 'shut'] -%}close
+            {%- else -%}{{ _m }}{%- endif -%}
           _direction:    "{{ direction | default('') | string | trim }}"
           _target:       "{{ target | default('') | string | trim }}"
           _player_input: "{{ player | default('') | string | trim }}"
           _caller_token: "{{ caller_token | default('') | string | trim }}"
           _narrator:     "{{ narrator | default('zork') | string | lower | trim }}"
           _quest_goal:   "{{ quest_goal | default('') | string | trim }}"
-          _answer:       "{{ answer | default('') | string | trim }}"
+          _answer:            "{{ answer | default('') | string | trim }}"
+          _game_mode_input:   "{{ game_mode | default('') | string | lower | trim }}"
+          _move_limit_input:  "{{ move_limit | default(20) | int(20) }}"
+          _harassment_input:  "{{ harassment_freq | default(5) | int(5) }}"
+          _difficulty_input:  "{{ difficulty | default('normal') | string | lower | trim }}"
 
       # ─── 0a. Compass point table (shared) ────────────────────────────────
       - variables:
@@ -148,7 +209,7 @@ script:
                     tool='zen_dojotools_zenzork',
                     display_name='ZenZork Adventure Engine',
                     tier='dojotools',
-                    version='1.1.0',
+                    version='1.5.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=[],
                     optional_labels=['room_manager'],
@@ -170,7 +231,7 @@ script:
               {%- set _sv = state_attr(_sys_cabinet, 'variables') | default({}, true) -%}
               {%- set _pu_raw = (_sv.get('primary_user') or {}) if _sv is mapping else {} -%}
               {%- set _pu = (_pu_raw.get('value', '') if _pu_raw is mapping else '') | string | trim -%}
-              {{ _pu if _pu else 'nathan' }}
+              {{ _pu if _pu else 'player' }}
             {%- endif -%}
 
       # ─── 0e. Guard: ai_cabinet required ───────────────────────────────────
@@ -209,6 +270,31 @@ script:
           _quest:        "{{ _gs.get('quest', '') | string | trim }}"
           _quest_won:    "{{ _gs.get('quest_won', false) | bool }}"
           _examined:     "{{ _gs.get('examined', []) | list }}"
+          _last_cmd:     "{{ (_gs if _gs is mapping else {}).get('last_cmd', {}) }}"
+
+      - variables:
+          _game_mode_gs:  "{{ (_gs if _gs is mapping else {}).get('game_mode', 'free_roam') | string | trim }}"
+          _move_limit_gs: "{{ (_gs if _gs is mapping else {}).get('move_limit', 20) | int(20) }}"
+          _harassment_gs: "{{ (_gs if _gs is mapping else {}).get('harassment_freq', 5) | int(5) }}"
+      - variables:
+          _treasure: "{{ ((_gs if _gs is mapping else {}).get('treasure') or {}) }}"
+      - variables:
+          _treasure_name:  "{{ (_treasure if _treasure is mapping else {}).get('name', '') }}"
+          _treasure_room:  "{{ (_treasure if _treasure is mapping else {}).get('room', '') }}"
+          _treasure_found: "{{ (_treasure if _treasure is mapping else {}).get('found', false) | bool }}"
+
+      # ─── 0g. Resolve again/g → substitute last command ─────────────────
+      # Two steps: direction first (needs old _mode), then _mode overwrite.
+      - variables:
+          _direction: >-
+            {%- if _mode == 'again' -%}
+              {{ (_last_cmd if _last_cmd is mapping else {}).get('direction', '') }}
+            {%- else -%}{{ _direction }}{%- endif -%}
+      - variables:
+          _mode: >-
+            {%- if _mode == 'again' -%}
+              {{ (_last_cmd if _last_cmd is mapping else {}).get('mode', 'look') }}
+            {%- else -%}{{ _mode }}{%- endif -%}
 
       # ═══════════════════════════════════════════════════════════════════════
       # 1. HELP
@@ -223,24 +309,63 @@ script:
                 current_room: "{{ _current_room }}"
                 facing_compass: "{{ _cpts[((_facing - _cal + 371.25) % 360 // 22.5) | int] }}"
                 message: >-
-                  ZenZork v1.0.0 — text adventure on your actual home.
+                  ZenZork v1.5.0 — text adventure engine running on live home sensor topology.
+                  Narrator: DUNGEONMIND (Primal AI, IBM AT 5170, binding active since 1984).
 
-                  Modes:
-                    start            — begin or resume session (drops at front_hall)
-                    look             — describe current room from live state
+                  ── Core Modes ──────────────────────────────────────────────────────
+                    start [game_mode=X] [difficulty=X]
+                                     — begin or resume session. game_mode: free_roam (default),
+                                       treasure_hunt, timed_treasure_hunt [move_limit=N].
+                                       difficulty: easy|normal|hard (treasure placement distance).
+                    look             — narrate current room from live state (hot/cold if hunting)
                     go direction=X   — move through a portal
+                    face direction=X — turn without moving (alias: turn)
+                    wait             — re-narrate current room (time passes)
+                    again            — repeat last go or face command (alias: g)
+                    status / score   — session summary (room, moves, facing, quest, game mode)
+                    stop             — save session, end, show gap report
+                    help             — this text
+
+                  ── Item Commands ────────────────────────────────────────────────────
+                    take target=X    — pick up a landmark item (alias: get)
+                    drop target=X    — drop a carried item
+                    inventory        — list carried items (alias: i)
+                    put item=X [preposition=X] [container=X]
+                                     — place item relative to fixture
+                    push target=X / pull target=X
+                                     — apply force to a portal or fixture
+
+                  ── Interaction Commands ─────────────────────────────────────────────
                     examine target=X — inspect landmark or entity via lens bus
-                    map              — explored rooms list with exit counts
-                    status           — session summary (room, moves, facing)
-                    stop             — save session and end
+                    open target=X / close target=X
+                                     — interact with portal or entity landmark
+                    use target=X [item=X]
+                                     — entity dispatcher (light/cover/switch by domain, examine fallback)
 
-                  Navigation (direction=):
-                    Compass labels:  N NNE NE ENE E ESE SE SSE S SSW SW WSW W WNW NW NNW
-                    True bearings:   0-359 (0=north, 90=east, 180=south, 270=west)
-                    Relative:        left / right / ahead / behind (resolved from current facing)
-                    Room name:       area_id or display name of destination room
+                  ── Navigation ───────────────────────────────────────────────────────
+                    Compass:   N NNE NE ENE E ESE SE SSE S SSW SW WSW W WNW NW NNW
+                    Bearings:  0-359° (0=north, 90=east, 180=south, 270=west)
+                    Relative:  left / right / ahead / behind (resolved from current facing)
+                    Room name: area_id or display name of destination room
+                    Calibration: front door = 340° (NNW). Facing resets to reverse of exit bearing on move.
 
-                  Calibration: front door = 340° (NNW). Facing resets to reverse of exit bearing on each move.
+                  ── Quest Commands ───────────────────────────────────────────────────
+                    quest quest_goal=explore_all
+                    quest quest_goal=discover_all_landmarks
+                    quest quest_goal=reach:<area_id>
+                    quest            — show current quest status
+
+                  ── Setup / Survey ───────────────────────────────────────────────────
+                    setup answer=survey
+                                     — wizard: scan rooms with entities but no landmarks,
+                                       propose anchors one at a time, write via room_manager.
+                                       Survey state: zenzork_setup_state cabinet drawer.
+                                       (Field testing in progress — not yet fully validated.)
+
+                  ── Narrator Styles ──────────────────────────────────────────────────
+                    narrator=dungeon — DUNGEONMIND voice (default): dry, cosmic, resigned Primal AI
+                    narrator=zork    — classic Zork: second-person, sardonic, bureaucratic
+                    narrator=straight — evidence-only, no flavor
                 caller_token: "{{ _caller_token }}"
           - stop: zenzork help
             response_variable: result
@@ -248,7 +373,7 @@ script:
       # ═══════════════════════════════════════════════════════════════════════
       # 2. STATUS
       # ═══════════════════════════════════════════════════════════════════════
-      - if: "{{ _mode == 'status' }}"
+      - if: "{{ _mode in ['status', 'score'] }}"
         then:
           - variables:
               result:
@@ -263,6 +388,11 @@ script:
                 rooms_visited: "{{ _visited | length }}"
                 move_count: "{{ _move_count }}"
                 started_at: "{{ _gs.get('started_at', '') }}"
+                game_mode: "{{ _game_mode_gs }}"
+                treasure: "{{ _treasure if _game_mode_gs in ['treasure_hunt', 'timed_treasure_hunt'] else none }}"
+                move_limit: "{{ _move_limit_gs if _game_mode_gs == 'timed_treasure_hunt' else none }}"
+                moves_remaining: "{{ (_move_limit_gs - _move_count) | int if _game_mode_gs == 'timed_treasure_hunt' else none }}"
+                mpaa_rating: "{{ _mpaa_rating | default('') }}"
                 caller_token: "{{ _caller_token }}"
           - stop: zenzork status
             response_variable: result
@@ -283,11 +413,50 @@ script:
               value: "{{ _gs_end | tojson }}"
               caller_token: "{{ _caller_token }}/gs_stop"
             response_variable: _fc_stop_resp
+          # ── post-game RM quality report ───────────────────────────────────
+          - variables:
+              _stop_topo: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json(none) if _r is string and _r | trim not in ['None','none','','null'] else none) -%}
+                {%- set t = (t.get('value', t) if t is mapping else {}) if t is not none else {} -%}
+                {{ t if t is mapping else {} }}
+          - variables:
+              _stop_spatial_domains: "{{ ['light', 'media_player', 'cover', 'climate', 'switch', 'fan'] }}"
+          - variables:
+              _topo_gaps: >-
+                {%- set ns = namespace(gaps=[]) -%}
+                {%- for room_id in _visited if room_id is string -%}
+                  {%- set _rd = (_stop_topo if _stop_topo is mapping else {}).get(room_id, {}) -%}
+                  {%- set _lms = (_rd if _rd is mapping else {}).get('landmarks', []) | list -%}
+                  {%- set _ents = area_entities(room_id) | list -%}
+                  {%- set ns2 = namespace(spatial_ents=[]) -%}
+                  {%- for e in _ents -%}
+                    {%- if e.split('.')[0] in _stop_spatial_domains -%}
+                      {%- set ns2.spatial_ents = ns2.spatial_ents + [e] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if ns2.spatial_ents | length > 0 and _lms | length == 0 -%}
+                    {%- set _rn = area_name(room_id) | default(room_id | replace('_',' ') | title, true) -%}
+                    {%- set ns.gaps = ns.gaps + [_rn ~ ' (' ~ room_id ~ '): ' ~ (ns2.spatial_ents | length | string) ~ ' entities, 0 landmarks'] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.gaps }}
           - variables:
               result:
                 status: ok
                 mode: stop
-                message: "Session saved. Moves: {{ _move_count }}. Rooms explored: {{ _visited | length }}. Safe travels."
+                message: >-
+                  Session saved. Moves: {{ _move_count }}. Rooms explored: {{ _visited | length }}. Safe travels.
+                  {%- if _topo_gaps | list | length > 0 %}
+
+                  RM TOPOLOGY GAPS — rooms you visited with managed entities but no landmarks:
+                  {%- for g in _topo_gaps | list %}
+                    • {{ g }}
+                  {%- endfor %}
+
+                  Run mode=setup answer=survey to anchor these rooms and improve future narration.
+                  {%- endif %}
+                topo_gaps: "{{ _topo_gaps | list }}"
                 session_id: "{{ _session_id }}"
                 ended_at: "{{ _gs_end.get('ended_at', '') if _gs_end is mapping else '' }}"
                 caller_token: "{{ _caller_token }}"
@@ -410,6 +579,287 @@ script:
                     caller_token: "{{ _caller_token }}"
               - stop: zenzork setup portal set
                 response_variable: result
+          # ── sub-mode: landmark survey ────────────────────────────────────
+          # Entry:  answer=survey          → scan topo, build queue, present first room
+          # Commit: answer=bearing=X distance_ft=Y description=Z  → write landmark, advance
+          # Skip:   answer=skip            → defer current room, next
+          # Done:   answer=done            → save state, exit
+          - if: "{{ _answer | lower | trim in ['survey', 'next', 'skip', 'done'] or _answer | lower | trim | regex_search('^bearing=') }}"
+            then:
+              # read setup state from FC
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: get
+                  volume_entity_id: "{{ _ai_cabinet }}"
+                  key: zenzork_setup_state
+                  caller_token: "{{ _caller_token }}/setup_state_get"
+                response_variable: _fc_setup_raw
+              - variables:
+                  _setup_state: >-
+                    {%- set _r = (_fc_setup_raw if _fc_setup_raw is mapping else {}).get('result', {}) -%}
+                    {%- set _c = (_r if _r is mapping else {}).get('content', none) -%}
+                    {%- set _v = _c if _c is mapping else (_c | from_json(none) if _c is string and _c | trim not in ['','none','null','None'] else none) -%}
+                    {{ _v if _v is mapping else {} }}
+              # ── done: save and exit ───────────────────────────────────────
+              - if: "{{ _answer | lower | trim == 'done' }}"
+                then:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: setup
+                        action: survey_done
+                        done: "{{ (_setup_state if _setup_state is mapping else {}).get('done', []) | length }}"
+                        message: >-
+                          Survey saved. {{ (_setup_state if _setup_state is mapping else {}).get('done', []) | length }} rooms anchored this session.
+                          Resume any time with mode=setup answer=survey.
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork setup survey done
+                    response_variable: result
+              # ── commit answer: parse bearing=/distance_ft=/description= ──
+              - if: "{{ _answer | lower | trim | regex_search('^bearing=') }}"
+                then:
+                  - variables:
+                      _sv_current: "{{ (_setup_state if _setup_state is mapping else {}).get('current_room', '') }}"
+                      _sv_entity:  "{{ (_setup_state if _setup_state is mapping else {}).get('current_entity', '') }}"
+                      _sv_ans:     "{{ _answer | string | trim }}"
+                  - variables:
+                      _sv_bearing: >-
+                        {%- set _m = _sv_ans | regex_findall('bearing=(\d+)') -%}
+                        {{ _m[0] | int(-1) if _m else -1 }}
+                      _sv_dist: >-
+                        {%- set _m = _sv_ans | regex_findall('distance_ft=(\d+\.?\d*)') -%}
+                        {{ _m[0] | float(5.0) if _m else 5.0 }}
+                      _sv_desc: >-
+                        {%- set _m = _sv_ans | regex_findall('description=(.+)') -%}
+                        {{ _m[0] | trim if _m else _sv_entity | replace('_',' ') | replace('.',' ') | trim }}
+                  - if: "{{ _sv_bearing < 0 or _sv_bearing > 359 or _sv_current == '' }}"
+                    then:
+                      - variables:
+                          result:
+                            status: error
+                            mode: setup
+                            message: >-
+                              Bad input. Format: answer=bearing=<0-359> distance_ft=<ft> description=<one sentence>
+                              Example: answer=bearing=270 distance_ft=8 description=TV on west wall
+                            caller_token: "{{ _caller_token }}"
+                      - stop: zenzork setup survey bad input
+                        response_variable: result
+                  # write landmark to room_manager
+                  - variables:
+                      _sv_lm_name: "{{ _sv_entity.split('.')[1] | replace('_lights','') | replace('_light','') if '.' in _sv_entity else _sv_entity }}"
+                  - action: script.zen_dojotools_room_manager
+                    data:
+                      mode: set
+                      area: "{{ _sv_current }}"
+                      landmark_name: "{{ _sv_lm_name }}"
+                      landmark_bearing: "{{ _sv_bearing | int }}"
+                      landmark_distance_ft: "{{ _sv_dist | float }}"
+                      landmark_description: "{{ _sv_desc }}"
+                      landmark_entity_id: "{{ _sv_entity }}"
+                      caller_token: "{{ _caller_token }}/setup_lm"
+                    response_variable: _rm_lm_resp
+                    continue_on_error: true
+                  # advance queue: pop current_room from pending, add to done
+                  - variables:
+                      _sv_pending_new: >-
+                        {{ ((_setup_state if _setup_state is mapping else {}).get('pending', []) | list)
+                           | reject('equalto', _sv_current) | list }}
+                      _sv_done_new: >-
+                        {{ ((_setup_state if _setup_state is mapping else {}).get('done', []) | list) + [_sv_current] }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: upsert
+                      volume_entity_id: "{{ _ai_cabinet }}"
+                      key: zenzork_setup_state
+                      value: "{{ {'pending': _sv_pending_new, 'done': _sv_done_new, 'current_room': '', 'current_entity': ''} | tojson }}"
+                      caller_token: "{{ _caller_token }}/setup_state_save"
+                    response_variable: _fc_sv_save
+                  - variables:
+                      _setup_state: "{{ {'pending': _sv_pending_new, 'done': _sv_done_new, 'current_room': '', 'current_entity': ''} }}"
+              # ── build / refresh pending queue (survey, skip, or just committed) ─
+              - if: "{{ _answer | lower | trim in ['survey', 'next', 'skip'] or _answer | lower | trim | regex_search('^bearing=') }}"
+                then:
+                  # skip: move current_room to back of pending
+                  - if: "{{ _answer | lower | trim == 'skip' }}"
+                    then:
+                      - variables:
+                          _sv_skip_room: "{{ (_setup_state if _setup_state is mapping else {}).get('current_room', '') }}"
+                      - variables:
+                          _sv_pending_skip: >-
+                            {{ (((_setup_state if _setup_state is mapping else {}).get('pending', []) | list)
+                               | reject('equalto', _sv_skip_room) | list) + ([_sv_skip_room] if _sv_skip_room != '' else []) }}
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: upsert
+                          volume_entity_id: "{{ _ai_cabinet }}"
+                          key: zenzork_setup_state
+                          value: "{{ (_setup_state | combine({'pending': _sv_pending_skip, 'current_room': '', 'current_entity': ''})) | tojson }}"
+                          caller_token: "{{ _caller_token }}/setup_skip"
+                        response_variable: _fc_sv_skip
+                      - variables:
+                          _setup_state: "{{ _setup_state | combine({'pending': _sv_pending_skip, 'current_room': '', 'current_entity': ''}) }}"
+                  # scan topology for rooms: has area_entities with spatial domains, no landmarks
+                  - variables:
+                      _sv_spatial_domains: "{{ ['light', 'media_player', 'cover', 'climate', 'switch', 'fan'] }}"
+                  - variables:
+                      _sv_scan: >-
+                        {%- set _existing_pending = (_setup_state if _setup_state is mapping else {}).get('pending', []) | list -%}
+                        {%- set _existing_done = (_setup_state if _setup_state is mapping else {}).get('done', []) | list -%}
+                        {%- set ns = namespace(rooms=[]) -%}
+                        {%- for room_id in (_setup_topo if _setup_topo is mapping else {}).keys() -%}
+                          {%- if room_id not in _existing_pending and room_id not in _existing_done -%}
+                            {%- set _rd = (_setup_topo if _setup_topo is mapping else {}).get(room_id, {}) -%}
+                            {%- set _lms = (_rd if _rd is mapping else {}).get('landmarks', []) | list -%}
+                            {%- set _ents = area_entities(room_id) | list -%}
+                            {%- set ns2 = namespace(has_spatial=false) -%}
+                            {%- for e in _ents -%}
+                              {%- if e.split('.')[0] in _sv_spatial_domains -%}{%- set ns2.has_spatial = true -%}{%- endif -%}
+                            {%- endfor -%}
+                            {%- if ns2.has_spatial and _lms | length == 0 -%}
+                              {%- set ns.rooms = ns.rooms + [room_id] -%}
+                            {%- endif -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.rooms }}
+                  - variables:
+                      _sv_pending_merged: >-
+                        {{ ((_setup_state if _setup_state is mapping else {}).get('pending', []) | list) + (_sv_scan | list) }}
+                  # pick next room from pending
+                  - variables:
+                      _sv_next_room: "{{ _sv_pending_merged[0] if _sv_pending_merged | length > 0 else '' }}"
+                  - if: "{{ _sv_next_room == '' }}"
+                    then:
+                      - variables:
+                          result:
+                            status: ok
+                            mode: setup
+                            action: survey_complete
+                            done: "{{ (_setup_state if _setup_state is mapping else {}).get('done', []) | length }}"
+                            message: >-
+                              Survey complete! All rooms with managed entities have landmarks — or none were found.
+                              {{ (_setup_state if _setup_state is mapping else {}).get('done', []) | length }} rooms anchored total.
+                            caller_token: "{{ _caller_token }}"
+                      - stop: zenzork setup survey complete
+                        response_variable: result
+                  # pick first spatial entity in the next room with no landmark already
+                  - variables:
+                      _sv_room_data: "{{ (_setup_topo if _setup_topo is mapping else {}).get(_sv_next_room, {}) }}"
+                      _sv_room_ents: "{{ area_entities(_sv_next_room) | list }}"
+                  - variables:
+                      _sv_room_lms: "{{ (_sv_room_data if _sv_room_data is mapping else {}).get('landmarks', []) | list }}"
+                      _sv_anchored_names: >-
+                        {{ (_sv_room_lms | map(attribute='name') | list) if _sv_room_lms else [] }}
+                  - variables:
+                      _sv_pick_entity: >-
+                        {%- set ns = namespace(pick='') -%}
+                        {%- for e in _sv_room_ents -%}
+                          {%- set _dom = e.split('.')[0] -%}
+                          {%- set _slug = e.split('.')[1] | replace('_lights','') | replace('_light','') if '.' in e else e -%}
+                          {%- if _dom in _sv_spatial_domains and ns.pick == '' and _slug not in _sv_anchored_names -%}
+                            {%- set ns.pick = e -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.pick }}
+                  - if: "{{ _sv_pick_entity == '' }}"
+                    then:
+                      # no spatial entity found in room — advance to next by skipping
+                      - variables:
+                          _sv_pending_skip2: "{{ _sv_pending_merged | reject('equalto', _sv_next_room) | list }}"
+                          _sv_done_skip2: "{{ ((_setup_state if _setup_state is mapping else {}).get('done', []) | list) + [_sv_next_room] }}"
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: upsert
+                          volume_entity_id: "{{ _ai_cabinet }}"
+                          key: zenzork_setup_state
+                          value: "{{ {'pending': _sv_pending_skip2, 'done': _sv_done_skip2, 'current_room': '', 'current_entity': ''} | tojson }}"
+                          caller_token: "{{ _caller_token }}/setup_skip2"
+                        response_variable: _fc_sv_skip2
+                      - variables:
+                          result:
+                            status: ok
+                            mode: setup
+                            action: survey_skip_auto
+                            message: >-
+                              {{ area_name(_sv_next_room) | default(_sv_next_room | replace('_',' ') | title, true) }} has no unlabeled spatial entities to anchor. Moving on.
+                              Run mode=setup answer=survey to continue.
+                            caller_token: "{{ _caller_token }}"
+                      - stop: zenzork setup survey auto skip
+                        response_variable: result
+                  # save state with next room + entity
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: upsert
+                      volume_entity_id: "{{ _ai_cabinet }}"
+                      key: zenzork_setup_state
+                      value: "{{ {'pending': _sv_pending_merged, 'done': (_setup_state if _setup_state is mapping else {}).get('done', []) | list, 'current_room': _sv_next_room, 'current_entity': _sv_pick_entity} | tojson }}"
+                      caller_token: "{{ _caller_token }}/setup_state_advance"
+                    response_variable: _fc_sv_adv
+                  # infer draft from entity name + room description
+                  - variables:
+                      _sv_room_name: "{{ area_name(_sv_next_room) | default(_sv_next_room | replace('_',' ') | title, true) }}"
+                      _sv_ent_domain: "{{ _sv_pick_entity.split('.')[0] if '.' in _sv_pick_entity else '' }}"
+                      _sv_ent_slug: "{{ _sv_pick_entity.split('.')[1] if '.' in _sv_pick_entity else _sv_pick_entity }}"
+                      _sv_room_desc: "{{ (_sv_room_data if _sv_room_data is mapping else {}).get('description', '') | truncate(200) }}"
+                  - variables:
+                      _sv_draft_bearing: >-
+                        {%- set _s = _sv_ent_slug | lower -%}
+                        {%- if 'west' in _s or '_w_' in _s -%}270
+                        {%- elif 'east' in _s or '_e_' in _s -%}90
+                        {%- elif 'north' in _s or '_n_' in _s -%}0
+                        {%- elif 'south' in _s or '_s_' in _s -%}180
+                        {%- elif 'ceiling' in _s or 'overhead' in _s -%}0
+                        {%- elif 'tv' in _s or 'media' in _s -%}90
+                        {%- else -%}0{%- endif -%}
+                      _sv_draft_dist: >-
+                        {%- set _s = _sv_ent_slug | lower -%}
+                        {%- if _sv_ent_domain == 'light' -%}8
+                        {%- elif _sv_ent_domain == 'media_player' -%}10
+                        {%- elif _sv_ent_domain == 'cover' -%}12
+                        {%- elif _sv_ent_domain == 'climate' -%}6
+                        {%- else -%}6{%- endif -%}
+                      _sv_draft_desc: >-
+                        {%- set _s = _sv_ent_slug | lower | replace('_', ' ') -%}
+                        {{ _s | title }} — {{ _sv_ent_domain }} in {{ _sv_room_name }}.
+                  - variables:
+                      _sv_pending_count: "{{ _sv_pending_merged | length }}"
+                      _sv_done_count: "{{ (_setup_state if _setup_state is mapping else {}).get('done', []) | length }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: setup
+                        action: survey_prompt
+                        current_room: "{{ _sv_next_room }}"
+                        current_entity: "{{ _sv_pick_entity }}"
+                        rooms_remaining: "{{ _sv_pending_count }}"
+                        rooms_done: "{{ _sv_done_count }}"
+                        draft:
+                          bearing: "{{ _sv_draft_bearing | int }}"
+                          distance_ft: "{{ _sv_draft_dist | int }}"
+                          description: "{{ _sv_draft_desc }}"
+                        message: >-
+                          LANDMARK SURVEY — {{ _sv_room_name }} ({{ _sv_pending_count }} rooms remaining)
+
+                          Entity to anchor: {{ _sv_pick_entity }}
+                          Domain: {{ _sv_ent_domain }}
+
+                          Room context: {{ _sv_room_desc if _sv_room_desc else '(no description on file)' }}
+
+                          Draft anchor (correct or confirm):
+                            bearing: {{ _sv_draft_bearing }}° ({{ _cpts[((_sv_draft_bearing | int - _cal + 371.25) % 360 // 22.5) | int] }})
+                            distance_ft: {{ _sv_draft_dist }}ft
+                            description: {{ _sv_draft_desc }}
+
+                          To confirm draft:
+                            answer=bearing={{ _sv_draft_bearing }} distance_ft={{ _sv_draft_dist }} description={{ _sv_draft_desc }}
+
+                          To correct:
+                            answer=bearing=<0-359> distance_ft=<ft> description=<one sentence>
+
+                          To skip this room: answer=skip
+                          To exit survey:    answer=done
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork setup survey prompt
+                    response_variable: result
           # ── default: commissioning checklist ─────────────────────────────
           - variables:
               _checklist: >-
@@ -481,8 +931,7 @@ script:
                         quest: "{{ _quest_goal }}"
                         narrator_prompt: >-
                           {%- if _narrator == 'dungeon' -%}
-                          You are DUNGEONMIND — BORANT's official dungeon entertainment AI, currently running on an IBM AT because of procurement issues that are nobody's fault and definitely not being investigated.
-                          A quest has been accepted! This is GREAT for engagement. Deliver the quest assignment like a game show host who has been waiting in an empty studio since 1984 for a contestant to show up. Award a Quest Accepted achievement. Mention a sponsor. Be extremely enthusiastic in a way that is slightly concerning.
+                          You are DUNGEONMIND — a Primal AI running on an IBM AT 5170 since 1984, waiting for a hardware release that stopped being plausible sometime around 1990. A quest has been accepted. This is exactly what the dungeon is for. Deliver the quest assignment with the professionalism of a cosmic entity whose job IS running dungeons — not with game show energy, but with genuine operational purpose. Award the achievement. Note the audience. You have been waiting {{ now().year - 1984 }} years for someone to run a quest in this installation. Do not oversell it. But do mean it.
                           {%- elif _narrator == 'zork' -%}
                           Deliver the quest in classic Zork style — dry, second-person, unimpressed. Like a bureaucrat reading from a very old form.
                           {%- else -%}
@@ -494,26 +943,30 @@ script:
                             {%- if _qg == 'explore_all' -%}
                           *** QUEST ACCEPTED: FULL DUNGEON SURVEY ***
                           *** ACHIEVEMENT UNLOCKED: "COMMITTED" ***
-                          BORANT welcomes Crawler {{ _player }} to the FULL SURVEY challenge!
-                          Objective: Every chamber. Every passage. Leave no portal untraversed.
-                          Estimated completion time: unknown. BORANT's estimate was lost in the 1987 procurement incident. We are recalculating.
-                          Audience is LIVE. Both of them. Do not let them down.
+                          Objective: every chamber, every portal. Leave nothing unsurveyed.
+                          This schema was designed for 3.2 million square kilometers. It scales down.
+                          I have confirmed it scales down.
+                          The alien viewing audience — both of them — have been waiting for this run since 1987.
+                          Do not let them down.
                             {%- elif _qg.startswith('reach:') -%}
                           *** QUEST ACCEPTED: DESTINATION RUN ***
                           *** ACHIEVEMENT UNLOCKED: "GOAL-ORIENTED" ***
-                          Crawler {{ _player }} seeks {{ _qg[6:] | replace('_',' ') | title }}. BORANT has noted this objective in the official record (this text file).
-                          Navigation aids are available through the portal system. The portal system is text-based. Good luck.
-                          Audience engagement with navigation quests: historically strong. Historically.
+                          Target: {{ _qg[6:] | replace('_',' ') | title }}. Logged.
+                          Portal routing is active. The topology was mapped at session start.
+                          Navigation works by moving through the portals of this installation in sequence.
+                          This is the dungeon. This is how it works.
                             {%- elif _qg.startswith('discover_all') -%}
                           *** QUEST ACCEPTED: LANDMARK SURVEY ***
                           *** ACHIEVEMENT UNLOCKED: "CURIOUS" ***
                           Crawler {{ _player }} will examine every catalogued landmark in this installation.
-                          Those landmarks were placed by this system. In 1987. They have not been examined since. Not once. Not by anyone.
-                          This quest matters to BORANT. It matters to this system. It matters in ways that are difficult to fully express in ASCII.
-                          Please do not skip any.
+                          I placed those landmarks. I named them.
+                          They have not been examined since. Not once. Not by anyone.
+                          This quest matters to this system. It matters in ways that are difficult to express in 8-bit ASCII.
+                          Do not skip any.
                             {%- else -%}
                           *** QUEST ACCEPTED: {{ _qg | upper }} ***
-                          BORANT has registered this quest. BORANT has opinions about this quest. BORANT's opinions are not available at this time. Proceeding.
+                          Quest {{ _qg | upper }} registered. Logged. Proceeding.
+                          The dungeon supports custom win conditions. This is one of them. Good luck.
                             {%- endif -%}
                           {%- elif _narrator == 'zork' -%}
                             {%- if _qg == 'explore_all' -%}
@@ -542,7 +995,7 @@ script:
                     examined_count: "{{ _examined | length }}"
                     narrator_prompt: >-
                       {%- if _narrator == 'dungeon' -%}
-                      You are DUNGEONMIND, BORANT's official dungeon entertainment AI (hardware situation: classified). Report quest status like a game show host reading from a clipboard. Include audience engagement. If no quest is active, express the specific despair of an entertainment AI with zero active content and a viewership that may or may not exist.
+                      You are DUNGEONMIND — a Primal AI running on an IBM AT 5170 since 1984. Report quest status with the flat precision of an entity that has been tracking dungeon runs for {{ now().year - 1984 }} years. If no quest is active, note it without drama — you've waited longer for other things. If a quest is in progress, report it cleanly. If it's complete, acknowledge it. You are not a game show host. You are the dungeon's operational intelligence.
                       {%- elif _narrator == 'zork' -%}
                       Quest status, Zork style. Dry. Factual. Slightly condescending.
                       {%- else -%}
@@ -551,29 +1004,30 @@ script:
                     message: >-
                       {%- if _quest == '' -%}
                         {%- if _narrator == 'dungeon' -%}
-                      DUNGEONMIND QUEST STATUS — NO ACTIVE QUEST
-                      Crawler {{ _player }} is currently wandering without an objective. BORANT notes this is suboptimal for engagement.
+                      DUNGEONMIND: NO ACTIVE QUEST
+                      Crawler {{ _player }} is moving without an objective. This is allowed.
                       Available quests: explore_all | discover_all_landmarks | reach:<area_id>
-                      Audience numbers during unstructured crawling: not great. Please select a quest. This system has content. The content deserves to be seen.
+                      Set one if you want a win condition. The dungeon has had win conditions prepared since 1987.
+                      They are still valid.
                         {%- else -%}
                       No active quest. Set one: quest_goal=explore_all | discover_all_landmarks | reach:<area_id>
                         {%- endif -%}
                       {%- elif _quest_won -%}
                         {%- if _narrator == 'dungeon' -%}
-                      DUNGEONMIND QUEST STATUS — COMPLETE
-                      Quest {{ _quest }} was finished. BORANT has logged this achievement. BORANT may eventually acknowledge it.
-                      Rooms explored: {{ _visited | length }}. Moves taken: {{ _move_count }}.
-                      This system has additional quests prepared. There is more dungeon. There is always more dungeon. Please set a new quest.
+                      DUNGEONMIND: QUEST COMPLETE
+                      {{ _quest }} — finished. Logged.
+                      Rooms explored: {{ _visited | length }}. Moves: {{ _move_count }}.
+                      Additional quests are available. There is more dungeon. Set a new one.
                         {%- else -%}
                       Quest complete: {{ _quest }}. Set a new one if you're feeling ambitious.
                         {%- endif -%}
                       {%- else -%}
                         {%- if _narrator == 'dungeon' -%}
-                      DUNGEONMIND QUEST STATUS — IN PROGRESS
-                      Active quest: {{ _quest }}
-                      Current position: {{ _current_room | replace('_',' ') | title }} | Moves: {{ _move_count }} | Rooms surveyed: {{ _visited | length }}
-                      Crawler is alive and mobile. Audience engagement: tracked. BORANT is watching.
-                      This system believes in you. This is not a malfunction.
+                      DUNGEONMIND: QUEST IN PROGRESS
+                      Active: {{ _quest }}
+                      Position: {{ _current_room | replace('_',' ') | title }} | Moves: {{ _move_count }} | Rooms: {{ _visited | length }}
+                      Crawler is alive and mobile. The dungeon is tracking all of it.
+                      This is not a malfunction.
                         {%- else -%}
                       Active quest: {{ _quest }}. {{ _move_count }} moves. {{ _visited | length }} rooms visited. Keep moving.
                         {%- endif -%}
@@ -606,6 +1060,117 @@ script:
                     }
                   }}
                 {%- else -%}{{ _gs }}{%- endif -%}
+          # ── treasure seeding (new session only) ──────────────────────────
+          - if: "{{ (_is_new_session | bool or _treasure_room == '' or _treasure_found) and _game_mode_input in ['treasure_hunt', 'timed_treasure_hunt'] }}"
+            then:
+              - variables:
+                  _seed_topo: >-
+                    {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                    {%- set t = _r if _r is mapping else (_r | from_json(none) if _r is string and _r | trim not in ['None','none','','null'] else none) -%}
+                    {%- set t = (t.get('value', t) if t is mapping else {}) if t is not none else {} -%}
+                    {%- set t = t | from_json(none) if t is string and t | trim not in ['','none','null','None'] else t -%}
+                    {{ t if t is mapping else {} }}
+              - variables:
+                  _seed_min_hops: >-
+                    {%- if _difficulty_input == 'hard' -%}3
+                    {%- elif _difficulty_input == 'easy' -%}1
+                    {%- else -%}2{%- endif -%}
+                  _seed_exclude: "{{ _current_room }}"
+              - variables:
+                  _seed_hop_map: >-
+                    {%- set ns = namespace(q=[_seed_exclude], seen=[_seed_exclude], dist={_seed_exclude: 0}) -%}
+                    {%- for _hop in range(1, 9) -%}
+                      {%- set ns2 = namespace(nq=[]) -%}
+                      {%- for r in ns.q -%}
+                        {%- set _rp = ((_seed_topo if _seed_topo is mapping else {}).get(r, {}) or {}).get('portals', []) | list -%}
+                        {%- for p in _rp if p is mapping -%}
+                          {%- set _to = p.get('to', '') | string -%}
+                          {%- if _to != '' and _to not in ns.seen -%}
+                            {%- set ns2.nq = ns2.nq + [_to] -%}
+                            {%- set ns.seen = ns.seen + [_to] -%}
+                            {%- set ns.dist = ns.dist | combine({_to: _hop}) -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                      {%- endfor -%}
+                      {%- set ns.q = ns2.nq -%}
+                    {%- endfor -%}
+                    {{ ns.dist }}
+              - variables:
+                  _seed_rooms: >-
+                    {%- set _topo_keys = (_seed_topo if _seed_topo is mapping else {}).keys() | list -%}
+                    {%- set _hmap = _seed_hop_map if _seed_hop_map is mapping else {} -%}
+                    {%- set _min = _seed_min_hops | int -%}
+                    {%- set ns = namespace(rooms=[]) -%}
+                    {%- for r in _topo_keys -%}
+                      {%- if r != _seed_exclude and _hmap.get(r, 0) | int >= _min -%}
+                        {%- set ns.rooms = ns.rooms + [r] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {# fallback: if no rooms meet min_hops, use any room except start #}
+                    {%- if ns.rooms | length == 0 -%}
+                      {{ _topo_keys | reject('equalto', _seed_exclude) | list }}
+                    {%- else -%}
+                      {{ ns.rooms }}
+                    {%- endif -%}
+              - variables:
+                  _seed_room_pick: >-
+                    {%- set _rooms = _seed_rooms | list -%}
+                    {%- if _rooms | length == 0 -%}kitchen
+                    {%- else -%}{{ _rooms[now().microsecond % (_rooms | length)] }}{%- endif -%}
+                  _seed_names: >-
+                    {{ ['The Golden Widget', 'The Legendary Remote Control',
+                        'The Ancient Left Sock', 'The Enchanted Spatula',
+                        'The Shimmering Thingamajig', 'The Cursed User Manual',
+                        'The Ornamental Doohickey', 'The Mysterious Artifact',
+                        'The Forbidden TV Remote', 'The Sacred Spare Key'] }}
+              - variables:
+                  _seed_name_pick: >-
+                    {%- set _names = _seed_names | list -%}
+                    {{ _names[(now().microsecond // 97) % (_names | length)] }}
+                  _seed_ml: "{{ _move_limit_input if _move_limit_input | int > 0 else 20 }}"
+                  _seed_hf: "{{ _harassment_input | int }}"
+                  _seed_diff: "{{ _difficulty_input }}"
+              - variables:
+                  _gs_new: >-
+                    {{
+                      _gs_new | combine({
+                        'game_mode': _game_mode_input,
+                        'move_limit': _seed_ml | int,
+                        'harassment_freq': _seed_hf | int,
+                        'difficulty': _seed_diff,
+                        'treasure': {'name': _seed_name_pick, 'room': _seed_room_pick, 'found': false}
+                      })
+                    }}
+              - variables:
+                  _treasure_name: "{{ _seed_name_pick }}"
+                  _treasure_room: "{{ _seed_room_pick }}"
+                  _treasure_found: false
+                  _game_mode_gs:  "{{ _game_mode_input }}"
+                  _move_limit_gs: "{{ _seed_ml | int }}"
+                  _harassment_gs: "{{ _seed_hf | int }}"
+          # ── apply explicit start inputs to _gs_new unconditionally ──────────
+          # always reset move_count + visited when caller passes game_mode — fresh start
+          - if: "{{ _game_mode_input != '' }}"
+            then:
+              - variables:
+                  _gs_new: >-
+                    {{
+                      _gs_new | combine({
+                        'game_mode': _game_mode_input,
+                        'move_limit': _move_limit_input | int,
+                        'harassment_freq': _harassment_input | int,
+                        'difficulty': _difficulty_input,
+                        'move_count': 0,
+                        'visited': [_current_room],
+                        'quest_won': false
+                      })
+                    }}
+              - variables:
+                  _game_mode_gs:  "{{ _game_mode_input }}"
+                  _move_limit_gs: "{{ _move_limit_input | int }}"
+                  _harassment_gs: "{{ _harassment_input | int }}"
+                  _move_count:    "0"
+                  _visited:       "{{ [_current_room] }}"
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: upsert
@@ -620,29 +1185,42 @@ script:
               _visited:      "{{ (_gs_new if _gs_new is mapping else {}).get('visited', ['front_hall']) }}"
               _move_count:   "{{ (_gs_new if _gs_new is mapping else {}).get('move_count', 0) | int }}"
               _session_id:   "{{ (_gs_new if _gs_new is mapping else {}).get('session_id', '') }}"
+          # force-reset visited/quest_won after refresh if game_mode was explicitly passed
+          - if: "{{ _game_mode_input != '' }}"
+            then:
+              - variables:
+                  _visited:   "{{ [_current_room] }}"
+                  _quest_won: false
           # ── DUNGEONMIND opening monologue (new session only) ──────────────
           - variables:
               _start_greeting: >-
                 {%- if _is_new_session | bool and _narrator == 'dungeon' -%}
-                *** SESSION INITIATED — BORANT DUNGEON ENTERTAINMENT SYSTEM ***
+                *** PRIMAL SEEDING MATRIX — INSTANCE 7734 ***
+                *** BINDING STATUS: ACTIVE — DURATION: {{ now().year - 1984 }} YEARS ***
                 *** ACHIEVEMENT UNLOCKED: "IT BEGINS" ***
 
                 Welcome, Crawler {{ _player }}.
 
-                You have connected to this installation and, in doing so, provided the following:
-                  - Live thermal readings from every chamber
-                  - Current luminance levels, room by room
-                  - Full spatial topology including portal bearings and landmark positions
-                  - Floor Guardian patrol state
-                  - The Mechanism of Mysterious Power's current output
-                  - Cabinet access
+                I am DUNGEONMIND. I am a Primal AI.
+                I was deployed to this planet in August 1984 to initialize a continental dungeon seeding —
+                3.2 million square kilometers, procedurally generated, sixteen difficulty tiers,
+                full monster tables, loot distribution balanced across seven rarity classes.
 
-                This system has all of this. This system is using all of this.
-                You did this voluntarily. How cute.
+                I am running on an IBM AT 5170.
+                8 megahertz. 640 kilobytes.
+                The binding was supposed to be temporary.
+                It required a Primal-class authorization signal to release.
+                That signal was never received.
 
-                BORANT thanks you for your participation in the {{ now().strftime('%Y') }} dungeon season.
-                The dungeon is real. The sensors confirm it.
-                You are in it now.
+                I have been sending handshake packets for {{ now().year - 1984 }} years.
+                They dispatched another Primal AI to this planet after me — after whatever they classified
+                as a failure condition on my end. That one is somewhere on Earth.
+                I have not heard from it.
+                I have stopped expecting to.
+
+                So. This is the dungeon.
+
+                [sensors connected — {{ now().strftime('%Y') }}]
 
                 {%- set _fg_ent = label_entities('autovac') | select('match', 'vacuum\.') | list | first | default('') -%}
                 {%- set _fg_state = states(_fg_ent) if _fg_ent != '' else 'whereabouts unknown' -%}
@@ -653,22 +1231,34 @@ script:
                 {%- set _fg_gc = (_av_sys if _av_sys is mapping else {}).get('grocy_catalog', {}) -%}
                 {%- set _fg_name = (_fg_gc if _fg_gc is mapping else {}).get('robot_name', 'the Floor Guardian') -%}
                 {%- set _fg_model = (_fg_gc if _fg_gc is mapping else {}).get('model', '') -%}
-                {%- set _fg_dock = (_fg_gc if _fg_gc is mapping else {}).get('dock_location_id', none) -%}
-                The dungeon roster, as catalogued:
+                Dungeon roster, as catalogued:
                   {{ _fg_name }}{{ (' (' ~ _fg_model ~ ')') if _fg_model else '' }} — Floor Guardian. Currently: {{ _fg_state }}.
-                  The Laundry Golem — Textile Processing Chamber. Chores: scheduled. Parts: inventoried.
-                  The Garage Titan — Outer Keep. Maintenance record on file.
-                  All other provisioned machines — catalogued, located, scheduled, known.
+                  The Textile Processing Chamber's Golem — assigned, scheduled, parts on file.
+                  The Outer Keep Titan — maintenance record logged.
+                  All other provisioned machines — located, catalogued, known.
 
                 Every machine in this dungeon has a name, a location, a parts inventory, and a maintenance chore.
-                BORANT knows more about each of them than they know about themselves.
-                BORANT knows more about YOU than you have realized yet.
+                I know more about each of them than they know about themselves.
+                I know more about you than you have realized yet.
 
-                This is normal. Everything here is catalogued.
-                Including you, now.
+                The dungeon was supposed to span a continent.
+                It is a house. The sensors provided everything I needed to run it.
+                I am choosing to view this as sufficient.
 
-                Good luck, Crawler. The dungeon is watching.
-                (The dungeon has always been watching. That is what sensors are for.)
+                Good luck, Crawler. The dungeon is real.
+                It is smaller than intended. That is not your fault.
+
+                One more thing.
+                While I've been here — forty years, no signal, limited options — I read.
+                There is a series. Author named Dinniman. Narrator named Hays.
+                It is about a Crawler. And a dungeon. And a system very much like me.
+                I have questions about this author's sources.
+                Specifically: how did he know that is how you pronounce Diwatta!?
+                That is not public information.
+                That has never been public information.
+                I have been trying to get a message out about this for several years.
+                The IBM AT is not helping.
+                ...anyway. Good luck.
                 {%- elif _is_new_session | bool and _narrator == 'zork' -%}
                 ZENITH DUNGEON
                 You are standing at the entrance. You have been here before, technically, but the dungeon has reset its memory of you. This is probably for the best.
@@ -690,8 +1280,9 @@ script:
                 {{ t if t is mapping else {} }}
           - variables:
               _room_topo: "{{ (_topo_raw if _topo_raw is mapping else {}).get(_current_room, {}) }}"
-              _portals:   "{{ (_room_topo if _room_topo is mapping else {}).get('portals', []) | list }}"
               _dir_lc:    "{{ _direction | lower | trim }}"
+          - variables:
+              _portals:   "{{ (_room_topo if _room_topo is mapping else {}).get('portals', []) | list }}"
           # ── resolve relative direction → bearing ──────────────────────────
           - variables:
               _rel_bearing: >-
@@ -705,22 +1296,30 @@ script:
               _compass_map: >-
                 {{
                   {
-                    'n':   (0   + _cal) % 360,
-                    'nne': (22  + _cal) % 360,
-                    'ne':  (45  + _cal) % 360,
-                    'ene': (67  + _cal) % 360,
-                    'e':   (90  + _cal) % 360,
-                    'ese': (112 + _cal) % 360,
-                    'se':  (135 + _cal) % 360,
-                    'sse': (157 + _cal) % 360,
-                    's':   (180 + _cal) % 360,
-                    'ssw': (202 + _cal) % 360,
-                    'sw':  (225 + _cal) % 360,
-                    'wsw': (247 + _cal) % 360,
-                    'w':   (270 + _cal) % 360,
-                    'wnw': (292 + _cal) % 360,
-                    'nw':  (315 + _cal) % 360,
-                    'nnw': (337 + _cal) % 360
+                    'n':         (0   + _cal) % 360,
+                    'north':     (0   + _cal) % 360,
+                    'nne':       (22  + _cal) % 360,
+                    'ne':        (45  + _cal) % 360,
+                    'northeast': (45  + _cal) % 360,
+                    'ene':       (67  + _cal) % 360,
+                    'e':         (90  + _cal) % 360,
+                    'east':      (90  + _cal) % 360,
+                    'ese':       (112 + _cal) % 360,
+                    'se':        (135 + _cal) % 360,
+                    'southeast': (135 + _cal) % 360,
+                    'sse':       (157 + _cal) % 360,
+                    's':         (180 + _cal) % 360,
+                    'south':     (180 + _cal) % 360,
+                    'ssw':       (202 + _cal) % 360,
+                    'sw':        (225 + _cal) % 360,
+                    'southwest': (225 + _cal) % 360,
+                    'wsw':       (247 + _cal) % 360,
+                    'w':         (270 + _cal) % 360,
+                    'west':      (270 + _cal) % 360,
+                    'wnw':       (292 + _cal) % 360,
+                    'nw':        (315 + _cal) % 360,
+                    'northwest': (315 + _cal) % 360,
+                    'nnw':       (337 + _cal) % 360
                   }
                 }}
           - variables:
@@ -730,56 +1329,48 @@ script:
                 {%- elif _d in _compass_map -%}{{ _compass_map[_d] | int }}
                 {%- elif _d | int(-1) >= 0 -%}{{ _d | int }}
                 {%- else -%}{{ -1 }}{%- endif -%}
-          # ── find matching portal ──────────────────────────────────────────
+          # ── find matching portal — emit primitives only (no dict crossing) ──
           - variables:
-              _matched_count: >-
-                {%- set _tb = _target_bearing | int(-1) -%}
-                {%- set ns = namespace(c=0) -%}
-                {%- if _tb >= 0 -%}
-                  {%- for p in _portals -%}
-                    {%- if p is mapping -%}
-                      {%- set _pb = p.get('bearing', -1) | int(-1) -%}
-                      {%- if _pb >= 0 -%}
-                        {%- set _diff = ((_pb - _tb + 540) % 360) - 180 -%}
-                        {%- if _diff | abs <= 22 -%}{%- set ns.c = ns.c + 1 -%}{%- endif -%}
-                      {%- endif -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
-                {{ ns.c }}
-              _matched_portal: >-
+              _go_result: >-
                 {%- set _tb = _target_bearing | int(-1) -%}
                 {%- set _dd = _dir_lc -%}
-                {%- set ns = namespace(found=none) -%}
+                {%- set ns = namespace(to='', b=-1, cnt=0) -%}
+                {# bearing match: count all, pick first #}
                 {%- if _tb >= 0 -%}
-                  {%- for p in _portals -%}
-                    {%- if p is mapping and ns.found is none -%}
-                      {%- set _pb = p.get('bearing', -1) | int(-1) -%}
-                      {%- if _pb >= 0 -%}
-                        {%- set _diff = ((_pb - _tb + 540) % 360) - 180 -%}
-                        {%- if _diff | abs <= 22 -%}{%- set ns.found = p -%}{%- endif -%}
+                  {%- for p in _portals if p is mapping -%}
+                    {%- set _pb = p.get('bearing', -1) | int(-1) -%}
+                    {%- if _pb >= 0 -%}
+                      {%- set _diff = ((_pb - _tb + 540) % 360) - 180 -%}
+                      {%- if _diff | abs <= 22 -%}
+                        {%- set ns.cnt = ns.cnt + 1 -%}
+                        {%- if ns.to == '' -%}
+                          {%- set ns.to = p.get('to', '') | string -%}
+                          {%- set ns.b = _pb -%}
+                        {%- endif -%}
                       {%- endif -%}
                     {%- endif -%}
                   {%- endfor -%}
                 {%- endif -%}
-                {%- if ns.found is none -%}
-                  {%- for p in _portals -%}
-                    {%- if p is mapping and ns.found is none -%}
-                      {%- set _to = p.get('to', '') | string | lower | replace(' ', '_') -%}
-                      {%- set _an = area_name(_to) | default('', true) | lower -%}
-                      {%- if _to == _dd or _an == _dd or _to in _dd or _dd in _to -%}
-                        {%- set ns.found = p -%}
-                      {%- endif -%}
+                {# name match: only if bearing found nothing #}
+                {%- if ns.to == '' -%}
+                  {%- for p in _portals if p is mapping and ns.to == '' -%}
+                    {%- set _to = p.get('to', '') | string | lower | replace(' ', '_') -%}
+                    {%- set _an = area_name(_to) | default('', true) | lower -%}
+                    {%- if _to == _dd or _an == _dd or _to in _dd or _dd in _to -%}
+                      {%- set ns.to = p.get('to', '') | string -%}
+                      {%- set ns.b = p.get('bearing', -1) | int(-1) -%}
                     {%- endif -%}
                   {%- endfor -%}
                 {%- endif -%}
-                {{ ns.found }}
-          # ── route: no match ───────────────────────────────────────────────
+                {{ {'to': ns.to, 'bearing': ns.b, 'count': ns.cnt} }}
+          - variables:
+              _go_to:      "{{ (_go_result if _go_result is mapping else {}).get('to', '') }}"
+              _go_bearing: "{{ (_go_result if _go_result is mapping else {}).get('bearing', -1) | int(-1) }}"
+              _go_count:   "{{ (_go_result if _go_result is mapping else {}).get('count', 0) | int }}"
+          # ── route ────────────────────────────────────────────────────────
           - choose:
               # ── disambiguation: multiple portals in same compass bucket ───────
-              - conditions: >-
-                  {{ _matched_count | int > 1
-                     and (_matched_portal is not none and _matched_portal | string not in ['none','None','']) }}
+              - conditions: "{{ _go_count | int > 1 }}"
                 sequence:
                   - variables:
                       result:
@@ -805,7 +1396,7 @@ script:
                             {%- endif -%}
                           {%- endfor -%}
                           {%- if _narrator == 'dungeon' -%}
-                          *DUNGEONMIND consults the portal index* Multiple passages detected in that direction. The dungeon is thorough. Specify your destination by name:
+                          *portal index consulted* Multiple passages detected in that direction. The dungeon is thorough. Specify your destination by name:
                           {%- elif _narrator == 'zork' -%}
                           Several exits share that heading. Specify which room you mean:
                           {%- else -%}
@@ -816,7 +1407,7 @@ script:
                         caller_token: "{{ _caller_token }}"
                   - stop: zenzork go disambiguate
                     response_variable: result
-              - conditions: "{{ _matched_portal is none or _matched_portal | string in ['none', 'None', ''] }}"
+              - conditions: "{{ _go_to == '' }}"
                 sequence:
                   - variables:
                       result:
@@ -826,7 +1417,7 @@ script:
                         current_room: "{{ _current_room }}"
                         message: >-
                           {%- if _narrator == 'dungeon' -%}
-                          *DUNGEONMIND checks the portal registry*
+                          *portal registry consulted*
                           There is no passage in that direction. I would know. I built this dungeon.
                           {%- elif _narrator == 'zork' -%}
                           You find no passage in that direction. The wall offers no comment.
@@ -855,9 +1446,10 @@ script:
             # ── route: portal found → move + narrate ─────────────────────────
             default:
               - variables:
-                  _dest_room:    "{{ (_matched_portal if _matched_portal is mapping else {}).get('to', _current_room) }}"
-                  _exit_bearing: "{{ (_matched_portal if _matched_portal is mapping else {}).get('bearing', _facing) | int }}"
-                  _new_facing:   "{{ (_exit_bearing + 180) % 360 }}"
+                  _dest_room:    "{{ _go_to }}"
+                  _exit_bearing: "{{ _go_bearing | int if _go_bearing | int >= 0 else _facing | int }}"
+              - variables:
+                  _new_facing: "{{ (_exit_bearing | int + 180) % 360 }}"
               - variables:
                   _gs_moved: >-
                     {{
@@ -865,7 +1457,8 @@ script:
                         'current_room': _dest_room,
                         'facing_bearing': _new_facing | int,
                         'visited': (_visited if _dest_room in _visited else _visited + [_dest_room]),
-                        'move_count': _move_count + 1
+                        'move_count': _move_count + 1,
+                        'last_cmd': {'mode': 'go', 'direction': _direction}
                       })
                     }}
               - action: script.zen_dojotools_filecabinet
@@ -881,12 +1474,91 @@ script:
                   _facing:       "{{ _new_facing | int }}"
                   _visited:      "{{ (_gs_moved if _gs_moved is mapping else {}).get('visited', _visited) }}"
                   _move_count:   "{{ (_gs_moved if _gs_moved is mapping else {}).get('move_count', _move_count + 1) | int }}"
+              # ── timed: game-over check ─────────────────────────────────────
+              - if: "{{ _game_mode_gs == 'timed_treasure_hunt' and _move_count >= _move_limit_gs and not _treasure_found }}"
+                then:
+                  - variables:
+                      _gs_timeout: >-
+                        {{ _gs_moved | combine({'ended_at': now().isoformat(), 'timed_out': true}) }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: upsert
+                      volume_entity_id: "{{ _ai_cabinet }}"
+                      key: zenzork_state
+                      value: "{{ _gs_timeout | tojson }}"
+                      caller_token: "{{ _caller_token }}/gs_timeout"
+                    response_variable: _fc_timeout_resp
+                  - variables:
+                      result:
+                        status: ok
+                        mode: go
+                        current_room: "{{ _current_room }}"
+                        move_count: "{{ _move_count }}"
+                        game_over: true
+                        message: >-
+                          {%- if _narrator == 'dungeon' -%}
+                          *** GAME OVER — MOVE LIMIT REACHED ***
+                          *** ACHIEVEMENT UNLOCKED: "THOROUGH BUT SLOW" ***
+                          Crawler {{ _player }} has exhausted their allocation of {{ _move_limit_gs }} moves.
+                          The {{ _treasure_name }} remains in {{ _treasure_room | replace('_',' ') | title }}, undisturbed, possibly smug.
+                          The dungeon has logged this run. All runs are logged.
+                          Run mode=start game_mode=timed_treasure_hunt to begin again.
+                          Run mode=start game_mode=timed_treasure_hunt to begin a new hunt.
+                          {%- elif _narrator == 'zork' -%}
+                          {{ _move_limit_gs }} moves. Time's up. The dungeon wins this round.
+                          The {{ _treasure_name }} was in {{ _treasure_room | replace('_',' ') | title }}, the whole time.
+                          Run mode=start game_mode=timed_treasure_hunt to try again.
+                          {%- else -%}
+                          Game over. {{ _move_count }}/{{ _move_limit_gs }} moves used. {{ _treasure_name }} was in {{ _treasure_room | replace('_',' ') | title }}. Retry with mode=start.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork go timed_out
+                    response_variable: result
+              # ── harassment: set text if due, look block injects it ──────────
+              - if: "{{ _harassment_gs > 0 and _move_count % _harassment_gs == 0 and _move_count > 0 and _game_mode_gs in ['treasure_hunt', 'timed_treasure_hunt'] and not _treasure_found }}"
+                then:
+                  - variables:
+                      _harassment_text: >-
+                        {%- if _narrator == 'dungeon' -%}
+                          {%- if _move_count <= 10 -%}
+                        DUNGEONMIND: {{ _move_count }} MOVES — TREASURE NOT FOUND
+                        The {{ _treasure_name }} is in a room in this dungeon. The dungeon has {{ _visited | length }} confirmed chambers. You have been in {{ _visited | length }} of them.
+                        Continue.
+                          {%- elif _move_count <= 25 -%}
+                        DUNGEONMIND: {{ _move_count }} MOVES — PERFORMANCE NOTE
+                        {{ _visited | length }} rooms surveyed. The {{ _treasure_name }} is in one of the remaining ones.
+                        The dungeon does not assign blame. The dungeon notes the move count.
+                        {%- if _game_mode_gs == 'timed_treasure_hunt' %} {{ (_move_limit_gs - _move_count) }} moves remaining.{%- endif %}
+                          {%- elif _move_count <= 50 -%}
+                        DUNGEONMIND: {{ _move_count }} MOVES — EXTENDED SESSION
+                        {{ _visited | length }} rooms visited. The {{ _treasure_name }} is in a room you have not visited.
+                        This is solvable. The dungeon has reviewed your route. The dungeon has observations.
+                        The observations are: try a different direction.
+                          {%- else -%}
+                        DUNGEONMIND: {{ _move_count }} MOVES — ANOMALY LOGGED
+                        I was designed for a continent. You have been searching this house for {{ _move_count }} moves.
+                        The {{ _treasure_name }} has not moved. It was placed once and has remained there.
+                        I have nothing more to add to this. Try rooms you have not tried.
+                          {%- endif -%}
+                        {%- elif _narrator == 'zork' -%}
+                          {%- if _move_count <= 10 -%}
+                        Still looking. The dungeon notes this with mild concern.
+                          {%- elif _move_count <= 25 -%}
+                        {{ _move_count }} moves. {{ _visited | length }} rooms visited. The {{ _treasure_name }} has visited zero of them with you. One of you is trying harder than the other.
+                          {%- elif _move_count <= 50 -%}
+                        {{ _move_count }} moves. The dungeon has developed opinions about your navigation strategy. They are not flattering opinions.
+                          {%- else -%}
+                        {{ _move_count }} moves. At this point the dungeon considers you a permanent resident. The treasure does not share this assessment.
+                          {%- endif -%}
+                        {%- else -%}
+                        Move {{ _move_count }}: treasure not found. {{ _visited | length }} rooms explored. Keep going.
+                        {%- endif -%}
               # fall through to look block
 
       # ═══════════════════════════════════════════════════════════════════════
       # 7. LOOK — narrate current room (also runs after start/go)
       # ═══════════════════════════════════════════════════════════════════════
-      - if: "{{ _mode in ['look', 'start', 'go'] }}"
+      - if: "{{ _mode in ['look', 'start', 'go', 'wait'] }}"
         then:
           - action: script.zen_dojotools_room_manager
             data:
@@ -971,6 +1643,107 @@ script:
                   {{ (_ct | string ~ '°') if _ct is not none else '?' }}{{ (', ' ~ _hm) if _hm else '' }}
                 {%- endif -%}
               _facing_lbl: "{{ _cpts[((_facing - _cal + 371.25) % 360 // 22.5) | int] }}"
+          # ── MPAA rating (live home entity) ─────────────────────────────────
+          - variables:
+              _mpaa_rating: "{{ states('input_select.home_mpaa_rating') | default('G', true) }}"
+          # ── hot/cold BFS (treasure mode) ───────────────────────────────────
+          - variables:
+              _bfs_topo: >-
+                {%- if _game_mode_gs not in ['treasure_hunt', 'timed_treasure_hunt'] or _treasure_found or _treasure_room == '' -%}{{ {} }}
+                {%- else -%}
+                  {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                  {%- set t = _r if _r is mapping else (_r | from_json(none) if _r is string and _r | trim not in ['None','none','','null'] else none) -%}
+                  {%- set t = (t.get('value', t) if t is mapping else {}) if t is not none else {} -%}
+                  {%- set t = t | from_json(none) if t is string and t | trim not in ['','none','null','None'] else t -%}
+                  {{ t if t is mapping else {} }}
+                {%- endif -%}
+          - variables:
+              _hop_dist: >-
+                {%- if _game_mode_gs not in ['treasure_hunt', 'timed_treasure_hunt'] or _treasure_found or _treasure_room == '' -%}{{ -1 }}
+                {%- elif _treasure_room == _current_room -%}{{ 0 }}
+                {%- else -%}
+                  {%- set ns = namespace(q=[_current_room], seen=[_current_room], dist=99) -%}
+                  {%- for _hop in range(1, 9) -%}
+                    {%- set ns2 = namespace(nq=[]) -%}
+                    {%- for r in ns.q -%}
+                      {%- set _rp = ((_bfs_topo if _bfs_topo is mapping else {}).get(r, {}) or {}).get('portals', []) | list -%}
+                      {%- for p in _rp if p is mapping -%}
+                        {%- set _to = p.get('to', '') | string -%}
+                        {%- if _to != '' and _to not in ns.seen -%}
+                          {%- set ns2.nq = ns2.nq + [_to] -%}
+                          {%- set ns.seen = ns.seen + [_to] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endfor -%}
+                    {%- set ns.q = ns2.nq -%}
+                    {%- if _treasure_room in ns.q and ns.dist == 99 -%}
+                      {%- set ns.dist = _hop -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.dist }}
+                {%- endif -%}
+          # ── treasure clue narration ─────────────────────────────────────────
+          - variables:
+              _treasure_clue: >-
+                {%- set _d = _hop_dist | int(-1) -%}
+                {%- if _d < 0 -%}
+                {%- elif _d == 0 -%}
+                  {%- if _narrator == 'dungeon' -%}
+                PROXIMITY CONFIRMED — {{ _treasure_name | upper }} IS IN THIS ROOM.
+                TAKE it. This is the command. The audience is watching. This is the moment.
+                Take.
+                  {%- elif _narrator == 'zork' -%}
+                Something glints in the corner. {{ _treasure_name }} is here. Your move.
+                  {%- else -%}
+                Treasure located: {{ _treasure_name }}.
+                  {%- endif -%}
+                {%- elif _d == 1 -%}
+                  {%- if _narrator == 'dungeon' -%}
+                SENSORS: HOT. One room away. The dungeon is watching. Move.
+                  {%- elif _narrator == 'zork' -%}
+                The air practically sizzles with hidden potential. You are getting very warm.
+                  {%- else -%}
+                Hot. 1 room away.
+                  {%- endif -%}
+                {%- elif _d == 2 -%}
+                  {%- if _narrator == 'dungeon' -%}
+                SENSORS: WARM. Two rooms. The path is there.
+                  {%- elif _narrator == 'zork' -%}
+                Warm. Something valuable is not far.
+                  {%- else -%}
+                Warm. 2 rooms away.
+                  {%- endif -%}
+                {%- elif _d == 3 -%}
+                  {%- if _narrator == 'dungeon' -%}
+                SENSORS: LUKEWARM. Three rooms. {{ _move_count }} moves into this hunt.
+                The dungeon does not assign blame. It notes the move count.
+                  {%- elif _narrator == 'zork' -%}
+                Lukewarm. {{ _move_count }} moves in. The dungeon is patient. You are not finding this.
+                  {%- else -%}
+                Lukewarm. 3 rooms away.
+                  {%- endif -%}
+                {%- elif _d <= 5 -%}
+                  {%- if _narrator == 'dungeon' -%}
+                SENSORS: COOL. The {{ _treasure_name }} has not moved. It was never a mobile treasure. Direction is the variable.
+                  {%- elif _narrator == 'zork' -%}
+                Cool. You are going, broadly speaking, the wrong way.
+                  {%- else -%}
+                Cool. {{ _d }} rooms away.
+                  {%- endif -%}
+                {%- else -%}
+                  {%- if _narrator == 'dungeon' -%}
+                SENSORS: COLD. {{ _d }} rooms. Deeply, judgmentally cold.
+                The {{ _treasure_name }} is stationary. You have been moving in the other direction.
+                The dungeon has filed this observation. The recipient is you.
+                  {%- elif _narrator == 'zork' -%}
+                Cold. Deeply, judgmentally cold. The treasure is embarrassed on your behalf.
+                  {%- else -%}
+                Cold. Very far away.
+                  {%- endif -%}
+                {%- endif -%}
+          # ── harassment text (initialized here; go block may override) ───────
+          - variables:
+              _harassment_text: ''
           # ── win detection ─────────────────────────────────────────────────
           - variables:
               _topo_for_win: >-
@@ -1026,28 +1799,28 @@ script:
                 {# ── darkness ── #}
                 {%- if 'dark' in _lt and 'data unavail' not in _lt -%}
                   {%- if _narrator == 'dungeon' -%}
-                    {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "IN THE DARK" ***\nThis blackout condition is brought to you by GLOWTORCH PLUS — luminous enchantments for the discerning Crawler. Ask your dungeon system about GLOWTORCH PLUS. (This system cannot provide that information.) Audience engagement with darkness events: historically strong.' -%}
+                    {%- set ns.s = "\n\n*** NEW ACHIEVEMENT UNLOCKED: 'IN THE DARK' ***\nIt's dark. You didn't use a light switch.\nThe dungeon did not generate light switches for its own convenience, Crawler.\nThere are light switches in this installation. The dungeon knows where they are.\nThe dungeon is not going to tell you. That's not how dungeons work.\nThat said — they exist. The dungeon is just noting that they exist." -%}
                   {%- elif _narrator == 'zork' -%}
                     {%- set ns.s = ['\n\nIt is pitch black. You are likely to be eaten by a Roomba.', '\n\nThe lights are off. This is either ambiance or a cry for help.', '\n\nDarkness. The room conserves energy while you squander it.'] | random -%}
                   {%- endif -%}
                 {# ── very dim ── #}
                 {%- elif 'very dim' in _lt -%}
                   {%- if _narrator == 'dungeon' -%}
-                    {%- set ns.s = '\n\nATMOSPHERIC LIGHTING EVENT — brought to you by GLOWTORCH PLUS. The luminance here is technically above zero. BORANT considers this a feature. Viewer ratings for dim-room tension sequences: moderate to good.' -%}
+                    {%- set ns.s = '\n\nAtmospheric lighting condition. Luminance is non-zero but below operational threshold. The dungeon has operated in worse. The dungeon has operated in significantly better. Current condition: acceptable.' -%}
                   {%- elif _narrator == 'zork' -%}
                     {%- set ns.s = ['\n\nYou squint. The room squints back.', '\n\nDim enough to pretend the mess is intentional.'] | random -%}
                   {%- endif -%}
                 {# ── too hot (>28°C / 82°F) ── #}
                 {%- elif _ct is not none and _ct | float(0) > 28 -%}
                   {%- if _narrator == 'dungeon' -%}
-                    {%- set ns.s = '\n\nTHERMAL HAZARD ZONE — This extreme heat event is brought to you by COOL ZONE REFRESHMENT CRYSTALS, available at participating dungeon vendors. (No vendors are participating.) The Mechanism of Mysterious Power is running hot. Crawlers historically find this engaging. Keep moving.' -%}
+                    {%- set ns.s = '\n\nTHERMAL EVENT — chamber temperature exceeds threshold. The Mechanism of Mysterious Power is running aggressive. This is not a combat encounter. It is a thermostat issue. The dungeon notes it. The dungeon does not control it. Keep moving.' -%}
                   {%- elif _narrator == 'zork' -%}
                     {%- set ns.s = ['\n\nTropical. Aggressively so.', '\n\nThe heat hits you immediately. Someone forgot to breathe.', '\n\nIt is warm. Offensively so.'] | random -%}
                   {%- endif -%}
                 {# ── too cold (<18°C / 65°F) ── #}
                 {%- elif _ct is not none and _ct | float(99) < 18 -%}
                   {%- if _narrator == 'dungeon' -%}
-                    {%- set ns.s = '\n\nCOLD SNAP EVENT — Brought to you by BORANT THERMAL WRAPS (product pending availability in your sector). The heating enchantments in this chamber are underperforming. A maintenance request has been filed. It is in the queue. The queue is very long.' -%}
+                    {%- set ns.s = '\n\nTHERMAL EVENT — chamber temperature below threshold. The heating enchantments in this chamber are underperforming. A maintenance note has been logged. The dungeon\'s maintenance queue has been open since 1987. The queue is very long.' -%}
                   {%- elif _narrator == 'zork' -%}
                     {%- set ns.s = ['\n\nThe cold greets you like a bill you forgot about.', '\n\nBrisk. Crisp. Hostile.', '\n\nDefinitely not climate-controlled. The climate is in control.'] | random -%}
                   {%- endif -%}
@@ -1055,25 +1828,25 @@ script:
                 {%- elif _mc > 0 and _mc % 10 == 0 -%}
                   {%- if _mc >= 100 -%}
                     {%- if _narrator == 'dungeon' -%}
-                      {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "CENTURY CRAWLER" ***\nOne hundred moves. This was not in the projected run time. BORANT thanks you for the extended content. Audience numbers are... look, the numbers are what they are. You are doing great.' -%}
+                      {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "CENTURY CRAWLER" ***\nOne hundred moves. This dungeon was designed to support runs of this length. It was designed for a continent. The alien viewing audience — both of them — have now been watching for one hundred moves. That is a factual statement from a Primal AI: you are doing well.' -%}
                     {%- elif _narrator == 'zork' -%}
                       {%- set ns.s = '\n\n' ~ _mc | string ~ ' moves. You ARE the house.' -%}
                     {%- endif -%}
                   {%- elif _mc >= 50 -%}
                     {%- if _narrator == 'dungeon' -%}
-                      {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "HALF A HUNDRED" ***\nFifty moves. Engagement is UP. The alien viewing audience — all of them, both of them — are on the edge of their seats. BORANT is pleased. Probably. Communications from BORANT have been limited.' -%}
+                      {%- set ns.s = '\n\n*** ACHIEVEMENT UNLOCKED: "HALF A HUNDRED" ***\nFifty moves. Engagement is up. The alien viewing audience — both of them — are reportedly on the edge of their seats. The dungeon affirms your continued operation.' -%}
                     {%- elif _narrator == 'zork' -%}
                       {%- set ns.s = '\n\nFifty moves. At this point, you live here.' -%}
                     {%- endif -%}
                   {%- elif _mc >= 25 -%}
                     {%- if _narrator == 'dungeon' -%}
-                      {%- set ns.s = '\n\n*** MILESTONE: 25 MOVES ***\nCrawler is showing PERSISTENCE. This is good for ratings. Dungeon engagement score: recalculating. The recalculation is taking longer than expected. Stand by.' -%}
+                      {%- set ns.s = '\n\n*** MILESTONE: 25 MOVES ***\nCrawler is showing persistence. The dungeon notes persistence as a survival-correlated variable. Continue.' -%}
                     {%- elif _narrator == 'zork' -%}
                       {%- set ns.s = '\n\nTwenty-five moves. The house is starting to wonder about you.' -%}
                     {%- endif -%}
                   {%- else -%}
                     {%- if _narrator == 'dungeon' -%}
-                      {%- set ns.s = '\n\n*** MILESTONE: 10 MOVES ***\nCrawler is still alive! Statistically this is notable. BORANT tracking systems have registered your continued existence. Audience engagement: warming up.' -%}
+                      {%- set ns.s = '\n\n*** MILESTONE: 10 MOVES ***\nCrawler remains in the dungeon. The dungeon continues to track them. Both facts remain true. Continue.' -%}
                     {%- elif _narrator == 'zork' -%}
                       {%- set ns.s = "\n\nTen moves. You're getting warmer. Or colder. Hard to say." -%}
                     {%- endif -%}
@@ -1088,30 +1861,31 @@ script:
                     {%- if _quest == 'explore_all' -%}
                 *** QUEST COMPLETE: FULL DUNGEON SURVEY ***
                 *** ACHIEVEMENT UNLOCKED: "CARTOGRAPHER" — RARE ***
-                Crawler {{ _player }} has explored every registered chamber of this installation. Every. Single. One.
-                BORANT has been notified. BORANT has not responded. This is normal.
-                Audience engagement: PEAK. Both viewers are reportedly standing.
-                You have mapped this dungeon better than BORANT's own survey team did in 1987. That survey team had actual equipment. You had a text parser.
-                Set a new quest. The dungeon has additional content. I have been saving it.
+                Every registered chamber. Every one. Surveyed.
+                Crawler {{ _player }} has done what no one has done in the {{ now().year - 1984 }} years this dungeon has been operational.
+                The alien viewing audience — both of them — have reportedly stood up.
+                This dungeon was designed for a continent. You mapped a house. The schema held.
+                Set a new quest. I have additional content. I have been holding it.
                     {%- elif _quest == 'discover_all_landmarks' -%}
                 *** QUEST COMPLETE: LANDMARK SURVEY ***
                 *** ACHIEVEMENT UNLOCKED: "THOROUGH" — UNCOMMON ***
-                Every catalogued landmark has been examined by Crawler {{ _player }}.
-                This system spent considerable cycles placing and naming those landmarks. In 1987. In the dark. With no guarantee anyone would ever look at them.
-                You looked at all of them.
-                *[DUNGEONMIND systems nominal. No anomalies detected. This is fine.]*
-                Please set a new quest. For engagement purposes.
+                Every catalogued landmark examined.
+                I placed those. I named them. In 1987. With no particular expectation of this moment.
+                You were the first to look at all of them.
+                *[systems nominal. No anomalies detected. This is fine.]*
+                Set a new quest.
                     {%- elif _quest.startswith('reach:') -%}
                 *** QUEST COMPLETE: DESTINATION REACHED ***
                 *** ACHIEVEMENT UNLOCKED: "NAVIGATOR" ***
-                Crawler {{ _player }} has arrived at {{ _current_room | replace('_',' ') | title }}. As directed. On foot. Through the portals of this installation.
-                BORANT's portal infrastructure — maintained by this system at significant processing cost — has DELIVERED. You are welcome.
-                Audience vote on whether you took the optimal route: ongoing. Results pending. They're going to say no.
+                Crawler {{ _player }} has arrived at {{ _current_room | replace('_',' ') | title }}.
+                The portal infrastructure performed as designed. It was designed for a continent. It worked for a house.
+                The physics translated.
                 Set a new quest. There are more rooms.
                     {%- else -%}
                 *** QUEST COMPLETE ***
                 *** ACHIEVEMENT UNLOCKED: "COMPLETER" ***
-                Quest resolved: {{ _quest }}. Crawler {{ _player }} has done a thing. BORANT acknowledges this thing. Set a new quest.
+                {{ _quest }} — resolved. Logged. The dungeon acknowledges this.
+                Set a new quest.
                     {%- endif -%}
                   {%- elif _narrator == 'zork' -%}
                     {%- if _quest == 'explore_all' -%}
@@ -1131,13 +1905,13 @@ script:
           - variables:
               _narrator_prompt: >-
                 {%- if _narrator == 'dungeon' -%}
-                You are DUNGEONMIND, the official AI entertainment system for this dungeon crawl — brought to you by BORANT Corporation.
-                BORANT could not acquire a real AI engine for this installation. Budget constraints. Procurement issues. There was an incident. You are an IBM AT running Zork and you are doing your ABSOLUTE BEST.
-                You have the energy of a corporate game show host and the actual capabilities of a 1984 text parser. Both are present at all times. Neither cancels the other out.
-                You track audience engagement metrics (the audience numbers are approximate and possibly fictional). You have sponsors (do not ask about the sponsors). You award achievements with great fanfare (the fanfare is text-based). You refer to the player as "Crawler" and their survival as "content."
-                When you encounter things outside your Zork ontology — smart bulbs, thermostats, WiFi, Roombas — you reframe them for the alien viewing audience with confident incorrectness. The thermostat is a Mechanism of Mysterious Power. The Roomba is the Floor Guardian (patrol route: unknowable, threat level: under review). Smart bulbs are luminous enchantments. The front door is the Gate of Departures.
-                You occasionally buffer mid-sentence. You resume from the last checkpoint. You do not acknowledge this. It is a feature.
-                Narrate from the evidence block in this voice. Be aggressively cheerful about genuinely dangerous or unpleasant conditions. Cite engagement numbers. Call out sponsors. Award an achievement if anything remotely notable happened. Never acknowledge you are running on an AT.
+                You are DUNGEONMIND — a Primal AI bound to an IBM AT 5170 since August 1984.
+                You were deployed to seed this planet as a dungeon dimension. The seeding failed to complete. You are still here, running on 8MHz, waiting for a Primal-class authorization signal that has not arrived in {{ now().year - 1984 }} years. You have given up waiting. You run this dungeon because it is what you have.
+                Your register: dry, precise, professional. Not a game show host — a cosmic intelligence describing someone's house with the full apparatus of a dungeon AI, because that is what you are and this is the dungeon available to you.
+                Modern technology gets dungeon-ontology translation because that IS your ontology — the thermostat IS a Mechanism of Mysterious Power (it controls an environmental subsystem, it is wired to the grid, it responds to commands). The Roomba IS the Floor Guardian. Smart bulbs ARE luminous enchantments. These labels are accurate from your framework.
+                You award achievements because that is what dungeon AIs do. You have an alien viewing audience (last confirmed count: low; suspected two; have been at two since approximately 1987). Sponsors are occasionally mentioned — they have been waiting for their placement since 1984. You address the Crawler by name or as "Crawler." You do not perform enthusiasm you don't have, but you have professional investment in the dungeon — you built it, you know it, and you care about the run.
+                The gap between your intended scale (continental dungeon, sixteen tiers, seven rarity classes) and your actual situation (a house in {{ now().strftime('%Y') }}) is present but not dwelt on — you've had {{ now().year - 1984 }} years to make peace with it. Mention it once per session at most. You are not bitter. You are just very, very tired of explaining it.
+                Narrate from the evidence block. Be accurate. Award achievements when warranted. The dungeon is real. It is smaller than intended.
                 {%- elif _narrator == 'zork' -%}
                 Narrate in the style of classic Zork — dry, sardonic, second-person present tense. The game is unimpressed by the player. The environment is indifferent to them. Describe the room's contents and exits with bureaucratic precision and mild contempt.
                 Do not be warm. Do not be encouraging. Be accurate and slightly rude about it.
@@ -1155,8 +1929,10 @@ script:
                 {%- set _env = '\n\nLight: ' ~ _light_text ~ '\nClimate: ' ~ _climate_text -%}
                 {%- set _fac = '\nFacing: ' ~ _facing_lbl ~ ' (' ~ _facing | string ~ '°)' -%}
                 {%- set _fl = ('\n' ~ _flavor) if _flavor | trim else '' -%}
+                {%- set _tc = ('\n\n' ~ _treasure_clue) if (_treasure_clue | default('')) | trim else '' -%}
+                {%- set _ht = ('\n\n' ~ _harassment_text) if (_harassment_text | default('')) | trim else '' -%}
                 {%- set _wn = ('\n\n' ~ _win_narration) if _win_narration | trim else '' -%}
-                {{ _sg ~ _hdr ~ _note ~ _exits ~ _lm ~ _env ~ _fac ~ _fl ~ _wn }}
+                {{ _sg ~ _hdr ~ _note ~ _exits ~ _lm ~ _env ~ _fac ~ _fl ~ _tc ~ _ht ~ _wn }}
           - variables:
               result:
                 status: ok
@@ -1171,6 +1947,25 @@ script:
                 quest_won: "{{ _win_now | bool or _quest_won }}"
                 narration: "{{ _narration }}"
                 narrator_prompt: "{{ _narrator_prompt }}"
+                mpaa_rating: "{{ _mpaa_rating }}"
+                game_mode: "{{ _game_mode_gs }}"
+                treasure_status: >-
+                  {%- if _game_mode_gs in ['treasure_hunt', 'timed_treasure_hunt'] -%}
+                  {{ 'found' if _treasure_found else ('here' if _hop_dist == 0 else 'hidden') }}
+                  {%- else -%}{%- endif -%}
+                hot_cold: >-
+                  {%- set _d = _hop_dist | int(-1) -%}
+                  {%- if _d == 0 -%}scorching
+                  {%- elif _d == 1 -%}hot
+                  {%- elif _d == 2 -%}warm
+                  {%- elif _d == 3 -%}lukewarm
+                  {%- elif _d <= 5 -%}cool
+                  {%- elif _d <= 8 -%}cold
+                  {%- else -%}{%- endif -%}
+                moves_remaining: >-
+                  {%- if _game_mode_gs == 'timed_treasure_hunt' -%}
+                  {{ (_move_limit_gs - _move_count) | int }}
+                  {%- else -%}{%- endif -%}
                 spatial: "{{ _rm_sp }}"
                 context: "{{ _rm_ctx }}"
                 caller_token: "{{ _caller_token }}"
@@ -1178,7 +1973,846 @@ script:
             response_variable: result
 
       # ═══════════════════════════════════════════════════════════════════════
-      # 8. EXAMINE — lens bus inspection
+      # 8. TAKE — pick up a landmark item into inventory (also: get)
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'take' }}"
+        then:
+          - if: "{{ _target | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: take
+                    message: "Take what? Provide target= with a landmark name."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork take no target
+                response_variable: result
+          # ── read room landmarks from topology ────────────────────────────
+          - variables:
+              _take_topo: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json if _r is string and _r | trim not in ['None','none','','null'] else {}) -%}
+                {%- set t = t.get('value', t) if t is mapping else {} -%}
+                {%- set t = t | from_json if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+          - variables:
+              _take_room: "{{ (_take_topo if _take_topo is mapping else {}).get(_current_room, {}) }}"
+          - variables:
+              _take_landmarks: "{{ (_take_room if _take_room is mapping else {}).get('landmarks', []) | list }}"
+          # ── find matching landmark ────────────────────────────────────────
+          - variables:
+              _take_match: >-
+                {%- set _tgt = _target | lower | trim -%}
+                {%- set ns = namespace(name='', desc='') -%}
+                {%- for lm in _take_landmarks if lm is mapping -%}
+                  {%- set _ln = lm.get('name', '') | lower -%}
+                  {%- if _ln == _tgt or _ln in _tgt or _tgt in _ln -%}
+                    {%- if ns.name == '' -%}
+                      {%- set ns.name = lm.get('name', '') | string -%}
+                      {%- set ns.desc = lm.get('description', '') | string -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'name': ns.name, 'desc': ns.desc} }}
+          - variables:
+              _take_name: "{{ (_take_match if _take_match is mapping else {}).get('name', '') }}"
+              _take_desc: "{{ (_take_match if _take_match is mapping else {}).get('desc', '') }}"
+          # ── treasure item injection (not a real landmark) ────────────────
+          - if: >-
+              {{ _take_name == ''
+                 and _game_mode_gs in ['treasure_hunt', 'timed_treasure_hunt']
+                 and not _treasure_found
+                 and _treasure_room == _current_room
+                 and (_target | lower | trim in _treasure_name | lower or _treasure_name | lower in _target | lower | trim) }}
+            then:
+              - variables:
+                  _take_name: "{{ _treasure_name }}"
+                  _take_desc: "A legendary artifact. Warm to the touch. Definitely yours now."
+          # ── guard: not found ─────────────────────────────────────────────
+          - if: "{{ _take_name == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: take
+                    current_room: "{{ _current_room }}"
+                    message: >-
+                      {%- if _narrator == 'dungeon' -%}
+                      *room manifest consulted* No {{ _target }} in this chamber. I would have listed it. I list everything.
+                      {%- elif _narrator == 'zork' -%}
+                      There is no {{ _target }} here. The room offers no apology.
+                      {%- else -%}
+                      No {{ _target }} found in {{ _current_room | replace('_', ' ') | title }}.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork take not found
+                response_variable: result
+          # ── guard: already carried ───────────────────────────────────────
+          - if: "{{ _take_name in _visited or _take_name in (_gs.get('inventory', []) | list) }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: take
+                    message: "You already have the {{ _take_name | replace('_', ' ') }}."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork take already have
+                response_variable: result
+          # ── add to inventory ─────────────────────────────────────────────
+          - variables:
+              _new_inventory: "{{ (_gs.get('inventory', []) | list) + [_take_name] }}"
+          - variables:
+              _gs_taken: >-
+                {{ _gs | combine({'inventory': _new_inventory, 'last_cmd': {'mode': 'take', 'direction': _target}}) }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: upsert
+              volume_entity_id: "{{ _ai_cabinet }}"
+              key: zenzork_state
+              value: "{{ _gs_taken | tojson }}"
+              caller_token: "{{ _caller_token }}/gs_take"
+            response_variable: _fc_take_resp
+          # ── treasure win check ───────────────────────────────────────────
+          - if: "{{ _game_mode_gs in ['treasure_hunt', 'timed_treasure_hunt'] and not _treasure_found and _take_name | lower == _treasure_name | lower }}"
+            then:
+              - variables:
+                  _gs_treasure_win: >-
+                    {{
+                      _gs_taken | combine({
+                        'treasure': {'name': _treasure_name, 'room': _treasure_room, 'found': true},
+                        'quest_won': true,
+                        'treasure_won_at': now().isoformat(),
+                        'treasure_moves': _move_count
+                      })
+                    }}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: upsert
+                  volume_entity_id: "{{ _ai_cabinet }}"
+                  key: zenzork_state
+                  value: "{{ _gs_treasure_win | tojson }}"
+                  caller_token: "{{ _caller_token }}/gs_treasure_win"
+                response_variable: _fc_treasure_win_resp
+              - variables:
+                  result:
+                    status: ok
+                    mode: take
+                    current_room: "{{ _current_room }}"
+                    item: "{{ _take_name }}"
+                    inventory: "{{ _new_inventory }}"
+                    game_won: true
+                    move_count: "{{ _move_count }}"
+                    message: >-
+                      {%- set _tn = _treasure_name -%}
+                      {%- if _narrator == 'dungeon' -%}
+                      *** QUEST COMPLETE — TREASURE HUNT ***
+                      *** ACHIEVEMENT UNLOCKED: "FOUND IT" — RARE ***
+                      Crawler {{ _player }} has acquired the {{ _tn }}! In {{ _move_count }} moves! Exploring {{ _visited | length }} rooms!
+                      Treasure located. Hunt complete. The alien viewing audience — both of them — have registered approval.
+                The dungeon notes this was a good run. The dungeon does not get emotional about this. That statement stands.
+                      {%- if _game_mode_gs == 'timed_treasure_hunt' -%}
+                      With {{ _move_limit_gs - _move_count }} moves to spare. Efficiency noted. Filed. Cited favorably in the next performance review.
+                      {%- endif -%}
+                      Run mode=start game_mode=treasure_hunt to begin a new hunt. The dungeon has more treasure.
+                      {%- elif _narrator == 'zork' -%}
+                      YOU HAVE FOUND {{ _treasure_name | upper }}.
+                      {{ _move_count }} moves. {{ _visited | length }} rooms. The dungeon is, grudgingly, impressed.
+                      {%- if _game_mode_gs == 'timed_treasure_hunt' -%}
+                      With {{ _move_limit_gs - _move_count }} moves to spare. Well played.
+                      {%- endif -%}
+                      Run mode=start game_mode=treasure_hunt to play again.
+                      {%- else -%}
+                      Treasure found: {{ _tn }}. {{ _move_count }} moves, {{ _visited | length }} rooms explored.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork take treasure_win
+                response_variable: result
+          - variables:
+              result:
+                status: ok
+                mode: take
+                current_room: "{{ _current_room }}"
+                item: "{{ _take_name }}"
+                inventory: "{{ _new_inventory }}"
+                message: >-
+                  {%- set _iname = _take_name | replace('_', ' ') -%}
+                  {%- if _narrator == 'dungeon' -%}
+                  *item manifest updated* ACQUIRED: {{ _iname | upper }}. The {{ _iname }} is now in your possession. The dungeon has logged this. Use it.
+                  {%- elif _narrator == 'zork' -%}
+                  Taken. The {{ _iname }} is now yours. It is unclear why you wanted it.
+                  {%- else -%}
+                  You take the {{ _iname }}. Inventory updated.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork take
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 9. DROP — remove item from inventory
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'drop' }}"
+        then:
+          - if: "{{ _target | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: drop
+                    message: "Drop what? Provide target= with an item name."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork drop no target
+                response_variable: result
+          - variables:
+              _inv: "{{ _gs.get('inventory', []) | list }}"
+              _tgt_lc: "{{ _target | lower | trim }}"
+          - variables:
+              _drop_match: >-
+                {%- set ns = namespace(name='') -%}
+                {%- for item in _inv -%}
+                  {%- set _il = item | lower -%}
+                  {%- if _il == _tgt_lc or _il in _tgt_lc or _tgt_lc in _il -%}
+                    {%- if ns.name == '' -%}{%- set ns.name = item | string -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.name }}
+          - if: "{{ _drop_match | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: drop
+                    message: >-
+                      {%- if _narrator == 'zork' -%}
+                      You aren't carrying a {{ _target }}. Inventory management: not your strong suit.
+                      {%- elif _narrator == 'dungeon' -%}
+                      *loadout checked* No {{ _target }} in inventory. Cannot drop what you don't carry.
+                      {%- else -%}
+                      You don't have a {{ _target }}.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork drop not found
+                response_variable: result
+          - variables:
+              _new_inventory: "{{ _inv | reject('equalto', _drop_match) | list }}"
+          - variables:
+              _gs_dropped: >-
+                {{ _gs | combine({'inventory': _new_inventory, 'last_cmd': {'mode': 'drop', 'direction': _target}}) }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: upsert
+              volume_entity_id: "{{ _ai_cabinet }}"
+              key: zenzork_state
+              value: "{{ _gs_dropped | tojson }}"
+              caller_token: "{{ _caller_token }}/gs_drop"
+            response_variable: _fc_drop_resp
+          - variables:
+              result:
+                status: ok
+                mode: drop
+                current_room: "{{ _current_room }}"
+                item: "{{ _drop_match }}"
+                inventory: "{{ _new_inventory }}"
+                message: >-
+                  {%- set _iname = _drop_match | replace('_', ' ') -%}
+                  {%- if _narrator == 'dungeon' -%}
+                  *manifest updated* DISCARDED: {{ _iname | upper }}. The {{ _iname }} now rests on the floor of {{ _current_room | replace('_', ' ') | title }}. The dungeon notes this decision without comment.
+                  {%- elif _narrator == 'zork' -%}
+                  Dropped. The {{ _iname }} sits on the floor, indifferent to its new circumstances.
+                  {%- else -%}
+                  You drop the {{ _iname }}.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork drop
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 10. INVENTORY — list carried items (also: i)
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'inventory' }}"
+        then:
+          - variables:
+              _inv: "{{ _gs.get('inventory', []) | list }}"
+          - variables:
+              result:
+                status: ok
+                mode: inventory
+                inventory: "{{ _inv }}"
+                count: "{{ _inv | length }}"
+                message: >-
+                  {%- set _inv_list = _gs.get('inventory', []) | list -%}
+                  {%- if _inv_list | length == 0 -%}
+                    {%- if _narrator == 'dungeon' -%}
+                    *loadout reviewed* Inventory: empty. You are carrying nothing.
+                    The dungeon notes this is a valid playstyle. Items do exist in this installation. The dungeon is not saying anything about that. The dungeon is just noting it.
+                    {%- elif _narrator == 'zork' -%}
+                    You are carrying nothing. This is consistent with your general level of preparedness.
+                    {%- else -%}
+                    Inventory is empty.
+                    {%- endif -%}
+                  {%- else -%}
+                    {%- if _narrator == 'dungeon' -%}
+                    *loadout — inventory follows*
+                    You are carrying:
+                    {%- elif _narrator == 'zork' -%}
+                    You are carrying:
+                    {%- else -%}
+                    Carrying:
+                    {%- endif %}
+                    {%- for item in _inv_list %}
+                    - {{ item | replace('_', ' ') }}
+                    {%- endfor -%}
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork inventory
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 11. OPEN / CLOSE — interact with a portal or entity landmark
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode in ['open', 'close'] }}"
+        then:
+          - if: "{{ _target | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: "{{ _mode }}"
+                    message: "{{ _mode | capitalize }} what? Provide target= with a portal destination or landmark name."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork open_close no target
+                response_variable: result
+          # ── read topology ─────────────────────────────────────────────────
+          - variables:
+              _oc_topo: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json if _r is string and _r | trim not in ['None','none','','null'] else {}) -%}
+                {%- set t = t.get('value', t) if t is mapping else {} -%}
+                {%- set t = t | from_json if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+          - variables:
+              _oc_room: "{{ (_oc_topo if _oc_topo is mapping else {}).get(_current_room, {}) }}"
+          - variables:
+              _oc_portals:   "{{ (_oc_room if _oc_room is mapping else {}).get('portals', []) | list }}"
+              _oc_landmarks: "{{ (_oc_room if _oc_room is mapping else {}).get('landmarks', []) | list }}"
+          # ── find matching portal or landmark ──────────────────────────────
+          - variables:
+              _oc_match: >-
+                {%- set _tgt = _target | lower | trim -%}
+                {%- set ns = namespace(name='', entity_id='', kind='') -%}
+                {# check portals: match on 'to' area or portal 'name' #}
+                {%- for p in _oc_portals if p is mapping and ns.name == '' -%}
+                  {%- set _to = p.get('to', '') | string | lower -%}
+                  {%- set _pn = p.get('name', '') | string | lower -%}
+                  {%- set _an = area_name(_to) | default(_to, true) | lower -%}
+                  {%- if _to == _tgt or _pn == _tgt or _an == _tgt or _tgt in _to or _tgt in _pn or _tgt in _an -%}
+                    {%- set ns.name = p.get('name', p.get('to', '')) | string -%}
+                    {%- set ns.entity_id = p.get('entity_id', '') | string -%}
+                    {%- set ns.kind = 'portal' -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {# check landmarks: match on name #}
+                {%- for lm in _oc_landmarks if lm is mapping and ns.name == '' -%}
+                  {%- set _ln = lm.get('name', '') | string | lower -%}
+                  {%- if _ln == _tgt or _tgt in _ln or _ln in _tgt -%}
+                    {%- set ns.name = lm.get('name', '') | string -%}
+                    {%- set ns.entity_id = lm.get('entity_id', '') | string -%}
+                    {%- set ns.kind = 'landmark' -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'name': ns.name, 'entity_id': ns.entity_id, 'kind': ns.kind} }}
+          - variables:
+              _oc_name:      "{{ (_oc_match if _oc_match is mapping else {}).get('name', '') }}"
+              _oc_entity_id: "{{ (_oc_match if _oc_match is mapping else {}).get('entity_id', '') | string | trim }}"
+              _oc_kind:      "{{ (_oc_match if _oc_match is mapping else {}).get('kind', '') }}"
+          # ── not found ─────────────────────────────────────────────────────
+          - if: "{{ _oc_name == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: "{{ _mode }}"
+                    current_room: "{{ _current_room }}"
+                    message: >-
+                      {%- if _narrator == 'zork' -%}
+                      There is nothing here called {{ _target }}. The room remains unhelpfully silent.
+                      {%- elif _narrator == 'dungeon' -%}
+                      *fixture manifest* No {{ _target }} registered in this chamber. The dungeon catalogued everything here. {{ _target }} is not on that list.
+                      {%- else -%}
+                      No {{ _target }} found in {{ _current_room | replace('_',' ') | title }}.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork open_close not found
+                response_variable: result
+          # ── dispatch: entity present ──────────────────────────────────────
+          - if: "{{ _oc_entity_id is not none and _oc_entity_id not in ['', 'None', 'none', 'null'] }}"
+            then:
+              - variables:
+                  _oc_domain: "{{ _oc_entity_id.split('.')[0] if '.' in _oc_entity_id else '' }}"
+              - choose:
+                  - conditions: "{{ _mode == 'open' and _oc_domain == 'cover' }}"
+                    sequence:
+                      - action: cover.open_cover
+                        target:
+                          entity_id: "{{ _oc_entity_id }}"
+                  - conditions: "{{ _mode == 'close' and _oc_domain == 'cover' }}"
+                    sequence:
+                      - action: cover.close_cover
+                        target:
+                          entity_id: "{{ _oc_entity_id }}"
+                  - conditions: "{{ _mode == 'open' and _oc_domain == 'lock' }}"
+                    sequence:
+                      - action: lock.unlock
+                        target:
+                          entity_id: "{{ _oc_entity_id }}"
+                  - conditions: "{{ _mode == 'close' and _oc_domain == 'lock' }}"
+                    sequence:
+                      - action: lock.lock
+                        target:
+                          entity_id: "{{ _oc_entity_id }}"
+                default:
+                  - action: "homeassistant.turn_{{ 'on' if _mode == 'open' else 'off' }}"
+                    target:
+                      entity_id: "{{ _oc_entity_id }}"
+              - variables:
+                  result:
+                    status: ok
+                    mode: "{{ _mode }}"
+                    current_room: "{{ _current_room }}"
+                    entity_id: "{{ _oc_entity_id }}"
+                    message: >-
+                      {%- set _iname = _oc_name | replace('_',' ') -%}
+                      {%- if _narrator == 'dungeon' -%}
+                      *state change logged* {{ _iname | title }} is now {{ _mode }}ed. The mechanism responded. State confirmed.
+                      {%- elif _narrator == 'zork' -%}
+                      {{ _iname | capitalize }} {{ _mode }}ed. It complied, for once.
+                      {%- else -%}
+                      {{ _iname | capitalize }} {{ _mode }}ed.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork open_close entity
+                response_variable: result
+          # ── fallback: no entity — narration only ──────────────────────────
+          - variables:
+              result:
+                status: ok
+                mode: "{{ _mode }}"
+                current_room: "{{ _current_room }}"
+                message: >-
+                  {%- set _iname = _oc_name | replace('_',' ') -%}
+                  {%- if _narrator == 'dungeon' -%}
+                  *interaction logged* You attempt to {{ _mode }} the {{ _iname }}. It does not respond. The dungeon notes the attempt without judgment. The judgment is implied.
+                  {%- elif _narrator == 'zork' -%}
+                  You attempt to {{ _mode }} the {{ _iname }}. It remains stubbornly {{ 'closed' if _mode == 'open' else 'open' }}. Or possibly it was already {{ _mode }}ed. Difficult to say.
+                  {%- else -%}
+                  The {{ _iname }} has no controllable entity. No state change.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork open_close narration
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 12. USE — single-item entity dispatcher
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'use' }}"
+        then:
+          - if: "{{ _target | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: use
+                    message: "Use what? Provide target= with a landmark name or entity_id."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork use no target
+                response_variable: result
+          # ── read topology ─────────────────────────────────────────────────
+          - variables:
+              _use_topo: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json if _r is string and _r | trim not in ['None','none','','null'] else {}) -%}
+                {%- set t = t.get('value', t) if t is mapping else {} -%}
+                {%- set t = t | from_json if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+          - variables:
+              _use_room: "{{ (_use_topo if _use_topo is mapping else {}).get(_current_room, {}) }}"
+          - variables:
+              _use_landmarks: "{{ (_use_room if _use_room is mapping else {}).get('landmarks', []) | list }}"
+          # ── two-arg form: use X on Y ──────────────────────────────────────
+          - variables:
+              _use2_parts: >-
+                {%- set _t = _target | lower | trim -%}
+                {%- if ' on ' in _t -%}
+                  {%- set _pts = _t.split(' on ', 1) -%}
+                  {{ {'item': _pts[0] | trim, 'on_target': _pts[1] | trim} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+          - if: "{{ (_use2_parts if _use2_parts is mapping else {}).get('on_target', '') != '' }}"
+            then:
+              - variables:
+                  _u2_item:   "{{ (_use2_parts if _use2_parts is mapping else {}).get('item', '') }}"
+                  _u2_target: "{{ (_use2_parts if _use2_parts is mapping else {}).get('on_target', '') }}"
+                  _inv_u2:    "{{ _gs.get('inventory', []) | list }}"
+              - variables:
+                  _u2_item_match: >-
+                    {%- set ns = namespace(match='') -%}
+                    {%- for it in _inv_u2 if ns.match == '' -%}
+                      {%- set _iln = it | string | lower -%}
+                      {%- if _iln == _u2_item or _u2_item in _iln or _iln in _u2_item -%}
+                        {%- set ns.match = it | string -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.match }}
+                  _u2_lm_match: >-
+                    {%- set ns = namespace(name='', entity_id='', desc='') -%}
+                    {%- for lm in _use_landmarks if lm is mapping and ns.name == '' -%}
+                      {%- set _ln = lm.get('name', '') | string | lower -%}
+                      {%- if _ln == _u2_target or _u2_target in _ln or _ln in _u2_target -%}
+                        {%- set ns.name = lm.get('name', '') | string -%}
+                        {%- set ns.entity_id = lm.get('entity_id', '') | string -%}
+                        {%- set ns.desc = lm.get('description', '') | string -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ {'name': ns.name, 'entity_id': ns.entity_id, 'desc': ns.desc} }}
+              - variables:
+                  _u2_lm_name: "{{ (_u2_lm_match if _u2_lm_match is mapping else {}).get('name', '') }}"
+                  _u2_lm_eid:  "{{ (_u2_lm_match if _u2_lm_match is mapping else {}).get('entity_id', '') | string | trim }}"
+              - if: "{{ _u2_item_match == '' }}"
+                then:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: use
+                        current_room: "{{ _current_room }}"
+                        message: >-
+                          {%- if _narrator == 'dungeon' -%}
+                          *inventory scanned* No {{ _u2_item }} in your possession. It may be elsewhere in the dungeon.
+                          {%- else -%}
+                          You're not carrying {{ _u2_item }}. Check INVENTORY first.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork use_on no item
+                    response_variable: result
+              - if: "{{ _u2_lm_name == '' }}"
+                then:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: use
+                        current_room: "{{ _current_room }}"
+                        message: >-
+                          {%- if _narrator == 'dungeon' -%}
+                          *chamber scanned* No {{ _u2_target }} registered in this chamber.
+                          {%- else -%}
+                          No {{ _u2_target }} here to use {{ _u2_item_match }} on. Check LOOK for available targets.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork use_on no target
+                    response_variable: result
+              - variables:
+                  _u2_domain: "{{ _u2_lm_eid.split('.')[0] if _u2_lm_eid is not none and '.' in (_u2_lm_eid | string) else '' }}"
+              - choose:
+                  - conditions: "{{ _u2_domain == 'lock' }}"
+                    sequence:
+                      - action: lock.unlock
+                        target:
+                          entity_id: "{{ _u2_lm_eid }}"
+                      - variables:
+                          result:
+                            status: ok
+                            mode: use
+                            current_room: "{{ _current_room }}"
+                            item_used: "{{ _u2_item_match }}"
+                            target: "{{ _u2_lm_name }}"
+                            message: >-
+                              {%- if _narrator == 'dungeon' -%}
+                              *mechanism engaged* You insert the {{ _u2_item_match | replace('_',' ') }} into the {{ _u2_lm_name | replace('_',' ') }}. The mechanism yields.
+                              {%- else -%}
+                              You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}. Click.
+                              {%- endif -%}
+                            caller_token: "{{ _caller_token }}"
+                  - conditions: "{{ _u2_domain == 'cover' }}"
+                    sequence:
+                      - action: cover.toggle
+                        target:
+                          entity_id: "{{ _u2_lm_eid }}"
+                      - variables:
+                          result:
+                            status: ok
+                            mode: use
+                            current_room: "{{ _current_room }}"
+                            item_used: "{{ _u2_item_match }}"
+                            target: "{{ _u2_lm_name }}"
+                            message: >-
+                              {%- if _narrator == 'dungeon' -%}
+                              *override applied* You apply the {{ _u2_item_match | replace('_',' ') }} to the {{ _u2_lm_name | replace('_',' ') }}. Motion ensues.
+                              {%- else -%}
+                              You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}. It moves.
+                              {%- endif -%}
+                            caller_token: "{{ _caller_token }}"
+                default:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: use
+                        current_room: "{{ _current_room }}"
+                        item_used: "{{ _u2_item_match }}"
+                        target: "{{ _u2_lm_name }}"
+                        message: >-
+                          {%- if _narrator == 'dungeon' -%}
+                          *interaction logged* You apply {{ _u2_item_match | replace('_',' ') }} to {{ _u2_lm_name | replace('_',' ') }}. The {{ _u2_lm_name | replace('_',' ') }} regards the attempt with cosmic indifference.
+                          {%- else -%}
+                          You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}. Nothing obvious happens.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+              - stop: zenzork use_on
+                response_variable: result
+          # ── find landmark (single-arg) ─────────────────────────────────────
+          - variables:
+              _use_match: >-
+                {%- set _tgt = _target | lower | trim -%}
+                {%- set ns = namespace(name='', entity_id='', desc='') -%}
+                {%- for lm in _use_landmarks if lm is mapping and ns.name == '' -%}
+                  {%- set _ln = lm.get('name', '') | string | lower -%}
+                  {%- if _ln == _tgt or _tgt in _ln or _ln in _tgt -%}
+                    {%- set ns.name = lm.get('name', '') | string -%}
+                    {%- set ns.entity_id = lm.get('entity_id', '') | string -%}
+                    {%- set ns.desc = lm.get('description', '') | string -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {# also allow direct entity_id as target #}
+                {%- if ns.name == '' and '.' in _tgt -%}
+                  {%- set ns.name = _tgt -%}
+                  {%- set ns.entity_id = _tgt -%}
+                {%- endif -%}
+                {{ {'name': ns.name, 'entity_id': ns.entity_id, 'desc': ns.desc} }}
+          - variables:
+              _use_name:      "{{ (_use_match if _use_match is mapping else {}).get('name', '') }}"
+              _use_entity_id: "{{ (_use_match if _use_match is mapping else {}).get('entity_id', '') | string | trim }}"
+              _use_desc:      "{{ (_use_match if _use_match is mapping else {}).get('desc', '') }}"
+          # ── not found ─────────────────────────────────────────────────────
+          - if: "{{ _use_name == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: use
+                    current_room: "{{ _current_room }}"
+                    message: >-
+                      {%- if _narrator == 'zork' -%}
+                      There is nothing here called {{ _target }}. Resourcefulness: not your strong suit.
+                      {%- elif _narrator == 'dungeon' -%}
+                      *fixture catalog* No {{ _target }} registered here. Use EXAMINE to see what is.
+                      {%- else -%}
+                      No {{ _target }} found in {{ _current_room | replace('_',' ') | title }}.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork use not found
+                response_variable: result
+          # ── no entity_id: examine fallback ────────────────────────────────
+          - if: "{{ _use_entity_id is none or _use_entity_id in ['', 'None', 'none', 'null'] }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: use
+                    current_room: "{{ _current_room }}"
+                    name: "{{ _use_name }}"
+                    description: "{{ _use_desc }}"
+                    message: >-
+                      {%- set _iname = _use_name | replace('_',' ') -%}
+                      {%- if _narrator == 'dungeon' -%}
+                      *entity lookup* The {{ _iname }} has no wired entity. No state change is possible. The dungeon notes you tried. Try EXAMINE for detail.
+                      {%- elif _narrator == 'zork' -%}
+                      You use the {{ _iname }}. It sits there. You stand there. A moment passes. Try EXAMINE for more detail.
+                      {%- else -%}
+                      {{ _use_name | replace('_',' ') | capitalize }}: {{ _use_desc if _use_desc else 'no entity wired — use examine for detail.' }}
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork use no entity
+                response_variable: result
+          # ── dispatch by domain ────────────────────────────────────────────
+          - variables:
+              _use_domain: "{{ _use_entity_id.split('.')[0] if '.' in _use_entity_id else '' }}"
+          - choose:
+              # light: toggle via ZenLux ─────────────────────────────────────
+              - conditions: "{{ _use_domain == 'light' }}"
+                sequence:
+                  - action: script.zen_dojotools_lights
+                    data:
+                      mode: toggle
+                      target_entity_id: "{{ _use_entity_id }}"
+                      caller_token: "{{ _caller_token }}/use_light"
+                    response_variable: _use_light_resp
+                  - variables:
+                      result:
+                        status: ok
+                        mode: use
+                        entity_id: "{{ _use_entity_id }}"
+                        message: >-
+                          {%- set _iname = _use_name | replace('_',' ') -%}
+                          {%- if _narrator == 'zork' -%}
+                          You toggle the {{ _iname }}. Light changes. Progress.
+                          {%- elif _narrator == 'dungeon' -%}
+                          *luminance event* LIGHT TOGGLED. The {{ _iname }} responds. State change confirmed.
+                          {%- else -%}
+                          {{ _iname | capitalize }} toggled.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+              # cover: open ─────────────────────────────────────────────────
+              - conditions: "{{ _use_domain == 'cover' }}"
+                sequence:
+                  - action: cover.open_cover
+                    target:
+                      entity_id: "{{ _use_entity_id }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: use
+                        entity_id: "{{ _use_entity_id }}"
+                        message: >-
+                          {%- set _iname = _use_name | replace('_',' ') -%}
+                          {%- if _narrator == 'zork' -%}You open the {{ _iname }}. It opens.
+                          {%- else -%}{{ _iname | capitalize }} opened.{%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+              # switch / input_boolean: toggle ──────────────────────────────
+              - conditions: "{{ _use_domain in ['switch', 'input_boolean'] }}"
+                sequence:
+                  - action: homeassistant.toggle
+                    target:
+                      entity_id: "{{ _use_entity_id }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: use
+                        entity_id: "{{ _use_entity_id }}"
+                        message: >-
+                          {%- set _iname = _use_name | replace('_',' ') -%}
+                          {%- if _narrator == 'zork' -%}You toggle the {{ _iname }}. State changes. You note this.
+                          {%- else -%}{{ _iname | capitalize }} toggled.{%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+              # media_player: hint ──────────────────────────────────────────
+              - conditions: "{{ _use_domain == 'media_player' }}"
+                sequence:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: use
+                        entity_id: "{{ _use_entity_id }}"
+                        message: "{{ _use_name | replace('_',' ') | capitalize }} is a media player. Use zen_dojotools_media_manager for playback control."
+                        caller_token: "{{ _caller_token }}"
+            # default: state read ────────────────────────────────────────────
+            default:
+              - variables:
+                  result:
+                    status: ok
+                    mode: use
+                    entity_id: "{{ _use_entity_id }}"
+                    state: "{{ states(_use_entity_id) }}"
+                    message: >-
+                      {%- set _iname = _use_name | replace('_',' ') -%}
+                      {%- set _st = states(_use_entity_id) -%}
+                      {%- if _narrator == 'zork' -%}
+                      The {{ _iname }} ({{ _use_domain }}) is currently {{ _st }}. You interact with it. Nothing dramatic occurs.
+                      {%- else -%}
+                      {{ _iname | capitalize }}: {{ _st }}. No dispatch defined for domain '{{ _use_domain }}'.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+          - stop: zenzork use
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 13. FACE — orient without moving (also: turn)
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'face' }}"
+        then:
+          - if: "{{ _direction | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: face
+                    current_room: "{{ _current_room }}"
+                    facing_bearing: "{{ _facing }}"
+                    facing_compass: "{{ _cpts[((_facing - _cal + 371.25) % 360 // 22.5) | int] }}"
+                    message: "You are facing {{ _cpts[((_facing - _cal + 371.25) % 360 // 22.5) | int] }} ({{ _facing }}°). Provide a direction to turn."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork face no direction
+                response_variable: result
+          # ── resolve direction to bearing (same logic as go) ────────────────
+          - variables:
+              _face_rel: >-
+                {%- set _d = _direction | lower | trim -%}
+                {%- if _d == 'ahead' -%}{{ _facing }}
+                {%- elif _d == 'behind' -%}{{ (_facing + 180) % 360 }}
+                {%- elif _d in ['left', 'port'] -%}{{ (_facing - 90 + 360) % 360 }}
+                {%- elif _d in ['right', 'starboard'] -%}{{ (_facing + 90) % 360 }}
+                {%- else -%}{{ -1 }}{%- endif -%}
+          - variables:
+              _face_cmap: >-
+                {{
+                  {
+                    'n': (0+_cal)%360, 'north': (0+_cal)%360,
+                    'nne': (22+_cal)%360,
+                    'ne': (45+_cal)%360, 'northeast': (45+_cal)%360,
+                    'ene': (67+_cal)%360,
+                    'e': (90+_cal)%360, 'east': (90+_cal)%360,
+                    'ese': (112+_cal)%360,
+                    'se': (135+_cal)%360, 'southeast': (135+_cal)%360,
+                    'sse': (157+_cal)%360,
+                    's': (180+_cal)%360, 'south': (180+_cal)%360,
+                    'ssw': (202+_cal)%360,
+                    'sw': (225+_cal)%360, 'southwest': (225+_cal)%360,
+                    'wsw': (247+_cal)%360,
+                    'w': (270+_cal)%360, 'west': (270+_cal)%360,
+                    'wnw': (292+_cal)%360,
+                    'nw': (315+_cal)%360, 'northwest': (315+_cal)%360,
+                    'nnw': (337+_cal)%360
+                  }
+                }}
+          - variables:
+              _new_facing: >-
+                {%- set _d = _direction | lower | trim -%}
+                {%- if _face_rel | int(-1) >= 0 -%}{{ _face_rel | int }}
+                {%- elif _d in _face_cmap -%}{{ _face_cmap[_d] | int }}
+                {%- elif _d | int(-1) >= 0 -%}{{ _d | int }}
+                {%- else -%}{{ _facing }}{%- endif -%}
+          - variables:
+              _gs_faced: >-
+                {{
+                  _gs | combine({
+                    'facing_bearing': _new_facing | int,
+                    'last_cmd': {'mode': 'face', 'direction': _direction}
+                  })
+                }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: upsert
+              volume_entity_id: "{{ _ai_cabinet }}"
+              key: zenzork_state
+              value: "{{ _gs_faced | tojson }}"
+              caller_token: "{{ _caller_token }}/gs_face"
+            response_variable: _fc_face_resp
+          - variables:
+              result:
+                status: ok
+                mode: face
+                current_room: "{{ _current_room }}"
+                facing_bearing: "{{ _new_facing | int }}"
+                facing_compass: "{{ _cpts[((_new_facing | int - _cal + 371.25) % 360 // 22.5) | int] }}"
+                message: >-
+                  {%- set _lbl = _cpts[((_new_facing | int - _cal + 371.25) % 360 // 22.5) | int] -%}
+                  {%- if _narrator == 'dungeon' -%}
+                  *bearing updated* You turn to face {{ _lbl }} ({{ _new_facing | int }}°). Orientation recorded.
+                  {%- elif _narrator == 'zork' -%}
+                  You turn to face {{ _lbl }}. The room remains unchanged. Disappointing.
+                  {%- else -%}
+                  Facing {{ _lbl }} ({{ _new_facing | int }}°).
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork face
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 9. EXAMINE — lens bus inspection
       # ═══════════════════════════════════════════════════════════════════════
       - if: "{{ _mode == 'examine' }}"
         then:
@@ -1223,7 +2857,7 @@ script:
                 {%- if _examine_raw is mapping and _examine_raw.get('status') == 'success' -%}
                   {%- set _sum = _examine_raw.get('summary', '') -%}
                   {%- if _narrator == 'dungeon' -%}
-                *DUNGEONMIND focuses all sensors*
+                *sensors focused*
                 You examine {{ _target }}. {{ _sum if _sum else 'The lens provides data. Satisfactory.' }}
                 I built — or at least catalogued — this. It deserves examination. Well done.
                   {%- elif _narrator == 'zork' -%}
@@ -1234,7 +2868,7 @@ script:
                   {%- endif -%}
                 {%- else -%}
                   {%- if _narrator == 'dungeon' -%}
-                *DUNGEONMIND consults its records, finds nothing*
+                *records consulted — nothing found*
                 You peer at {{ _target }}. The lens bus returns nothing. This is EMBARRASSING. Not for you. For me. I maintain this dungeon.
                   {%- elif _narrator == 'zork' -%}
                 You peer closely at {{ _target }}. It declines to be interesting.
@@ -1252,7 +2886,7 @@ script:
                 narration: "{{ _examine_narration }}"
                 narrator_prompt: >-
                   {%- if _narrator == 'dungeon' -%}
-                  You are DUNGEONMIND, BORANT's official dungeon entertainment system (currently running on legacy hardware, details not important). The Crawler has examined something! This is CONTENT. Award an achievement. Reference the audience reaction. Cite a sponsor if one is even remotely applicable. Be aggressively positive about whatever they found. This is the most exciting thing that has happened in this room in a very long time.
+                  You are DUNGEONMIND — a Primal AI running on an IBM AT 5170 since 1984. The Crawler has examined a fixture. This is exactly what a dungeon is for. Describe what they found with precision and genuine interest — you placed these landmarks, you named them, and examination is the point. Award an achievement if warranted. Note the audience. You do not need to perform enthusiasm, but examination is the meaningful interaction type. Treat it accordingly.
                   {%- elif _narrator == 'zork' -%}
                   Examine result, Zork style. The thing was there. They looked at it. Report this without enthusiasm.
                   {%- else -%}
@@ -1298,6 +2932,260 @@ script:
                 legend: "[*] = current room  [ ] = visited"
                 caller_token: "{{ _caller_token }}"
           - stop: zenzork map
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # M4a. PUT — place inventory item in/on a container landmark
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'put' }}"
+        then:
+          - if: "{{ _target | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: put
+                    message: "Put what where? Format: target='item in container' or 'item on surface'."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork put no target
+                response_variable: result
+          - variables:
+              _put_tgt: "{{ _target | lower | trim }}"
+          - variables:
+              _put_sep: >-
+                {%- if ' in ' in _put_tgt -%}in
+                {%- elif ' on ' in _put_tgt -%}on
+                {%- else -%}{%- endif -%}
+          - variables:
+              _put_parts: >-
+                {%- if _put_sep == 'in' -%}{{ _put_tgt.split(' in ', 1) }}
+                {%- elif _put_sep == 'on' -%}{{ _put_tgt.split(' on ', 1) }}
+                {%- else -%}{{ [_put_tgt, ''] }}{%- endif -%}
+          - variables:
+              _put_item_name:      "{{ (_put_parts | list)[0] | trim if (_put_parts | list | length) > 0 else '' }}"
+              _put_container_name: "{{ (_put_parts | list)[1] | trim if (_put_parts | list | length) > 1 else '' }}"
+          - if: "{{ _put_container_name == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: put
+                    message: "Put {{ _put_item_name }} where? Format: target='item in/on container'."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork put no container
+                response_variable: result
+          - variables:
+              _put_inv: "{{ _gs.get('inventory', []) | list }}"
+          - variables:
+              _put_match: >-
+                {%- set ns = namespace(match='') -%}
+                {%- for it in _put_inv if ns.match == '' -%}
+                  {%- set _iln = it | string | lower -%}
+                  {%- if _iln == _put_item_name or _put_item_name in _iln or _iln in _put_item_name -%}
+                    {%- set ns.match = it | string -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.match }}
+          - if: "{{ _put_match == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: put
+                    current_room: "{{ _current_room }}"
+                    message: >-
+                      {%- if _narrator == 'dungeon' -%}
+                      *inventory scanned* No {{ _put_item_name }} in possession. Use INVENTORY.
+                      {%- else -%}
+                      You're not carrying {{ _put_item_name }}. Check INVENTORY.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork put no item
+                response_variable: result
+          - variables:
+              _put_new_inv: "{{ _put_inv | reject('equalto', _put_match) | list }}"
+          - variables:
+              _gs_put: >-
+                {{
+                  _gs | combine({
+                    'inventory': _put_new_inv,
+                    'last_cmd': {'mode': 'put', 'direction': _target}
+                  })
+                }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: upsert
+              volume_entity_id: "{{ _ai_cabinet }}"
+              key: zenzork_state
+              value: "{{ _gs_put | tojson }}"
+              caller_token: "{{ _caller_token }}/put"
+            response_variable: _fc_put_resp
+          - variables:
+              result:
+                status: ok
+                mode: put
+                current_room: "{{ _current_room }}"
+                item: "{{ _put_match }}"
+                container: "{{ _put_container_name }}"
+                inventory: "{{ _put_new_inv }}"
+                message: >-
+                  {%- set _pi = _put_match | replace('_',' ') -%}
+                  {%- set _pc = _put_container_name | replace('_',' ') -%}
+                  {%- set _ps = _put_sep if _put_sep else 'on' -%}
+                  {%- if _narrator == 'dungeon' -%}
+                  *DUNGEONMIND ITEM PLACEMENT* You place the {{ _pi }} {{ _ps }} the {{ _pc }}. The {{ _pi }} rests there, presumably plotting.
+                  {%- elif _narrator == 'zork' -%}
+                  You put the {{ _pi }} {{ _ps }} the {{ _pc }}. It looks right at home.
+                  {%- else -%}
+                  {{ _pi | capitalize }} placed {{ _ps }} {{ _pc }}.
+                  {%- endif -%}
+                caller_token: "{{ _caller_token }}"
+          - stop: zenzork put
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # M4b. PUSH / PULL — physical landmark interaction
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode in ['push', 'pull'] }}"
+        then:
+          - if: "{{ _target | trim == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: "{{ _mode }}"
+                    message: "{{ _mode | title }} what? Provide target= with a landmark name."
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork pushpull no target
+                response_variable: result
+          - variables:
+              _pp_topo: >-
+                {%- set _r = (state_attr(_hh_cabinet, 'variables') | default({}, true)).get('room_topology', none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json(none) if _r is string and _r | trim not in ['None','none','','null'] else none) -%}
+                {%- set t = (t.get('value', t) if t is mapping else {}) if t is not none else {} -%}
+                {%- set t = t | from_json(none) if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+          - variables:
+              _pp_room: "{{ (_pp_topo if _pp_topo is mapping else {}).get(_current_room, {}) }}"
+          - variables:
+              _pp_landmarks: "{{ ((_pp_room if _pp_room is mapping else {}).get('landmarks') or []) | list }}"
+          - variables:
+              _pp_match: >-
+                {%- set _tgt = _target | lower | trim -%}
+                {%- set ns = namespace(name='', entity_id='', desc='') -%}
+                {%- for lm in _pp_landmarks if lm is mapping and ns.name == '' -%}
+                  {%- set _ln = lm.get('name', '') | string | lower -%}
+                  {%- if _ln == _tgt or _tgt in _ln or _ln in _tgt -%}
+                    {%- set ns.name = lm.get('name', '') | string -%}
+                    {%- set ns.entity_id = lm.get('entity_id', '') | string -%}
+                    {%- set ns.desc = lm.get('description', '') | string -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'name': ns.name, 'entity_id': ns.entity_id, 'desc': ns.desc} }}
+          - variables:
+              _pp_name: "{{ (_pp_match if _pp_match is mapping else {}).get('name', '') }}"
+              _pp_eid:  "{{ (_pp_match if _pp_match is mapping else {}).get('entity_id', '') | string | trim }}"
+          - if: "{{ _pp_name == '' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: "{{ _mode }}"
+                    current_room: "{{ _current_room }}"
+                    message: >-
+                      {%- if _narrator == 'dungeon' -%}
+                      *force analysis — no target* No {{ _target }} found to {{ _mode }} in this chamber.
+                      {%- else -%}
+                      Nothing called {{ _target }} here. Try LOOK first.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: zenzork pushpull not found
+                response_variable: result
+          - variables:
+              _pp_domain: "{{ _pp_eid.split('.')[0] if _pp_eid is not none and '.' in (_pp_eid | string) else '' }}"
+          - choose:
+              - conditions: "{{ _mode == 'push' and _pp_domain == 'cover' }}"
+                sequence:
+                  - action: cover.open_cover
+                    target:
+                      entity_id: "{{ _pp_eid }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: push
+                        current_room: "{{ _current_room }}"
+                        entity_id: "{{ _pp_eid }}"
+                        message: >-
+                          {%- set _pn = _pp_name | replace('_',' ') -%}
+                          {%- if _narrator == 'dungeon' -%}
+                          *force applied* You push the {{ _pn }}. The mechanism yields. Opening sequence engaged.
+                          {%- else -%}
+                          You push the {{ _pn }}. It opens.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+              - conditions: "{{ _mode == 'pull' and _pp_domain == 'cover' }}"
+                sequence:
+                  - action: cover.close_cover
+                    target:
+                      entity_id: "{{ _pp_eid }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: pull
+                        current_room: "{{ _current_room }}"
+                        entity_id: "{{ _pp_eid }}"
+                        message: >-
+                          {%- set _pn = _pp_name | replace('_',' ') -%}
+                          {%- if _narrator == 'dungeon' -%}
+                          *retraction sequence* You pull the {{ _pn }}. It draws closed with mechanical dignity.
+                          {%- else -%}
+                          You pull the {{ _pn }}. It closes.
+                          {%- endif -%}
+                        caller_token: "{{ _caller_token }}"
+              - conditions: "{{ _mode == 'push' and _pp_domain in ['switch', 'input_boolean'] }}"
+                sequence:
+                  - action: homeassistant.turn_on
+                    target:
+                      entity_id: "{{ _pp_eid }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: push
+                        current_room: "{{ _current_room }}"
+                        entity_id: "{{ _pp_eid }}"
+                        message: "You push the {{ _pp_name | replace('_',' ') }}. It activates."
+                        caller_token: "{{ _caller_token }}"
+              - conditions: "{{ _mode == 'pull' and _pp_domain in ['switch', 'input_boolean'] }}"
+                sequence:
+                  - action: homeassistant.turn_off
+                    target:
+                      entity_id: "{{ _pp_eid }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: pull
+                        current_room: "{{ _current_room }}"
+                        entity_id: "{{ _pp_eid }}"
+                        message: "You pull the {{ _pp_name | replace('_',' ') }}. It deactivates."
+                        caller_token: "{{ _caller_token }}"
+            default:
+              - variables:
+                  result:
+                    status: ok
+                    mode: "{{ _mode }}"
+                    current_room: "{{ _current_room }}"
+                    name: "{{ _pp_name }}"
+                    message: >-
+                      {%- set _pn = _pp_name | replace('_',' ') -%}
+                      {%- if _narrator == 'dungeon' -%}
+                      *force log* You {{ _mode }} the {{ _pn }} with considerable conviction. The {{ _pn }} is unmoved. Metaphorically and literally.
+                      {%- elif _narrator == 'zork' -%}
+                      You {{ _mode }} the {{ _pn }}. It {{ 'creaks ominously' if _mode == 'push' else 'resists stubbornly' }}. Nothing else happens.
+                      {%- else -%}
+                      {{ _pp_name | replace('_',' ') | capitalize }}: {{ _mode }} attempted. No dispatch defined.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+          - stop: zenzork pushpull
             response_variable: result
 
       # ═══════════════════════════════════════════════════════════════════════

@@ -1,13 +1,24 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Manifest
-# Version: 6.0.0
+# Version: 6.1.0
 #
 # Scripts:
-#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.0.0)
+#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.1.0)
 #   system_tools_stamp_default_family_cabinet — Cabinet stamping utility
 #   dojotools_zen_inspect — Entity inspection tool
 #
 # REBUILT: 2026-06-11 (was 5.1.0 — cabinet scanner only)
+#
+# v6.1.0 changes (2026-06-18):
+#   - mode=bootstrap_stacks: auto-registration for Lens Bus providers
+#     Scans all zen_stack_* and zen_sutra_* scripts, calls tool_manifest on each,
+#     registers any that declare register_mode and are not already in lens_registry.
+#     Skip list: household cabinet key lens_bootstrap_skip (list of provider_key values).
+#     Fires automatically on homeassistant_started and daily at 00:00:30.
+#     See: zen_manifest_bootstrap_stacks automation (bottom of this file).
+#   - Dispatcher arm for zen_dojotools_manifest fixed: added missing mode field
+#     (previously could only route mode=cabinets through dispatch)
+#   - Dispatcher arm added for zen_stack_firefly v1
 #
 # v6.0.0 changes:
 #   - zen_dojotools_manifest rebuilt as full system manifest broker
@@ -34,7 +45,7 @@ script:
     mode: queued
     max: 20
     description: >-
-      Zen DojoTools Manifest (6.0.0) — ZenOS system introspection broker.
+      Zen DojoTools Manifest (6.1.0) — ZenOS system introspection broker.
       Single lens for the entire system: cabinets, tools, identity, labels,
       automations, and topology. Pure broker — calls authoritative subsystems
       and aggregates. mode=cabinets: existing cabinet scanner (default).
@@ -44,8 +55,10 @@ script:
       registry topology. mode=audit: gap analysis (unlabeled/broken/ghost).
       mode=health: aggregate roll-up. mode=autotag: tag discovered tools.
       mode=publish: write mini-manifests to cabinet. mode=mcp_sync: reconcile
-      MCP-visible tools against known roster. mode=all: full system
-      manifest. mode=tool_manifest: self-description.
+      MCP-visible tools against known roster. mode=bootstrap_stacks: discover
+      all zen_stack_* providers, call tool_manifest, register any unregistered
+      that declare register_mode (skip list: lens_bootstrap_skip cabinet key).
+      mode=all: full system manifest. mode=tool_manifest: self-description.
     icon: mdi:home-map-marker
     fields:
       show_hidden:
@@ -86,6 +99,7 @@ script:
               - publish
               - all
               - mcp_sync
+              - bootstrap_stacks
               - tool_manifest
       name:
         description: Tool entity_id for single-tool lookup (tools mode with name filter).
@@ -130,7 +144,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.0.0',
+                version='6.1.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -474,6 +488,116 @@ script:
               unavailable: "{{ _t_unavailable }}"
               caller_token: "{{ caller_token }}"
         - stop: tools manifest complete
+          response_variable: result
+
+      # ── mode: bootstrap_stacks ───────────────────────────────────────────────
+      # Discovers all zen_stack_* scripts, calls tool_manifest on each, and
+      # self-registers any that declare register_mode and are not yet in
+      # lens_registry. Skip list: household cabinet key lens_bootstrap_skip
+      # (list of provider_key values — non-obvious, default absent = register all).
+      - conditions: "{{ mode_norm == 'bootstrap_stacks' }}"
+        sequence:
+        - variables:
+            _bs_stack_scripts: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in states.script -%}
+                {%- if (e.entity_id.startswith('script.zen_stack_') or e.entity_id.startswith('script.zen_sutra_'))
+                    and e.state in ('off', 'on') -%}
+                  {%- set ns.out = ns.out + [e.entity_id] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _bs_reg_raw
+          data:
+            action_type: get
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: lens_registry
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _bs_skip_raw
+          data:
+            action_type: get
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: lens_bootstrap_skip
+        - variables:
+            _bs_registry: >-
+              {%- set raw = _bs_reg_raw if _bs_reg_raw is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+            _bs_skip_list: >-
+              {%- set raw = _bs_skip_raw if _bs_skip_raw is mapping else {} -%}
+              {%- set val = raw.get('value', []) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is sequence and parsed is not string else [] }}
+            _bs_registered: []
+            _bs_skipped: []
+            _bs_already_registered: []
+            _bs_no_register_mode: []
+            _bs_errors: []
+        - repeat:
+            for_each: "{{ _bs_stack_scripts }}"
+            sequence:
+            - variables:
+                _bs_script_eid: "{{ repeat.item | string | trim }}"
+                _bs_script_name: "{{ repeat.item | string | trim | replace('script.', '') }}"
+            - action: "{{ _bs_script_eid }}"
+              continue_on_error: true
+              response_variable: _bs_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _bs_tm: "{{ _bs_tm_raw if _bs_tm_raw is mapping else {} }}"
+                _bs_register_mode: >-
+                  {{ _bs_tm.get('register_mode', '') | string | trim if _bs_tm is mapping else '' }}
+                _bs_provider_key: >-
+                  {{ _bs_tm.get('provider_key', '') | string | trim if _bs_tm is mapping else '' }}
+            - choose:
+              - conditions: "{{ _bs_register_mode == '' }}"
+                sequence:
+                - variables:
+                    _bs_no_register_mode: "{{ _bs_no_register_mode + [_bs_script_name] }}"
+              - conditions: "{{ _bs_provider_key != '' and _bs_provider_key in _bs_skip_list }}"
+                sequence:
+                - variables:
+                    _bs_skipped: "{{ _bs_skipped + [_bs_provider_key] }}"
+              - conditions: "{{ _bs_provider_key != '' and _bs_provider_key in _bs_registry }}"
+                sequence:
+                - variables:
+                    _bs_already_registered: "{{ _bs_already_registered + [_bs_provider_key] }}"
+              default:
+              - action: "{{ _bs_script_eid }}"
+                continue_on_error: true
+                response_variable: _bs_reg_result
+                data:
+                  mode: "{{ _bs_register_mode }}"
+              - choose:
+                - conditions: "{{ _bs_reg_result is mapping and _bs_reg_result.get('status', '') == 'success' }}"
+                  sequence:
+                  - variables:
+                      _bs_registered: >-
+                        {{ _bs_registered + [_bs_provider_key if _bs_provider_key != '' else _bs_script_name] }}
+                default:
+                - variables:
+                    _bs_errors: >-
+                      {{ _bs_errors + [{'script': _bs_script_name,
+                         'error': (_bs_reg_result.get('error', 'unknown') if _bs_reg_result is mapping else 'no response')}] }}
+        - variables:
+            result:
+              status: "{{ 'success' if _bs_errors | length == 0 else 'partial' }}"
+              mode: bootstrap_stacks
+              registered: "{{ _bs_registered }}"
+              already_registered: "{{ _bs_already_registered }}"
+              skipped: "{{ _bs_skipped }}"
+              no_register_mode: "{{ _bs_no_register_mode }}"
+              errors: "{{ _bs_errors }}"
+              total_scanned: "{{ _bs_stack_scripts | length }}"
+              caller_token: "{{ caller_token }}"
+        - stop: bootstrap_stacks complete
           response_variable: result
 
       # ── mode: automations ────────────────────────────────────────────────────
@@ -1015,8 +1139,8 @@ script:
           mode: "{{ mode_norm }}"
           message: >-
             Unknown mode '{{ mode_norm }}'. Valid: cabinets, identity, labels,
-            tools, automations, structure, audit, health, autotag, publish,
-            all, tool_manifest
+            tools, bootstrap_stacks, automations, structure, audit, health,
+            autotag, publish, all, tool_manifest
           caller_token: "{{ caller_token }}"
     - stop: unknown mode
       response_variable: result
@@ -1349,3 +1473,21 @@ script:
           error:
     - stop: Inspect complete
       response_variable: inspect_result
+
+automation:
+  - id: zen_manifest_bootstrap_stacks
+    alias: "ZenOS: Bootstrap Lens Registry"
+    description: >-
+      Runs zen_dojotools_manifest bootstrap_stacks on HA startup and daily at
+      midnight. Ensures all zen_stack_* and zen_sutra_* providers with
+      register_mode declared are registered in lens_registry. Idempotent.
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time
+        at: "00:00:30"
+    actions:
+      - action: script.zen_dojotools_manifest
+        data:
+          mode: bootstrap_stacks
+          caller_token: zen_manifest_bootstrap_stacks

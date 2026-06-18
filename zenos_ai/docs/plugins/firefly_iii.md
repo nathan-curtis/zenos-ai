@@ -3,9 +3,12 @@
 **Version:** 1.0.0  
 **Package:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Primary script:** `zen_dojotools_finance`  
-**Internal REST dispatcher:** `zen_sutra_firefly`
+**Internal REST dispatcher:** `zen_sutra_firefly`  
+**Lens Bus stack provider:** `zen_stack_firefly` (provider_key: `firefly_iii`)
 
-> **v.next:** This plugin ships with standard DojoTools patterns (tool_manifest, caller_token, from_json guards, sutra dispatcher). A deeper refactor is queued for v.next — endpoint coverage, cabinet-backed config, and Lens Bus integration.
+> **Lens Bus (2026.7.0):** `zen_stack_firefly` is now a fully registered Lens Bus stack provider. It was the first ZenOS plugin to use bootstrap auto-registration — on every HA boot, `zen_dojotools_manifest mode=bootstrap_stacks` discovers and registers it automatically. See [Lens Bus Auto-Registration](lens_bus_autoreg.md).
+
+> **v.next:** Deeper refactor queued — expanded endpoint coverage and cabinet-backed config.
 
 ---
 

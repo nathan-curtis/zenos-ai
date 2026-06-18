@@ -1,10 +1,12 @@
 # ZenOS-AI Paperless-NGX Plugin
 
-**Version:** 0.7.3
-**Package:** `packages/zenos_ai/plugins/paperless_ngx/paperless_ngx.yaml`
-**Lens Bus stack provider:** `zen_stack_paperless` (internal — not MCP-exposed)
-**Internal REST broker:** `zen_sutra_paperless` (not MCP-exposed)
+**Version:** 0.7.4  
+**Package:** `packages/zenos_ai/plugins/paperless_ngx/paperless_ngx.yaml`  
+**Lens Bus stack provider:** `zen_stack_paperless` (provider_key: `paperless_ngx`, internal — not MCP-exposed)  
+**Internal REST broker:** `zen_sutra_paperless` (not MCP-exposed)  
 **Public surface:** `zen_dojotools_library` with `section=stacks`
+
+> **Auto-registration (2026.7.0):** `zen_stack_paperless` now participates in Lens Bus bootstrap registration. On every HA boot, `zen_dojotools_manifest mode=bootstrap_stacks` discovers and registers it automatically — no manual `lens_registry` writes needed. See [Lens Bus Auto-Registration](lens_bus_autoreg.md).
 
 ---
 

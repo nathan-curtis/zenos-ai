@@ -1,4 +1,4 @@
-# Zen DojoTools Manifest — v6.0.0 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Manifest — v6.1.0 (ZenOS-AI 2026.7.0 'Neo')
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 
@@ -50,6 +50,7 @@ The `mode` field routes the broker to the appropriate subsystem. Default is `cab
 | `autotag` | Tag discovered tools. Optionally filtered by `tier`. |
 | `publish` | Writes three mini-manifests to the household cabinet: `zen_tool_manifest`, `zen_label_manifest`, `zen_automation_manifest`. Also writes the domain routing table. |
 | `mcp_sync` | Reconciles MCP-visible tools against the known tool roster. Requires `mcp_tool_list` (JSON array of entity_ids the agent can see). |
+| `bootstrap_stacks` | Auto-registers Lens Bus stack providers. Scans all `zen_stack_*` and `zen_sutra_*` scripts, calls `tool_manifest` on each, and registers any that declare `register_mode` and are not already in `lens_registry`. Idempotent — safe to run repeatedly. See [Lens Bus Auto-Registration](../plugins/lens_bus_autoreg.md). |
 | `all` | Full system manifest. Calls subsystems directly and aggregates. If `force_refresh: true`, runs `publish` first to refresh cached drawers. |
 | `tool_manifest` | Self-description. See below. |
 
