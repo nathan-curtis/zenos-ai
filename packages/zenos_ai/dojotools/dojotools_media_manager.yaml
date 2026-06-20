@@ -114,6 +114,13 @@ script:
               - prefs_apply
               - room_default_get
               - room_default_set
+              - stacks_by_anchor
+              - search
+              - register
+              - unregister
+              - health
+              - audit
+              - tool_manifest
               - help
       entity_id:
         name: Entity ID
@@ -155,7 +162,6 @@ script:
               - watch
               - listen
               - announce
-              - tool_manifest
       source:
         name: Source
         description: >-
@@ -202,6 +208,81 @@ script:
         description: "Opaque audit token echoed in all responses for correlation."
         selector:
           text:
+      anchors_json:
+        name: Anchors JSON
+        description: "Lens anchor list: [{type, id}]. Preferred over anchor_type/anchor_ids."
+        required: false
+        selector:
+          text:
+            multiline: true
+      anchor_type:
+        name: Anchor Type
+        description: "label | person | area_id | zone | concept | mood | activity"
+        required: false
+        selector:
+          select:
+            options:
+              - label
+              - person
+              - area_id
+              - zone
+              - concept
+              - mood
+              - activity
+      anchor_ids:
+        name: Anchor IDs
+        description: "Comma-sep IDs (fallback when anchors_json omitted)."
+        required: false
+        selector:
+          text:
+      media_types:
+        name: Media Types
+        description: "Optional filter: track, album, artist, playlist, radio, podcast, audiobook"
+        required: false
+        selector:
+          select:
+            multiple: true
+            options:
+              - track
+              - album
+              - artist
+              - playlist
+              - radio
+              - podcast
+              - audiobook
+      sources:
+        name: Sources
+        description: "Backend filter (default: music_assistant)"
+        required: false
+        selector:
+          text:
+      limit:
+        name: Limit
+        description: "Max evidence items. Default 10."
+        required: false
+        default: 10
+        selector:
+          number:
+            min: 1
+            max: 50
+      query:
+        name: Query Override
+        description: "Direct search string (overrides anchor-derived query)."
+        required: false
+        selector:
+          text:
+
+      profile_target:
+        name: Profile Target
+        description: >
+          Cabinet entity ID or shorthand (household | user | family) whose media_prefs
+          are applied to re-rank evidence. Defaults to active user (default_user cabinet).
+          Pass a specific cabinet entity ID for "play something Mom likes" scenarios.
+          Household prefs always loaded as base; profile_target prefs layer on top.
+        required: false
+        default: ""
+        selector:
+          text:
 
     sequence:
 
@@ -211,23 +292,41 @@ script:
         - conditions: "{{ _tm_check == 'tool_manifest' }}"
           sequence:
           - variables:
+              _tm_ms_ok: >-
+                {{ states('script.zen_sutra_music_search') not in ['unavailable', 'unknown'] }}
+          - variables:
               result: >-
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
-                {{ MF.tool_manifest(
+                {%- set _h = {'configured': _tm_ms_ok | bool, 'status': 'ok' if _tm_ms_ok | bool else 'warn',
+                              'notes': [] if _tm_ms_ok | bool else ['zen_sutra_music_search unavailable']} -%}
+                {%- set _m = MF.tool_manifest(
                     tool='zen_dojotools_media_manager',
-                    display_name='Media Manager',
+                    display_name='Media Manager — Media Lens Surface',
                     tier='dojotools',
-                    version='1.0.0',
-                    health={'configured': true, 'status': 'ok', 'notes': []},
+                    version='6.0.0',
+                    health=_h,
                     required_labels=['dojotools'],
-                    optional_labels=['media_player'],
-                    consumes=['entity_or_room'],
-                    returns=['media_state'],
+                    optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch'],
+                    consumes=['label', 'person', 'area_id', 'zone', 'concept', 'mood', 'activity'],
+                    returns=['track_evidence', 'album_evidence', 'artist_evidence', 'playlist_evidence',
+                             'radio_evidence', 'podcast_evidence', 'audiobook_evidence',
+                             'queue_evidence', 'playback_target_evidence'],
+                    failure_policy='soft',
+                    content_policy='metadata_only',
+                    risk_class='read_metadata',
+                    security_act={'model': 'rwxda', 'required': 'r', 'allowed': ['r'],
+                                  'denied': ['w', 'x', 'd', 'a'],
+                                  'note': 'Lens lookup returns media metadata and playback hints only. Playback/control actions remain outside the Lens path.'},
+                    modes={'lookup': 'stacks_by_anchor', 'manifest': 'tool_manifest'},
                     icon='mdi:television-play',
                     color='deep-orange',
-
                     caller_token=caller_token | default('')
-                ) | from_json }}
+                ) | from_json -%}
+                {{- _m | combine({
+                    'provider_key': 'media',
+                    'department': 'special_collections',
+                    'register_mode': 'register'
+                }) -}}
           - stop: tool_manifest
             response_variable: result
       # ── 0. Resolve inputs ─────────────────────────────────────────────────
@@ -244,6 +343,7 @@ script:
           _volume:       "{{ volume | default(-1) | int(-1) }}"
           _dry_run:      "{{ dry_run | default(false) | bool }}"
           _caller_token: "{{ caller_token | default('') | string | trim }}"
+          _hh:           "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
 
       # ── 0b. Cabinet + room entity list ────────────────────────────────────
       - variables:
@@ -432,14 +532,54 @@ script:
                        | select('match', 'script\\.')
                        | list }}
                   roles:
-                    search: "zen_dojotools_music_search — search MA media library. Params: query, artist, album, media_type. Returns playable URIs."
+                    search: "zen_sutra_music_search — search MA media library. Params: query, artist, album, media_type. Returns playable URIs."
                     play: "music_assistant_start_playback — play to a room. Params: media_type, media_id, area, shuffle."
                     queue: "music_assistant_get_queue_for_room — read MA queue for a room. Param: area. Read-only."
                   usage: >-
                     Typical flow: search for content → pick a URI → start_playback with area=.
                     For ambient: play a named playlist, radio, or artist directly (no search needed).
-                    These are HA scripts — call via script.zen_dojotools_music_search etc.,
+                    These are HA scripts — call via script.zen_sutra_music_search etc.,
                     not media_player services. intent=listen in resolve_debug surfaces them via media_library_tools.
+                lens_surface:
+                  about: >-
+                    Media Manager is a registered Lens Bus provider (provider_key=media,
+                    department=special_collections). Consumers call mode=stacks_by_anchor with
+                    typed anchors — Media Manager searches Music Assistant and returns ranked
+                    evidence leaves. The AV resolution layer (discover/prefs/source_set) is
+                    separate from the Lens path — Lens is read-only metadata + playback hints.
+                  lens_modes:
+                    stacks_by_anchor: "Core Lens lookup. Pass anchors_json=[{type,id}] — types: mood, activity, concept, area_id, label, person, zone. Returns evidence[] of track/album/playlist/artist items with playback_hint on each."
+                    register: "Write this provider into lens_registry in household cabinet. Called by bootstrap or operator. Returns registered entry."
+                    unregister: "Remove this provider from lens_registry."
+                    health: "Returns music_search availability + stack status."
+                    audit: "Returns this provider's security/policy declaration (read-only, metadata_only, no PII)."
+                    tool_manifest: "Full Lens provider self-description for bootstrap scan."
+                  evidence_types: ["track_evidence", "album_evidence", "playlist_evidence", "artist_evidence", "radio_evidence", "audiobook_evidence", "podcast_evidence"]
+                  playback_hint_shape:
+                    tool: zen_dojotools_media_manager
+                    mode: play
+                    uri: "library://album/167 or spotify://track/..."
+                    source: music_assistant
+                    media_type: "album | track | playlist | ..."
+                    suggested_room: "area_id if anchor included area_id type, else empty"
+                    suggested_volume: "int from active profile media_prefs.default_volume, else null"
+                  profile_prefs:
+                    about: >-
+                      Pass profile_target=(household|user|family|<cabinet_entity_id>) to load
+                      that profile's media_prefs and apply them to evidence ranking. Default is
+                      the active user (default_user cabinet). Household prefs are always loaded as
+                      base; profile_target prefs layer on top. 'Play something Mom likes' =
+                      profile_target=<mom cabinet entity_id>.
+                    prefs_applied_block: "Echoed in every stacks_by_anchor response — shows which prefs fired."
+                    policy_applied_per_item: "Each evidence item carries policy_applied[] — e.g. ['boost_artist:Dave Brubeck', 'source_rank:spotify:0', 'default_volume:user']."
+                  media_prefs_schema:
+                    preferred_genres: "list — biases query derivation from mood/concept anchors"
+                    boost_artists: "list — items whose artist matches get confidence +0.2 (max 1.0)"
+                    explicit_policy: "allow | avoid | block (default allow)"
+                    default_volume: "int 0-100 — injected into every playback_hint.suggested_volume"
+                    preferred_sources: "ordered list of URI schemes e.g. ['spotify','library'] — rank 0=+0.15, rank 1=+0.10, rank 2=+0.05"
+                    provider_instance: "TBD — per-person MA provider instance ID for streaming account targeting. Stored in profile now; forwarded to music_search when that tool gains provider_instance_id support."
+                  write_prefs: "zen_dojotools_profile_editor mode=write target_type=user|family|household media_prefs='{...}'"
                 caller_token: "{{ _caller_token }}"
           - stop: help
             response_variable: _result
@@ -1583,7 +1723,483 @@ script:
           - stop: resolve_debug complete
             response_variable: _result
 
-      # ── 16. Fallback ──────────────────────────────────────────────────────
+      # ── Lens: stacks_by_anchor ────────────────────────────────────────────────
+      - if: "{{ _mode == 'stacks_by_anchor' }}"
+        then:
+          - variables:
+              _sba_raw: >-
+                {%- set raw = anchors_json | default('', true) -%}
+                {%- if raw is sequence and raw is not string -%}{{ raw | list }}
+                {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json | default([]) }}
+                {%- else -%}{{ [] }}{%- endif -%}
+          - variables:
+              _sba_anchors: >-
+                {%- if _sba_raw is sequence and _sba_raw | length > 0 -%}
+                  {{ _sba_raw }}
+                {%- else -%}
+                  {%- set _at = anchor_type | default('concept', true) | string | trim | lower -%}
+                  {%- set raw = anchor_ids | default('', true) -%}
+                  {%- if raw is sequence and raw is not string -%}
+                    {%- set _ids = raw | list -%}
+                  {%- elif (raw | string | trim)[:1] == '[' -%}
+                    {%- set _ids = raw | string | trim | from_json | default([]) -%}
+                  {%- elif raw | string | trim != '' -%}
+                    {%- set _ids = raw | string | trim | split(',') | map('trim') | select | list -%}
+                  {%- else -%}
+                    {%- set _ids = [] -%}
+                  {%- endif -%}
+                  {%- set ns = namespace(a=[]) -%}
+                  {%- for _id in _ids -%}
+                    {%- set ns.a = ns.a + [{'type': _at, 'id': _id}] -%}
+                  {%- endfor -%}
+                  {{ ns.a }}
+                {%- endif -%}
+              _sba_limit: "{{ limit | default(10) | int(10) }}"
+              _sba_media_types: >-
+                {%- set raw = media_types | default('', true) -%}
+                {%- if raw is sequence and raw is not string -%}{{ raw | list }}
+                {%- elif raw is string and raw | trim != '' -%}
+                  {%- if (raw | trim)[:1] == '[' -%}{{ raw | trim | from_json | default([]) }}
+                  {%- else -%}{{ raw | trim | split(',') | map('trim') | select | list }}{%- endif -%}
+                {%- else -%}{{ [] }}{%- endif -%}
+              _sba_query_override: "{{ query | default('', true) | string | trim }}"
+          - variables:
+              _sba_ms_ok: >-
+                {{ states('script.zen_sutra_music_search') not in ['unavailable', 'unknown'] }}
+          - variables:
+              _sba_pt: "{{ profile_target | default('', true) | string | trim }}"
+              _sba_hh_vars: >-
+                {{ state_attr(_hh, 'variables') | default({}, true) if _hh != '' else {} }}
+              _sba_hh_profile_raw: >-
+                {%- set rv = _sba_hh_vars.get('_household_profile', {}) -%}
+                {{ rv.get('value', rv) if rv is mapping else {} }}
+              _sba_hh_mp: >-
+                {%- set pv = _sba_hh_profile_raw if _sba_hh_profile_raw is mapping else {} -%}
+                {{ pv.get('media_prefs', {}) | default({}, true) }}
+          - variables:
+              _sba_pt_entity: >-
+                {%- if _sba_pt == 'household' -%}{{ _hh }}
+                {%- elif _sba_pt == 'family' -%}{{ states('sensor.zen_default_family_cabinet_resolved') }}
+                {%- elif _sba_pt == 'user' or _sba_pt == '' -%}{{ states('sensor.zen_default_user_cabinet_resolved') }}
+                {%- else -%}{{ _sba_pt }}{%- endif -%}
+          - variables:
+              _sba_pt_vars: >-
+                {{ state_attr(_sba_pt_entity, 'variables') | default({}, true) if _sba_pt_entity != '' else {} }}
+              _sba_pt_profile_raw: >-
+                {%- set _ptk = '_household_profile' if _sba_pt == 'household' else ('_family_profile' if _sba_pt == 'family' else '_user_profile') -%}
+                {%- set rv = _sba_pt_vars.get(_ptk, _sba_pt_vars.get('_user_profile', {})) -%}
+                {{ rv.get('value', rv) if rv is mapping else {} }}
+              _sba_pt_mp: >-
+                {%- set pv = _sba_pt_profile_raw if _sba_pt_profile_raw is mapping else {} -%}
+                {{ pv.get('media_prefs', {}) | default({}, true) }}
+          - variables:
+              _sba_prefs: >-
+                {%- set hh = _sba_hh_mp if _sba_hh_mp is mapping else {} -%}
+                {%- set pt = _sba_pt_mp if _sba_pt_mp is mapping else {} -%}
+                {{ hh | combine(pt) }}
+              _sba_boost_artists: >-
+                {%- set ba = _sba_prefs.get('boost_artists', []) if _sba_prefs is mapping else [] -%}
+                {{ (ba | list if ba is sequence and ba is not string else []) | tojson }}
+              _sba_pref_sources: >-
+                {%- set ps = _sba_prefs.get('preferred_sources', []) if _sba_prefs is mapping else [] -%}
+                {{ (ps | list if ps is sequence and ps is not string else []) | tojson }}
+              _sba_explicit_policy: "{{ _sba_prefs.get('explicit_policy', 'allow') | string | lower }}"
+              _sba_default_volume: "{{ _sba_prefs.get('default_volume', none) }}"
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: "{{ _sba_anchors | length == 0 and _sba_query_override == '' }}"
+              sequence:
+              - variables:
+                  _sba_result:
+                    status: success
+                    tool: zen_dojotools_media_manager
+                    provider: media
+                    consumer: "{{ consumer | default('', true) }}"
+                    action: stacks_by_anchor
+                    anchors: []
+                    evidence: []
+                    providers:
+                      media:
+                        status: available
+                        count: 0
+                    trace:
+                      caller_token: "{{ _caller_token }}"
+              - stop: stacks_by_anchor empty
+                response_variable: _sba_result
+          - variables:
+              _sba_anchor_0: >-
+                {%- if _sba_anchors is sequence and _sba_anchors | length > 0 -%}
+                  {{ _sba_anchors | first }}
+                {%- else -%}{{ {} }}{%- endif -%}
+          - variables:
+              _sba_derived_query: >-
+                {%- if _sba_query_override != '' -%}
+                  {{ _sba_query_override }}
+                {%- elif _sba_anchor_0 is mapping -%}
+                  {%- set _atype = _sba_anchor_0.get('type', 'concept') -%}
+                  {%- set _aid   = _sba_anchor_0.get('id', '') -%}
+                  {%- if _atype == 'area_id' -%}
+                    {{ area_attr(_aid, 'name') | default(_aid | replace('_', ' '), true) }}
+                  {%- elif _atype == 'person' -%}
+                    {{ state_attr('person.' ~ _aid, 'friendly_name') | default(_aid | replace('_', ' '), true) }}
+                  {%- else -%}
+                    {{ _aid | replace('_', ' ') }}
+                  {%- endif -%}
+                {%- else -%}{{ '' }}{%- endif -%}
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: "{{ not _sba_ms_ok }}"
+              sequence:
+              - variables:
+                  _sba_result:
+                    status: success
+                    tool: zen_dojotools_media_manager
+                    provider: media
+                    consumer: "{{ consumer | default('', true) }}"
+                    action: stacks_by_anchor
+                    anchors: "{{ _sba_anchors }}"
+                    evidence: []
+                    providers:
+                      media:
+                        status: degraded
+                        count: 0
+                        note: zen_sutra_music_search unavailable
+                    trace:
+                      caller_token: "{{ _caller_token }}"
+              - stop: stacks_by_anchor degraded
+                response_variable: _sba_result
+          - action: script.zen_sutra_music_search
+            data:
+              query: "{{ _sba_derived_query }}"
+              number: "{{ _sba_limit }}"
+              library_only: true
+              media_type: >-
+                {%- if _sba_media_types | length > 0 -%}{{ _sba_media_types | first }}
+                {%- else -%}{{ none }}{%- endif -%}
+            response_variable: _sba_ms_raw
+            continue_on_error: true
+          - variables:
+              _sba_items: >-
+                {%- set r = _sba_ms_raw if _sba_ms_raw is defined else {} -%}
+                {%- if r is mapping -%}
+                  {%- set ns = namespace(flat=[]) -%}
+                  {%- for key in ['tracks', 'albums', 'playlists', 'artists', 'radio', 'audiobooks', 'podcasts'] -%}
+                    {%- set _bucket = r.get(key, []) -%}
+                    {%- if _bucket is sequence and _bucket is not string -%}
+                      {%- for it in _bucket -%}
+                        {%- set ns.flat = ns.flat + [{'name': it.get('name','') | string, 'uri': it.get('uri','') | string, 'media_type': key[:-1] if key != 'radio' else 'radio', 'artists': it.get('artists',[]) | list, 'album': it.get('album') or {}}] -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.flat | tojson }}
+                {%- elif r is sequence and r is not string -%}{{ r | list | tojson }}
+                {%- else -%}{{ [] | tojson }}{%- endif -%}
+          - variables:
+              _sba_evidence: >-
+                {%- set _anchors   = _sba_anchors if _sba_anchors is sequence else [] -%}
+                {%- set _anchor_0  = _anchors | first if _anchors | length > 0 else {} -%}
+                {%- set _area_anc  = _anchors | selectattr('type', 'eq', 'area_id') | list | first | default(none) -%}
+                {%- set _boost_list = _sba_boost_artists | from_json if _sba_boost_artists is string else _sba_boost_artists -%}
+                {%- set _boost_list = _boost_list if _boost_list is sequence and _boost_list is not string else [] -%}
+                {%- set _boost_low = _boost_list | map('lower') | list -%}
+                {%- set _pref_src_raw = _sba_pref_sources | from_json if _sba_pref_sources is string else _sba_pref_sources -%}
+                {%- set _pref_src  = (_pref_src_raw | map('lower') | list) if _pref_src_raw is sequence and _pref_src_raw is not string else [] -%}
+                {%- set _ep        = _sba_explicit_policy | default('allow') -%}
+                {%- set _def_vol   = _sba_default_volume | default(none) -%}
+                {%- set _def_vol   = _def_vol | int(none) if _def_vol is not none and _def_vol | string != 'None' else none -%}
+                {%- set ns = namespace(ev=[], count=0) -%}
+                {%- set _items_list = _sba_items | from_json if _sba_items is string else _sba_items -%}
+                {%- for item in (_items_list if _items_list is sequence else []) -%}
+                  {%- if ns.count >= _sba_limit -%}{%- break -%}{%- endif -%}
+                  {%- if not (item is mapping) -%}{%- continue -%}{%- endif -%}
+                  {%- set _mtype   = item.get('media_type', 'track') | string | lower -%}
+                  {%- set _title   = item.get('name', '') | string -%}
+                  {%- set _uri_str = item.get('uri', '') | string -%}
+                  {%- set _iid     = _uri_str.split('/')[-1] if '/' in _uri_str else _uri_str -%}
+                  {%- set _al      = item.get('artists', []) -%}
+                  {%- set _al      = _al | list if _al is sequence and _al is not string else [] -%}
+                  {%- set _artist  = (_al | first).get('name', '') if _al | length > 0 and (_al | first) is mapping else none -%}
+                  {%- set _aln     = item.get('album', none) -%}
+                  {%- set _album   = _aln.get('name', none) if _aln is mapping else none -%}
+                  {%- set _policy  = [] -%}
+                  {%- set _conf    = 0.7 -%}
+                  {%- set _artist_low = (_artist | lower) if _artist else '' -%}
+                  {%- if _boost_low | length > 0 and _artist_low in _boost_low -%}
+                    {%- set _conf = 0.9 -%}
+                    {%- set _policy = _policy + ['boost_artist:' ~ (_artist | default(''))] -%}
+                  {%- endif -%}
+                  {%- if _pref_src | length > 0 -%}
+                    {%- set _uri_scheme = _uri_str.split('://')[0] | lower if '://' in _uri_str else 'library' -%}
+                    {%- set _src_rank = _pref_src.index(_uri_scheme) if _uri_scheme in _pref_src else -1 -%}
+                    {%- if _src_rank >= 0 -%}
+                      {%- set _src_boost = [0.15, 0.10, 0.05, 0.02] -%}
+                      {%- set _boost_val = _src_boost[_src_rank] if _src_rank < _src_boost | length else 0.01 -%}
+                      {%- set _conf = [(_conf + _boost_val), 1.0] | min -%}
+                      {%- set _policy = _policy + ['source_rank:' ~ _uri_scheme ~ ':' ~ _src_rank] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {%- set _scope_label = _sba_pt or 'user' -%}
+                  {%- if _def_vol is not none -%}
+                    {%- set _policy = _policy + ['default_volume:' ~ _scope_label] -%}
+                  {%- endif -%}
+                  {%- if _ep != 'allow' -%}
+                    {%- set _policy = _policy + ['explicit_policy:' ~ _ep ~ ':no_explicit_metadata'] -%}
+                  {%- endif -%}
+                  {%- set _hint = {
+                    'tool': 'zen_dojotools_media_manager',
+                    'mode': 'play',
+                    'uri': _uri_str,
+                    'source': 'music_assistant',
+                    'media_type': _mtype,
+                    'suggested_room': _area_anc.get('id', '') if _area_anc is mapping else '',
+                    'suggested_volume': _def_vol
+                  } -%}
+                  {%- set _entry = {
+                    'evidence_id':    'media:music_assistant:' ~ _mtype ~ ':' ~ _iid,
+                    'evidence_type':  _mtype ~ '_evidence',
+                    'provider':       'media',
+                    'source':         'music_assistant',
+                    'media_type':     _mtype,
+                    'title':          _title,
+                    'artist':         _artist,
+                    'album':          _album,
+                    'uri':            _uri_str,
+                    'playable':       true,
+                    'matched_anchor': _anchor_0 if _anchor_0 is mapping else {},
+                    'confidence':     _conf,
+                    'content_redacted': false,
+                    'metadata_only':  true,
+                    'policy_applied': _policy,
+                    'playback_hint':  _hint
+                  } -%}
+                  {%- set ns.ev = ns.ev + [_entry] -%}
+                  {%- set ns.count = ns.count + 1 -%}
+                {%- endfor -%}
+                {{ ns.ev }}
+          - variables:
+              _sba_result:
+                status: success
+                tool: zen_dojotools_media_manager
+                provider: media
+                consumer: "{{ consumer | default('', true) }}"
+                action: stacks_by_anchor
+                anchors: "{{ _sba_anchors }}"
+                evidence: "{{ _sba_evidence if _sba_evidence is sequence else [] }}"
+                providers:
+                  media:
+                    status: available
+                    count: "{{ (_sba_evidence | length) if _sba_evidence is sequence else 0 }}"
+                prefs_applied:
+                  profile_scope: "{{ _sba_pt or 'user' }}"
+                  profile_entity: "{{ _sba_pt_entity }}"
+                  boost_artists: "{{ _sba_boost_artists }}"
+                  preferred_sources: "{{ _sba_pref_sources }}"
+                  explicit_policy: "{{ _sba_explicit_policy }}"
+                  default_volume: "{{ _sba_default_volume }}"
+                trace:
+                  query: "{{ _sba_derived_query }}"
+                  caller_token: "{{ _caller_token }}"
+          - stop: stacks_by_anchor complete
+            response_variable: _sba_result
+
+      # ── Lens: register ────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'register' }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _reg_fc_raw
+            continue_on_error: true
+            data:
+              action_type: get
+              stack: cabinet
+              volume_entity_id: "{{ _hh }}"
+              path: lens_registry
+          - variables:
+              _reg_registry: >-
+                {%- set r = _reg_fc_raw if _reg_fc_raw is mapping and _reg_fc_raw.get('status') == 'success' else {} -%}
+                {%- set v = r.get('value', {}) -%}
+                {%- if v is mapping -%}{{ v }}
+                {%- elif v is string and (v | trim)[:1] == '{' -%}{{ v | from_json | default({}) }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              _reg_entry:
+                provider: media
+                configured_by: zen_dojotools_media_manager
+                department: special_collections
+                tool: zen_dojotools_media_manager
+                mode: stacks_by_anchor
+                consumes: [label, person, area_id, zone, concept, mood, activity]
+                returns: [track_evidence, album_evidence, artist_evidence, playlist_evidence,
+                          radio_evidence, podcast_evidence, audiobook_evidence,
+                          queue_evidence, playback_target_evidence]
+                failure_policy: soft
+                content_policy: metadata_only
+                risk_class: read_metadata
+                security_act:
+                  model: rwxda
+                  required: r
+                  allowed: [r]
+                  denied: [w, x, d, a]
+          - variables:
+              _reg_new: "{{ (_reg_registry if _reg_registry is mapping else {}) | combine({'media': _reg_entry}) }}"
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _reg_write_raw
+            continue_on_error: true
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh }}"
+              key: lens_registry
+              value: "{{ _reg_new | tojson }}"
+              force_action: true
+          - event: lens.provider_registered
+            event_data:
+              provider: media
+              tool: zen_dojotools_media_manager
+          - variables:
+              _reg_result: >-
+                {%- set _ok = _reg_write_raw is mapping and _reg_write_raw.get('status') == 'success' -%}
+                {{
+                  {
+                    'status': 'success' if _ok else 'error',
+                    'tool': 'zen_dojotools_media_manager',
+                    'action': 'register',
+                    'provider': 'media',
+                    'registry_entry': _reg_entry,
+                    'trace': {
+                      'fc_status': _reg_write_raw.get('status', 'unknown') if _reg_write_raw is mapping else 'no_response',
+                      'caller_token': _caller_token
+                    }
+                  }
+                }}
+          - stop: media register done
+            response_variable: _reg_result
+
+      # ── Lens: unregister ──────────────────────────────────────────────────────
+      - if: "{{ _mode == 'unregister' }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _unreg_fc_raw
+            continue_on_error: true
+            data:
+              action_type: get
+              stack: cabinet
+              volume_entity_id: "{{ _hh }}"
+              path: lens_registry
+          - variables:
+              _unreg_registry: >-
+                {%- set r = _unreg_fc_raw if _unreg_fc_raw is mapping and _unreg_fc_raw.get('status') == 'success' else {} -%}
+                {%- set v = r.get('value', {}) -%}
+                {%- if v is mapping -%}{{ v }}
+                {%- elif v is string and (v | trim)[:1] == '{' -%}{{ v | from_json | default({}) }}
+                {%- else -%}{{ {} }}{%- endif -%}
+          - variables:
+              _unreg_new: >-
+                {%- set ns = namespace(reg={}) -%}
+                {%- for k, v in (_unreg_registry if _unreg_registry is mapping else {}).items() -%}
+                  {%- if k != 'media' -%}{%- set ns.reg = ns.reg | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.reg }}
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _unreg_write_raw
+            continue_on_error: true
+            data:
+              action_type: update
+              volume_entity_id: "{{ _hh }}"
+              key: lens_registry
+              value: "{{ _unreg_new | tojson }}"
+              force_action: true
+          - variables:
+              _unreg_result:
+                status: success
+                tool: zen_dojotools_media_manager
+                action: unregister
+                provider: media
+                trace:
+                  fc_status: "{{ _unreg_write_raw.get('status', 'unknown') if _unreg_write_raw is mapping else 'no_response' }}"
+                  caller_token: "{{ _caller_token }}"
+          - stop: media unregister done
+            response_variable: _unreg_result
+
+      # ── Lens: health ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'health' }}"
+        then:
+          - variables:
+              _health_ms_ok: >-
+                {{ states('script.zen_sutra_music_search') not in ['unavailable', 'unknown'] }}
+          - variables:
+              _health_result:
+                status: "{{ 'ok' if _health_ms_ok | bool else 'degraded' }}"
+                tool: zen_dojotools_media_manager
+                action: health
+                provider: media
+                backends:
+                  music_assistant:
+                    available: "{{ _health_ms_ok | bool }}"
+                    script: zen_sutra_music_search
+                trace:
+                  caller_token: "{{ _caller_token }}"
+          - stop: media health done
+            response_variable: _health_result
+
+      # ── Lens: audit ───────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'audit' }}"
+        then:
+          - variables:
+              _audit_result:
+                status: success
+                tool: zen_dojotools_media_manager
+                action: audit
+                provider: media
+                department: special_collections
+                policy:
+                  consumes: [label, person, area_id, zone, concept, mood, activity]
+                  returns: [track_evidence, album_evidence, artist_evidence, playlist_evidence,
+                            radio_evidence, podcast_evidence, audiobook_evidence,
+                            queue_evidence, playback_target_evidence]
+                  security_act:
+                    model: rwxda
+                    required: r
+                    allowed: [r]
+                    denied: [w, x, d, a]
+                  failure_policy: soft
+                  content_policy: metadata_only
+                  content_redacted: false
+                  risk_class: read_metadata
+                trace:
+                  caller_token: "{{ _caller_token }}"
+          - stop: media audit done
+            response_variable: _audit_result
+
+      # ── 16. search ────────────────────────────────────────────────────────
+      # Lightweight raw search — no Lens envelope, no pref ranking. Returns
+      # the MA grouped response directly. Use stacks_by_anchor when you want
+      # ranked evidence + playback hints. Use search when you just want to browse.
+      - if: "{{ _mode == 'search' }}"
+        then:
+          - action: script.zen_sutra_music_search
+            data:
+              query: "{{ query | default('*', true) | string | trim }}"
+              number: "{{ limit | default(25) | int(25) }}"
+              library_only: true
+              media_type: >-
+                {%- set raw = media_types | default('', true) -%}
+                {%- if raw is sequence and raw is not string and raw | length > 0 -%}{{ raw | first }}
+                {%- elif raw is string and raw | trim != '' -%}{{ raw | trim }}
+                {%- else -%}{{ none }}{%- endif -%}
+            response_variable: _search_raw
+            continue_on_error: true
+          - variables:
+              _search_result:
+                status: success
+                tool: zen_dojotools_media_manager
+                action: search
+                query: "{{ query | default('*', true) }}"
+                results: "{{ _search_raw if _search_raw is mapping else {} }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: search complete
+            response_variable: _search_result
+
+      # ── 17. Fallback ──────────────────────────────────────────────────────
       - variables:
           _err:
             status: error
@@ -1591,7 +2207,119 @@ script:
               Unknown mode '{{ _mode }}'. Valid: discover, setup, label_suggest,
               resolve_debug, source_get, source_set, sound_mode_get,
               sound_mode_set, state_get, prefs_get, prefs_set, prefs_apply,
-              room_default_get, room_default_set, help
+              room_default_get, room_default_set, stacks_by_anchor, search,
+              register, unregister, health, audit, help
             caller_token: "{{ _caller_token }}"
       - stop: unknown mode
         response_variable: _err
+
+  zen_stack_media:
+    alias: Zen Stack Provider — Media (Internal)
+    description: >-
+      Internal Lens Bus stack adapter for the Media provider. Bootstrap-discoverable
+      via zen_stack_* namespace. Proxies all Lens contract verbs to
+      zen_dojotools_media_manager. Not MCP-exposed — use zen_dojotools_media_manager directly.
+    mode: parallel
+    max: 10
+    fields:
+      mode:
+        name: Mode
+        description: "tool_manifest | stacks_by_anchor | by_anchor | register | unregister | health | audit"
+        selector:
+          select:
+            options:
+              - tool_manifest
+              - stacks_by_anchor
+              - by_anchor
+              - register
+              - unregister
+              - health
+              - audit
+        default: tool_manifest
+      anchors_json:
+        name: Anchors JSON
+        description: "Lens anchor list [{type, id}]. Passed through to media_manager."
+        required: false
+        selector:
+          text:
+            multiline: true
+      anchor_type:
+        name: Anchor Type
+        description: "label | person | area_id | zone | concept | mood | activity"
+        required: false
+        selector:
+          text:
+      anchor_ids:
+        name: Anchor IDs
+        description: "Comma-sep anchor IDs. Fallback when anchors_json omitted."
+        required: false
+        selector:
+          text:
+      media_types:
+        name: Media Types
+        description: "Optional filter passed through to media_manager."
+        required: false
+        selector:
+          text:
+      limit:
+        name: Limit
+        description: "Max evidence items."
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 50
+      query:
+        name: Query Override
+        description: "Direct search string override."
+        required: false
+        selector:
+          text:
+      profile_target:
+        name: Profile Target
+        description: "Cabinet entity ID or shorthand (household|user|family). Passed through to media_manager."
+        required: false
+        selector:
+          text:
+      consumer:
+        name: Consumer
+        description: "Calling consumer identifier — echoed in response."
+        required: false
+        selector:
+          text:
+      caller_token:
+        name: Caller Token
+        description: "Opaque audit token."
+        required: false
+        selector:
+          text:
+    sequence:
+    - variables:
+        _mode: "{{ mode | default('tool_manifest') | string | trim | lower }}"
+        _mode_map:
+          by_anchor: stacks_by_anchor
+        _mm_mode: "{{ _mode_map.get(_mode, _mode) }}"
+        _caller_token: "{{ caller_token | default('') }}"
+
+    - action: script.zen_dojotools_media_manager
+      response_variable: _result
+      continue_on_error: true
+      data:
+        mode: "{{ _mm_mode }}"
+        anchors_json: "{{ anchors_json | default('', true) }}"
+        anchor_type: "{{ anchor_type | default('', true) }}"
+        anchor_ids: "{{ anchor_ids | default('', true) }}"
+        media_types: "{{ media_types | default('', true) }}"
+        limit: "{{ limit | default(10) }}"
+        query: "{{ query | default('', true) }}"
+        profile_target: "{{ profile_target | default('', true) }}"
+        consumer: "{{ consumer | default('', true) }}"
+        caller_token: "{{ _caller_token }}"
+
+    - variables:
+        _out: >-
+          {%- set r = _result if _result is mapping else {} -%}
+          {{ r | combine({'stack': 'media', 'handler': 'zen_stack_media'}) }}
+
+    - stop: zen_stack_media complete
+      response_variable: _out

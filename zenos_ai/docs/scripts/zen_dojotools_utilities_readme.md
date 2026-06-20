@@ -19,7 +19,7 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `zen_dojotools_calculator` | Math operations and GUID generation |
 | `zen_dojotools_dice_roller` | D&D dice, coin flip, random numbers |
 | `zen_dojotools_announce` | TTS announcement router with urgency + dedup gates |
-| `zen_dojotools_music_search` | Music Assistant library/internet search |
+| `zen_sutra_music_search` | Music Assistant search — **internal sutra, not MCP-exposed**. Use `zen_dojotools_media_manager` mode=search or mode=stacks_by_anchor. |
 | `zen_dojotools_help` | Live ZenOS-AI system overview and script inventory |
 | `zen_dojotools_wait` | Timed delay (1–120 seconds) |
 | `dojotools_volume_auditor` | Cabinet volume accessibility scanner |
@@ -121,22 +121,15 @@ After a successful fire, an entry is written to `zen_announcement_log` in the Ka
 
 ---
 
-## zen_dojotools_music_search
+## zen_sutra_music_search (Internal Sutra)
 
-Music Assistant library and internet search wrapper.
+**Not MCP-exposed.** Internal Music Assistant search connector called by `zen_dojotools_media_manager`.
 
-### Input Fields
+For music discovery use `zen_dojotools_media_manager`:
+- `mode=stacks_by_anchor` — ranked evidence + playback hints + profile pref re-ranking
+- `mode=search` — lightweight raw MA results without Lens envelope
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `query` | text | — | Search term |
-| `artist` | text | — | Filter by artist |
-| `album` | text | — | Filter by album |
-| `media_type` | select (multi) | — | `artist`, `album`, `track`, `playlist`, `radio`, `audiobook`, `podcast` |
-| `number` | number | `50` | Result limit (1–50) |
-| `status` | boolean | `true` | `true` = library only; `false` = library + internet |
-
-Returns the Music Assistant search result object directly.
+Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `number`, `status` (library_only). Returns the MA grouped response `{tracks, albums, playlists, artists, radio, audiobooks, podcasts}`.
 
 ---
 
