@@ -214,7 +214,14 @@ Friday's visual surface. Wraps HA camera entities with LLM vision analysis, hous
 
 ---
 
-## 22. Zen DojoTools Postman — v1.0.0 'Lights, Camera, Action'
+## 22. Zen DojoTools Dispatcher — v5.1.0
+**File:** `zen_dojotools_dispatcher_readme.md`
+
+Event-driven inter-tool communication layer. Tools call each other via `zen_event(kind: dojotool_call)` instead of direct `script.*` actions. Two-tier architecture: Tier 1 dispatcher (explicit arms for custom field-mapping) → Tier 2 tool router (generic routing). Unregistered tools return structured `dojotool_dispatch_error` — nothing crashes. Enables version routing (`tool + version` → specific script) and observability at no extra cost.
+
+---
+
+## 23. Zen DojoTools Postman — v1.0.0 'Lights, Camera, Action'
 **File:** `zen_dojotools_postman_readme.md`
 
 Unified household communications layer. Supersedes `zen_dojotools_notification_router` (now deprecated). Resolves urgency + target against the authority stack (house ceiling → family floor → user preference) and dispatches to push/TTS/Teams. Supports image attachments, actionable response buttons with push-ack wait, phone TTS audio attachment, `kata_input` pipeline derivation, `breakthrough` gate bypass, full Android `notification_data` passthrough, and `open_dashboard` tap navigation. `zen_postman_response_router` automation bridges `mobile_app_notification_action` → `zen_event(kind: postman_response)` for ack correlation. `author_policy` seeds `postman_profile` drawers. Full `resolve` dry-run audit before sending.
