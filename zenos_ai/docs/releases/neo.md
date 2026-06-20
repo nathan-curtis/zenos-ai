@@ -197,7 +197,6 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 |---------|------|-----|
 | FC heartbeat routing bug | `dojotools_filecabinet.yaml` | `action_type \| default(action \| default('get'))` — sutra was reading `action_type` but DojoTool sends `action`. Every upsert was silently a GET. Fixed. |
 | `from_json` unguarded | All affected tools | Global sweep: bare `\| from_json` → `\| from_json({})` or `\| from_json(none)` + mapping re-assign guard |
-| `content→value` migration | All callers | FC GET no longer returns `content` key. `.get('content', '')` → `.get('value', {})` throughout |
 | FC dict-in/dict-out | All callers | Callers must NOT `\| tojson` before passing `value:` to FC. v6 no longer wraps in v1 envelope. |
 | `zen_dojotools_wikijs` stale refs | `dojotools_filecabinet.yaml:3317`, `dojotools_manifest.yaml:772` | FC tool_manifest child call removed (script deleted). Manifest domain map: `wiki → script.zen_dojotools_filecabinet`. |
 | `ha_reload_all` docs | `zen_dojotools_systemtools_readme.md` | "Default choice for most reloads" → "LAST RESORT ONLY — use targeted reload modes whenever possible." |
@@ -208,11 +207,7 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 
 **FC v6 dict-in/dict-out contract.** If you have any calls passing `value: "{{ payload \| tojson }}"` to FileCabinet, remove the `tojson`. v6 expects native dict/list. Wrapping it breaks the write.
 
-**`content` key gone from FC GET.** Any caller reading `.get('content', '')` from a FileCabinet response needs to be updated to `.get('value', {})`.
-
 **`zen_dojotools_wikijs` is gone.** Wiki access is exclusively via `zen_dojotools_filecabinet` with `stack=wiki`. Any KFC or automation calling `script.zen_dojotools_wikijs` directly needs to be updated.
-
-**`kitchen_sync.yaml` moved.** Now lives in `plugins/mealie/` as a companion file. Remove `plugins/kitchen_sync/` if you installed it as a standalone plugin.
 
 ---
 
@@ -220,7 +215,7 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 
 | File | Change |
 |------|--------|
-| `dojotools/dojotools_filecabinet.yaml` | v6.2.0. CabCeption engine, VirtualDrawer, LiveDrawer, dict-in/dict-out, `from_json({})` guard sweep, `content→value` migration, tool_manifest child block removed (wikijs deleted). |
+| `dojotools/dojotools_filecabinet.yaml` | v6.2.0. CabCeption engine, VirtualDrawer, LiveDrawer, dict-in/dict-out, `from_json({})` guard sweep, tool_manifest child block removed (wikijs deleted). |
 | `dojotools/dojotools_manifest.yaml` | v6.0.0. Namespace discovery aggregation. `wiki` domain map → `script.zen_dojotools_filecabinet`. |
 | `dojotools/dojotools_library.yaml` | v5.5.0. Lens Bus `stack=` field. Generic verbs route to registered providers. |
 | `dojotools/dojotools_admintools.yaml` | Cortex v43 'Rule Zero' as latest. KFC schema v1.4.0 retained. |
@@ -250,7 +245,7 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 
 ## Upgrade Notes
 
-**FC v6 callers:** Run a grep for `tojson` on any `value:` fields passed to FileCabinet. Remove them. Run a grep for `.get('content'` in any tool reading FC responses. Replace with `.get('value', {})`.
+**FC v6 callers:** Run a grep for `tojson` on any `value:` fields passed to FileCabinet. Remove them.
 
 **Wiki callers:** Any KFC or automation calling `script.zen_dojotools_wikijs` directly must be updated to `script.zen_dojotools_filecabinet` with `stack=wiki`.
 
