@@ -1,7 +1,7 @@
 ###############################################################################
 # ZenOS-AI Plugin: Zammad — Fulfillment (Service Desk / Help Tickets)
 # Codename: Radar
-# Version: 0.3.1
+# Version: 0.4.0
 #
 # MCP-facing:
 #   zen_dojotools_servicedesk  ← expose this to MCP
@@ -69,8 +69,10 @@ script:
   zen_dojotools_servicedesk:
     alias: Zen DojoTools Service Desk
     description: >
-      Radar — Zammad service desk. Friday tracks all service requests and help tickets.
-      Use mode=help to list all cases and their input fields.
+      Radar — ZenOS service desk backed by Zammad. Create, update, assign, search, tag, and close
+      help tickets. Supports customer resolution via household roster or reporter shorthand
+      (house/zenos). Manage queues, orgs, triage metadata, typed anchors, and ticket links.
+      Run radar_setup to initialize identity infrastructure. Use mode=help for full case reference.
     mode: parallel
     icon: mdi:ticket-outline
     fields:
@@ -108,6 +110,8 @@ script:
             - tool_manifest
             - batch_update
             - object_attribute_create
+            - radar_setup
+            - ticket_assign
         default: help
       input_json:
         name: Input JSON
@@ -142,7 +146,7 @@ script:
           ticket_create:
             intent: Create a new Zammad ticket.
             needs: [input_json.title, input_json.body]
-            optional: [input_json.group (default Users), input_json.customer (email — explicit), input_json.person_entity_id (HA person entity e.g. person.nathan — resolves customer email from household roster; overridden by customer if both given), input_json.priority (default "2 normal"), input_json.state (default new), input_json.product_name (Grocy product name — inventory notified on success), input_json.timeout_seconds (Zammad HTTP timeout, clamped 10-90)]
+            optional: [input_json.group (default Users), input_json.customer (email — explicit), input_json.person_entity_id (HA person entity e.g. person.nathan — resolves customer email from household roster; overridden by customer if both given), input_json.reporter (shorthand: house=household persona, zenos=dev persona — bypasses group lookup; ignored if customer set), input_json.priority (default "2 normal"), input_json.state (default new), input_json.product_name (Grocy product name — inventory notified on success), input_json.timeout_seconds (Zammad HTTP timeout, clamped 10-90)]
           ticket_get:
             intent: Fetch a ticket by ID including all articles.
             needs: [input_json.ticket_id (display number 10xxx or raw id)]
@@ -165,11 +169,19 @@ script:
             needs: [input_json.ticket_ids (list of int), at least one update field]
             optional: [input_json.title, input_json.state, input_json.priority, input_json.organization_id (int), input_json.group (queue full name string), input_json.owner_id (int), input_json.pending_time (ISO8601 datetime — required when state is pending close or pending reminder)]
           object_attribute_create:
-            intent: Create a custom field (object manager attribute) on the Ticket object, then execute migrations to apply it. Admin token required.
-            needs: [input_json.name (snake_case field key), input_json.display (human label), input_json.data_type (boolean|input|select|integer|datetime|date)]
-            optional: [input_json.default (default value), input_json.position (int, default 1600)]
-            returns: "{status: success|partial|error, total, succeeded, failed, results: [{per-ticket ticket_update result}]}"
-            note: status=partial if some tickets failed. Each result in results[] matches ticket_update response shape.
+            intent: Create a custom field (object manager attribute) on a Zammad object, then execute migrations to apply it. Admin token required.
+            needs: [input_json.name (snake_case field key — Zammad reserves _id and _ids suffixes, avoid them), input_json.display (human label), input_json.data_type (boolean|input|select|integer|datetime|date)]
+            optional: [input_json.object_type (Ticket|Organization|Group|User — default Ticket), input_json.default (default value), input_json.position (int, default 1600)]
+          radar_setup:
+            intent: Initialize or configure Radar identity infrastructure (default personas, cabinet defaults).
+            needs: [input_json.action (init|map_queue|set_org_default|inspect_queue)]
+            optional: [input_json.house_email (init only), input_json.dev_email (init only), input_json.group_id (int — map_queue/inspect_queue), input_json.org_id (int — set_org_default), input_json.customer_id (int — map_queue/set_org_default)]
+            returns: "action=init: {house_customer_id, house_status, dev_customer_id, dev_status, cabinet_written}. action=map_queue: {group_id, group_name, customer_id}. action=set_org_default: {org_id, org_name, customer_id}. action=inspect_queue: {group_id, group_name, zen_default_customer, wired}"
+            note: Idempotent. init finds-or-creates personas + writes radar_defaults to household cabinet. map_queue sets zen_default_customer on a Group. set_org_default sets zen_default_customer on an Org. inspect_queue reads the full wiring chain for a group.
+          ticket_assign:
+            intent: Assign a ticket to a specific agent/owner by name, email, or HA person entity.
+            needs: [input_json.ticket_id (display number 10xxx or raw id), input_json.owner (name or email string or person.* entity_id)]
+            returns: "{status, ticket_id, owner_id, owner_name, owner_email}"
           ticket_close:
             intent: Close a ticket (sets state to closed).
             needs: [input_json.ticket_id (display number 10xxx or raw id)]
@@ -297,7 +309,7 @@ script:
               status: info
               tool: Zen DojoTools Fulfillment
               codename: Radar
-              version: "0.3.1"
+              version: "0.4.0"
               configured_url: "{{ _base_url }}"
               cases: "{{ cases_help }}"
               caller_token: "{{ caller_token_norm }}"
@@ -1150,6 +1162,7 @@ script:
                 _tc_group: "{{ input_data.get('group', 'Users') | string | trim if input_data is mapping else 'Users' }}"
                 _tc_customer: "{{ input_data.get('customer', '') | string | trim if input_data is mapping else '' }}"
                 _tc_person_entity_id: "{{ input_data.get('person_entity_id', '') | string | trim if input_data is mapping else '' }}"
+                _tc_reporter: "{{ input_data.get('reporter', '') | string | trim | lower if input_data is mapping else '' }}"
                 _tc_priority: "{{ input_data.get('priority', '2 normal') | string | trim if input_data is mapping else '2 normal' }}"
                 _tc_state: "{{ input_data.get('state', 'new') | string | trim if input_data is mapping else 'new' }}"
                 _tc_product_name: "{{ input_data.get('product_name', '') | string | trim if input_data is mapping else '' }}"
@@ -1221,6 +1234,55 @@ script:
                   {%- elif _tc_person_resolve_raw is mapping and _tc_person_resolve_raw.get('status','') == 'success' -%}zammad_search
                   {%- elif _tc_customer != '' -%}explicit
                   {%- else -%}none{%- endif -%}
+            # --- reporter shorthand + group→zen_default_customer resolution ---
+            # GATE: only fires when no customer resolved yet AND (reporter shorthand OR group set)
+            - variables:
+                _tc_radar_defaults: >-
+                  {%- set _hh_cab = states('sensor.zen_default_household_cabinet_resolved') -%}
+                  {%- set _hh_vars = state_attr(_hh_cab, 'variables') | default({}, true) -%}
+                  {%- set _hh_vars = _hh_vars if _hh_vars is mapping else {} -%}
+                  {%- set _rd_raw = _hh_vars.get('radar_defaults', {}) -%}
+                  {%- set _rd = _rd_raw.get('value', _rd_raw) if _rd_raw is mapping and 'value' in _rd_raw else _rd_raw -%}
+                  {%- set _rd = _rd if _rd is mapping else (_rd | from_json(none) if _rd is string and _rd | trim not in ['','none','null','None'] else {}) -%}
+                  {{ _rd if _rd is mapping else {} }}
+            - if: "{{ _tc_customer == '' }}"
+              then:
+              - if: "{{ _tc_reporter == 'house' }}"
+                then:
+                - variables:
+                    _tc_customer: "{{ _tc_radar_defaults.get('house_customer_id', 0) | int(0) | string }}"
+                    _tc_person_email_source: shorthand_house
+                else:
+                - if: "{{ _tc_reporter == 'zenos' }}"
+                  then:
+                  - variables:
+                      _tc_customer: "{{ _tc_radar_defaults.get('dev_customer_id', 0) | int(0) | string }}"
+                      _tc_person_email_source: shorthand_zenos
+                  else:
+                  - if: "{{ _tc_group != '' }}"
+                    then:
+                    # group→customer_id via radar_group_map cabinet lookup (written by radar_setup map_queue)
+                    - variables:
+                        _tc_grp_map_raw: >-
+                          {%- set _hh_cab = states('sensor.zen_default_household_cabinet_resolved') -%}
+                          {%- set _hh_vars = state_attr(_hh_cab, 'variables') | default({}, true) -%}
+                          {%- set _hh_vars = _hh_vars if _hh_vars is mapping else {} -%}
+                          {%- set _raw = _hh_vars.get('radar_group_map', {}) -%}
+                          {%- set _v = _raw.get('value', _raw) if _raw is mapping and 'value' in _raw else _raw -%}
+                          {%- set _v = _v if _v is mapping else (_v | from_json(none) if _v is string and _v | trim not in ['','none','null','None'] else {}) -%}
+                          {{ _v if _v is mapping else {} }}
+                    - variables:
+                        _tc_grp_cust_id: "{{ (_tc_grp_map_raw.get(_tc_group, none) if _tc_grp_map_raw is mapping else none) | int(0) }}"
+                    - if: "{{ _tc_grp_cust_id > 0 }}"
+                      then:
+                      - variables:
+                          _tc_customer: "{{ _tc_grp_cust_id | string }}"
+                          _tc_person_email_source: group_map
+                      else:
+                      - variables:
+                          _tc_customer: "{{ _tc_radar_defaults.get('house_customer_id', 0) | int(0) | string }}"
+                          _tc_person_email_source: radar_fallback
+
             - variables:
                 _tc_payload: >-
                   {%- set _ns = namespace(p={
@@ -1235,7 +1297,13 @@ script:
                       'internal': false
                     }
                   }) -%}
-                  {%- if _tc_customer != '' -%}{%- set _ns.p = _ns.p | combine({'customer': _tc_customer}) -%}{%- endif -%}
+                  {%- if _tc_customer != '' -%}
+                    {%- if _tc_customer | int(0) > 0 -%}
+                      {%- set _ns.p = _ns.p | combine({'customer_id': _tc_customer | int}) -%}
+                    {%- else -%}
+                      {%- set _ns.p = _ns.p | combine({'customer': _tc_customer}) -%}
+                    {%- endif -%}
+                  {%- endif -%}
                   {{ _ns.p | tojson }}
             - action: script.zen_sutra_zammad
               response_variable: _tc_raw
@@ -2455,6 +2523,7 @@ script:
             _oac_name: "{{ input_data.get('name', '') | string | trim if input_data is mapping else '' }}"
             _oac_display: "{{ input_data.get('display', '') | string | trim if input_data is mapping else '' }}"
             _oac_type: "{{ input_data.get('data_type', 'boolean') | string | trim if input_data is mapping else 'boolean' }}"
+            _oac_object: "{{ input_data.get('object_type', 'Ticket') | string | trim if input_data is mapping else 'Ticket' }}"
             _oac_default: "{{ input_data.get('default', false) if input_data is mapping else false }}"
             _oac_position: "{{ input_data.get('position', 1600) | int if input_data is mapping else 1600 }}"
         - if: "{{ _oac_name == '' or _oac_display == '' }}"
@@ -2477,22 +2546,29 @@ script:
             request_timeout: "{{ _request_timeout }}"
             endpoint: object_manager_attributes
             payload: >-
+              {%- set _perm_key = 'admin.group' if _oac_object == 'Group' else ('admin.user' if _oac_object == 'User' else ('admin.organization' if _oac_object == 'Organization' else 'ticket.agent')) -%}
               {{
                 {
-                  'object': 'Ticket',
+                  'object': _oac_object,
                   'name': _oac_name,
                   'display': _oac_display,
                   'active': true,
                   'data_type': _oac_type,
                   'data_option': {
                     'default': _oac_default,
+                    'null': true,
+                    'min': 1,
+                    'max': 999999999
+                  } if _oac_type == 'integer' else {
+                    'default': _oac_default,
                     'options': {'true': 'Yes', 'false': 'No'} if _oac_type == 'boolean' else {}
                   },
                   'editable': true,
                   'position': _oac_position,
                   'screens': {
-                    'edit': {'shown': true, 'required': false},
-                    'view': {'shown': true}
+                    'create': {_perm_key: {'shown': true, 'required': false}},
+                    'edit': {_perm_key: {'shown': true, 'required': false}},
+                    'view': {_perm_key: {'shown': true}}
                   }
                 } | tojson
               }}
@@ -2503,9 +2579,9 @@ script:
                 status: error
                 tool: Zen DojoTools Fulfillment
                 case: object_attribute_create
-                message: "Failed to create attribute. Check admin token permissions (admin.object_manager required)."
+                message: "Failed to create attribute. Token needs admin.object + admin.group (for Group objects). Confirm token was regenerated after role changes."
                 http_status: "{{ _oac_raw.get('http_status', 0) if _oac_raw is mapping else 0 }}"
-                error_detail: "{{ _oac_raw.get('error_detail', '') if _oac_raw is mapping else '' }}"
+                error_detail: "{{ (_oac_raw.get('result', {}) or {}).get('content', {}) if _oac_raw is mapping else '' }}"
                 caller_token: "{{ caller_token_norm }}"
           - stop: object_attribute_create failed
             response_variable: result
@@ -2516,17 +2592,407 @@ script:
             action_type: post
             base_url: "{{ _base_url }}"
             request_timeout: "{{ _request_timeout }}"
-            endpoint: object_manager_attributes/execute_migrations
+            endpoint: object_manager_attributes_execute_migrations
             payload: "{}"
         - variables:
             result:
               status: success
               tool: Zen DojoTools Fulfillment
               case: object_attribute_create
+              object_type: "{{ _oac_object }}"
               attribute: "{{ (_oac_raw.get('result', {}).get('content', {}) if _oac_raw is mapping else {}) }}"
               migrations_executed: "{{ _oac_migrate_raw.get('status') == 'success' if _oac_migrate_raw is mapping else false }}"
               caller_token: "{{ caller_token_norm }}"
         - stop: object_attribute_create done
+          response_variable: result
+
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "radar_setup" }}'
+        sequence:
+        - variables:
+            _rs_action: "{{ input_data.get('action', 'init') | string | trim | lower if input_data is mapping else 'init' }}"
+            _rs_house_email: "{{ input_data.get('house_email', 'household@curtisplace.net') | string | trim if input_data is mapping else 'household@curtisplace.net' }}"
+            _rs_dev_email: "{{ input_data.get('dev_email', 'zenos@curtisplace.net') | string | trim if input_data is mapping else 'zenos@curtisplace.net' }}"
+
+        # --- action=init ---
+        - if: "{{ _rs_action == 'init' }}"
+          then:
+
+          # 1. Find or create house persona
+          - action: script.zen_sutra_zammad
+            response_variable: _rs_house_find_raw
+            continue_on_error: true
+            data:
+              action_type: get
+              base_url: "{{ _base_url }}"
+              request_timeout: "{{ _request_timeout }}"
+              endpoint: "users/search?query={{ _rs_house_email | urlencode }}&limit=5"
+          - variables:
+              _rs_house_found: "{{ _rs_house_find_raw.get('result', {}).get('content', []) if _rs_house_find_raw is mapping else [] }}"
+              _rs_house_id: >-
+                {%- set hits = _rs_house_find_raw.get('result', {}).get('content', []) if _rs_house_find_raw is mapping else [] -%}
+                {%- set hits = hits if hits is sequence else [] -%}
+                {{ (hits | selectattr('email', 'defined') | selectattr('email', 'eq', _rs_house_email) | list | first or {}).get('id', none) }}
+
+          - if: "{{ _rs_house_id is none or _rs_house_id == 'None' }}"
+            then:
+            - action: script.zen_sutra_zammad
+              response_variable: _rs_house_create_raw
+              continue_on_error: true
+              data:
+                action_type: post
+                base_url: "{{ _base_url }}"
+                request_timeout: "{{ _request_timeout }}"
+                endpoint: users
+                payload: >-
+                  {{ {'email': _rs_house_email, 'firstname': 'Household', 'lastname': 'Curtis Place', 'roles': ['Customer']} | tojson }}
+            - variables:
+                _rs_house_id: "{{ (_rs_house_create_raw.get('result', {}).get('content', {}) or {}).get('id', none) if _rs_house_create_raw is mapping else none }}"
+                _rs_house_status: "{{ 'created' if _rs_house_id not in [none, 'None'] else 'failed' }}"
+            else:
+            - variables:
+                _rs_house_status: existing
+
+          # 2. Find or create dev persona
+          - action: script.zen_sutra_zammad
+            response_variable: _rs_dev_find_raw
+            continue_on_error: true
+            data:
+              action_type: get
+              base_url: "{{ _base_url }}"
+              request_timeout: "{{ _request_timeout }}"
+              endpoint: "users/search?query={{ _rs_dev_email | urlencode }}&limit=5"
+          - variables:
+              _rs_dev_id: >-
+                {%- set hits = _rs_dev_find_raw.get('result', {}).get('content', []) if _rs_dev_find_raw is mapping else [] -%}
+                {%- set hits = hits if hits is sequence else [] -%}
+                {{ (hits | selectattr('email', 'defined') | selectattr('email', 'eq', _rs_dev_email) | list | first or {}).get('id', none) }}
+
+          - if: "{{ _rs_dev_id is none or _rs_dev_id == 'None' }}"
+            then:
+            - action: script.zen_sutra_zammad
+              response_variable: _rs_dev_create_raw
+              continue_on_error: true
+              data:
+                action_type: post
+                base_url: "{{ _base_url }}"
+                request_timeout: "{{ _request_timeout }}"
+                endpoint: users
+                payload: >-
+                  {{ {'email': _rs_dev_email, 'firstname': 'ZenOS', 'lastname': 'Development', 'roles': ['Customer']} | tojson }}
+            - variables:
+                _rs_dev_id: "{{ (_rs_dev_create_raw.get('result', {}).get('content', {}) or {}).get('id', none) if _rs_dev_create_raw is mapping else none }}"
+                _rs_dev_status: "{{ 'created' if _rs_dev_id not in [none, 'None'] else 'failed' }}"
+            else:
+            - variables:
+                _rs_dev_status: existing
+
+          # 3. Write radar_defaults cabinet drawer (system cabinet)
+          - variables:
+              _rs_sys_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+              _rs_cab_vars: >-
+                {{ state_attr(_rs_sys_cab, 'variables') | default({}, true) if _rs_sys_cab != '' else {} }}
+              _rs_existing_defaults: >-
+                {{ (_rs_cab_vars if _rs_cab_vars is mapping else {}).get('radar_defaults', {}) or {} }}
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _rs_cab_write
+            continue_on_error: true
+            data:
+              action_type: "{{ 'update' if 'radar_defaults' in (_rs_cab_vars if _rs_cab_vars is mapping else {}) else 'create' }}"
+              force_action: true
+              set_timestamp: true
+              volume_entity_id:
+                - "{{ _rs_sys_cab }}"
+              key: radar_defaults
+              value: >-
+                {{
+                  _rs_existing_defaults | combine({
+                    'house_customer_id': _rs_house_id | int(0),
+                    'dev_customer_id': _rs_dev_id | int(0)
+                  }) | tojson
+                }}
+          - variables:
+              result:
+                status: "{{ 'success' if _rs_house_id not in [none, 'None'] and _rs_dev_id not in [none, 'None'] else 'partial' }}"
+                tool: Zen DojoTools Fulfillment
+                case: radar_setup
+                action: init
+                house_customer_id: "{{ _rs_house_id | int(0) }}"
+                house_status: "{{ _rs_house_status | default('unknown') }}"
+                dev_customer_id: "{{ _rs_dev_id | int(0) }}"
+                dev_status: "{{ _rs_dev_status | default('unknown') }}"
+                cabinet_written: "{{ _rs_cab_write.get('status') == 'success' if _rs_cab_write is mapping else false }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: radar_setup init done
+            response_variable: result
+
+        # --- action=map_queue ---
+        - if: "{{ _rs_action == 'map_queue' }}"
+          then:
+          - variables:
+              _rs_mq_group_id: "{{ input_data.get('group_id', 0) | int(0) if input_data is mapping else 0 }}"
+              _rs_mq_customer_id: "{{ input_data.get('customer_id', 0) | int(0) if input_data is mapping else 0 }}"
+          - if: "{{ _rs_mq_group_id == 0 or _rs_mq_customer_id == 0 }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  tool: Zen DojoTools Fulfillment
+                  case: radar_setup
+                  action: map_queue
+                  message: "group_id and customer_id are required integers."
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: radar_setup map_queue validation failed
+              response_variable: result
+          - action: script.zen_sutra_zammad
+            response_variable: _rs_mq_raw
+            continue_on_error: true
+            data:
+              action_type: put
+              base_url: "{{ _base_url }}"
+              request_timeout: "{{ _request_timeout }}"
+              endpoint: "groups/{{ _rs_mq_group_id }}"
+              payload: "{{ {'zen_default_customer': _rs_mq_customer_id} | tojson }}"
+          - variables:
+              _rs_mq_content: "{{ (_rs_mq_raw.get('result', {}) or {}).get('content', {}) if _rs_mq_raw is mapping else {} }}"
+              _rs_mq_group_name: "{{ (_rs_mq_content.get('name', '') if _rs_mq_content is mapping else '') }}"
+          # Write group_name→customer_id to radar_group_map cabinet drawer
+          - variables:
+              _rs_mq_hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+              _rs_mq_hh_vars: "{{ state_attr(_rs_mq_hh_cab, 'variables') | default({}, true) if _rs_mq_hh_cab != '' else {} }}"
+          - variables:
+              _rs_mq_existing_map: >-
+                {%- set _raw = (_rs_mq_hh_vars if _rs_mq_hh_vars is mapping else {}).get('radar_group_map', {}) -%}
+                {%- set _v = _raw.get('value', _raw) if _raw is mapping and 'value' in _raw else _raw -%}
+                {%- set _v = _v if _v is mapping else (_v | from_json(none) if _v is string and _v | trim not in ['','none','null','None'] else {}) -%}
+                {{ _v if _v is mapping else {} }}
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _rs_mq_map_write
+            continue_on_error: true
+            data:
+              action_type: "{{ 'update' if 'radar_group_map' in (_rs_mq_hh_vars if _rs_mq_hh_vars is mapping else {}) else 'create' }}"
+              force_action: true
+              set_timestamp: true
+              volume_entity_id:
+                - "{{ _rs_mq_hh_cab }}"
+              key: radar_group_map
+              value: >-
+                {{ _rs_mq_existing_map | combine({_rs_mq_group_name: _rs_mq_customer_id}) | tojson }}
+          - variables:
+              result:
+                status: "{{ 'success' if _rs_mq_raw is mapping and _rs_mq_raw.get('status') == 'success' else 'error' }}"
+                tool: Zen DojoTools Fulfillment
+                case: radar_setup
+                action: map_queue
+                group_id: "{{ _rs_mq_group_id }}"
+                customer_id: "{{ _rs_mq_customer_id }}"
+                group_name: "{{ _rs_mq_group_name }}"
+                map_written: "{{ _rs_mq_map_write.get('status') == 'success' if _rs_mq_map_write is mapping else false }}"
+                http_status: "{{ _rs_mq_raw.get('http_status', 0) if _rs_mq_raw is mapping else 0 }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: radar_setup map_queue done
+            response_variable: result
+
+        # --- action=set_org_default ---
+        - if: "{{ _rs_action == 'set_org_default' }}"
+          then:
+          - variables:
+              _rs_so_org_id: "{{ input_data.get('org_id', 0) | int(0) if input_data is mapping else 0 }}"
+              _rs_so_customer_id: "{{ input_data.get('customer_id', 0) | int(0) if input_data is mapping else 0 }}"
+          - if: "{{ _rs_so_org_id == 0 or _rs_so_customer_id == 0 }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  tool: Zen DojoTools Fulfillment
+                  case: radar_setup
+                  action: set_org_default
+                  message: "org_id and customer_id are required integers."
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: radar_setup set_org_default validation failed
+              response_variable: result
+          - action: script.zen_sutra_zammad
+            response_variable: _rs_so_raw
+            continue_on_error: true
+            data:
+              action_type: put
+              base_url: "{{ _base_url }}"
+              request_timeout: "{{ _request_timeout }}"
+              endpoint: "organizations/{{ _rs_so_org_id }}"
+              payload: "{{ {'zen_default_customer': _rs_so_customer_id} | tojson }}"
+          - variables:
+              _rs_so_content: "{{ (_rs_so_raw.get('result', {}) or {}).get('content', {}) if _rs_so_raw is mapping else {} }}"
+              result:
+                status: "{{ 'success' if _rs_so_raw is mapping and _rs_so_raw.get('status') == 'success' else 'error' }}"
+                tool: Zen DojoTools Fulfillment
+                case: radar_setup
+                action: set_org_default
+                org_id: "{{ _rs_so_org_id }}"
+                customer_id: "{{ _rs_so_customer_id }}"
+                org_name: "{{ (_rs_so_content.get('name', '') if _rs_so_content is mapping else '') }}"
+                http_status: "{{ _rs_so_raw.get('http_status', 0) if _rs_so_raw is mapping else 0 }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: radar_setup set_org_default done
+            response_variable: result
+
+        # --- action=inspect_queue ---
+        - if: "{{ _rs_action == 'inspect_queue' }}"
+          then:
+          - variables:
+              _rs_iq_group_id: "{{ input_data.get('group_id', 0) | int(0) if input_data is mapping else 0 }}"
+          - if: "{{ _rs_iq_group_id == 0 }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  tool: Zen DojoTools Fulfillment
+                  case: radar_setup
+                  action: inspect_queue
+                  message: "group_id is required."
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: radar_setup inspect_queue validation failed
+              response_variable: result
+          - action: script.zen_sutra_zammad
+            response_variable: _rs_iq_grp_raw
+            continue_on_error: true
+            data:
+              action_type: get
+              base_url: "{{ _base_url }}"
+              request_timeout: "{{ _request_timeout }}"
+              endpoint: "groups/{{ _rs_iq_group_id }}"
+          - variables:
+              _rs_iq_grp_raw_content: "{{ (_rs_iq_grp_raw.get('result', {}) or {}).get('content', {}) if _rs_iq_grp_raw is mapping else {} }}"
+          - variables:
+              _rs_iq_grp: "{{ _rs_iq_grp_raw_content if _rs_iq_grp_raw_content is mapping else {} }}"
+          - variables:
+              _rs_iq_cust_id: "{{ _rs_iq_grp.get('zen_default_customer', none) }}"
+          - variables:
+              result:
+                status: "{{ 'success' if _rs_iq_grp_raw is mapping and _rs_iq_grp_raw.get('status') == 'success' else 'error' }}"
+                tool: Zen DojoTools Fulfillment
+                case: radar_setup
+                action: inspect_queue
+                group_id: "{{ _rs_iq_group_id }}"
+                group_name: "{{ _rs_iq_grp.get('name', '') }}"
+                zen_default_customer: "{{ _rs_iq_cust_id }}"
+                wired: "{{ _rs_iq_cust_id is not none and _rs_iq_cust_id | int(0) > 0 }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: radar_setup inspect_queue done
+            response_variable: result
+
+        - variables:
+            result:
+              status: error
+              tool: Zen DojoTools Fulfillment
+              case: radar_setup
+              message: "Unknown action '{{ _rs_action }}'. Supported: init, map_queue, set_org_default, inspect_queue"
+              caller_token: "{{ caller_token_norm }}"
+        - stop: radar_setup unknown action
+          response_variable: result
+
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "ticket_assign" }}'
+        sequence:
+        - variables:
+            _ta_ticket_id_raw: "{{ input_data.get('ticket_id', '') | string | trim if input_data is mapping else '' }}"
+            _ta_owner: "{{ input_data.get('owner', '') | string | trim if input_data is mapping else '' }}"
+        - if: "{{ _ta_ticket_id_raw == '' or _ta_owner == '' }}"
+          then:
+          - variables:
+              result:
+                status: error
+                tool: Zen DojoTools Fulfillment
+                case: ticket_assign
+                message: "ticket_id and owner are required. owner accepts name, email, or person entity_id (person.*)."
+                caller_token: "{{ caller_token_norm }}"
+          - stop: ticket_assign validation failed
+            response_variable: result
+        # Resolve ticket_id (display 10xxx → raw id)
+        - variables:
+            _ta_ticket_id: >-
+              {%- set n = _ta_ticket_id_raw | int(0) -%}
+              {%- if n >= 10001 -%}{{ n - 10000 }}{%- else -%}{{ n }}{%- endif -%}
+        # Resolve owner — person entity, email, or name
+        - variables:
+            _ta_owner_query: >-
+              {%- if _ta_owner.startswith('person.') -%}
+                {%- set _slug = _ta_owner | replace('person.', '', 1) -%}
+                {%- set _fam_cab = states('sensor.zen_default_family_cabinet_resolved') -%}
+                {%- set _fam_vars = state_attr(_fam_cab, 'variables') | default({}, true) -%}
+                {%- set _fam_vars = _fam_vars if _fam_vars is mapping else {} -%}
+                {%- set _hm_raw = _fam_vars.get('household_members', {}) -%}
+                {%- set _hm = (_hm_raw.get('value', _hm_raw) if _hm_raw is mapping and 'value' in _hm_raw else _hm_raw) -%}
+                {%- set _hm = _hm if _hm is mapping else (_hm | from_json(none) if _hm is string and _hm | trim not in ['','none','null','None'] else {}) -%}
+                {%- set _members = _hm.get('members', {}) if _hm is mapping else {} -%}
+                {%- set _member = _members.get(_slug, {}) -%}
+                {%- set _email = _member.get('email', '') if _member is mapping else '' -%}
+                {{ _email if _email != '' else _slug }}
+              {%- else -%}
+                {{ _ta_owner }}
+              {%- endif -%}
+        - action: script.zen_sutra_zammad
+          response_variable: _ta_user_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            base_url: "{{ _base_url }}"
+            request_timeout: "{{ _request_timeout }}"
+            endpoint: "users/search?query={{ _ta_owner_query | urlencode }}&limit=10"
+        - variables:
+            _ta_user_hits: >-
+              {%- set _c = (_ta_user_raw.get('result', {}) or {}).get('content', []) if _ta_user_raw is mapping else [] -%}
+              {{ _c if _c is sequence else [] }}
+        - variables:
+            _ta_user_match: >-
+              {%- set hits = _ta_user_hits if _ta_user_hits is sequence else [] -%}
+              {%- set by_email = hits | selectattr('email', 'defined') | selectattr('email', 'eq', _ta_owner_query) | list -%}
+              {%- if by_email | length > 0 -%}
+                {{ by_email | first }}
+              {%- elif hits | length > 0 -%}
+                {{ hits | first }}
+              {%- else -%}
+                {{ {} }}
+              {%- endif -%}
+        - variables:
+            _ta_owner_id: "{{ (_ta_user_match.get('id', 0) if _ta_user_match is mapping else 0) | int(0) }}"
+            _ta_owner_email: "{{ (_ta_user_match.get('email', '') if _ta_user_match is mapping else '') }}"
+            _ta_owner_name: "{{ ((_ta_user_match.get('firstname', '') ~ ' ' ~ _ta_user_match.get('lastname', '')) | trim if _ta_user_match is mapping else '') }}"
+        - if: "{{ _ta_owner_id == 0 }}"
+          then:
+          - variables:
+              result:
+                status: error
+                tool: Zen DojoTools Fulfillment
+                case: ticket_assign
+                message: "Could not resolve owner '{{ _ta_owner }}' to a Zammad user. Try email or full name."
+                query_used: "{{ _ta_owner_query }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: ticket_assign owner not found
+            response_variable: result
+        # PUT owner_id onto ticket
+        - action: script.zen_sutra_zammad
+          response_variable: _ta_update_raw
+          continue_on_error: true
+          data:
+            action_type: put
+            base_url: "{{ _base_url }}"
+            request_timeout: "{{ _request_timeout }}"
+            endpoint: "tickets/{{ _ta_ticket_id }}"
+            payload: "{{ {'owner_id': _ta_owner_id} | tojson }}"
+        - variables:
+            result:
+              status: "{{ 'success' if _ta_update_raw is mapping and _ta_update_raw.get('status') == 'success' else 'error' }}"
+              tool: Zen DojoTools Fulfillment
+              case: ticket_assign
+              ticket_id: "{{ _ta_ticket_id }}"
+              owner_id: "{{ _ta_owner_id }}"
+              owner_name: "{{ _ta_owner_name }}"
+              owner_email: "{{ _ta_owner_email }}"
+              http_status: "{{ _ta_update_raw.get('http_status', 0) if _ta_update_raw is mapping else 0 }}"
+              caller_token: "{{ caller_token_norm }}"
+        - stop: ticket_assign done
           response_variable: result
 
     - variables:

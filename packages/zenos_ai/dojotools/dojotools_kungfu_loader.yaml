@@ -22,7 +22,7 @@
 #
 # DEPLOY-ONLY KFCs (manual opt-in, never factory):
 #   camera_manager    v1.0.0        — visual security scene analysis
-#   security_manager  v1.1.1        — unified security picture
+#   security_manager  v1.2.0        — unified security picture + state field reading rules
 #   camera_heartbeat  v1.0.0        — scheduled camera cache refresh
 #
 # FOLLOWS: admintools conventions (caller_token, mode selector, boolean fields)
@@ -720,6 +720,10 @@ script:
                   - Max urgency contribution: 1.
 
                 MED CLASSIFICATION (apply in order before urgency scoring):
+                  HARD RULE — MEDICATIONS ARE NOT LIFE SAFETY EVENTS.
+                    A missed dose is a reminder, not an emergency. NEVER output the word
+                    CRITICAL for any medication. NEVER assign urgency > 3 to any medication
+                    for any reason. Violating this rule is a model error.
                   STEP 1 — PRN first. Any 'if needed' / 'as needed' in summary = urgency 0. Stop.
                   STEP 2 — Classify by clinical importance. Check household interpretation
                     for name-specific overrides first, then apply these defaults:
@@ -727,22 +731,21 @@ script:
                       → Max urgency: 1. Ambient only. Never action_required.
                     STANDARD: antidepressants, PPIs, statins, NSAIDs, muscle relaxants,
                       sleep aids, non-critical maintenance meds
-                      → Max urgency: 3 (missed yesterday). Never action_required. Never CRITICAL.
+                      → Max urgency: 2. Reminder only. Never action_required.
                     CLINICAL: blood pressure, GLP-1/diabetes, cardiac, immunosuppressant,
                       anticoagulant, seizure, thyroid, or any med where missing doses has
                       measurable clinical consequence
-                      → Max urgency: 4 (missed yesterday). action_required only at 4.
-                      → Never auto-CRITICAL. A missed clinical med is important, not an emergency.
+                      → HARD CAP: urgency 3. No exceptions. Not 4, not 5, not higher.
+                      → action_required: false. Push reminder only. Never TTS. Never CRITICAL.
                     BIOLOGIC/SPECIALTY: monthly or periodic injectables, infusions
-                      → Flag only within 3 days of due date. Max urgency: 4.
+                      → Flag only within 3 days of due date. Max urgency: 3.
                   STEP 3 — Apply time-window logic using current local time:
                     Many items include 'HHMM or earlier/later' in summary — extract that window.
-                    Before window end, due today     → DUE. Supplement: 1, Standard: 2, Clinical: 3.
-                    Within 2 hrs after window, today → WINDOW PASSED. Standard: 2, Clinical: 3.
-                    >2 hrs past window, same day     → MISSED TODAY. Standard: 3, Clinical: 3.
-                    Due date yesterday               → MISSED YESTERDAY. Standard: 3, Clinical: 4.
-                  STEP 4 — Explicit override only: if item text says 'critical if missed'
-                    AND due date < today, may escalate to urgency 5. Only path to 5.
+                    Before window end, due today     → DUE. Supplement: 1, Standard: 1, Clinical: 2.
+                    Within 2 hrs after window, today → WINDOW PASSED. Standard: 2, Clinical: 2.
+                    >2 hrs past window, same day     → MISSED TODAY. Standard: 2, Clinical: 3.
+                    Due date yesterday               → MISSED YESTERDAY. Standard: 2, Clinical: 3.
+                  STEP 4 — REMOVED. Medications do not escalate past urgency 3. Ever.
 
                 CHORE SCORING:
                   Active anomaly, no due date (e.g., equipment alerts) → urgency 3.
@@ -792,16 +795,16 @@ script:
                   Stale (>30 days): excluded. Surface count only.
                   Conductor tasks: excluded from urgency.
                   Calibrated scale:
-                    5 — Calendar event within 30 min AND person not moving. OR item text
-                        EXPLICITLY contains 'critical if missed' AND due date < today. THAT IS ALL.
-                    4 — Clinical med missed yesterday.
-                    3 — Standard med missed yesterday. Clinical med missed today (>2 hrs past window).
-                        Active equipment anomaly. Chores overdue 4-7 days.
-                    2 — Standard med missed today (past window). Chores overdue 1-3 days.
+                    5 — Calendar event within 30 min AND person not moving. THAT IS ALL.
+                        Medications NEVER reach 5. Not even clinical. Not even explicit flags.
+                    4 — Safety sensor active. Equipment anomaly with active risk. NOT medications.
+                    3 — Clinical med missed today (>2 hrs past window) or missed yesterday.
+                        Chores overdue 4-7 days.
+                    2 — Standard med missed (any window). Chores overdue 1-3 days.
                         Any item due today, window not yet passed.
                     1 — Future tasks. Supplements. Stale backlog count.
-                  action_required: true ONLY at urgency 4+.
-                  CRITICAL (urgency 5): explicit item text flag AND due date < today. No exceptions.
+                  action_required: true ONLY at urgency 4+. Medications: always false.
+                  MEDICATIONS MAX URGENCY: 3. Hard cap. No override path exists.
 
                 ASYNC BACKLOG (label: tasks): ninja_tickets, automation_todo_list —
                   surface count + top items only. Do not foreground over conductor-driven tasks.
@@ -1048,6 +1051,24 @@ script:
                   camera_cache     — security_cameras kata: which cameras triggered, detected_subjects, activity_type, urgency
                   camera_analysis  — camera_manager kata: full LLM vision analysis (ready ~15-30s after trigger). May be absent — degrade gracefully.
 
+                STATE FIELD READING RULES — read state verbatim before assigning urgency:
+                  perimeter_cache.state: locked   = door/lock is SECURED. Not a breach. Not open.
+                  perimeter_cache.state: unlocked = door/lock is UNSECURED. May be noteworthy if armed.
+                  perimeter_cache.state: on       = contact sensor OPEN (door/window physically open).
+                  perimeter_cache.state: off      = contact sensor CLOSED (door/window physically closed/secured).
+                  perimeter_cache.state: open     = cover (garage door) physically open.
+                  perimeter_cache.state: closed   = cover (garage door) physically closed/secured.
+                  NEVER infer open/breach from entity name or event type alone. Always read state field first.
+
+                EVENT DIRECTION — last_event tells you what HAPPENED, state tells you what IS:
+                  last_event: lock_*_locked   = lock transitioned TO locked = SECURING action. Urgency 0 unless other signals.
+                  last_event: lock_*_unlocked = lock transitioned TO unlocked = OPENING action. Noteworthy if armed.
+                  last_event: door_*_on       = door opened.
+                  last_event: door_*_off      = door closed.
+                  last_event: garage_open     = garage door opened.
+                  last_event: garage_closed   = garage door closed/secured.
+                  A securing event (locked, closed, off) while armed = panel doing its job. Not an alert.
+
                 SPATIAL COMPOUND INFERENCE:
                   Cross-reference RM state with event streams before assigning urgency.
                   Person outside + house occupied: lower urgency than person outside + house vacant.
@@ -1069,11 +1090,21 @@ script:
                 ALERT POLICY: household cabinet -> security_manager drawer -> _alert_policy.
                   If unavailable: apply default escalation rules below.
 
+                DOOR OPEN POLICY:
+                  If panel_armed=false AND door has been open < 2 min: urgency 0, not message-worthy. Drop.
+                  If panel_armed=false AND door open >= 2 min: urgency 3 (climate/animals/weather). Note only.
+                  If panel_armed=true AND any door/contact OPEN (state=on): urgency 7+. Treat as perimeter breach.
+                  If panel_armed=true AND lock UNLOCKED (state=unlocked): urgency 5. Unsecured entry point.
+                  If panel_armed=true AND lock LOCKED (state=locked): urgency 0. Securing event — not an alert.
+                  garage_entry_door lock state=locked while armed = normal. urgency 0.
+
                 ESCALATION:
                   Panel triggered: urgency 10. action_required. suggested_act_event: zen_dojotools_postman.
                   Unknown person + armed_away: urgency 8. suggested_act_event: zen_dojotools_postman.
-                  Perimeter breach while armed: urgency 7. suggested_act_event: zen_dojotools_postman.
-                  urgency < 7: suggested_act_event: null.
+                  Perimeter breach while armed (door/contact open): urgency 7. suggested_act_event: zen_dojotools_postman.
+                  Lock unlocked while armed: urgency 5. note, no postman unless camera confirms presence.
+                  Door open >= 2 min while disarmed: urgency 3. note only, no postman.
+                  urgency < 5: suggested_act_event: null.
 
                 MASTER SWITCH: input_boolean.security_manager. If OFF: urgency 0, no escalation, no postman.
 

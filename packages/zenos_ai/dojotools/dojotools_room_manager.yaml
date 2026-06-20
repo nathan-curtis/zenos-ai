@@ -85,7 +85,7 @@ script:
         description: "get/set/list: room data. zone_set/zone_remove/zones: sub-room zones. landmark_set/landmark_remove/landmarks: named anchors. link/unlink/boundary_*: adjacency. home_overview/emergency: whole-home. area_create/update/delete: manage HA areas. setup/help."
         selector:
           select:
-            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, setup, tool_manifest, help]
+            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, setup, pathfind, tool_manifest, help]
       area:
         description: "Area to operate on. Required for get, set, link, unlink, area_update, area_delete."
         selector:
@@ -227,6 +227,10 @@ script:
         description: "Household street address (no area= required). Full human-readable address. Written to household_profile drawer."
         selector:
           text:
+      default_room:
+        description: "Default starting room for pathfinding when no person location is known. HA area_id or name. Written to household_profile drawer."
+        selector:
+          text:
       utility_action:
         description: "Utility CRUD: list (default), get, set, delete. mode=utility required."
         selector:
@@ -335,6 +339,10 @@ script:
         selector:
           select:
             options: [filtered, discover]
+      pathfind:
+        description: "JSON: {start: area_id|name|person.xxx, destination: area_id|name|person.xxx, max_hops: int (default 20)}. BFS shortest path. start/destination also accept area= and area_b= as fallback."
+        selector:
+          text:
     mode: queued
     max: 2
 
@@ -361,6 +369,7 @@ script:
           _item_name: "{{ name | default('') | trim }}"
           spatial_meta: "{{ spatial_meta | from_json if spatial_meta is defined and spatial_meta is string and spatial_meta | trim != '' else spatial_meta | default(none, true) }}"
           spatial_config: "{{ spatial_config | from_json if spatial_config is defined and spatial_config is string and spatial_config | trim != '' else spatial_config | default(none, true) }}"
+          pathfind: "{{ pathfind | from_json if pathfind is defined and pathfind is string and pathfind | trim != '' else pathfind | default(none, true) }}"
 
       # ── tool_manifest early-exit ─────────────────────────────────────────
       - if: "{{ _mode == 'tool_manifest' }}"
@@ -391,6 +400,7 @@ script:
                   'area_update': 'Update HA area metadata',
                   'area_delete': 'Delete area + topology entry',
                   'setup': 'Deploy RM KFC to dojo',
+                  'pathfind': 'Shortest path between two areas or persons',
                   'tool_manifest': 'Return tool identity'
                 },
                 icon='mdi:floor-plan',
@@ -1059,7 +1069,8 @@ script:
                 {{ (rally_point is defined and rally_point is not none and (rally_point|string)|trim != '')
                    or (zip_code is defined and zip_code is not none and (zip_code|string)|trim != '')
                    or (address is defined and address is not none and (address|string)|trim != '')
-                   or (spatial_config is defined and spatial_config is not none and spatial_config is mapping) }}
+                   or (spatial_config is defined and spatial_config is not none and spatial_config is mapping)
+                   or (default_room is defined and default_room is not none and (default_room|string)|trim != '') }}
 
           - if: "{{ _hh_cabinet == '' or (_area_id == '' and not _hh_write) }}"
             then:
@@ -1102,6 +1113,9 @@ script:
                       {%- set _sc=_sc if _sc is mapping else {} -%}
                       {%- set _hpu=_hpu|combine({'spatial_config':_sc|combine(spatial_config)}) -%}
                     {%- endif -%}
+                    {%- if default_room is defined and default_room is not none and (default_room|string)|trim != '' -%}
+                      {%- set _hpu=_hpu|combine({'default_room':(default_room|string)|trim}) -%}
+                    {%- endif -%}
                     {{ _hpu | tojson }}
                 response_variable: _rp_fc_result
 
@@ -1115,6 +1129,7 @@ script:
                     rally_point_written: "{{ (rally_point|string)|trim if (rally_point is defined and rally_point is not none and (rally_point|string)|trim != '') else none }}"
                     zip_code_written: "{{ (zip_code|string)|trim if (zip_code is defined and zip_code is not none and (zip_code|string)|trim != '') else none }}"
                     address_written: "{{ (address|string)|trim if (address is defined and address is not none and (address|string)|trim != '') else none }}"
+                    default_room_written: "{{ (default_room|string)|trim if (default_room is defined and default_room is not none and (default_room|string)|trim != '') else none }}"
                     household_profile_status: "{{ _rp_fc_result.status | default('error') }}"
                     caller_token: "{{ _caller_token }}"
               - stop: set household profile
@@ -3331,7 +3346,192 @@ script:
             response_variable: _result
 
       # ═══════════════════════════════════════════════════════════════════════
-      # 15. HELP
+      # 15. PATHFIND — BFS shortest path between two areas or live persons
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'pathfind' }}"
+        then:
+          # ── resolve inputs ─────────────────────────────────────────────────
+          - variables:
+              _pf:           "{{ pathfind if pathfind is mapping else {} }}"
+              _pf_start_raw: "{{ (_pf.get('start', _area_input) if pathfind is mapping else _area_input) | string | trim }}"
+              _pf_dest_raw:  "{{ (_pf.get('destination', _area_b_input) if pathfind is mapping else _area_b_input) | string | trim }}"
+              _pf_max:       "{{ (_pf.get('max_hops', 20) if pathfind is mapping else 20) | int(20) }}"
+
+          # ── person → area resolution (HPS BPS zone sensors) ────────────────
+          - variables:
+              _pf_start_id: >-
+                {%- set _raw = _pf_start_raw -%}
+                {%- if _raw.startswith('person.') -%}
+                  {%- set _hps = label_entities('hps') | select('match', '.*_bps_zone$') | list -%}
+                  {%- set ns = namespace(found='') -%}
+                  {%- for eid in _hps if ns.found == '' -%}
+                    {%- set _fn = state_attr(eid, 'friendly_name') | default('', true) | lower -%}
+                    {%- if _raw.split('.')[1] | replace('_',' ') in _fn or _raw in _fn -%}
+                      {%- set _an = states(eid) | string | trim -%}
+                      {%- set _aid = area_id(_an) | default('', true) -%}
+                      {%- set ns.found = _aid if _aid else (area_id(_an | title) | default('', true)) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.found }}
+                {%- else -%}
+                  {%- set _d = area_id(_raw) | default('', true) -%}
+                  {%- set _t = area_id(_raw | title) | default('', true) -%}
+                  {%- set _slug = _d if _d else (_t if _t else _raw | lower | replace(' ', '_')) -%}
+                  {{ _slug if area_name(_slug) | default('', true) != '' else '' }}
+                {%- endif -%}
+              _pf_dest_id: >-
+                {%- set _raw = _pf_dest_raw -%}
+                {%- if _raw.startswith('person.') -%}
+                  {%- set _hps = label_entities('hps') | select('match', '.*_bps_zone$') | list -%}
+                  {%- set ns = namespace(found='') -%}
+                  {%- for eid in _hps if ns.found == '' -%}
+                    {%- set _fn = state_attr(eid, 'friendly_name') | default('', true) | lower -%}
+                    {%- if _raw.split('.')[1] | replace('_',' ') in _fn or _raw in _fn -%}
+                      {%- set _an = states(eid) | string | trim -%}
+                      {%- set _aid = area_id(_an) | default('', true) -%}
+                      {%- set ns.found = _aid if _aid else (area_id(_an | title) | default('', true)) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.found }}
+                {%- else -%}
+                  {%- set _d = area_id(_raw) | default('', true) -%}
+                  {%- set _t = area_id(_raw | title) | default('', true) -%}
+                  {%- set _slug = _d if _d else (_t if _t else _raw | lower | replace(' ', '_')) -%}
+                  {{ _slug if area_name(_slug) | default('', true) != '' else '' }}
+                {%- endif -%}
+
+          # ── guard: both endpoints must resolve ─────────────────────────────
+          - if: "{{ _pf_start_id == '' or _pf_dest_id == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: resolution_error
+                    mode: pathfind
+                    message: >-
+                      {%- set _failed_raw = _pf_start_raw if _pf_start_id == '' else _pf_dest_raw -%}
+                      {%- set _which = 'start' if _pf_start_id == '' else 'destination' -%}
+                      {%- if _failed_raw.startswith('person.') -%}
+                        Person entity '{{ _failed_raw }}' not found in HA, or found but not resolvable to a room (no HPS presence sensor active for this person). Check the entity ID exists and that an hps-labeled BPS zone sensor is tracking them.
+                      {%- else -%}
+                        Could not resolve {{ _which }} ('{{ _failed_raw }}') to a known area. Pass an area_id slug (e.g. 'kitchen'), area display name (e.g. 'Kitchen'), or person.xxx entity.
+                      {%- endif -%}
+                    caller_token: "{{ _caller_token }}"
+              - stop: pathfind resolution_error
+                response_variable: _result
+
+          - variables:
+              _pf_start_name: "{{ area_name(_pf_start_id) | default(_pf_start_id, true) }}"
+              _pf_dest_name:  "{{ area_name(_pf_dest_id)  | default(_pf_dest_id,  true) }}"
+
+          # ── same-room short-circuit ─────────────────────────────────────────
+          - if: "{{ _pf_start_id == _pf_dest_id }}"
+            then:
+              - variables:
+                  _result:
+                    status: same_room
+                    mode: pathfind
+                    start_area_id:         "{{ _pf_start_id }}"
+                    start_area_name:       "{{ _pf_start_name }}"
+                    destination_area_id:   "{{ _pf_dest_id }}"
+                    destination_area_name: "{{ _pf_dest_name }}"
+                    distance: 0
+                    path: "{{ [_pf_start_id] }}"
+                    steps: []
+                    caller_token: "{{ _caller_token }}"
+              - stop: pathfind same_room
+                response_variable: _result
+
+          # ── read topology ───────────────────────────────────────────────────
+          - variables:
+              _pf_topo: >-
+                {%- set _r = (state_attr(_hh_cabinet,'variables') | default({},true)).get('room_topology',none) -%}
+                {%- set t = _r if _r is mapping else (_r | from_json if _r is string and _r | trim not in ['None','none','','null'] else {}) -%}
+                {%- set t = t.get('value', t) if t is mapping else {} -%}
+                {%- set t = t | from_json if t is string and t | trim not in ['','none','null','None'] else t -%}
+                {{ t if t is mapping else {} }}
+
+          # ── BFS ─────────────────────────────────────────────────────────────
+          - variables:
+              _pf_result: >-
+                {%- set ns = namespace(queue=[[_pf_start_id]], visited=[_pf_start_id], found=none, idx=0) -%}
+                {%- for _ in range(_pf_max | int * 5) -%}
+                  {%- if ns.idx < ns.queue | length and ns.found is none -%}
+                    {%- set path = ns.queue[ns.idx] -%}
+                    {%- set ns.idx = ns.idx + 1 -%}
+                    {%- set cur = path[-1] -%}
+                    {%- if cur == _pf_dest_id -%}
+                      {%- set ns.found = path -%}
+                    {%- else -%}
+                      {%- for n in (_pf_topo.get(cur, {}) if _pf_topo is mapping else {}).get('adjacent', []) | list -%}
+                        {%- if n not in ns.visited -%}
+                          {%- set ns.queue = ns.queue + [path + [n]] -%}
+                          {%- set ns.visited = ns.visited + [n] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.found | default(none, true) }}
+
+          # ── no path found ───────────────────────────────────────────────────
+          - if: "{{ _pf_result is none or _pf_result | string | trim in ['None','none',''] }}"
+            then:
+              - variables:
+                  _result:
+                    status: no_path
+                    mode: pathfind
+                    start_area_id:         "{{ _pf_start_id }}"
+                    start_area_name:       "{{ _pf_start_name }}"
+                    destination_area_id:   "{{ _pf_dest_id }}"
+                    destination_area_name: "{{ _pf_dest_name }}"
+                    message: "No connected path found within {{ _pf_max }} hops. Check that portals are commissioned between these areas (mode=set portals={to,bearing,type})."
+                    caller_token: "{{ _caller_token }}"
+              - stop: pathfind no_path
+                response_variable: _result
+
+          # ── steps enrichment (portal type + bearing per hop) ────────────────
+          - variables:
+              _pf_steps: >-
+                {%- set _cpts = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'] -%}
+                {%- set path = _pf_result | list -%}
+                {%- set ns = namespace(steps=[]) -%}
+                {%- for i in range(path | length - 1) -%}
+                  {%- set a = path[i] -%}
+                  {%- set b = path[i+1] -%}
+                  {%- set _an = area_name(a) | default(a, true) -%}
+                  {%- set _bn = area_name(b) | default(b, true) -%}
+                  {%- set _portals = (_pf_topo.get(a, {}) if _pf_topo is mapping else {}).get('portals', []) | list -%}
+                  {%- set ps = namespace(via_type='passage', bearing=-1) -%}
+                  {%- for p in _portals if p is mapping -%}
+                    {%- if p.get('to', '') == b -%}
+                      {%- set ps.via_type = p.get('type', 'passage') -%}
+                      {%- set ps.bearing = p.get('bearing', -1) | int(-1) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set _compass = _cpts[((ps.bearing + 11.25) % 360 // 22.5) | int] if ps.bearing >= 0 else '' -%}
+                  {%- set _step = {'from_id': a, 'from_name': _an, 'to_id': b, 'to_name': _bn, 'via_type': ps.via_type, 'bearing': ps.bearing if ps.bearing >= 0 else none, 'compass': _compass} -%}
+                  {%- set ns.steps = ns.steps + [_step] -%}
+                {%- endfor -%}
+                {{ ns.steps }}
+
+          # ── result ──────────────────────────────────────────────────────────
+          - variables:
+              _result:
+                status: ok
+                mode: pathfind
+                start_area_id:         "{{ _pf_start_id }}"
+                start_area_name:       "{{ _pf_start_name }}"
+                destination_area_id:   "{{ _pf_dest_id }}"
+                destination_area_name: "{{ _pf_dest_name }}"
+                distance:              "{{ (_pf_result | list | length) - 1 }}"
+                path:                  "{{ _pf_result | list }}"
+                steps:                 "{{ _pf_steps }}"
+                caller_token:          "{{ _caller_token }}"
+          - stop: pathfind ok
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 16. HELP
       # ═══════════════════════════════════════════════════════════════════════
       - variables:
           _result:
@@ -3364,6 +3564,7 @@ script:
               - "Tasks assigned to room → mode=get +tasks (todo entities labeled with any area label)"
               - "Calendar events for room → mode=get +calendar (calendar entities labeled with any area label, 7-day window)"
               - "Conductor queue → mode=get +conductor (todo entities labeled 'schedule')"
+              - "Shortest path between two rooms → mode=pathfind pathfind={start:area_id_or_name, destination:area_id_or_name}. Also accepts person.xxx to resolve live location via HPS. Returns path[], steps[{from,to,via_type,bearing,compass}], distance."
               - "New or unknown room → mode=set to register manually, or mode=area_create to create the HA area + register in one call"
               - "Create HA area (doesn't exist yet) → mode=area_create area_name='...' floor_id_new=floor_slug"
               - "Update HA area description/name/floor → mode=area_update area=X area_note='...' area_name_new='...' floor_id_new=floor_slug"
