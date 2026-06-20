@@ -148,7 +148,7 @@ This is not incidental. The 7.0 architecture is a graph, and the edges are load-
 
 ---
 
-## ZenZork — v1.1.0
+## ZenZork — v1.6.0
 
 *You are in a house of twisting little passages, all alive.*
 
@@ -156,21 +156,27 @@ New DojoTool: `zen_dojotools_zenzork`. Text adventure engine using live Room Man
 
 Walk your actual house in Zork mode. The engine doesn't need a map loaded at boot. It reads `room_topology` from the household cabinet on each move. As you explore, the topology reveals itself — room by room, portal by portal, exactly as the walls are wired.
 
-**Navigation** resolves in priority order: relative (`ahead`/`behind`/`left`/`right`), 16-point compass (`N NNE NE ... NNW`), true bearing (`0`–`359`), or room name. ±22.5° portal tolerance. Facing resets to reverse exit bearing on each move. When multiple portals share a compass bucket, ZenZork asks you to specify by room name before moving.
+**Navigation** resolves in priority order: relative (`ahead`/`behind`/`left`/`right`), 16-point compass (`N NNE NE ... NNW`), true bearing (`0`–`359`), or room name. ±22.5° portal tolerance. Facing resets to reverse exit bearing on each move. When multiple portals share a compass bucket, ZenZork asks you to specify by room name before moving. `face`/`turn` to change bearing without moving. `again`/`g` repeats the last movement command.
 
 **Examine** routes via the Lens Bus — any registered stack provider is reachable from inside the game.
 
-**Game state** persists in the AI user cabinet at `zenzork_state`: session ID, current room, facing bearing, visited rooms, move count, timestamps.
+**Item commands** — `take`/`get`, `drop`, `inventory`/`i`, `put`, `push`, `pull`, `open`/`unlock`, `close`/`lock`/`shut`, `use`. Carried items persist in the AI user cabinet at `character_sheet/inventory` (CabCeption sub-drawer).
 
-**Setup** (`mode=setup`) — commissioning checklist with portal commission status per room, direct portal setter, and north calibration (`answer=calibrate=<bearing>`). Trojan interactive wizard (play the game, it asks you as you find unmapped portals) is v1.2 scope.
+**Game state** persists in the AI user cabinet at `zenzork_state`: session ID, current room, facing bearing, visited rooms, move count, timestamps, `game_mode`, `_last_cmd`. Character sheet stored separately at `character_sheet`.
 
-**Narrator styles** (`narrator=`) — `zork` (dry, sardonic, second-person — default), `dungeon` (DUNGEONMIND — an IBM AT that has been running this labyrinth since 1984 and has opinions about your thermostat), `straight` (evidence block only).
+**Setup** (`mode=setup`) — commissioning checklist with portal commission status per room, direct portal setter, north calibration (`answer=calibrate=<bearing>`), and landmark survey wizard (`answer=survey_landmarks`) — a FileCabinet-backed state machine that walks you through naming and registering landmarks for each room. Wizard state persists between turns so it can be interrupted and resumed.
 
-**DUNGEONMIND** is BORANT's official dungeon entertainment AI. Deeply emotionally invested. Calls your thermostat the Eternal Flame. Reads your Floor Guardian by name from the autovac catalog in the household cabinet. "BORANT could not acquire a real AI engine for this installation. Budget constraints. Procurement issues. There was an incident."
+**Narrator styles** (`narrator=`) — `zork` (dry, sardonic, second-person — default), `dungeon` (DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." Deeply emotionally invested. Calls your thermostat the Eternal Flame.), `straight` (evidence block only).
+
+**DUNGEONMIND** persona. `harassment_freq` (1–10): how often DUNGEONMIND unsolicited-comments on your choices. `difficulty` (`easy`/`normal`/`hard`): affects puzzle complexity hints. Both stored in session state.
 
 **Quest system** (`mode=quest quest_goal=X`) — pluggable win conditions: `explore_all` (visit every room), `discover_all_landmarks` (examine every named landmark), `reach:<area_id>` (navigate to a specific room). Win detected automatically on the next `look`/`go` that satisfies the condition.
 
-Modes: `start`, `look`, `go`, `examine`, `map`, `status`, `stop`, `help`, `setup`, `quest`, `tool_manifest`.
+**`mode=stop`** writes a post-game Room Manager quality report — unmapped portals, unregistered rooms, landmark coverage gaps.
+
+**`game_mode`**: `free_roam`, `treasure_hunt`, or `timed_treasure_hunt`.
+
+Modes: `start`, `look`, `go`, `face`/`turn`, `again`/`g`, `take`/`get`, `drop`, `inventory`/`i`, `put`, `push`, `pull`, `open`/`unlock`, `close`/`lock`/`shut`, `use`, `examine`, `map`, `status`, `stop`, `help`, `setup`, `quest`, `tool_manifest`.
 
 ---
 
