@@ -180,6 +180,35 @@ Modes: `start`, `look`, `go`, `face`/`turn`, `again`/`g`, `take`/`get`, `drop`, 
 
 ---
 
+## Media Manager — v6.0.0 (NyxMau5)
+
+The media surface grows a full Lens provider. Same `stack=` routing pattern as radar and paperless — library routes to provider routes to evidence envelope.
+
+**New Lens modes** alongside the existing AV playback surface:
+
+| Mode | What it does |
+|------|-------------|
+| `stacks_by_anchor` | Core Lens lookup. Anchors (label/person/area/concept/mood/activity) → Music Assistant search → ranked evidence leaves with `playback_hint` |
+| `search` | Lightweight raw browse. No Lens envelope. Direct sutra pass-through. |
+| `register` / `unregister` | Write or remove provider from `lens_registry` in household cabinet |
+| `health` | Returns music search service availability |
+| `audit` | Returns policy declaration (read-only, metadata_only) |
+| `tool_manifest` | Full Lens provider self-description for bootstrap scanner |
+
+**Evidence envelope** — each item in `stacks_by_anchor` returns a structured leaf with `evidence_id`, `evidence_type`, `confidence`, `policy_applied`, and a `playback_hint` block ready to pass directly to a playback call.
+
+**Profile pref re-ranking** — preferences from the active user and household cabinets are applied at search time: `boost_artists` (+0.2 confidence, capped at 1.0), `preferred_sources` (URI scheme rank applied as confidence deltas), `default_volume` (injected into every `playback_hint`), `explicit_policy` (allow/avoid/block). `profile_target` field lets you request prefs for a specific household member: household prefs are always the base, `profile_target` layers on top.
+
+**`zen_stack_media`** — thin bootstrap-discoverable proxy appended to same file. Passes all fields including `profile_target`.
+
+---
+
+## Profile Editor — v5.3.0
+
+New `media_prefs` field on all three profile targets (household, user, family). Deep-merge on write — same pattern as `preferences`. Schema: `preferred_genres`, `boost_artists`, `explicit_policy`, `default_volume`, `preferred_sources`, `provider_instance` (stored now, forwarding pending Music Assistant sutra enhancement).
+
+---
+
 ## Flynn — v5.1.0
 
 - `zen_dojotools_persona_editor mode=write` (leaf-merge) replaces `FC create force_action: true` for persona writes. The old pattern clobbered the entire `zenai_essence` drawer. Leaf-merge preserves the three-layer essence and writes only what changed.
@@ -244,6 +273,8 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 | `plugins/mealie/mealie.yaml` | v5.8.0 (from v5.1.0). |
 | `plugins/mealie/kitchen_sync.yaml` | Moved from `plugins/kitchen_sync/`. Companion pattern. |
 | `plugins/kitchen_sync/` | Deleted. |
+| `dojotools/dojotools_media_manager.yaml` | v6.0.0. Lens provider surface: `stacks_by_anchor`, `search`, `register`, `unregister`, `health`, `audit`, `tool_manifest`. Evidence envelope with `playback_hint`. Profile pref re-ranking. `zen_stack_media` proxy. |
+| `dojotools/dojotools_profile.yaml` | v5.3.0. `media_prefs` field (household/user/family), deep-merge on write, `provider_instance` placeholder. |
 | `dojotools/dojotools_zenzork.yaml` | New. v1.1.0. Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight), DUNGEONMIND, quest system, setup commissioning, portal disambiguation. |
 | `zenos_ai/docs/scripts/zen_dojotools_systemtools_readme.md` | `ha_reload_all` — "LAST RESORT ONLY" corrected from "Default choice." |
 

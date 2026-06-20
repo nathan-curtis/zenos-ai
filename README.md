@@ -24,6 +24,7 @@ And a few things that are.
 - **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter. The manifest replaced the static surface.
 - **Lens Bus `stack=` routing** — Library v5.5.0 routes generic verbs to registered providers. `zen_stack_radar` v1.0.0 wires Zammad service desk as a Lens stack provider.
 - **Intentional tool topology** — tools wired to talk to each other by design. FC is the wiki surface. Library routes to radar routes to servicedesk. The manifest discovers tools by namespace. LiveDrawers fire tool calls on read.
+- **Media Manager v6.0.0 (NyxMau5) — Lens provider.** `stacks_by_anchor` maps anchors to ranked evidence with `playback_hint`. Profile pref re-ranking (boost artists, source rank, volume, explicit policy). `zen_stack_media` proxy. Profile Editor v5.3.0 adds `media_prefs` to all profile targets.
 - **ZenZork v1.6.0** — text adventure engine using live Room Manager topology as the dungeon. Narrator styles: `zork` (dry/sardonic), `dungeon` (DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984"), `straight`. Item commands (take/drop/inventory/put/push/pull/open/close/use). Character sheet in AI user cabinet. Landmark survey wizard. Quest system, portal disambiguation.
 
 → [Release Notes — Neo](zenos_ai/docs/releases/neo.md)

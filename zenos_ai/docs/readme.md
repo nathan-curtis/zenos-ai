@@ -18,6 +18,8 @@
 >
 > **4. ZenZork v1.6.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." Item commands (take/drop/inventory/put/push/pull/open/close/use). Navigation additions (face/turn, again/g). Character sheet in AI user cabinet. Landmark survey wizard. `game_mode`, `harassment_freq`, `difficulty` session fields. Post-game RM quality report on stop. Quest system. Portal disambiguation.
 >
+> **5. Media Manager v6.0.0 (NyxMau5) — Lens provider surface.** `stacks_by_anchor` maps anchors (label/person/area/mood/activity) to ranked evidence leaves with `playback_hint`. Profile pref re-ranking applies household and user `media_prefs` at search time (boost_artists, preferred_sources, default_volume, explicit_policy). `zen_stack_media` proxy. `register`/`unregister`/`health`/`audit` Lens modes. Profile Editor v5.3.0 adds `media_prefs` to all three profile targets.
+>
 > → [Full Release Notes — Neo](releases/neo.md) | [ZenZork](scripts/zen_dojotools_zenzork_readme.md)
 
 ---
@@ -339,7 +341,7 @@ See: [Release Notes — Neo](releases/neo.md)
 * Index v5.0.1 — +rm pipeline (Room Manager snapshot per entity area), area_entities fix
 * AlertManager v1.5.0 — Postman integration documented; ack lifecycle + open_dashboard pattern
 * OOBE — _oobe_done backward compat (checks both _oobe_complete and legacy oobe_complete); 5-component options dict with tool names
-* Media Manager (NyxMau5) v0.7.2 — whole-home media management and intent routing
+* Media Manager (NyxMau5) v6.0.0 — whole-home media management, Lens provider surface, evidence envelopes with `playback_hint`, profile pref re-ranking
 * Security Manager v1.2.0 — replaces alarm_panel; room-aware zone inventory via RM +security slice
 * ZenShade v0.2.2 — cover management, tilt support, ZenLux sync
 * SpaMaster v3.12.0 — replaces calderaspas entirely; ESPHome hot tub management, ESPHome device discovery, scene/chemistry/log modes, preset library; consumables ERP via `provision_bom` (idempotent Grocy product + chore provisioning)

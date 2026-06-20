@@ -56,10 +56,11 @@ Generic verbs are forwarded to the provider, which maps them to its own internal
 | `stack=` | Provider Script | Security | Description |
 |---|---|---|---|
 | `paperless` | `zen_stack_paperless` | read-redacted | Paperless-NGX document archive. Content redacted by default. |
-| `wiki` | `zen_stack_paperless` (stack=wiki) | read-redacted | Wiki pages via Paperless storage path partition. |
+| `wiki` | `zen_dojotools_filecabinet` (stack=wiki) | read-redacted | Wiki.js pages via `zen_sutra_wikijs`. Requires Wiki.js integration installed and registered. |
 | `radar` | `zen_stack_radar` | r-only | Zammad service desk tickets. See section below. |
+| `media` | `zen_dojotools_media_manager` | read-only | Music Assistant media — tracks, albums, playlists, artists. Returns evidence leaves with `playback_hint`. |
 
-Providers register themselves by writing their config to `integrations_config.<provider>` in the household FileCabinet via `zen_sutra_filecabinet`. Run `mode=configure` against any stack to inspect its config state.
+Providers register themselves via their own `mode=register` call (writes to `lens_registry` in the household cabinet). Run `mode=configure` against any stack to inspect its config state. To register a provider: call `zen_dojotools_<provider> mode=register`. To list all registered providers with live status: `section=stacks mode=stacks_list`.
 
 To list all registered providers with live status, use:
 

@@ -479,6 +479,27 @@ Drawers support two GC fields set on write:
 
 These fields are stored in the drawer envelope by the Sutra. GC runs independently; FC does not enforce expiry at read time.
 
+### GC Operator (`zen_dojotools_kata_gc`)
+
+`zen_dojotools_kata_gc` is a **MCP-exposed, destructive operator**. It is the only tool that permanently deletes or recycles kata drawers. It must not be called without operator intent.
+
+| Mode | What it does | Destructive? |
+|------|-------------|--------------|
+| `gc` | Evict expired drawers from the kata cabinet | **Yes — permanent delete** |
+| `recycle` | Move a named drawer to `.recycle/<key>` (soft delete) | Yes — drawer is hidden |
+| `hide` | Rename drawer to `.hidden/<key>` (suppress from GC) | Yes — path change |
+| `unhide` | Restore a hidden drawer to its original key | No |
+
+**Guardrails:**
+
+- Always run with `dry_run: true` first. The response shows exactly which drawers would be evicted with their age and reason — no changes are made.
+- `gc` mode only evicts drawers whose `expires_after` timestamp has passed **or** whose age exceeds `max_age_hours`. It never evicts drawers with `no_autoexpire: true`.
+- `recycle` and `hide` require an explicit `key`. They do not operate on trees — only the named drawer is affected. Children are **not** cascaded.
+- There is no undo for `gc`. Recycled drawers (`.recycle/<key>`) can be restored manually via FileCabinet `move`, but GC-evicted drawers are gone.
+- This tool is **operator-only**. Agents should not call it autonomously. If an agent needs to clean up its own session state, it should set `expires_after` on write and let the scheduler-driven GC handle eviction.
+
+**Scheduled GC:** The system scheduler calls `zen_dojotools_kata_gc mode=gc` daily (via `dojotools_core.yaml` automation). Manual invocation is for maintenance or emergency use only.
+
 ---
 
 ## Safety Features
