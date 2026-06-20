@@ -22,18 +22,6 @@
 
 ---
 
-> ### 2026.6.0 'Clue' — Released
->
-> **1. Room Manager v5.1.0 + Grocy v5.2.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
->
-> **2. Plant Manager — v5.4.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
->
-> **3. AutoVac — v5.1.0.** Controller automation in package (no per-schedule wiring). 3-button briefing (Go now / Skip / Pause all day). `mode=setup` deploys KFC + inits cabinet in one call.
->
-> **4. Postman + AlertManager + Scribe + Summarizer — v5.1.0.** Full ack lifecycle, `open_dashboard` companion URI. Scribe: `repair`, `republish_kfc`, `component_size`. Summarizer: dual-seed, emission gate.
->
-> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](components/room_manager.md) | [Plant Manager](components/plant_manager.md) | [Grocy](plugins/grocy.md)
-
 ---
 
 Welcome to the **ZenOS-AI Documentation** — the full map of the architecture, tools, cognitive model, and operational philosophy behind *Friday’s Party*.
