@@ -16,7 +16,7 @@
 >
 > **3. Tool Manifest + Lens Bus.** `zenos_manifest.jinja` + `MF.tool_manifest()`. Manifest broker v6.0.0 discovers tools by namespace. Library v5.5.0 `stack=` routing. `zen_stack_radar` v1.0.0 wires Zammad as a Lens provider.
 >
-> **4. ZenZork v1.1.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — BORANT's corporate dungeon AI, IBM AT since 1984. Quest system. Setup commissioning. Portal disambiguation.
+> **4. ZenZork v1.6.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." Item commands (take/drop/inventory/put/push/pull/open/close/use). Navigation additions (face/turn, again/g). Character sheet in AI user cabinet. Landmark survey wizard. `game_mode`, `harassment_freq`, `difficulty` session fields. Post-game RM quality report on stop. Quest system. Portal disambiguation.
 >
 > → [Full Release Notes — Neo](releases/neo.md) | [ZenZork](scripts/zen_dojotools_zenzork_readme.md)
 
@@ -231,7 +231,7 @@ Includes:
 * `zen_dojotools_scheduler_readme.md` — Scheduler: trigger IDs, Dojo-driven dispatch, component subscription, force events, hardware trigger pattern
 * `zen_dojotools_summarizers_readme.md` — Ninja Summarizer + SuperSummary: kill switches, active component selection, monk pipeline
 * `zen_dojotools_library_readme.md` — Library: Lens Bus `stack=` routing, generic verbs, hash_md5, slugify (`~commands~` interface removed in 2026.7.0)
-* `zen_dojotools_zenzork_readme.md` — ZenZork v1.1.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, quest system, setup commissioning
+* `zen_dojotools_zenzork_readme.md` — ZenZork v1.6.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, quest system, setup commissioning
 * `zen_home_mode_readme.md` — Home Mode: 8-state machine, schedule anchors, quiet/work hours, scheduler trigger IDs
 * `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`

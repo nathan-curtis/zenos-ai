@@ -24,7 +24,7 @@ And a few things that are.
 - **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter. The manifest replaced the static surface.
 - **Lens Bus `stack=` routing** — Library v5.5.0 routes generic verbs to registered providers. `zen_stack_radar` v1.0.0 wires Zammad service desk as a Lens stack provider.
 - **Intentional tool topology** — tools wired to talk to each other by design. FC is the wiki surface. Library routes to radar routes to servicedesk. The manifest discovers tools by namespace. LiveDrawers fire tool calls on read.
-- **ZenZork v1.1.0** — text adventure engine using live Room Manager topology as the dungeon. Narrator styles: `zork` (dry/sardonic), `dungeon` (DUNGEONMIND — BORANT's corporate dungeon AI, IBM AT since 1984), `straight`. Quest system, setup commissioning, portal disambiguation.
+- **ZenZork v1.6.0** — text adventure engine using live Room Manager topology as the dungeon. Narrator styles: `zork` (dry/sardonic), `dungeon` (DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984"), `straight`. Item commands (take/drop/inventory/put/push/pull/open/close/use). Character sheet in AI user cabinet. Landmark survey wizard. Quest system, portal disambiguation.
 
 → [Release Notes — Neo](zenos_ai/docs/releases/neo.md)
 
@@ -256,7 +256,7 @@ packages/zenos_ai/
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
     dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
-    dojotools_zenzork.yaml        — ZenZork v1.1.0 — text adventure on live RM topology, DUNGEONMIND narrator, quests
+    dojotools_zenzork.yaml        — ZenZork v1.6.0 — text adventure on live RM topology, DUNGEONMIND narrator, item commands, character sheet, quests
 
     — Productivity —
     dojotools_office.yaml      — Office integrations (Teams, mail)
