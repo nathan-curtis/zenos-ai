@@ -202,10 +202,6 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 | `zen_dojotools_wikijs` stale refs | `dojotools_filecabinet.yaml:3317`, `dojotools_manifest.yaml:772` | FC tool_manifest child call removed (script deleted). Manifest domain map: `wiki → script.zen_dojotools_filecabinet`. |
 | `ha_reload_all` docs | `zen_dojotools_systemtools_readme.md` | "Default choice for most reloads" → "LAST RESORT ONLY — use targeted reload modes whenever possible." |
 
-### WONT FIX — carried forward
-
-**FG-09: FileCabinet delete gate** — see Clue release notes. Design decision stands.
-
 ---
 
 ## Breaking Changes
