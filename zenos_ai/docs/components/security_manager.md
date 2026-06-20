@@ -1,6 +1,6 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.1.0
+**Version:** 5.2.0
 **File:** `dojotools/dojotools_security_manager.yaml`
 **Replaces:** `zen_dojotools_alarm_panel` (deleted)
 
@@ -94,6 +94,31 @@ Zone states:
 - `state` — `on` (open/active) or `off` (closed/secure)
 - `fault` — true if a `_fault` companion sensor is `on`
 - `bypass` — true if a `_bypass` companion sensor is `on`
+
+### Binary Sensor Device Class Translation
+
+v5.2.0 adds human-readable `_interp` strings derived from `device_class`. Raw `on`/`off` states are translated per class before being surfaced in the response:
+
+| device_class | `on` → `_interp` | `off` → `_interp` |
+|---|---|---|
+| `power` | `power_on` | `power_off` |
+| `battery` | `battery_low` | `battery_ok` |
+| `problem` | `problem_detected` | `ok` |
+| `safety` / `gas` / `smoke` | `alarm_active` | `clear` |
+| `lock` | `unlocked` | `locked` |
+| `door` / `window` / `opening` / `garage_door` | `open` | `closed` |
+| (default) | `active` | `inactive` |
+
+**STATE FIELD READING RULES (loaded into KFC):** `locked` → SECURED. `on` → contact OPEN. `off` → contact CLOSED. `open` → cover open. Never infer breach from entity name alone — read `device_class`.
+
+### System Health Summary Fields
+
+`read_state` response v5.2.0 adds two top-level summary fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `system_ok` | bool | `true` when no zones are faulted or open and panel is not in alarm |
+| `system_issues` | list of strings | Names of zones contributing to a non-ok state |
 
 ---
 

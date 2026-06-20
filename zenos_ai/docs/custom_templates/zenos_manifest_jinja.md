@@ -59,6 +59,11 @@ Import once at the top of the script's variables step. Do not import inside loop
     children=None,
     icon=None,
     color=None,
+    managed=None,
+    lens_provider=None,
+    stack=None,
+    mcp_exposed=None,
+    self_repair=None,
     caller_token=''
 ) }}
 ```
@@ -97,6 +102,16 @@ These fields are merged into the output at the top level alongside the base iden
 | `limitations` | list or any | Known limitations or constraints. |
 | `evidence_shape` | any | Schema description of what the tool writes as evidence. |
 | `children` | list | Child tool names for composite/router tools. Must be a sequence. |
+
+### Optional parameters — deployment and Lens Bus
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `managed` | any | Deployment manager identifier (e.g., `"zenos_ai"` for OS-managed tools). Only emitted when passed. |
+| `lens_provider` | bool | `true` if this tool participates in Lens Bus evidence routing. Only emitted when passed. |
+| `stack` | string | Stack key this tool registers under in the Lens Bus (e.g., `"firefly_iii"`). Only emitted when passed. |
+| `mcp_exposed` | bool | `true` if this tool is exposed to the conversation agent via MCP. Only emitted when passed. |
+| `self_repair` | bool | `true` if this tool supports self-repair / auto-remediation on failure. Only emitted when passed. |
 
 ### Optional parameters — UI hints (Level 3)
 

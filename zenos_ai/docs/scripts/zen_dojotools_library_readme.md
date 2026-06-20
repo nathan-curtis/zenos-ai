@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v5.5.0 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Library — v5.9.0 (ZenOS-AI 2026.7.0 'Neo')
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -166,6 +166,54 @@ Individual command tokens (`~SECURITY~`, `~MEDIA~`, etc.) are not documented her
 
 ---
 
+---
+
+## `section=books` — Physical Book Catalog
+
+v5.6.0–v5.9.0 adds a full physical book catalog backed by Grocy (ISBN lookup, stock locations, lending). Use `section=books` with a `mode=` to access.
+
+```yaml
+zen_dojotools_library:
+  section: books
+  mode: browse
+```
+
+### Book Modes
+
+| Mode | Version | What It Does |
+|------|---------|--------------|
+| `browse` | v5.6.0 | List all books in the catalog. Optional `query` for title/author filter. |
+| `find` | v5.6.0 | Search catalog by title, author, ISBN, or tag. Returns `{books[], count}`. |
+| `search` | v5.6.0 | Full-text search across all book fields including notes. |
+| `add` | v5.7.0 | Add a book to the catalog. Requires `isbn` or `title`. ISBN triggers Grocy product lookup/creation with dedup guard — if a product with that ISBN exists, returns the existing record rather than creating a duplicate. |
+| `move` | v5.8.0 | Move a book to a different shelf location. Requires `item` (title or ISBN) and `location` (Grocy location ID or name). |
+| `stock_transfer_location` | v5.8.0 | Bulk-move all books from one location to another. |
+| `books_loan` | v5.9.0 | Check out a book to a person. Requires `item` (title or ISBN) and `person` (HA person entity or name). Writes loan record to the book's Grocy userfields. Uses `inventory_root` from the borrower's profile as the destination location. Schema v1.4.0 loan fields. |
+| `books_return` | v5.9.0 | Return a loaned book. Requires `item`. Clears loan fields, restores book to home location. |
+| `books_configure` | v5.9.0 | Configure the books catalog: set default home location (`bookshelf_default_location_id`), loan period (`loan_period_days`), and other catalog defaults. Written to household cabinet `books_config` drawer. |
+
+### Book Schema (v1.4.0 loan fields)
+
+Books in the Grocy catalog carry these userfields:
+
+| Field | Description |
+|-------|-------------|
+| `isbn` | ISBN-13 (canonical) |
+| `author` | Author string |
+| `series` | Series name if applicable |
+| `series_number` | Position in series |
+| `tags` | Comma-separated tags |
+| `on_loan_to` | Person entity ID or name of current borrower (`null` when in) |
+| `loan_date` | ISO date loan was checked out |
+| `loan_due` | ISO date loan is due back (loan_date + loan_period_days) |
+| `loan_notes` | Free-form notes on the loan |
+
+### Bookshelf Discovery
+
+The Library tool discovers all bookshelf locations by looking for Grocy locations tagged with the HA label `bookshelf`. Tag a parent Grocy location with `bookshelf` and all child locations (shelves, bins) are automatically included in browse/find queries. Tag once, the whole shelf tree joins the library.
+
+---
+
 ## MCP Exposure
 
 The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this. Provider scripts (`zen_stack_paperless`, `zen_stack_radar`, `zen_dojotools_servicedesk`) are internal and should not be MCP-exposed or called directly by agents.
@@ -183,3 +231,15 @@ The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this
 | ~~`command_interpreter.jinja`~~ | Removed in 2026.7.0. |
 | HA `md5` filter | MD5 hash computation (legacy `tool=` surface) |
 | HA `slugify()` filter | String slugification (legacy `tool=` surface) |
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v5.9.0 | `books_loan`, `books_return`, `books_configure` modes. KFC schema v1.4.0 loan fields: `on_loan_to`, `loan_date`, `loan_due`, `loan_notes`. Loan uses `inventory_root` from borrower's profile as destination location. |
+| v5.8.0 | `move` mode (relocate a book by title/ISBN to a new Grocy location). `stock_transfer_location` (bulk move). |
+| v5.7.0 | `add` mode with ISBN dedup guard (checks existing Grocy products before creating). |
+| v5.6.0 | `section=books` introduced. `browse`, `find`, `search` modes. Bookshelf discovery via `bookshelf` HA label on Grocy locations. |
+| v5.5.0 | Lens Bus architecture (`stack=` routing). `zen_stack_radar` registered as Radar provider. Generic verbs (`get/find/list/configure/by_anchor`). `zen_dojotools_wikijs` retired; wiki access via `stack=wiki`. |

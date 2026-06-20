@@ -98,6 +98,7 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | `area_update` | Update floor assignment, topology, and compiled description (`area_note` + adjacency). `area=` required. Rename, icon, and picture must be set via HA Settings → Areas UI (Spook has no `update_area` service — response includes `ha_ui_advisory` when these are requested). Invalid `floor_id_new` returns clean error with valid floor list. |
 | `area_delete` | Delete HA area and remove from room_topology. `area=` required. `confirm_action=true` required. |
 | `utility` | Manage utility_index in household cabinet. `utility_action=list\|get\|set\|delete`. `utility_type=electric\|gas\|water\|...` required for get/set/delete. |
+| `pathfind` | BFS shortest path between two areas or persons. Fields: `start` (area_id or person entity), `destination` (area_id or person entity), `max_hops` (default 20). Returns path as ordered list of area_ids, hop count, and portal sequence. Returns `no_path` if destination is unreachable within `max_hops`. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
 | `help` | Full reference: purpose, when_to_call, seed_steps, domain_routing, schema, context_slices, concepts, modes. |
 
@@ -263,6 +264,7 @@ All three fields can be passed in a single call. The write is a non-destructive 
 | `address` | Full street address for emergency dispatch. Store what 911 needs. |
 | `zip_code` | Postal code. |
 | `rally_point` | Human-readable rally point description. Read-back in every `mode=emergency` response. |
+| `default_room` | Default area_id written to `household_profile.default_room`. Used as the implied starting area for pathfinding and other tools when no explicit `area=` is given. Set with `mode=set default_room=<area_id>`. |
 
 GPS coordinates are **not** stored — read live from `zone.home` at query time.
 

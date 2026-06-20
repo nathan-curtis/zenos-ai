@@ -1,6 +1,6 @@
 # ZenOS-AI Zammad (Radar) Plugin
 
-**Version:** 0.3.1 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
+**Version:** 0.4.0 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
 **Package:** `packages/zenos_ai/plugins/zammad/zammad.yaml`
 **MCP-facing script:** `zen_dojotools_servicedesk`
 **Lens Bus stack provider:** `zen_stack_radar`
@@ -26,7 +26,9 @@ Use `mode=help` for the full field catalog. Key modes:
 | Mode | Purpose |
 |------|---------|
 | `configure` | Write Zammad URL to household cabinet and test-connect. Also registers `zen_stack_radar` in the Lens registry. |
-| `ticket_create` | Create a new ticket. Accepts `person_entity_id` for roster-based customer resolution or explicit `customer` email. |
+| `radar_setup` | Idempotent Radar initialization wizard. Sub-actions: `init` (find-or-create house/zenos personas, write `radar_defaults` to household cabinet), `map_queue` (assign default group/queue for house or zenos reporter), `set_org_default` (set default org for a persona), `inspect_queue` (read current queue config). Input fields: `action` (default `init`), `house_email`, `dev_email` (persona email addresses). |
+| `ticket_assign` | Assign a ticket to a Zammad agent by name, email, or HA person entity (`person.*`). Resolves the agent via the household roster. |
+| `ticket_create` | Create a new ticket. Accepts `person_entity_id` for roster-based customer resolution or explicit `customer` email. Reporter shorthand: `reporter=house` (household persona) or `reporter=zenos` (dev persona) — bypasses group lookup; seeded by `radar_setup`. |
 | `ticket_get` | Fetch a ticket including all articles, tags, and anchor context. |
 | `ticket_find` | Search tickets by query string. |
 | `ticket_list` | List tickets by state (open/closed/all). |
@@ -142,3 +144,12 @@ A successful configure call connects to Zammad, writes the URL to `integrations_
 | `tickets_by_anchor` returns empty results | Confirm tickets are tagged with the correct HA slug. Use `ticket_tag` to add slugs. |
 | `view_get` returns 401/403 | Check token expiry and group/ticket/search permissions in Zammad. |
 | Agent queue is stale | Fire a `zen_event` with `kind: agent_queue_refresh` to force sync. |
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v0.4.0 (Radar) | `radar_setup` mode: idempotent init wizard (find-or-creates house/zenos personas, writes `radar_defaults` to household cabinet). `ticket_assign` mode. `batch_update` mode. `object_attribute_create` mode. `reporter` shorthand on `ticket_create`: `house`=household persona, `zenos`=dev persona. `ticket_id` accepts display number (e.g. `10073`) or raw DB id. |
+| v0.3.1 | Baseline Radar: `configure`, `ticket_create/get/find/list/search/update/close/complete`, `article_add/list`, `triage_set/get`, `tickets_by_anchor`, `ticket_link/unlink`, `customer_find/create`, `org_find/create`, `queue_get`, `view_get`, `workflow_context_get`. `zen_stack_radar` Lens Bus registration. |

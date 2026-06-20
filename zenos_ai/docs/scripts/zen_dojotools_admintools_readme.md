@@ -1,4 +1,4 @@
-# Zen DojoTools AdminTools — v5.1.0
+# Zen DojoTools AdminTools — v5.2.0
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -23,7 +23,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.5.0 | No | Inspect, restore, reset, hammer, init, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 5.1.0 | No | Load versioned Cortex, Directives, and Purpose (v43 = Rule Zero (default/latest), v42 = The Answer, v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist` and `zen_summarizer_seed_whitelist` via `mode=whitelist`. |
+| `zen_admintools_prompt_loader` | 5.2.0 | No | Load versioned Cortex, Directives, and Purpose (v43 = Rule Zero (default/latest), v42 = The Answer, v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist` and `zen_summarizer_seed_whitelist` via `mode=whitelist`. |
 | `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.

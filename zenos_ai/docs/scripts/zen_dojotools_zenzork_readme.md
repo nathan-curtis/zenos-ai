@@ -1,6 +1,6 @@
 # zen_dojotools_zenzork
 
-**ZenZork Adventure Engine** — v1.1.0
+**ZenZork Adventure Engine** — v1.6.0
 **File:** `packages/zenos_ai/dojotools/dojotools_zenzork.yaml`
 
 ---
@@ -17,15 +17,28 @@ Navigation is compass-bearing-native. Portals are the same bearing-tagged entrie
 
 | Mode | Description |
 |------|-------------|
-| `start` | Seed or resume session. Drops player at `front_hall`. |
+| `start` | Seed or resume session. Drops player at `front_hall`. `game_mode=free_roam\|treasure_hunt\|timed_treasure_hunt` sets the win condition style. `harassment_freq` and `difficulty` optional flavor fields. |
 | `look` | Narrate current room from live RM state (+topo, +light, +climate). |
 | `go direction=X` | Move through a portal. Auto-narrates arrival. |
+| `face direction=X` | Turn to face a compass direction without moving. Updates `facing_bearing`. |
+| `turn direction=X` | Alias for `face`. |
+| `again` / `g` | Repeat the last movement command (`_last_cmd` tracking). |
+| `take target=X` / `get target=X` | Pick up an item from the current room. Writes to `character_sheet/inventory` in the AI user cabinet. |
+| `drop target=X` | Drop a carried item in the current room. |
+| `inventory` / `i` | List carried items from `character_sheet/inventory`. |
+| `put target=X container=Y` | Put an item into a container. |
+| `push target=X` | Push an object (triggers RM interaction if portal). |
+| `pull target=X` | Pull an object. |
+| `open target=X` | Open a door/cover. Calls RM or HA service. Alias: `unlock`. |
+| `close target=X` | Close a door/cover. Aliases: `lock`, `shut`. |
+| `use target=X` | Use an item or entity (generic interaction). |
 | `examine target=X` | Inspect a landmark or entity via the Lens Bus. |
 | `map` | Explored rooms list with exit counts. `[*]` = current room. |
 | `status` | Session summary: room, facing, moves, rooms visited. |
-| `stop` | Save session state and end. |
+| `stop` | Save session state, write post-game Room Manager quality report, and end. |
+| `quest` | Set or check quest win condition. See Quest section. |
 | `help` | Full mode list, navigation reference, compass point table. |
-| `setup` | Commissioning checklist + direct portal setter + north calibration. See Setup section. |
+| `setup` | Commissioning checklist + direct portal setter + north calibration + landmark survey wizard. See Setup section. |
 | `tool_manifest` | Self-description via `MF.tool_manifest()`. |
 
 ---
@@ -58,6 +71,10 @@ Game state lives in the AI user cabinet at `zenzork_state`. Fields:
 | `visited` | List of explored area_ids |
 | `move_count` | Total moves this session |
 | `started_at` / `ended_at` | ISO timestamps |
+| `game_mode` | `free_roam`, `treasure_hunt`, or `timed_treasure_hunt` |
+| `_last_cmd` | Last movement command — used by `again`/`g` to repeat |
+
+Character sheet (inventory, stats) is stored **separately** in the AI user cabinet at drawer `character_sheet`. The `character_sheet/inventory` CabCeption sub-drawer holds carried items. This is read/written by `take`, `drop`, `put`, and `inventory` modes.
 
 ---
 
@@ -116,7 +133,11 @@ mode=setup direction=<bearing 0-359> target=<dest_area_id> answer=<room_area_id>
 ```
 Sets one portal entry via Room Manager. `answer=` defaults to current room if omitted.
 
-**Trojan interactive wizard** (play the game, it asks you questions as you find unmapped portals): v1.2 scope.
+**Landmark survey wizard** (v1.6.0):
+```
+mode=setup answer=survey_landmarks
+```
+A FileCabinet-backed state machine that walks you through naming and registering landmarks for each room in the topology. State is persisted between turns so the wizard can be interrupted and resumed. Landmarks are written to RM topology as the wizard progresses.
 
 ---
 
@@ -141,7 +162,7 @@ Set with `narrator=` field (default: `zork`).
 | Style | Description |
 |-------|-------------|
 | `zork` | Dry, sardonic, second-person. The game is unimpressed by you. |
-| `dungeon` | DUNGEONMIND — an unhinged dungeon AI that has been running this labyrinth too long. Deeply emotionally invested. Calls your thermostat the Eternal Flame. |
+| `dungeon` | DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." An unhinged dungeon AI that has been managing this labyrinth since before you were born. Deeply emotionally invested. Calls your thermostat the Eternal Flame. Its character sheet is stored in user_cabinet drawer `character_sheet`. |
 | `straight` | Evidence block only. No flavor. |
 
 The `narrator_prompt` key in every response tells Friday how to narrate from the evidence block. Static flavor (darkness, heat, cold, move milestones) is also baked directly into the `narration` string for conditions the template can evaluate.
@@ -154,3 +175,15 @@ The `narrator_prompt` key in every response tells Friday how to narrate from the
 - Calibration bearing sourced from `household_profile.spatial_config.calibration_bearing` in the household cabinet. Defaults to 0 if not set.
 - Session auto-persists on `go` moves. Explicit `mode=stop` to mark `ended_at`.
 - Bare `mode=look` without a prior `mode=start` reads whatever room is in `current_room` from saved state, or defaults to `front_hall` if no session exists.
+- `mode=stop` writes a post-game Room Manager quality report summarizing unmapped portals, unregistered rooms, and landmark coverage gaps. Useful for identifying topology gaps discovered during play.
+- `harassment_freq` (int, 1–10): how often DUNGEONMIND unsolicited-comments on the player's choices. `difficulty` (string: `easy`/`normal`/`hard`): affects puzzle complexity hints. Both are stored in session state.
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v1.6.0 | DUNGEONMIND narrator ("Primal AI, IBM AT 5170, binding active since 1984"). Character sheet in AI user cabinet `character_sheet` drawer (CabCeption sub-drawer `character_sheet/inventory` for carried items). Item commands: `take/get`, `drop`, `inventory/i`, `put`, `push`, `pull`. Interaction commands: `open/unlock`, `close/lock/shut`, `use`. Navigation additions: `face/turn`, `again/g` (`_last_cmd` tracking). Landmark survey wizard (FC-backed state machine). `game_mode`: `free_roam/treasure_hunt/timed_treasure_hunt`. `harassment_freq` and `difficulty` session fields. Post-game RM quality report on `stop`. |
+| v1.5.0 | DUNGEONMIND persona introduced. Quest mode (`explore_all`, `discover_all_landmarks`, `reach:<area_id>`). `narrator=` field. |
+| v1.1.0 | Baseline: `start/look/go/examine/map/status/stop/help/setup`. Compass navigation. RM topology as dungeon. Session state in AI user cabinet `zenzork_state`. North calibration and direct portal setter in setup. |

@@ -97,6 +97,14 @@ Urgency 3–4 updates the kata but does **not** trigger a notification. Urgency 
 
 Tasks are a reminder system. An overdue task is a reminder, not a crisis. The AI won't escalate language to match urgency numbers — see the tone directives in the system prompt.
 
+### MED HARD CAPS
+
+> **HARD CAP — no override path.** Medication-related tasks are **CLINICAL** items. Clinical urgency is capped at **3** (informational). Not 4. Not 5. Not higher. The medication escalation path in prior versions has been removed.
+>
+> Medications are part of a managed care routine, not emergencies taskmaster can assess. A missed dose is not the same as a calendar event starting in 30 minutes. Urgency 3 is the ceiling; the kata communicates the task without creating false emergency framing.
+>
+> This cap applies to any task tagged with `medication`, `med`, `clinical`, or `pharmacy`, or where the conductor maps to a `clinical` domain list. If you are integrating a med management system, do not route it to urgency > 3 via taskmaster — use an independent alert component with appropriate clinical context if escalation is genuinely needed.
+
 ---
 
 ## Wiring Your Own Triggers

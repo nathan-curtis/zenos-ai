@@ -1,6 +1,6 @@
 # ZenOS-AI Firefly III Finance Component
 
-**Version:** 1.0.0  
+**Version:** 2.2.0  
 **Package:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Primary script:** `zen_dojotools_finance`  
 **Internal REST dispatcher:** `zen_sutra_firefly`  
@@ -53,6 +53,21 @@ Use `mode=run` and specify a `case`. Use `mode=help` to get the full catalog bac
 | `transaction_update` | Fix an existing transaction — category, description, amount, or date |
 | `transfer` | Move money between two asset accounts |
 | `spend_summary` | Compound briefing — net worth + budget snapshot + upcoming bills in one call. Writes snapshot to household cabinet. |
+| `account_create` | Create a new account (asset, expense, revenue, liability, cash). |
+| `account_update` | Update an existing account's fields (name, type, currency, notes). |
+| `piggybank_create` | Create a new savings goal (piggy bank) with target amount and optional target date. |
+| `piggybank_update` | Update a piggy bank's target or add/remove funds. |
+| `budget_create` | Create a new budget category. |
+| `budget_limit_set` | Set the spend limit for a budget in a given period. |
+| `bill_create` | Create a recurring bill. |
+| `bill_status` | Get current status of a bill (next due, paid/overdue). |
+| `net_worth_snapshot` | Point-in-time net worth across all asset and liability accounts. |
+| `liability_summary` | Summary of all liability accounts — balance, interest rate, next payment. |
+| `reconcile_prepare` | Pull all unreconciled transactions for a specific account to prepare for reconciliation. |
+| `transaction_normalize` | Fix malformed or miscategorized transactions in bulk (recategorize, retag, move account). |
+| `project_account_status` | Status of a project/tracking account — balance, linked transactions, progress against target. |
+| `transaction_link` | Create a Firefly link (related, refund, paid by) between two transactions. |
+| `catalog` | Return the tool's full case catalog with brief descriptions — use for help/routing. |
 
 ---
 
@@ -77,6 +92,8 @@ Use `mode=run` and specify a `case`. Use `mode=help` to get the full catalog bac
 | `transaction_type` | `transaction_add` | `withdrawal`, `deposit`, or `transfer`; default `withdrawal` |
 | `page` / `per_page` | paginated cases | Pagination controls |
 | `show_trace` | any | Boolean; debug output |
+| `label` | `transaction_add`, `transfer`, create cases | Firefly tag string. Applied as a tag on the created/updated transaction. Used for cross-referencing by external systems. |
+| `external_ref` | `transaction_add`, `transaction_update` | External system reference string (e.g., Grocy product ID, Paperless document ID). Stored in Firefly's `external_url` or notes field for cross-linking. |
 
 ### Name resolution
 
@@ -203,6 +220,15 @@ The YAML notes a planned n8n integration for bank feed → Firefly sync. n8n pus
 | `transaction_add` logs without a category | Category name not found or mismatched | Confirm category exists in Firefly; check exact spelling |
 | `spend_summary` returns `snapshot_written: false` | `sensor.zen_default_household_cabinet_resolved` not available | Household cabinet not configured; snapshot skipped, briefing data still returned |
 | 401 errors on all calls | Bearer token missing or expired | Regenerate Personal Access Token in Firefly III and update `secrets.yaml` |
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v2.2.0 | Complete rebuild. `zen_stack_firefly` Lens Bus stack provider with auto-registration (`register_mode: register`). r-only security gate on the stack provider. 15 new cases: `account_create/update`, `piggybank_create/update`, `budget_create/budget_limit_set`, `bill_create/status`, `net_worth_snapshot`, `liability_summary`, `reconcile_prepare`, `transaction_normalize`, `project_account_status`, `transaction_link`, `catalog`. New fields: `label` (Firefly tag), `external_ref` (Grocy/Paperless cross-link). REST dispatcher: PUT and DELETE commands added. Auto-registration pattern first established here. |
+| v1.0.0 | Initial release. `zen_dojotools_finance` with 13 core cases. GET and POST REST. `zen_sutra_firefly` internal dispatcher. `spend_summary` household cabinet snapshot. |
 
 ---
 
