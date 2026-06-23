@@ -1,7 +1,17 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.2.0 — Cabception: nested drawer trees via / path separator.
+# Version: 6.13.0 — hard block _label_index in set_mount + expand_drawer: unsupported until traversal handles mount-pointer index reads.
+#   Previous: 6.12.0 — fleet discovery: broad zenos_.*_cabinet pattern (catches history, index, expansion); history role classification.
+#   Previous: 6.11.0 — fleet mode: single-call full cabinet fleet view (named + expansion), GUIDs, mount resolution, fat/broken/slot hints.
+#   Previous: 6.10.0 — sutra fields: add destination_volume_entity_id (was missing, caused _dest_vol='' on cross-cabinet copy).
+#   Previous: 6.9.0 — copy cross-cabinet bug fix: write + verify now target _dest_vol, not source _vol.
+#   Previous: 6.8.0 — sitrep discovery via states.sensor (finds unlabeled cabs); system drawers excluded from empty-target + user_keys checks.
+#   Previous: 6.7.0 — raw_key=true (REPAIRS ONLY): skip slugification, requires force_action=true confirmation.
+#   Previous: 6.6.0 — expansion_sitrep: inventory all expansion cabinets, usage, % full, target eligibility.
+#   Previous: 6.5.0 — expansion cabinet class: locked write target, hosted_by parent, stamp on expand_drawer completion.
+#   Previous: 6.3.0 — Write-mount traversal: create/update/upsert follow mount_point drawers transparently.
+#   Previous: 6.2.0 — Cabception: nested drawer trees via / path separator.
 #   get returns subdrawers+has_children when children exist (additive, no contract break).
 #   move/delete cascade to all children (prefix scan). move child cascade is
 #   write-verified before delete (same safety guarantee as parent node).
@@ -48,13 +58,12 @@ script:
       Cabception (v6.2.0): drawer keys using / as path separator form virtual
       trees. get returns subdrawers+has_children. move/delete/copy cascade
       to all children. move child writes are verified before source delete.
-    mode: queued
-    max: 10
+    mode: parallel
     icon: mdi:cabinet
     fields:
       mode:
         name: Mode
-        description: "Dispatch: get|create|update|upsert|delete|list|move|copy|search|relabel|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|help. Preferred over action: (legacy)."
+        description: "Dispatch: get|create|update|upsert|delete|list|move|copy|search|relabel|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|fleet|help. Preferred over action: (legacy)."
         selector:
           select:
             options:
@@ -82,6 +91,7 @@ script:
             - health
             - audit
             - help
+            - expand_drawer
       action_type:
         name: Action Type (legacy)
         description: "Legacy alias for mode:. Accepted for backcompat — use mode: going forward."
@@ -111,6 +121,7 @@ script:
             - inspect
             - health
             - audit
+            - expand_drawer
       volume_entity_id:
         name: Volume Entity ID
         description: Cabinet sensor entity ID to operate on.
@@ -146,6 +157,12 @@ script:
       destination_path:
         name: Destination Path
         description: Target key for move or copy.
+        selector:
+          text:
+      destination_volume_entity_id:
+        name: Destination Volume Entity ID
+        description: "Target cabinet entity_id for cross-cabinet copy/move (e.g. sensor.zenos_expansion_cabinet_1)."
+        required: false
         selector:
           text:
       path_prefix:
@@ -215,6 +232,12 @@ script:
         required: false
         selector:
           boolean:
+      raw_key:
+        name: Raw Key
+        description: "REPAIRS ONLY. Skip key slugification — use path exactly as given. Requires force_action=true or hard-rejects. Use only to repair keys written outside FC (e.g. raw events with hyphens) that can no longer be reached. Logs a warning on every use."
+        required: false
+        selector:
+          boolean:
       create_label:
         name: Create Label
         description: "If true, auto-create any HA labels in tags that are not in the registry."
@@ -257,6 +280,27 @@ script:
         required: false
         selector:
           text:
+      source_cabinet:
+        name: Source Cabinet (expand_drawer only)
+        description: Entity ID of the cabinet that currently holds the drawer to migrate.
+        required: false
+        selector:
+          text:
+      target_cabinet:
+        name: Target Cabinet (expand_drawer only)
+        description: Entity ID of the expansion cabinet to migrate the drawer into.
+        required: false
+        selector:
+          text:
+      space_threshold:
+        name: Space Threshold % (expand_drawer only)
+        description: Abort if source stays at or above this % after migration. Default 85.
+        required: false
+        selector:
+          number:
+            min: 50
+            max: 99
+            mode: box
       caller_token:
         name: Caller Token
         selector:
@@ -346,6 +390,47 @@ script:
           {%- elif _r is string and _r | trim != '' -%}{{ _r | trim }}
           {%- else -%}{%- endif -%}
         _now: "{{ now().isoformat() }}"
+        _raw_key: "{{ raw_key | default(false) | bool }}"
+
+    # --- raw_key gate: requires force_action=true or hard-rejects ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _raw_key and not _force_action }}"
+        sequence:
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: "{{ _action }}"
+              message: >-
+                raw_key=true bypasses key slugification and can delete keys that were written
+                outside FC — this is a destructive admin operation with no undo.
+                You MUST also pass force_action=true to confirm you know what you are doing.
+              trace:
+                caller_token: "{{ _caller_token }}"
+        - stop: filecabinet raw_key requires force_action confirmation
+          response_variable: result
+
+    # --- raw_key override: skip slugification, log warning on use ---
+    - variables:
+        _key: >-
+          {%- if _raw_key -%}
+            {{- path | default(key | default('', true), true) | string | trim | regex_replace('^/', '') -}}
+          {%- else -%}
+            {{- _key -}}
+          {%- endif -%}
+
+    - if: "{{ _raw_key and _force_action }}"
+      then:
+      - action: logbook.log
+        data:
+          name: "FileCabinet — RAW_KEY REPAIR"
+          message: >
+            ⚠ raw_key REPAIR used on {{ _vol }} key='{{ _key }}'.
+            Slugification skipped — repair mode only. I hope you knew what you were doing.
+          entity_id: "{{ _vol }}"
+          domain: sensor
 
     # --- Guard: volume required for data actions ---
     - choose:
@@ -353,7 +438,7 @@ script:
         - condition: template
           value_template: >-
             {{ _vol == '' and _action not in
-               ['register', 'unregister', 'inspect', 'health', 'audit', 'stacks_by_anchor', 'manifest'] }}
+               ['register', 'unregister', 'inspect', 'health', 'audit', 'stacks_by_anchor', 'manifest', 'expand_drawer', 'expansion_sitrep', 'fleet'] }}
         sequence:
         - variables:
             result:
@@ -372,7 +457,7 @@ script:
         - condition: template
           value_template: >-
             {{ _vol != '' and state_attr(_vol, 'variables') is none and
-               _action not in ['register', 'unregister', 'inspect', 'audit'] }}
+               _action not in ['register', 'unregister', 'inspect', 'audit', 'expand_drawer'] }}
         sequence:
         - variables:
             result:
@@ -801,7 +886,8 @@ script:
                       {%- set _wl_raw = (_wl_vars.get('fc_mount_callout_whitelist') or {}) if _wl_vars is mapping else {} -%}
                       {%- set _wl_val = (_wl_raw.get('value') or {}) if _wl_raw is mapping else {} -%}
                       {%- set _hard_wl = ['zen_dojotools_index', 'zen_dojotools_inspect', 'zen_dojotools_query', 'zen_dojotools_room_manager', 'zen_dojotools_manifest', 'zen_dojotools_inventory', 'zen_dojotools_filecabinet'] -%}
-                      {%- set _allowed = _wl_val.get('allowed_action_types', _hard_wl) if _wl_val is mapping else _hard_wl -%}
+                      {%- set _syscab_wl = (_wl_val.get('allowed_action_types', []) if _wl_val is mapping else []) -%}
+                      {%- set _allowed = (_hard_wl + _syscab_wl) | unique | list -%}
                       {%- set _fa = _cv.get('fc_args') -%}
                       {%- set _act = (_fa.get('action_type') or _fa.get('tool', '')) if _fa is mapping else '' -%}
                       {%- if _act in _allowed -%}
@@ -1146,6 +1232,31 @@ script:
         - condition: template
           value_template: "{{ _action == 'create' }}"
         sequence:
+        - variables:
+            _expansion_vi: >-
+              {%- set _vi = ((state_attr(_vol, 'variables') or {}).get('AI_Cabinet_VolumeInfo') or {}) -%}
+              {{ (_vi.get('value') or {}) if _vi is mapping else {} }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ (_expansion_vi if _expansion_vi is mapping else {}).get('cabinet_class') == 'expansion' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_filecabinet
+                  action: create
+                  volume: "{{ _vol }}"
+                  cabinet_class: expansion
+                  hosted_by: "{{ (_expansion_vi if _expansion_vi is mapping else {}).get('hosted_by', '') }}"
+                  message: >-
+                    Direct writes to expansion cabinets are blocked. Write to the source cabinet
+                    ({{ (_expansion_vi if _expansion_vi is mapping else {}).get('hosted_by', 'unknown') }})
+                    — mount traversal routes writes to this cabinet automatically.
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: filecabinet expansion cabinet write blocked
+              response_variable: result
         - choose:
           - conditions:
             - condition: template
@@ -1163,13 +1274,24 @@ script:
             - stop: filecabinet sutra create missing args
               response_variable: result
         - variables:
+            _w_vol: >-
+              {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
+              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
+              {{ _dv.get('target_entity_id', _vol) if (_dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '') else _vol }}
+            _w_is_mount: >-
+              {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
+              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
+              {{ _dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '' }}
+        - variables:
             _exists: >-
               {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
               {{ CABS.cabinet_drawer_exists(_vol, _key) | from_json }}
         - choose:
           - conditions:
             - condition: template
-              value_template: "{{ _exists and not _force_action }}"
+              value_template: "{{ _exists and not _force_action and not _w_is_mount }}"
             sequence:
             - variables:
                 result:
@@ -1189,10 +1311,10 @@ script:
           event_data:
             key: "{{- _key -}}"
             value: "{{ _cr_value }}"
-            volume_entity: "{{- _vol -}}"
+            volume_entity: "{{- _w_vol -}}"
             set_timestamp: true
         - wait_template: >-
-            {{ (state_attr(_vol, 'variables') or {}).get(_key, {}).get('timestamp', '') >= _now }}
+            {{ (state_attr(_w_vol, 'variables') or {}).get(_key, {}).get('timestamp', '') >= _now }}
           timeout: "00:00:30"
           continue_on_timeout: true
         - variables:
@@ -1277,8 +1399,44 @@ script:
           value_template: "{{ _action == 'update' }}"
         sequence:
         - variables:
+            _expansion_vi: >-
+              {%- set _vi = ((state_attr(_vol, 'variables') or {}).get('AI_Cabinet_VolumeInfo') or {}) -%}
+              {{ (_vi.get('value') or {}) if _vi is mapping else {} }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ (_expansion_vi if _expansion_vi is mapping else {}).get('cabinet_class') == 'expansion' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_filecabinet
+                  action: update
+                  volume: "{{ _vol }}"
+                  cabinet_class: expansion
+                  hosted_by: "{{ (_expansion_vi if _expansion_vi is mapping else {}).get('hosted_by', '') }}"
+                  message: >-
+                    Direct writes to expansion cabinets are blocked. Write to the source cabinet
+                    ({{ (_expansion_vi if _expansion_vi is mapping else {}).get('hosted_by', 'unknown') }})
+                    — mount traversal routes writes to this cabinet automatically.
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: filecabinet expansion cabinet write blocked
+              response_variable: result
+        - variables:
+            _w_vol: >-
+              {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
+              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
+              {{ _dv.get('target_entity_id', _vol) if (_dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '') else _vol }}
+            _w_is_mount: >-
+              {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
+              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
+              {{ _dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '' }}
+        - variables:
             _upd_raw: >-
-              {{ (state_attr(_vol, 'variables') or {}).get(_key) }}
+              {{ (state_attr(_w_vol, 'variables') or {}).get(_key) }}
         - variables:
             _upd_val: >-
               {{ _upd_raw.get('value') if _upd_raw is mapping else none }}
@@ -1332,10 +1490,10 @@ script:
           event_data:
             key: "{{- _key -}}"
             value: "{{ _upd_value }}"
-            volume_entity: "{{- _vol -}}"
+            volume_entity: "{{- _w_vol -}}"
             set_timestamp: true
         - wait_template: >-
-            {{ (state_attr(_vol, 'variables') or {}).get(_key, {}).get('timestamp', '') >= _now }}
+            {{ (state_attr(_w_vol, 'variables') or {}).get(_key, {}).get('timestamp', '') >= _now }}
           timeout: "00:00:30"
           continue_on_timeout: true
         - variables:
@@ -1406,6 +1564,7 @@ script:
               mode: "{{ _mode }}"
               updated_at: "{{ _now }}"
               write_verified: "{{ _write_verified }}"
+              mount_traversal: "{{ {'traversed': true, 'target_vol': _w_vol} if _w_is_mount else none }}"
               tags_dropped: "{{ [] if _create_label else _tags_dropped }}"
               labels_created: "{{ _tags_dropped if _create_label else [] }}"
               trace:
@@ -1420,8 +1579,44 @@ script:
           value_template: "{{ _action == 'upsert' }}"
         sequence:
         - variables:
+            _expansion_vi: >-
+              {%- set _vi = ((state_attr(_vol, 'variables') or {}).get('AI_Cabinet_VolumeInfo') or {}) -%}
+              {{ (_vi.get('value') or {}) if _vi is mapping else {} }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ (_expansion_vi if _expansion_vi is mapping else {}).get('cabinet_class') == 'expansion' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_filecabinet
+                  action: upsert
+                  volume: "{{ _vol }}"
+                  cabinet_class: expansion
+                  hosted_by: "{{ (_expansion_vi if _expansion_vi is mapping else {}).get('hosted_by', '') }}"
+                  message: >-
+                    Direct writes to expansion cabinets are blocked. Write to the source cabinet
+                    ({{ (_expansion_vi if _expansion_vi is mapping else {}).get('hosted_by', 'unknown') }})
+                    — mount traversal routes writes to this cabinet automatically.
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: filecabinet expansion cabinet write blocked
+              response_variable: result
+        - variables:
+            _w_vol: >-
+              {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
+              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
+              {{ _dv.get('target_entity_id', _vol) if (_dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '') else _vol }}
+            _w_is_mount: >-
+              {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
+              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
+              {{ _dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '' }}
+        - variables:
             _ups_raw: >-
-              {{ (state_attr(_vol, 'variables') or {}).get(_key) }}
+              {{ (state_attr(_w_vol, 'variables') or {}).get(_key) }}
         - variables:
             _ups_val: >-
               {{ _ups_raw.get('value') if _ups_raw is mapping else none }}
@@ -1452,10 +1647,10 @@ script:
           event_data:
             key: "{{- _key -}}"
             value: "{{ _ups_value }}"
-            volume_entity: "{{- _vol -}}"
+            volume_entity: "{{- _w_vol -}}"
             set_timestamp: true
         - wait_template: >-
-            {{ (state_attr(_vol, 'variables') or {}).get(_key, {}).get('timestamp', '') >= _now }}
+            {{ (state_attr(_w_vol, 'variables') or {}).get(_key, {}).get('timestamp', '') >= _now }}
           timeout: "00:00:30"
           continue_on_timeout: true
         - variables:
@@ -1527,6 +1722,7 @@ script:
               created: "{{ not _existed }}"
               updated_at: "{{ _now }}"
               write_verified: "{{ _write_verified }}"
+              mount_traversal: "{{ {'traversed': true, 'target_vol': _w_vol} if _w_is_mount else none }}"
               tags_dropped: "{{ [] if _create_label else _tags_dropped }}"
               labels_created: "{{ _tags_dropped if _create_label else [] }}"
               trace:
@@ -1740,6 +1936,36 @@ script:
                   trace:
                     caller_token: "{{ _caller_token }}"
             - stop: filecabinet sutra move not found
+              response_variable: result
+        - variables:
+            _mov_val_parsed: >-
+              {%- set _mv = (_mov_raw.get('value') if _mov_raw is mapping else none) -%}
+              {%- if _mv is mapping -%}
+                {{ _mv }}
+              {%- elif _mv is string and _mv | trim not in ['', 'null', 'None'] -%}
+                {{ _mv | from_json(none) }}
+              {%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: >-
+                {{ _mov_val_parsed is mapping and _mov_val_parsed.get('mount_point', false) == true and not (force_action | default(false) | bool) }}
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_filecabinet
+                  action: move
+                  code: mounted_drawer
+                  key: "{{ _key }}"
+                  volume: "{{ _vol }}"
+                  mount_type: "{{ 'live_drawer' if (_mov_val_parsed is mapping and _mov_val_parsed.get('fc_args') is not none) else 'cross_cabinet' }}"
+                  message: >-
+                    '{{ _key }}' is a {{ 'live_drawer' if (_mov_val_parsed is mapping and _mov_val_parsed.get('fc_args') is not none) else 'cross_cabinet' }} mount — move is blocked.
+                    Create the mount at the destination first (set_mount), then delete this drawer (delete).
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: filecabinet sutra move blocked mounted drawer
               response_variable: result
         - event: set_variable_legacy
           event_data:
@@ -1976,14 +2202,46 @@ script:
                     caller_token: "{{ _caller_token }}"
             - stop: filecabinet sutra copy not found
               response_variable: result
+        - variables:
+            _cpy_val_parsed: >-
+              {%- set _cv = (_cpy_raw.get('value') if _cpy_raw is mapping else none) -%}
+              {%- if _cv is mapping -%}
+                {{ _cv }}
+              {%- elif _cv is string and _cv | trim not in ['', 'null', 'None'] -%}
+                {{ _cv | from_json(none) }}
+              {%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: >-
+                {{ _cpy_val_parsed is mapping and _cpy_val_parsed.get('mount_point', false) == true and not (force_action | default(false) | bool) }}
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_filecabinet
+                  action: copy
+                  code: mounted_drawer
+                  key: "{{ _key }}"
+                  volume: "{{ _vol }}"
+                  mount_type: "{{ 'live_drawer' if (_cpy_val_parsed is mapping and _cpy_val_parsed.get('fc_args') is not none) else 'cross_cabinet' }}"
+                  message: >-
+                    '{{ _key }}' is a {{ 'live_drawer' if (_cpy_val_parsed is mapping and _cpy_val_parsed.get('fc_args') is not none) else 'cross_cabinet' }} mount — copy is blocked.
+                    Create the mount at the destination instead (set_mount). Mounts must be set up explicitly — they cannot be duplicated by copy.
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: filecabinet sutra copy blocked mounted drawer
+              response_variable: result
+        - variables:
+            _cpy_dest_vol: "{{ _dest_vol if _dest_vol != '' else _vol }}"
         - event: set_variable_legacy
           event_data:
             key: "{{- _dest -}}"
             value: "{{- _cpy_val -}}"
-            volume_entity: "{{- _vol -}}"
+            volume_entity: "{{- _cpy_dest_vol -}}"
             set_timestamp: true
         - wait_template: >-
-            {{ (state_attr(_vol, 'variables') or {}).get(_dest, {}).get('timestamp', '') >= _now }}
+            {{ (state_attr(_cpy_dest_vol, 'variables') or {}).get(_dest, {}).get('timestamp', '') >= _now }}
           timeout: "00:00:30"
           continue_on_timeout: true
         - variables:
@@ -2039,7 +2297,7 @@ script:
                 key: _label_index
                 value: "{{- _updated_label_index | tojson -}}"
                 set_timestamp: true
-                volume_entity: "{{- _vol -}}"
+                volume_entity: "{{- _cpy_dest_vol -}}"
         - variables:
             _tags_dropped: >-
               {%- set _all = labels() -%}
@@ -2358,6 +2616,212 @@ script:
         - stop: filecabinet sutra audit done
           response_variable: result
 
+    # --- EXPANSION_SITREP — inventory all expansion cabinets, usage + target eligibility ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'expansion_sitrep' }}"
+        sequence:
+        - variables:
+            result: >-
+              {%- set _exp_cabs = states.sensor | selectattr('entity_id', 'search', 'zenos_expansion_cabinet') | map(attribute='entity_id') | list | sort -%}
+              {%- set _sys_drawers = ['AI_Cabinet_VolumeInfo', 'meta', '_label_index', '_zen_relationships'] -%}
+              {%- set ns = namespace(cabs=[]) -%}
+              {%- for _eid in _exp_cabs -%}
+                {%- set _raw = state_attr(_eid, 'variables') | default(none) -%}
+                {%- set _vars = _raw if _raw is mapping else {} -%}
+                {%- set _vi_outer = (_vars.get('AI_Cabinet_VolumeInfo') or {}) -%}
+                {%- set _vi_outer = _vi_outer if _vi_outer is mapping else {} -%}
+                {%- set _vi = (_vi_outer.get('value') or {}) if _vi_outer else {} -%}
+                {%- set _vi = _vi if _vi is mapping else {} -%}
+                {%- set _user_keys = _vars.keys() | reject('in', _sys_drawers) | list -%}
+                {%- set _bytes = _vars | tojson | length -%}
+                {%- set _pct = ((_bytes / 131072) * 100) | round(1) -%}
+                {%- set _cab_class = _vi.get('cabinet_class', none) -%}
+                {%- set _hosted_by = _vi.get('hosted_by', none) -%}
+                {%- set _is_empty = _user_keys | length == 0 -%}
+                {%- set _boot_ready = _raw is not none -%}
+                {%- set _qualifies = _is_empty and _cab_class is none and _boot_ready -%}
+                {%- if _cab_class == 'expansion' -%}
+                  {%- set _note = 'expansion slave — writes blocked, parent: ' ~ (_hosted_by | default('unknown')) -%}
+                {%- elif not _boot_ready -%}
+                  {%- set _note = 'not ready (boot guard active)' -%}
+                {%- elif _qualifies -%}
+                  {%- set _note = 'available as expand_drawer target' -%}
+                {%- else -%}
+                  {%- set _note = 'in use — ' ~ (_user_keys | length) ~ ' drawer(s): ' ~ (_user_keys | join(', ')) -%}
+                {%- endif -%}
+                {%- set _rec = {
+                  'entity_id': _eid,
+                  'friendly_name': state_attr(_eid, 'friendly_name') | default(_eid, true),
+                  'state': states(_eid),
+                  'boot_ready': _boot_ready,
+                  'drawer_count': _user_keys | length,
+                  'drawer_keys': _user_keys,
+                  'bytes_used': _bytes,
+                  'bytes_total': 131072,
+                  'pct_full': _pct,
+                  'cabinet_class': _cab_class,
+                  'hosted_by': _hosted_by,
+                  'qualifies_as_target': _qualifies,
+                  'note': _note
+                } -%}
+                {%- set ns.cabs = ns.cabs + [_rec] -%}
+              {%- endfor -%}
+              {%- set _available = ns.cabs | selectattr('qualifies_as_target') | list -%}
+              {%- set _stamped = ns.cabs | selectattr('cabinet_class', 'equalto', 'expansion') | list -%}
+              {{
+                {
+                  'status': 'success',
+                  'tool': 'zen_sutra_filecabinet',
+                  'action': 'expansion_sitrep',
+                  'cabinets': ns.cabs,
+                  'summary': {
+                    'total_expansion_cabs': ns.cabs | length,
+                    'available_as_targets': _available | length,
+                    'stamped_as_expansion_slaves': _stamped | length,
+                    'in_use': (ns.cabs | length) - (_available | length) - (_stamped | length),
+                    'available_entities': _available | map(attribute='entity_id') | list
+                  },
+                  'trace': {'caller_token': _caller_token}
+                }
+              }}
+        - stop: filecabinet expansion_sitrep done
+          response_variable: result
+
+    # --- FLEET — full cabinet fleet view (named + expansion, all in one call) ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'fleet' }}"
+        sequence:
+        - variables:
+            result: >-
+              {%- set _sys_drawers = ['AI_Cabinet_VolumeInfo', 'meta', '_label_index', '_zen_relationships'] -%}
+              {%- set _labeled = label_entities('Zen Cabinet') | select('match', 'sensor\\.') | list -%}
+              {%- set _pattern = states.sensor | selectattr('entity_id', 'search', 'zenos_.*_cabinet') | map(attribute='entity_id') | list -%}
+              {%- set _ns_all = namespace(eids=[]) -%}
+              {%- for e in (_labeled + _pattern) -%}
+                {%- if e not in _ns_all.eids -%}{%- set _ns_all.eids = _ns_all.eids + [e] -%}{%- endif -%}
+              {%- endfor -%}
+              {%- set ns = namespace(cabs=[], fat=[], critical=[], broken_mounts=[], exp_clean=[], exp_stamped=[]) -%}
+              {%- for _eid in _ns_all.eids | sort -%}
+                {%- set _raw = state_attr(_eid, 'variables') | default(none) -%}
+                {%- set _vars = _raw if _raw is mapping else {} -%}
+                {%- set _vi_outer = (_vars.get('AI_Cabinet_VolumeInfo') or {}) -%}
+                {%- set _vi_outer = _vi_outer if _vi_outer is mapping else {} -%}
+                {%- set _vi = (_vi_outer.get('value') or {}) -%}
+                {%- set _vi = _vi if _vi is mapping else (_vi | from_json({}) if _vi is string else {}) -%}
+                {%- set _guid = _vi.get('id', none) -%}
+                {%- set _cab_class = _vi.get('cabinet_class', none) -%}
+                {%- set _hosted_by = _vi.get('hosted_by', none) -%}
+                {%- set _ro = (_vi.get('flags', {}) or {}).get('cabinet_ro', false) -%}
+                {%- set _boot_ready = _raw is not none -%}
+                {%- set _bytes = _vars | tojson | length -%}
+                {%- set _pct = ((_bytes / 131072) * 100) | round(1) -%}
+                {%- set _in_exp = 'zenos_expansion_cabinet' in _eid -%}
+                {%- set _is_history = '_history_cabinet' in _eid -%}
+                {%- set _role = 'expansion' if _in_exp else ('history' if _is_history else 'named') -%}
+                {%- set _user_keys = _vars.keys() | reject('in', _sys_drawers) | list -%}
+                {%- set _ns_m = namespace(mounts=[]) -%}
+                {%- for k in _user_keys -%}
+                  {%- set _dv = (_vars.get(k) or {}) -%}
+                  {%- if _dv is mapping -%}
+                    {%- set _dval = _dv.get('value') -%}
+                    {%- set _dval = _dval if _dval is mapping else (_dval | from_json(none) if _dval is string and _dval | trim not in ['', 'null'] else none) -%}
+                    {%- if _dval is mapping and _dval.get('mount_point', false) == true -%}
+                      {%- set _fc_args = _dval.get('fc_args', none) -%}
+                      {%- if _fc_args is mapping -%}
+                        {%- set _live_tool = _fc_args.get('tool', _fc_args.get('action_type', '')) -%}
+                        {%- set _live_blocked = _live_tool in ['read', 'manifest'] or not _live_tool.startswith('zen_') -%}
+                        {%- set _ns_m.mounts = _ns_m.mounts + [{'key': k, 'type': 'live_drawer', 'tool': _live_tool, 'resolved': not _live_blocked}] -%}
+                        {%- if _live_blocked -%}
+                          {%- set ns.broken_mounts = ns.broken_mounts + [{'cabinet': _eid, 'key': k, 'type': 'live_drawer', 'tool': _live_tool, 'reason': 'fc_args.tool is a lens verb or invalid — must be a zen_* script name'}] -%}
+                        {%- endif -%}
+                      {%- else -%}
+                        {%- set _tgt = _dval.get('target_entity_id', '') -%}
+                        {%- set _tgt_vars = (state_attr(_tgt, 'variables') or {}) if _tgt != '' else {} -%}
+                        {%- set _res = k in _tgt_vars -%}
+                        {%- set _ns_m.mounts = _ns_m.mounts + [{'key': k, 'type': 'cross_cabinet', 'target': _tgt, 'resolved': _res}] -%}
+                        {%- if not _res -%}
+                          {%- set ns.broken_mounts = ns.broken_mounts + [{'cabinet': _eid, 'key': k, 'type': 'cross_cabinet', 'target': _tgt, 'reason': 'key not found in target'}] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set _rec = {
+                  'entity_id': _eid,
+                  'friendly_name': state_attr(_eid, 'friendly_name') | default(_eid, true),
+                  'guid': _guid,
+                  'role': _role,
+                  'cabinet_class': _cab_class,
+                  'hosted_by': _hosted_by,
+                  'state': states(_eid),
+                  'cabinet_ro': _ro,
+                  'boot_ready': _boot_ready,
+                  'drawer_count': _user_keys | length,
+                  'drawer_keys': _user_keys,
+                  'pct_full': _pct,
+                  'bytes_used': _bytes,
+                  'bytes_total': 131072,
+                  'mounts_out': _ns_m.mounts
+                } -%}
+                {%- set ns.cabs = ns.cabs + [_rec] -%}
+                {%- if _pct >= 90 -%}{%- set ns.critical = ns.critical + [{'entity_id': _eid, 'pct_full': _pct, 'guid': _guid}] -%}
+                {%- elif _pct >= 70 -%}{%- set ns.fat = ns.fat + [{'entity_id': _eid, 'pct_full': _pct, 'guid': _guid}] -%}
+                {%- endif -%}
+                {%- if _in_exp -%}
+                  {%- if _cab_class == 'expansion' -%}{%- set ns.exp_stamped = ns.exp_stamped + [_eid] -%}
+                  {%- elif (_user_keys | length) == 0 and _boot_ready -%}{%- set ns.exp_clean = ns.exp_clean + [{'entity_id': _eid, 'guid': _guid}] -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set _hints = namespace(h=[]) -%}
+              {%- if ns.critical | length > 0 -%}
+                {%- set _hints.h = _hints.h + ['CRITICAL: ' ~ (ns.critical | length) ~ ' cab(s) >90% full — expand_drawer immediately: ' ~ (ns.critical | map(attribute='entity_id') | join(', '))] -%}
+              {%- endif -%}
+              {%- if ns.fat | length > 0 -%}
+                {%- set _hints.h = _hints.h + ['WARNING: ' ~ (ns.fat | length) ~ ' cab(s) 70-90% full: ' ~ (ns.fat | map(attribute='entity_id') | join(', '))] -%}
+              {%- endif -%}
+              {%- if ns.broken_mounts | length > 0 -%}
+                {%- set _hints.h = _hints.h + ['BROKEN: ' ~ (ns.broken_mounts | length) ~ ' mount pointer(s) do not resolve — check mount_broken in summary'] -%}
+              {%- endif -%}
+              {%- if ns.exp_clean | length > 0 -%}
+                {%- set _ns_sl = namespace(parts=[]) -%}
+                {%- for s in ns.exp_clean -%}{%- set _ns_sl.parts = _ns_sl.parts + [s.entity_id ~ ' (guid=' ~ (s.guid | default('unknown')) ~ ')'] -%}{%- endfor -%}
+                {%- set _hints.h = _hints.h + ['OK: ' ~ (ns.exp_clean | length) ~ ' clean expansion slot(s) ready — call expand_drawer with target_guid from expansion_pool.available: ' ~ (_ns_sl.parts | join(', '))] -%}
+              {%- else -%}
+                {%- set _hints.h = _hints.h + ['NO SLOTS: all expansion cabs in use — provision a new one before expanding'] -%}
+              {%- endif -%}
+              {{
+                {
+                  'status': 'success',
+                  'tool': 'zen_sutra_filecabinet',
+                  'action': 'fleet',
+                  'cabinets': ns.cabs,
+                  'summary': {
+                    'total_cabs': ns.cabs | length,
+                    'named_cabs': ns.cabs | selectattr('role', 'equalto', 'named') | list | length,
+                    'history_cabs': ns.cabs | selectattr('role', 'equalto', 'history') | list | length,
+                    'expansion_cabs': ns.cabs | selectattr('role', 'equalto', 'expansion') | list | length,
+                    'fat': ns.fat,
+                    'critical': ns.critical,
+                    'broken_mounts': ns.broken_mounts,
+                    'expansion_pool': {
+                      'total': (ns.exp_stamped | length) + (ns.exp_clean | length),
+                      'stamped_in_use': ns.exp_stamped | length,
+                      'clean_available': ns.exp_clean | length,
+                      'available': ns.exp_clean
+                    },
+                    'action_hints': _hints.h
+                  },
+                  'trace': {'caller_token': _caller_token}
+                }
+              }}
+        - stop: filecabinet fleet done
+          response_variable: result
+
     # --- MANIFEST (delegates to zen_dojotools_manifest directly — no FC hop) ---
     - choose:
       - conditions:
@@ -2557,6 +3021,25 @@ script:
         - condition: template
           value_template: "{{ _action == 'set_mount' }}"
         sequence:
+        # Hard block — _label_index mount-out not yet supported
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _key == '_label_index' }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_filecabinet
+                  action: set_mount
+                  message: >-
+                    Mounting out _label_index is not yet supported. The label index is read
+                    directly during cabinet traversal — mount-pointer following for this
+                    system drawer requires dedicated work. Planned for a future release.
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: filecabinet set_mount _label_index blocked
+              response_variable: result
         - variables:
             _sm_vol: "{{ state_attr(_vol, 'variables') | default({}, true) }}"
         - variables:
@@ -2704,10 +3187,12 @@ script:
             _rm_existing: "{{ (_rm_vol if _rm_vol is mapping else {}).get(_key, {}) }}"
         - variables:
             _rm_is_mount: >-
-              {%- set ev = _rm_existing.get('value', {}) if _rm_existing is mapping else {} -%}
+              {%- set ev = (_rm_existing.get('value') if _rm_existing is mapping else none) -%}
+              {%- set ev = ev if ev is mapping else (ev | from_json(none) if ev is string and ev | trim not in ['', 'null', 'None'] else none) -%}
               {{ ev is mapping and ev.get('mount_point', false) == true }}
             _rm_old_guid: >-
-              {%- set ev = _rm_existing.get('value', {}) if _rm_existing is mapping else {} -%}
+              {%- set ev = (_rm_existing.get('value') if _rm_existing is mapping else none) -%}
+              {%- set ev = ev if ev is mapping else (ev | from_json(none) if ev is string and ev | trim not in ['', 'null', 'None'] else none) -%}
               {{ ev.get('target_guid', '') if ev is mapping else '' }}
             _rm_key_exists: "{{ (_rm_vol if _rm_vol is mapping else {}).get(_key) is not none }}"
         - choose:
@@ -3057,6 +3542,349 @@ script:
         - stop: filecabinet sutra set_cabinet_ro done
           response_variable: result
 
+    # ── expand_drawer — atomic drawer migration to expansion cabinet ────────────
+    # Copies a leaf drawer to a target cabinet, installs a write-mount pointer in
+    # the source, then round-trip verifies the target is writable. Full undo on
+    # any step failure. Callers: just pick a target cabinet and call this mode.
+    - if:
+      - condition: template
+        value_template: "{{ _action == 'expand_drawer' }}"
+      then:
+      # Step 0: Validate inputs
+      - variables:
+          _ed_src: "{{ source_cabinet | default('', true) | string | trim }}"
+          _ed_tgt: "{{ target_cabinet | default('', true) | string | trim }}"
+          _ed_key: "{{ _key }}"
+          _ed_thresh: "{{ space_threshold | default(85) | int(85) }}"
+          _ed_max: 131072
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_src == '' or _ed_tgt == '' or _ed_key == '' }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: validate
+                reason: source_cabinet, target_cabinet, and path are all required
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer validate failed
+            response_variable: result
+      # Step 0b: Hard block — _label_index offload not yet supported
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_key == '_label_index' }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: label_index_block
+                reason: >-
+                  Offloading _label_index is not yet supported. The label index is read
+                  directly during cabinet traversal — mount-pointer following for this
+                  system drawer requires dedicated work. Planned for a future release.
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer _label_index blocked
+            response_variable: result
+      # Step 1: Read source/target vars, validate drawer exists, no subtree
+      - variables:
+          _ed_src_vars: "{{ state_attr(_ed_src, 'variables') or {} }}"
+          _ed_tgt_vars: "{{ state_attr(_ed_tgt, 'variables') or {} }}"
+      - variables:
+          _ed_subtree_keys: >-
+            {%- set _prefix = _ed_key ~ '/' -%}
+            {%- set ns = namespace(keys=[]) -%}
+            {%- for k in (_ed_src_vars.keys() | list) -%}
+              {%- if k == _ed_key or k.startswith(_prefix) -%}
+                {%- set ns.keys = ns.keys + [k] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.keys }}
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_key not in _ed_src_vars }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: validate
+                reason: source_drawer key not found in source_cabinet
+                source_cabinet: "{{ _ed_src }}"
+                source_drawer: "{{ _ed_key }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer key not found
+            response_variable: result
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_subtree_keys | length > 1 }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: validate
+                reason: >-
+                  subtree_not_supported — drawer has Cabception children.
+                  expand_drawer requires a leaf key only.
+                subtree_keys: "{{ _ed_subtree_keys }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer subtree not supported
+            response_variable: result
+      # Target-empty guard: expansion cabinets are dedicated — target must be empty
+      - variables:
+          _ed_tgt_user_drawers: >-
+            {%- set _sys = ['AI_Cabinet_VolumeInfo', 'meta', '_label_index', '_zen_relationships'] -%}
+            {{ (_ed_tgt_vars.keys() | list) | reject('in', _sys) | list }}
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_tgt_user_drawers | length > 0 }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: validate
+                reason: target_cabinet_not_empty
+                target_cabinet: "{{ _ed_tgt }}"
+                existing_drawers: "{{ _ed_tgt_user_drawers }}"
+                message: >-
+                  target_cabinet must be empty before expand_drawer. Expansion cabinets are
+                  dedicated and locked after first use. Provision an empty cabinet as the target.
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer target not empty
+            response_variable: result
+      # Step 2: Space check
+      - variables:
+          _ed_drawer_size: >-
+            {{ {_ed_key: _ed_src_vars.get(_ed_key, {})} | tojson | length }}
+          _ed_src_size: "{{ _ed_src_vars | tojson | length }}"
+          _ed_tgt_size: "{{ _ed_tgt_vars | tojson | length }}"
+      - variables:
+          _ed_tgt_post_size: "{{ _ed_tgt_size + _ed_drawer_size }}"
+          _ed_src_post_pct: "{{ ((_ed_src_size - _ed_drawer_size + 100) * 100 / _ed_max) | round(1) }}"
+          _ed_src_pre_pct: "{{ (_ed_src_size * 100 / _ed_max) | round(1) }}"
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_tgt_post_size > _ed_max }}"
+          sequence:
+          - variables:
+              result:
+                status: abort
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: space_check
+                reason: insufficient_target_space
+                target_cabinet: "{{ _ed_tgt }}"
+                target_current_size: "{{ _ed_tgt_size }}"
+                drawer_size: "{{ _ed_drawer_size }}"
+                target_max: "{{ _ed_max }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer insufficient target space
+            response_variable: result
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_src_post_pct | float >= _ed_thresh }}"
+          sequence:
+          - variables:
+              result:
+                status: abort
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: space_check
+                reason: source_will_remain_above_threshold
+                source_cabinet: "{{ _ed_src }}"
+                space_before_pct: "{{ _ed_src_pre_pct }}"
+                space_after_pct: "{{ _ed_src_post_pct }}"
+                threshold: "{{ _ed_thresh }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer threshold not met
+            response_variable: result
+      # Step 3: Copy drawer to target cabinet
+      - variables:
+          _ed_copy_value: "{{ _ed_src_vars.get(_ed_key, {}).get('value') }}"
+      - event: set_variable_legacy
+        event_data:
+          key: "{{- _ed_key -}}"
+          value: "{{ _ed_copy_value }}"
+          volume_entity: "{{- _ed_tgt -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {{ (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) is not none }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      - variables:
+          _ed_copy_ok: "{{ wait.completed }}"
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ not _ed_copy_ok }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: copy
+                reason: copy_to_target_not_confirmed
+                source_cabinet: "{{ _ed_src }}"
+                target_cabinet: "{{ _ed_tgt }}"
+                source_drawer: "{{ _ed_key }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer copy failed
+            response_variable: result
+      # Step 4: Set mount pointer in source (overwrites original with pointer)
+      - event: set_variable_legacy
+        event_data:
+          key: "{{- _ed_key -}}"
+          value: '{"mount_point": true, "target_entity_id": "{{ _ed_tgt }}"}'
+          volume_entity: "{{- _ed_src -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {%- set _dr = (state_attr(_ed_src, 'variables') or {}).get(_ed_key) -%}
+          {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+          {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+          {{ _dv is mapping and _dv.get('mount_point', false) == true }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      - variables:
+          _ed_mount_set: "{{ wait.completed }}"
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ not _ed_mount_set }}"
+          sequence:
+          # Undo: restore original data to source, delete target copy
+          - event: set_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              value: "{{ _ed_copy_value }}"
+              volume_entity: "{{- _ed_src -}}"
+              set_timestamp: true
+          - event: remove_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              volume_entity: "{{- _ed_tgt -}}"
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: mount_set
+                reason: mount_pointer_not_confirmed_in_source
+                source_cabinet: "{{ _ed_src }}"
+                source_drawer: "{{ _ed_key }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer mount set failed
+            response_variable: result
+      # Step 5: Round-trip — write sentinel directly to target, verify, restore
+      - variables:
+          _ed_rt_sentinel: >-
+            {{ _ed_copy_value | combine({'_ed_rt': true}) if _ed_copy_value is mapping
+               else {'_ed_rt': true} }}
+      - event: set_variable_legacy
+        event_data:
+          key: "{{- _ed_key -}}"
+          value: "{{ _ed_rt_sentinel }}"
+          volume_entity: "{{- _ed_tgt -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
+          {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+          {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+          {{ _dv is mapping and _dv.get('_ed_rt') == true }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      - variables:
+          _ed_rt_ok: "{{ wait.completed }}"
+      # Restore original data to target (undo sentinel)
+      - event: set_variable_legacy
+        event_data:
+          key: "{{- _ed_key -}}"
+          value: "{{ _ed_copy_value }}"
+          volume_entity: "{{- _ed_tgt -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
+          {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+          {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+          {{ not (_dv is mapping and _dv.get('_ed_rt') == true) }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ not _ed_rt_ok }}"
+          sequence:
+          # Undo: restore original to source, remove target copy
+          - event: set_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              value: "{{ _ed_copy_value }}"
+              volume_entity: "{{- _ed_src -}}"
+              set_timestamp: true
+          - event: remove_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              volume_entity: "{{- _ed_tgt -}}"
+          - variables:
+              result:
+                status: error
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: round_trip
+                reason: target_write_not_verified
+                source_cabinet: "{{ _ed_src }}"
+                target_cabinet: "{{ _ed_tgt }}"
+                source_drawer: "{{ _ed_key }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: filecabinet expand_drawer round trip failed
+            response_variable: result
+      # Step 6: Stamp target as expansion cabinet — dedicated + locked
+      - event: set_variable_legacy
+        event_data:
+          key: AI_Cabinet_VolumeInfo
+          value: '{"cabinet_class": "expansion", "hosted_by": "{{ _ed_src }}"}'
+          volume_entity: "{{- _ed_tgt -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {%- set _vi = (state_attr(_ed_tgt, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
+          {%- set _viv = (_vi.get('value') or none) if _vi is mapping else none -%}
+          {%- set _viv = _viv if _viv is mapping else (_viv | from_json(none) if _viv is string else none) -%}
+          {{ _viv is mapping and _viv.get('cabinet_class') == 'expansion' }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      # SUCCESS
+      - variables:
+          result:
+            status: success
+            tool: zen_sutra_filecabinet
+            action: expand_drawer
+            source_cabinet: "{{ _ed_src }}"
+            source_drawer: "{{ _ed_key }}"
+            target_cabinet: "{{ _ed_tgt }}"
+            space_before_pct: "{{ _ed_src_pre_pct }}"
+            space_after_pct: "{{ _ed_src_post_pct }}"
+            drawer_size_bytes: "{{ _ed_drawer_size }}"
+            mount_installed: true
+            round_trip_verified: true
+            caller_token: "{{ _caller_token }}"
+      - stop: filecabinet expand_drawer complete
+        response_variable: result
+
     # --- Unknown action fallback ---
     - variables:
         result:
@@ -3087,7 +3915,7 @@ script:
     icon: mdi:bookshelf
     fields:
       action_type:
-        description: "list|get|create|update|upsert|delete|move|copy|relabel|search|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|help. Aliases: read=get, write=upsert, scan=list"
+        description: "list|get|create|update|upsert|delete|move|copy|relabel|search|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|expansion_sitrep|fleet|help|expand_drawer|weave|weave_preview|weave_save. Aliases: read=get, write=upsert, scan=list"
         required: true
         selector:
           select:
@@ -3116,10 +3944,16 @@ script:
             - health
             - audit
             - help
+            - expand_drawer
+            - fleet
+            - expansion_sitrep
             - read
             - write
             - scan
             - tool_manifest
+            - weave
+            - weave_preview
+            - weave_save
         default: list
       stack:
         description: "Backend: cabinet (FileCabinet, default) | wiki (WikiJS) | all (read-only aggregate)."
@@ -3298,6 +4132,60 @@ script:
         selector:
           text:
         name: Anchor IDs
+      source_cabinet:
+        description: "expand_drawer: entity ID of the cabinet that currently holds the drawer."
+        required: false
+        selector:
+          text:
+        name: Source Cabinet
+      target_cabinet:
+        description: "expand_drawer: entity ID of the expansion cabinet to migrate the drawer into."
+        required: false
+        selector:
+          text:
+        name: Target Cabinet
+      space_threshold:
+        description: "expand_drawer: abort if source stays at or above this % after migration (default 85)."
+        required: false
+        selector:
+          number:
+            min: 50
+            max: 99
+            mode: box
+        name: Space Threshold
+      weave_drawer:
+        description: "weave/weave_preview: drawer name containing the tapestry definition. Resolves from volume_entity_id cabinet if provided, else searches all Zen Cabinet entities."
+        required: false
+        selector:
+          text:
+        name: Weave Drawer
+      weave_label:
+        description: "weave/weave_preview: HA label — collect all zen_tapestry drawers with this label and merge their sources lists."
+        required: false
+        selector:
+          text:
+        name: Weave Label
+      weave_sources:
+        description: "weave/weave_preview/weave_save: inline tapestry definition JSON. Schema: {sources:[{key,cabinet,drawer,mask?,rename?}|{key,weave,cabinet?}], description?}. Call weave_preview first before weave_save."
+        required: false
+        selector:
+          text:
+        name: Weave Sources
+      weave_max_depth:
+        description: "weave/weave_preview: max nesting depth for weave sources (1-3, default 2)."
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 3
+            mode: box
+        name: Weave Max Depth
+      preview_token:
+        description: "weave_save: token returned by weave_preview — required to commit a tapestry definition. Token is valid for the clock minute it was issued."
+        required: false
+        selector:
+          text:
+        name: Preview Token
       caller_token:
         required: false
         selector:
@@ -3361,7 +4249,7 @@ script:
                 tool='zen_dojotools_filecabinet',
                 display_name='FileCabinet — Knowledge Stack Surface',
                 tier='dojotools',
-                version='6.2.0',
+                version='6.9.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['cabinet', 'wiki_js', 'knowledge', 'documents'],
@@ -3396,7 +4284,7 @@ script:
               {{-
                 {
                   "tool": "zen_dojotools_filecabinet",
-                  "version": "6.2.0",
+                  "version": "6.9.0",
                   "intent": "Stack-agnostic knowledge surface. stack=cabinet is always available (built-in FileCabinet key-value store). stack=wiki is optional — requires zen_sutra_wikijs installed and registered; returns stack_not_available if missing. HA Labels are the shared tag/anchor system across both stacks.",
                   "you_should_use_this_tool_when": [
                     "You need to read, write, or manage key-value knowledge drawers in a FileCabinet volume (stack=cabinet — always available).",
@@ -4067,6 +4955,427 @@ script:
         - stop: knowledge wiki done
           response_variable: result
 
+    # --- Route: weave / weave_preview / weave_save ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action_type in ['weave', 'weave_preview', 'weave_save'] }}"
+        sequence:
+
+        # --- weave_save: write a tapestry definition to a cabinet drawer ---
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _action_type == 'weave_save' }}"
+            sequence:
+            - variables:
+                _ws_src: >-
+                  {%- set raw = weave_sources | default('', true) -%}
+                  {%- if raw is mapping -%}{{ raw }}
+                  {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) }}
+                  {%- else -%}{{ none }}{%- endif -%}
+                _ws_token_expected: >-
+                  {{ (weave_sources | default('', true) | string | length | string) + '-' + now().strftime('%Y-%m-%dT%H:%M') }}
+                _ws_token_given: "{{ preview_token | default('', true) | string | trim }}"
+                _ws_force: "{{ force_action | default(false) | bool }}"
+            - variables:
+                _ws_error: >-
+                  {%- if not _ws_force -%}confirm_required
+                  {%- elif _ws_token_given == '' or _ws_token_given != _ws_token_expected -%}token_expired
+                  {%- elif _vol == '' -%}cabinet_required
+                  {%- elif _path == '' -%}drawer_name_required
+                  {%- elif _ws_src is none or _ws_src.get('sources') is none -%}invalid_definition
+                  {%- elif (_ws_src | tojson | length) > 2048 -%}definition_too_large
+                  {%- else -%}{%- endif -%}
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: "{{ _ws_error != '' }}"
+                sequence:
+                - variables:
+                    result:
+                      status: error
+                      tool: zen_dojotools_filecabinet
+                      action: weave_save
+                      code: "{{ _ws_error }}"
+                      message: >-
+                        {%- if _ws_error == 'confirm_required' -%}Set force_action=true to confirm intent to write a tapestry definition.
+                        {%- elif _ws_error == 'token_expired' -%}preview_token missing or expired. Call weave_preview first — token is valid for the current clock minute only.
+                        {%- elif _ws_error == 'cabinet_required' -%}volume_entity_id required for weave_save.
+                        {%- elif _ws_error == 'drawer_name_required' -%}path/key required — name to save the tapestry definition under.
+                        {%- elif _ws_error == 'invalid_definition' -%}weave_sources must be a JSON object with a 'sources' key.
+                        {%- elif _ws_error == 'definition_too_large' -%}Tapestry definition exceeds 2048 byte limit. Reduce sources or descriptions.
+                        {%- else -%}{{ _ws_error }}{%- endif -%}
+                      trace:
+                        caller_token: "{{ _caller_token }}"
+                - stop: weave_save error
+                  response_variable: result
+              default:
+              - action: script.zen_sutra_filecabinet
+                response_variable: _ws_write_raw
+                continue_on_error: true
+                data:
+                  action: upsert
+                  volume_entity_id: "{{ _vol }}"
+                  path: "{{ _path }}"
+                  value: "{{ _ws_src }}"
+                  force_action: true
+                  tags: "zen_tapestry{{ (','+(_ws_src.get('labels', []) | join(','))) if _ws_src.get('labels') else '' }}"
+                  create_label: false
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  result: >-
+                    {%- set _wr = _ws_write_raw if _ws_write_raw is mapping else {} -%}
+                    {%- if _wr.get('status') in ['success'] -%}
+                      {{
+                        {
+                          'status': 'ok',
+                          'action': 'weave_save',
+                          'tool': 'zen_dojotools_filecabinet',
+                          'drawer': _path,
+                          'cabinet': _vol,
+                          'size_bytes': (_ws_src | tojson | length),
+                          'labels_applied': ['zen_tapestry'] + (_ws_src.get('labels', []) or []),
+                          'write_verified': _wr.get('write_verified', false),
+                          'trace': {'caller_token': _caller_token}
+                        }
+                      }}
+                    {%- else -%}
+                      {{ _wr | combine({'action': 'weave_save', 'tool': 'zen_dojotools_filecabinet'}) }}
+                    {%- endif -%}
+              - stop: weave_save done
+                response_variable: result
+
+        # --- weave + weave_preview: compile tapestry ---
+        - variables:
+            _w_raw_src: >-
+              {%- set raw = weave_sources | default('', true) -%}
+              {%- if raw is mapping -%}{{ raw }}
+              {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) }}
+              {%- else -%}{{ none }}{%- endif -%}
+            _w_drawer: "{{ weave_drawer | default('', true) | string | trim }}"
+            _w_label: "{{ weave_label | default('', true) | string | trim }}"
+            _w_max_depth: "{{ [1, [3, (weave_max_depth | default(2) | int)] | min] | max }}"
+
+        # Load definition: inline > drawer > label
+        - variables:
+            _w_def: >-
+              {%- if _w_raw_src is mapping and _w_raw_src.get('sources') is not none -%}
+                {{ _w_raw_src }}
+              {%- elif _w_drawer != '' -%}
+                {%- set _search_cabs = ([_vol] if _vol != '' else []) + (label_entities('Zen Cabinet') | select('match', 'sensor\\.') | list) -%}
+                {%- set _ns = namespace(found=none) -%}
+                {%- for _ce in _search_cabs -%}
+                  {%- if _ns.found is none -%}
+                    {%- set _cv = state_attr(_ce, 'variables') | default({}, true) -%}
+                    {%- set _dk = _w_drawer | lower | slugify -%}
+                    {%- set _entry = (_cv or {}).get(_dk, {}) -%}
+                    {%- set _val = (_entry.get('value') if _entry is mapping else none) -%}
+                    {%- set _val = _val.get('content', _val) if (_val is mapping and _val.get('v') == 1) else _val -%}
+                    {%- set _val = (_val | from_json(none)) if (_val is string and _val | trim not in ['', 'null', 'None']) else _val -%}
+                    {%- if _val is mapping and _val.get('sources') is not none -%}
+                      {%- set _ns.found = _val -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ _ns.found if _ns.found is not none else none }}
+              {%- elif _w_label != '' -%}
+                {%- set _label_ents = label_entities(_w_label) | select('match', 'sensor\\.') | list -%}
+                {%- set _ns = namespace(srcs=[]) -%}
+                {%- for _le in _label_ents | sort -%}
+                  {%- set _cv = state_attr(_le, 'variables') | default({}, true) -%}
+                  {%- for _dk, _entry in (_cv or {}).items() -%}
+                    {%- set _val = (_entry.get('value') if _entry is mapping else none) -%}
+                    {%- set _val = _val.get('content', _val) if (_val is mapping and _val.get('v') == 1) else _val -%}
+                    {%- set _val = (_val | from_json(none)) if (_val is string and _val | trim not in ['', 'null', 'None']) else _val -%}
+                    {%- if _val is mapping and _val.get('sources') is not none -%}
+                      {%- for _s in (_val.get('sources', []) or []) -%}
+                        {%- set _ns.srcs = _ns.srcs + [_s] -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+                {{ {'sources': _ns.srcs, 'description': 'Merged from label: ' ~ _w_label} if _ns.srcs | length > 0 else none }}
+              {%- else -%}{{ none }}{%- endif -%}
+
+        # Guard: definition not found or source count
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _w_def is none }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_dojotools_filecabinet
+                  action: "{{ _action_type }}"
+                  code: definition_not_found
+                  message: "No weave definition found. Provide weave_sources inline, weave_drawer name, or weave_label."
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: weave no definition
+              response_variable: result
+          - conditions:
+            - condition: template
+              value_template: "{{ (_w_def.get('sources', []) | length) > 10 }}"
+            sequence:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_dojotools_filecabinet
+                  action: "{{ _action_type }}"
+                  code: too_many_sources
+                  message: "Tapestry has {{ _w_def.get('sources', []) | length }} sources — max is 10."
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: weave too many sources
+              response_variable: result
+
+        # Compile — all 3 depth passes in one template
+        - variables:
+            _w_compiled: >-
+              {%- set _def = _w_def -%}
+              {%- set _max_d = _w_max_depth | int -%}
+              {%- set _all_cabs = label_entities('Zen Cabinet') | select('match', 'sensor\\.') | list -%}
+
+              {#- Helper macro-substitute: resolve one leaf source dict → {key: data} or error dict #}
+              {#- Inline as a sub-loop below for each pass #}
+
+              {%- set ns = namespace(compiled={}, queue=[], visited=[_w_drawer], errors=[]) -%}
+
+              {#- PASS 0: leaves from root definition #}
+              {%- for src in (_def.get('sources', []) or []) -%}
+                {%- if src.get('weave') is not none -%}
+                  {%- set ns.queue = ns.queue + [{'src': src, 'parent_key': none}] -%}
+                {%- elif src.get('key') and src.get('cabinet') and src.get('drawer') -%}
+                  {%- set _cv = state_attr(src['cabinet'], 'variables') | default({}, true) -%}
+                  {%- set _entry = (_cv or {}).get(src['drawer'] | lower | slugify, {}) -%}
+                  {%- set _raw = (_entry.get('value') if _entry is mapping else none) -%}
+                  {%- set _raw = _raw.get('content', _raw) if (_raw is mapping and _raw.get('v') == 1) else _raw -%}
+                  {%- set _raw = (_raw | from_json(none)) if (_raw is string and _raw | trim not in ['', 'null', 'None']) else _raw -%}
+                  {%- set _raw = _raw if _raw is mapping else {} -%}
+                  {%- if _raw | length > 20 and src.get('mask') is none -%}
+                    {%- set ns.errors = ns.errors + [{'code': 'mask_required', 'source_key': src['key'], 'drawer': src['drawer'], 'key_count': _raw | length}] -%}
+                  {%- else -%}
+                    {%- set _mask_ns = namespace(d={}) -%}
+                    {%- for k, v in _raw.items() -%}
+                      {%- if src.get('mask') is none or k in src['mask'] -%}
+                        {%- set _nk = src.get('rename', {}).get(k, k) if src.get('rename') else k -%}
+                        {%- set _mask_ns.d = _mask_ns.d | combine({_nk: v}) -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set ns.compiled = ns.compiled | combine({src['key']: _mask_ns.d}) -%}
+                  {%- endif -%}
+                {%- else -%}
+                  {%- set ns.errors = ns.errors + [{'code': 'invalid_source', 'source_key': src.get('key', '?'), 'message': 'Drawer source requires key+cabinet+drawer. Weave source requires key+weave.'}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+
+              {#- PASS 1: depth-1 weave sources #}
+              {%- set _q1 = ns.queue -%}
+              {%- set ns.queue = [] -%}
+              {%- for item in _q1 -%}
+                {%- set src = item['src'] -%}
+                {%- set _wname = src.get('weave', '') -%}
+                {%- if _wname in ns.visited -%}
+                  {%- set ns.errors = ns.errors + [{'code': 'cycle_detected', 'weave': _wname, 'cycle_path': ns.visited + [_wname]}] -%}
+                {%- else -%}
+                  {%- set ns.visited = ns.visited + [_wname] -%}
+                  {%- set _sub_cabs = ([src['cabinet']] if src.get('cabinet') else []) + _all_cabs -%}
+                  {%- set _sub_ns = namespace(sub_def=none) -%}
+                  {%- for _ce in _sub_cabs -%}
+                    {%- if _sub_ns.sub_def is none -%}
+                      {%- set _cv = state_attr(_ce, 'variables') | default({}, true) -%}
+                      {%- set _entry = (_cv or {}).get(_wname | lower | slugify, {}) -%}
+                      {%- set _val = (_entry.get('value') if _entry is mapping else none) -%}
+                      {%- set _val = _val.get('content', _val) if (_val is mapping and _val.get('v') == 1) else _val -%}
+                      {%- set _val = (_val | from_json(none)) if (_val is string and _val | trim not in ['', 'null', 'None']) else _val -%}
+                      {%- if _val is mapping and _val.get('sources') is not none -%}
+                        {%- set _sub_ns.sub_def = _val -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if _sub_ns.sub_def is none -%}
+                    {%- set ns.errors = ns.errors + [{'code': 'weave_not_found', 'weave': _wname}] -%}
+                  {%- elif _max_d < 1 -%}
+                    {%- set ns.errors = ns.errors + [{'code': 'depth_exceeded', 'weave': _wname, 'at_depth': 1}] -%}
+                  {%- else -%}
+                    {%- set _leaf_ns = namespace(d={}) -%}
+                    {%- for _ss in (_sub_ns.sub_def.get('sources', []) or []) -%}
+                      {%- if _ss.get('weave') is not none -%}
+                        {%- set ns.queue = ns.queue + [{'src': _ss, 'parent_key': src['key']}] -%}
+                      {%- elif _ss.get('key') and _ss.get('cabinet') and _ss.get('drawer') -%}
+                        {%- set _cv2 = state_attr(_ss['cabinet'], 'variables') | default({}, true) -%}
+                        {%- set _entry2 = (_cv2 or {}).get(_ss['drawer'] | lower | slugify, {}) -%}
+                        {%- set _raw2 = (_entry2.get('value') if _entry2 is mapping else none) -%}
+                        {%- set _raw2 = _raw2.get('content', _raw2) if (_raw2 is mapping and _raw2.get('v') == 1) else _raw2 -%}
+                        {%- set _raw2 = (_raw2 | from_json(none)) if (_raw2 is string and _raw2 | trim not in ['', 'null', 'None']) else _raw2 -%}
+                        {%- set _raw2 = _raw2 if _raw2 is mapping else {} -%}
+                        {%- if _raw2 | length > 20 and _ss.get('mask') is none -%}
+                          {%- set ns.errors = ns.errors + [{'code': 'mask_required', 'source_key': src['key'] ~ '.' ~ _ss['key'], 'drawer': _ss['drawer'], 'key_count': _raw2 | length}] -%}
+                        {%- else -%}
+                          {%- set _mn2 = namespace(d={}) -%}
+                          {%- for k2, v2 in _raw2.items() -%}
+                            {%- if _ss.get('mask') is none or k2 in _ss['mask'] -%}
+                              {%- set _nk2 = _ss.get('rename', {}).get(k2, k2) if _ss.get('rename') else k2 -%}
+                              {%- set _mn2.d = _mn2.d | combine({_nk2: v2}) -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {%- set _leaf_ns.d = _leaf_ns.d | combine({_ss['key']: _mn2.d}) -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set ns.compiled = ns.compiled | combine({src['key']: _leaf_ns.d}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+
+              {#- PASS 2: depth-2 weave sources #}
+              {%- set _q2 = ns.queue -%}
+              {%- set ns.queue = [] -%}
+              {%- for item in _q2 -%}
+                {%- set src = item['src'] -%}
+                {%- set _pk = item.get('parent_key', '') -%}
+                {%- set _wname = src.get('weave', '') -%}
+                {%- if _max_d < 2 -%}
+                  {%- set ns.errors = ns.errors + [{'code': 'depth_exceeded', 'weave': _wname, 'at_depth': 2}] -%}
+                {%- elif _wname in ns.visited -%}
+                  {%- set ns.errors = ns.errors + [{'code': 'cycle_detected', 'weave': _wname, 'cycle_path': ns.visited + [_wname]}] -%}
+                {%- else -%}
+                  {%- set ns.visited = ns.visited + [_wname] -%}
+                  {%- set _sub_cabs2 = ([src['cabinet']] if src.get('cabinet') else []) + _all_cabs -%}
+                  {%- set _sub_ns2 = namespace(sub_def=none) -%}
+                  {%- for _ce in _sub_cabs2 -%}
+                    {%- if _sub_ns2.sub_def is none -%}
+                      {%- set _cv = state_attr(_ce, 'variables') | default({}, true) -%}
+                      {%- set _entry = (_cv or {}).get(_wname | lower | slugify, {}) -%}
+                      {%- set _val = (_entry.get('value') if _entry is mapping else none) -%}
+                      {%- set _val = _val.get('content', _val) if (_val is mapping and _val.get('v') == 1) else _val -%}
+                      {%- set _val = (_val | from_json(none)) if (_val is string and _val | trim not in ['', 'null', 'None']) else _val -%}
+                      {%- if _val is mapping and _val.get('sources') is not none -%}
+                        {%- set _sub_ns2.sub_def = _val -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if _sub_ns2.sub_def is none -%}
+                    {%- set ns.errors = ns.errors + [{'code': 'weave_not_found', 'weave': _wname}] -%}
+                  {%- else -%}
+                    {%- set _leaf_ns2 = namespace(d={}) -%}
+                    {%- for _ss in (_sub_ns2.sub_def.get('sources', []) or []) -%}
+                      {%- if _ss.get('weave') is not none -%}
+                        {%- set ns.errors = ns.errors + [{'code': 'depth_exceeded', 'weave': _ss['weave'], 'at_depth': 3, 'message': 'max_depth reached — increase weave_max_depth (max 3) or flatten this definition'}] -%}
+                      {%- elif _ss.get('key') and _ss.get('cabinet') and _ss.get('drawer') -%}
+                        {%- set _cv3 = state_attr(_ss['cabinet'], 'variables') | default({}, true) -%}
+                        {%- set _entry3 = (_cv3 or {}).get(_ss['drawer'] | lower | slugify, {}) -%}
+                        {%- set _raw3 = (_entry3.get('value') if _entry3 is mapping else none) -%}
+                        {%- set _raw3 = _raw3.get('content', _raw3) if (_raw3 is mapping and _raw3.get('v') == 1) else _raw3 -%}
+                        {%- set _raw3 = (_raw3 | from_json(none)) if (_raw3 is string and _raw3 | trim not in ['', 'null', 'None']) else _raw3 -%}
+                        {%- set _raw3 = _raw3 if _raw3 is mapping else {} -%}
+                        {%- if _raw3 | length > 20 and _ss.get('mask') is none -%}
+                          {%- set ns.errors = ns.errors + [{'code': 'mask_required', 'source_key': _pk ~ '.' ~ src['key'] ~ '.' ~ _ss['key'], 'drawer': _ss['drawer'], 'key_count': _raw3 | length}] -%}
+                        {%- else -%}
+                          {%- set _mn3 = namespace(d={}) -%}
+                          {%- for k3, v3 in _raw3.items() -%}
+                            {%- if _ss.get('mask') is none or k3 in _ss['mask'] -%}
+                              {%- set _nk3 = _ss.get('rename', {}).get(k3, k3) if _ss.get('rename') else k3 -%}
+                              {%- set _mn3.d = _mn3.d | combine({_nk3: v3}) -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {%- set _leaf_ns2.d = _leaf_ns2.d | combine({_ss['key']: _mn3.d}) -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {# Merge into parent key's dict if parent_key exists #}
+                    {%- if _pk and _pk in ns.compiled -%}
+                      {%- set _parent_existing = ns.compiled[_pk] if ns.compiled[_pk] is mapping else {} -%}
+                      {%- set ns.compiled = ns.compiled | combine({_pk: _parent_existing | combine({src['key']: _leaf_ns2.d})}) -%}
+                    {%- else -%}
+                      {%- set ns.compiled = ns.compiled | combine({src['key']: _leaf_ns2.d}) -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+
+              {{ {'compiled': ns.compiled, 'errors': ns.errors} | tojson }}
+
+        # Size check + VirtualDrawer hint + final result
+        - variables:
+            _w_result: >-
+              {%- set _cr = _w_compiled if _w_compiled is mapping else (_w_compiled | from_json({})) -%}
+              {%- set _compiled = _cr.get('compiled', {}) -%}
+              {%- set _errors = _cr.get('errors', []) -%}
+              {%- set _out_json = _compiled | tojson -%}
+              {%- set _size = _out_json | length -%}
+              {%- set _status = 'error' if (_errors | selectattr('code', 'in', ['mask_required','cycle_detected','definition_not_found','too_many_sources','invalid_source']) | list | length > 0) else 'ok' -%}
+              {%- set _hint = none -%}
+              {%- if _size > 2048 -%}
+                {%- set _hint = 'Virtual tapestry: ' ~ _w_drawer ~ ' (' ~ _size ~ ' bytes, ' ~ (_w_def.get('sources', []) | length) ~ ' sources). Call mode=weave weave_drawer=' ~ _w_drawer ~ ' with a tighter mask to read inline.' -%}
+              {%- endif -%}
+              {%- set _truncated = _size > 8192 -%}
+              {%- set _final_compiled = _compiled -%}
+              {%- if _truncated -%}
+                {%- set _trunc_ns = namespace(d={}, dropped=[], size=0) -%}
+                {%- for k, v in _compiled.items() -%}
+                  {%- set _entry_size = {k: v} | tojson | length -%}
+                  {%- if _trunc_ns.size + _entry_size <= 8000 -%}
+                    {%- set _trunc_ns.d = _trunc_ns.d | combine({k: v}) -%}
+                    {%- set _trunc_ns.size = _trunc_ns.size + _entry_size -%}
+                  {%- else -%}
+                    {%- set _trunc_ns.dropped = _trunc_ns.dropped + [k] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set _final_compiled = _trunc_ns.d -%}
+              {%- endif -%}
+              {{
+                {
+                  'status': _status,
+                  'tool': 'zen_dojotools_filecabinet',
+                  'action': _action_type,
+                  'tapestry': _w_drawer if _w_drawer != '' else (_w_label if _w_label != '' else 'inline'),
+                  'compiled': _final_compiled,
+                  'value': _hint,
+                  'size_bytes': _size,
+                  'truncated': _truncated,
+                  'dropped_sources': (_trunc_ns.dropped if _truncated else []),
+                  'errors': _errors,
+                  'trace': {'caller_token': _caller_token}
+                }
+              }}
+
+        # For weave_preview: add depth_map + preview_token
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _action_type == 'weave_preview' }}"
+            sequence:
+            - variables:
+                _w_preview_token: >-
+                  {{ (weave_sources | default('', true) | string | length | string) + '-' + now().strftime('%Y-%m-%dT%H:%M') }}
+                _w_depth_map: >-
+                  {%- set _srcs = _w_def.get('sources', []) or [] -%}
+                  {%- set _ns = namespace(d={}) -%}
+                  {%- for src in _srcs -%}
+                    {%- if src.get('weave') -%}
+                      {%- set _ns.d = _ns.d | combine({src['key']: {'depth': 1, 'type': 'weave', 'weave': src['weave']}}) -%}
+                    {%- elif src.get('key') -%}
+                      {%- set _ns.d = _ns.d | combine({src['key']: {'depth': 0, 'type': 'drawer', 'cabinet': src.get('cabinet', ''), 'drawer': src.get('drawer', '')}}) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.d }}
+            - variables:
+                result: >-
+                  {{ _w_result | combine({
+                    'preview_token': _w_preview_token,
+                    'depth_map': _w_depth_map,
+                    'hint': 'Call mode=weave_save weave_sources=<definition> preview_token=' ~ _w_preview_token ~ ' volume_entity_id=<cabinet> path=<drawer_name> force_action=true to save this definition.'
+                  }) }}
+            - stop: weave_preview done
+              response_variable: result
+        - variables:
+            result: "{{ _w_result }}"
+        - stop: weave done
+          response_variable: result
+
     # --- Route: cabinet ---
     - choose:
       - conditions:
@@ -4094,6 +5403,7 @@ script:
             no_autoexpire: "{{ no_autoexpire | default(none) }}"
             no_autorecycle: "{{ no_autorecycle | default(none) }}"
             force_action: "{{ force_action | default(false) }}"
+            raw_key: "{{ raw_key | default(false) }}"
             create_label: "{{ create_label | default(false) }}"
             destination_cabinet: "{{ destination_cabinet | default('', true) }}"
             destination_volume_entity_id: "{{ destination_volume_entity_id | default('', true) }}"
@@ -4103,6 +5413,9 @@ script:
             transfer_guid: "{{ transfer_guid | default(false) }}"
             fc_args: "{{ fc_args | default('', true) }}"
             source_created_at: "{{ source_created_at | default('', true) }}"
+            source_cabinet: "{{ source_cabinet | default('', true) }}"
+            target_cabinet: "{{ target_cabinet | default('', true) }}"
+            space_threshold: "{{ space_threshold | default(85) }}"
             caller_token: "{{ _caller_token }}"
         - variables:
             result: >-
