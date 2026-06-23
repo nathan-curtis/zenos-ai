@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Library
-# Version: 5.9.0
+# Version: 6.10.0
 #
 # Two departments, one tool.
 #
@@ -13,19 +13,36 @@
 #     Failure policy: soft — missing or misconfigured provider returns status=error, never raises
 #     Consumer entry point: stacks_by_anchor or stacks_document_lens for article_evidence leaves
 #
-# section=books — Physical home book collection card catalog (Grocy, ha_labels=book).
-#   Setup: books_configure (one-time userfield + On Loan location deploy)
-#   Write: books_add (ISBN dedup), books_move (shelf transfer), books_loan, books_return
-#   Read:  books_browse, books_find, books_search
+# section=catalog — FRBR physical item catalog. Library owns circulation + storage
+#   for all cataloged items. Inventory (Grocy) owns the product record (Work).
+#   Library adds the catalog_item userobject (Item) per physical copy.
+#   item_type routes to the right HA label + creator role. All physical item types
+#   (music_recording, book, game, video, periodical, art_print) live here.
+#   Library is the Lens owner for all catalog items (item_evidence leaves).
 #
 # Sections:
 #   section=stacks   -- Lens provider stack — use stack= to pick provider:
 #                         stack=paperless  Paperless-NGX documents
 #                         stack=radar      Zammad service desk / ticket evidence
 #                         stack=wiki       Wiki.js knowledge base
-#   section=books    -- Physical home library card catalog and lending library (see above)
+#   section=catalog  -- FRBR physical item catalog (all item types)
 #
 # MCP-facing: zen_dojotools_library  <- expose this to MCP
+#
+# Architecture note — sutra shortcut (pre-existing, tracked for future cleanup):
+#   Library calls zen_sutra_grocy directly for catalog_item userentity/userobject
+#   reads (browse, find, search, loan, return, configure, by_anchor). This is a known
+#   layer shortcut — Inventory does not expose a convenient userobject query for
+#   catalog_item shells by type. All stock operations (transfer, tag, values_get/set,
+#   locations_list) correctly route through zen_dojotools_inventory. The shortcut does
+#   not affect correctness; it is flagged here so a future refactor can close the gap.
+#
+# Lens Bus — Auto-Registration (v6.10.0):
+#   tool_manifest returns: provider_key=library_catalog, register_mode=register
+#   On boot/daily, zen_dojotools_manifest mode=bootstrap_stacks calls tool_manifest,
+#   then mode=register if library_catalog not already in lens_registry.
+#   mode=register:   writes library_catalog entry to lens_registry household cabinet key.
+#   mode=unregister: removes library_catalog entry from lens_registry.
 #
 # History:
 #   5.1.0-retired  Bundled in paperless_ngx.yaml (Paperless was sole Lens provider)
@@ -33,33 +50,39 @@
 #   5.3.0          Utility section (hash_md5/slugify/library/library_2) fully retired
 #   5.4.0          Docs refactor: Library is knowledge broker + Lens owner (#10042)
 #   5.5.0          Radar section added — zen_stack_radar proxies to zen_dojotools_servicedesk
-#   5.6.0          Books section — read modes (books_browse, books_find, books_search)
-#   5.7.0          Books write mode — books_add (ISBN dedup + catalog_import_bom + stock)
-#   5.8.0          books_move (stock_transfer_location + location_name enrichment)
-#   5.9.0          books_loan + books_return + books_configure (schema v1.4.0 loan fields)
+#   5.6.0-5.9.0    Books + games sections (pre-FRBR, now removed)
+#   6.0.0          FRBR catalog section: catalog_item userobject per physical copy
+#   6.1.0          section=books + section=games removed; all items are section=catalog item_type=*
+#                  catalog_item schema extended: platform, digital, hardware_note, isbn, genre, series, publisher
+#   6.8.0          Lens bus auto-registration: register/unregister modes + tool_manifest provider_key
+#   6.10.0          mode=move implemented (reshelve catalog item to named location); migrate ghost mode removed
+#                  digital_uri + preferred_service fields on catalog_item (bridge to Nyx/Media Manager)
+#   6.10.0         by_anchor emits playback_hint on item_evidence when digital_uri present — same shape as
+#                  Media Manager track/album evidence. item_type→media_type map: music_recording→album,
+#                  video→movie, book→audiobook, periodical→podcast. Nyx reads it without any changes.
 ###############################################################################
 
 script:
   zen_dojotools_library:
     alias: Zen DojoTools Library
-    description: >
-      The Library — two things in one: (1) Knowledge broker and Lens owner for
-      documents/tickets/wiki (section=stacks); (2) Physical home book collection
-      card catalog (section=books). Books: configure once, then add/browse/find/
-      search/move/loan/return. Stacks: routes to Paperless-NGX, Radar, Wiki.js —
-      consumers call Library, never providers directly. Use mode=help for full
-      quick-start guide, schemas, and examples for all operations.
+    description: >-
+      Library (v6.10.0) — knowledge broker + FRBR physical item catalog.
+      section=stacks: documents/tickets/wiki via Paperless, Radar, Wiki.js.
+      section=catalog: browse/find/loan/return/add for books, games, music, video, art, periodicals.
+      Barcode scan → catalog_add auto-shelves. intake_pending finds uncataloged items at intake shelf.
+      configure_status shows shelf setup. Lens bus provider (library_catalog) — area_id anchor returns
+      item_evidence. For stock/shopping/ERP ops use zen_dojotools_inventory. mode=help for full guide.
     mode: parallel
     icon: mdi:library
     fields:
       section:
         name: Section
-        description: "Library department — stacks=documents, books=physical collection."
+        description: "Library department — stacks=documents/tickets/wiki, catalog=FRBR physical items (item_type routes to collection)."
         selector:
           select:
             options:
             - stacks
-            - books
+            - catalog
         default: stacks
       stack:
         name: Stack
@@ -72,15 +95,23 @@ script:
             - wiki
       mode:
         name: Mode
-        description: "Generic: get, find, list, configure, by_anchor. Paperless legacy: stacks_search, stacks_document_get, etc."
+        description: "Catalog: add/browse/find/search/loan/return/move/configure/configure_status/intake_pending. Stacks: stacks_search/stacks_document_get/etc. Start with configure_status or intake_pending for catalog workflows."
         selector:
           select:
             options:
             - help
-            - get
+            - browse
             - find
-            - list
+            - search
+            - add
+            - loan
+            - return
             - configure
+            - move
+            - get
+            - intake_pending
+            - configure_status
+            - list
             - by_anchor
             - stacks_configure
             - stacks_search
@@ -108,15 +139,9 @@ script:
             - stacks_by_company
             - stacks_document_restore
             - stacks_list
-            - books_browse
-            - books_find
-            - books_search
-            - books_add
-            - books_move
-            - books_loan
-            - books_return
-            - books_configure
             - tool_manifest
+            - register
+            - unregister
         default: help
       query:
         name: Library Query / Input
@@ -135,6 +160,29 @@ script:
         description: Opaque token passed through for correlation.
         selector:
           text:
+      anchor_type:
+        name: Anchor Type
+        description: "Lens bus anchor type (person/label/area_id). Passed by dispatcher for by_anchor mode."
+        selector:
+          text:
+      anchor_ids:
+        name: Anchor IDs
+        description: "JSON array of anchor IDs. Passed by dispatcher for by_anchor mode."
+        selector:
+          text:
+      item_type:
+        name: Item Type
+        description: "Catalog item type (section=catalog only). music_recording | book | game | video | periodical | art_print"
+        selector:
+          select:
+            options:
+            - music_recording
+            - book
+            - game
+            - video
+            - periodical
+            - art_print
+        default: music_recording
 
     sequence:
     - variables:
@@ -143,6 +191,7 @@ script:
         stack_norm: "{{ stack | default('', true) | string | trim | lower }}"
         mode_norm: "{{ mode | default('help') | string | trim | lower }}"
         query_norm: "{{ query | default('') | string | trim }}"
+        item_type_norm: "{{ item_type | default('music_recording', true) | string | lower | trim }}"
         input_json_norm: >-
           {%- set raw = input_json | default('', true) -%}
           {%- if raw is mapping -%}{{ raw | tojson }}
@@ -245,16 +294,16 @@ script:
                 tool='zen_dojotools_library',
                 display_name='Library — Knowledge Broker and Lens Owner',
                 tier='dojotools',
-                version='5.9.0',
+                version='6.10.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
-                optional_labels=['library', 'documents', 'paperless', 'radar', 'books'],
-                consumes=['label', 'person', 'area_id', 'zone', 'concept', 'ticket', 'book'],
-                returns=['document_evidence', 'ticket_evidence', 'book_catalog'],
+                optional_labels=['library', 'documents', 'paperless', 'radar'],
+                consumes=['label', 'person', 'area_id', 'zone', 'concept', 'ticket'],
+                returns=['document_evidence', 'ticket_evidence', 'item_evidence'],
                 failure_policy='soft',
                 content_policy='redacted_by_default',
                 risk_class='read_redacted',
-                modes={'lookup': 'stacks_by_anchor', 'radar_lookup': 'radar_tickets_by_anchor', 'manifest': 'tool_manifest'},
+                modes={'lookup': 'stacks_by_anchor', 'radar_lookup': 'radar_tickets_by_anchor', 'catalog_lookup': 'by_anchor', 'manifest': 'tool_manifest'},
                 children=[{
                   'tool': 'zen_stack_paperless',
                   'stack': 'stacks',
@@ -274,25 +323,26 @@ script:
                 self_repair=['relabel', 'rereg_lens'],
 
                 caller_token=caller_token_norm
-              ) | from_json -}}
+              ) | from_json | combine({'register_mode': 'register', 'provider_key': 'library_catalog'}) -}}
         - stop: library tool manifest
           response_variable: result
 
     - choose:
       - conditions:
         - condition: template
-          value_template: '{{ mode_norm == "help" and section_norm != "books" }}'
+          value_template: '{{ mode_norm == "help" }}'
         sequence:
         - variables:
             result:
               status: info
               tool: zen_dojotools_library
-              version: "5.9.0"
+              version: "6.10.0"
               mode: help
               description: >-
-                Knowledge broker and Lens owner for the Monastery. Routes knowledge requests to
-                registered Lens providers and normalizes evidence output. Consumers (Inspect, Index,
-                Query, Room Manager) call Library — never providers directly.
+                Two departments in one tool. section=stacks: knowledge broker and Lens owner —
+                routes document/ticket/wiki requests to registered providers (Paperless, Radar, Wiki.js).
+                section=catalog: FRBR physical item catalog with barcode-first intake, auto-shelving,
+                loan/return circulation, and multi-class location support.
               lens_contract:
                 provider_registration: >-
                   Providers write config to integrations_config.<provider> via zen_sutra_filecabinet.
@@ -329,14 +379,28 @@ script:
                     stacks_document_type_create, stacks_storage_path_create, stacks_by_company,
                     stacks_document_restore, stacks_list]
                   example: "section=stacks mode=stacks_search query=invoice"
-                books:
+                catalog:
                   description: >-
-                    Your friendly home library. Physical book card catalog backed by Grocy (ha_labels=book).
-                    Setup: books_configure (one-time). Add books: books_add (ISBN dedup). Browse/find/search.
-                    Move books between shelves: books_move. Loan out: books_loan. Return: books_return.
-                    Use mode=help section=books for full quick-start guide and all mode schemas.
-                  modes: [books_configure, books_add, books_browse, books_find, books_search, books_move, books_loan, books_return]
-                  example: "section=books mode=books_add input_json={\"title\":\"Eragon\",\"author\":\"Paolini, Christopher\",\"isbn\":\"9780375826696\"}"
+                    FRBR physical item catalog. Library owns circulation (loan/return) and storage for all cataloged items.
+                    item_type selects collection: music_recording, book, game, video, periodical, art_print.
+                    Barcode-first intake: scan via Barcode Buddy → catalog_add resolves product + auto-shelves.
+                    Locations support multiple catalog classes (book+game on same shelf).
+                    Use mode=configure_status to see what's configured. Use mode=intake_pending to find
+                    uncataloged ISBN items at the intake location. Use mode=help section=catalog for full guide.
+                  modes: [add, browse, find, search, loan, return, move, configure, configure_status, intake_pending, get, list]
+                  workflow: "configure_status → intake_pending → add (auto-shelves) → browse/find/search → loan → return → move (reshelve)"
+                  agent_superpowers: >-
+                    You have a full physical item catalog. Scan a barcode via Barcode Buddy and it
+                    lands at the intake shelf — call intake_pending to see what's waiting, then
+                    add to register each item and auto-shelve it. browse/find/search work across
+                    all item types at once. loan checks out to a borrower, return brings it back,
+                    move reshelves to any named location (set_as_home=true makes it the new home).
+                    configure_status shows every shelf class so you know what each shelf holds.
+                    Lens bus registered — ask 'what books are in the living room?' and it answers
+                    via area_id anchor without you calling Library directly. For buying/consuming
+                    stock or managing chores, use zen_dojotools_inventory — that's the ERP layer
+                    Library sits on top of.
+                  example: "section=catalog item_type=book mode=add input_json={\"barcode\":\"9780375826696\"}"
         - stop: library help
           response_variable: result
 
@@ -358,7 +422,7 @@ script:
           response_variable: result
       - conditions:
         - condition: template
-          value_template: '{{ stack_norm in ["paperless", ""] and mode_norm in ["get", "find", "list", "configure", "by_anchor"] }}'
+          value_template: '{{ stack_norm in ["paperless", ""] and mode_norm in ["get", "find", "list", "configure", "by_anchor"] and section_norm != "catalog" }}'
         sequence:
         - variables:
             _paperless_mode_map:
@@ -1955,937 +2019,1827 @@ script:
         - stop: wiki stack done
           response_variable: result
 
+
+    # ── register / unregister ── Lens registry self-registration ─────────────
+    # Matches Paperless pattern: manifest returns register_mode=register + provider_key.
+    # zen_dojotools_manifest mode=bootstrap_stacks calls tool_manifest, then register
+    # if provider_key not already in lens_registry.
+    # ──────────────────────────────────────────────────────────────────────────
     - choose:
       - conditions:
         - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm == "help" }}'
+          value_template: '{{ mode_norm == "register" }}'
         sequence:
         - variables:
-            result:
-              status: info
+            _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _lr_reg_read
+          data:
+            action_type: get
+            volume_entity_id: "{{ _hh }}"
+            key: lens_registry
+        - variables:
+            _lr_existing_reg: >-
+              {%- set raw = _lr_reg_read if _lr_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _lr_provider_decl:
+              provider: library_catalog
+              configured_by: zen_dojotools_library
+              department: catalog
+              enabled: true
+              status: available
               tool: zen_dojotools_library
-              section: books
-              mode: help
-              description: Physical book collection card catalog. Backed by Grocy inventory (ha_labels=book).
-              quick_start: >-
-                STEP 1 — One-time setup (new Grocy instance only):
-                  books_configure — deploys all book userfields + On Loan location. Safe to re-run.
-                STEP 2 — Add books one at a time:
-                  books_add — title required. Add author/isbn/series/genre/location_id as known.
-                  ISBN dedup: if the book is already in Grocy, books_add finds it and returns existing.
-                  Use books_search to check first if unsure.
-                STEP 3 — Day-to-day:
-                  books_browse — see all books with shelf locations and walking directions.
-                  books_find   — filter by author/genre/series/location.
-                  books_search — text search across title + author + series.
-                  books_move   — move a book to a different shelf (title + to_location_id).
-                  books_loan   — loan to someone (title + borrower + optional due_date).
-                  books_return — return from loan back to home shelf (title only).
-              modes:
-                books_configure:
-                  intent: One-time setup. Deploys 8 book userfields + On Loan virtual location. Idempotent — safe to re-run anytime.
-                  when_to_use: First time setting up books on a new Grocy instance, or after a Grocy reinstall.
-                  example: "section=books mode=books_configure"
-                books_add:
-                  intent: Add a book to the catalog with stock registration. ISBN dedup guard prevents duplicates.
-                  schema: "{'title':'<required>','author':'Last, First','isbn':'<ISBN-13>','series':'Series #N','genre':'fantasy','location_id':109,'note':''}"
-                  tip: location_id defaults to 109 (Left Twin Bookcase). Use books_browse to find other shelf IDs.
-                  example: "section=books mode=books_add input_json={\"title\":\"Eragon\",\"author\":\"Paolini, Christopher\",\"isbn\":\"9780375826696\",\"series\":\"Inheritance Cycle #1\",\"genre\":\"fantasy\",\"location_id\":109}"
-                books_browse:
-                  intent: Full collection with shelf location names and walking directions. Use to discover location_ids for books_move.
-                  example: "section=books mode=books_browse"
-                books_find:
-                  intent: Filter by author, genre, series, or shelf location. All filters optional — combine freely.
-                  schema: "{'author':'<partial>','genre':'<genre>','series':'<series>','location_id':<int>,'location_name':'<partial>'}"
-                  example: "section=books mode=books_find input_json={\"author\":\"Paolini\",\"genre\":\"fantasy\"}"
-                books_search:
-                  intent: Free-text search across title + author + series. Fastest way to check if a book exists.
-                  example: "section=books mode=books_search query=eragon"
-                books_move:
-                  intent: Move a book to a different shelf. Use books_browse to find to_location_id values.
-                  schema: "{'title':'<required>','to_location_id':<int>}"
-                  example: "section=books mode=books_move input_json={\"title\":\"Eragon\",\"to_location_id\":214}"
-                books_loan:
-                  intent: Loan a book out. Moves stock to On Loan (loc 551), saves borrower + loan_date (auto) + due_date + home shelf.
-                  schema: "{'title':'<required>','borrower':'<required>','due_date':'YYYY-MM-DD (optional)'}"
-                  example: "section=books mode=books_loan input_json={\"title\":\"Eragon\",\"borrower\":\"Alex\",\"due_date\":\"2026-07-19\"}"
-                books_return:
-                  intent: Return a loaned book. Moves back to home shelf (recorded at loan time). Clears all loan fields.
-                  schema: "{'title':'<required>'}"
-                  example: "section=books mode=books_return input_json={\"title\":\"Eragon\"}"
-              caller_token: "{{ caller_token_norm }}"
-        - stop: books help
+              mode: by_anchor
+              consumes: [person, label, area_id]
+              returns: [item_evidence]
+              failure_policy: soft
+              content_policy: not_redacted
+              risk_class: read_metadata
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _lr_reg_write
+          data:
+            action_type: update
+            volume_entity_id: "{{ _hh }}"
+            key: lens_registry
+            value: "{{ _lr_existing_reg | combine({'library_catalog': _lr_provider_decl}) | tojson }}"
+        - variables:
+            result:
+              status: "{{ 'success' if _lr_reg_write is mapping and _lr_reg_write.get('status', '') == 'success' else 'error' }}"
+              provider: library_catalog
+              mode: register
+              message: >-
+                {{ 'Provider library_catalog registered in lens_registry.' if _lr_reg_write is mapping
+                   and _lr_reg_write.get('status', '') == 'success' else
+                   'Registration failed: ' ~ (_lr_reg_write.get('error', 'unknown') if _lr_reg_write is mapping else 'no response') }}
+        - stop: library register complete
           response_variable: result
 
+    - choose:
       - conditions:
         - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_browse", "browse"] }}'
+          value_template: '{{ mode_norm == "unregister" }}'
         sequence:
-        - action: script.zen_dojotools_inventory
-          response_variable: _bk_catalog_raw
+        - variables:
+            _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        - action: script.zen_dojotools_filecabinet
           continue_on_error: true
+          response_variable: _lu_reg_read
           data:
-            mode: catalog_find_by_tag
-            ha_labels: book
+            action_type: get
+            volume_entity_id: "{{ _hh }}"
+            key: lens_registry
         - variables:
-            _bk_pre: >-
-              {%- set r = _bk_catalog_raw if _bk_catalog_raw is mapping else {} -%}
-              {%- set items = r.get('items', r.get('products', [])) -%}
-              {%- set items = items if items is sequence and items is not string else [] -%}
-              {%- set ns = namespace(out=[]) -%}
-              {%- for b in items if b is mapping -%}
-                {%- set uf = b.get('userfields', {}) if b.get('userfields') is mapping else {} -%}
-                {%- set ns.out = ns.out + [{'id': b.get('id', ''), 'name': b.get('name', ''), 'location_id': b.get('location_id', none), 'homeassistant_area': b.get('homeassistant_area', ''), 'userfields': {'book_author': uf.get('book_author', ''), 'book_genre': uf.get('book_genre', ''), 'book_series': uf.get('book_series', ''), 'book_isbn': uf.get('book_isbn', ''), 'book_loan_borrower': uf.get('book_loan_borrower', ''), 'book_loan_date': uf.get('book_loan_date', ''), 'book_loan_due': uf.get('book_loan_due', ''), 'book_loan_home_location_id': uf.get('book_loan_home_location_id', none)}}] -%}
+            _lu_existing: >-
+              {%- set raw = _lu_reg_read if _lu_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _lu_new: >-
+              {%- set ns = namespace(result={}) -%}
+              {%- for k, v in _lu_existing.items() if k != 'library_catalog' -%}
+                {%- set ns.result = ns.result | combine({k: v}) -%}
               {%- endfor -%}
-              {{ ns.out | tojson }}
-            _bk_mode: books_browse
-            _bk_filters: {}
-
-      - conditions:
-        - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_find", "find"] }}'
-        sequence:
-        - variables:
-            _bk_find_input: >-
-              {%- set raw = input_json | default('', true) -%}
-              {%- if raw is mapping -%}{{ raw }}
-              {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) or {} }}
-              {%- else -%}{{ {} }}{%- endif -%}
-        - action: script.zen_dojotools_inventory
-          response_variable: _bk_catalog_raw
+              {{ ns.result }}
+        - action: script.zen_dojotools_filecabinet
           continue_on_error: true
+          response_variable: _lu_write
           data:
-            mode: catalog_find_by_tag
-            ha_labels: book
+            action_type: update
+            volume_entity_id: "{{ _hh }}"
+            key: lens_registry
+            value: "{{ _lu_new | tojson }}"
         - variables:
-            _bk_pre: >-
-              {%- set r = _bk_catalog_raw if _bk_catalog_raw is mapping else {} -%}
-              {%- set items = r.get('items', r.get('products', [])) -%}
-              {%- set items = items if items is sequence and items is not string else [] -%}
-              {%- set ns = namespace(out=[]) -%}
-              {%- for b in items if b is mapping -%}
-                {%- set uf = b.get('userfields', {}) if b.get('userfields') is mapping else {} -%}
-                {%- set ns.out = ns.out + [{'id': b.get('id', ''), 'name': b.get('name', ''), 'location_id': b.get('location_id', none), 'homeassistant_area': b.get('homeassistant_area', ''), 'userfields': {'book_author': uf.get('book_author', ''), 'book_genre': uf.get('book_genre', ''), 'book_series': uf.get('book_series', ''), 'book_isbn': uf.get('book_isbn', ''), 'book_loan_borrower': uf.get('book_loan_borrower', ''), 'book_loan_date': uf.get('book_loan_date', ''), 'book_loan_due': uf.get('book_loan_due', ''), 'book_loan_home_location_id': uf.get('book_loan_home_location_id', none)}}] -%}
-              {%- endfor -%}
-              {{ ns.out | tojson }}
-            _bk_mode: books_find
-            _bk_filters: >-
-              {%- set inp = _bk_find_input if _bk_find_input is mapping else {} -%}
-              {%- set v = inp.get('location_id') -%}
-              {%- set loc_id = v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none -%}
-              {{ {
-                'author': (inp.get('author', '') or '') | lower | trim,
-                'genre':  (inp.get('genre',  '') or '') | lower | trim,
-                'series': (inp.get('series', '') or '') | lower | trim,
-                'location_id': loc_id,
-                'location_name': (inp.get('location_name', '') or '') | lower | trim,
-                'person': (inp.get('person', '') or '') | trim
-              } }}
+            result:
+              status: "{{ 'success' if _lu_write is mapping and _lu_write.get('status', '') == 'success' else 'error' }}"
+              provider: library_catalog
+              mode: unregister
+              message: Provider library_catalog removed from lens_registry.
+        - stop: library unregister complete
+          response_variable: result
 
-      - conditions:
-        - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_search", "search"] }}'
-        sequence:
-        - action: script.zen_dojotools_inventory
-          response_variable: _bk_catalog_raw
-          continue_on_error: true
-          data:
-            mode: catalog_find_by_tag
-            ha_labels: book
-        - variables:
-            _bk_pre: >-
-              {%- set q = query_norm | default('', true) | lower -%}
-              {%- set r = _bk_catalog_raw if _bk_catalog_raw is mapping else {} -%}
-              {%- set items = r.get('items', r.get('products', [])) -%}
-              {%- set items = items if items is sequence and items is not string else [] -%}
-              {%- set ns = namespace(out=[]) -%}
-              {%- for b in items if b is mapping -%}
-                {%- set uf = b.get('userfields', {}) if b.get('userfields') is mapping else {} -%}
-                {%- set title  = (b.get('name', '') or '') | lower -%}
-                {%- set author = (uf.get('book_author', '') or '') | lower -%}
-                {%- set series = (uf.get('book_series', '') or '') | lower -%}
-                {%- if q == '' or q in title or q in author or q in series -%}
-                  {%- set ns.out = ns.out + [{'id': b.get('id', ''), 'name': b.get('name', ''), 'location_id': b.get('location_id', none), 'homeassistant_area': b.get('homeassistant_area', ''), 'userfields': {'book_author': uf.get('book_author', ''), 'book_genre': uf.get('book_genre', ''), 'book_series': uf.get('book_series', ''), 'book_isbn': uf.get('book_isbn', ''), 'book_loan_borrower': uf.get('book_loan_borrower', ''), 'book_loan_date': uf.get('book_loan_date', ''), 'book_loan_due': uf.get('book_loan_due', ''), 'book_loan_home_location_id': uf.get('book_loan_home_location_id', none)}}] -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.out | tojson }}
-            _bk_mode: books_search
-            _bk_filters: "{{ {'query': query_norm | lower} }}"
+    # ── section=catalog ── FRBR physical item catalog ─────────────────────────
+    # Library owns circulation + storage for all cataloged items.
+    # item_type → HA label + creator role. New type = one registry entry + one label.
+    # ──────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # section=catalog — Pocket MARC generic physical item catalog
+    # item_type → ha_label + creator_role. All metadata on catalog_item userobject.
+    # New item type = one registry entry + one HA label. Zero handler changes.
+    # ─────────────────────────────────────────────────────────────────────────
+    - if: "{{ section_norm == 'catalog' }}"
+      then:
+      - variables:
+          _ct_item_type: "{{ item_type_norm if item_type_norm not in ['', 'none'] else (input_data.get('item_type', 'music_recording') if input_data is mapping else 'music_recording') }}"
+      - variables:
+          catalog_registry:
+            music_recording:
+              ha_label: music_recording
+              creator_role: artist
+            book:
+              ha_label: book
+              creator_role: author
+            game:
+              ha_label: game
+              creator_role: developer
+            video:
+              ha_label: video
+              creator_role: director
+            periodical:
+              ha_label: periodical
+              creator_role: publisher
+            art_print:
+              ha_label: art_print
+              creator_role: artist
+      - variables:
+          _ct_reg: "{{ catalog_registry.get(_ct_item_type) or catalog_registry.get('music_recording') }}"
+          _ct_ha_label: "{{ _ct_reg.get('ha_label', _ct_item_type) }}"
+          _ct_creator_role: "{{ _ct_reg.get('creator_role', 'creator') }}"
+      - variables:
+          result:
+            status: error
+            section: catalog
+            mode: "{{ mode_norm }}"
+            item_type: "{{ _ct_item_type }}"
+            message: "Unknown catalog mode. Use mode=help for available modes: configure, browse, find, search, add, loan, return."
+            caller_token: "{{ caller_token_norm }}"
+      - choose:
 
-      - conditions:
-        - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_add", "add"] }}'
-        sequence:
-        - variables:
-            _ba_title: "{{ (input_data.get('title', '') or '') | string | trim if input_data is mapping else '' }}"
-            _ba_author: "{{ input_data.get('author', none) if input_data is mapping else none }}"
-            _ba_isbn: >-
-              {%- set v = input_data.get('isbn', none) if input_data is mapping else none -%}
-              {{ v | string | trim if v is not none and v | string | trim not in ['', 'none', 'null', 'None'] else none }}
-            _ba_series: "{{ input_data.get('series', none) if input_data is mapping else none }}"
-            _ba_genre: "{{ input_data.get('genre', none) if input_data is mapping else none }}"
-            _ba_loc_id: "{{ input_data.get('location_id', 109) | int(109) if input_data is mapping else 109 }}"
-            _ba_note: "{{ (input_data.get('note', '') or '') | string | trim if input_data is mapping else '' }}"
-        - if: "{{ _ba_title == '' }}"
-          then:
+        # ── catalog help ──────────────────────────────────────────────────────
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm == "help" }}'
+          sequence:
           - variables:
               result:
-                status: error
-                section: books
-                mode: books_add
-                message: title is required.
-                coaching:
-                - "Pass input_json with at minimum: {\"title\": \"Book Title\"}"
-          - stop: books_add title required
-            response_variable: result
-        - action: script.zen_dojotools_inventory
-          response_variable: _ba_catalog_raw
-          continue_on_error: true
-          data:
-            mode: catalog_find_by_tag
-            ha_labels: book
-        - variables:
-            _ba_catalog_items: >-
-              {%- set r = _ba_catalog_raw if _ba_catalog_raw is mapping else {} -%}
-              {%- set items = r.get('items', r.get('products', [])) -%}
-              {{ items if items is sequence and items is not string else [] }}
-        - variables:
-            _ba_existing: >-
-              {%- set ns = namespace(found=none) -%}
-              {%- set title_norm = _ba_title | lower | replace('’', "'") | replace('‘', "'") -%}
-              {%- for b in _ba_catalog_items if b is mapping -%}
-                {%- set ufs = b.get('userfields', {}) if b.get('userfields') is mapping else {} -%}
-                {%- set isbn_hit = _ba_isbn is not none and (ufs.get('book_isbn') or '') | string | trim == _ba_isbn -%}
-                {%- set bname = (b.get('name', '') or '') | lower | replace('’', "'") | replace('‘', "'") -%}
-                {%- set name_hit = bname == title_norm -%}
-                {%- if isbn_hit or name_hit -%}
-                  {%- set ns.found = b -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.found | default(none, true) }}
-        - if: "{{ _ba_existing is mapping }}"
-          then:
-          - action: script.zen_dojotools_inventory
-            response_variable: _ba_loc_raw
-            continue_on_error: true
-            data:
-              mode: locations_find
-              location_id: "{{ _ba_loc_id }}"
-          - variables:
-              _ba_loc_name: >-
-                {%- set r = _ba_loc_raw if _ba_loc_raw is mapping else {} -%}
-                {%- set items = r.get('result', []) -%}
-                {{ (items[0].get('name', '') if items | length > 0 and items[0] is mapping else '') }}
-              _ba_existing_ufs: "{{ _ba_existing.get('userfields', {}) if _ba_existing.get('userfields') is mapping else {} }}"
-          - variables:
-              result:
-                status: existing
-                section: books
-                mode: books_add
-                product_id: "{{ _ba_existing.get('id') | int(0) }}"
-                title: "{{ _ba_existing.get('name', _ba_title) }}"
-                author: "{{ _ba_existing_ufs.get('book_author', _ba_author) }}"
-                isbn: "{{ _ba_existing_ufs.get('book_isbn', _ba_isbn) }}"
-                series: "{{ _ba_existing_ufs.get('book_series', _ba_series) }}"
-                genre: "{{ _ba_existing_ufs.get('book_genre', _ba_genre) }}"
-                location_id: "{{ _ba_existing.get('location_id', _ba_loc_id) }}"
-                location_name: "{{ _ba_loc_name }}"
-                stocked: 0
+                status: ok
+                section: catalog
+                mode: help
+                item_type: "{{ _ct_item_type }}"
+                ha_label: "{{ _ct_ha_label }}"
+                creator_role: "{{ _ct_creator_role }}"
+                description: >-
+                  FRBR physical item catalog. Library owns all circulation (loan/return)
+                  and storage for cataloged items. Inventory (Grocy) owns the product record
+                  (Work). Library mints a catalog_item userobject per physical copy (Item).
+                  item_type routes to the right HA label + creator role.
+                item_types:
+                  music_recording: "creator=artist. format: vinyl/cassette/cd/8-track/reel/minidisc/other. Also: genre, publisher, condition."
+                  book: "creator=author. Also: isbn, series, genre, publisher, condition."
+                  game: "creator=developer. format: cartridge/disc/digital. Also: platform, digital, hardware_note, series, genre."
+                  video: "creator=director. format: dvd/blu-ray/vhs/laserdisc. Also: genre, year."
+                  periodical: "creator=publisher. Also: genre, series."
+                  art_print: "creator=artist. Also: genre, publisher, condition."
+                modes:
+                  configure: "Set default location for a class or global intake. input_json: {location, role} where role=class_default (default) or intake. item_type selects class."
+                  browse: "List all items of this item_type with metadata and loan status."
+                  find: "Filter by any meta field. input_json keys become AND filters."
+                  search: "Full-text across title, creator, and all meta string values."
+                  add: "Add item. title required OR barcode. Pass creator + any fields in input_json. Location resolved from Grocy catalog_class userfield."
+                  intake_pending: "Find ISBN-13 items (978/979 barcode prefix) at the intake location not yet in catalog. Returns candidate list ready for catalog_add. Optional: input_json={\"location_id\":17} to override location."
+                  loan: "Loan item. input_json: {item_id} or {title, borrower, due_date}. item_id preferred for multi-copy disambiguation."
+                  return: "Return loaned item. input_json: {item_id} or {title}. Restores location from loan_home_location_id."
+                location_resolution: "3-tier: explicit location_id → Grocy location with catalog_class=item_type userfield → Grocy location with catalog_class=__intake__ → hard fail. Run configure first."
+                examples:
+                  configure_class: "section=catalog item_type=music_recording mode=configure input_json={\"location\":\"Music Room\"}"
+                  configure_intake: "section=catalog mode=configure input_json={\"location\":\"Receiving\",\"role\":\"intake\"}"
+                  browse: "section=catalog item_type=music_recording mode=browse"
+                  add: "section=catalog item_type=music_recording mode=add input_json={\"title\":\"Foreigner 4\",\"creator\":\"Foreigner\",\"format\":\"vinyl\",\"year\":\"1981\",\"label\":\"Atlantic\"}"
+                  add_8track: "section=catalog item_type=music_recording mode=add input_json={\"title\":\"Boston\",\"creator\":\"Boston\",\"format\":\"8-track\",\"year\":\"1976\",\"label\":\"Epic\"}"
+                  find_by_format: "section=catalog item_type=music_recording mode=find input_json={\"format\":\"8-track\"}"
+                  search: "section=catalog item_type=music_recording mode=search query=boston"
+                  loan: "section=catalog item_type=music_recording mode=loan input_json={\"title\":\"Boston\",\"borrower\":\"Alex\",\"due_date\":\"2026-07-21\"}"
+                  return: "section=catalog item_type=music_recording mode=return input_json={\"title\":\"Boston\"}"
                 caller_token: "{{ caller_token_norm }}"
-          - stop: books_add existing
+          - stop: catalog help
             response_variable: result
-        - variables:
-            _ba_bom_item: >-
-              {%- set p = {'name': _ba_title, 'location_id': _ba_loc_id} -%}
-              {%- if _ba_author is not none -%}{%- set p = p | combine({'book_author': _ba_author | string}) -%}{%- endif -%}
-              {%- if _ba_isbn is not none -%}{%- set p = p | combine({'book_isbn': _ba_isbn | string}) -%}{%- endif -%}
-              {%- if _ba_series is not none -%}{%- set p = p | combine({'book_series': _ba_series | string}) -%}{%- endif -%}
-              {%- if _ba_genre is not none -%}{%- set p = p | combine({'book_genre': _ba_genre | string}) -%}{%- endif -%}
-              {%- if _ba_note != '' -%}{%- set p = p | combine({'note': _ba_note}) -%}{%- endif -%}
-              {{ p }}
-            _ba_bom: >-
-              {{
-                {
-                  'default_location_id': _ba_loc_id,
-                  'default_ha_labels': 'book',
-                  'default_asset_type': 'book',
-                  'default_unit': 'each',
-                  'items': [_ba_bom_item]
-                } | tojson
-              }}
-        - action: script.zen_dojotools_inventory
-          response_variable: _ba_import_raw
-          continue_on_error: true
-          data:
-            mode: catalog_import_bom
-            bom: "{{ _ba_bom }}"
-            confirm_action: true
-        - variables:
-            _ba_import: "{{ _ba_import_raw if _ba_import_raw is mapping else {} }}"
-            _ba_import_items: "{{ _ba_import.get('items', []) }}"
-        - variables:
-            _ba_product_id: >-
-              {%- set itms = _ba_import_items if _ba_import_items is sequence and _ba_import_items is not string else [] -%}
-              {%- set raw = (itms[0].get('product_id') if itms | length > 0 and itms[0] is mapping else none) -%}
-              {{ raw | int(none) if raw is not none and raw | string | trim not in ['', 'none', 'null', 'None'] else none }}
-            _ba_import_was_existing: >-
-              {%- set itms = _ba_import_items if _ba_import_items is sequence and _ba_import_items is not string else [] -%}
-              {{ (itms[0].get('status', '') == 'existing') if itms | length > 0 and itms[0] is mapping else false }}
-        - if: "{{ _ba_product_id is none and _ba_import_was_existing }}"
-          then:
+
+        # ── catalog configure ─────────────────────────────────────────────────
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["configure", "catalog_configure"] }}'
+          sequence:
+          - variables:
+              _cfg_location: "{{ (input_data.get('location', '') or '') | string | trim if input_data is mapping else '' }}"
+              _cfg_role: "{{ (input_data.get('role', 'class_default') or 'class_default') | string | lower | trim if input_data is mapping else 'class_default' }}"
+          - if: "{{ _cfg_location == '' }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: configure
+                  item_type: "{{ _ct_item_type }}"
+                  message: "location is required. Pass the Grocy location name in input_json."
+                  examples:
+                    set_class_default: "section=catalog item_type=music_recording mode=configure input_json={\"location\":\"Music Room\"}"
+                    set_intake: "section=catalog mode=configure input_json={\"location\":\"Receiving\",\"role\":\"intake\"}"
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: catalog configure missing location
+              response_variable: result
           - action: script.zen_dojotools_inventory
-            response_variable: _ba_cap_raw
+            response_variable: _cfg_schema_raw
             continue_on_error: true
             data:
-              mode: catalog_add_product
-              item: "{{ _ba_title }}"
-              location_id: "{{ _ba_loc_id }}"
+              mode: userfields_deploy
+          - action: script.zen_dojotools_inventory
+            response_variable: _cfg_locs_raw
+            continue_on_error: true
+            data:
+              mode: locations_list
+              per_page: 200
           - variables:
-              _ba_cap: "{{ _ba_cap_raw if _ba_cap_raw is mapping else {} }}"
-              _ba_product_id: >-
-                {%- set r = _ba_cap_raw if _ba_cap_raw is mapping else {} -%}
-                {%- set ids_raw = r.get('candidate_ids', none) -%}
-                {%- set ids = ids_raw if ids_raw is sequence and ids_raw is not string
-                              else (ids_raw | from_json([]) if ids_raw is string and ids_raw | trim not in ['', 'null', 'none', 'None'] else []) -%}
-                {%- set ids = ids if ids is sequence and ids is not string else [] -%}
-                {{ ids[0] | int(none) if ids | length > 0 else none }}
-        - if: "{{ _ba_product_id is none }}"
-          then:
+              _cfg_existing_class: >-
+                {%- set locs = _cfg_locs_raw.get('result') if _cfg_locs_raw is mapping else [] -%}
+                {%- set locs = locs if locs is sequence and locs is not string else [] -%}
+                {%- set ns = namespace(val='') -%}
+                {%- for loc in locs if loc is mapping -%}
+                  {%- if (loc.get('name', '') | string | lower | trim) == (_cfg_location | lower | trim) -%}
+                    {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                    {%- set ns.val = (uf.get('catalog_class') or '') | string | trim -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.val }}
+          - variables:
+              _cfg_class_value: >-
+                {%- if _cfg_role == 'intake' -%}__intake__
+                {%- else -%}
+                  {%- set existing = _cfg_existing_class | string | trim -%}
+                  {%- set parts = existing.split(',') | map('trim') | select | list if existing not in ['', 'none', 'null', '__intake__'] else [] -%}
+                  {%- if _ct_item_type not in parts -%}
+                    {%- set parts = parts + [_ct_item_type] -%}
+                  {%- endif -%}
+                  {{ parts | join(',') }}
+                {%- endif -%}
+          - action: script.zen_dojotools_inventory
+            response_variable: _cfg_set_raw
+            continue_on_error: true
+            data:
+              mode: locations_metadata_set
+              location: "{{ _cfg_location }}"
+              catalog_class: "{{ _cfg_class_value }}"
+          - variables:
+              _cfg_ok: >-
+                {{ _cfg_set_raw is mapping
+                   and _cfg_set_raw.get('status') not in [none, 'error'] }}
           - variables:
               result:
-                status: error
-                section: books
-                mode: books_add
-                message: Failed to create book product in Grocy.
-                detail: "{{ _ba_import }}"
-          - stop: books_add create failed
+                status: "{{ 'ok' if _cfg_ok else 'error' }}"
+                section: catalog
+                mode: configure
+                item_type: "{{ _ct_item_type }}"
+                role: "{{ _cfg_role }}"
+                location: "{{ _cfg_location }}"
+                catalog_class_value: "{{ _cfg_class_value }}"
+                schema_deployed: "{{ _cfg_schema_raw is mapping and _cfg_schema_raw.get('status') in ['ok', 'partial'] }}"
+                message: "{{ 'Location ' ~ _cfg_location ~ ' set as ' ~ (_cfg_role | replace('class_default', 'class default for ' ~ _ct_item_type)) ~ '.' if _cfg_ok else 'Failed to update location userfield. Check location name.' }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog configure done
             response_variable: result
-        - if: "{{ _ba_import_was_existing }}"
-          then:
-          - action: script.zen_dojotools_inventory
-            response_variable: _ba_tag_raw
+
+        # ── catalog browse / find / search ────────────────────────────────────
+        # M3: item-primary. Grocy API pattern:
+        #   1. /objects/userentities?query[]=name=catalog_item  → entity id
+        #   2. /objects/userobjects?query[]=userentity_id={id}  → object shells
+        #   3. /userfields/userentity-catalog_item/{id}         → field values (per shell)
+        #   4. catalog_find_by_tag                              → work products
+        #   join: item.product_id → work product dict
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["browse", "catalog_browse"] }}'
+          sequence:
+          - action: script.zen_sutra_grocy
+            response_variable: _ct_ue_raw
             continue_on_error: true
             data:
-              mode: products_tag
-              product_id: "{{ _ba_product_id }}"
+              action_type: read
+              endpoint: "/objects/userentities?query[]=name=catalog_item&limit=1"
+          - variables:
+              _ct_ue_item_id: >-
+                {%- set c = (_ct_ue_raw.get('result', {}) or {}).get('content', []) if _ct_ue_raw is mapping else [] -%}
+                {%- set c = c if c is sequence and c is not string else [] -%}
+                {{ c[0].get('id') | int if c | length > 0 and c[0] is mapping else none }}
+          - if: "{{ _ct_ue_item_id is none }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: browse
+                  message: "catalog_item userentity not found. Run inventory mode=userfields_deploy."
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: catalog browse no userentity
+              response_variable: result
+          - action: script.zen_sutra_grocy
+            response_variable: _ct_obj_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "/objects/userobjects?query[]=userentity_id={{ _ct_ue_item_id }}&limit=500&offset=0"
+          - action: script.zen_dojotools_inventory
+            response_variable: _ct_products_raw
+            continue_on_error: true
+            data:
+              mode: catalog_find_by_tag
+              ha_labels: "{{ _ct_ha_label }}"
+          - variables:
+              _ct_obj_ids: >-
+                {%- set c = (_ct_obj_raw.get('result', {}) or {}).get('content', []) if _ct_obj_raw is mapping else [] -%}
+                {{ c if c is sequence and c is not string else [] }}
+              _ct_prods: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- set plist = _ct_products_raw if _ct_products_raw is mapping else {} -%}
+                {%- set plist = plist.get('products', plist.get('items', plist.get('result', []))) -%}
+                {%- for p in plist if p is mapping -%}
+                  {%- set ns.d = ns.d | combine({p.get('id') | string: p}) -%}
+                {%- endfor -%}
+                {{ ns.d }}
+          - repeat:
+              for_each: "{{ _ct_obj_ids }}"
+              sequence:
+                - action: script.zen_dojotools_inventory
+                  response_variable: _ct_val_raw
+                  continue_on_error: true
+                  data:
+                    mode: userentity_values_get
+                    entity: userentity-catalog_item
+                    userobject_id: "{{ repeat.item.id }}"
+                - variables:
+                    _ct_items_acc: >-
+                      {%- set prev = _ct_items_acc | default([]) -%}
+                      {%- set v = _ct_val_raw.get('values') if _ct_val_raw is mapping and _ct_val_raw.get('status') == 'ok' else none -%}
+                      {%- if v is mapping -%}
+                        {%- set pid = v.get('product_id') | string | trim -%}
+                        {%- set work = (_ct_prods if _ct_prods is mapping else {}).get(pid) -%}
+                        {%- if work is mapping -%}
+                          {{ prev + [{'item_id': repeat.item.id | int, 'product_id': pid | int, 'title': work.get('name', ''), 'item_type': _ct_item_type, 'creator': v.get('creator', '') | string | trim, 'creator_role': _ct_creator_role, 'format': v.get('format', '') | string | trim, 'condition': v.get('condition', '') | string | trim, 'location_id': v.get('location_id') | int(none), 'isbn': v.get('isbn', '') | string | trim, 'genre': v.get('genre', '') | string | trim, 'platform': v.get('platform', '') | string | trim, 'digital': v.get('digital', '') | string | trim, 'series': v.get('series', '') | string | trim, 'publisher': v.get('publisher', '') | string | trim, 'loan_borrower': v.get('loan_borrower', '') | string | trim, 'loan_date': v.get('loan_date', '') | string | trim, 'loan_due': v.get('loan_due', '') | string | trim, 'loan_home_location_id': v.get('loan_home_location_id') | int(none), 'digital_uri': v.get('digital_uri', '') | string | trim, 'preferred_service': v.get('preferred_service', '') | string | trim}] }}
+                        {%- else -%}{{ prev }}{%- endif -%}
+                      {%- else -%}{{ prev }}{%- endif -%}
+          - variables:
+              _ct_final: "{{ _ct_items_acc | default([]) }}"
+          - variables:
+              result:
+                status: ok
+                section: catalog
+                mode: browse
+                item_type: "{{ _ct_item_type }}"
+                count: "{{ _ct_final | length }}"
+                items: "{{ _ct_final }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog browse done
+            response_variable: result
+
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["find", "catalog_find"] }}'
+          sequence:
+          - action: script.zen_sutra_grocy
+            response_variable: _ct_ue_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "/objects/userentities?query[]=name=catalog_item&limit=1"
+          - variables:
+              _ct_ue_item_id: >-
+                {%- set c = (_ct_ue_raw.get('result', {}) or {}).get('content', []) if _ct_ue_raw is mapping else [] -%}
+                {%- set c = c if c is sequence and c is not string else [] -%}
+                {{ c[0].get('id') | int if c | length > 0 and c[0] is mapping else none }}
+          - action: script.zen_sutra_grocy
+            response_variable: _ct_obj_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "/objects/userobjects?query[]=userentity_id={{ _ct_ue_item_id }}&limit=500&offset=0"
+          - action: script.zen_dojotools_inventory
+            response_variable: _ct_products_raw
+            continue_on_error: true
+            data:
+              mode: catalog_find_by_tag
+              ha_labels: "{{ _ct_ha_label }}"
+          - variables:
+              _ct_obj_ids: >-
+                {%- set c = (_ct_obj_raw.get('result', {}) or {}).get('content', []) if _ct_obj_raw is mapping else [] -%}
+                {{ c if c is sequence and c is not string else [] }}
+              _ct_prods: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- set plist = _ct_products_raw if _ct_products_raw is mapping else {} -%}
+                {%- set plist = plist.get('products', plist.get('items', plist.get('result', []))) -%}
+                {%- for p in plist if p is mapping -%}
+                  {%- set ns.d = ns.d | combine({p.get('id') | string: p}) -%}
+                {%- endfor -%}
+                {{ ns.d }}
+              _ct_title_filter: "{{ (input_data.get('title', '') or '') | lower | trim if input_data is mapping else '' }}"
+              _ct_filters: >-
+                {%- set inp = input_data if input_data is mapping else {} -%}
+                {%- set skip = ['item_type', 'location_id', 'note', 'title'] -%}
+                {%- set ns = namespace(f={}) -%}
+                {%- for k, v in inp.items() if k not in skip and v is not none and v | string | trim not in ['', 'none', 'null'] -%}
+                  {%- set ns.f = ns.f | combine({k: v | string | lower | trim}) -%}
+                {%- endfor -%}
+                {{ ns.f }}
+          - repeat:
+              for_each: "{{ _ct_obj_ids }}"
+              sequence:
+                - action: script.zen_dojotools_inventory
+                  response_variable: _ct_val_raw
+                  continue_on_error: true
+                  data:
+                    mode: userentity_values_get
+                    entity: userentity-catalog_item
+                    userobject_id: "{{ repeat.item.id }}"
+                - variables:
+                    _ct_items_acc: >-
+                      {%- set prev = _ct_items_acc | default([]) -%}
+                      {%- set v = _ct_val_raw.get('values') if _ct_val_raw is mapping and _ct_val_raw.get('status') == 'ok' else none -%}
+                      {%- if v is mapping -%}
+                        {%- set pid = v.get('product_id') | string | trim -%}
+                        {%- set work = (_ct_prods if _ct_prods is mapping else {}).get(pid) -%}
+                        {%- if work is mapping -%}
+                          {%- set fmt = v.get('format', '') | string | trim -%}
+                          {%- set cond = v.get('condition', '') | string | trim -%}
+                          {%- set title_ok = _ct_title_filter == '' or _ct_title_filter in (work.get('name', '') | lower) -%}
+                          {%- set filters = _ct_filters if _ct_filters is mapping else {} -%}
+                          {%- set ns2 = namespace(match=true) -%}
+                          {%- for fk, fv in filters.items() -%}
+                            {%- set mval = (v.get(fk) or work.get(fk) or '') | string | lower | trim -%}
+                            {%- if fv | lower not in mval -%}{%- set ns2.match = false -%}{%- endif -%}
+                          {%- endfor -%}
+                          {%- if title_ok and ns2.match -%}
+                            {{ prev + [{'item_id': repeat.item.id | int, 'product_id': pid | int, 'title': work.get('name', ''), 'item_type': _ct_item_type, 'creator': v.get('creator', '') | string | trim, 'creator_role': _ct_creator_role, 'format': fmt, 'condition': cond, 'location_id': v.get('location_id') | int(none), 'isbn': v.get('isbn', '') | string | trim, 'genre': v.get('genre', '') | string | trim, 'platform': v.get('platform', '') | string | trim, 'digital': v.get('digital', '') | string | trim, 'series': v.get('series', '') | string | trim, 'publisher': v.get('publisher', '') | string | trim, 'loan_borrower': v.get('loan_borrower', '') | string | trim, 'loan_date': v.get('loan_date', '') | string | trim, 'loan_due': v.get('loan_due', '') | string | trim}] }}
+                          {%- else -%}{{ prev }}{%- endif -%}
+                        {%- else -%}{{ prev }}{%- endif -%}
+                      {%- else -%}{{ prev }}{%- endif -%}
+          - variables:
+              _ct_final: "{{ _ct_items_acc | default([]) }}"
+          - variables:
+              result:
+                status: ok
+                section: catalog
+                mode: find
+                item_type: "{{ _ct_item_type }}"
+                filters: "{{ _ct_filters }}"
+                count: "{{ _ct_final | length }}"
+                items: "{{ _ct_final }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog find done
+            response_variable: result
+
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["search", "catalog_search"] }}'
+          sequence:
+          - action: script.zen_sutra_grocy
+            response_variable: _ct_ue_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "/objects/userentities?query[]=name=catalog_item&limit=1"
+          - variables:
+              _ct_ue_item_id: >-
+                {%- set c = (_ct_ue_raw.get('result', {}) or {}).get('content', []) if _ct_ue_raw is mapping else [] -%}
+                {%- set c = c if c is sequence and c is not string else [] -%}
+                {{ c[0].get('id') | int if c | length > 0 and c[0] is mapping else none }}
+          - action: script.zen_sutra_grocy
+            response_variable: _ct_obj_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "/objects/userobjects?query[]=userentity_id={{ _ct_ue_item_id }}&limit=500&offset=0"
+          - action: script.zen_dojotools_inventory
+            response_variable: _ct_products_raw
+            continue_on_error: true
+            data:
+              mode: catalog_find_by_tag
+              ha_labels: "{{ _ct_ha_label }}"
+          - variables:
+              _ct_obj_ids: >-
+                {%- set c = (_ct_obj_raw.get('result', {}) or {}).get('content', []) if _ct_obj_raw is mapping else [] -%}
+                {{ c if c is sequence and c is not string else [] }}
+              _ct_prods: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- set plist = _ct_products_raw if _ct_products_raw is mapping else {} -%}
+                {%- set plist = plist.get('products', plist.get('items', plist.get('result', []))) -%}
+                {%- for p in plist if p is mapping -%}
+                  {%- set ns.d = ns.d | combine({p.get('id') | string: p}) -%}
+                {%- endfor -%}
+                {{ ns.d }}
+              _ct_q: "{{ (input_data.get('q') or input_data.get('query') or query_norm or '') | lower | trim if input_data is mapping else (query_norm | default('', true) | lower | trim) }}"
+          - repeat:
+              for_each: "{{ _ct_obj_ids }}"
+              sequence:
+                - action: script.zen_dojotools_inventory
+                  response_variable: _ct_val_raw
+                  continue_on_error: true
+                  data:
+                    mode: userentity_values_get
+                    entity: userentity-catalog_item
+                    userobject_id: "{{ repeat.item.id }}"
+                - variables:
+                    _ct_items_acc: >-
+                      {%- set prev = _ct_items_acc | default([]) -%}
+                      {%- set v = _ct_val_raw.get('values') if _ct_val_raw is mapping and _ct_val_raw.get('status') == 'ok' else none -%}
+                      {%- if v is mapping -%}
+                        {%- set pid = v.get('product_id') | string | trim -%}
+                        {%- set work = (_ct_prods if _ct_prods is mapping else {}).get(pid) -%}
+                        {%- if work is mapping -%}
+                          {%- set fmt = v.get('format', '') | string | trim -%}
+                          {%- set cond = v.get('condition', '') | string | trim -%}
+                          {%- set creator = v.get('creator', '') | string | trim -%}
+                          {%- set haystack = (work.get('name', '') | lower) ~ ' ' ~ (creator | lower) ~ ' ' ~ (fmt | lower) ~ ' ' ~ (cond | lower) ~ ' ' ~ (v.get('genre', '') | lower) ~ ' ' ~ (v.get('platform', '') | lower) ~ ' ' ~ (v.get('series', '') | lower) -%}
+                          {%- if _ct_q == '' or _ct_q in haystack -%}
+                            {{ prev + [{'item_id': repeat.item.id | int, 'product_id': pid | int, 'title': work.get('name', ''), 'item_type': _ct_item_type, 'creator': creator, 'creator_role': _ct_creator_role, 'format': fmt, 'condition': cond, 'location_id': v.get('location_id') | int(none), 'isbn': v.get('isbn', '') | string | trim, 'genre': v.get('genre', '') | string | trim, 'platform': v.get('platform', '') | string | trim, 'digital': v.get('digital', '') | string | trim, 'series': v.get('series', '') | string | trim, 'publisher': v.get('publisher', '') | string | trim, 'loan_borrower': v.get('loan_borrower', '') | string | trim, 'loan_date': v.get('loan_date', '') | string | trim, 'loan_due': v.get('loan_due', '') | string | trim}] }}
+                          {%- else -%}{{ prev }}{%- endif -%}
+                        {%- else -%}{{ prev }}{%- endif -%}
+                      {%- else -%}{{ prev }}{%- endif -%}
+          - variables:
+              _ct_final: "{{ _ct_items_acc | default([]) }}"
+          - variables:
+              result:
+                status: ok
+                section: catalog
+                mode: search
+                item_type: "{{ _ct_item_type }}"
+                query: "{{ _ct_q }}"
+                count: "{{ _ct_final | length }}"
+                items: "{{ _ct_final }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog search done
+            response_variable: result
+
+        # ── catalog add ───────────────────────────────────────────────────────
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["add", "catalog_add"] }}'
+          sequence:
+          - variables:
+              _ca_title: "{{ (input_data.get('title', '') or '') | string | trim if input_data is mapping else '' }}"
+              _ca_note: "{{ (input_data.get('note', '') or '') | string | trim if input_data is mapping else '' }}"
+              _ca_barcode: "{{ (input_data.get('barcode', '') or '') | string | trim if input_data is mapping else '' }}"
+              _ca_explicit_loc: >-
+                {%- set v = (input_data.get('location_id', none) if input_data is mapping else none) -%}
+                {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
+          - if: "{{ _ca_title == '' and _ca_barcode == '' }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: add
+                  item_type: "{{ _ct_item_type }}"
+                  message: title or barcode is required.
+                  coaching:
+                  - "By title: section=catalog item_type=book mode=add input_json={\"title\":\"Book Title\"}"
+                  - "By barcode: section=catalog item_type=book mode=add input_json={\"barcode\":\"9780375826696\"}"
+                  - "Add creator, format, condition, isbn, genre, series, and any other known fields."
+            - stop: catalog add title required
+              response_variable: result
+          - action: script.zen_dojotools_inventory
+            response_variable: _ca_loc_list_raw
+            continue_on_error: true
+            data:
+              mode: locations_list
+              per_page: 200
+          - variables:
+              _ca_all_locs: >-
+                {%- set _r = _ca_loc_list_raw.get('result') if _ca_loc_list_raw is mapping else none -%}
+                {{ _r if _r is sequence and _r is not string else [] }}
+          - variables:
+              _ca_class_loc: >-
+                {%- set ns = namespace(id=none) -%}
+                {%- for loc in _ca_all_locs if loc is mapping -%}
+                  {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                  {%- set classes = (uf.get('catalog_class') or '') | string | trim -%}
+                  {%- set class_list = classes.split(',') | map('trim') | list -%}
+                  {%- if _ct_item_type in class_list and ns.id is none -%}
+                    {%- set ns.id = loc.get('id') | int -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.id }}
+              _ca_intake_loc: >-
+                {%- set ns = namespace(id=none) -%}
+                {%- for loc in _ca_all_locs if loc is mapping -%}
+                  {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                  {%- if uf.get('catalog_class', '') | string | trim == '__intake__' -%}
+                    {%- set ns.id = loc.get('id') | int -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.id }}
+          - variables:
+              _ca_loc_id: >-
+                {%- if _ca_explicit_loc is not none -%}
+                  {{ _ca_explicit_loc | int }}
+                {%- elif _ca_class_loc is not none -%}
+                  {{ _ca_class_loc | int }}
+                {%- elif _ca_intake_loc is not none -%}
+                  {{ _ca_intake_loc | int }}
+                {%- else -%}
+                  {{ none }}
+                {%- endif -%}
+              _ca_loc_source: >-
+                {%- if _ca_explicit_loc is not none -%}explicit
+                {%- elif _ca_class_loc is not none -%}class_default
+                {%- elif _ca_intake_loc is not none -%}intake
+                {%- else -%}none{%- endif -%}
+          - if: "{{ _ca_loc_id is none }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: add
+                  item_type: "{{ _ct_item_type }}"
+                  message: >-
+                    No location configured for {{ _ct_item_type }} and no intake location set.
+                    Run: section=catalog item_type={{ _ct_item_type }} mode=configure input_json={"location":"<Location Name>"}
+                    Or set a global intake: section=catalog mode=configure input_json={"location":"<Location Name>","role":"intake"}
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: catalog add no location
+              response_variable: result
+          # ── barcode-first product resolution ──────────────────────────────
+          - variables:
+              _ca_product_id: "{{ none }}"
+              _ca_action: item_added
+          - if: "{{ _ca_barcode != '' }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              response_variable: _ca_bc_raw
+              continue_on_error: true
+              data:
+                mode: catalog_find_by_barcode
+                barcode: "{{ _ca_barcode }}"
+            - variables:
+                _ca_bc_product_id: >-
+                  {%- set r = _ca_bc_raw if _ca_bc_raw is mapping else {} -%}
+                  {{ r.get('product_id') | int(0) if r.get('status') == 'found' else 0 }}
+                _ca_bc_name: >-
+                  {%- set r = _ca_bc_raw if _ca_bc_raw is mapping else {} -%}
+                  {{ (r.get('product_name') or '') | string | trim if r.get('status') == 'found' else '' }}
+            - if: "{{ _ca_bc_product_id | int(0) > 0 }}"
+              then:
+              - variables:
+                  _ca_product_id: "{{ _ca_bc_product_id | int }}"
+                  _ca_title: "{{ _ca_bc_name if _ca_title == '' else _ca_title }}"
+                  _ca_action: item_added
+          # ── title-based dedup + BOM import (skipped if barcode resolved) ──
+          - if: "{{ _ca_product_id is none or _ca_product_id | int(0) == 0 }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              response_variable: _ca_existing_raw
+              continue_on_error: true
+              data:
+                mode: catalog_find_by_tag
+                ha_labels: "{{ _ct_ha_label }}"
+            - variables:
+                _ca_existing: >-
+                  {%- set r = _ca_existing_raw if _ca_existing_raw is mapping else {} -%}
+                  {%- set items = r.get('items', r.get('products', r.get('result', []))) -%}
+                  {%- set items = items if items is sequence and items is not string else [] -%}
+                  {%- set title_norm = _ca_title | lower -%}
+                  {%- set ns = namespace(found=none) -%}
+                  {%- for b in items if b is mapping -%}
+                    {%- if (b.get('name', '') | lower) == title_norm -%}{%- set ns.found = b -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.found | default(none, true) }}
+            # --- resolve product_id (work dedup) then fall through to item creation ---
+            - if: "{{ _ca_existing is mapping }}"
+              then:
+              - variables:
+                  _ca_product_id: "{{ _ca_existing.get('id') | int(0) }}"
+                  _ca_action: item_added
+              else:
+              - variables:
+                  _ca_bom: >-
+                    {%- set item = {'name': _ca_title | string} -%}
+                    {%- if _ca_loc_id is not none -%}
+                      {%- set item = item | combine({'location_id': _ca_loc_id | int}) -%}
+                    {%- endif -%}
+                    {%- if _ca_note != '' -%}
+                      {%- set item = item | combine({'note': _ca_note}) -%}
+                    {%- endif -%}
+                    {%- set bom = {'default_ha_labels': _ct_ha_label, 'default_asset_type': _ct_item_type, 'default_unit': 'each', 'items': [item]} -%}
+                    {%- if _ca_loc_id is not none -%}
+                      {%- set bom = bom | combine({'default_location_id': _ca_loc_id | int}) -%}
+                    {%- endif -%}
+                    {{ bom | tojson }}
+              - action: script.zen_dojotools_inventory
+                response_variable: _ca_import_raw
+                continue_on_error: true
+                data:
+                  mode: catalog_import_bom
+                  bom: "{{ _ca_bom }}"
+                  confirm_action: true
+              - variables:
+                  _ca_product_id: >-
+                    {%- set r = _ca_import_raw if _ca_import_raw is mapping else {} -%}
+                    {%- set items = r.get('items', []) -%}
+                    {%- set created = items | selectattr('status', 'equalto', 'created') | list -%}
+                    {{ created[0].get('product_id', none) if created | length > 0 and created[0] is mapping else none }}
+                  _ca_action: product_and_item_created
+          # guard: work product unavailable
+          - if: "{{ _ca_product_id | default(none) is none or _ca_product_id | int(0) == 0 }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: add
+                  message: "Work product creation failed — BOM import returned no product_id."
+                  title: "{{ _ca_title }}"
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: catalog add import failed
+              response_variable: result
+          # apply HA label to product (covers BB-created products that bypass BOM)
+          - if: "{{ _ca_product_id is not none and _ca_product_id | int(0) > 0 }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              continue_on_error: true
+              data:
+                mode: products_tag
+                product_id: "{{ _ca_product_id }}"
+                ha_labels: "{{ _ct_ha_label }}"
+          # resolve catalog_item userentity ID (avoid hardcoding)
+          - action: script.zen_dojotools_inventory
+            response_variable: _ca_ue_list_raw
+            continue_on_error: true
+            data:
+              mode: userentities_list
+          - variables:
+              _ca_ue_item_id: >-
+                {%- set ues = (_ca_ue_list_raw.get('userentities', []) if _ca_ue_list_raw is mapping else []) -%}
+                {%- set match = ues | selectattr('name','equalto','catalog_item') | list -%}
+                {{ match[0].get('id') | int if match | length > 0 and match[0] is mapping else none }}
+          - if: "{{ _ca_ue_item_id is none }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: add
+                  message: "catalog_item userentity not found. Run mode=userfields_deploy (inventory tool) to initialize schema."
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: catalog add no userentity
+              response_variable: result
+          # create physical item record
+          - action: script.zen_dojotools_inventory
+            response_variable: _ca_item_raw
+            continue_on_error: true
+            data:
+              mode: userobjects_create
+              userentity_id: "{{ _ca_ue_item_id }}"
+          - variables:
+              _ca_item_id: >-
+                {{ (_ca_item_raw.get('created_id') | int)
+                   if _ca_item_raw is mapping and _ca_item_raw.get('created_id') is not none
+                   else none }}
+          - variables:
+              _ca_inp: "{{ input_data if input_data is mapping else {} }}"
+          - variables:
+              _ca_values_dict: >-
+                {%- set inp = _ca_inp if _ca_inp is mapping else {} -%}
+                {%- set ns = namespace(d={'product_id': _ca_product_id | int, 'item_type': _ct_item_type}) -%}
+                {%- if _ca_loc_id is not none -%}{%- set ns.d = ns.d | combine({'location_id': _ca_loc_id | int}) -%}{%- endif -%}
+                {%- set _str_fields = ['format','condition','isbn','genre','platform','digital','hardware_note','series','publisher','digital_uri','preferred_service'] -%}
+                {%- for k in _str_fields -%}
+                  {%- set v = (inp.get(k, '') or '') | string | trim -%}
+                  {%- if v not in ['', 'none', 'null'] -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {%- set creator_v = (inp.get('creator', '') or '') | string | trim -%}
+                {%- if creator_v != '' -%}{%- set ns.d = ns.d | combine({'creator': creator_v}) -%}{%- endif -%}
+                {{ ns.d | tojson }}
+          - if: "{{ _ca_item_id is not none }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              response_variable: _ca_vals_raw
+              continue_on_error: true
+              data:
+                mode: userentity_values_set
+                entity: userentity-catalog_item
+                userobject_id: "{{ _ca_item_id }}"
+                values_json: "{{ _ca_values_dict }}"
+          # ── auto-shelve: transfer stock from intake → shelf when class_default resolved ──
+          - variables:
+              _ca_shelved: false
+          - if: >-
+              {{ _ca_loc_source == 'class_default'
+                 and _ca_intake_loc is not none
+                 and _ca_intake_loc | int != _ca_loc_id | int
+                 and _ca_product_id is not none
+                 and _ca_product_id | int(0) > 0 }}
+            then:
+            - action: script.zen_dojotools_inventory
+              response_variable: _ca_transfer_raw
+              continue_on_error: true
+              data:
+                mode: stock_transfer_location
+                product_id: "{{ _ca_product_id }}"
+                location_id: "{{ _ca_intake_loc }}"
+                to_location_id: "{{ _ca_loc_id }}"
+            - variables:
+                _ca_shelved: >-
+                  {{ _ca_transfer_raw is mapping
+                     and _ca_transfer_raw.get('status') in ['ok', 'success'] }}
+          - variables:
+              result:
+                status: "{{ _ca_action }}"
+                section: catalog
+                mode: add
+                item_type: "{{ _ct_item_type }}"
+                product_id: "{{ _ca_product_id }}"
+                item_id: "{{ _ca_item_id }}"
+                title: "{{ _ca_title }}"
+                creator: "{{ (_ca_inp.get('creator', '') or '') | string | trim if _ca_inp is mapping else '' }}"
+                format: "{{ (_ca_inp.get('format', '') or '') | string | trim if _ca_inp is mapping else '' }}"
+                condition: "{{ (_ca_inp.get('condition', '') or '') | string | trim if _ca_inp is mapping else '' }}"
+                location_id: "{{ _ca_loc_id }}"
+                location_source: "{{ _ca_loc_source }}"
+                shelved: "{{ _ca_shelved }}"
+                ha_label: "{{ _ct_ha_label }}"
+                hint: "{{ 'Item placed in intake/receiving location. Set a class default: section=catalog item_type=' ~ _ct_item_type ~ ' mode=configure input_json={\"location\":\"<shelf name>\"}' if _ca_loc_source == 'intake' else '' }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog add done
+            response_variable: result
+
+        # ── catalog loan ──────────────────────────────────────────────────────
+        # M4: operates on catalog_item userobject (item_id), not product
+        # Resolution: item_id direct | title+format → find item → userentity_values_set
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["loan", "catalog_loan"] }}'
+          sequence:
+          - variables:
+              _cl_item_id_in: >-
+                {%- set v = (input_data.get('item_id', none) if input_data is mapping else none) -%}
+                {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
+              _cl_title:    "{{ (input_data.get('title', '') or '') | string | trim if input_data is mapping else '' }}"
+              _cl_format:   "{{ (input_data.get('format', '') or '') | string | lower | trim if input_data is mapping else '' }}"
+              _cl_borrower: "{{ (input_data.get('borrower', '') or '') | string | trim if input_data is mapping else '' }}"
+              _cl_due:      "{{ (input_data.get('due_date', '') or input_data.get('due', '') or '') | string | trim if input_data is mapping else '' }}"
+          - if: "{{ _cl_borrower == '' or (_cl_item_id_in is none and _cl_title == '') }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: loan
+                  item_type: "{{ _ct_item_type }}"
+                  message: "borrower and (item_id or title) are required."
+                  coaching: "input_json: {\"title\": \"No Parking on the Dance Floor\", \"format\": \"cassette\", \"borrower\": \"Alex\", \"due_date\": \"2026-07-21\"}"
+            - stop: catalog loan missing input
+              response_variable: result
+          # --- resolve item_id if not provided directly ---
+          - if: "{{ _cl_item_id_in is none }}"
+            then:
+            # resolve userentity + shells (same pattern as browse)
+            - action: script.zen_sutra_grocy
+              response_variable: _cl_ue_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/userentities?query[]=name=catalog_item&limit=1"
+            - variables:
+                _cl_ue_id: >-
+                  {%- set c = (_cl_ue_raw.get('result', {}) or {}).get('content', []) if _cl_ue_raw is mapping else [] -%}
+                  {%- set c = c if c is sequence and c is not string else [] -%}
+                  {{ c[0].get('id') | int if c | length > 0 and c[0] is mapping else none }}
+            - action: script.zen_sutra_grocy
+              response_variable: _cl_obj_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/userobjects?query[]=userentity_id={{ _cl_ue_id }}&limit=500&offset=0"
+            - action: script.zen_dojotools_inventory
+              response_variable: _cl_products_raw
+              continue_on_error: true
+              data:
+                mode: catalog_find_by_tag
+                ha_labels: "{{ _ct_ha_label }}"
+            - variables:
+                _cl_obj_ids: >-
+                  {%- set c = (_cl_obj_raw.get('result', {}) or {}).get('content', []) if _cl_obj_raw is mapping else [] -%}
+                  {{ c if c is sequence and c is not string else [] }}
+                _cl_prods: >-
+                  {%- set ns = namespace(d={}) -%}
+                  {%- set plist = _cl_products_raw if _cl_products_raw is mapping else {} -%}
+                  {%- set plist = plist.get('products', plist.get('items', plist.get('result', []))) -%}
+                  {%- for p in plist if p is mapping -%}
+                    {%- set ns.d = ns.d | combine({p.get('id') | string: p}) -%}
+                  {%- endfor -%}
+                  {{ ns.d }}
+            - repeat:
+                for_each: "{{ _cl_obj_ids }}"
+                sequence:
+                  - action: script.zen_dojotools_inventory
+                    response_variable: _cl_val_raw
+                    continue_on_error: true
+                    data:
+                      mode: userentity_values_get
+                      entity: userentity-catalog_item
+                      userobject_id: "{{ repeat.item.id }}"
+                  - variables:
+                      _cl_matches_acc: >-
+                        {%- set prev = _cl_matches_acc | default([]) -%}
+                        {%- set v = _cl_val_raw.get('values') if _cl_val_raw is mapping and _cl_val_raw.get('status') == 'ok' else none -%}
+                        {%- if v is mapping -%}
+                          {%- set pid = v.get('product_id') | string | trim -%}
+                          {%- set work = (_cl_prods if _cl_prods is mapping else {}).get(pid) -%}
+                          {%- if work is mapping -%}
+                            {%- set title_ok = _cl_title | lower in (work.get('name', '') | lower) -%}
+                            {%- set fmt_ok = _cl_format == '' or _cl_format in (v.get('format', '') | lower) -%}
+                            {%- if title_ok and fmt_ok -%}
+                              {{ prev + [{'item_id': repeat.item.id | int, 'product_id': pid | int, 'title': work.get('name', ''), 'format': v.get('format', ''), 'condition': v.get('condition', ''), 'location_id': v.get('location_id') | int(none), 'loan_borrower': v.get('loan_borrower', '') | string | trim}] }}
+                            {%- else -%}{{ prev }}{%- endif -%}
+                          {%- else -%}{{ prev }}{%- endif -%}
+                        {%- else -%}{{ prev }}{%- endif -%}
+            - variables:
+                _cl_candidates: "{{ _cl_matches_acc | default([]) }}"
+            - if: "{{ _cl_candidates | length == 0 }}"
+              then:
+              - variables:
+                  result:
+                    status: not_found
+                    section: catalog
+                    mode: loan
+                    item_type: "{{ _ct_item_type }}"
+                    message: "No item found for '{{ _cl_title }}'{{ ' format=' ~ _cl_format if _cl_format != '' else '' }}. Browse to see item_ids."
+              - stop: catalog loan not found
+                response_variable: result
+            - if: "{{ _cl_candidates | length > 1 }}"
+              then:
+              - variables:
+                  result:
+                    status: ambiguous
+                    section: catalog
+                    mode: loan
+                    item_type: "{{ _ct_item_type }}"
+                    message: "Multiple copies found. Specify item_id or add format= to disambiguate."
+                    candidates: "{{ _cl_candidates }}"
+              - stop: catalog loan ambiguous
+                response_variable: result
+            - variables:
+                _cl_item_id_in: "{{ _cl_candidates[0].get('item_id') | int }}"
+                _cl_resolved_title: "{{ _cl_candidates[0].get('title', _cl_title) }}"
+                _cl_current_loc: "{{ _cl_candidates[0].get('location_id') }}"
+          # --- get current values if item_id was provided directly ---
+          - if: "{{ _cl_resolved_title | default('') == '' }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              response_variable: _cl_cur_raw
+              continue_on_error: true
+              data:
+                mode: userentity_values_get
+                entity: userentity-catalog_item
+                userobject_id: "{{ _cl_item_id_in }}"
+            - variables:
+                _cl_cur_vals: "{{ _cl_cur_raw.get('values', {}) if _cl_cur_raw is mapping else {} }}"
+                _cl_current_loc: "{{ (_cl_cur_vals.get('location_id') | int(none)) if _cl_cur_vals is mapping else none }}"
+                _cl_cur_product_id: "{{ (_cl_cur_vals.get('product_id') | int(0)) if _cl_cur_vals is mapping else 0 }}"
+            - action: script.zen_sutra_grocy
+              response_variable: _cl_prod_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/products?query[]=id={{ _cl_cur_product_id }}&limit=1"
+            - variables:
+                _cl_resolved_title: >-
+                  {%- set c = (_cl_prod_raw.get('result', {}) or {}).get('content', []) if _cl_prod_raw is mapping else [] -%}
+                  {%- set c = c if c is sequence and c is not string else [] -%}
+                  {%- set name = c[0].get('name', '') if c | length > 0 and c[0] is mapping else '' -%}
+                  {{ name if name != '' else _cl_title }}
+          # --- write loan state to userobject ---
+          - variables:
+              _cl_loan_dict: >-
+                {%- set d = {'loan_borrower': _cl_borrower, 'loan_date': now().strftime('%Y-%m-%d'), 'loan_due': _cl_due} -%}
+                {%- if _cl_current_loc is not none -%}
+                  {%- set d = d | combine({'loan_home_location_id': _cl_current_loc | int}) -%}
+                {%- endif -%}
+                {{ d | tojson }}
+          - action: script.zen_dojotools_inventory
+            response_variable: _cl_write_raw
+            continue_on_error: true
+            data:
+              mode: userentity_values_set
+              entity: userentity-catalog_item
+              userobject_id: "{{ _cl_item_id_in }}"
+              values_json: "{{ _cl_loan_dict }}"
+          - variables:
+              result:
+                status: loaned
+                section: catalog
+                mode: loan
+                item_type: "{{ _ct_item_type }}"
+                item_id: "{{ _cl_item_id_in }}"
+                title: "{{ _cl_resolved_title }}"
+                borrower: "{{ _cl_borrower }}"
+                loan_date: "{{ now().strftime('%Y-%m-%d') }}"
+                loan_due: "{{ _cl_due }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog loan done
+            response_variable: result
+
+        # ── catalog return ────────────────────────────────────────────────────
+        # M4: clears loan fields on catalog_item userobject, restores location_id
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["return", "catalog_return"] }}'
+          sequence:
+          - variables:
+              _cr_item_id_in: >-
+                {%- set v = (input_data.get('item_id', none) if input_data is mapping else none) -%}
+                {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
+              _cr_title:  "{{ (input_data.get('title', '') or '') | string | trim if input_data is mapping else '' }}"
+              _cr_format: "{{ (input_data.get('format', '') or '') | string | lower | trim if input_data is mapping else '' }}"
+          - if: "{{ _cr_item_id_in is none and _cr_title == '' }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: return
+                  item_type: "{{ _ct_item_type }}"
+                  message: "item_id or title required."
+            - stop: catalog return missing input
+              response_variable: result
+          # --- resolve item_id if needed ---
+          - if: "{{ _cr_item_id_in is none }}"
+            then:
+            - action: script.zen_sutra_grocy
+              response_variable: _cr_ue_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/userentities?query[]=name=catalog_item&limit=1"
+            - variables:
+                _cr_ue_id: >-
+                  {%- set c = (_cr_ue_raw.get('result', {}) or {}).get('content', []) if _cr_ue_raw is mapping else [] -%}
+                  {%- set c = c if c is sequence and c is not string else [] -%}
+                  {{ c[0].get('id') | int if c | length > 0 and c[0] is mapping else none }}
+            - action: script.zen_sutra_grocy
+              response_variable: _cr_obj_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/userobjects?query[]=userentity_id={{ _cr_ue_id }}&limit=500&offset=0"
+            - action: script.zen_dojotools_inventory
+              response_variable: _cr_products_raw
+              continue_on_error: true
+              data:
+                mode: catalog_find_by_tag
+                ha_labels: "{{ _ct_ha_label }}"
+            - variables:
+                _cr_obj_ids: >-
+                  {%- set c = (_cr_obj_raw.get('result', {}) or {}).get('content', []) if _cr_obj_raw is mapping else [] -%}
+                  {{ c if c is sequence and c is not string else [] }}
+                _cr_prods: >-
+                  {%- set ns = namespace(d={}) -%}
+                  {%- set plist = _cr_products_raw if _cr_products_raw is mapping else {} -%}
+                  {%- set plist = plist.get('products', plist.get('items', plist.get('result', []))) -%}
+                  {%- for p in plist if p is mapping -%}
+                    {%- set ns.d = ns.d | combine({p.get('id') | string: p}) -%}
+                  {%- endfor -%}
+                  {{ ns.d }}
+            - repeat:
+                for_each: "{{ _cr_obj_ids }}"
+                sequence:
+                  - action: script.zen_dojotools_inventory
+                    response_variable: _cr_val_raw
+                    continue_on_error: true
+                    data:
+                      mode: userentity_values_get
+                      entity: userentity-catalog_item
+                      userobject_id: "{{ repeat.item.id }}"
+                  - variables:
+                      _cr_matches_acc: >-
+                        {%- set prev = _cr_matches_acc | default([]) -%}
+                        {%- set v = _cr_val_raw.get('values') if _cr_val_raw is mapping and _cr_val_raw.get('status') == 'ok' else none -%}
+                        {%- if v is mapping and (v.get('loan_borrower') or '') | string | trim != '' -%}
+                          {%- set pid = v.get('product_id') | string | trim -%}
+                          {%- set work = (_cr_prods if _cr_prods is mapping else {}).get(pid) -%}
+                          {%- if work is mapping -%}
+                            {%- set title_ok = _cr_title == '' or (_cr_title | lower) in (work.get('name', '') | lower) -%}
+                            {%- set fmt_ok = _cr_format == '' or _cr_format in (v.get('format', '') | lower) -%}
+                            {%- if title_ok and fmt_ok -%}
+                              {{ prev + [{'item_id': repeat.item.id | int, 'product_id': pid | int, 'title': work.get('name', ''), 'format': v.get('format', ''), 'loan_borrower': v.get('loan_borrower', ''), 'loan_home_location_id': v.get('loan_home_location_id') | int(none)}] }}
+                            {%- else -%}{{ prev }}{%- endif -%}
+                          {%- else -%}{{ prev }}{%- endif -%}
+                        {%- else -%}{{ prev }}{%- endif -%}
+            - variables:
+                _cr_candidates: "{{ _cr_matches_acc | default([]) }}"
+            - if: "{{ _cr_candidates | length == 0 }}"
+              then:
+              - variables:
+                  result:
+                    status: not_found
+                    section: catalog
+                    mode: return
+                    item_type: "{{ _ct_item_type }}"
+                    message: "No loaned item found for '{{ _cr_title }}'{{ ' format=' ~ _cr_format if _cr_format != '' else '' }}."
+              - stop: catalog return not found
+                response_variable: result
+            - if: "{{ _cr_candidates | length > 1 }}"
+              then:
+              - variables:
+                  result:
+                    status: ambiguous
+                    section: catalog
+                    mode: return
+                    item_type: "{{ _ct_item_type }}"
+                    message: "Multiple loaned copies found. Specify item_id or format= to disambiguate."
+                    candidates: "{{ _cr_candidates }}"
+              - stop: catalog return ambiguous
+                response_variable: result
+            - variables:
+                _cr_item_id_in: "{{ _cr_candidates[0].get('item_id') | int }}"
+                _cr_resolved_title: "{{ _cr_candidates[0].get('title', _cr_title) }}"
+                _cr_borrower: "{{ _cr_candidates[0].get('loan_borrower', '') }}"
+                _cr_home_loc_id: "{{ _cr_candidates[0].get('loan_home_location_id') }}"
+          # --- if item_id provided directly, fetch current values ---
+          - if: "{{ _cr_resolved_title | default('') == '' }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              response_variable: _cr_cur_raw
+              continue_on_error: true
+              data:
+                mode: userentity_values_get
+                entity: userentity-catalog_item
+                userobject_id: "{{ _cr_item_id_in }}"
+            - variables:
+                _cr_cur_vals: "{{ _cr_cur_raw.get('values', {}) if _cr_cur_raw is mapping else {} }}"
+                _cr_borrower: "{{ (_cr_cur_vals.get('loan_borrower', '') or '') if _cr_cur_vals is mapping else '' }}"
+                _cr_home_loc_id: "{{ (_cr_cur_vals.get('loan_home_location_id') | int(none)) if _cr_cur_vals is mapping else none }}"
+                _cr_cur_product_id: "{{ (_cr_cur_vals.get('product_id') | int(0)) if _cr_cur_vals is mapping else 0 }}"
+            - action: script.zen_sutra_grocy
+              response_variable: _cr_prod_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/products?query[]=id={{ _cr_cur_product_id }}&limit=1"
+            - variables:
+                _cr_resolved_title: >-
+                  {%- set c = (_cr_prod_raw.get('result', {}) or {}).get('content', []) if _cr_prod_raw is mapping else [] -%}
+                  {%- set c = c if c is sequence and c is not string else [] -%}
+                  {%- set name = c[0].get('name', '') if c | length > 0 and c[0] is mapping else '' -%}
+                  {{ name if name != '' else _cr_title }}
+          # --- write cleared loan state ---
+          - variables:
+              _cr_return_dict: >-
+                {%- set d = {'loan_borrower': '', 'loan_date': '', 'loan_due': '', 'loan_home_location_id': none} -%}
+                {%- if _cr_home_loc_id is not none -%}
+                  {%- set d = d | combine({'location_id': _cr_home_loc_id | int}) -%}
+                {%- endif -%}
+                {{ d | tojson }}
+          - action: script.zen_dojotools_inventory
+            response_variable: _cr_write_raw
+            continue_on_error: true
+            data:
+              mode: userentity_values_set
+              entity: userentity-catalog_item
+              userobject_id: "{{ _cr_item_id_in }}"
+              values_json: "{{ _cr_return_dict }}"
+          - variables:
+              result:
+                status: returned
+                section: catalog
+                mode: return
+                item_type: "{{ _ct_item_type }}"
+                item_id: "{{ _cr_item_id_in }}"
+                title: "{{ _cr_resolved_title }}"
+                returned_by: "{{ _cr_borrower }}"
+                restored_location_id: "{{ _cr_home_loc_id }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog return done
+            response_variable: result
+
+        # ── catalog move ─────────────────────────────────────────────────────
+        # Relocate a catalog item to a named location (shelve/reshelve).
+        # input_json: {item_id?, title?, location_name, set_as_home?}
+        # set_as_home=true also updates loan_home_location_id so returns
+        # go back to the new shelf automatically.
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm == "move" }}'
+          sequence:
+          - variables:
+              _mv_item_id_in: >-
+                {%- set v = (input_data.get('item_id', none) if input_data is mapping else none) -%}
+                {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
+              _mv_title:        "{{ (input_data.get('title', '') or '') | string | trim if input_data is mapping else '' }}"
+              _mv_loc_name:     "{{ (input_data.get('location_name', '') or '') | string | trim if input_data is mapping else '' }}"
+              _mv_set_as_home:  "{{ (input_data.get('set_as_home', false) or false) | bool if input_data is mapping else false }}"
+          - if: "{{ _mv_loc_name == '' }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: move
+                  message: "location_name required."
+            - stop: catalog move missing location
+              response_variable: result
+          - if: "{{ _mv_item_id_in is none and _mv_title == '' }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: move
+                  message: "item_id or title required."
+            - stop: catalog move missing item
+              response_variable: result
+          # --- resolve target location ---
+          - action: script.zen_dojotools_inventory
+            response_variable: _mv_locs_raw
+            continue_on_error: true
+            data:
+              mode: locations_list
+          - variables:
+              _mv_locs: >-
+                {%- set r = _mv_locs_raw if _mv_locs_raw is mapping else {} -%}
+                {%- set lst = r.get('locations', r.get('result', [])) -%}
+                {{ lst if lst is sequence and lst is not string else [] }}
+              _mv_loc_id: >-
+                {%- set needle = _mv_loc_name | lower -%}
+                {%- set ns = namespace(found=none) -%}
+                {%- for loc in _mv_locs if loc is mapping -%}
+                  {%- if ns.found is none and (loc.get('name', '') | lower) == needle -%}
+                    {%- set ns.found = loc.get('id') | int -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if ns.found is none -%}
+                  {%- for loc in _mv_locs if loc is mapping -%}
+                    {%- if ns.found is none and needle in (loc.get('name', '') | lower) -%}
+                      {%- set ns.found = loc.get('id') | int -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.found }}
+              _mv_loc_resolved_name: >-
+                {%- set needle = _mv_loc_name | lower -%}
+                {%- set ns = namespace(found='') -%}
+                {%- for loc in _mv_locs if loc is mapping -%}
+                  {%- if ns.found == '' and (loc.get('name', '') | lower) == needle -%}
+                    {%- set ns.found = loc.get('name', '') -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if ns.found == '' -%}
+                  {%- for loc in _mv_locs if loc is mapping -%}
+                    {%- if ns.found == '' and needle in (loc.get('name', '') | lower) -%}
+                      {%- set ns.found = loc.get('name', '') -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.found }}
+          - if: "{{ _mv_loc_id is none }}"
+            then:
+            - variables:
+                result:
+                  status: not_found
+                  section: catalog
+                  mode: move
+                  message: "Location '{{ _mv_loc_name }}' not found in Grocy. Use zen_dojotools_inventory mode=locations_list to see available locations."
+            - stop: catalog move location not found
+              response_variable: result
+          # --- resolve item_id if not provided ---
+          - if: "{{ _mv_item_id_in is none }}"
+            then:
+            - action: script.zen_sutra_grocy
+              response_variable: _mv_ue_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/userentities?query[]=name=catalog_item&limit=1"
+            - variables:
+                _mv_ue_id: >-
+                  {%- set c = (_mv_ue_raw.get('result', {}) or {}).get('content', []) if _mv_ue_raw is mapping else [] -%}
+                  {%- set c = c if c is sequence and c is not string else [] -%}
+                  {{ c[0].get('id') | int if c | length > 0 and c[0] is mapping else none }}
+            - action: script.zen_sutra_grocy
+              response_variable: _mv_obj_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/userobjects?query[]=userentity_id={{ _mv_ue_id }}&limit=500&offset=0"
+            - action: script.zen_dojotools_inventory
+              response_variable: _mv_products_raw
+              continue_on_error: true
+              data:
+                mode: catalog_find_by_tag
+                ha_labels: "{{ _ct_ha_label }}"
+            - variables:
+                _mv_obj_ids: >-
+                  {%- set c = (_mv_obj_raw.get('result', {}) or {}).get('content', []) if _mv_obj_raw is mapping else [] -%}
+                  {{ c if c is sequence and c is not string else [] }}
+                _mv_prods: >-
+                  {%- set ns = namespace(d={}) -%}
+                  {%- set plist = _mv_products_raw if _mv_products_raw is mapping else {} -%}
+                  {%- set plist = plist.get('products', plist.get('items', plist.get('result', []))) -%}
+                  {%- for p in plist if p is mapping -%}
+                    {%- set ns.d = ns.d | combine({p.get('id') | string: p}) -%}
+                  {%- endfor -%}
+                  {{ ns.d }}
+            - repeat:
+                for_each: "{{ _mv_obj_ids }}"
+                sequence:
+                  - action: script.zen_dojotools_inventory
+                    response_variable: _mv_val_raw
+                    continue_on_error: true
+                    data:
+                      mode: userentity_values_get
+                      entity: userentity-catalog_item
+                      userobject_id: "{{ repeat.item.id }}"
+                  - variables:
+                      _mv_matches_acc: >-
+                        {%- set prev = _mv_matches_acc | default([]) -%}
+                        {%- set v = _mv_val_raw.get('values') if _mv_val_raw is mapping and _mv_val_raw.get('status') == 'ok' else none -%}
+                        {%- if v is mapping -%}
+                          {%- set pid = v.get('product_id') | string | trim -%}
+                          {%- set work = (_mv_prods if _mv_prods is mapping else {}).get(pid) -%}
+                          {%- if work is mapping -%}
+                            {%- set title_ok = _mv_title == '' or (_mv_title | lower) in (work.get('name', '') | lower) -%}
+                            {%- if title_ok -%}
+                              {{ prev + [{'item_id': repeat.item.id | int, 'product_id': pid | int, 'title': work.get('name', ''), 'format': v.get('format', ''), 'home_loc_id': v.get('loan_home_location_id') | int(none)}] }}
+                            {%- else -%}{{ prev }}{%- endif -%}
+                          {%- else -%}{{ prev }}{%- endif -%}
+                        {%- else -%}{{ prev }}{%- endif -%}
+            - variables:
+                _mv_candidates: "{{ _mv_matches_acc | default([]) }}"
+            - if: "{{ _mv_candidates | length == 0 }}"
+              then:
+              - variables:
+                  result:
+                    status: not_found
+                    section: catalog
+                    mode: move
+                    message: "No catalog item found matching '{{ _mv_title }}'."
+              - stop: catalog move item not found
+                response_variable: result
+            - if: "{{ _mv_candidates | length > 1 }}"
+              then:
+              - variables:
+                  result:
+                    status: ambiguous
+                    section: catalog
+                    mode: move
+                    message: "Multiple copies found matching '{{ _mv_title }}'. Specify item_id to disambiguate."
+                    candidates: "{{ _mv_candidates }}"
+              - stop: catalog move ambiguous
+                response_variable: result
+            - variables:
+                _mv_item_id_in:   "{{ _mv_candidates[0].get('item_id') | int }}"
+                _mv_resolved_title: "{{ _mv_candidates[0].get('title', _mv_title) }}"
+                _mv_old_home_loc_id: "{{ _mv_candidates[0].get('home_loc_id') }}"
+          # --- fetch current values when item_id was provided directly ---
+          - if: "{{ _mv_resolved_title | default('') == '' }}"
+            then:
+            - action: script.zen_dojotools_inventory
+              response_variable: _mv_cur_raw
+              continue_on_error: true
+              data:
+                mode: userentity_values_get
+                entity: userentity-catalog_item
+                userobject_id: "{{ _mv_item_id_in }}"
+            - variables:
+                _mv_cur_vals: "{{ _mv_cur_raw.get('values', {}) if _mv_cur_raw is mapping else {} }}"
+                _mv_old_home_loc_id: "{{ (_mv_cur_vals.get('loan_home_location_id') | int(none)) if _mv_cur_vals is mapping else none }}"
+                _mv_cur_product_id: "{{ (_mv_cur_vals.get('product_id') | int(0)) if _mv_cur_vals is mapping else 0 }}"
+            - action: script.zen_sutra_grocy
+              response_variable: _mv_prod_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/products?query[]=id={{ _mv_cur_product_id }}&limit=1"
+            - variables:
+                _mv_resolved_title: >-
+                  {%- set c = (_mv_prod_raw.get('result', {}) or {}).get('content', []) if _mv_prod_raw is mapping else [] -%}
+                  {%- set c = c if c is sequence and c is not string else [] -%}
+                  {{ c[0].get('name', _mv_title) if c | length > 0 and c[0] is mapping else _mv_title }}
+          # --- write new location ---
+          - variables:
+              _mv_write_dict: >-
+                {%- set d = {'location_id': _mv_loc_id | int} -%}
+                {%- if _mv_set_as_home -%}
+                  {%- set d = d | combine({'loan_home_location_id': _mv_loc_id | int}) -%}
+                {%- endif -%}
+                {{ d | tojson }}
+          - action: script.zen_dojotools_inventory
+            response_variable: _mv_write_raw
+            continue_on_error: true
+            data:
+              mode: userentity_values_set
+              entity: userentity-catalog_item
+              userobject_id: "{{ _mv_item_id_in }}"
+              values_json: "{{ _mv_write_dict }}"
+          - variables:
+              result:
+                status: moved
+                section: catalog
+                mode: move
+                item_id: "{{ _mv_item_id_in }}"
+                title: "{{ _mv_resolved_title }}"
+                location_id: "{{ _mv_loc_id }}"
+                location_name: "{{ _mv_loc_resolved_name }}"
+                home_updated: "{{ _mv_set_as_home }}"
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog move done
+            response_variable: result
+
+        # ── catalog configure_status ──────────────────────────────────────────
+        # Returns full shelf configuration map: intake location, which classes
+        # have shelves, which don't, and where each class resolves to.
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["configure_status", "catalog_configure_status"] }}'
+          sequence:
+          - action: script.zen_dojotools_inventory
+            response_variable: _cs_locs_raw
+            continue_on_error: true
+            data:
+              mode: locations_list
+              per_page: 200
+          - variables:
+              _cs_all_locs: >-
+                {%- set r = _cs_locs_raw.get('result') if _cs_locs_raw is mapping else none -%}
+                {{ r if r is sequence and r is not string else [] }}
+          - variables:
+              _cs_known_classes:
+                - book
+                - music_recording
+                - game
+                - video
+                - periodical
+                - art_print
+          - variables:
+              _cs_intake: >-
+                {%- set ns = namespace(d=none) -%}
+                {%- for loc in _cs_all_locs if loc is mapping -%}
+                  {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                  {%- if (uf.get('catalog_class') or '') | string | trim == '__intake__' -%}
+                    {%- set ns.d = {'id': loc.get('id') | int, 'name': loc.get('name', '')} -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.d }}
+              _cs_class_map: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- for loc in _cs_all_locs if loc is mapping -%}
+                  {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                  {%- set classes = (uf.get('catalog_class') or '') | string | trim -%}
+                  {%- if classes not in ['', 'none', 'null', '__intake__'] -%}
+                    {%- for cls in classes.split(',') | map('trim') | select -%}
+                      {%- set existing = ns.d.get(cls, []) -%}
+                      {%- set ns.d = ns.d | combine({cls: existing + [{'id': loc.get('id') | int, 'name': loc.get('name', '')}]}) -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.d }}
+          - variables:
+              _cs_configured: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- for cls in _cs_known_classes -%}
+                  {%- set locs = (_cs_class_map if _cs_class_map is mapping else {}).get(cls, []) -%}
+                  {%- set ns.d = ns.d | combine({cls: locs if locs | length > 0 else none}) -%}
+                {%- endfor -%}
+                {{ ns.d }}
+              _cs_unconfigured: >-
+                {%- set map = _cs_class_map if _cs_class_map is mapping else {} -%}
+                {{ _cs_known_classes | reject('in', map.keys() | list) | list }}
+          - variables:
+              result:
+                status: ok
+                section: catalog
+                mode: configure_status
+                intake_location: "{{ _cs_intake }}"
+                configured_classes: "{{ _cs_configured }}"
+                unconfigured_classes: "{{ _cs_unconfigured }}"
+                hint: >-
+                  {%- if _cs_unconfigured | length > 0 -%}
+                  Run mode=configure item_type=<type> input_json={"location":"<shelf>"} for: {{ _cs_unconfigured | join(', ') }}.
+                  {%- else -%}
+                  All catalog classes have at least one shelf configured.
+                  {%- endif -%}
+                caller_token: "{{ caller_token_norm }}"
+          - stop: catalog configure_status done
+            response_variable: result
+
+        # ── catalog intake_pending ────────────────────────────────────────────
+        # Find items at the intake location (or explicit location_id) that have
+        # an ISBN-13 barcode (978/979 prefix) but are not yet in the catalog.
+        # Returns a ready-to-add candidate list — Friday calls catalog_add per item.
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm in ["intake_pending", "catalog_intake_pending"] }}'
+          sequence:
+          # ── step 1: resolve location ──────────────────────────────────────
+          - variables:
+              _ip_explicit_loc: >-
+                {%- set v = (input_data.get('location_id', none) if input_data is mapping else none) -%}
+                {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
+          - action: script.zen_dojotools_inventory
+            response_variable: _ip_locs_raw
+            continue_on_error: true
+            data:
+              mode: locations_list
+              per_page: 200
+          - variables:
+              _ip_all_locs: >-
+                {%- set r = _ip_locs_raw.get('result') if _ip_locs_raw is mapping else none -%}
+                {{ r if r is sequence and r is not string else [] }}
+          - variables:
+              _ip_intake_loc_id: >-
+                {%- if _ip_explicit_loc is not none -%}{{ _ip_explicit_loc | int }}
+                {%- else -%}
+                  {%- set ns = namespace(id=none) -%}
+                  {%- for loc in _ip_all_locs if loc is mapping -%}
+                    {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                    {%- if uf.get('catalog_class', '') | string | trim == '__intake__' -%}
+                      {%- set ns.id = loc.get('id') | int -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.id }}
+                {%- endif -%}
+              _ip_intake_loc_name: >-
+                {%- if _ip_explicit_loc is not none -%}
+                  {%- set ns = namespace(name='') -%}
+                  {%- for loc in _ip_all_locs if loc is mapping -%}
+                    {%- if loc.get('id') | int == _ip_explicit_loc | int -%}{%- set ns.name = loc.get('name', '') -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.name }}
+                {%- else -%}
+                  {%- set ns = namespace(name='') -%}
+                  {%- for loc in _ip_all_locs if loc is mapping -%}
+                    {%- set uf = loc.get('userfields', {}) if loc.get('userfields') is mapping else {} -%}
+                    {%- if uf.get('catalog_class', '') | string | trim == '__intake__' -%}{%- set ns.name = loc.get('name', '') -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.name }}
+                {%- endif -%}
+          - if: "{{ _ip_intake_loc_id is none }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  section: catalog
+                  mode: intake_pending
+                  message: >-
+                    No intake location found. Set one with:
+                    section=catalog mode=configure input_json={"location":"<Name>","role":"intake"}
+                    Or pass location_id explicitly in input_json.
+                  caller_token: "{{ caller_token_norm }}"
+            - stop: catalog intake_pending no location
+              response_variable: result
+          # ── step 2: products at this location ─────────────────────────────
+          - action: script.zen_dojotools_inventory
+            response_variable: _ip_stock_raw
+            continue_on_error: true
+            data:
+              mode: stock_list_by_location
+              location_id: "{{ _ip_intake_loc_id }}"
+          - variables:
+              _ip_loc_products: >-
+                {%- set r = _ip_stock_raw.get('result') if _ip_stock_raw is mapping else none -%}
+                {%- set r = r if r is sequence and r is not string else [] -%}
+                {{ r }}
+              _ip_loc_product_ids: >-
+                {%- set r = _ip_stock_raw.get('result') if _ip_stock_raw is mapping else none -%}
+                {%- set r = r if r is sequence and r is not string else [] -%}
+                {%- set ns = namespace(ids=[]) -%}
+                {%- for p in r if p is mapping -%}
+                  {%- set pid = p.get('product_id') | int(0) -%}
+                  {%- if pid > 0 and pid not in ns.ids -%}
+                    {%- set ns.ids = ns.ids + [pid] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.ids }}
+          # ── step 3: known catalog product_ids (via HA label — catalog_add stamps the label) ──
+          - action: script.zen_dojotools_inventory
+            response_variable: _ip_cat_raw
+            continue_on_error: true
+            data:
+              mode: catalog_find_by_tag
               ha_labels: book
-          - action: script.zen_dojotools_inventory
-            response_variable: _ba_uf_raw
-            continue_on_error: true
-            data:
-              mode: update_product_meta
-              product_id: "{{ _ba_product_id }}"
-              note: "{{ _ba_note if _ba_note != '' else omit }}"
-          - action: script.zen_dojotools_inventory
-            response_variable: _ba_loc_raw
-            continue_on_error: true
-            data:
-              mode: locations_find
-              location_id: "{{ _ba_loc_id }}"
           - variables:
-              _ba_loc_name: >-
-                {%- set r = _ba_loc_raw if _ba_loc_raw is mapping else {} -%}
-                {%- set items = r.get('result', []) -%}
-                {{ (items[0].get('name', '') if items | length > 0 and items[0] is mapping else '') }}
+              _ip_cataloged_ids: >-
+                {%- set r = _ip_cat_raw if _ip_cat_raw is mapping else {} -%}
+                {%- set items = r.get('products', r.get('items', [])) -%}
+                {%- set items = items if items is sequence and items is not string else [] -%}
+                {%- set ns = namespace(ids=[]) -%}
+                {%- for p in items if p is mapping -%}
+                  {%- set pid = p.get('id') | int(0) -%}
+                  {%- if pid > 0 -%}{%- set ns.ids = ns.ids + [pid] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.ids }}
+          # ── step 4: gap = at location but not in catalog ───────────────────
+          - variables:
+              _ip_gap_ids: >-
+                {%- set cat = _ip_cataloged_ids if _ip_cataloged_ids is sequence else [] -%}
+                {%- set loc = _ip_loc_product_ids if _ip_loc_product_ids is sequence else [] -%}
+                {%- set ns = namespace(gap=[]) -%}
+                {%- for pid in loc -%}
+                  {%- if pid | int not in cat -%}
+                    {%- set ns.gap = ns.gap + [pid | int] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.gap }}
+          # ── step 5: per-gap-product barcode fetch + ISBN filter ────────────
+          - repeat:
+              for_each: "{{ _ip_gap_ids }}"
+              sequence:
+              - action: script.zen_dojotools_inventory
+                response_variable: _ip_det_raw
+                continue_on_error: true
+                data:
+                  mode: stock_get_product_details
+                  product_id: "{{ repeat.item }}"
+              - variables:
+                  _ip_candidates: >-
+                    {%- set prev = _ip_candidates | default([]) -%}
+                    {%- set r = _ip_det_raw.get('result', {}) if _ip_det_raw is mapping else {} -%}
+                    {%- set r = r if r is mapping else {} -%}
+                    {%- set prod = r.get('product', {}) or {} -%}
+                    {%- set barcodes = r.get('product_barcodes', []) or [] -%}
+                    {%- set ns = namespace(isbn_bc='', found=false) -%}
+                    {%- for b in barcodes if b is mapping -%}
+                      {%- set bc = b.get('barcode', '') | string | trim -%}
+                      {%- if (bc.startswith('978') or bc.startswith('979')) and bc | length == 13 -%}
+                        {%- set ns.isbn_bc = bc -%}
+                        {%- set ns.found = true -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- if ns.found -%}
+                      {{ prev + [{'product_id': prod.get('id') | int, 'name': prod.get('name', '') | string | trim, 'barcode': ns.isbn_bc, 'confidence': 'isbn13'}] }}
+                    {%- else -%}{{ prev }}{%- endif -%}
+          - variables:
+              _ip_final: "{{ _ip_candidates | default([]) }}"
           - variables:
               result:
-                status: existing
-                section: books
-                mode: books_add
-                product_id: "{{ _ba_product_id }}"
-                title: "{{ _ba_title }}"
-                author: "{{ _ba_author }}"
-                isbn: "{{ _ba_isbn }}"
-                series: "{{ _ba_series }}"
-                genre: "{{ _ba_genre }}"
-                location_id: "{{ _ba_loc_id }}"
-                location_name: "{{ _ba_loc_name }}"
-                stocked: 0
-                tagged_book: true
+                status: ok
+                section: catalog
+                mode: intake_pending
+                location_id: "{{ _ip_intake_loc_id }}"
+                location_name: "{{ _ip_intake_loc_name }}"
+                pending_count: "{{ _ip_final | length }}"
+                candidates: "{{ _ip_final }}"
+                hint: >-
+                  {%- if (_ip_final | length) == 0 -%}
+                  No ISBN-13 items found at this location that are not already cataloged.
+                  {%- else -%}
+                  Call section=catalog item_type=book mode=add input_json={"barcode":"<barcode>"} for each candidate.
+                  {%- endif -%}
                 caller_token: "{{ caller_token_norm }}"
-          - stop: books_add existing untagged
+          - stop: catalog intake_pending done
             response_variable: result
-        - action: script.zen_dojotools_inventory
-          response_variable: _ba_stock_raw
-          continue_on_error: true
-          data:
-            mode: stock_buy_product
-            product_id: "{{ _ba_product_id }}"
-            location_id: "{{ _ba_loc_id }}"
-            amount: 1
-        - action: script.zen_dojotools_inventory
-          response_variable: _ba_loc_raw
-          continue_on_error: true
-          data:
-            mode: locations_find
-            location_id: "{{ _ba_loc_id }}"
-        - variables:
-            _ba_loc_name: >-
-              {%- set r = _ba_loc_raw if _ba_loc_raw is mapping else {} -%}
-              {%- set items = r.get('result', []) -%}
-              {{ (items[0].get('name', '') if items | length > 0 and items[0] is mapping else '') }}
-        - variables:
-            result:
-              status: created
-              section: books
-              mode: books_add
-              product_id: "{{ _ba_product_id }}"
-              title: "{{ _ba_title }}"
-              author: "{{ _ba_author }}"
-              isbn: "{{ _ba_isbn }}"
-              series: "{{ _ba_series }}"
-              genre: "{{ _ba_genre }}"
-              location_id: "{{ _ba_loc_id }}"
-              location_name: "{{ _ba_loc_name }}"
-              stocked: 1
-              note: "{{ _ba_note }}"
-              caller_token: "{{ caller_token_norm }}"
-        - stop: books_add done
-          response_variable: result
 
-      - conditions:
-        - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_move", "move"] }}'
-        sequence:
-        - variables:
-            _bm_input_data: >-
-              {%- set raw = input_json | default('', true) -%}
-              {%- if raw is mapping -%}{{ raw }}
-              {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) or {} }}
-              {%- else -%}{{ {} }}{%- endif -%}
-        - variables:
-            _bm_title: "{{ (_bm_input_data.get('title', '') or '') | string | trim if _bm_input_data is mapping else '' }}"
-            _bm_product_id_in: "{{ _bm_input_data.get('product_id', none) | int(none) if _bm_input_data is mapping else none }}"
-            _bm_to_loc_id: "{{ _bm_input_data.get('to_location_id', none) | int(none) if _bm_input_data is mapping else none }}"
-        - if: "{{ _bm_title == '' and _bm_product_id_in is none }}"
-          then:
-          - variables:
-              result:
-                status: error
-                section: books
-                mode: books_move
-                message: title or product_id is required.
-                coaching:
-                - "Pass input_json: {\"title\": \"Book Title\", \"to_location_id\": 214}"
-          - stop: books_move title required
-            response_variable: result
-        - if: "{{ _bm_to_loc_id is none }}"
-          then:
-          - variables:
-              result:
-                status: error
-                section: books
-                mode: books_move
-                message: to_location_id is required.
-                coaching:
-                - "Use books_find or books_browse to look up location_ids."
-          - stop: books_move to_location_id required
-            response_variable: result
-        # Resolve book — targeted lookup to avoid 256KB catalog limit
-        - if: "{{ _bm_product_id_in is not none }}"
-          then:
-          - action: script.zen_dojotools_inventory
-            response_variable: _bm_catalog_raw
-            continue_on_error: true
-            data:
-              mode: catalog_find_product
-              product_id: "{{ _bm_product_id_in }}"
-          else:
-          - action: script.zen_dojotools_inventory
-            response_variable: _bm_catalog_raw
-            continue_on_error: true
-            data:
-              mode: catalog_find_product
-              item: "{{ _bm_title }}"
-        - variables:
-            _bm_book: >-
-              {%- set r = _bm_catalog_raw if _bm_catalog_raw is mapping else {} -%}
-              {%- set items = r.get('result', r.get('items', [])) -%}
-              {%- set items = items if items is sequence and items is not string else [] -%}
-              {%- if _bm_product_id_in is not none -%}
-                {%- set ns = namespace(found=none) -%}
-                {%- for b in items if b is mapping -%}
-                  {%- if b.get('id') | int(0) == _bm_product_id_in -%}{%- set ns.found = b -%}{%- endif -%}
-                {%- endfor -%}
-                {{ ns.found | default(none, true) }}
-              {%- else -%}
-                {%- set ns = namespace(found=none) -%}
-                {%- set title_norm = _bm_title | lower -%}
-                {%- for b in items if b is mapping -%}
-                  {%- if (b.get('name', '') or '') | lower == title_norm -%}{%- set ns.found = b -%}{%- endif -%}
-                {%- endfor -%}
-                {{ ns.found | default(none, true) }}
-              {%- endif -%}
-        - if: "{{ _bm_book is not mapping }}"
-          then:
-          - variables:
-              result:
-                status: not_found
-                section: books
-                mode: books_move
-                message: "Book not found in catalog: {{ _bm_title }}"
-                coaching:
-                - Use books_search to verify the exact title, or pass product_id directly.
-          - stop: books_move book not found
-            response_variable: result
-        - variables:
-            _bm_product_id: "{{ _bm_book.get('id') | int(0) }}"
-            _bm_from_loc_id: "{{ _bm_book.get('location_id') | int(0) }}"
-        # Transfer stock
-        - action: script.zen_dojotools_inventory
-          response_variable: _bm_xfer_raw
-          continue_on_error: true
-          data:
-            mode: stock_transfer_location
-            product_id: "{{ _bm_product_id }}"
-            to_location_id: "{{ _bm_to_loc_id }}"
-            amount: 1
-        # Resolve from/to location names
-        - action: script.zen_dojotools_inventory
-          response_variable: _bm_from_loc_raw
-          continue_on_error: true
-          data:
-            mode: locations_find
-            location_id: "{{ _bm_from_loc_id }}"
-        - action: script.zen_dojotools_inventory
-          response_variable: _bm_to_loc_raw
-          continue_on_error: true
-          data:
-            mode: locations_find
-            location_id: "{{ _bm_to_loc_id }}"
-        - variables:
-            _bm_from_loc_name: >-
-              {%- set items = (_bm_from_loc_raw if _bm_from_loc_raw is mapping else {}).get('result', []) -%}
-              {{ (items[0].get('name', '') if items | length > 0 and items[0] is mapping else '') }}
-            _bm_to_loc_name: >-
-              {%- set items = (_bm_to_loc_raw if _bm_to_loc_raw is mapping else {}).get('result', []) -%}
-              {{ (items[0].get('name', '') if items | length > 0 and items[0] is mapping else '') }}
-        - variables:
-            result:
-              status: moved
-              section: books
-              mode: books_move
-              product_id: "{{ _bm_product_id }}"
-              title: "{{ _bm_book.get('name', _bm_title) }}"
-              from_location_id: "{{ _bm_from_loc_id }}"
-              from_location_name: "{{ _bm_from_loc_name }}"
-              to_location_id: "{{ _bm_to_loc_id }}"
-              to_location_name: "{{ _bm_to_loc_name }}"
-              caller_token: "{{ caller_token_norm }}"
-        - stop: books_move done
-          response_variable: result
+      - stop: catalog done
+        response_variable: result
 
-      - conditions:
-        - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_loan", "loan"] }}'
-        sequence:
-        - variables:
-            _bl_input_data: >-
-              {%- set raw = input_json | default('', true) -%}
-              {%- if raw is mapping -%}{{ raw }}
-              {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) or {} }}
-              {%- else -%}{{ {} }}{%- endif -%}
-        - variables:
-            _bl_title: "{{ (_bl_input_data.get('title', '') or '') | string | trim if _bl_input_data is mapping else '' }}"
-            _bl_borrower: "{{ (_bl_input_data.get('borrower', '') or '') | string | trim if _bl_input_data is mapping else '' }}"
-            _bl_due_date: "{{ (_bl_input_data.get('due_date', '') or '') | string | trim if _bl_input_data is mapping else '' }}"
-        - if: "{{ _bl_title == '' or _bl_borrower == '' }}"
-          then:
-          - variables:
-              result:
-                status: error
-                section: books
-                mode: books_loan
-                message: title and borrower are required.
-                coaching:
-                - "Pass input_json: {\"title\": \"Eragon\", \"borrower\": \"Alex\", \"due_date\": \"2026-07-19\"}"
-          - stop: books_loan missing required
-            response_variable: result
-        # Resolve book
-        - action: script.zen_dojotools_inventory
-          response_variable: _bl_catalog_raw
-          continue_on_error: true
-          data:
-            mode: catalog_find_product
-            item: "{{ _bl_title }}"
-        - variables:
-            _bl_book: >-
-              {%- set r = _bl_catalog_raw if _bl_catalog_raw is mapping else {} -%}
-              {%- set items = r.get('result', r.get('items', [])) -%}
-              {%- set items = items if items is sequence and items is not string else [] -%}
-              {%- set ns = namespace(found=none) -%}
-              {%- set title_norm = _bl_title | lower -%}
-              {%- for b in items if b is mapping -%}
-                {%- if (b.get('name', '') or '') | lower == title_norm -%}{%- set ns.found = b -%}{%- endif -%}
-              {%- endfor -%}
-              {{ ns.found | default(none, true) }}
-        - if: "{{ _bl_book is not mapping }}"
-          then:
-          - variables:
-              result:
-                status: not_found
-                section: books
-                mode: books_loan
-                message: "Book not found: {{ _bl_title }}"
-                coaching:
-                - Use books_search to verify the exact title.
-          - stop: books_loan book not found
-            response_variable: result
-        - variables:
-            _bl_product_id: "{{ _bl_book.get('id') | int(0) }}"
-            _bl_home_loc_id: "{{ _bl_book.get('location_id') | int(109) }}"
-            _bl_loan_date: "{{ now().strftime('%Y-%m-%d') }}"
-        # Set loan userfields via products_tag (book_loan_* fields added to products_tag)
-        - action: script.zen_dojotools_inventory
-          response_variable: _bl_uf_raw
-          continue_on_error: true
-          data:
-            mode: products_tag
-            product_id: "{{ _bl_product_id }}"
-            book_loan_borrower: "{{ _bl_borrower }}"
-            book_loan_date: "{{ _bl_loan_date }}"
-            book_loan_due: "{{ _bl_due_date }}"
-            book_loan_home_location_id: "{{ _bl_home_loc_id }}"
-        # Move to On Loan (551)
-        - action: script.zen_dojotools_inventory
-          response_variable: _bl_xfer_raw
-          continue_on_error: true
-          data:
-            mode: stock_transfer_location
-            product_id: "{{ _bl_product_id }}"
-            to_location_id: 551
-            amount: 1
-        - variables:
-            result:
-              status: loaned
-              section: books
-              mode: books_loan
-              product_id: "{{ _bl_product_id }}"
-              title: "{{ _bl_book.get('name', _bl_title) }}"
-              borrower: "{{ _bl_borrower }}"
-              loan_date: "{{ _bl_loan_date }}"
-              due_date: "{{ _bl_due_date }}"
-              home_location_id: "{{ _bl_home_loc_id }}"
-              caller_token: "{{ caller_token_norm }}"
-        - stop: books_loan done
-          response_variable: result
-
-      - conditions:
-        - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_return", "return"] }}'
-        sequence:
-        - variables:
-            _br_input_data: >-
-              {%- set raw = input_json | default('', true) -%}
-              {%- if raw is mapping -%}{{ raw }}
-              {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) or {} }}
-              {%- else -%}{{ {} }}{%- endif -%}
-        - variables:
-            _br_title: "{{ (_br_input_data.get('title', '') or '') | string | trim if _br_input_data is mapping else '' }}"
-            _br_product_id_in: "{{ _br_input_data.get('product_id', none) | int(none) if _br_input_data is mapping else none }}"
-        - if: "{{ _br_title == '' and _br_product_id_in is none }}"
-          then:
-          - variables:
-              result:
-                status: error
-                section: books
-                mode: books_return
-                message: title or product_id is required.
-          - stop: books_return missing required
-            response_variable: result
-        # Resolve book — use product_id direct path or title lookup
-        - if: "{{ _br_product_id_in is not none }}"
-          then:
-          - action: script.zen_dojotools_inventory
-            response_variable: _br_catalog_raw
-            continue_on_error: true
-            data:
-              mode: catalog_find_product
-              product_id: "{{ _br_product_id_in }}"
-          else:
-          - action: script.zen_dojotools_inventory
-            response_variable: _br_catalog_raw
-            continue_on_error: true
-            data:
-              mode: catalog_find_product
-              item: "{{ _br_title }}"
-        - variables:
-            _br_book: >-
-              {%- set r = _br_catalog_raw if _br_catalog_raw is mapping else {} -%}
-              {%- set items = r.get('result', r.get('items', [])) -%}
-              {%- set items = items if items is sequence and items is not string else [] -%}
-              {%- set ns = namespace(found=none) -%}
-              {%- if _br_product_id_in is not none -%}
-                {%- for b in items if b is mapping -%}
-                  {%- if b.get('id') | int(0) == _br_product_id_in -%}{%- set ns.found = b -%}{%- endif -%}
-                {%- endfor -%}
-              {%- else -%}
-                {%- set title_norm = _br_title | lower -%}
-                {%- for b in items if b is mapping -%}
-                  {%- if (b.get('name', '') or '') | lower == title_norm -%}{%- set ns.found = b -%}{%- endif -%}
-                {%- endfor -%}
-              {%- endif -%}
-              {{ ns.found | default(none, true) }}
-        - if: "{{ _br_book is not mapping }}"
-          then:
-          - variables:
-              result:
-                status: not_found
-                section: books
-                mode: books_return
-                message: "Book not found: {{ _br_title }}"
-          - stop: books_return book not found
-            response_variable: result
-        - variables:
-            _br_product_id: "{{ _br_book.get('id') | int(0) }}"
-            _br_ufs: "{{ _br_book.get('userfields', {}) if _br_book.get('userfields') is mapping else {} }}"
-        - variables:
-            _br_home_loc_id: "{{ (_br_ufs.get('book_loan_home_location_id') or 109) | int(109) }}"
-            _br_borrower: "{{ _br_ufs.get('book_loan_borrower', '') or '' }}"
-        # Move back to home shelf
-        - action: script.zen_dojotools_inventory
-          response_variable: _br_xfer_raw
-          continue_on_error: true
-          data:
-            mode: stock_transfer_location
-            product_id: "{{ _br_product_id }}"
-            to_location_id: "{{ _br_home_loc_id }}"
-            amount: 1
-        # Clear loan userfields via products_tag
-        - action: script.zen_dojotools_inventory
-          response_variable: _br_uf_raw
-          continue_on_error: true
-          data:
-            mode: products_tag
-            product_id: "{{ _br_product_id }}"
-            book_loan_borrower: ""
-            book_loan_date: ""
-            book_loan_due: ""
-        # Resolve home location name
-        - action: script.zen_dojotools_inventory
-          response_variable: _br_loc_raw
-          continue_on_error: true
-          data:
-            mode: locations_find
-            location_id: "{{ _br_home_loc_id }}"
-        - variables:
-            _br_loc_name: >-
-              {%- set items = (_br_loc_raw if _br_loc_raw is mapping else {}).get('result', []) -%}
-              {{ (items[0].get('name', '') if items | length > 0 and items[0] is mapping else '') }}
-        - variables:
-            result:
-              status: returned
-              section: books
-              mode: books_return
-              product_id: "{{ _br_product_id }}"
-              title: "{{ _br_book.get('name', _br_title) }}"
-              returned_by: "{{ _br_borrower }}"
-              returned_to_location_id: "{{ _br_home_loc_id }}"
-              returned_to_location_name: "{{ _br_loc_name }}"
-              caller_token: "{{ caller_token_norm }}"
-        - stop: books_return done
-          response_variable: result
-
-      - conditions:
-        - condition: template
-          value_template: '{{ section_norm == "books" and mode_norm in ["books_configure", "configure"] }}'
-        sequence:
-        # Deploy book userfields (idempotent)
-        - action: script.zen_dojotools_inventory
-          response_variable: _bc_uf_raw
-          continue_on_error: true
-          data:
-            mode: userfields_deploy
-            entity: products
-            values_json: >-
-              {{
-                [
-                  {'field_name': 'book_author', 'field_caption': 'Author (Last, First or full name)', 'field_type': 'text-single-line'},
-                  {'field_name': 'book_isbn', 'field_caption': 'ISBN-13 (or ISBN-10)', 'field_type': 'text-single-line'},
-                  {'field_name': 'book_series', 'field_caption': 'Series name and volume (e.g. Inheritance #1)', 'field_type': 'text-single-line'},
-                  {'field_name': 'book_genre', 'field_caption': 'Genre (e.g. sci-fi, fantasy, non-fiction)', 'field_type': 'text-single-line'},
-                  {'field_name': 'book_loan_borrower', 'field_caption': 'Borrower name', 'field_type': 'text-single-line'},
-                  {'field_name': 'book_loan_date', 'field_caption': 'Loan date (ISO)', 'field_type': 'text-single-line'},
-                  {'field_name': 'book_loan_due', 'field_caption': 'Loan due date (ISO)', 'field_type': 'text-single-line'},
-                  {'field_name': 'book_loan_home_location_id', 'field_caption': 'Home shelf location_id before loan', 'field_type': 'number-integer'}
-                ] | tojson
-              }}
-        # Ensure On Loan location exists
-        - action: script.zen_dojotools_inventory
-          response_variable: _bc_loc_check_raw
-          continue_on_error: true
-          data:
-            mode: locations_find
-            item: On Loan
-        - variables:
-            _bc_loan_loc_exists: >-
-              {%- set r = _bc_loc_check_raw if _bc_loc_check_raw is mapping else {} -%}
-              {%- set items = r.get('result', []) -%}
-              {{ items | length > 0 }}
-            _bc_loan_loc_id: >-
-              {%- set r = _bc_loc_check_raw if _bc_loc_check_raw is mapping else {} -%}
-              {%- set items = r.get('result', []) -%}
-              {{ items[0].get('id') | int(0) if items | length > 0 and items[0] is mapping else 0 }}
-        - if: "{{ not _bc_loan_loc_exists }}"
-          then:
-          - action: script.zen_dojotools_inventory
-            response_variable: _bc_loc_create_raw
-            continue_on_error: true
-            data:
-              mode: locations_add
-              location: On Loan
-              note: Virtual location for books currently loaned out.
-              confirm_action: true
+    # ── Catalog by_anchor: item_evidence lens — person anchor = loan lookup ──
+    - if: "{{ mode_norm == 'by_anchor' }}"
+      then:
+      - variables:
+          _ba_type: "{{ anchor_type | default('', true) | string | trim | lower }}"
+          _ba_ids_raw: >-
+            {%- set raw = anchor_ids | default('', true) -%}
+            {%- if raw is sequence and raw is not string -%}{{ raw | list }}
+            {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) or [] }}
+            {%- else -%}{{ [] }}{%- endif -%}
+      - variables:
+          _ba_ids: "{{ _ba_ids_raw if _ba_ids_raw is sequence and _ba_ids_raw is not string else [] }}"
+      - if: "{{ _ba_type not in ['person', 'label', 'area_id'] or _ba_ids | length == 0 }}"
+        then:
         - variables:
             result:
               status: ok
-              section: books
-              mode: books_configure
-              schema_version: "1.4.0"
-              userfields_deployed: 8
-              loan_location_id: "{{ _bc_loan_loc_id if _bc_loan_loc_id > 0 else 551 }}"
-              loan_location_existed: "{{ _bc_loan_loc_exists }}"
+              evidence: []
+              count: 0
+              anchor_type: "{{ _ba_type }}"
+              message: "Catalog lens supports anchor_type: person (patron checkout lookup), label (collection scope), area_id (stacks location)."
               caller_token: "{{ caller_token_norm }}"
-        - stop: books_configure done
+        - stop: by_anchor unsupported
           response_variable: result
-
-    - if: "{{ section_norm == 'books' and _bk_mode is defined }}"
-      then:
-      # Shared enrichment: loc_map (per unique loc_id) + pathfind dedup + filter
+      # Resolve catalog_item userentity + all shells
+      - action: script.zen_sutra_grocy
+        response_variable: _ba_ue_raw
+        continue_on_error: true
+        data:
+          action_type: read
+          endpoint: "/objects/userentities?query[]=name=catalog_item&limit=1"
       - variables:
-          _bk_filters_safe: "{{ _bk_filters if _bk_filters is mapping else {} }}"
-          _bk_unique_loc_ids: >-
-            {%- set _bk_items = _bk_pre | from_json if _bk_pre is string else _bk_pre -%}
-            {%- set ns = namespace(seen=[], ids=[]) -%}
-            {%- for b in _bk_items if b is mapping -%}
-              {%- set lid = b.get('location_id') -%}
-              {%- if lid is not none and lid | string not in ns.seen -%}
-                {%- set ns.seen = ns.seen + [lid | string] -%}
-                {%- set ns.ids = ns.ids + [lid | string] -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.ids }}
-          _bk_unique_areas: >-
-            {%- set _bk_items = _bk_pre | from_json if _bk_pre is string else _bk_pre -%}
-            {%- set ns = namespace(seen=[], areas=[]) -%}
-            {%- for b in _bk_items if b is mapping -%}
-              {%- set a = (b.get('homeassistant_area') or '') | trim -%}
-              {%- if a != '' and a not in ns.seen -%}
-                {%- set ns.seen = ns.seen + [a] -%}
-                {%- set ns.areas = ns.areas + [a] -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.areas }}
+          _ba_ue_id: >-
+            {%- set c = (_ba_ue_raw.get('result', {}) or {}).get('content', []) if _ba_ue_raw is mapping else [] -%}
+            {%- set c = c if c is sequence and c is not string else [] -%}
+            {{ c[0].get('id') | int if c | length > 0 and c[0] is mapping else none }}
+      - action: script.zen_sutra_grocy
+        response_variable: _ba_obj_raw
+        continue_on_error: true
+        data:
+          action_type: read
+          endpoint: "/objects/userobjects?query[]=userentity_id={{ _ba_ue_id }}&limit=500&offset=0"
       - variables:
-          _bk_source: >-
-            {%- set p = _bk_filters_safe.get('person', '') | trim -%}
-            {%- if p != '' -%}{{ p }}
-            {%- else -%}
-              {%- set hh_cab = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') -%}
-              {%- set hp = (state_attr(hh_cab, 'variables') or {}).get('household_profile', {}) -%}
-              {%- set hp = hp if hp is mapping else {} -%}
-              {{ hp.get('default_room', 'front_hall') }}
-            {%- endif -%}
-      - repeat:
-          for_each: "{{ _bk_unique_loc_ids }}"
-          sequence:
-          - action: script.zen_dojotools_inventory
-            response_variable: _bk_loc_raw
-            continue_on_error: true
-            data:
-              mode: locations_find
-              location_id: "{{ repeat.item | int }}"
-          - variables:
-              _bk_loc_name: >-
-                {%- set r = _bk_loc_raw if _bk_loc_raw is mapping else {} -%}
-                {%- set items = r.get('result', []) -%}
-                {{ (items[0].get('name', '') if items | length > 0 and items[0] is mapping else '') }}
-              _bk_loc_ha_area: >-
-                {%- set r = _bk_loc_raw if _bk_loc_raw is mapping else {} -%}
-                {%- set items = r.get('result', []) -%}
-                {%- set uf = (items[0].get('userfields', {}) or {}) if items | length > 0 and items[0] is mapping else {} -%}
-                {{ (uf.get('homeassistant_area') or '') | trim }}
-              _bk_loc_map: >-
-                {{ (_bk_loc_map if _bk_loc_map is mapping else {}) | combine({repeat.item: _bk_loc_name}) }}
-              _bk_loc_area_map: >-
-                {{ (_bk_loc_area_map if _bk_loc_area_map is mapping else {}) | combine({repeat.item: _bk_loc_ha_area}) }}
-      - variables:
-          _bk_unique_areas: >-
-            {%- set area_map = _bk_loc_area_map if _bk_loc_area_map is mapping else {} -%}
-            {%- set ns = namespace(seen=[], areas=[]) -%}
-            {%- for loc_id, a in area_map.items() -%}
-              {%- set a = (a or '') | trim -%}
-              {%- if a != '' and a not in ns.seen -%}
-                {%- set ns.seen = ns.seen + [a] -%}
-                {%- set ns.areas = ns.areas + [a] -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.areas }}
-      - repeat:
-          for_each: "{{ _bk_unique_areas }}"
-          sequence:
-          - action: script.zen_dojotools_room_manager
-            response_variable: _bk_pf_raw
-            continue_on_error: true
-            data:
-              mode: pathfind
-              pathfind: "{{ {'start': _bk_source, 'destination': repeat.item} | tojson }}"
-          - variables:
-              _bk_pf_entry: >-
-                {%- set r = _bk_pf_raw if _bk_pf_raw is mapping else {} -%}
-                {{ r.get('path', []) }}
-              _bk_paths: >-
-                {{ (_bk_paths if _bk_paths is mapping else {}) | combine({repeat.item: _bk_pf_entry}) }}
-      - variables:
-          _bk_enriched: >-
-            {%- set _bk_items = _bk_pre | from_json if _bk_pre is string else _bk_pre -%}
-            {%- set ns = namespace(out=[]) -%}
-            {%- for b in _bk_items if b is mapping -%}
-              {%- set loc_id_str = b.get('location_id') | string -%}
-              {%- set loc_name = (_bk_loc_map if _bk_loc_map is mapping else {}).get(loc_id_str, '') -%}
-              {%- set area = (_bk_loc_area_map if _bk_loc_area_map is mapping else {}).get(loc_id_str, '') or (b.get('homeassistant_area') or '') | trim -%}
-              {%- set dirs = (_bk_paths if _bk_paths is mapping else {}).get(area, []) -%}
-              {%- set ns.out = ns.out + [b | combine({'location_name': loc_name, 'homeassistant_area': area, 'directions': dirs})] -%}
-            {%- endfor -%}
-            {{ ns.out | tojson }}
-      - variables:
-          _bk_final: >-
-            {%- set _bk_en = _bk_enriched | from_json if _bk_enriched is string else _bk_enriched -%}
-            {%- set ns = namespace(out=[]) -%}
-            {%- set f = _bk_filters_safe -%}
-            {%- if _bk_mode == 'books_browse' -%}
-              {{ _bk_en | tojson }}
-            {%- elif _bk_mode == 'books_find' -%}
-              {%- set f_author   = f.get('author', '') -%}
-              {%- set f_genre    = f.get('genre', '') -%}
-              {%- set f_series   = f.get('series', '') -%}
-              {%- set f_loc_id   = f.get('location_id') -%}
-              {%- set f_loc_name = f.get('location_name', '') -%}
-              {%- for b in _bk_en if b is mapping -%}
-                {%- set ufs = b.get('userfields', {}) if b is mapping else {} -%}
-                {%- set pass_author   = f_author   == '' or f_author   in (ufs.get('book_author', '') or '') | lower -%}
-                {%- set pass_genre    = f_genre    == '' or f_genre    in (ufs.get('book_genre',  '') or '') | lower -%}
-                {%- set pass_series   = f_series   == '' or f_series   in (ufs.get('book_series', '') or '') | lower -%}
-                {%- set pass_loc_id   = f_loc_id   is none or b.get('location_id') == f_loc_id -%}
-                {%- set pass_loc_name = f_loc_name == '' or f_loc_name in (b.get('location_name', '') or '') | lower -%}
-                {%- if pass_author and pass_genre and pass_series and pass_loc_id and pass_loc_name -%}
-                  {%- set ns.out = ns.out + [b] -%}
+          _ba_obj_ids: >-
+            {%- set c = (_ba_obj_raw.get('result', {}) or {}).get('content', []) if _ba_obj_raw is mapping else [] -%}
+            {{ c if c is sequence and c is not string else [] }}
+      # Resolve area_id → Grocy location_ids via locations list + ha_area_id userfield
+      - if: "{{ _ba_type == 'area_id' }}"
+        then:
+        - action: script.zen_dojotools_inventory
+          response_variable: _ba_locs_raw
+          continue_on_error: true
+          data:
+            mode: locations_list
+            per_page: 200
+        - variables:
+            _ba_area_loc_ids: >-
+              {%- set locs = _ba_locs_raw.get('result', []) if _ba_locs_raw is mapping else [] -%}
+              {%- set locs = locs if locs is sequence and locs is not string else [] -%}
+              {%- set ba_ids_lower = _ba_ids | map('lower') | list -%}
+              {%- set ns = namespace(ids=[]) -%}
+              {%- for loc in locs if loc is mapping -%}
+                {%- set loc_area = loc.get('userfields', {}).get('homeassistant_area', '') | string | lower | trim -%}
+                {%- if loc_area != '' and loc_area in ba_ids_lower -%}
+                  {%- set ns.ids = ns.ids + [loc.get('id') | int(-1)] -%}
                 {%- endif -%}
               {%- endfor -%}
-              {{ ns.out | tojson }}
-            {%- elif _bk_mode == 'books_search' -%}
-              {{ _bk_en | tojson }}
-            {%- endif -%}
+              {{ ns.ids }}
+        else:
+        - variables:
+            _ba_area_loc_ids: []
+      # Build anchor_contexts once from input ids (reused in each evidence item)
+      - variables:
+          _ba_anchor_contexts: >-
+            {%- set ns = namespace(ctx=[]) -%}
+            {%- for aid in _ba_ids -%}
+              {%- set ns.ctx = ns.ctx + [{'type': _ba_type, 'id': aid | string | trim, 'confidence': 'explicit', 'provider': 'library_catalog'}] -%}
+            {%- endfor -%}
+            {{ ns.ctx }}
+      # Enrich each shell — filter for loaned items matching anchor IDs
+      - repeat:
+          for_each: "{{ _ba_obj_ids }}"
+          sequence:
+            - action: script.zen_dojotools_inventory
+              response_variable: _ba_val_raw
+              continue_on_error: true
+              data:
+                mode: userentity_values_get
+                entity: userentity-catalog_item
+                userobject_id: "{{ repeat.item.id }}"
+            - variables:
+                _ba_evidence_acc: >-
+                  {%- set prev = _ba_evidence_acc | default([]) -%}
+                  {%- set v = _ba_val_raw.get('values') if _ba_val_raw is mapping and _ba_val_raw.get('status') == 'ok' else none -%}
+                  {%- if v is mapping -%}
+                    {%- set pid = v.get('product_id') | string | trim -%}
+                    {%- set eid = 'grocy:catalog_item:' ~ (repeat.item.id | string) -%}
+                    {%- set ns = namespace(matched=false) -%}
+                    {%- if _ba_type == 'person' -%}
+                      {%- set borrower = (v.get('loan_borrower') or '') | lower | trim -%}
+                      {%- if borrower != '' -%}
+                        {%- for aid in _ba_ids -%}
+                          {%- set norm = aid | lower | trim -%}
+                          {%- set friendly = norm.split('.')[-1] | replace('_', ' ') if '.' in norm else norm -%}
+                          {%- if borrower == norm or borrower == friendly or friendly in borrower or borrower in friendly -%}
+                            {%- set ns.matched = true -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                      {%- endif -%}
+                    {%- elif _ba_type == 'label' -%}
+                      {%- set item_type = v.get('item_type', '') | lower | trim -%}
+                      {%- for aid in _ba_ids -%}
+                        {%- set norm = aid | lower | trim -%}
+                        {%- if item_type == '' or norm == item_type or norm in item_type -%}
+                          {%- set ns.matched = true -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- elif _ba_type == 'area_id' -%}
+                      {%- set loc_id = v.get('location_id') | int(-1) -%}
+                      {%- if loc_id >= 0 and loc_id in _ba_area_loc_ids -%}
+                        {%- set ns.matched = true -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                    {%- if ns.matched -%}
+                      {%- set _duri = v.get('digital_uri', '') | string | trim -%}
+                      {%- set _svc  = v.get('preferred_service', '') | string | trim -%}
+                      {%- set _itype = v.get('item_type', '') | lower | trim -%}
+                      {%- set _mtype = 'album' if _itype == 'music_recording' else ('movie' if _itype == 'video' else ('audiobook' if _itype == 'book' else ('podcast' if _itype == 'periodical' else none))) -%}
+                      {%- set _room  = (_ba_ids | first | string) if _ba_type == 'area_id' and _ba_ids | length > 0 else '' -%}
+                      {%- set _hint  = {'uri': _duri, 'source': _svc if _svc != '' else 'catalog', 'media_type': _mtype, 'suggested_room': _room, 'suggested_volume': none} if _duri != '' and _mtype is not none else none -%}
+                      {{ prev + [{'evidence_id': eid, 'leaf_type': 'item_evidence', 'content_redacted': false, 'anchor_contexts': _ba_anchor_contexts, 'stack': {'provider': 'library_catalog', 'object_type': 'catalog_item', 'evidence_id': eid, 'lens_mode': 'by_anchor'}, 'playback_hint': _hint, 'content': {'evidence_id': eid, 'lens_mode': 'by_anchor', 'anchor_type': _ba_type, 'item_id': repeat.item.id | int, 'product_id': pid | int(none), 'loan_borrower': v.get('loan_borrower', ''), 'loan_date': v.get('loan_date', ''), 'loan_due': v.get('loan_due', ''), 'format': v.get('format', ''), 'creator': v.get('creator', ''), 'platform': v.get('platform', ''), 'isbn': v.get('isbn', ''), 'genre': v.get('genre', ''), 'series': v.get('series', ''), 'location_id': v.get('location_id') | int(none), 'digital_uri': _duri, 'preferred_service': _svc}}] }}
+                    {%- else -%}{{ prev }}{%- endif -%}
+                  {%- else -%}{{ prev }}{%- endif -%}
+      - variables:
           result:
             status: ok
-            section: books
-            mode: "{{ _bk_mode }}"
-            source: "{{ _bk_source }}"
-            filters: "{{ _bk_filters_safe }}"
-            total: "{{ (_bk_final | from_json if _bk_final is string else _bk_final) | length }}"
-            books: "{{ _bk_final | from_json if _bk_final is string else _bk_final }}"
+            evidence: "{{ _ba_evidence_acc | default([]) }}"
+            count: "{{ _ba_evidence_acc | default([]) | length }}"
+            anchor_type: "{{ _ba_type }}"
             caller_token: "{{ caller_token_norm }}"
-      - stop: books done
+      - stop: by_anchor done
         response_variable: result
 
     - variables:

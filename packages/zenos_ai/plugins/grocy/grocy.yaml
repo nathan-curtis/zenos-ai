@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI Plugin: Grocy ERP Integration
-# Version: 5.2.0
+# Version: 5.2.3
 #
 # UAT:     Critical path PASS — 2026-03-02
 #          (locations_add, stock_buy_product, stock_check_item,
@@ -372,7 +372,7 @@ script:
               {%- for o in _trimmed -%}{%- set ns_sl.out = ns_sl.out + [{'id': o.id, 'name': o.name | default('', true)}] -%}{%- endfor -%}
               {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_sl.out}} }}
               {%- elif is_objects_products -%}
-              {%- set _zuf_keys = ['zen_safety_type', 'zen_asset_type', 'hazmat_class', 'homeassistant_area', 'ha_labels', 'book_author', 'book_isbn', 'book_series', 'book_genre', 'book_loan_borrower', 'book_loan_date', 'book_loan_due', 'book_loan_home_location_id'] -%}
+              {%- set _zuf_keys = ['zen_safety_type', 'zen_asset_type', 'hazmat_class', 'homeassistant_area', 'ha_labels', 'book_author', 'book_isbn', 'book_series', 'book_genre', 'book_loan_borrower', 'book_loan_date', 'book_loan_due', 'book_loan_home_location_id', 'library_meta', 'library_loan_borrower', 'library_loan_date', 'library_loan_due', 'library_loan_home_location_id'] -%}
               {%- set ns_pr = namespace(out=[]) -%}
               {%- for o in _trimmed -%}
               {%- set _ouf = o.get('userfields', {}) if o.get('userfields') is mapping else {} -%}
@@ -445,7 +445,7 @@ script:
   zen_dojotools_inventory:
     alias: Zen DojoTools Inventory
     description: >-
-      Household inventory (4.56.0) — full ERP stack. Stock, shopping, catalog, locations,
+      Household inventory (5.2.3) — full ERP stack. Stock, shopping, catalog, locations,
       chores, tasks, recipes, units, batteries, userentities, userobjects, userfields CRUD.
       99 operations. Names resolve to IDs.
       mode=help returns a structured cases dict — CONTRACT for tool-to-tool calls.
@@ -457,6 +457,10 @@ script:
       mode=chores_execute item=X: log + consume. mode=stock_check_item item=X: stock + location.
       mode=stock_buy_product item=X amount=N location=L: purchase. mode=stock_consume item=X: consume.
       mode=shopping_add_product item=X: queue. mode=help: full 96-op catalogue.
+      BOUNDARY: For physical item circulation (loan/return/browse books/games/media/art) use
+      zen_dojotools_library section=catalog. Inventory owns the Grocy product (the Work);
+      Library owns the physical copy (the Item). locations_reparent_bulk inherits
+      homeassistant_area from parent — idempotent, safe to re-run.
     mode: single
     icon: mdi:cart-variant
     fields:
@@ -581,6 +585,9 @@ script:
             - product_ref_add
             - product_ref_remove
             - tool_manifest
+            - by_anchor
+            - register
+            - unregister
         default: help
       item:
         name: Item
@@ -910,6 +917,11 @@ script:
         description: "HA label slugs CSV — HA owns namespace. e.g. fire_safety,garage_tools"
         selector:
           text:
+      catalog_class:
+        name: Catalog Class
+        description: "locations_metadata_set: item_type slug (music_recording/book/…) or __intake__ for global intake location."
+        selector:
+          text:
       expand:
         name: Expand
         description: "Opt-in: expand place lens results to full object_lens objects. Use per_page to cap (default 5). 3N+1 API calls."
@@ -992,13 +1004,94 @@ script:
                 color='green',
 
                 caller_token=caller_token | default('')
-            ) | from_json }}
+            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'inventory', 'lens_anchors': ['area_id'], 'lens_returns': ['player_hint']}) }}
       - stop: tool_manifest
         response_variable: result
+
+    # ── Lens bus: register ────────────────────────────────────────────────────
+    - if: "{{ (mode | default('') | lower) == 'register' }}"
+      then:
+      - variables:
+          _inv_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+      - action: script.zen_dojotools_filecabinet
+        response_variable: _inv_reg_raw
+        continue_on_error: true
+        data:
+          mode: get
+          cabinet: "{{ _inv_hh }}"
+          key: lens_registry
+      - variables:
+          _inv_registry: >-
+            {%- set r = _inv_reg_raw.get('value') if _inv_reg_raw is mapping else none -%}
+            {%- set r = r if r is mapping else (r | from_json(none) if r is string and r | trim != '' else none) -%}
+            {{ r if r is mapping else {} }}
+          _inv_provider:
+            consumes: [area_id]
+            returns: [player_hint]
+            script: script.zen_dojotools_inventory
+            anchor_mode: by_anchor
+            department: inventory
+      - variables:
+          _inv_merged: "{{ _inv_registry | combine({'inventory': _inv_provider}) }}"
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        data:
+          mode: set
+          cabinet: "{{ _inv_hh }}"
+          key: lens_registry
+          value: "{{ _inv_merged | tojson }}"
+      - variables:
+          result:
+            status: ok
+            mode: register
+            provider: inventory
+            registry_entry: "{{ _inv_provider }}"
+      - stop: inventory register complete
+        response_variable: result
+
+    # ── Lens bus: unregister ──────────────────────────────────────────────────
+    - if: "{{ (mode | default('') | lower) == 'unregister' }}"
+      then:
+      - variables:
+          _inv_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+      - action: script.zen_dojotools_filecabinet
+        response_variable: _inv_unreg_raw
+        continue_on_error: true
+        data:
+          mode: get
+          cabinet: "{{ _inv_hh }}"
+          key: lens_registry
+      - variables:
+          _inv_ureg: >-
+            {%- set r = _inv_unreg_raw.get('value') if _inv_unreg_raw is mapping else none -%}
+            {%- set r = r if r is mapping else (r | from_json(none) if r is string and r | trim != '' else none) -%}
+            {{ r if r is mapping else {} }}
+          _inv_removed: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for k, v in (_inv_ureg if _inv_ureg is mapping else {}).items() -%}
+              {%- if k != 'inventory' -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.d }}
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        data:
+          mode: set
+          cabinet: "{{ _inv_hh }}"
+          key: lens_registry
+          value: "{{ _inv_removed | tojson }}"
+      - variables:
+          result:
+            status: ok
+            mode: unregister
+            provider: inventory
+            message: Provider inventory removed from lens_registry.
+      - stop: inventory unregister complete
+        response_variable: result
+
     - variables:
         show_trace: '{{ show_trace | default(false) }}'
         tool_name: Zen DojoTools Inventory
-        tool_version: 5.2.0
+        tool_version: 5.3.0
         schema_version: "1.3.0"
     # ─── CASE AUTHORING CHECKLIST ────────────────────────────────────────────────
     # When adding a new mode/case to this script, update ALL of the following:
@@ -1078,6 +1171,8 @@ script:
         has_new_name: '{{ new_name_norm is string and new_name_norm | length > 0 }}'
         has_area_id: '{{ area_id_norm is string and area_id_norm | length > 0 }}'
         has_loc_subclass: '{{ loc_sub_norm is string and loc_sub_norm | length > 0 }}'
+        catalog_class_in: "{{ (catalog_class | default('', true)) | string | trim }}"
+        has_catalog_class: "{{ (catalog_class | default('', true)) | string | trim | length > 0 }}"
         has_store_name: '{{ store_norm is string and store_norm | length > 0 }}'
         has_unit_name: '{{ unit_norm is string and unit_norm | length > 0 }}'
         has_note: '{{ note_in is string and note_in | length > 0 }}'
@@ -1090,7 +1185,7 @@ script:
         booking_id_in: '{{ booking_id | default(none) }}'
         battery_id_in: '{{ battery_id | default(none) }}'
         done_only_in: '{{ done_only | default(false) }}'
-        has_barcode: '{{ barcode_norm | length > 0 }}'
+        has_barcode: '{{ (barcode | default("") | string | trim) | length > 0 }}'
         has_explicit_amount: '{{ amount is defined and amount is not none }}'
         recipe_id_resolved: '{{ recipe_id | default(none) }}'
         child_lids_in: '{{ child_location_ids | default("[]") }}'
@@ -1776,11 +1871,13 @@ script:
             does: POST /batteries/{batteryId}/charge
             example: "{'mode':'batteries_charge','battery_id':1}"
           locations_reparent_bulk:
-            intent: Bulk-set a new parent on multiple child locations with JS reconciliation.
+            intent: "Bulk-set parent on child locations. Idempotent — safe to re-run. Inherits parent homeassistant_area to each child. Preserves child area if parent has none (unless confirm_action=true clears it)."
             needs:
             - parent_location_id
             - child_location_ids
-            does: PUT /userfields/locations/{childId} per child + JS register + JS evict
+            optional:
+            - confirm_action (true = allow blanking child homeassistant_area when parent has none)
+            does: "GET parent area → per child: read current state, skip if already correct, PUT grocy_parent_location_id + homeassistant_area if changed, sync child lists"
             example: "{'mode':'locations_reparent_bulk','parent_location_id':15,'child_location_ids':'[201,202,203]'}"
           locations_audit:
             intent: Scan all locations, report HA area mismatches and parent/child integrity issues.
@@ -1924,6 +2021,23 @@ script:
             intent: Remove a ticket or doc ID from a product’s ref array.
             needs: [item OR product_id, ref_type (ticket|doc), ref_id (int)]
             returns: "{status ok|warn, refs_updated, was_present}"
+          by_anchor:
+            intent: "Lens bus entry point. anchor_type=area_id returns player_hint evidence for every product in that area with media_role set. Tells agents what physical playback hardware exists in a room."
+            needs: [anchor_type (area_id), anchor_ids (JSON array of area slugs)]
+            does: "Scan all products for media_role userfield at locations whose homeassistant_area matches anchor_ids. Emits player_hint evidence: {player_type, media_formats, media_types, dumb, entity_id, area, location_name}."
+            returns: "{status, evidence[], count, anchor_type}"
+            example: "{‘mode’:’by_anchor’,’anchor_type’:’area_id’,’anchor_ids’:’[\"living_room\"]’}"
+          register:
+            intent: Enroll Inventory as a Lens bus provider in the household lens_registry cabinet key. Run once after deploy or if registry is reset.
+            needs: []
+            does: Writes {consumes:[area_id], returns:[player_hint], script:script.zen_dojotools_inventory, anchor_mode:by_anchor, department:inventory} to lens_registry.
+            returns: "{status ok, provider, registry_entry}"
+            example: "{‘mode’:’register’}"
+          unregister:
+            intent: Remove Inventory from lens_registry.
+            needs: []
+            returns: "{status ok, message}"
+            example: "{‘mode’:’unregister’}"
     - alias: 'Mode: Help'
       choose:
       - conditions:
@@ -2153,6 +2267,51 @@ script:
         - variables:
             help_json: "{{ help_json | combine({'scenarios': scenarios_block}) }}"
         - variables:
+            agent_superpowers_block:
+              you_own: >-
+                Full household ERP — stock levels, shopping lists, chores, locations, product catalog,
+                recipes, batteries, asset registration, userfields, userentities. You are the ground
+                truth for what exists, where it lives, and how much is left.
+              boundary: >-
+                Physical item circulation (loan/return/browse books/games/music/video/art) belongs to
+                zen_dojotools_library section=catalog. Inventory owns the Grocy product (the Work —
+                what something IS); Library owns the catalog_item userobject (the Item — the physical
+                copy on a shelf). Scan a barcode → Inventory creates the product → Library catalogs
+                the copy. Never try to do loan/return through Inventory directly.
+              location_superpowers: >-
+                locations_reparent_bulk now inherits homeassistant_area from parent automatically
+                and is idempotent — run it again on an already-correct location and it's a safe no-op.
+                This is the stamping mechanism that makes room-aware queries (stock_area_summary,
+                chores_by_area, library area_id lens) light up for child locations.
+              quickstart: "configure a shelf → locations_metadata_set + catalog_class. Tag a machine → provision_bom. Find what's in a room → room_brief area=X. Queue shopping → shopping_add_missing."
+              player_setup:
+                what: >-
+                  Register any physical playback device or space as a Lens player. The Lens bus
+                  will surface it as a player_hint on any area_id query — agents see what can play
+                  what in each room without asking. Two userfields do it all: media_role + media_formats.
+                how: >-
+                  1. Create or find the Grocy product for the device/space.
+                  2. Set media_role (pick from role_catalog below).
+                  3. Set media_formats (CSV of what physical media it accepts).
+                  4. Set the product default location to a Grocy location with homeassistant_area stamped.
+                  5. If the device has an HA entity, set homeassistant_entity_id on the product — makes dumb=false so agents can control it (turn on lamp, wake Xbox, etc).
+                  6. Done — Lens dispatcher fans out automatically on every area_id query.
+                role_catalog:
+                  turntable: {plays: [music_recording], formats: [vinyl, 7-inch, 12-inch], note: Dumb unless connected to smart amp. Set homeassistant_entity_id to amp/receiver entity if available.}
+                  cassette_deck: {plays: [music_recording], formats: [cassette], note: Almost always dumb. Still surfaces so agent knows the room has tape capability.}
+                  cd_player: {plays: [music_recording], formats: [cd], note: Dumb or smart depending on integration. Set entity_id if it has one.}
+                  dvd_player: {plays: [video], formats: [dvd, cd], note: Dumb standalone. For smart players use game_console or digital_player.}
+                  blu_ray_player: {plays: [video], formats: [blu_ray, dvd, cd], note: Dumb standalone. Upscaling players count here.}
+                  projector: {plays: [video], formats: [digital, hdmi], note: "Set entity_id if smart (Epson/BenQ HA integrations). media_formats=digital."}
+                  e_reader: {plays: [book, periodical], formats: [digital], note: "Kindle/Kobo as a product. Set entity_id if HA-integrated. Tells agent a digital reader is in the room."}
+                  radio: {plays: [music_recording], formats: [am_fm, digital], note: "Smart radios may have HA entity. media_formats=am_fm or digital."}
+                  digital_player: {plays: [music_recording, video, book, game], formats: [digital], note: "Catch-all for smart streaming devices (Chromecast/Fire Stick/Apple TV) not better described by another role. Prefer game_console for consoles."}
+                  game_console: {plays: [game, video, music_recording], formats: [xbox_one, xbox_360, ps5, ps4, switch, blu_ray, dvd, cd, digital], note: "Resolves as disc player AND game player. Set homeassistant_entity_id to the HA media_player entity (Xbox integration). Most powerful multi-role player."}
+                  reading_nook: {plays: [book, periodical], formats: [physical, digital], note: "A SPACE not a device. Create as a Grocy product for the chair/nook/corner. Set homeassistant_entity_id to the reading lamp if smart — agent turns it on when delivering a book. Lives next to the shelf; agent connects the dots."}
+                formats_reference: "vinyl, cassette, cd, dvd, blu_ray, digital, am_fm, hdmi, xbox_one, xbox_360, ps5, ps4, switch, physical — use physical for any dumb format not listed"
+        - variables:
+            help_json: "{{ help_json | combine({'agent_superpowers': agent_superpowers_block}) }}"
+        - variables:
             suggested_constructs_block:
               personal_inventory:
                 description: >-
@@ -2271,7 +2430,8 @@ script:
           value_template: "{{ location_id_resolved is none\n   and has_loc_name\n   and
             mode_norm in [\n     'stock_list_by_location',\n     'locations_add',\n     'stock_register_asset',\n     'catalog_add_product',\n
             \    'stock_add_purchase',\n     'stock_buy_product',\n     'stock_transfer_location',\n
-            \    'stock_add_by_barcode',\n     'stock_entry_update'\n
+            \    'stock_add_by_barcode',\n     'stock_entry_update',\n
+            \    'locations_metadata_set',\n     'locations_rename',\n     'locations_update_description',\n     'locations_delete',\n     'locations_delete_safe'\n
             \  ] }}"
         sequence:
         - action: script.zen_sutra_grocy
@@ -2941,6 +3101,13 @@ script:
             perPage: 200
           response_variable: _uf_all_raw
           continue_on_error: true
+        - action: script.zen_sutra_grocy
+          data:
+            action_type: read
+            endpoint: /objects/userentities
+            perPage: 200
+          response_variable: _ue_all_raw
+          continue_on_error: true
         - variables:
             _uf_existing: >-
               {{ _uf_all_raw['result']['content']
@@ -2973,9 +3140,48 @@ script:
                 {'entity':'products','name':'book_author','caption':'Author (Last, First or full name)','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'products','name':'book_isbn','caption':'ISBN-13 (or ISBN-10)','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'products','name':'book_series','caption':'Series name and volume (e.g. Inheritance #1)','type':'text-single-line','show_as_column_in_tables':0},
-                {'entity':'products','name':'book_genre','caption':'Genre (e.g. sci-fi, fantasy, non-fiction)','type':'text-single-line','show_as_column_in_tables':0}
+                {'entity':'products','name':'book_genre','caption':'Genre (e.g. sci-fi, fantasy, non-fiction)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'library_meta','caption':'Library metadata JSON blob (platform, digital, hardware_note, etc.)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'library_loan_borrower','caption':'Current borrower name','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'library_loan_date','caption':'Loan-out date (ISO)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'library_loan_due','caption':'Loan due-back date (ISO)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'library_loan_home_location_id','caption':'Home shelf location_id before loan','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'products','name':'media_role','caption':'turntable|cassette_deck|cd_player|dvd_player|blu_ray_player|projector|e_reader|radio|digital_player|game_console|reading_nook','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'products','name':'media_formats','caption':'CSV of playable formats: vinyl,cassette,cd,dvd,blu_ray,digital,am_fm,xbox_one,xbox_360,ps5,ps4,switch','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'locations','name':'catalog_class','caption':'Catalog class default (item_type slug) or __intake__ for global intake','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-catalog_item','name':'product_id','caption':'Work product ID (FK to Grocy product)','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'item_type','caption':'Catalog item type (music_recording/book/game/video/periodical/art_print)','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-catalog_item','name':'creator','caption':'Creator name (artist/author/developer — role determined by item_type)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'format','caption':'Physical format (vinyl/cassette/cd/8-track/reel/minidisc/other)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'condition','caption':'Physical condition (mint/vg+/vg/good/fair/poor)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'location_id','caption':'Current shelf location ID','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'loan_borrower','caption':'Current borrower name','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'loan_date','caption':'Loan-out date (ISO)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'loan_due','caption':'Loan due-back date (ISO)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'loan_home_location_id','caption':'Home shelf location ID before loan','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'accession_number','caption':'Library accession number (optional)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'platform','caption':'Platform or hardware (NES/SNES/PS1/Switch/PC/etc.)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'digital','caption':'Digital copy flag (true/false)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'hardware_note','caption':'Hardware compatibility or accessory note','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'isbn','caption':'ISBN-13 for books','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'genre','caption':'Genre or category tag','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'series','caption':'Series name (books/games)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'publisher','caption':'Publisher or label','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'digital_uri','caption':'Digital equivalent URI (streaming link, audiobook URL, etc.)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-catalog_item','name':'preferred_service','caption':'Preferred digital service (tidal/spotify/jellyfin/audible/etc.)','type':'text-single-line','show_as_column_in_tables':0}
               ] -%}
               {{ _c }}
+            _ue_existing: >-
+              {{ _ue_all_raw['result']['content']
+                 if _ue_all_raw is mapping and 'result' in _ue_all_raw
+                    and _ue_all_raw['result']['content'] is sequence
+                 else [] }}
+            _ue_canonical:
+              - name: catalog_item
+                caption: Catalog Item
+                description: "FRBR Item record — one per physical copy of a cataloged work. Links to a Grocy product (the Work) via product_id."
+                show_in_sidebar_menu: 0
+                icon_css_class: "fas fa-cube"
 
         # mode=userfields_list
         - if: "{{ mode_norm == 'userfields_list' }}"
@@ -3064,6 +3270,37 @@ script:
         # mode=userfields_deploy
         - if: "{{ mode_norm == 'userfields_deploy' }}"
           then:
+            # --- phase 1: userentities ---
+            - variables:
+                _ude_missing: >-
+                  {%- set ns = namespace(m=[]) -%}
+                  {%- for ue in _ue_canonical -%}
+                    {%- if _ue_existing | selectattr('name','equalto',ue.name) | list | length == 0 -%}
+                      {%- set ns.m = ns.m + [ue] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.m }}
+                _ude_skipped: >-
+                  {%- set ns = namespace(s=[]) -%}
+                  {%- for ue in _ue_canonical -%}
+                    {%- if _ue_existing | selectattr('name','equalto',ue.name) | list | length > 0 -%}
+                      {%- set ns.s = ns.s + [ue.name] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.s }}
+            - if: "{{ _ude_missing | length > 0 }}"
+              then:
+                - repeat:
+                    for_each: "{{ _ude_missing }}"
+                    sequence:
+                      - action: script.zen_sutra_grocy
+                        data:
+                          action_type: create
+                          endpoint: /objects/userentities
+                          payload: "{{ repeat.item | tojson }}"
+                        response_variable: _udec_raw
+                        continue_on_error: true
+            # --- phase 2: userfields ---
             - variables:
                 _udp_missing: >-
                   {%- set ns = namespace(m=[]) -%}
@@ -3133,7 +3370,7 @@ script:
                     action_type: "{{ 'update' if (state_attr(_uf_hh_cab, 'variables') | default({}, true)).get('grocy_schema') is not none else 'create' }}"
                     key: grocy_schema
                     volume_entity_id: "{{ _uf_hh_cab }}"
-                    value: "{{ {'schema_version': schema_version, 'deployed_at': now().isoformat(), 'field_count': _uf_canonical | length} | tojson }}"
+                    value: "{{ {'schema_version': schema_version, 'deployed_at': now().isoformat(), 'field_count': _uf_canonical | length, 'userentity_count': _ue_canonical | length} | tojson }}"
                   response_variable: _udp_cab_raw
                   continue_on_error: true
             - variables:
@@ -3142,6 +3379,8 @@ script:
                   case: userfields_deploy
                   schema_version: "{{ schema_version }}"
                   total_canonical: "{{ _uf_canonical | length }}"
+                  userentities_created: "{{ _ude_missing | default([]) | map(attribute='name') | list }}"
+                  userentities_skipped: "{{ _ude_skipped | default([]) }}"
                   created: "{{ _udp_created | default([]) }}"
                   skipped: "{{ _udp_skipped }}"
                   failed: "{{ _udp_failed | default([]) }}"
@@ -3675,7 +3914,9 @@ script:
                 - stop: userentity_values_set missing fields
                   response_variable: final_response
             - variables:
-                _uevs_parsed: "{{ _uevs_vals_raw | from_json | default(none, true) }}"
+                _uevs_parsed: >-
+                  {{ _uevs_vals_raw if _uevs_vals_raw is mapping
+                     else (_uevs_vals_raw | from_json(none) if _uevs_vals_raw | string | trim not in ['', 'none', 'null'] else none) }}
             - variables:
                 _uevs_payload: >-
                   {{ _uevs_parsed | tojson if _uevs_parsed is mapping else none }}
@@ -4040,6 +4281,9 @@ script:
           %}\n  {% endif %}\n  {% if ha_labels is string and ha_labels | trim != '' %}
     {% set ns.o = ns.o | combine({'homeassistant_labels': ha_labels | trim}) %}
   {% endif %}
+  {% if has_catalog_class %}
+    {% set ns.o = ns.o | combine({'catalog_class': catalog_class_in}) %}
+  {% endif %}
   {{ ns.o }}\n{% elif mode_norm == 'locations_rename' %}\n
           \ {{\n    {\n      \"name\": new_name_norm\n    }\n  }}\n{% elif mode_norm == 'locations_update_description' %}\n  {{\n    {\n      \"description\": note_in\n    }\n  }}\n{% elif mode_norm
           in ['shopping_add_missing','shopping_add_overdue','shopping_add_expired']
@@ -4060,7 +4304,7 @@ script:
       - conditions:
         - alias: 'Error: Endpoint not Resolved'
           condition: template
-          value_template: "{{\n  (final_endpoint is none)\n  and mode_norm not in ['catalog_find_product', 'catalog_search', 'catalog_add_product', 'catalog_delete_product', 'catalog_audit', 'locations_reparent_bulk', 'locations_delete_safe', 'locations_hierarchy_rebuild', 'stock_register_asset', 'stock_area_summary', 'stock_area_volatile', 'stock_area_inventory', 'chores_by_area', 'room_brief', 'chores_add', 'chores_tag', 'products_tag', 'catalog_find_by_tag', 'object_lens', 'chores_delete', 'chores_edit', 'tasks_add', 'tasks_tag', 'update_product_meta', 'provision_bom', 'catalog_import_bom', 'product_refs_get', 'product_ref_add', 'product_ref_remove', 'bulk_tag', 'bulk_location_move', 'bulk_label_add', 'bulk_label_remove', 'bulk_stock_add']\n}}\n"
+          value_template: "{{\n  (final_endpoint is none)\n  and mode_norm not in ['catalog_find_product', 'catalog_search', 'catalog_add_product', 'catalog_delete_product', 'catalog_audit', 'locations_reparent_bulk', 'locations_delete_safe', 'locations_hierarchy_rebuild', 'stock_register_asset', 'stock_area_summary', 'stock_area_volatile', 'stock_area_inventory', 'chores_by_area', 'room_brief', 'chores_add', 'chores_tag', 'products_tag', 'catalog_find_by_tag', 'object_lens', 'chores_delete', 'chores_edit', 'tasks_add', 'tasks_tag', 'update_product_meta', 'provision_bom', 'catalog_import_bom', 'product_refs_get', 'product_ref_add', 'product_ref_remove', 'bulk_tag', 'bulk_location_move', 'bulk_label_add', 'bulk_label_remove', 'bulk_stock_add', 'catalog_find_by_barcode', 'by_anchor']\n}}\n"
         sequence:
         - variables:
             final_response:
@@ -4109,11 +4353,52 @@ script:
             endpoint: /objects/locations?limit=500&offset=0
         - variables:
             _deleted_loc_parent_id: "{{ _del_snap_raw['result']['content'] | selectattr('id', 'equalto', location_id_resolved | int) | map(attribute='userfields.grocy_parent_location_id') | first | default(none, true) | int(none) }}"
+    - alias: catalog_find_by_barcode — dedicated handler
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'catalog_find_by_barcode' }}"
+        sequence:
+        - if: "{{ not has_barcode }}"
+          then:
+          - variables:
+              final_response:
+                status: error
+                message: barcode is required for catalog_find_by_barcode.
+                coaching:
+                - "{'mode':'catalog_find_by_barcode','barcode':'9780375826696'}"
+          - stop: barcode required
+            response_variable: final_response
+        - action: script.zen_sutra_grocy
+          response_variable: _cfbb_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "/stock/products/by-barcode/{{ barcode_norm }}"
+        - variables:
+            _cfbb_content: >-
+              {%- set r = _cfbb_raw if _cfbb_raw is mapping else {} -%}
+              {%- set rr = r.get('result', none) -%}
+              {%- set c = rr.get('content', none) if rr is mapping else none -%}
+              {{ c | tojson if c is mapping else (c | string | trim if c is not none else '{}') }}
+        - variables:
+            _cfbb_data: "{{ _cfbb_content if _cfbb_content is mapping else (_cfbb_content | from_json(none) if _cfbb_content is string and _cfbb_content | trim | length > 0 else {}) }}"
+        - variables:
+            _cfbb_pid: "{{ _cfbb_data.get('product', {}).get('id') | int(0) if _cfbb_data is mapping else 0 }}"
+            _cfbb_name: "{{ (_cfbb_data.get('product', {}).get('name') or '') | string | trim if _cfbb_data is mapping else '' }}"
+        - variables:
+            final_response:
+              status: "{{ 'found' if _cfbb_pid | int(0) > 0 else 'not_found' }}"
+              barcode: "{{ barcode_norm }}"
+              product_id: "{{ _cfbb_pid | int(0) }}"
+              product_name: "{{ _cfbb_name }}"
+        - stop: catalog_find_by_barcode done
+          response_variable: final_response
     - alias: Call Grocy API (if not barred by endpoint)
       choose:
       - conditions:
         - condition: template
-          value_template: '{{ mode_norm not in [''catalog_find_product'', ''catalog_search'', ''catalog_add_product'', ''catalog_delete_product'', ''locations_reparent_bulk'', ''locations_delete_safe'', ''locations_hierarchy_rebuild'', ''stock_register_asset'', ''stock_area_summary'', ''stock_area_volatile'', ''stock_area_inventory'', ''chores_by_area'', ''room_brief'', ''chores_add'', ''chores_tag'', ''products_tag'', ''catalog_find_by_tag'', ''object_lens'', ''chores_delete'', ''chores_edit'', ''tasks_add'', ''tasks_tag'', ''update_product_meta'', ''provision_bom'', ''product_refs_get'', ''product_ref_add'', ''product_ref_remove''] }}'
+          value_template: '{{ mode_norm not in [''catalog_find_product'', ''catalog_search'', ''catalog_add_product'', ''catalog_delete_product'', ''locations_reparent_bulk'', ''locations_delete_safe'', ''locations_hierarchy_rebuild'', ''stock_register_asset'', ''stock_area_summary'', ''stock_area_volatile'', ''stock_area_inventory'', ''chores_by_area'', ''room_brief'', ''chores_add'', ''chores_tag'', ''products_tag'', ''catalog_find_by_tag'', ''object_lens'', ''chores_delete'', ''chores_edit'', ''tasks_add'', ''tasks_tag'', ''update_product_meta'', ''provision_bom'', ''product_refs_get'', ''product_ref_add'', ''product_ref_remove'', ''catalog_find_by_barcode'', ''by_anchor''] }}'
           alias: Not 'catalog_find_product'
         sequence:
         - action: script.zen_sutra_grocy
@@ -4717,6 +5002,17 @@ script:
                   - child_location_ids must be a JSON array e.g. "[201,202,203]"
             - stop: Reparent Bulk Guard
               response_variable: final_response
+        # Read parent location once — we need its homeassistant_area for inheritance
+        - action: script.zen_sutra_grocy
+          response_variable: _rb_parent_raw
+          data:
+            action_type: read
+            endpoint: /objects/locations/{{ _bulk_parent_lid }}
+        - variables:
+            _rb_parent_area: >-
+              {%- set c = _rb_parent_raw.get('result', {}).get('content', {}) if _rb_parent_raw is mapping else {} -%}
+              {%- set c = c if c is mapping else {} -%}
+              {{ c.get('userfields', {}).get('homeassistant_area', '') | string | lower | trim }}
         - repeat:
             for_each: "{{ _bulk_child_ids }}"
             sequence:
@@ -4726,12 +5022,43 @@ script:
                 action_type: read
                 endpoint: /objects/locations?limit=500&offset=0
             - variables:
-                _rb_old_parent: "{{ _rb_snap_raw['result']['content'] | selectattr('id', 'equalto', repeat.item | int) | map(attribute='userfields.grocy_parent_location_id') | first | default(none, true) | int(none) }}"
-            - action: script.zen_sutra_grocy
-              data:
-                action_type: update
-                endpoint: /userfields/locations/{{ repeat.item }}
-                payload: "{{ dict([('grocy_parent_location_id', _bulk_parent_lid)]) }}"
+                _rb_child_snap: >-
+                  {{ _rb_snap_raw['result']['content'] | selectattr('id', 'equalto', repeat.item | int) | list | first | default({}) }}
+            - variables:
+                _rb_old_parent: "{{ _rb_child_snap.get('userfields', {}).get('grocy_parent_location_id', none) | int(none) }}"
+                _rb_child_area: "{{ _rb_child_snap.get('userfields', {}).get('homeassistant_area', '') | string | lower | trim }}"
+            # Determine area to write: parent's area if set; else keep child's unless confirm_action clears it
+            - variables:
+                _rb_area_to_write: >-
+                  {%- if _rb_parent_area != '' -%}{{ _rb_parent_area }}
+                  {%- elif _rb_child_area != '' and not confirm_action_in -%}{{ _rb_child_area }}
+                  {%- else -%}{{ _rb_parent_area }}{%- endif -%}
+                _rb_already_parented: "{{ _rb_old_parent is not none and (_rb_old_parent | int) == (_bulk_parent_lid | int) }}"
+            - variables:
+                _rb_area_already_set: "{{ _rb_child_area == _rb_area_to_write }}"
+            # Write grocy_parent_location_id only if not already correct (idempotency)
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: "{{ not _rb_already_parented }}"
+                sequence:
+                - action: script.zen_sutra_grocy
+                  data:
+                    action_type: update
+                    endpoint: /userfields/locations/{{ repeat.item }}
+                    payload: "{{ dict([('grocy_parent_location_id', _bulk_parent_lid)]) }}"
+            # Write homeassistant_area if it needs to change
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: "{{ not _rb_area_already_set }}"
+                sequence:
+                - action: script.zen_sutra_grocy
+                  data:
+                    action_type: update
+                    endpoint: /userfields/locations/{{ repeat.item }}
+                    payload: "{{ dict([('homeassistant_area', _rb_area_to_write)]) }}"
+            # Sync parent's child list
             - action: script.zen_sutra_grocy
               response_variable: _rb_js_reg_raw
               data:
@@ -4744,10 +5071,11 @@ script:
                 action_type: update
                 endpoint: /userfields/locations/{{ _bulk_parent_lid }}
                 payload: "{{ dict([('grocy_child_location_ids', '[' ~ (_rb_new_kids | join(',')) ~ ']')]) }}"
+            # Evict from old parent's child list if parent actually changed
             - choose:
               - conditions:
                 - condition: template
-                  value_template: "{{ _rb_old_parent is not none and (_rb_old_parent | int) != (_bulk_parent_lid | int) }}"
+                  value_template: "{{ not _rb_already_parented and _rb_old_parent is not none and (_rb_old_parent | int) != (_bulk_parent_lid | int) }}"
                 sequence:
                 - action: script.zen_sutra_grocy
                   response_variable: _rb_evict_raw
@@ -4769,8 +5097,10 @@ script:
               mode: locations_reparent_bulk
               result:
                 parent_id: '{{ _bulk_parent_lid }}'
+                parent_area: '{{ _rb_parent_area }}'
                 children_processed: '{{ _bulk_child_ids | length }}'
                 child_ids: '{{ _bulk_child_ids }}'
+                area_inherited: "{{ _rb_parent_area != '' }}"
         - stop: Reparent Bulk Complete
           response_variable: final_response
     - alias: 'locations_delete_safe — stock-safe delete'
@@ -5523,6 +5853,17 @@ script:
             _pt_loan_date: "{{ book_loan_date | default(none) }}"
             _pt_loan_due: "{{ book_loan_due | default(none) }}"
             _pt_loan_home_loc: "{{ book_loan_home_location_id | default(none) }}"
+            _pt_lib_loan_borrower: "{{ library_loan_borrower | default(none, true) }}"
+            _pt_lib_loan_date: "{{ library_loan_date | default(none, true) }}"
+            _pt_lib_loan_due: "{{ library_loan_due | default(none, true) }}"
+            _pt_lib_loan_home_loc: "{{ library_loan_home_location_id | default(none, true) }}"
+        - variables:
+            _pt_lib_meta: >-
+              {%- set _v = library_meta | default(none, true) -%}
+              {%- if _v is none or _v == 'None' or (_v is string and _v | trim == '') -%}{{ none }}
+              {%- elif _v is mapping -%}{{ _v | tojson }}
+              {%- else -%}{{ _v | string | trim }}
+              {%- endif -%}
         - variables:
             _pt_payload: >-
               {%- set p = {} -%}
@@ -5539,6 +5880,11 @@ script:
               {%- if _pt_loan_date is not none -%}{%- set p = p | combine({'book_loan_date': _pt_loan_date}) -%}{%- endif -%}
               {%- if _pt_loan_due is not none -%}{%- set p = p | combine({'book_loan_due': _pt_loan_due}) -%}{%- endif -%}
               {%- if _pt_loan_home_loc is not none -%}{%- set p = p | combine({'book_loan_home_location_id': _pt_loan_home_loc}) -%}{%- endif -%}
+              {%- if _pt_lib_meta is not none -%}{%- set p = p | combine({'library_meta': _pt_lib_meta}) -%}{%- endif -%}
+              {%- if _pt_lib_loan_borrower is not none -%}{%- set p = p | combine({'library_loan_borrower': _pt_lib_loan_borrower}) -%}{%- endif -%}
+              {%- if _pt_lib_loan_date is not none -%}{%- set p = p | combine({'library_loan_date': _pt_lib_loan_date}) -%}{%- endif -%}
+              {%- if _pt_lib_loan_due is not none -%}{%- set p = p | combine({'library_loan_due': _pt_lib_loan_due}) -%}{%- endif -%}
+              {%- if _pt_lib_loan_home_loc is not none -%}{%- set p = p | combine({'library_loan_home_location_id': _pt_lib_loan_home_loc}) -%}{%- endif -%}
               {{ p | tojson }}
         - action: script.zen_sutra_grocy
           response_variable: _pt_raw
@@ -5577,6 +5923,11 @@ script:
                   {%- if _pt_loan_date is not none -%}{%- set ns.u = ns.u | combine({'book_loan_date': _pt_loan_date}) -%}{%- endif -%}
                   {%- if _pt_loan_due is not none -%}{%- set ns.u = ns.u | combine({'book_loan_due': _pt_loan_due}) -%}{%- endif -%}
                   {%- if _pt_loan_home_loc is not none -%}{%- set ns.u = ns.u | combine({'book_loan_home_location_id': _pt_loan_home_loc}) -%}{%- endif -%}
+                  {%- if _pt_lib_meta is not none -%}{%- set ns.u = ns.u | combine({'library_meta': _pt_lib_meta}) -%}{%- endif -%}
+                  {%- if _pt_lib_loan_borrower is not none -%}{%- set ns.u = ns.u | combine({'library_loan_borrower': _pt_lib_loan_borrower}) -%}{%- endif -%}
+                  {%- if _pt_lib_loan_date is not none -%}{%- set ns.u = ns.u | combine({'library_loan_date': _pt_lib_loan_date}) -%}{%- endif -%}
+                  {%- if _pt_lib_loan_due is not none -%}{%- set ns.u = ns.u | combine({'library_loan_due': _pt_lib_loan_due}) -%}{%- endif -%}
+                  {%- if _pt_lib_loan_home_loc is not none -%}{%- set ns.u = ns.u | combine({'library_loan_home_location_id': _pt_lib_loan_home_loc}) -%}{%- endif -%}
                   {{ ns.u }}
             - variables:
                 _pt_prod_patch: >-
@@ -5617,6 +5968,138 @@ script:
               version: "{{ tool_version }}"
         - stop: Product Tagged
           response_variable: final_response
+    # ── Lens bus: by_anchor — player_hint emission ───────────────────────────
+    # Supports anchor_type=area_id only. Finds products with media_role set at
+    # locations whose homeassistant_area matches the anchor. Emits player_hint
+    # evidence items — "here is something TO PLAY ON in this room."
+    - alias: 'by_anchor — lens player_hint for physical media equipment'
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'by_anchor' }}"
+        sequence:
+        - variables:
+            _ba_type: "{{ anchor_type | default('', true) | string | trim | lower }}"
+            _ba_ids_raw: >-
+              {%- set raw = anchor_ids | default('', true) -%}
+              {%- if raw is sequence and raw is not string -%}{{ raw | list }}
+              {%- elif raw is string and raw | trim != '' -%}{{ raw | trim | from_json(none) or [] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+        - variables:
+            _ba_ids: "{{ _ba_ids_raw if _ba_ids_raw is sequence and _ba_ids_raw is not string else [] }}"
+        - if: "{{ _ba_type != 'area_id' or _ba_ids | length == 0 }}"
+          then:
+          - variables:
+              final_response:
+                status: ok
+                evidence: []
+                count: 0
+                anchor_type: "{{ _ba_type }}"
+                message: "Inventory lens supports anchor_type: area_id (physical media equipment in room)."
+          - stop: by_anchor unsupported anchor
+            response_variable: final_response
+        # Fetch all locations — build area_id → location_id set
+        - action: script.zen_dojotools_inventory
+          response_variable: _iba_locs_raw
+          continue_on_error: true
+          data:
+            mode: locations_list
+            per_page: 200
+        - variables:
+            _iba_locs: >-
+              {%- set r = _iba_locs_raw.get('result', []) if _iba_locs_raw is mapping else [] -%}
+              {{ r if r is sequence and r is not string else [] }}
+            _iba_area_loc_ids: >-
+              {%- set ba_ids_lower = _ba_ids | map('lower') | list -%}
+              {%- set ns = namespace(ids=[]) -%}
+              {%- set locs = _iba_locs_raw.get('result', []) if _iba_locs_raw is mapping else [] -%}
+              {%- for loc in locs if loc is mapping -%}
+                {%- set loc_area = loc.get('userfields', {}).get('homeassistant_area', '') | string | lower | trim -%}
+                {%- if loc_area != '' and loc_area in ba_ids_lower -%}
+                  {%- set ns.ids = ns.ids + [loc.get('id') | int(-1)] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.ids }}
+            _iba_loc_name_map: >-
+              {%- set ns = namespace(d={}) -%}
+              {%- set locs = _iba_locs_raw.get('result', []) if _iba_locs_raw is mapping else [] -%}
+              {%- for loc in locs if loc is mapping -%}
+                {%- set ns.d = ns.d | combine({loc.get('id') | string: loc.get('name', '')}) -%}
+              {%- endfor -%}
+              {{ ns.d }}
+        # Fetch all products — filter for media_role in-memory
+        - variables:
+            _iba_offset: 0
+            _iba_all_players: []
+            _iba_page_done: false
+        - repeat:
+            until: "{{ _iba_page_done or _iba_offset >= 100000 }}"
+            sequence:
+              - action: script.zen_sutra_grocy
+                response_variable: _iba_page_raw
+                continue_on_error: true
+                data:
+                  action_type: read
+                  endpoint: "/objects/products?limit=500&offset={{ _iba_offset }}"
+              - variables:
+                  _iba_page_size: >-
+                    {{ _iba_page_raw['result']['content'] | length
+                       if _iba_page_raw is mapping and 'result' in _iba_page_raw
+                          and _iba_page_raw['result']['content'] is sequence
+                       else 0 }}
+                  _iba_page_players: >-
+                    {%- set _raw = _iba_page_raw['result']['content']
+                        if _iba_page_raw is mapping and 'result' in _iba_page_raw
+                           and _iba_page_raw['result']['content'] is sequence
+                        else [] -%}
+                    {%- set ns = namespace(r=[]) -%}
+                    {%- for p in _raw if p is mapping -%}
+                      {%- set uf = p.get('userfields', {}) if p.get('userfields') is mapping else {} -%}
+                      {%- set mrole = (uf.get('media_role', '') or '') | string | trim -%}
+                      {%- if mrole != '' -%}
+                        {%- set lid = p.get('location_id') | int(-1) -%}
+                        {%- if lid >= 0 and lid in _iba_area_loc_ids -%}
+                          {%- set mfmts_raw = (uf.get('media_formats', '') or '') | string | trim -%}
+                          {%- set mfmts = mfmts_raw.split(',') | map('trim') | reject('equalto', '') | list if mfmts_raw != '' else [] -%}
+                          {%- set mtypes = ['music_recording'] if mrole in ['turntable','cassette_deck','cd_player','radio'] else (['video'] if mrole in ['dvd_player','blu_ray_player','projector'] else (['book'] if mrole == 'e_reader' else (['game','video','music_recording'] if mrole == 'game_console' else (['book','periodical'] if mrole == 'reading_nook' else ['music_recording','video','book','game'])))) -%}
+                          {%- set loc_name = (_iba_loc_name_map if _iba_loc_name_map is mapping else {}).get(lid | string, '') -%}
+                          {%- set ns.r = ns.r + [{'product_id': p.get('id') | int, 'product_name': p.get('name', ''), 'media_role': mrole, 'media_formats': mfmts, 'media_types': mtypes, 'location_id': lid, 'location_name': loc_name, 'entity_id': (uf.get('homeassistant_entity_id', '') or '') | string | trim}] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.r }}
+              - variables:
+                  _iba_all_players: >-
+                    {{ (_iba_all_players | list) + (_iba_page_players if _iba_page_players is sequence else []) }}
+                  _iba_page_done: "{{ (_iba_page_size | int(0)) < 500 }}"
+                  _iba_offset: "{{ (_iba_offset | int) + 500 }}"
+        # Build anchor_contexts + evidence items
+        - variables:
+            _iba_anchor_contexts: >-
+              {%- set ns = namespace(ctx=[]) -%}
+              {%- for aid in _ba_ids -%}
+                {%- set ns.ctx = ns.ctx + [{'type': _ba_type, 'id': aid | string | trim, 'confidence': 'explicit', 'provider': 'inventory'}] -%}
+              {%- endfor -%}
+              {{ ns.ctx }}
+            _iba_room: "{{ _ba_ids | first | string if _ba_ids | length > 0 else '' }}"
+        - variables:
+            _iba_evidence: >-
+              {%- set ns = namespace(ev=[]) -%}
+              {%- for p in _iba_all_players if p is mapping -%}
+                {%- set eid = 'grocy:product:' ~ (p.get('product_id') | string) -%}
+                {%- set hint = {'player_type': p.get('media_role'), 'media_formats': p.get('media_formats', []), 'media_types': p.get('media_types', []), 'dumb': p.get('entity_id', '') == '', 'entity_id': p.get('entity_id') or none, 'area': _iba_room, 'location_name': p.get('location_name', ''), 'product_name': p.get('product_name', '')} -%}
+                {%- set ns.ev = ns.ev + [{'evidence_id': eid, 'leaf_type': 'player_hint', 'content_redacted': false, 'anchor_contexts': _iba_anchor_contexts, 'stack': {'provider': 'inventory', 'object_type': 'product', 'evidence_id': eid, 'lens_mode': 'by_anchor'}, 'player_hint': hint, 'content': {'product_id': p.get('product_id') | int, 'product_name': p.get('product_name', ''), 'media_role': p.get('media_role'), 'media_formats': p.get('media_formats', []), 'media_types': p.get('media_types', []), 'location_id': p.get('location_id') | int, 'location_name': p.get('location_name', ''), 'area': _iba_room}}] -%}
+              {%- endfor -%}
+              {{ ns.ev }}
+        - variables:
+            final_response:
+              status: ok
+              evidence: "{{ _iba_evidence }}"
+              count: "{{ _iba_evidence | length }}"
+              anchor_type: "{{ _ba_type }}"
+        - stop: by_anchor done
+          response_variable: final_response
+
     - alias: 'catalog_find_by_tag — find products by ZenOS userfield tags'
       choose:
       - conditions:
@@ -5685,7 +6168,12 @@ script:
                             'book_author': uf.get('book_author', none),
                             'book_isbn': uf.get('book_isbn', none),
                             'book_series': uf.get('book_series', none),
-                            'book_genre': uf.get('book_genre', none)}] -%}
+                            'book_genre': uf.get('book_genre', none),
+                            'library_meta': uf.get('library_meta', none),
+                            'library_loan_borrower': uf.get('library_loan_borrower', none),
+                            'library_loan_date': uf.get('library_loan_date', none),
+                            'library_loan_due': uf.get('library_loan_due', none),
+                            'library_loan_home_location_id': uf.get('library_loan_home_location_id', none)}] -%}
                         {%- endif -%}
                       {%- endif -%}
                     {%- endfor -%}
@@ -5767,7 +6255,12 @@ script:
                     'book_author': uf.get('book_author', none),
                     'book_isbn': uf.get('book_isbn', none),
                     'book_series': uf.get('book_series', none),
-                    'book_genre': uf.get('book_genre', none)}] -%}
+                    'book_genre': uf.get('book_genre', none),
+                    'library_meta': uf.get('library_meta', none),
+                    'library_loan_borrower': uf.get('library_loan_borrower', none),
+                    'library_loan_date': uf.get('library_loan_date', none),
+                    'library_loan_due': uf.get('library_loan_due', none),
+                    'library_loan_home_location_id': uf.get('library_loan_home_location_id', none)}] -%}
                 {%- endif -%}
               {%- endfor -%}
               {{ ns.r }}
@@ -7827,6 +8320,7 @@ script:
                 _ci_isbn: "{{ repeat.item.get('book_isbn', none) }}"
                 _ci_series: "{{ repeat.item.get('book_series', none) }}"
                 _ci_genre: "{{ repeat.item.get('book_genre', none) }}"
+                _ci_library_meta: "{{ repeat.item.get('library_meta', none) }}"
                 _ci_note: "{{ repeat.item.get('note', '') | string | trim }}"
                 _ci_pid: 0
                 _ci_is_new: false
@@ -7856,7 +8350,7 @@ script:
                   response_variable: _ci_exact_raw
                   data:
                     action_type: read
-                    endpoint: "objects/products?query%5B%5D=name={{ _ci_name }}"
+                    endpoint: "objects/products?query%5B%5D=name={{ _ci_name | replace(':', '%3A') }}"
                 - variables:
                     _ci_pid: >-
                       {%- set _raw = _ci_exact_raw['result']['content'] | default(none, true) -%}
@@ -7881,7 +8375,7 @@ script:
                   response_variable: _ci_fuzzy_raw
                   data:
                     action_type: read
-                    endpoint: "objects/products?query%5B%5D=name~{{ _ci_name }}"
+                    endpoint: "objects/products?query%5B%5D=name~{{ _ci_name | replace(':', '%3A') }}"
                 - variables:
                     _ci_pid: >-
                       {%- set _raw = _ci_fuzzy_raw['result']['content'] | default(none, true) -%}
@@ -7951,6 +8445,7 @@ script:
                       {%- if _ci_isbn is not none -%}{%- set p = p | combine({'book_isbn': _ci_isbn | string}) -%}{%- endif -%}
                       {%- if _ci_series is not none -%}{%- set p = p | combine({'book_series': _ci_series}) -%}{%- endif -%}
                       {%- if _ci_genre is not none -%}{%- set p = p | combine({'book_genre': _ci_genre}) -%}{%- endif -%}
+                      {%- if _ci_library_meta is not none -%}{%- set p = p | combine({'library_meta': _ci_library_meta | string}) -%}{%- endif -%}
                       {{ p | tojson }}
                 - action: script.zen_sutra_grocy
                   response_variable: _ci_tag_raw
