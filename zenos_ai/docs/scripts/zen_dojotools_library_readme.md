@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v5.9.0 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Library — v6.10.0 (ZenOS-AI 2026.7.0 'Neo')
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -158,60 +158,72 @@ Individual command tokens (`~SECURITY~`, `~MEDIA~`, etc.) are not documented her
 
 | Field | Required | Description |
 |---|---|---|
-| `section` | No | Library department. Default: `stacks`. |
-| `stack` | No | Stack provider to route to: `paperless`, `radar`, `wiki`. |
+| `section` | No | Library department. Default: `stacks`. Values: `stacks`, `radar`, `catalog`. |
+| `stack` | No | Stack provider to route to: `paperless`, `radar`, `wiki`, `media`. |
 | `mode` | No | Generic verb or legacy mode. Default: `help`. |
+| `item_type` | No | Works catalog item type: `book`, `game`, `music_recording`, `video`, `periodical`, `art_print`. Required when `section=catalog`. |
 | `query` | No | Text input or search query. |
 | `input_json` | No | Structured JSON payload for modes that require it. |
 | `caller_token` | No | Opaque pass-through token for correlation. Not interpreted. |
 
 ---
 
+## Capability Tiers — What You Unlock
+
+Library is independently useful at every tier. Each addition compounds the previous.
+
+| Tier | Requires | What you get |
+|------|----------|-------------|
+| **1 — Knowledge Broker** | Library only | Lens Bus routing, `stack=` dispatch to registered providers, evidence envelopes, generic verbs |
+| **2 — Circulation Desk** | + Grocy (Inventory plugin) | Full physical catalog: browse/find/search/add/loan/return across books and games. Library science enforced — location tracking, dedup guards, loan lifecycle |
+| **3 — Media-Aware Library** | + Media Manager | Music evidence via `stacks_by_anchor`. Evidence envelopes carry `playback_hint` — caller gets both the item and the call shape to play it |
+| **4 — Room-Context Evidence** | + Room Manager `+media` | Anchor searches know what's already playing in the target room. Evidence confidence boosted when provider matches room's current source |
+
+The Library **silently degrades** when a tier dependency is absent. If Grocy is unavailable, catalog modes skip the call and return empty. If Media Manager is unreachable, `stack=media` returns `status: degraded` with empty evidence — no error raised.
+
 ---
 
-## `section=books` — Physical Book Catalog
+## `section=catalog` — Unified Works Catalog
 
-v5.6.0–v5.9.0 adds a full physical book catalog backed by Grocy (ISBN lookup, stock locations, lending). Use `section=books` with a `mode=` to access.
+v6.x+ replaces the separate `section=books` and `section=games` surfaces with a unified catalog keyed by `item_type`. The catalog is backed by Grocy; Library enforces library science (ISBN dedup, loan lifecycle, location tracking) behind the scenes.
 
 ```yaml
 zen_dojotools_library:
-  section: books
+  section: catalog
+  item_type: book   # book | game | music_recording | video | periodical | art_print
   mode: browse
 ```
 
-### Book Modes
+### Catalog Modes
 
-| Mode | Version | What It Does |
-|------|---------|--------------|
-| `browse` | v5.6.0 | List all books in the catalog. Optional `query` for title/author filter. |
-| `find` | v5.6.0 | Search catalog by title, author, ISBN, or tag. Returns `{books[], count}`. |
-| `search` | v5.6.0 | Full-text search across all book fields including notes. |
-| `add` | v5.7.0 | Add a book to the catalog. Requires `isbn` or `title`. ISBN triggers Grocy product lookup/creation with dedup guard — if a product with that ISBN exists, returns the existing record rather than creating a duplicate. |
-| `move` | v5.8.0 | Move a book to a different shelf location. Requires `item` (title or ISBN) and `location` (Grocy location ID or name). |
-| `stock_transfer_location` | v5.8.0 | Bulk-move all books from one location to another. |
-| `books_loan` | v5.9.0 | Check out a book to a person. Requires `item` (title or ISBN) and `person` (HA person entity or name). Writes loan record to the book's Grocy userfields. Uses `inventory_root` from the borrower's profile as the destination location. Schema v1.4.0 loan fields. |
-| `books_return` | v5.9.0 | Return a loaned book. Requires `item`. Clears loan fields, restores book to home location. |
-| `books_configure` | v5.9.0 | Configure the books catalog: set default home location (`bookshelf_default_location_id`), loan period (`loan_period_days`), and other catalog defaults. Written to household cabinet `books_config` drawer. |
+| Mode | What It Does |
+|------|-------------|
+| `browse` | List all items of the given `item_type`. Optional `query` for title/author/platform filter. |
+| `find` | Search by title, author/artist, ISBN, platform, or tag. Returns `{items[], count}`. |
+| `search` | Full-text search across all item fields including notes. Accepts `q` or `query`. |
+| `add` | Add an item. Requires `isbn` or `title`. ISBN triggers Grocy dedup guard — returns existing record if found. |
+| `loan` | Check out an item to a person. Requires `item` and `person` (HA person entity or name). Writes loan record to Grocy userfields. Uses `inventory_root` from borrower profile as destination location. |
+| `return` | Return a loaned item. Requires `item`. Clears loan fields, restores item to home location. |
 
-### Book Schema (v1.4.0 loan fields)
+### Works Schema
 
-Books in the Grocy catalog carry these userfields:
+All catalog items share the unified userfield schema stored in `library_meta` (JSON blob in Grocy):
 
 | Field | Description |
 |-------|-------------|
-| `isbn` | ISBN-13 (canonical) |
-| `author` | Author string |
-| `series` | Series name if applicable |
-| `series_number` | Position in series |
-| `tags` | Comma-separated tags |
-| `on_loan_to` | Person entity ID or name of current borrower (`null` when in) |
-| `loan_date` | ISO date loan was checked out |
-| `loan_due` | ISO date loan is due back (loan_date + loan_period_days) |
-| `loan_notes` | Free-form notes on the loan |
+| `library_meta` | JSON blob: `platform`, `digital`, `hardware_note` (games); `author`, `isbn`, `series`, `genre` (books) |
+| `library_loan_borrower` | Person entity ID or name of current borrower |
+| `library_loan_date` | ISO date loan was checked out |
+| `library_loan_due` | ISO date loan is due back |
+| `library_loan_home_location_id` | Grocy location ID to restore to on return |
 
-### Bookshelf Discovery
+### Location Discovery
 
-The Library tool discovers all bookshelf locations by looking for Grocy locations tagged with the HA label `bookshelf`. Tag a parent Grocy location with `bookshelf` and all child locations (shelves, bins) are automatically included in browse/find queries. Tag once, the whole shelf tree joins the library.
+Grocy locations tagged with the HA label `bookshelf` are auto-discovered for browse/find queries. Tag once, the whole shelf tree joins the catalog.
+
+### Legacy: `section=books` (v5.6.0–v5.9.0)
+
+The original `section=books` surface (separate from games, flat-key userfields) was retired in v6.1.0. The unified `section=catalog item_type=book` is the replacement. v5.x loan fields (`on_loan_to`, `loan_date`, `loan_due`, `loan_notes`) are read via dual-source fallback — the Library checks both flat keys and `library_meta` on decode, so existing book records continue to resolve without migration.
 
 ---
 

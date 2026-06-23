@@ -1,6 +1,6 @@
 # ZenOS-AI: First Run Guide
 
-> **Version:** 2026.6.0 'Clue' | **Last Updated:** May 2026
+> **Version:** 2026.7.0 'Neo' | **Last Updated:** June 2026
 
 ---
 
@@ -184,6 +184,15 @@ Fields you can update any time:
 ---
 
 ## If Something Goes Wrong
+
+**"cabinet online, unmounted — cannot reinitialize dirty state"**
+You may see this message in HA logs or in a Flynn notification during startup, especially in 2026.7.0. It is **not catastrophic** and does not mean data loss.
+
+What it means: Flynn is testing a core CabCeption feature — activating history cabinets that were previously put in the `online_unmounted` (stacks) state. A cabinet in this state has uncommitted mount activation in progress. Flynn sees it as dirty and blocks re-initialization to protect it.
+
+What to do: nothing, immediately. Wait for the next Flynn health cycle (a minute or two) and it will either resolve the mount activation or surface a more specific advisory. If the message persists beyond 5 minutes, ask your AI: `"Flynn, show me cabinet health"` — it will tell you which cabinet is involved and what state it's in.
+
+This is expected behavior while CabCeption mount activation of history cabinets is being tested. If you see it, it means the feature is working as designed.
 
 **The welcome notification keeps appearing after setup**
 Your AI's name may still be the default ("your AI"). Ask your AI what its name is — if it says it doesn't have one yet, run OOBE again.

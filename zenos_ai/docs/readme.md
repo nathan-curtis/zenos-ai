@@ -18,7 +18,7 @@
 >
 > **4. ZenZork v1.6.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." Item commands (take/drop/inventory/put/push/pull/open/close/use). Navigation additions (face/turn, again/g). Character sheet in AI user cabinet. Landmark survey wizard. `game_mode`, `harassment_freq`, `difficulty` session fields. Post-game RM quality report on stop. Quest system. Portal disambiguation.
 >
-> **5. Media Manager v6.0.0 (NyxMau5) — Lens provider surface.** `stacks_by_anchor` maps anchors (label/person/area/mood/activity) to ranked evidence leaves with `playback_hint`. Profile pref re-ranking applies household and user `media_prefs` at search time (boost_artists, preferred_sources, default_volume, explicit_policy). `zen_stack_media` proxy. `register`/`unregister`/`health`/`audit` Lens modes. Profile Editor v5.3.0 adds `media_prefs` to all three profile targets.
+> **5. Media Manager v6.0.0 (NyxMau5) — Lens provider surface.** `stacks_by_anchor` maps anchors (label/person/area/mood/activity) to ranked evidence leaves with `playback_hint`. `now_playing` mode feeds Room Manager `+media` context slice with full playback fidelity (provider, search_metadata, lyrics_hint). `media_source_prefs` — preferred sources float, excluded sources stripped — applied on every Lens call automatically. `discovered_sources` returned on every search. Set once, use many: discover sources with `health`, save prefs in Profile Editor, done. Area anchors inject `room_context` only — semantic anchors drive the query. `zen_stack_media` proxy. Profile Editor v5.3.0 adds `media_prefs` to all three profile targets.
 >
 > → [Full Release Notes — Neo](releases/neo.md) | [ZenZork](scripts/zen_dojotools_zenzork_readme.md)
 
@@ -218,7 +218,7 @@ Includes:
 * `zen_dojotools_admintools_readme.md` — AdminTools: KungFu Writer, cabinet repair, template press, prompt loader, nuclear label reset, reset_all cabinet sequence
 * `zen_dojotools_scheduler_readme.md` — Scheduler: trigger IDs, Dojo-driven dispatch, component subscription, force events, hardware trigger pattern
 * `zen_dojotools_summarizers_readme.md` — Ninja Summarizer + SuperSummary: kill switches, active component selection, monk pipeline
-* `zen_dojotools_library_readme.md` — Library: Lens Bus `stack=` routing, generic verbs, hash_md5, slugify (`~commands~` interface removed in 2026.7.0)
+* `zen_dojotools_library_readme.md` — Library v6.10.0: Lens Bus `stack=` routing, generic verbs, unified catalog (`section=catalog item_type=*`) with books/games/all works types, compounding capability tiers, hash_md5, slugify
 * `zen_dojotools_zenzork_readme.md` — ZenZork v1.6.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, quest system, setup commissioning
 * `zen_home_mode_readme.md` — Home Mode: 8-state machine, schedule anchors, quiet/work hours, scheduler trigger IDs
 * `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
@@ -319,7 +319,10 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 * Cortex 43 — Rule Zero: DojoTools supersede all HA built-ins, domain routing table in directives
 * Wake sequence rewrite — `~commands~` dropped, ~2,000 chars lighter
 * Lens Bus `stack=` routing — Library v5.5.0, `zen_stack_radar` v1.0.0 (Zammad service desk)
-* ZenZork v1.1.0 — text adventure on live RM topology, DUNGEONMIND narrator, quest system, setup, disambiguation
+* ZenZork v1.6.0 — text adventure on live RM topology, DUNGEONMIND narrator, quest system, setup, disambiguation
+* Media Manager v6.0.0 — Lens provider surface: now_playing, stacks_by_anchor room-context injection, media_source_prefs, discovered_sources, play_media query fallback
+* Library v6.10.0 — unified catalog (`section=catalog item_type=*`), games, compounding capability tiers; Grocy +5 library userfields
+* FileCabinet Tapestry — weave/weave_preview/weave_save modes; multi-cabinet composer; stored definitions as labeled drawers
 * New plugins: wiki_js, paperless_ngx, twenty, zammad, firefly_iii, mealie v5.8.0
 
 See: [Release Notes — Neo](releases/neo.md)
@@ -341,7 +344,7 @@ See: [Release Notes — Neo](releases/neo.md)
 * Index v5.0.1 — +rm pipeline (Room Manager snapshot per entity area), area_entities fix
 * AlertManager v1.5.0 — Postman integration documented; ack lifecycle + open_dashboard pattern
 * OOBE — _oobe_done backward compat (checks both _oobe_complete and legacy oobe_complete); 5-component options dict with tool names
-* Media Manager (NyxMau5) v6.0.0 — whole-home media management, Lens provider surface, evidence envelopes with `playback_hint`, profile pref re-ranking
+* Media Manager (NyxMau5) v0.7.2 — whole-home AV discovery, label-driven entity resolution, source/sound mode control, acoustic topology integration
 * Security Manager v1.2.0 — replaces alarm_panel; room-aware zone inventory via RM +security slice
 * ZenShade v0.2.2 — cover management, tilt support, ZenLux sync
 * SpaMaster v3.12.0 — replaces calderaspas entirely; ESPHome hot tub management, ESPHome device discovery, scene/chemistry/log modes, preset library; consumables ERP via `provision_bom` (idempotent Grocy product + chore provisioning)

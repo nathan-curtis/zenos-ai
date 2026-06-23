@@ -16,16 +16,22 @@ And a few things that are.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-**What's in Neo:** *I know Kung Fu.* The cabinet is a graph. Every drawer is a node. Every node has meta, labels, and children. Tools are wired to talk to each other by design. Friday composed her own executive dashboard from live-mounted drawers without being asked.
+**What's in Neo:** *I know Kung Fu.* Neo turns a collection of well-made tools into a system that knows itself, talks to itself, and reasons from live structured memory.
 
-- **CabCeption — FileCabinet v6.2.0** — nested drawer trees via `/` path separator. VirtualDrawer (softlink to another path), LiveDrawer (KF4 schema absorbed into FC — fires a tool call on read, warm cache, auto-expiring cold cache, never empty). Drawers are first-class entities: meta + labels + children at every level.
-- **Tool Manifest** — `zenos_manifest.jinja` + `MF.tool_manifest()`. Every compliant tool self-describes. Manifest broker v6.0.0 aggregates by namespace discovery. The system knows what it is.
-- **Cortex 43 — Rule Zero** — DojoTools supersede all HA built-ins. Not preference. Authority. GetLiveContext overridden. Domain routing table in directives. Successor to v42 'The Answer'.
-- **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter. The manifest replaced the static surface.
-- **Lens Bus `stack=` routing** — Library v5.5.0 routes generic verbs to registered providers. `zen_stack_radar` v1.0.0 wires Zammad service desk as a Lens stack provider.
-- **Intentional tool topology** — tools wired to talk to each other by design. FC is the wiki surface. Library routes to radar routes to servicedesk. The manifest discovers tools by namespace. LiveDrawers fire tool calls on read.
-- **Media Manager v6.0.0 (NyxMau5) — Lens provider.** `stacks_by_anchor` maps anchors to ranked evidence with `playback_hint`. Profile pref re-ranking (boost artists, source rank, volume, explicit policy). `zen_stack_media` proxy. Profile Editor v5.3.0 adds `media_prefs` to all profile targets.
-- **ZenZork v1.6.0** — text adventure engine using live Room Manager topology as the dungeon. Narrator styles: `zork` (dry/sardonic), `dungeon` (DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984"), `straight`. Item commands (take/drop/inventory/put/push/pull/open/close/use). Character sheet in AI user cabinet. Landmark survey wizard. Quest system, portal disambiguation.
+**Graph Memory**
+- **CabCeption — FileCabinet v6.2.0** — nested drawer trees via `/` path separator. VirtualDrawer (softlink to another path), LiveDrawer (fires a tool call on read, warm/cold cache, never empty). Every drawer is a graph node with meta, labels, and children at every level.
+- **Tapestry** — `weave`/`weave_preview`/`weave_save`: compose any combination of cabinet drawers from any cabinets into a single live nested dict. Store the definition once as a labeled drawer. Friday navigates to a name; the name becomes the context.
+
+**Self-Knowing Tools**
+- **Tool Manifest** — `zenos_manifest.jinja` + `MF.tool_manifest()`. Every tool self-describes. Manifest broker v6.0.0 aggregates by namespace discovery. The system knows what it is.
+- **Cortex 43 — Rule Zero** — DojoTools supersede all HA built-ins. Not preference. Authority. GetLiveContext overridden. Domain routing table in directives.
+- **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter.
+
+**Connected Knowledge**
+- **Lens Bus `stack=` routing** — Library v6.10.0 routes generic verbs to registered providers: `radar` (Zammad), `paperless`, `wiki`, `media`. Unified works catalog (`section=catalog item_type=book|game|…`) + compounding capability tiers.
+- **Media Manager v6.0.0 (NyxMau5)** — `now_playing` feeds room context with full playback fidelity. `stacks_by_anchor` returns evidence with `playback_hint`. Set prefs once in Profile Editor; every future Lens call auto-applies them.
+- **New plugins** — Zammad (service desk), Wiki.js, Paperless-NGX, Twenty CRM, Firefly III. Five new `!secret` keys.
+- **ZenZork v1.6.0** — text adventure on live Room Manager topology. DUNGEONMIND narrator. Quest system, item commands, character sheet in AI user cabinet.
 
 → [Release Notes — Neo](zenos_ai/docs/releases/neo.md)
 

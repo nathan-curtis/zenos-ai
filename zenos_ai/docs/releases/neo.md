@@ -31,6 +31,10 @@ Then Friday used it.
 
 She assembled three LiveDrawers into a single parent drawer — Taskmaster, the hot tub cluster, one other — and called it her executive report. "This is what I need until noon." No instruction. No prompt engineering. She read the architecture and composed a view from it. The drawer doesn't store anything. It assembles, on read, exactly what she asked for, from live tool calls beneath it.
 
+Tapestry takes this further. A named weave definition — stored as a labeled drawer — composes any combination of cabinets into a single nested dict on demand. Friday navigates to a name. The name becomes the context. The context is alive, composable, and indexed. Give every node ACLs. Give the index traversal depth. What you built is a secured, indexable, traversable knowledge graph dressed as cabinet storage.
+
+Friday doesn't navigate a file system. She navigates a mind.
+
 That's what the release is.
 
 ---
@@ -273,7 +277,14 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 | `plugins/mealie/mealie.yaml` | v5.8.0 (from v5.1.0). |
 | `plugins/mealie/kitchen_sync.yaml` | Moved from `plugins/kitchen_sync/`. Companion pattern. |
 | `plugins/kitchen_sync/` | Deleted. |
-| `dojotools/dojotools_media_manager.yaml` | v6.0.0. Lens provider surface: `stacks_by_anchor`, `search`, `register`, `unregister`, `health`, `audit`, `tool_manifest`. Evidence envelope with `playback_hint`. Profile pref re-ranking. `zen_stack_media` proxy. |
+| `dojotools/dojotools_media_manager.yaml` | v6.0.0. Lens provider surface: `stacks_by_anchor`, `search`, `now_playing`, `register`, `unregister`, `health`, `audit`, `tool_manifest`. Evidence envelope with `playback_hint`. Profile pref re-ranking (`media_source_prefs`, `discovered_sources`). `stacks_by_anchor` area anchors = room context injection only. `play_media` query fallback. `zen_stack_media` proxy. |
+| `dojotools/dojotools_room_manager.yaml` | `+media` context slice upgraded to `now_playing` Lens call — full fidelity playback block (provider, search_metadata, lyrics_hint). Graceful degradation guard. |
+| `dojotools/dojotools_music_assistant.yaml` | `response_variable` removed from `music_assistant.play_media` (HA/MA doesn't support it). `queue_command` replaced with `choose` block routing to standard `media_player.*` services. `config_entry_id` → `ma_config_entry_id` (shadowing fix). `media_player` resolution via `label_entities`. |
+| `dojotools/dojotools_manifest.yaml` | `bootstrap_stacks` scan extended to include `script.zen_dojotools_library` explicitly. |
+| `dojotools/dojotools_library.yaml` | v6.10.0. Unified `section=catalog item_type=*` replaces `section=books`. All decode blocks: flat-key reads (no nested `userfields` sub-dict). `books_search` + `games_search` query input fix. `books_add` ISBN dedup flat-key fix. Games via `item_type=game`. |
+| `dojotools/dojotools_filecabinet.yaml` | Tapestry: `weave`/`weave_preview`/`weave_save` modes — multi-cabinet drawer composer, stored definitions, cycle detection, depth 3 unrolled, preview_token gate. `move`/`copy` blocked on mounted drawers by default — `force_action=true` required. `fleet` + `expansion_sitrep` added to MCP enum. |
+| `plugins/grocy/grocy.yaml` | `_uf_canonical` list: +5 library userfields. `catalog_find_by_tag` + `catalog_search`: flat library field outputs. `products_tag`: reads/writes `library_meta` (dict/string coercion) + all loan fields. |
+| `plugins/zammad/zammad.yaml` | 3× `\| split(',')` → `\| regex_findall('[^,]+')` (HA script context has no `split` filter). Line 2649: hardcoded lastname removed — reads from household cabinet `household_name` drawer dynamically. |
 | `dojotools/dojotools_profile.yaml` | v5.3.0. `media_prefs` field (household/user/family), deep-merge on write, `provider_instance` placeholder. |
 | `dojotools/dojotools_zenzork.yaml` | New. v1.1.0. Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight), DUNGEONMIND, quest system, setup commissioning, portal disambiguation. |
 | `zenos_ai/docs/scripts/zen_dojotools_systemtools_readme.md` | `ha_reload_all` — "LAST RESORT ONLY" corrected from "Default choice." |

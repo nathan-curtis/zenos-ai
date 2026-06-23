@@ -116,10 +116,10 @@ The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and Sup
 
 ---
 
-## 8. Zen DojoTools Library — v5.9.0 (2026.7.0)
+## 8. Zen DojoTools Library — v6.10.0 (2026.7.0)
 **File:** `zen_dojotools_library_readme.md`
 
-Knowledge broker and Lens Bus owner. `stack=` routing to registered providers (`paperless`, `radar`, `wiki`). Generic verbs: `get/find/list/configure/by_anchor`. `section=books` full physical book catalog (browse/find/search/add/move/loan/return/configure) backed by Grocy. `hash_md5` and `slugify` utility tools. `command_interpreter.jinja` removed in 2026.7.0.
+Knowledge broker and Lens Bus owner. `stack=` routing to registered providers (`paperless`, `radar`, `wiki`, `media`). Generic verbs: `get/find/list/configure/by_anchor`. `section=catalog item_type=book|game|…` unified works catalog backed by Grocy — browse/find/search/add/loan/return with library science (dedup, loan lifecycle, location tracking). Compounding capability tiers: Library alone (Lens Bus) → +Grocy (circulation desk) → +Media Manager (music evidence with playback_hint) → +Room Manager now_playing (room-context evidence). `hash_md5` and `slugify` utility tools. `command_interpreter.jinja` removed in 2026.7.0.
 
 ---
 
@@ -172,17 +172,17 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — 2026.6.0 'Clue'
+## 16. Zen DojoTools FileCabinet — v6.2.0 (2026.7.0)
 **File:** `zen_dojotools_filecabinet_readme.md`
 
-Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet.
+Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet.
 
 ---
 
-## 17. Zen DojoTools Manifest — 4.5.8
+## 17. Zen DojoTools Manifest — v6.1.0 (2026.7.0)
 **File:** `zen_dojotools_manifest_readme.md`
 
-Runtime-only Cabinet manifest scanner. Builds a complete, zero-persistence health and metadata model for every Cabinet Volume — GUID checks, schema compatibility, drawer discovery, capacity analysis, ACL expansion.
+System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `health`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. Domain routing table maps domains to authoritative scripts. UMP `tool_manifest` contract supported.
 
 ---
 
