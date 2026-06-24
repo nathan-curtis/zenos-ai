@@ -1,4 +1,4 @@
-# Zen DojoTools Office — v5.1.0 (ZenOS-AI 2026.6.0 'Clue')
+# Zen DojoTools Office — v5.1.0 (ZenOS-AI 2026.7.0 'Neo')
 
 *M365 Teams and Mail tools for Home Assistant*
 
@@ -47,20 +47,22 @@ Update and delete are not supported by the MS365 Teams integration.
 
 ---
 
-## zen_dojotools_mail
+## zen_dojotools_mail — v5.0.0
 
-M365 Mail CRUD via the MS365 integration. Supports listing inbox messages, reading a specific message by UID, and sending new mail. Includes a whitelist gate on outbound sends.
+M365 Mail via the MS365 integration. Supports listing inbox messages, reading a message by subject, and sending new mail. Includes a whitelist gate on outbound sends.
+
+> **Spook v6 compatibility note:** `ms365_mail.get_message` (used by the previous `read` implementation) does not exist in the MS365 integration. Read mode now resolves messages via sensor attribute scan. This was surfaced by the [Spook v6](https://spook.boo/) unknown-actions sweep.
 
 ### Modes
 
 | `action_type` | Description |
 |---|---|
-| `list` | Lists messages from a folder (default: Inbox). Supports `from` and `query` filters |
-| `read` | Fetches a single message by `uid`. Requires `folder` and `uid` |
-| `create` | Sends a new email. Requires `to`, `subject`, `body` |
-| `help` | Returns capability summary, field reference, examples, and setup notes |
-
-Delete and restore are declared in the field selector but not implemented — `uid` required errors gate them. Attachments are listed on `read` but not retrievable.
+| `list` | Lists messages from a folder (default: Inbox). Supports `from_filter` and `query` filters. Returns `uid` in each header row. |
+| `read` | Finds a message by `uid` OR `subject` substring (first match wins). Resolves via sensor attribute scan — `uid` is always empty string from the MS365 sensor, so **subject match is the practical path**. Returns full body. |
+| `create` | Sends a new email. Requires `to`, `subject`, `body`. |
+| `delete` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
+| `move` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
+| `help` | Returns capability summary, field reference, examples, and setup notes. |
 
 ### Key Fields
 
@@ -68,15 +70,16 @@ Delete and restore are declared in the field selector but not implemented — `u
 |---|---|---|
 | `action_type` | Yes | `list`, `read`, `create`, `help` (default: `help`) |
 | `folder` | read/list | Folder name. Valid: `Inbox`, `Sent Items`, `Deleted Items`, `Junk Email`, `Outbox`. Default: `Inbox` |
-| `uid` | read | Message UID from a `list` response |
+| `uid` | read | Message UID — always empty string from sensor; use `subject` instead |
+| `subject` | read | Subject substring match — practical read path |
 | `to` | create | Recipient(s), comma-separated |
 | `subject` | create | Subject line |
 | `body` | create | Message body |
 | `cc` / `bcc` | optional | Additional recipients, comma-separated |
 | `importance` | optional | `Low`, `Normal`, `High`. Default: `Normal` |
 | `content_type` | optional | `Text` or `HTML`. Default: `Text` |
-| `from` | list filter | Filter by sender address |
-| `query` | list filter | Search string for subject/body/sender |
+| `from_filter` | list | Filter by sender address |
+| `query` | list | Search string for subject/body/sender |
 
 ### Whitelist Gate
 

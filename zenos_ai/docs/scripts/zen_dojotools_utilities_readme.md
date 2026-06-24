@@ -263,7 +263,7 @@ GET response includes a `topology_context` block: open doors/windows, area tempe
 | `swing_mode` | Swing mode |
 | `preset` | Preset mode (eco, sleep, away, etc.) |
 | `humidity` | Target humidity (if supported) |
-| `aux_heat` | Auxiliary heat — `on`/`off` |
+| `aux_heat` | ~~Auxiliary heat~~ — `not_implemented`. `climate.set_aux_heat` was removed from HA with no replacement (surfaced by Spook v6 sweep). |
 | `power` | Power control — `on`/`off` (via hvac_mode) |
 | `get` | Any truthy value forces read-only |
 
@@ -312,9 +312,11 @@ Full zone CRUD and haversine bearing for HA zones. Zones defined in `configurati
 | `read` | `entity_id` | Inspect single zone (lat, lon, radius, persons, editable) |
 | `create` | `name`, `latitude`, `longitude` | Create zone (radius defaults to 100m) |
 | `update` | `entity_id` | Update any combination of name, lat, lon, radius, icon, passive |
-| `delete` | `entity_id` | Delete zone (must be editable) |
+| `delete` | `entity_id`, `confirm=true` | Delete zone (must be editable). Requires `confirm=true` — returns `confirm_required` with zone name if omitted. |
 | `bearing` | `entity_id` | Haversine distance + compass direction from `zone.home` to target |
 | `bearing` | `entity_id`, `origin_entity_id` | Zone-to-zone bearing |
 | `bearing` | `entity_id`, `origin_latitude`, `origin_longitude` | Arbitrary-coordinates-to-zone bearing |
 
 Optional fields for `create`/`update`: `icon` (MDI slug), `passive` (boolean — hidden from frontend).
+
+`confirm=true` is required for `delete`. Omitting it returns `confirm_required` with the zone's friendly name so the caller can surface a confirmation before proceeding. This guard was added when `zone.edit` → `zone.update` was corrected as part of the Spook v6 compatibility sweep.
