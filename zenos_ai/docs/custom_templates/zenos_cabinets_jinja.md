@@ -1,6 +1,6 @@
 # zenos_cabinets.jinja — Cabinet Macro Library
 
-**Version:** 1.0.0 (2026.4.0 'Ectoplasm')
+**Version:** 1.0.0 (introduced in 2026.4.0 'Ectoplasm' — current as of 2026.6.0 'Clue' stable / 2026.7.0 'Neo' beta)
 **File:** `custom_templates/zenos_ai/zenos_cabinets.jinja`
 **Status:** Stable. Required by `zen_os_1.jinja`, `zenos_health.jinja`, `dojotools_filecabinet`, and any template that reads cabinet drawers.
 

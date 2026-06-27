@@ -95,7 +95,7 @@ event_data:
     alert_key: unique_slug        # required — used as dedup key and cabinet key
     message: "Human-readable description"   # optional, defaults to alert_key
     severity: warn                # optional — info | warn | error, defaults to warn
-    notify_target: persistent     # optional — persistent | postman | notify service suffix
+    notify_target: persistent     # optional — persistent | mobile | postman
 ```
 
 ### Postman-specific fields
@@ -141,10 +141,10 @@ Only `error`-severity alerts are auto-wired to the Room Manager priority inject 
 | Value | Behavior |
 |-------|---------|
 | `persistent` (default) | Creates HA persistent notification |
+| `mobile` | Sends via HA mobile app notify service |
 | `postman` | Routes via `zen_dojotools_postman` with authority-stack routing. Household/family `postman_profile` policy applied. |
-| `<service suffix>` | Raw-event path only: calls `notify.<service suffix>` (for example, `mobile_app_pixel_8`). |
 
-The MCP tool exposes the safe selector values `persistent`, `mobile`, and `postman`. Use `persistent` for first tests and `postman` when profile-based routing is configured.
+Use `persistent` for first tests and `postman` when profile-based routing is configured.
 
 ---
 

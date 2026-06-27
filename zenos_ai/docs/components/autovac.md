@@ -1,6 +1,6 @@
 # ZenOS-AI AutoVac
 
-**Version:** 5.1.0
+**Version:** 5.2.0
 **Script:** `zen_dojotools_autovac`
 
 ---
@@ -51,6 +51,7 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `setup` | Verify label wiring, init cabinet drawer, deploy KFC dojo entry — idempotent. `dry_run=true` previews without writing. |
 | `status` | Full system snapshot: vacuum state, room decisions, election, schedules, run readiness |
 | `configure` | View or update room and system config via cabinet |
+| `preset` | Apply a named config bundle to one or more rooms in one call. `preset=<name> rooms=<csv>` (or `room=<slug>`). No args: list all presets and their settings. Patches specified fields only — other settings preserved. Available: `obstacle_prone`, `mop_room`, `guest_room`, `high_traffic`, `twice_weekly`, `weekly`, `disabled`, `standard`. |
 | `queue` | Mark a room for the next run regardless of schedule |
 | `dequeue` | Remove a room from the queue |
 | `skip` | Skip a room on the next run |

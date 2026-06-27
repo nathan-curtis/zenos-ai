@@ -46,6 +46,7 @@ script:
             options:
             - help
             - query
+            - tool_manifest
         default: help
       log_result:
         name: Log Result
@@ -100,6 +101,35 @@ script:
         description: 'Reserved. Governance stub — echoed in response. SP1 enforcement
           not yet active.'
     sequence:
+
+    # --- tool_manifest ---
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{- mode | default('') == 'tool_manifest' -}}"
+        sequence:
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_query',
+                display_name='Query — ZQ-1 Entity Selector',
+                tier='dojotools',
+                version='4.9.0',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools'],
+                optional_labels=[],
+                consumes=['label', 'domain', 'area_id', 'device_id', 'state'],
+                returns=['entity_list'],
+                failure_policy='hard',
+                modes={'query': 'query', 'manifest': 'tool_manifest'},
+                icon='mdi:database-search',
+                color='indigo',
+
+                caller_token=caller_token | default('')
+              ) | from_json -}}
+        - stop: query tool manifest
+          response_variable: result
 
     # --------------------------------------------------------------
     # Always normalize User/AI inputs so we don't have to react JIT
@@ -298,6 +328,35 @@ script:
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
 
+    - alias: tool_manifest
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{- mode | default('') == 'tool_manifest' -}}"
+        sequence:
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_inspect',
+                display_name='Inspect — Deep Entity Inspector',
+                tier='dojotools',
+                version='4.9.1',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools'],
+                optional_labels=[],
+                consumes=['entity_id', 'area_id', 'floor_id', 'device_id'],
+                returns=['entity_detail', 'area_detail', 'floor_detail'],
+                failure_policy='hard',
+                modes={'inspect': 'inspect', 'manifest': 'tool_manifest'},
+                icon='mdi:magnify-scan',
+                color='blue-grey',
+
+                caller_token=caller_token | default('')
+              ) | from_json -}}
+        - stop: inspect tool manifest
+          response_variable: result
+
     - alias: Show Help
       choose:
       - conditions:
@@ -338,7 +397,8 @@ script:
                       "+rm": "Room Manager snapshot per area — topo/light/climate/covers/media slices. Injected as room_context per entity + domain_context.room_manager[area_id].",
                       "+chores": "Grocy chores for each entity's HA area. Calls chores_by_area per unique area_id. Injected via room_context + domain_context.room_manager[area_id].chores.",
                       "+tasks": "Area-scoped HA todo tasks per entity's HA area. Calls RM +tasks slice per unique area_id. Injected via room_context + domain_context.room_manager[area_id].tasks.",
-                      "+inventory": "Grocy object_lens place lens per entity's HA area — tagged products, chores, expanded operational objects. Calls RM +inventory slice per unique area_id. Data in domain_context.room_manager[area_id].context.inventory only. Per-entity room_context.context=null — look up by room_area_id."
+                      "+inventory": "Grocy object_lens place lens per entity's HA area — tagged products, chores, expanded operational objects. Calls RM +inventory slice per unique area_id. Data in domain_context.room_manager[area_id].context.inventory only. Per-entity room_context.context=null — look up by room_area_id.",
+                      "+lenses": "Optional registry-backed lens enrichment. Builds typed anchors (label, person, area_id, zone), calls generic lens dispatch, and injects redacted evidence in domain_context.lenses plus per-entity lens_context. If providers are unavailable, Inspect still succeeds. Active providers: paperless (article_evidence), radar (ticket_evidence), wiki (article_evidence), media (track_evidence, album_evidence, playlist_evidence, artist_evidence). Media evidence carries playback_hint on each item — {tool, mode, uri, source, media_type, suggested_room, suggested_volume}. Media prefs (boost_artists, preferred_sources, default_volume) applied automatically from the active user profile."
                     },
                     "example": "+history,-device,-volume,-timestamps"
                   },
@@ -396,7 +456,9 @@ script:
                     "+statistics is a cheap eligibility check. +history fetches actual recorder data. They are independent.",
                     "Inspect is called automatically by Index when expand_entities=true — output_fields passes through.",
                     "Cabinet sensors suppress attributes. Use FileCabinet tools for drawer data.",
-                    "Camera entities: camera_cache is merged inline into each result entry — {analysis, cached_at, cache_age_minutes, snapshot_path, found}. Check found=true before using analysis. cache_age_minutes tells you how fresh the cached analysis is."
+                    "Camera entities: camera_cache is merged inline into each result entry — {analysis, cached_at, cache_age_minutes, snapshot_path, found}. Check found=true before using analysis. cache_age_minutes tells you how fresh the cached analysis is.",
+                    "+lenses with media provider: evidence[].playback_hint carries a ready-to-fire MM call — {tool, mode, uri, source, media_type, suggested_room, suggested_volume}. Pick the highest-confidence item, read its playback_hint, call zen_dojotools_media_manager with mode=play and the hint params. No search step needed.",
+                    "Media evidence confidence reflects profile prefs — boost_artists items score 0.9+, source_rank boosts up to +0.15. Sort evidence by confidence descending to surface the best match for the current user."
                   ]
                 }
               -}}
@@ -808,6 +870,7 @@ script:
         _show_chores:    "{{- '+chores'    in output_fields_input -}}"
         _show_tasks:     "{{- '+tasks'     in output_fields_input -}}"
         _show_inventory: "{{- '+inventory' in output_fields_input -}}"
+        _show_lenses:    "{{- '+lenses'    in output_fields_input -}}"
     - repeat:
         for_each: "{{- entity_list -}}"
         sequence:
@@ -873,17 +936,33 @@ script:
                 {%- set vars = raw.get('variables') -%}
                 {%- if vars is mapping -%}
                   {%- set cab = vars.get('AI_Cabinet_VolumeInfo') -%}
-                  {%- if cab is mapping and cab.get('value') is mapping -%}
-                    {{- cab.get('value') -}}
-                  {%- else -%} 
+                  {%- if cab is mapping -%}
+                    {%- set _cv = cab.get('value') -%}
+                    {%- if _cv is mapping -%}
+                      {{- _cv -}}
+                    {%- elif _cv is string and _cv | trim not in ['', '{}', 'null'] -%}
+                      {{- _cv | from_json | default({}) -}}
+                    {%- else -%}
+                      {{- {} -}}
+                    {%- endif -%}
+                  {%- else -%}
                     {{- {} -}}
                   {%- endif -%}
-                {%- else -%} 
+                {%- else -%}
                   {{- {} -}}
                 {%- endif -%}
-              {%- else -%} 
+              {%- else -%}
                 {{- {} -}}
               {%- endif -%}
+            cabinet_vi_json_string: >
+              {%- set raw = attrs_raw -%}
+              {%- if raw is mapping -%}
+                {%- set vars = raw.get('variables') -%}
+                {%- if vars is mapping -%}
+                  {%- set cab = vars.get('AI_Cabinet_VolumeInfo') -%}
+                  {{- cab is mapping and cab.get('value') is string and cab.get('value', '') | trim not in ['', '{}', 'null'] -}}
+                {%- else -%}false{%- endif -%}
+              {%- else -%}false{%- endif -%}
 
             # @todo - don't like this "''" return value
             cabinet_signature: >
@@ -913,7 +992,9 @@ script:
                     "description": cabinet_header.get("description"),
                     "validation": cabinet_signature,
                     "flags": ( cabinet_header.get("flags") if cabinet_header.get("flags") is mapping  else {} ),
-                    "uninitialized": cabinet_uninitialized
+                    "uninitialized": cabinet_uninitialized,
+                    "degraded": cabinet_vi_json_string | bool,
+                    "repair_hint": "VolumeInfo stored as JSON string — run: zen_admintools_cabinetadmin mode=repair_volumeinfo target_cabinet=" ~ current_entity if cabinet_vi_json_string | bool else none
                   }
                 -}}
               {%- else -%}
@@ -1079,11 +1160,18 @@ script:
                 {%- set ns = namespace(out={}) -%}
                 {%- for dk in drawer_key_input -%}
                   {%- set _d = _vars.get(dk) -%}
+                  {%- set _dk_prefix = dk ~ '/' -%}
+                  {%- set _sub_ns = namespace(keys=[]) -%}
+                  {%- for vk in _vars.keys() -%}
+                    {%- if vk.startswith(_dk_prefix) and '/' not in vk[_dk_prefix | length:] -%}
+                      {%- set _sub_ns.keys = _sub_ns.keys + [vk] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
                   {%- if _d is not mapping -%}
-                    {%- set ns.out = ns.out 
-                        | combine( { 
-                          dk: { "error": "Drawer not found." } 
-                        } ) 
+                    {%- set ns.out = ns.out
+                        | combine( {
+                          dk: { "error": "Drawer not found." }
+                        } )
                     -%}
                   {%- else -%}
                     {%- set _desc = _d.get('meta', {}).get('description', '') | trim -%}
@@ -1092,25 +1180,16 @@ script:
                     {%- set _trunc = _val[:64] ~ ('...' if _val | length > 64 else '') -%}
                     {%- set _td = _d | combine({'value': _trunc}) if _d is mapping else _trunc -%}
                     {%- set _exp_note = ' [exp:' ~ _exp ~ ']' if _exp | length > 0 else '' -%}
+                    {%- set _entry = {} -%}
                     {%- if _desc | length > 0 -%}
-                      {%- set ns.out = ns.out 
-                          | combine( { 
-                            dk: {
-                              'value': _td, 
-                              '_hint': (_exp_note ~ ' -- use FileCabinet for full data') | trim
-                            }
-                          }) 
-                      -%}
+                      {%- set _entry = {'value': _td, '_hint': (_exp_note ~ ' -- use FileCabinet for full data') | trim} -%}
                     {%- else -%}
-                      {%- set ns.out = ns.out 
-                          | combine( { 
-                            dk: {
-                              'value': _td, 
-                              '_hint': '(no description -- truncated to 64 chars)' ~ _exp_note ~ ' -- use FileCabinet for full data'
-                            }
-                          }) 
-                      -%}
+                      {%- set _entry = {'value': _td, '_hint': '(no description -- truncated to 64 chars)' ~ _exp_note ~ ' -- use FileCabinet for full data'} -%}
                     {%- endif -%}
+                    {%- if _sub_ns.keys | length > 0 -%}
+                      {%- set _entry = _entry | combine({'subdrawers': _sub_ns.keys}) -%}
+                    {%- endif -%}
+                    {%- set ns.out = ns.out | combine({dk: _entry}) -%}
                   {%- endif -%}
                 {%- endfor -%}
                 {{- ns.out -}}
@@ -1118,15 +1197,17 @@ script:
                 none
               {%- endif -%}
             entity_result: >
+              {%- set _dc = state_attr(current_entity, 'device_class') | default('', true) -%}
               {%- set ns = namespace(
                               out={
                                 'entity_id': current_entity,
                                 'friendly_name': friendly_name,
                                 'domain': domain,
                                 'state': state_str,
+                                'device_class': _dc if _dc != '' else none,
                                 'labels': label_details
                               }
-                            ) 
+                            )
               -%}
               {%- if _show_timestamps -%}
                 {%- set ns.out = ns.out | combine({'last_changed': last_changed, 'last_updated': last_updated}) -%}
@@ -1152,7 +1233,21 @@ script:
               {{- ns.out -}}
         - if:
           - condition: template
-            value_template: "{{- current_entity.startswith('person.') -}}"
+            value_template: "{{ cabinet_vi_json_string | bool }}"
+          then:
+          - action: script.zen_dojotools_event_emitter
+            continue_on_error: true
+            data:
+              mode: emit
+              component: inspect
+              severity: warning
+              kind: cabinet_vi_degraded
+              summary: "Cabinet {{ current_entity }} has JSON-string VolumeInfo — autorepair queued."
+              metadata:
+                entity_id: "{{ current_entity }}"
+        - if:
+          - condition: template
+            value_template: "{{- (current_entity | string)[:7] == 'person.' -}}"
           then:
           - variables:
               _person_user_label: >-
@@ -1212,12 +1307,14 @@ script:
                 reason: "{{- stats_reason -}}"
         - variables:
             entity_result: >
+              {%- set _dc = state_attr(current_entity, 'device_class') | default('', true) -%}
               {%- set ns = namespace(
                 out = {
                   'entity_id': current_entity,
                   'friendly_name': friendly_name,
                   'domain': domain,
                   'state': state_str,
+                  'device_class': _dc if _dc != '' else none,
                   'labels': label_details
                 }
               ) -%}
@@ -1285,7 +1382,77 @@ script:
           {{ results | selectattr('domain', 'defined')
              | selectattr('domain', 'equalto', 'calendar')
              | map(attribute='entity_id') | list }}
+        _default_household_cab_ent: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        _dc_zone_household_ids: >-
+          {%- set ns = namespace(ids=[]) -%}
+          {%- for item in results if item is mapping -%}
+            {%- set eid = item.get('entity_id', '') | string | trim -%}
+            {%- if eid[:5] == 'zone.' and eid not in ns.ids -%}
+              {%- set ns.ids = ns.ids + [eid] -%}
+            {%- endif -%}
+            {%- if eid == _default_household_cab_ent and 'zone.home' not in ns.ids -%}
+              {%- set ns.ids = ns.ids + ['zone.home'] -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.ids }}
+        _zone_household_map: {}
         _domain_context: {}
+
+    # Domain context supplement - household-zone structural links.
+    # Zones owns the association contract. Inspect only reads and attaches it.
+    - repeat:
+        for_each: "{{ _dc_zone_household_ids }}"
+        sequence:
+          - action: script.zen_dojotools_zones
+            continue_on_error: true
+            data:
+              mode: resolve_household
+              entity_id: "{{ repeat.item }}"
+              caller_token: "inspect-zone-household"
+            response_variable: _zh_resolve_raw
+          - variables:
+              _zh_resolve: "{{ _zh_resolve_raw if _zh_resolve_raw is mapping else {} }}"
+              _zh_assoc: "{{ _zh_resolve.get('association', {}) if _zh_resolve is mapping else {} }}"
+              _zone_household_map: >-
+                {{
+                  _zone_household_map | combine({
+                    repeat.item: {
+                      'status': _zh_resolve.get('ok', false) | bool,
+                      'association': _zh_assoc,
+                      'source_tool': 'zen_dojotools_zones'
+                    }
+                  }, recursive=true)
+                }}
+
+    - if:
+      - condition: template
+        value_template: "{{ _zone_household_map | length > 0 }}"
+      then:
+      - variables:
+          _domain_context: >-
+            {{
+              _domain_context | combine({
+                'household_zone_links': {
+                  'status': 'success',
+                  'default_household': _default_household_cab_ent,
+                  'links': _zone_household_map
+                }
+              }, recursive=true)
+            }}
+      - variables:
+          results: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for item in results if item is mapping -%}
+              {%- set eid = item.get('entity_id', '') | string | trim -%}
+              {%- if eid[:5] == 'zone.' and eid in _zone_household_map -%}
+                {%- set ns.out = ns.out + [item | combine({'household_context': _zone_household_map[eid].get('association', {})}, recursive=true)] -%}
+              {%- elif eid == _default_household_cab_ent and 'zone.home' in _zone_household_map -%}
+                {%- set ns.out = ns.out + [item | combine({'zone_context': {'primary_zone': 'zone.home', 'association': _zone_household_map['zone.home'].get('association', {})}}, recursive=true)] -%}
+              {%- else -%}
+                {%- set ns.out = ns.out + [item] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
 
     - if:
       - condition: template
@@ -1489,6 +1656,179 @@ script:
             {%- endfor -%}
             {{ ns.out }}
 
+    # Domain context supplement - generic lens evidence anchors.
+    # Optional only: Inspect must still succeed if lens providers are absent.
+    - variables:
+        _lens_anchors: >-
+          {%- if _show_lenses | bool or drawer_key_input | length > 0 -%}
+            {%- set ns = namespace(anchors=[], keys=[]) -%}
+            {%- for item in results if item is mapping -%}
+              {%- set eid = item.get('entity_id', '') | string | trim | lower -%}
+              {%- set lbls = item.get('labels', {}) -%}
+              {%- if lbls is mapping -%}
+                {%- for lbl in lbls.keys() -%}
+                  {%- set _id = lbl | string | trim | lower -%}
+                  {%- set _key = 'label:' ~ _id -%}
+                  {%- if _id != '' and _key not in ns.keys -%}
+                    {%- set ns.keys = ns.keys + [_key] -%}
+                    {%- set ns.anchors = ns.anchors + [{'type': 'label', 'id': _id}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {%- set _device = item.get('device', {}) if item.get('device', {}) is mapping else {} -%}
+              {%- set _area_id = item.get('room_area_id', _device.get('area_id', '')) | default('', true) | string | trim | lower -%}
+              {%- if _area_id == '' and eid != '' -%}{%- set _area_id = area_id(eid) | default('', true) | string | trim | lower -%}{%- endif -%}
+              {%- set _area_key = 'area_id:' ~ _area_id -%}
+              {%- if _area_id != '' and _area_key not in ns.keys -%}
+                {%- set ns.keys = ns.keys + [_area_key] -%}
+                {%- set ns.anchors = ns.anchors + [{'type': 'area_id', 'id': _area_id}] -%}
+              {%- endif -%}
+              {%- if eid[:7] == 'person.' -%}
+                {%- set _person_key = 'person:' ~ eid -%}
+                {%- if _person_key not in ns.keys -%}
+                  {%- set ns.keys = ns.keys + [_person_key] -%}
+                  {%- set ns.anchors = ns.anchors + [{'type': 'person', 'id': eid}] -%}
+                {%- endif -%}
+              {%- endif -%}
+              {%- if eid[:5] == 'zone.' -%}
+                {%- set _zone_id = eid | replace('zone.', '') -%}
+                {%- set _zone_key = 'zone:' ~ _zone_id -%}
+                {%- if _zone_id != '' and _zone_key not in ns.keys -%}
+                  {%- set ns.keys = ns.keys + [_zone_key] -%}
+                  {%- set ns.anchors = ns.anchors + [{'type': 'zone', 'id': _zone_id}] -%}
+                {%- endif -%}
+              {%- endif -%}
+              {%- set _vol = item.get('volume', {}) -%}
+              {%- if _vol is mapping and _vol.get('is_cabinet') and drawer_key_input | length > 0 -%}
+                {%- set _cab_vars = state_attr(eid, 'variables') | default({}, true) -%}
+                {%- set _li_raw = (_cab_vars.get('_label_index', {}).get('value', {})) if _cab_vars is mapping else {} -%}
+                {%- set _li = _li_raw if _li_raw is mapping else (_li_raw | from_json(none) if _li_raw is string and _li_raw | trim not in ['', '{}', 'null'] else {}) -%}
+                {%- for dk in drawer_key_input -%}
+                  {%- for lbl, keys in (_li if _li is mapping else {}).items() -%}
+                    {%- if dk in (keys if keys is sequence else []) -%}
+                      {%- set _dlbl_key = 'label:' ~ (lbl | string | trim | lower) -%}
+                      {%- if _dlbl_key not in ns.keys -%}
+                        {%- set ns.keys = ns.keys + [_dlbl_key] -%}
+                        {%- set ns.anchors = ns.anchors + [{'type': 'label', 'id': lbl | string | trim | lower, 'source': 'drawer_tag'}] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.anchors }}
+          {%- else -%}{{ [] }}{%- endif -%}
+
+    - if:
+      - condition: template
+        value_template: "{{ _lens_anchors | length > 0 }}"
+      then:
+      - action: script.zen_dojotools_lens_dispatch
+        continue_on_error: true
+        response_variable: _lenses_raw
+        data:
+          anchors_json: "{{ _lens_anchors | tojson }}"
+          consumer: inspect
+          timeout_ms: 1200
+          caller_token: "{{ caller_token }}"
+      else:
+      - variables:
+          _lenses_raw: {}
+
+    - if:
+      - condition: template
+        value_template: "{{ _show_lenses | bool or (drawer_key_input | length > 0 and _lens_anchors | length > 0) }}"
+      then:
+      - variables:
+          _lenses_context: >-
+            {%- set raw = _lenses_raw if _lenses_raw is defined and _lenses_raw is mapping else {} -%}
+            {%- set providers = raw.get('providers', {}) if raw is mapping and raw.get('providers', {}) is mapping else {} -%}
+            {%- set doc_ns = namespace(docs=[]) -%}
+            {%- for _pname, _provider in providers.items() if providers is mapping and _provider is mapping -%}
+              {%- set _pdocs = _provider.get('documents', []) if _provider.get('documents', []) is sequence and _provider.get('documents', []) is not string else [] -%}
+              {%- set doc_ns.docs = doc_ns.docs + _pdocs -%}
+            {%- endfor -%}
+            {%- set docs = doc_ns.docs -%}
+            {{ {
+              'status': raw.get('status', 'unavailable') if raw else 'unavailable',
+              'reason': none if raw else 'Lens dispatch unavailable or no typed anchors.',
+              'anchors': _lens_anchors,
+              'provider_count': providers | length,
+              'providers': providers,
+              'evidence_count': docs | length,
+              'evidence': docs,
+              'consumer': raw.get('consumer', 'inspect'),
+              'content_redacted': true
+            } }}
+          _domain_context: >-
+            {{ _domain_context | combine({'lenses': _lenses_context}) }}
+      - variables:
+          results: >-
+            {%- set docs = _lenses_context.get('evidence', []) if _lenses_context is mapping else [] -%}
+            {%- set ns = namespace(out=[]) -%}
+            {%- for item in results if item is mapping -%}
+              {%- set eid = item.get('entity_id', '') | string | trim | lower -%}
+              {%- set lbls = item.get('labels', {}) -%}
+              {%- set _device = item.get('device', {}) if item.get('device', {}) is mapping else {} -%}
+              {%- set item_ns = namespace(keys=[], anchors=[]) -%}
+              {%- if lbls is mapping -%}
+                {%- for lbl in lbls.keys() -%}
+                  {%- set _id = lbl | string | trim | lower -%}
+                  {%- if _id != '' -%}
+                    {%- set item_ns.keys = item_ns.keys + ['label:' ~ _id] -%}
+                    {%- set item_ns.anchors = item_ns.anchors + [{'type': 'label', 'id': _id}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {%- set _area_id = item.get('room_area_id', _device.get('area_id', '')) | default('', true) | string | trim | lower -%}
+              {%- if _area_id == '' and eid != '' -%}{%- set _area_id = area_id(eid) | default('', true) | string | trim | lower -%}{%- endif -%}
+              {%- if _area_id != '' -%}
+                {%- set item_ns.keys = item_ns.keys + ['area_id:' ~ _area_id] -%}
+                {%- set item_ns.anchors = item_ns.anchors + [{'type': 'area_id', 'id': _area_id}] -%}
+              {%- endif -%}
+              {%- if eid[:7] == 'person.' -%}
+                {%- set item_ns.keys = item_ns.keys + ['person:' ~ eid] -%}
+                {%- set item_ns.anchors = item_ns.anchors + [{'type': 'person', 'id': eid}] -%}
+              {%- endif -%}
+              {%- if eid[:5] == 'zone.' -%}
+                {%- set _zone_id = eid | replace('zone.', '') -%}
+                {%- if _zone_id != '' -%}
+                  {%- set item_ns.keys = item_ns.keys + ['zone:' ~ _zone_id] -%}
+                  {%- set item_ns.anchors = item_ns.anchors + [{'type': 'zone', 'id': _zone_id}] -%}
+                {%- endif -%}
+              {%- endif -%}
+              {%- set match_ns = namespace(count=0, anchors=[], evidence_ids=[], providers=[]) -%}
+              {%- for doc in docs if doc is mapping -%}
+                {%- set anchor_contexts = doc.get('anchor_contexts', []) if doc.get('anchor_contexts', []) is sequence and doc.get('anchor_contexts', []) is not string else [] -%}
+                {%- set doc_ns = namespace(hit=false, anchors=[]) -%}
+                {%- for anchor in anchor_contexts if anchor is mapping -%}
+                  {%- set _atype = anchor.get('type', '') | string | trim | lower -%}
+                  {%- set _aid = anchor.get('id', '') | string | trim | lower -%}
+                  {%- set _key = _atype ~ ':' ~ _aid -%}
+                  {%- if _key in item_ns.keys -%}
+                    {%- set doc_ns.hit = true -%}
+                    {%- if {'type': _atype, 'id': _aid} not in doc_ns.anchors -%}{%- set doc_ns.anchors = doc_ns.anchors + [{'type': _atype, 'id': _aid}] -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if doc_ns.hit -%}
+                  {%- set match_ns.count = match_ns.count + 1 -%}
+                  {%- for anchor in doc_ns.anchors -%}
+                    {%- if anchor not in match_ns.anchors -%}{%- set match_ns.anchors = match_ns.anchors + [anchor] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {%- set _eid = doc.get('stack', {}).get('evidence_id', 'paperless_ngx:document:' ~ (doc.get('id', '') | string)) -%}
+                  {%- set match_ns.evidence_ids = match_ns.evidence_ids + [_eid] -%}
+                  {%- set _provider_name = doc.get('stack', {}).get('provider', '') | string | trim -%}
+                  {%- if _provider_name != '' and _provider_name not in match_ns.providers -%}{%- set match_ns.providers = match_ns.providers + [_provider_name] -%}{%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- if match_ns.count > 0 -%}
+                {%- set ns.out = ns.out + [item | combine({'lens_context': {'status': 'matched', 'evidence_count': match_ns.count, 'anchors': match_ns.anchors, 'evidence_ids': match_ns.evidence_ids, 'providers': match_ns.providers}})] -%}
+              {%- else -%}
+                {%- set ns.out = ns.out + [item | combine({'lens_context': {'status': _lenses_context.get('status', 'unavailable') if _lenses_context is mapping else 'unavailable', 'evidence_count': 0, 'anchors': item_ns.anchors}})] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
+
     - variables:
         inspect_result:
           results: "{{- results -}}"
@@ -1518,6 +1858,8 @@ script:
       +chores: Grocy chores per area via chores_by_area. +tasks: area-scoped
       HA todo tasks via RM +tasks slice. +inventory: Grocy object_lens place
       lens per area — tagged products, chores, expanded operational objects.
+      +lenses: optional registry-backed evidence enrichment by typed anchors;
+      injects redacted evidence into domain_context.lenses and per-entity lens_context.
       +chores/+tasks/+inventory trigger same area seed as +rm — combinable
       freely. help — schema. (v5.1.0)
     fields:
@@ -1546,6 +1888,7 @@ script:
           +tasks (HA todo tasks per entity area via RM +tasks slice),
           +inventory (Grocy object_lens place lens per entity area — tagged products,
           chores, expanded operational objects; injects context.inventory),
+          +lenses (optional registry-backed evidence by typed anchors; safe unavailable fallback),
           +task_ids
           (include uid/todo_id GUIDs in domain_context.todo — omitted by default).
           Suppress defaults: -timestamps, -device, -volume. Comma-separated string or list."
@@ -1619,6 +1962,7 @@ script:
             - person_list
             - device_list
             - integration_entities
+            - tool_manifest
         description: >-
           inspect (default) — entity inspection loop. help — schema.
           area_info/floor_info/device_info — single-object drill-down (id required).
@@ -1645,6 +1989,35 @@ script:
     # --------------------------------------------------------------
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
+
+    - alias: tool_manifest
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{- mode | default('') == 'tool_manifest' -}}"
+        sequence:
+        - variables:
+            result: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                tool='zen_dojotools_index',
+                display_name='Index — ZenOS Hypergraph Reasoner',
+                tier='dojotools',
+                version='4.9.0',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools'],
+                optional_labels=[],
+                consumes=['label', 'entity_list', 'area_id'],
+                returns=['entity_list', 'hypergraph'],
+                failure_policy='hard',
+                modes={'normal': 'normal', 'hypergraph': 'hypergraph', 'manifest': 'tool_manifest'},
+                icon='mdi:graph',
+                color='deep-purple',
+
+                caller_token=caller_token | default('')
+              ) | from_json -}}
+        - stop: index tool manifest
+          response_variable: result
 
     - alias: Show Help
       choose:
@@ -1781,15 +2154,22 @@ script:
         - variables:
             compact_index_value: >-
               {%- set all_labels = labels() | sort -%}
+              {%- set _skip_pfx = ['zen_', 'autovac_', 'em_', 'haptic_', 'last_', 'coming_home_role_', 'preset_', 'foo_'] -%}
               {%- set ns = namespace(out=[]) -%}
               {%- for lbl in all_labels -%}
-                {%- set cnt = label_entities(lbl) | list | length -%}
-                {%- set ns.out = ns.out + [{
-                  'slug':  lbl,
-                  'name':  lbl | replace('_', ' ') | title,
-                  'count': cnt,
-                  'score': cnt
-                }] -%}
+                {%- set _skip = namespace(v=false) -%}
+                {%- for pfx in _skip_pfx -%}
+                  {%- if lbl.startswith(pfx) -%}{%- set _skip.v = true -%}{%- endif -%}
+                {%- endfor -%}
+                {%- if not _skip.v -%}
+                  {%- set cnt = label_entities(lbl) | list | length -%}
+                  {%- set ns.out = ns.out + [{
+                    'slug':  lbl,
+                    'name':  lbl | replace('_', ' ') | title,
+                    'count': cnt,
+                    'score': cnt
+                  }] -%}
+                {%- endif -%}
               {%- endfor -%}
               {{- {'generated': now().isoformat(), 'labels': ns.out} | tojson -}}
         - action: script.zen_dojotools_filecabinet
@@ -2186,6 +2566,7 @@ script:
             - hypergraph
             - build_compact_index
             - help
+            - tool_manifest
         default: normal
         description: 'Index mode. normal (default) — lightweight index. hypergraph
           — nodes, edges, adjacency. build_compact_index — rebuild the compact label
@@ -2412,7 +2793,7 @@ automation:
         depth: "{{- trigger.event.data.depth if 'depth' in trigger.event.data else 1 -}}"
         is_mapping: >
           {%- set cmd = index_command | trim -%}
-          {%- if cmd.startswith('{') -%}
+          {%- if cmd[:1] == '{' -%}
             {{- (cmd | from_json) is mapping -}}
           {%- else -%}
             false
@@ -2423,7 +2804,7 @@ automation:
           {%- set true_tokens = ['true','t','y','yes','on','1'] -%} 
           {%- set false_tokens = ['false','f','n','no','off','0'] -%} 
           {%- set raw = index_command | string | trim -%} 
-          {%- set is_json = raw.lstrip().startswith('{') -%}
+          {%- set is_json = raw | trim | list | first == '{' -%}
           {%- if is_json -%}
             {{- raw -}}
           {%- elif raw == "" or raw == "*" -%}

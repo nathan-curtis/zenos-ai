@@ -1,0 +1,458 @@
+###############################################################################
+# ZenOS-AI Plugin: WikiJS Root
+# Version: 0.2.0
+#
+# Internal adapter:
+#   zen_root_wikijs  <- internal GraphQL broker (NOT MCP-exposed)
+#
+# CONFIG:
+#   household cabinet: integrations_config.wikijs.url
+#   local fallback: none — run action_type=configure to store the URL
+#
+# SECRETS:
+#   wikijs_token_bearer: "Bearer YOUR_WIKIJS_API_TOKEN"
+#
+# Note: HA !secret values cannot be concatenated inside a header template, so the
+# secret stores the full Authorization header value including the "Bearer " prefix.
+###############################################################################
+
+rest_command:
+  wikijs_graphql:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}/graphql
+    method: POST
+    headers:
+      Authorization: !secret wikijs_token_bearer
+      Content-Type: application/json
+      Accept: application/json
+    payload: '{{ payload }}'
+    verify_ssl: false
+    timeout: 30
+
+  wikijs_graphql_smoke:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}/graphql
+    method: POST
+    headers:
+      Authorization: !secret wikijs_token_bearer
+      Content-Type: application/json
+      Accept: application/json
+    payload: '{"query":"{ __typename }"}'
+    verify_ssl: false
+    timeout: 10
+
+script:
+  zen_root_wikijs:
+    alias: Zen DojoTools WikiJS Root (Internal)
+    description: >
+      Internal GraphQL root broker for WikiJS. NOT MCP-exposed. Provides the
+      transport/setup layer for the future WikiJS cabinet provider.
+    mode: queued
+    max: 5
+    icon: mdi:graphql
+    fields:
+      action_type:
+        name: Action Type
+        description: help / configure / availability_probe / graphql_query / page_list / page_get
+        selector:
+          select:
+            options:
+            - help
+            - configure
+            - availability_probe
+            - graphql_query
+            - page_list
+            - page_get
+            - smoke_test
+        default: availability_probe
+      base_url:
+        name: Base URL
+        description: WikiJS base URL override. Configure stores this in integrations_config.wikijs.url.
+        selector:
+          text:
+      query:
+        name: GraphQL Query
+        description: GraphQL query string for action_type=graphql_query.
+        selector:
+          text:
+            multiline: true
+      variables_json:
+        name: Variables JSON
+        description: JSON object string for GraphQL variables.
+        selector:
+          text:
+            multiline: true
+      page_id:
+        name: Page ID
+        description: Numeric WikiJS page ID for page_get.
+        selector:
+          number:
+            min: 1
+      request_timeout:
+        name: Request Timeout
+        description: WikiJS HTTP timeout in seconds. Clamped 10-90.
+        selector:
+          number:
+            min: 10
+            max: 90
+
+    sequence:
+    - variables:
+        _action: "{{ action_type | default('availability_probe') | string | trim | lower }}"
+        _input_base_url: "{{ base_url | default('', true) | string | trim }}"
+        _query_input: "{{ query | default('', true) | string | trim }}"
+        _variables_json: >-
+          {%- set raw = variables_json | default('{}', true) -%}
+          {%- if raw is mapping -%}{{ raw | tojson }}
+          {%- elif raw is string and raw | trim != '' -%}{{ raw | trim }}
+          {%- else -%}{{ {} | tojson }}{%- endif -%}
+        _page_id: "{{ page_id | default(0) | int(0) }}"
+        _timeout: >-
+          {%- set sec = request_timeout | default(45) | int(45) -%}
+          {{ [10, [sec, 90] | min] | max }}
+        _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+
+    - action: script.zen_dojotools_filecabinet
+      response_variable: _ic_fc_raw
+      continue_on_error: true
+      data:
+        action_type: get
+        volume_entity_id: "{{ _hh }}"
+        path: integrations_config
+    - variables:
+        _integrations_config: >-
+          {%- set _ic = _ic_fc_raw.get('value', {}) if _ic_fc_raw is mapping and _ic_fc_raw.get('status') == 'success' else {} -%}
+          {{ _ic if _ic is mapping else {} }}
+
+    - variables:
+        _cfg: "{{ _integrations_config.get('wikijs', {}) if _integrations_config is mapping else {} }}"
+        _cfg_url: "{{ _cfg.get('url', '') | string | trim if _cfg is mapping else '' }}"
+        _fallback_url: ""
+        _base: >-
+          {%- set url = _input_base_url if _input_base_url != '' else _cfg_url -%}
+          {%- if url == '' -%}{%- set url = _fallback_url -%}{%- endif -%}
+          {{ url | regex_replace('/$','') }}
+        _url_configured: "{{ _cfg_url != '' }}"
+        _default_used: "{{ _input_base_url == '' and _cfg_url == '' }}"
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'help' }}"
+        sequence:
+        - variables:
+            final_response:
+              status: success
+              tool: Zen DojoTools WikiJS Root
+              version: 0.2.0
+              transport: graphql
+              endpoint: /graphql
+              secret:
+                key: wikijs_token_bearer
+                value_policy: full_authorization_header_redacted
+              actions:
+                help:
+                  intent: Describe available broker actions.
+                configure:
+                  intent: Probe WikiJS and store integrations_config.wikijs.url when reachable.
+                  needs: [base_url]
+                availability_probe:
+                  intent: Safe read probe using pages.list.
+                  needs: []
+                graphql_query:
+                  intent: Execute a caller-supplied GraphQL query through the root broker.
+                  needs: [query]
+                  optional: []
+                page_list:
+                  intent: List WikiJS pages with id, path, and title.
+                  needs: []
+                page_get:
+                  intent: Fetch one WikiJS page by numeric ID using documented fields.
+                  needs: [page_id]
+              config:
+                url_configured: "{{ _url_configured }}"
+                default_used: "{{ _default_used }}"
+                base_url: "{{ _base }}"
+              caller_token: ""
+        - stop: wikijs root help
+          response_variable: final_response
+
+    - variables:
+        _effective_query: >-
+          {%- if _action in ['availability_probe', 'configure', 'page_list'] -%}
+            { pages { list(orderBy: TITLE) { id path title } } }
+          {%- elif _action == 'page_get' -%}
+            { pages { single(id: {{ _page_id }}) { id path title content render description createdAt updatedAt } } }
+          {%- else -%}
+            {{ _query_input }}
+          {%- endif -%}
+
+    - variables:
+        _graphql_payload: >-
+          {%- if _action in ['availability_probe', 'configure', 'page_list'] -%}
+            {"query":"{ pages { list(orderBy: TITLE) { id path title } } }"}
+          {%- elif _action == 'page_get' -%}
+            {"query":"{ pages { single(id: {{ _page_id }}) { id path title content render description createdAt updatedAt } } }"}
+          {%- else -%}
+            {%- set _qobj = {'query': (_query_input | default('', true) | string)} -%}
+            {%- if _variables_json is mapping and _variables_json | length > 0 -%}
+              {%- set _qobj = _qobj | combine({'variables': _variables_json}) -%}
+            {%- elif _variables_json is string and _variables_json | trim not in ['', '{}', 'null'] and (_variables_json | trim)[:1] == '{' -%}
+              {%- set _qvars = _variables_json | from_json | default({}) -%}
+              {%- if _qvars is mapping and _qvars | length > 0 -%}
+                {%- set _qobj = _qobj | combine({'variables': _qvars}) -%}
+              {%- endif -%}
+            {%- endif -%}
+            {{ _qobj | tojson }}
+          {%- endif -%}
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'graphql_query' and _query_input == '__dry_run__' }}"
+        sequence:
+        - variables:
+            final_response:
+              status: success
+              tool: Zen DojoTools WikiJS Root
+              action_type: graphql_query
+              dry_run: true
+              config:
+                base_url: "{{ _base }}"
+                endpoint: /graphql
+                auth_header_present: true
+                token_value_redacted: true
+              rendered:
+                effective_query: "{{ _effective_query }}"
+                graphql_payload: "{{ _graphql_payload }}"
+                timeout_seconds: "{{ _timeout }}"
+        - stop: wikijs root dry run
+          response_variable: final_response
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'graphql_query' and _effective_query == '' }}"
+        sequence:
+        - variables:
+            final_response:
+              status: error
+              tool: Zen DojoTools WikiJS Root
+              message: query is required for action_type=graphql_query.
+              availability:
+                ok: false
+                class: invalid_request
+                human: WikiJS was not called because the GraphQL query was empty.
+                operator_hint: Pass a GraphQL query string in query.
+        - stop: wikijs query missing
+          response_variable: final_response
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'page_get' and _page_id <= 0 }}"
+        sequence:
+        - variables:
+            final_response:
+              status: error
+              tool: Zen DojoTools WikiJS Root
+              message: page_id is required for action_type=page_get.
+              availability:
+                ok: false
+                class: invalid_request
+                human: WikiJS was not called because the page ID was missing.
+                operator_hint: Pass a numeric WikiJS page_id.
+        - stop: wikijs page id missing
+          response_variable: final_response
+      - conditions:
+        - condition: template
+          value_template: "{{ _action not in ['configure', 'availability_probe', 'graphql_query', 'page_list', 'page_get', 'smoke_test'] }}"
+        sequence:
+        - variables:
+            final_response:
+              status: error
+              tool: Zen DojoTools WikiJS Root
+              message: Unknown action_type. Use action_type=help.
+              action_type: "{{ _action }}"
+        - stop: wikijs unknown action
+          response_variable: final_response
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'smoke_test' }}"
+        sequence:
+        - action: rest_command.wikijs_graphql_smoke
+          response_variable: _smoke_raw
+          continue_on_error: true
+          data:
+            base_url: "{{ _base }}"
+            request_timeout: "{{ _timeout }}"
+        - variables:
+            final_response:
+              status: success
+              tool: Zen DojoTools WikiJS Root
+              action_type: smoke_test
+              raw_type: "{{ 'mapping' if _smoke_raw is mapping else (_smoke_raw | string) }}"
+              raw: "{{ _smoke_raw if _smoke_raw is mapping else {} }}"
+        - stop: wikijs smoke test return
+          response_variable: final_response
+
+    - action: rest_command.wikijs_graphql
+      response_variable: _raw
+      continue_on_error: true
+      data:
+        base_url: "{{ _base }}"
+        payload: >-
+          {%- if _action in ['availability_probe', 'configure', 'page_list'] -%}
+            {"query":"{ pages { list(orderBy: TITLE) { id path title } } }"}
+          {%- elif _action == 'page_get' -%}
+            {"query":"{ pages { single(id: {{ _page_id }}) { id path title content render description createdAt updatedAt } } }"}
+          {%- else -%}
+            {%- set _qobj = {'query': (_query_input | default('', true) | string)} -%}
+            {%- if _variables_json is mapping and _variables_json | length > 0 -%}
+              {%- set _qobj = _qobj | combine({'variables': _variables_json}) -%}
+            {%- elif _variables_json is string and _variables_json | trim not in ['', '{}', 'null'] and (_variables_json | trim)[:1] == '{' -%}
+              {%- set _qvars = _variables_json | from_json | default({}) -%}
+              {%- if _qvars is mapping and _qvars | length > 0 -%}
+                {%- set _qobj = _qobj | combine({'variables': _qvars}) -%}
+              {%- endif -%}
+            {%- endif -%}
+            {{ _qobj | tojson }}
+          {%- endif -%}
+        request_timeout: "{{ _timeout }}"
+
+    - variables:
+        _raw_ok: "{{ _raw is defined and _raw is mapping }}"
+        _http: "{{ _raw['status'] | int(0) if _raw is defined and _raw is mapping else 0 }}"
+        _content: >-
+          {%- if _raw is defined and _raw is mapping -%}
+            {%- set c = _raw['content'] | default(none) -%}
+            {%- set cs = c | trim if c is string else '' -%}
+            {%- if c is string and cs != '' and cs[:1] in ['{', '['] -%}
+              {{ c | from_json | default({}) }}
+            {%- elif c is mapping or (c is sequence and c is not string) -%}
+              {{ c }}
+            {%- else -%}{{ {} }}{%- endif -%}
+          {%- else -%}{{ {} }}{%- endif -%}
+        _content_class: >-
+          {%- set c = _raw['content'] | default(none) if _raw_ok else none -%}
+          {%- set cs = c | trim if c is string else '' -%}
+          {%- if c is mapping or (c is sequence and c is not string) or (c is string and cs[:1] in ['{', '[']) -%}json
+          {%- elif c is string and cs != '' -%}non_json
+          {%- else -%}empty{%- endif -%}
+        _graphql_errors: "{{ _content.get('errors', []) if _content is mapping else [] }}"
+        _has_graphql_errors: "{{ _graphql_errors is sequence and _graphql_errors is not string and (_graphql_errors | length) > 0 }}"
+        _availability: >-
+          {%- set h = _http | int(0) -%}
+          {%- if h in [200, 201, 202, 204] and _content_class != 'non_json' and not (_has_graphql_errors | bool) -%}
+            {{ {'ok': true, 'class': 'available', 'human': 'WikiJS GraphQL is reachable.', 'operator_hint': 'No action needed.'} }}
+          {%- elif h in [200, 201, 202, 204] and _content_class != 'non_json' and (_has_graphql_errors | bool) -%}
+            {{ {'ok': false, 'class': 'graphql_error', 'human': 'WikiJS answered, but GraphQL rejected the query or permissions.', 'operator_hint': 'Check query shape, API token scopes, and WikiJS GraphQL Playground for the documented schema.'} }}
+          {%- elif h in [200, 201, 202, 204] and _content_class == 'non_json' -%}
+            {{ {'ok': false, 'class': 'non_json_response', 'human': 'WikiJS answered, but not with GraphQL JSON. This usually means a login page, proxy page, or wrong base URL.', 'operator_hint': 'Check the base URL, /graphql path, reverse proxy auth bypass, and wikijs_token_bearer secret.'} }}
+          {%- elif not _raw_ok or h == 0 -%}
+            {{ {'ok': false, 'class': 'network_error', 'human': 'WikiJS did not answer. It is probably DNS, routing, TLS, or the service is down.', 'operator_hint': 'Check the configured WikiJS host, reverse proxy routing, container/service health, and certificate settings.'} }}
+          {%- elif h == 400 -%}
+            {{ {'ok': false, 'class': 'bad_request', 'human': 'WikiJS says the GraphQL request shape is wrong.', 'operator_hint': 'Check JSON payload, query syntax, and variables_json.'} }}
+          {%- elif h == 401 -%}
+            {{ {'ok': false, 'class': 'auth_failed', 'human': 'WikiJS rejected the token. The token may be expired, revoked, malformed, or missing the Bearer scheme.', 'operator_hint': 'Check wikijs_token_bearer in secrets.yaml. It must contain the full Authorization header value.'} }}
+          {%- elif h == 403 -%}
+            {{ {'ok': false, 'class': 'forbidden', 'human': 'WikiJS says the caller is not allowed through that door.', 'operator_hint': 'Confirm the WikiJS API token has permission scopes for this query.'} }}
+          {%- elif h == 404 -%}
+            {{ {'ok': false, 'class': 'not_found', 'human': 'WikiJS answered, but /graphql is not here.', 'operator_hint': 'Check base URL, reverse proxy path, and DNS alias.'} }}
+          {%- elif h >= 500 -%}
+            {{ {'ok': false, 'class': 'server_error', 'human': 'WikiJS is borked server-side right now. Try again later after checking service logs.', 'operator_hint': 'Check WikiJS server logs, database health, and reverse proxy logs.'} }}
+          {%- else -%}
+            {{ {'ok': false, 'class': 'unknown_error', 'human': 'WikiJS returned an unexpected HTTP status.', 'operator_hint': 'Check http_status, base URL, token, and WikiJS logs.'} }}
+          {%- endif -%}
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'configure' and (_availability is mapping and _availability.get('ok', false)) }}"
+        sequence:
+        - variables:
+            _ic_existing: "{{ _integrations_config if _integrations_config is mapping else {} }}"
+            _ic_drawer_exists: "{{ state_attr(_hh, 'variables') is mapping and 'integrations_config' in state_attr(_hh, 'variables') }}"
+            _wikijs_cfg:
+              url: "{{ _base }}"
+              status: ok
+              transport: graphql
+              endpoint: /graphql
+              tested_at: "{{ now().isoformat() }}"
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _ic_write
+          continue_on_error: true
+          data:
+            action_type: "{{ 'update' if _ic_drawer_exists else 'create' }}"
+            force_action: true
+            set_timestamp: true
+            volume_entity_id:
+            - "{{ _hh }}"
+            key: integrations_config
+            value: "{{ _ic_existing | combine({'wikijs': _wikijs_cfg}, recursive=true) | tojson }}"
+        - variables:
+            _write_ok: "{{ _ic_write is mapping and _ic_write.get('status', '') in ['success', 'ok', 'warning'] }}"
+            final_response:
+              status: "{{ 'success' if _write_ok else 'warning' }}"
+              tool: Zen DojoTools WikiJS Root
+              action_type: configure
+              configured: "{{ _write_ok }}"
+              message: "{{ 'WikiJS connected and URL stored.' if _write_ok else 'WikiJS connected, but integrations_config write did not confirm.' }}"
+              http_status: "{{ _http }}"
+              availability: "{{ _availability }}"
+              config:
+                url_configured: "{{ _write_ok }}"
+                base_url: "{{ _base }}"
+                endpoint: /graphql
+                auth_header_present: true
+                token_value_redacted: true
+              write_result: "{{ _ic_write | default({}) }}"
+        - stop: wikijs configured
+          response_variable: final_response
+      - conditions:
+        - condition: template
+          value_template: "{{ _action == 'configure' }}"
+        sequence:
+        - variables:
+            final_response:
+              status: error
+              tool: Zen DojoTools WikiJS Root
+              action_type: configure
+              configured: false
+              message: "Cannot connect to WikiJS at {{ _base }}. URL was not stored."
+              http_status: "{{ _http }}"
+              availability: "{{ _availability }}"
+              config:
+                url_configured: "{{ _url_configured }}"
+                base_url: "{{ _base }}"
+                endpoint: /graphql
+                auth_header_present: true
+                token_value_redacted: true
+        - stop: wikijs configure failed
+          response_variable: final_response
+
+    - variables:
+        _data: "{{ _content.get('data', {}) if _content is mapping else {} }}"
+        final_response:
+          status: "{{ 'success' if _availability is mapping and _availability.get('ok', false) else 'error' }}"
+          tool: Zen DojoTools WikiJS Root
+          version: 0.2.0
+          action_type: "{{ _action }}"
+          http_status: "{{ _http }}"
+          availability: "{{ _availability }}"
+          config:
+            url_configured: "{{ _url_configured }}"
+            default_used: "{{ _default_used }}"
+            base_url: "{{ _base }}"
+            endpoint: /graphql
+            auth_header_present: true
+            token_value_redacted: true
+          result:
+            data: "{{ _data }}"
+            errors: "{{ _graphql_errors }}"
+          trace:
+            transport: graphql
+            timeout_seconds: "{{ _timeout }}"
+
+    - stop: wikijs root return
+      response_variable: final_response

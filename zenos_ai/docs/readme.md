@@ -1,24 +1,26 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.6.0 | **Last Updated:** May 2026 | **License:** MIT
+> **Version:** 2026.7.0 'Neo' | **Last Updated:** Jun 2026 | **License:** MIT
 >
-> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.6.0` is the June release 'Clue'. A new month resets to `.0`.*
+> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 
 → [Project Overview & Install](../../README.md)
 
 ---
 
-> ### 2026.6.0 'Clue' — Released
+> ### 2026.7.0 'Neo' — Released 2026-06-27
 >
-> **1. Room Manager v5.1.0 + Grocy v5.2.0.** `+inventory` now uses `object_lens` place lens — full operational context per room with action envelopes. Grocy adds `room_brief`, userentities/userobjects CRUD, 96 operations total.
+> **1. CabCeption — FileCabinet v6.2.0.** Nested drawer trees via `/` path separator. VirtualDrawer (softlink), LiveDrawer (KF4 schema absorbed into a drawer — fires a tool call on read, warm/cold cache, never empty). Every drawer is a node with meta, labels, and children.
 >
-> **2. Plant Manager — v5.4.0.** Motors, `include_inventory`, `water_management` rename, area+name fields on all load nodes.
+> **2. Cortex 43 — Rule Zero.** DojoTools supersede all HA built-ins. Not preference — authority. Domain routing table in directives. Successor to v42 'The Answer'.
 >
-> **3. AutoVac — v5.1.0.** Controller automation in package (no per-schedule wiring). 3-button briefing (Go now / Skip / Pause all day). `mode=setup` deploys KFC + inits cabinet in one call.
+> **3. Tool Manifest + Lens Bus.** `zenos_manifest.jinja` + `MF.tool_manifest()`. Manifest broker v6.0.0 discovers tools by namespace. Library v5.5.0 `stack=` routing. `zen_stack_radar` v1.0.0 wires Zammad as a Lens provider.
 >
-> **4. Postman + AlertManager + Scribe + Summarizer — v5.1.0.** Full ack lifecycle, `open_dashboard` companion URI. Scribe: `repair`, `republish_kfc`, `component_size`. Summarizer: dual-seed, emission gate.
+> **4. ZenZork v1.6.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." Item commands (take/drop/inventory/put/push/pull/open/close/use). Navigation additions (face/turn, again/g). Character sheet in AI user cabinet. Landmark survey wizard. `game_mode`, `harassment_freq`, `difficulty` session fields. Post-game RM quality report on stop. Quest system. Portal disambiguation.
 >
-> → [Full Release Notes — Clue](releases/clue.md) | [Room Manager](components/room_manager.md) | [Plant Manager](components/plant_manager.md) | [Grocy](plugins/grocy.md)
+> **5. Media Manager v6.0.0 (NyxMau5) — Lens provider surface.** `stacks_by_anchor` maps anchors (label/person/area/mood/activity) to ranked evidence leaves with `playback_hint`. `now_playing` mode feeds Room Manager `+media` context slice with full playback fidelity (provider, search_metadata, lyrics_hint). `media_source_prefs` — preferred sources float, excluded sources stripped — applied on every Lens call automatically. `discovered_sources` returned on every search. Set once, use many: discover sources with `health`, save prefs in Profile Editor, done. Area anchors inject `room_context` only — semantic anchors drive the query. `zen_stack_media` proxy. Profile Editor v5.3.0 adds `media_prefs` to all three profile targets.
+>
+> → [Full Release Notes — Neo](releases/neo.md) | [ZenZork](scripts/zen_dojotools_zenzork_readme.md)
 
 ---
 
@@ -153,7 +155,8 @@ Files:
 
 * `zen_os1_jinja.md` — Core prompt assembly engine
 * `zen_query_jinja.md` — ZQ-1 filter engine
-* `zenos_cabinets_jinja.md` — Cabinet macro library (new in 2026.4.0): canonical safe drawer I/O, FG-38 normalization encapsulated
+* `zenos_cabinets_jinja.md` — Cabinet macro library: canonical safe drawer I/O, FG-38 normalization encapsulated
+* `zenos_manifest_jinja.md` — Tool manifest macro (`MF.tool_manifest()`): every compliant tool self-describes via this contract
 
 This suite defines how Friday constructs her thoughts.
 
@@ -215,7 +218,8 @@ Includes:
 * `zen_dojotools_admintools_readme.md` — AdminTools: KungFu Writer, cabinet repair, template press, prompt loader, nuclear label reset, reset_all cabinet sequence
 * `zen_dojotools_scheduler_readme.md` — Scheduler: trigger IDs, Dojo-driven dispatch, component subscription, force events, hardware trigger pattern
 * `zen_dojotools_summarizers_readme.md` — Ninja Summarizer + SuperSummary: kill switches, active component selection, monk pipeline
-* `zen_dojotools_library_readme.md` — Library: command interpreter dispatch, hash_md5, slugify
+* `zen_dojotools_library_readme.md` — Library v6.10.0: Lens Bus `stack=` routing, generic verbs, unified catalog (`section=catalog item_type=*`) with books/games/all works types, compounding capability tiers, hash_md5, slugify
+* `zen_dojotools_zenzork_readme.md` — ZenZork v1.6.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, quest system, setup commissioning
 * `zen_home_mode_readme.md` — Home Mode: 8-state machine, schedule anchors, quiet/work hours, scheduler trigger IDs
 * `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`
@@ -308,7 +312,24 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 **File:** `docs/roadmap.md`
 
-**2026.6.0 'Clue' — Beta (ETA 2026-06-01)**
+**2026.7.0 'Neo' — Shipped (2026-06-27)**
+
+* CabCeption — FileCabinet v6.2.0: nested drawer trees, VirtualDrawer, LiveDrawer (KF4 schema absorbed into FC)
+* Tool Manifest — `zenos_manifest.jinja`, namespace discovery broker v6.0.0, every tool self-describes
+* Cortex 43 — Rule Zero: DojoTools supersede all HA built-ins, domain routing table in directives
+* Wake sequence rewrite — `~commands~` dropped, ~2,000 chars lighter
+* Lens Bus `stack=` routing — Library v5.5.0, `zen_stack_radar` v1.0.0 (Zammad service desk)
+* ZenZork v1.6.0 — text adventure on live RM topology, DUNGEONMIND narrator, quest system, setup, disambiguation
+* Media Manager v6.0.0 — Lens provider surface: now_playing, stacks_by_anchor room-context injection, media_source_prefs, discovered_sources, play_media query fallback
+* Library v6.10.0 — unified catalog (`section=catalog item_type=*`), games, compounding capability tiers; Grocy +5 library userfields
+* FileCabinet Tapestry — weave/weave_preview/weave_save modes; multi-cabinet composer; stored definitions as labeled drawers
+* New plugins: wiki_js, paperless_ngx, twenty, zammad, firefly_iii, mealie v5.8.0
+
+See: [Release Notes — Neo](releases/neo.md)
+
+---
+
+**2026.6.0 'Clue' — Shipped (2026-06-01)**
 
 * Room Manager (RoomReg) v1.48.0 — spatial topology hub, context slices, home_overview; +inventory via `object_lens` place lens (slim per-entity + full in `domain_context`); +chores with `replace_action` envelopes; area_create/area_update guards; emergency mode safety inventory enrichment
 * Plant Manager v5.4.0 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + water_management + motors + ignore/unignore modes; `include_inventory` attaches Grocy room_brief to load nodes; `mode=managed` universal machine rollup
@@ -323,7 +344,7 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 * Index v5.0.1 — +rm pipeline (Room Manager snapshot per entity area), area_entities fix
 * AlertManager v1.5.0 — Postman integration documented; ack lifecycle + open_dashboard pattern
 * OOBE — _oobe_done backward compat (checks both _oobe_complete and legacy oobe_complete); 5-component options dict with tool names
-* Media Manager (NyxMau5) v0.7.2 — whole-home media management and intent routing
+* Media Manager (NyxMau5) v0.7.2 — whole-home AV discovery, label-driven entity resolution, source/sound mode control, acoustic topology integration
 * Security Manager v1.2.0 — replaces alarm_panel; room-aware zone inventory via RM +security slice
 * ZenShade v0.2.2 — cover management, tilt support, ZenLux sync
 * SpaMaster v3.12.0 — replaces calderaspas entirely; ESPHome hot tub management, ESPHome device discovery, scene/chemistry/log modes, preset library; consumables ERP via `provision_bom` (idempotent Grocy product + chore provisioning)

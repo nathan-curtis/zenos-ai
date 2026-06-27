@@ -60,7 +60,7 @@ Guided authoring and lifecycle management for KF4 artifacts. Full lifecycle: `ne
 
 ---
 
-## 1. Zen DojoTools AdminTools — 4.6.0 'Ectoplasm'
+## 1. Zen DojoTools AdminTools — v5.2.0 (2026.7.0)
 **File:** `zen_dojotools_admintools_readme.md`
 
 Ring-2 administrative tools: cabinet repair, template management, label reset, prompt loading, KFC factory deployment, and human-confirmed maint script passthrough. Not MCP-exposed — operator use only.
@@ -74,7 +74,7 @@ Boot guard, initializer, OOBE driver, and prompt fallback. Gates 0–4 drive the
 
 ---
 
-## 3. Zen DojoTools Profile Editor — 5.0 'Clue'
+## 3. Zen DojoTools Profile Editor — v5.2.0 (2026.7.0)
 **File:** `zen_dojotools_profile_readme.md`
 
 Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI persona, household, user, and family profile drawers; signs/restores AI essence; and manages AI KFC certifications. Expose to your conversation agent so Friday can configure household details conversationally.
@@ -109,17 +109,17 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — 4.7.0 'Lights, Camera, Action'
+## 7. Zen DojoTools Summarizers — v5.1.0 (2026.7.0)
 **File:** `zen_dojotools_summarizers_readme.md`
 
-The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Run governor prevents duplicate runs within a configurable burnout window. Ninja now routes `index_command` dict fields to the compound/recursive indexer for multi-label component context queries. Three kill switches — default off; enable only after pointing at a local inference model.
+The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model.
 
 ---
 
-## 8. Zen DojoTools Library — 2026.6.0 'Clue'
+## 8. Zen DojoTools Library — v6.10.0 (2026.7.0)
 **File:** `zen_dojotools_library_readme.md`
 
-Unified system utility runner. Routes queries through `command_interpreter.jinja`. Also provides `hash_md5`, `slugify`. The engine the Ninja Summarizer uses for component `command` field dispatch.
+Knowledge broker and Lens Bus owner. `stack=` routing to registered providers (`paperless`, `radar`, `wiki`, `media`). Generic verbs: `get/find/list/configure/by_anchor`. `section=catalog item_type=book|game|…` unified works catalog backed by Grocy — browse/find/search/add/loan/return with library science (dedup, loan lifecycle, location tracking). Compounding capability tiers: Library alone (Lens Bus) → +Grocy (circulation desk) → +Media Manager (music evidence with playback_hint) → +Room Manager now_playing (room-context evidence). `hash_md5` and `slugify` utility tools. `command_interpreter.jinja` removed in 2026.7.0.
 
 ---
 
@@ -151,10 +151,10 @@ FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `g
 
 ---
 
-## 13. Zen DojoTools SystemTools — 2026.6.0 'Clue'
+## 13. Zen DojoTools SystemTools — v5.1.1 (2026.7.0)
 **File:** `zen_dojotools_systemtools_readme.md`
 
-HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`.
+HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. `render_dojo` and `render_system` template render tools. `prompt_health` prompt integrity checker. `pipeline` summarizer pipeline status. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`.
 
 ---
 
@@ -172,17 +172,17 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — 2026.6.0 'Clue'
+## 16. Zen DojoTools FileCabinet — v6.2.0 (2026.7.0)
 **File:** `zen_dojotools_filecabinet_readme.md`
 
-Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet.
+Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet.
 
 ---
 
-## 17. Zen DojoTools Manifest — 4.5.8
+## 17. Zen DojoTools Manifest — v6.1.0 (2026.7.0)
 **File:** `zen_dojotools_manifest_readme.md`
 
-Runtime-only Cabinet manifest scanner. Builds a complete, zero-persistence health and metadata model for every Cabinet Volume — GUID checks, schema compatibility, drawer discovery, capacity analysis, ACL expansion.
+System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `health`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. Domain routing table maps domains to authoritative scripts. UMP `tool_manifest` contract supported.
 
 ---
 

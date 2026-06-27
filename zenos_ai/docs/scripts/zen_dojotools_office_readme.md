@@ -1,280 +1,111 @@
-# Zen DojoTools Office — 2026.6.0 'Clue'
+# Zen DojoTools Office — v5.1.0 (ZenOS-AI 2026.7.0 'Neo')
 
-*Calendar and scheduling tools for Home Assistant*
-
----
-
-## **Overview**
-
-`zen_dojotools_calendar` is a unified Calendar orchestration layer for Home Assistant.
-It provides **deterministic, safe, and label-aware calendar operations** — including:
-
-* Event creation
-* Event read + multi-calendar aggregation
-* Event inspection (via DojoTools Inspect utility)
-* Event update (delete+create strategy)
-* Event delete (provider-verified)
-
-The tool is designed as a **fully JSON-driven conversational endpoint**, intended for use by Friday, Veronica, or any LLM-driven subsystem within ZenOS-AI.
-
-Version **1.10.3** introduces **major safety hardening**, expanded targeting logic, deterministic entity resolution, and completely unified response envelopes for *every* exit path.
+*M365 Teams and Mail tools for Home Assistant*
 
 ---
 
-# **Key Features in 1.10.3**
+## Overview
 
-### ✅ **Label-Based Calendar Targeting**
+`dojotools_office.yaml` contains two Microsoft 365 scripts: `zen_dojotools_teams` and `zen_dojotools_mail`. Both follow the standard DojoTools multitool pattern and return all responses as structured JSON.
 
-* A new `label_targets` input allows calendars to be selected using labels rather than entity_ids.
-* Supports multiple labels and resolves them into a consistent list of calendar entities.
-
-### ✅ **Deterministic Entity Resolution**
-
-* Friendly name fallback resolution.
-* Lowercase + whitespace normalization.
-* Guaranteed resolution into a single `calendar.<entity>` string when possible.
-
-### ✅ **Multi-Calendar Read Aggregation**
-
-* Reads all events across:
-
-  * Label-targeted calendars
-  * A single specific calendar
-  * Or all calendars when `calendar_name="*"`
-
-Includes:
-
-* Unified event metadata
-* Creation/update timestamps
-* Optional event_id when provider supports it
-
-### ✅ **Inspect Integration**
-
-* Direct integration with `script.dojotools_zen_inspect`
-* Used to extract event metadata including `event_id` where supported
-* Enables visibility into provider features and raw source details
-
-### ✅ **Strict Safety for Mutations (create/update/delete)**
-
-Mutating actions require:
-
-* Exactly **one** target calendar
-* **event_id** for update/delete
-* Provider support for delete or update
-* Deterministic date ordering (`start < end`)
-
-### Update & Delete Operations
-
-Because many calendar providers **do not expose event_id**, the following rules apply:
-
-| Provider          | Event ID Exposed? | Update/Delete Allowed? |
-| ----------------- | ----------------- | ---------------------- |
-| MS365             | ✔ Yes             | ✔ Full support         |
-| Google            | ❌ No              | ❌ Blocked safely       |
-| ICS / CalDAV      | ❌ No              | ❌ Blocked safely       |
-| Local HA Calendar | ❌ No              | ❌ Blocked safely       |
-
-LLMs receive structured error responses with instructions for remediation.
+Calendar (`zen_dojotools_calendar`) and Todo (`zen_dojotools_todo`) were split out to their own files in 2026.6.0 'Clue' and are no longer part of this module.
 
 ---
 
-# **Response Format (Unified JSON)**
+## zen_dojotools_teams
 
-Every code path returns the following minimal envelope:
+M365 Teams CRUD via the MS365 integration. Supports reading the latest incoming chat message, sending messages to a chat thread, setting your Teams presence status, and help.
 
-```json
-{
-  "status": "<success|error|info|delete triggered>",
-  "message": "...",
-  "results": [ ... ],      // for reads
-  "event": { ... },        // for create/update
-  "inspect": { ... },      // for provider safety output
-  "note": "..."            // optional metadata
-}
-```
+### Modes
 
-This guarantees that Friday, Kronk, and downstream systems always receive an unambiguous result.
+| `action_type` | Description |
+|---|---|
+| `read` | Returns latest chat message, your current Teams status, and the partner's chat ID |
+| `send` | Sends a text message to an existing chat thread. Requires `chat_id` and `message` |
+| `set` | Updates your Teams presence (availability + activity + expiration). Requires `availability` |
+| `help` | Returns capability summary, field reference, and setup notes |
 
----
+Update and delete are not supported by the MS365 Teams integration.
 
-# **Input Fields**
+### Key Fields
 
-| Field           | Required      | Description                                             |
-| --------------- | ------------- | ------------------------------------------------------- |
-| `action_type`   | ✔             | `read`, `create`, `update`, `delete`, `inspect`, `help` |
-| `calendar_name` | depends       | Friendly name, entity_id, or "*"                        |
-| `summary`       | create/update | Event summary/title                                     |
-| `start`         | optional      | ISO string or date; defaults to today @ 00:00           |
-| `end`           | optional      | ISO string or date; defaults to tomorrow @ 00:00        |
-| `description`   | optional      | Text body                                               |
-| `location`      | optional      | Event location                                          |
-| `attendees`     | optional      | Comma-separated list                                    |
-| `event_id`      | update/delete | Required for provider-safe mutations                    |
-| `label_targets` | optional      | Label-based targeting                                   |
+| Field | Required | Description |
+|---|---|---|
+| `action_type` | Yes | `read`, `send`, `set`, `help` (default: `read`) |
+| `chat_id` | send only | Target chat thread ID. Get it from a `read` response (`partner_chat_id`) |
+| `message` | send only | Text to send |
+| `availability` | set only | `Available`, `Busy`, `Away`, `DoNotDisturb` |
+| `activity` | set optional | Extended status. Invalid pairings with `availability` are auto-filtered |
+| `expiration` | set optional | ISO 8601 duration. Default: `PT5M` (5 min). Range: 5–240 min |
 
----
+### Setup Helpers
 
-# **Action Behavior**
+| Helper | Purpose |
+|---|---|
+| `input_text.zen_teams_chat_id` | Your Teams chat thread ID. Run `read` — `partner_chat_id` in the response is the value to set here |
+| `input_text.zen_teams_display_name` | Your display name as seen in Teams (e.g. `Home Assistant`) |
 
 ---
 
-## **📘 Help**
+## zen_dojotools_mail — v5.0.0
 
-Returns module capabilities, defaults, caveats, and provider notes.
+M365 Mail via the MS365 integration. Supports listing inbox messages, reading a message by subject, and sending new mail. Includes a whitelist gate on outbound sends.
 
-```yaml
-action_type: help
-```
+> **Spook v6 compatibility note:** `ms365_mail.get_message` (used by the previous `read` implementation) does not exist in the MS365 integration. Read mode now resolves messages via sensor attribute scan. This was surfaced by the [Spook v6](https://spook.boo/) unknown-actions sweep.
 
----
+### Modes
 
-## **📖 Read Events**
+| `action_type` | Description |
+|---|---|
+| `list` | Lists messages from a folder (default: Inbox). Supports `from_filter` and `query` filters. Returns `uid` in each header row. |
+| `read` | Finds a message by `uid` OR `subject` substring (first match wins). Resolves via sensor attribute scan — `uid` is always empty string from the MS365 sensor, so **subject match is the practical path**. Returns full body. |
+| `create` | Sends a new email. Requires `to`, `subject`, `body`. |
+| `delete` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
+| `move` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
+| `help` | Returns capability summary, field reference, examples, and setup notes. |
 
-Reads events from one or more calendars.
+### Key Fields
 
-Supports:
+| Field | Required | Description |
+|---|---|---|
+| `action_type` | Yes | `list`, `read`, `create`, `help` (default: `help`) |
+| `folder` | read/list | Folder name. Valid: `Inbox`, `Sent Items`, `Deleted Items`, `Junk Email`, `Outbox`. Default: `Inbox` |
+| `uid` | read | Message UID — always empty string from sensor; use `subject` instead |
+| `subject` | read | Subject substring match — practical read path |
+| `to` | create | Recipient(s), comma-separated |
+| `subject` | create | Subject line |
+| `body` | create | Message body |
+| `cc` / `bcc` | optional | Additional recipients, comma-separated |
+| `importance` | optional | `Low`, `Normal`, `High`. Default: `Normal` |
+| `content_type` | optional | `Text` or `HTML`. Default: `Text` |
+| `from_filter` | list | Filter by sender address |
+| `query` | list | Search string for subject/body/sender |
 
-* Label target aggregation
-* Single calendar read
-* Full calendar list when using `"*"`
+### Whitelist Gate
 
----
+Outbound sends are gated by `input_text.zen_mail_whitelist`. If the helper is missing or unavailable, sends are blocked and the AI surfaces setup instructions.
 
-## **🔍 Inspect**
+| Whitelist value | Behavior |
+|---|---|
+| `OFF` | All recipients allowed |
+| `*@yourdomain.com` | Domain wildcard — any address in that domain |
+| `user@domain.com` | Exact match only |
 
-Uses the DojoTools Inspect tool to retrieve:
+### Setup Helpers
 
-* Raw provider metadata
-* Event IDs (when supported)
-* Feature flags
-
-This enables downstream tools to determine whether safe deletes or updates are possible.
-
----
-
-## **🟢 Create Event**
-
-Creates an event on one explicit calendar.
-
-Safety:
-
-* Requires exactly one target calendar
-* Blocks ambiguous or multi-calendar targets
-* Validates date ordering
-
-Supports:
-
-* ISO timestamps
-* All-day events (date-only inputs)
-* Description, attendees, location
-
----
-
-## **🟠 Update Event**
-
-Implements delete→create pattern.
-
-* Valid only when provider exposes `event_id`
-* Prevents accidental overwrite due to summary/date inference
-* Returns success + warning message when old event not found
+| Helper | Purpose |
+|---|---|
+| `input_text.zen_mail_sender` | HA send-from address (e.g. `homeassistant@yourdomain.com`) |
+| `input_text.zen_mail_domain` | Your email domain for wildcard matching |
+| `input_text.zen_mail_whitelist` | Whitelist mode. Required for sends to proceed |
 
 ---
 
-## **🔴 Delete Event**
+## Dependencies
 
-Deletes event by exact provider `event_id`.
-
-Safety:
-
-* Checks provider delete support via `supported_features`
-* Blocks delete when:
-
-  * provider lacks support
-  * event_id is missing
-  * multiple calendars match
-
-Returns:
-
-* `"delete triggered"` for consistent downstream messaging
-* Includes inspect output when blocking action
-
----
-
-# **Timestamp Normalization**
-
-Because calendar providers return timestamps in **mixed UTC and local offset formats**, 1.10.3 ensures:
-
-* All outgoing timestamps are produced in **local offset ISO format**
-* Incoming mismatch handling is **explicitly documented**
-* UAT should normalize timestamps externally if absolute equality is required
-
-This enables deterministic outputs across all backends.
-
----
-
-# **Error Handling**
-
-Every failure path returns structured JSON with guidance:
-
-Examples:
-
-```json
-{
-  "status": "error",
-  "message": "Multiple calendars match the query. Provide a single calendar for this action."
-}
-```
-
-```json
-{
-  "status": "error",
-  "message": "Delete/update requires 'event_id'. Provider did not expose event_id; operation safely blocked."
-}
-```
-
----
-
-# **Provider Notes**
-
-### ⚠ Google, ICS, Local Calendar
-
-Do **not** expose event_id
-→ Update/Delete blocked safely
-
-### ✔ Microsoft 365
-
-Full support
-→ event_id exposed
-→ safe mutation ops enabled
-
----
-
-# **Version History**
-
-### **1.10.3**
-
-Major safety and determinism update.
-
-Changes include:
-
-* Added label_targets + label_target_entities
-* Added multi-target block (`target_is_multi`)
-* Rewrote entity resolution logic
-* Unified JSON envelopes for all branches
-* Multi-calendar event aggregation
-* Integrated inspect path
-* Added explicit safety checks for provider capabilities
-* Rewrote update to delete→create flow
-* Normalized timestamp formatting (ISO with offset)
-* Improved help output with provider notes
-* Cleaned branching logic, alignment, error structure
-
----
-
-# **Dependencies**
-
-| Module                                  | Purpose                                         |
-| --------------------------------------- | ----------------------------------------------- |
-| `dojotools_zen_inspect`                 | Inspect calendar entity for metadata + event_id |
-| Home Assistant `calendar.*` integration | Calendar data source                            |
-| MS365 calendar integration              | Delete/update provider                          |
+| Dependency | Purpose |
+|---|---|
+| MS365 integration | Teams and Mail data source and action target |
+| `sensor.homeassistant_chat` | Teams chat data |
+| `sensor.homeassistant_status` | Teams presence state |
+| `sensor.ms365_inbox` | Mail inbox data |

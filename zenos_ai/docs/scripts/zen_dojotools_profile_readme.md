@@ -1,4 +1,4 @@
-# Zen DojoTools Profile Editor — 5.0 'Clue'
+# Zen DojoTools Profile Editor — 5.1.0
 
 *Read, write, sign, restore, and certify ZenOS identity profiles*
 
@@ -137,6 +137,7 @@ Patches are **leaf-level** — changing `voice_tone` never touches `voice_style`
 | `email` | `_user_profile.email` | Email address |
 | `birthday` | `_user_profile.birthday` | Birthday (YYYY-MM-DD) |
 | `preferences` | `_user_profile.preferences` | JSON object of user preferences — merged, not overwritten |
+| `inventory_root` | `inventory.root_location_id` | Grocy location ID for this person's canonical personal inventory (int). Written to `inventory.root_location_id`. Used by Library lending (checkout target) and any tool that needs to resolve where a person's possessions live. Wire once via `mode=write inventory_root=<location_id>`. |
 
 `read` mode also returns the read-only relationship arrays when present: `partners`, `ai_partners`, `children`.
 
@@ -465,3 +466,12 @@ All modes return a consistent JSON envelope:
 - [Script Modules](readme.md) — return path to the internal tool map
 - [Clue Release Notes](../releases/clue.md) — 2026.6 identity and FileCabinet context
 - [Fry's Grandpa Release Notes](../releases/frys_grandpa.md#profile-editor--write-bug-fixes) — write-gate and second-write merge fixes
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| v5.2.0 | `inventory_root` field added to user and persona editor. Written as int to `inventory.root_location_id`. Used by Library lending (checkout target) and agent workspace resolution. Applies to both `zen_dojotools_profile_editor` and `zen_dojotools_persona_editor`. |
+| v5.1.0 | Baseline for Clue (2026.6.0). Profile editor GA-hardened; FC returns `confirmed` not `success`; second-write merge correctly parses JSON-encoded drawer value. |

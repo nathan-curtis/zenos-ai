@@ -3,7 +3,7 @@
 **Version:** 5.2.0  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
-**Internal REST dispatcher:** `zen_dojotools_grocy_advanced`
+**Internal REST dispatcher:** `zen_sutra_grocy`
 
 ---
 
@@ -15,7 +15,7 @@ In practical terms:
 
 * Products, stock entries, locations, units, shopping lists, chores, recipes, tasks, and batteries live in Grocy.
 * ZenOS-AI tools call `zen_dojotools_inventory` for normal work.
-* `zen_dojotools_grocy_advanced` is the lower-level REST dispatcher and should stay internal unless the inventory tool explicitly points there.
+* `zen_sutra_grocy` is the lower-level REST dispatcher and should stay internal unless the inventory tool explicitly points there.
 * AutoVac and SpaMaster use Grocy for consumable parts and supplies, but each stores its own local catalog pointer in its cabinet config.
 
 ---
@@ -310,7 +310,7 @@ https://<your-grocy-host>
 
 Do not add a trailing slash. Use HTTPS, not HTTP. If a reverse proxy redirects HTTP to HTTPS, Home Assistant may follow the redirect in a way that changes POST requests into GET requests, which breaks writes.
 
-3. Expose `zen_dojotools_inventory` to the conversation agent if the agent should help with household inventory. Keep `zen_dojotools_grocy_advanced` internal unless you are deliberately giving the agent raw REST access.
+3. Expose `zen_dojotools_inventory` to the conversation agent if the agent should help with household inventory. Keep `zen_sutra_grocy` internal — it is the low-level REST dispatcher and is not MCP-exposed.
 
 4. Provision domain catalogs from the owning tools:
 

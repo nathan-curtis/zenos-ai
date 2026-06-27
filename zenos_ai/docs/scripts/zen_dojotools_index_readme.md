@@ -1,4 +1,4 @@
-# Zen DojoTools Index — 5.0.1
+# Zen DojoTools Index — 5.1.0
 **File:** `zen_dojotools_zen_index_readme.md`  
 **Type:** Technical Documentation  
 
@@ -387,7 +387,7 @@ This is the *search brainstem* of ZenOS-AI.
 
 ## Summary
 
-The Zen Index 5.0.1 provides:
+The Zen Index 5.1.0 provides:
 
 - A fully featured, label/entity correlation engine
 - Full topology seed chain per operand: entities > label > device > integration > area > floor

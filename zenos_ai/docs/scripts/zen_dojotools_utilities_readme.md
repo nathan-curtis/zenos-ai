@@ -1,12 +1,36 @@
-# Zen DojoTools Utilities — 2026.6.0 'Clue'
+# Zen DojoTools Utilities — v5.1.0
 
-*Calculator, dice, announcements, music search, deprecated notification compatibility, system help, and misc tools*
+*Calculator, dice, announcements, music search, system help, wait, cabinet audit, and canonical HA domain control tools*
 
 ---
 
 ## Overview
 
-Utilities is a collection of general-purpose tools that don't belong to a specific subsystem. It covers math, randomness, TTS, music lookup, system introspection, and cabinet auditing. Notification Router remains here only as a deprecated compatibility bridge; new notification work should use Postman.
+Utilities is a collection of general-purpose tools that don't belong to a specific subsystem. It covers math, randomness, TTS, music lookup, system introspection, cabinet auditing, and canonical GET+SET wrappers for HA domains that HA's own MCP built-ins handle inconsistently.
+
+The canonical domain tools (`select_control`, `number`, `text`, `climate`, `water_heater`, `datetime`, `zones`) were promoted from legacy intent scripts in 2026.4. They are preferred over HA built-ins for their domains: they resolve shorthand names, validate inputs against entity constraints, and return structured responses.
+
+---
+
+## Script Index
+
+| Script | Purpose |
+|---|---|
+| `zen_dojotools_calculator` | Math operations and GUID generation |
+| `zen_dojotools_dice_roller` | D&D dice, coin flip, random numbers |
+| `zen_dojotools_announce` | TTS announcement router with urgency + dedup gates |
+| `zen_sutra_music_search` | Music Assistant search — **internal sutra, not MCP-exposed**. Use `zen_dojotools_media_manager` mode=search or mode=stacks_by_anchor. |
+| `zen_dojotools_help` | Live ZenOS-AI system overview and script inventory |
+| `zen_dojotools_wait` | Timed delay (1–120 seconds) |
+| `dojotools_volume_auditor` | Cabinet volume accessibility scanner |
+| `zen_dojotools_notification_router` | **Deprecated** — legacy push notification router |
+| `zen_dojotools_select_control` | CANONICAL: `select` / `input_select` GET+SET |
+| `zen_dojotools_number` | CANONICAL: `number` / `input_number` GET+SET+arithmetic |
+| `zen_dojotools_text` | CANONICAL: `text` / `input_text` GET+SET+string ops |
+| `zen_dojotools_climate` | CANONICAL: `climate` GET+SET with topology context |
+| `zen_dojotools_water_heater` | CANONICAL: `water_heater` GET+SET |
+| `zen_dojotools_datetime` | CANONICAL: `input_datetime` GET+SET |
+| `zen_dojotools_zones` | CANONICAL: zone CRUD + haversine bearing |
 
 ---
 
@@ -65,53 +89,53 @@ Dice rolls, coin flips, and random numbers for D&D and anything else that needs 
 
 ## zen_dojotools_announce
 
-TTS announcement router to HA areas.
+TTS announcement router to HA areas. Enforces four gates before firing audio — all gate responses are machine-readable status codes.
 
 ### Input Fields
 
-| Field | Type | Description |
-|---|---|---|
-| `area` | area (multi) | One or more HA areas to announce to |
-| `message` | text | Message to speak (max 255 characters) |
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `area` | area (multi) | Yes | One or more HA areas to announce to |
+| `message` | text | Yes | Message to speak (max 255 characters) |
+| `urgency` | number (1–10) | **Yes** | Urgency level — determines routing and gate behavior |
 
-Resolves TTS media players from `label_entities(slugify(area))` and the `tts_output` label. If no TTS entity is found for an area, returns `"No TTS target available for area."` for that area without failing the others.
+### Urgency Routing
 
-**Audio gate:** Blocked when `binary_sensor.zen_quiet_hours` is `on` or home mode is `Night` / `Night-Late`. Bypassed when `importance: high` or `max` and `breakthrough: true`. Blocked responses include `quiet_hours` state for diagnostics. Use `zen_dojotools_postman` for push during quiet hours.
+| Urgency | Behavior |
+|---|---|
+| Omitted | Blocked — `status: urgency_required` |
+| 1–3 | Blocked — `status: blocked_urgency`. Use `zen_dojotools_postman` for push. |
+| 4–8 | Normal voice announcement range |
+| 9–10 | Life-safety bypass — skips the sleep gate (smoke, CO, flood, alarm only) |
 
-### Response
+### Gates (in order)
 
-```json
-{
-  "results": [
-    { "tts": { "room": "living_room", "entity_id": "media_player.living_room_speaker", "message": "Dinner is ready.", "status": "sent" } }
-  ]
-}
-```
+1. **Urgency required** — `urgency` must be passed. Returns `status: urgency_required`.
+2. **Urgency gate** — urgency ≤ 3 → returns `status: blocked_urgency`. Use Postman for push.
+3. **Sleep gate** — blocked when `binary_sensor.zen_quiet_hours` is `on` or home mode is `Night`/`Night-Late`. Returns `status: blocked_sleep`. Urgency ≥ 9 bypasses.
+4. **Dedup gate** — same caller + message combination within the dedup window (default 300s, configurable in `zen_scheduler_config`) → returns `status: dedup`. Prevents looping components from spamming audio.
+
+TTS entity resolution: `label_entities(slugify(area))` intersected with `tts_output` label. If no TTS entity is found for an area, that area returns `"No TTS target available for area."` without failing the others.
+
+After a successful fire, an entry is written to `zen_announcement_log` in the Kata cabinet (capped at 50 entries).
 
 ---
 
-## zen_dojotools_music_search
+## zen_sutra_music_search (Internal Sutra)
 
-Music Assistant library and internet search wrapper.
+**Not MCP-exposed.** Internal Music Assistant search connector called by `zen_dojotools_media_manager`.
 
-### Input Fields
+For music discovery use `zen_dojotools_media_manager`:
+- `mode=stacks_by_anchor` — ranked evidence + playback hints + profile pref re-ranking
+- `mode=search` — lightweight raw MA results without Lens envelope
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `query` | text | — | Search term |
-| `artist` | text | — | Filter by artist |
-| `album` | text | — | Filter by album |
-| `media_type` | select (multi) | — | `artist`, `album`, `track`, `playlist`, `radio`, `audiobook`, `podcast` |
-| `number` | number | `50` | Result limit (1–50) |
-| `status` | boolean | `true` | `true` = library only; `false` = library + internet |
-
-Returns the Music Assistant search result object.
+Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `number`, `status` (library_only). Returns the MA grouped response `{tracks, albums, playlists, artists, radio, audiobooks, podcasts}`.
 
 ---
 
 ## zen_dojotools_help
 
-Returns a live system overview including architecture, design principles, safety notes, the Pantheon, module list, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA.
+Returns a live system overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA.
 
 ```yaml
 action: about
@@ -128,39 +152,6 @@ Timed delay. Useful for narrative pacing or spacing out sequential tool calls.
 | Field | Type | Default | Range |
 |---|---|---|---|
 | `duration` | number | `15` | 1–120 seconds |
-
----
-
-## zen_dojotools_notification_router
-
-Deprecated compatibility router for older automations. New sends should use `zen_dojotools_postman` with `mode: resolve_and_dispatch`, because Postman preserves native Android notification data, image payloads, and action-button responses.
-
-### Input Fields
-
-| Category | Fields |
-|---|---|
-| Content | `title` (required), `message` (required), `subject`, `tts_text` |
-| Routing | `notification_targets` (default: `Admin Devices`), `click_action`, `group`, `tag` |
-| Appearance | `color`, `icon_url`, `visibility`, `sticky`, `persistent`, `timeout` |
-| Android | `channel`, `importance` (`min`/`low`/`default`/`high`/`max`), `vibration_pattern`, `led_color` |
-| Override | `breakthrough` (boolean) — legacy bypass flag |
-
-### Targets
-
-| Target | Quiet/Work Hours Blocked? |
-|---|---|
-| Admin Devices | Never blocked |
-| Family Devices | Blocked unless breakthrough |
-| Default User Phone | Blocked unless breakthrough |
-| Secondary User Phone | Blocked unless breakthrough |
-
-### Breakthrough Logic
-
-Breakthrough is allowed when `importance` is `high` or `max` AND `breakthrough: true`. Without breakthrough, notifications to non-admin targets are blocked during quiet hours and work hours. This is legacy behavior; Postman now owns the current authority stack and response path.
-
-```json
-{ "error": "send blocked, use high importance or better and request breakthrough if appropriate." }
-```
 
 ---
 
@@ -192,3 +183,140 @@ Cabinet volume accessibility scanner. Reports which labeled cabinets are reachab
 ```
 
 Use this when a script can't find a cabinet it expects — it shows which volumes are actually reachable.
+
+---
+
+## zen_dojotools_notification_router
+
+**Deprecated.** New sends should use `zen_dojotools_postman` with `mode: resolve_and_dispatch`. Postman owns the current authority stack, kata_input derivation, image payloads, actionable response buttons, and full notification_data passthrough.
+
+This script remains for backwards compatibility with existing automations and will be removed in a future release. The dispatcher still routes `zen_dojotools_notification_router` calls for this reason.
+
+---
+
+## Canonical HA Domain Tools
+
+These seven scripts are the preferred interface for their respective HA domains. They resolve shorthand names (e.g., `"office_occupancy"` → `input_select.office_occupancy`), validate inputs against entity constraints before writing, and return structured responses with `ok: true/false`. Fall back to HA built-ins only if a tool is confirmed non-functional.
+
+All support `mode: tool_manifest` for self-description. All accept `caller_token` echoed in the response.
+
+---
+
+### zen_dojotools_select_control
+
+GET+SET for `select` and `input_select` entities.
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `option` | Option to set. Omit to read. |
+| `get` | Any truthy value forces read-only mode. |
+
+Validates `option` against `state_attr(entity_id, 'options')` before applying. Returns `error: invalid_option` with `supported` list if the option is not in the entity's option list.
+
+---
+
+### zen_dojotools_number
+
+GET+SET+arithmetic for `number` and `input_number` entities. Enforces entity `min`/`max`.
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `value` | Direct value to set |
+| `operation` | `set` (default), `add`, `sub`, `mul`, `div`, `inc`, `dec` |
+| `amount` | Operand for add/sub/mul/div |
+| `cast` | `float` (default) or `int` |
+
+Returns `error: out_of_range` with `min`/`max`/`requested` if the computed value would exceed the entity's bounds.
+
+---
+
+### zen_dojotools_text
+
+GET+SET+string operations for `text` and `input_text` entities. Enforces 255-character HA platform limit (overflow truncated).
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `value` | Text to store |
+| `operation` | `set` (default), `clear`, `append`, `prepend`, `replace` |
+| `search_text` | Substring to find (used with `operation: replace`) |
+| `replace_text` | Replacement string (used with `operation: replace`) |
+
+---
+
+### zen_dojotools_climate
+
+GET+SET for `climate` entities. Inspects `supported_features` before applying — fails closed on unsupported feature. Multiple setters may be sent in one call. Omit all to read state and capabilities.
+
+GET response includes a `topology_context` block: open doors/windows, area temperature/humidity sensors, adjacent HVAC bleed portals (via Room Manager), and a natural vent advisory.
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `room` | Area for topology context in GET mode (auto-detected if omitted) |
+| `temperature` | Target temperature (single setpoint) |
+| `target_low` / `target_high` | Auto/heat-cool range |
+| `hvac_mode` | HVAC operating mode — read first to see supported modes |
+| `fan_mode` | Fan mode |
+| `swing_mode` | Swing mode |
+| `preset` | Preset mode (eco, sleep, away, etc.) |
+| `humidity` | Target humidity (if supported) |
+| `aux_heat` | ~~Auxiliary heat~~ — `not_implemented`. `climate.set_aux_heat` was removed from HA with no replacement (surfaced by Spook v6 sweep). |
+| `power` | Power control — `on`/`off` (via hvac_mode) |
+| `get` | Any truthy value forces read-only |
+
+---
+
+### zen_dojotools_water_heater
+
+GET+SET for `water_heater` entities. Inspects `supported_features` before applying — fails closed on unsupported feature. Multiple setters may be sent in one call.
+
+Supported features bitmask: `TARGET_TEMPERATURE=1`, `OPERATION_MODE=2`, `AWAY_MODE=4`, `ON_OFF=8`.
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `temperature` | Target temperature — clamped to entity min/max (not rejected) |
+| `mode` | Operation mode (e.g., `eco`, `heat_pump`) — validated against `operation_list` |
+| `away` | Away mode — `on`/`off` |
+| `power` | Power — `on`/`off` (requires `ON_OFF` feature) |
+| `get` | Any truthy value forces read-only |
+
+GET response includes `current_temperature`, `state`, and the full `capabilities` block.
+
+---
+
+### zen_dojotools_datetime
+
+GET+SET for `input_datetime` entities. Resolves shorthand or full entity IDs. Accepts any datetime string parseable by `as_datetime()` including ISO 8601 with timezone offset.
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `value` | Datetime string (ISO 8601 recommended). Omit to read. |
+| `get` | Any truthy value forces read-only |
+
+GET response includes `has_date` and `has_time` flags.
+
+---
+
+### zen_dojotools_zones
+
+Full zone CRUD and haversine bearing for HA zones. Zones defined in `configuration.yaml` are read-only — only dynamically created zones (via UI or this tool) support write operations. The `zone.home` zone cannot be deleted.
+
+| Mode | Required Fields | Description |
+|---|---|---|
+| `read` | — | List all zones |
+| `read` | `entity_id` | Inspect single zone (lat, lon, radius, persons, editable) |
+| `create` | `name`, `latitude`, `longitude` | Create zone (radius defaults to 100m) |
+| `update` | `entity_id` | Update any combination of name, lat, lon, radius, icon, passive |
+| `delete` | `entity_id`, `confirm=true` | Delete zone (must be editable). Requires `confirm=true` — returns `confirm_required` with zone name if omitted. |
+| `bearing` | `entity_id` | Haversine distance + compass direction from `zone.home` to target |
+| `bearing` | `entity_id`, `origin_entity_id` | Zone-to-zone bearing |
+| `bearing` | `entity_id`, `origin_latitude`, `origin_longitude` | Arbitrary-coordinates-to-zone bearing |
+
+Optional fields for `create`/`update`: `icon` (MDI slug), `passive` (boolean — hidden from frontend).
+
+`confirm=true` is required for `delete`. Omitting it returns `confirm_required` with the zone's friendly name so the caller can surface a confirmation before proceeding. This guard was added when `zone.edit` → `zone.update` was corrected as part of the Spook v6 compatibility sweep.

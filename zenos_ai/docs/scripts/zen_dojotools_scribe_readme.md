@@ -1,6 +1,8 @@
-# Zen DojoTools Scribe — v1.8.0
+# Zen DojoTools Scribe — v1.8.0 (ZenOS-AI 5.1.0 — 2026.6.0 'Clue')
 
 *Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
+
+> **Versioning note:** The script version (v1.8.0) tracks Scribe's internal feature history. The ZenOS-AI package version (5.1.0) tracks the overall DojoTools package release. Both axes are independent.
 
 ---
 
@@ -317,3 +319,4 @@ Scribe is non-destructive by default:
 | v1.7.0 | `icon` field added to KFC schema; set on first publish (label create), preserved on update. `publish_kfc` label upsert — creates label if absent, always updates description. Component summary chonk warning (>150 chars). |
 | v1.4.0 | `seed` and `area_seed` input fields; parsed into draft and publish payloads. |
 | v1.3.0 | Initial release as Scribe. Replaces `zen_dojotools_kungfu_writer`. Full lifecycle management, LLM-native authoring, component group model. |
+| v1.0.0 | `meta:` wrapper flattening — FileCabinet `no_autoexpire`/`no_autorecycle`/`description` fields were silently dropped when nested under `meta:`; moved to sibling scope. `formalize_scroll` now applies `zen_scroll` label for true RO enforcement. `clear_field` key-removal fix. `publish_kfc` guards `artifact_state == formal` before pressing. |

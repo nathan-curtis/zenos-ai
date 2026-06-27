@@ -235,9 +235,25 @@ automation:
             sequence:
               - action: script.zen_dojotools_manifest
                 data:
+                  mode:         "{{ _payload.get('mode', 'cabinets') }}"
                   show_hidden:  "{{ _payload.get('show_hidden', false) }}"
                   show_stacks:  "{{ _payload.get('show_stacks', false) }}"
                   extended:     "{{ _payload.get('extended', false) }}"
+                  name:         "{{ _payload.get('name', '') }}"
+                  tier:         "{{ _payload.get('tier', '') }}"
+                  force_refresh: "{{ _payload.get('force_refresh', false) }}"
+                  mcp_tool_list: "{{ _payload.get('mcp_tool_list', '') }}"
+                  caller_token: "{{ _payload.get('caller_token', '') }}"
+                response_variable: _result
+
+          # ── zen_stack_firefly v1 ──────────────────────────────────────────
+          - conditions: "{{ _tool == 'zen_stack_firefly' and _ver | string == '1' }}"
+            sequence:
+              - action: script.zen_stack_firefly
+                data:
+                  mode:         "{{ _payload.get('mode', 'help') }}"
+                  anchor_type:  "{{ _payload.get('anchor_type', '') }}"
+                  anchor_ids:   "{{ _payload.get('anchor_ids', '[]') }}"
                   caller_token: "{{ _payload.get('caller_token', '') }}"
                 response_variable: _result
 
@@ -509,7 +525,7 @@ automation:
                 {%- set ns = namespace(cands=[]) -%}
                 {%- if _dojo_cab not in ['unknown', 'unavailable'] and _kata_cab not in ['unknown', 'unavailable'] -%}
                   {%- for key, drawer in (dojo_v if dojo_v is mapping else {}).items() -%}
-                    {%- if not key.startswith('_') and key not in protected -%}
+                    {%- if key[:1] != '_' and key not in protected -%}
                       {%- set val = drawer.get('value', drawer) if drawer is mapping else {} -%}
                       {%- if val is mapping -%}
                         {%- set tier = val.get('pipeline_tier', 'keeper') | lower -%}
@@ -614,6 +630,70 @@ automation:
   #
   # ADDING A NEW TOOL: add one choose arm. No dispatcher change required.
   #####################################################################
+
+  #####################################################################
+  # cabinet_vi_degraded autorepair — fires when Inspect detects a
+  # cabinet whose VolumeInfo is a JSON string instead of a mapping.
+  # Calls cabinetadmin repair_volumeinfo on the offending cabinet.
+  # Emits cabinet_vi_repaired on success, cabinet_vi_repair_failed on error.
+  #####################################################################
+  - id: zen_cabinet_vi_autorepair
+    alias: Zen Cabinet — VolumeInfo Autorepair
+    description: >-
+      zen_cabinet_vi_autorepair 1.0.0. Catches cabinet_vi_degraded zen_events
+      emitted by Inspect when a cabinet VolumeInfo is stored as a JSON string.
+      Calls zen_admintools_cabinetadmin mode=repair_volumeinfo on the entity,
+      then emits cabinet_vi_repaired or cabinet_vi_repair_failed.
+    mode: queued
+    max: 5
+
+    triggers:
+      - trigger: event
+        event_type: zen_event
+        event_data:
+          event:
+            kind: cabinet_vi_degraded
+
+    action:
+      - variables:
+          _cab: "{{ trigger.event.data['event']['metadata']['entity_id'] | default('') }}"
+      - if:
+        - condition: template
+          value_template: "{{ _cab == '' }}"
+        then:
+        - stop: cabinet_vi_degraded — no entity_id in metadata
+      - action: script.zen_admintools_cabinetadmin
+        continue_on_error: true
+        data:
+          mode: repair_volumeinfo
+          target_cabinet: "{{ _cab }}"
+          caller_token: cabinet_vi_autorepair
+        response_variable: _repair_result
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _repair_result is mapping and _repair_result.get('status') == 'success' }}"
+          sequence:
+          - event: zen_event
+            event_data:
+              event:
+                kind: cabinet_vi_repaired
+                component: cabinet_vi_autorepair
+                severity: info
+                summary: "VolumeInfo autorepaired on {{ _cab }}"
+                metadata:
+                  entity_id: "{{ _cab }}"
+        default:
+        - event: zen_event
+          event_data:
+            event:
+              kind: cabinet_vi_repair_failed
+              component: cabinet_vi_autorepair
+              severity: error
+              summary: "VolumeInfo autorepair FAILED on {{ _cab }}"
+              metadata:
+                entity_id: "{{ _cab }}"
+                result: "{{ _repair_result }}"
 
   - id: zen_dojotool_tool_router
     alias: Zen DojoTool Tool Router
@@ -969,4 +1049,316 @@ automation:
             tool: "{{ _tool }}"
             version: "{{ _ver }}"
             result: "{{ _result }}"
+
+script:
+  zen_dojotools_lens_dispatch:
+    alias: Zen DojoTools Lens Dispatch
+    description: >-
+      Generic lens provider dispatcher. Consumers pass typed anchors
+      (label/person/area_id/zone); registered providers return optional
+      enrichment. Provider failures are soft.
+    mode: parallel
+    max: 10
+    fields:
+      anchors_json:
+        name: Anchors JSON
+        description: 'JSON list of anchors: [{"type":"label","id":"foo"}].'
+        selector:
+          text:
+            multiline: true
+      consumer:
+        name: Consumer
+        description: Calling consumer name, e.g. inspect.
+        selector:
+          text:
+      timeout_ms:
+        name: Timeout MS
+        description: Advisory timeout budget for providers.
+        default: 1200
+        selector:
+          number:
+            min: 100
+            max: 10000
+      mode:
+        description: "Pass tool_manifest to get self-description."
+        required: false
+        selector:
+          select:
+            options:
+              - tool_manifest
+
+      caller_token:
+        name: Caller Token
+        selector:
+          text:
+    sequence:
+      - variables:
+          _tm_check: "{{ mode | default('') | lower }}"
+      - choose:
+        - conditions: "{{ _tm_check == 'tool_manifest' }}"
+          sequence:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{ MF.tool_manifest(
+                    tool='zen_dojotools_lens_dispatch',
+                    display_name='Lens Dispatch',
+                    tier='dojotools',
+                    version='1.0.0',
+                    health={'configured': true, 'status': 'ok', 'notes': []},
+                    required_labels=['sutra'],
+                    optional_labels=[],
+                    consumes=['lens_consumer','lens_anchors'],
+                    returns=['lens_evidence'],
+                    icon='mdi:transit-connection-variant',
+                    color='purple',
+                    caller_token=caller_token | default('')
+                ) | from_json }}
+          - stop: tool_manifest
+            response_variable: result
+      - variables:
+          _consumer: "{{ consumer | default('unknown') | string | trim }}"
+          _anchors_raw: "{{ anchors_json | default([]) }}"
+          _lr_household: >-
+            {%- set _sv = state_attr('sensor.zenos_system_cabinet', 'variables') -%}
+            {%- set _sv = _sv if _sv is mapping else {} -%}
+            {%- set _se = _sv.get('cab_schema_version', {}) -%}
+            {%- set _ma = ((_se.get('value', 0) if _se is mapping else 0) | int(0)) >= 1 -%}
+            {%- set _cands = label_entities('zen_default_household_cabinet') | select('match', 'sensor\.') | list -%}
+            {%- if _ma -%}
+              {%- set ns = namespace(r='unavailable') -%}
+              {%- for e in _cands -%}
+                {%- if ns.r == 'unavailable' and states(e) == 'online_mounted' -%}{%- set ns.r = e -%}{%- endif -%}
+              {%- endfor -%}
+              {{ ns.r }}
+            {%- else -%}
+              {{ _cands | first | default('unavailable') }}
+            {%- endif -%}
+
+      - variables:
+          _anchors: >-
+            {%- if _anchors_raw is sequence and _anchors_raw is not string -%}
+              {%- set a = _anchors_raw -%}
+            {%- elif _anchors_raw is string and (_anchors_raw | trim)[:1] == '[' -%}
+              {%- set a = _anchors_raw | trim | from_json -%}
+            {%- elif _anchors_raw is string and (_anchors_raw | trim)[:1] == '"' -%}
+              {%- set inner = _anchors_raw | trim | from_json -%}
+              {%- set a = inner | from_json if inner is string and (inner | trim)[:1] == '[' else [] -%}
+            {%- else -%}
+              {%- set a = [] -%}
+            {%- endif -%}
+            {{ a if a is sequence and a is not string else [] }}
+      - variables:
+          _label_ids: >-
+            {%- set ns = namespace(ids=[]) -%}
+            {%- for a in _anchors if a is mapping and a.get('type', '') == 'label' -%}
+              {%- set x = a.get('id', '') | string | trim | lower -%}
+              {%- if x != '' -%}{%- set ns.ids = ns.ids + [x] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ids | unique | list }}
+          _person_ids: >-
+            {%- set ns = namespace(ids=[]) -%}
+            {%- for a in _anchors if a is mapping and a.get('type', '') == 'person' -%}
+              {%- set x = a.get('id', '') | string | trim | lower -%}
+              {%- if x != '' -%}{%- set ns.ids = ns.ids + [x] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ids | unique | list }}
+          _area_ids: >-
+            {%- set ns = namespace(ids=[]) -%}
+            {%- for a in _anchors if a is mapping and a.get('type', '') == 'area_id' -%}
+              {%- set x = a.get('id', '') | string | trim | lower -%}
+              {%- if x != '' -%}{%- set ns.ids = ns.ids + [x] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ids | unique | list }}
+          _zone_ids: >-
+            {%- set ns = namespace(ids=[]) -%}
+            {%- for a in _anchors if a is mapping and a.get('type', '') == 'zone' -%}
+              {%- set x = a.get('id', '') | string | trim | lower -%}
+              {%- if x != '' -%}{%- set ns.ids = ns.ids + [x] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ids | unique | list }}
+          _company_ids: >-
+            {%- set ns = namespace(ids=[]) -%}
+            {%- for a in _anchors if a is mapping and a.get('type', '') == 'company' -%}
+              {%- set x = a.get('id', '') | string | trim -%}
+              {%- if x != '' -%}{%- set ns.ids = ns.ids + [x] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ids | unique | list }}
+          _family_ids: >-
+            {%- set ns = namespace(ids=[]) -%}
+            {%- for a in _anchors if a is mapping and a.get('type', '') == 'family' -%}
+              {%- set x = a.get('id', '') | string | trim -%}
+              {%- if x != '' -%}{%- set ns.ids = ns.ids + [x] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ids | unique | list }}
+          _household_ids: >-
+            {%- set ns = namespace(ids=[]) -%}
+            {%- for a in _anchors if a is mapping and a.get('type', '') == 'household' -%}
+              {%- set x = a.get('id', '') | string | trim -%}
+              {%- if x != '' -%}{%- set ns.ids = ns.ids + [x] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ids | unique | list }}
+      - variables:
+          _anchor_groups:
+            - anchor_type: label
+              anchor_ids: "{{ _label_ids }}"
+            - anchor_type: person
+              anchor_ids: "{{ _person_ids }}"
+            - anchor_type: area_id
+              anchor_ids: "{{ _area_ids }}"
+            - anchor_type: zone
+              anchor_ids: "{{ _zone_ids }}"
+            - anchor_type: company
+              anchor_ids: "{{ _company_ids }}"
+            - anchor_type: family
+              anchor_ids: "{{ _family_ids }}"
+            - anchor_type: household
+              anchor_ids: "{{ _household_ids }}"
+
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _lens_registry_raw
+        data:
+          action_type: read
+          show_hidden_volumes: false
+          volume_entity_id:
+            - "{{ _lr_household }}"
+          key: lens_registry
+
+      - variables:
+          _lens_registry: >-
+            {%- set raw = _lens_registry_raw if _lens_registry_raw is mapping else {} -%}
+            {%- set value = raw.get('value', {}) if raw is mapping else {} -%}
+            {%- set parsed = value | from_json if value is string else value -%}
+            {{ parsed if parsed is mapping else {} }}
+      - variables:
+          _registered_providers: >-
+            {{ _lens_registry if _lens_registry is mapping else {} }}
+          _provider_outputs: []
+
+      - repeat:
+          for_each: "{{ _anchor_groups }}"
+          sequence:
+            - variables:
+                _group_type: "{{ repeat.item.get('anchor_type', '') if repeat.item is mapping else '' }}"
+                _group_ids: "{{ repeat.item.get('anchor_ids', []) if repeat.item is mapping else [] }}"
+            - if: "{{ _group_ids | length > 0 }}"
+              then:
+                - repeat:
+                    for_each: "{{ _registered_providers.items() | list }}"
+                    sequence:
+                      - variables:
+                          _provider_key: "{{ repeat.item[0] | string | trim if repeat.item is sequence else '' }}"
+                          _provider_decl: "{{ repeat.item[1] if repeat.item is sequence and repeat.item[1] is mapping else {} }}"
+                      - variables:
+                          _provider_enabled: "{{ _provider_decl.get('enabled', true) if _provider_decl is mapping else false }}"
+                          _provider_consumes: "{{ _provider_decl.get('consumes', []) if _provider_decl is mapping and _provider_decl.get('consumes', []) is sequence and _provider_decl.get('consumes', []) is not string else [] }}"
+                          _provider_returns: "{{ _provider_decl.get('returns', []) if _provider_decl is mapping and _provider_decl.get('returns', []) is sequence and _provider_decl.get('returns', []) is not string else [] }}"
+                          _provider_tool: "{{ _provider_decl.get('tool', '') | string | trim if _provider_decl is mapping else '' }}"
+                          _provider_mode: "{{ _provider_decl.get('mode', 'stacks_by_anchor') | string | trim if _provider_decl is mapping else 'stacks_by_anchor' }}"
+                      - variables:
+                          _provider_action: >-
+                            {%- if _provider_tool == '' -%}
+                            {%- elif '.' in _provider_tool -%}{{ _provider_tool }}
+                            {%- else -%}script.{{ _provider_tool }}{%- endif -%}
+                      - choose:
+                          - conditions:
+                              - condition: template
+                                value_template: "{{ _provider_enabled and _provider_decl.get('status', 'available') | lower == 'available' and _provider_action != '' and _group_type in _provider_consumes and (_provider_returns | length) > 0 }}"
+                            sequence:
+                              - action: "{{ _provider_action }}"
+                                continue_on_error: true
+                                response_variable: _provider_raw
+                                data:
+                                  mode: "{{ _provider_mode }}"
+                                  action: "{{ _provider_mode }}"
+                                  anchor_type: "{{ _group_type }}"
+                                  anchor_ids: "{{ _group_ids | tojson }}"
+                                  caller_token: "{{ caller_token | default('') }}"
+                              - variables:
+                                  _provider_outputs: >-
+                                    {{ _provider_outputs + [{
+                                      'provider': _provider_key,
+                                      'anchor_type': _group_type,
+                                      'evidence': (_provider_raw.get('evidence', []) if _provider_raw is defined and _provider_raw is mapping else []),
+                                      'count': (_provider_raw.get('count', 0) if _provider_raw is defined and _provider_raw is mapping else 0)
+                                    }] }}
+                        default: []
+
+      - variables:
+          _providers_response: >-
+            {%- set ns = namespace(providers={}) -%}
+            {%- for pkey, pdecl in _registered_providers.items() if _registered_providers is mapping and pdecl is mapping -%}
+              {%- set doc_ns = namespace(docs=[], seen=[], was_called=false, call_counts={'label': 0, 'person': 0, 'area_id': 0, 'zone': 0, 'company': 0, 'family': 0, 'household': 0}) -%}
+              {%- for out in _provider_outputs if out is mapping and out.get('provider', '') == pkey -%}
+                {%- set doc_ns.was_called = true -%}
+                {%- set atype = out.get('anchor_type', '') | string | trim -%}
+                {%- set cnt = out.get('count', 0) | int(0) if out is mapping else 0 -%}
+                {%- if atype in doc_ns.call_counts -%}
+                  {%- set doc_ns.call_counts = doc_ns.call_counts | combine({atype: cnt}) -%}
+                {%- endif -%}
+                {%- set docs = out.get('evidence', []) if out is mapping and out.get('evidence', []) is sequence and out.get('evidence', []) is not string else [] -%}
+                {%- for d in docs if d is mapping -%}
+                  {%- set eid = d.get('evidence_id', pkey ~ ':evidence:' ~ loop.index | string) -%}
+                  {%- if eid not in doc_ns.seen -%}
+                    {%- set doc_ns.seen = doc_ns.seen + [eid] -%}
+                    {%- set doc_ns.docs = doc_ns.docs + [d] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {%- set _p_enabled = pdecl.get('enabled', false) -%}
+              {%- set _p_reg_status = pdecl.get('status', 'unavailable') | string | lower | trim -%}
+              {%- set _prov_status = 'disabled' if not _p_enabled else ('unavailable' if _p_reg_status != 'available' else ('success' if doc_ns.was_called else 'empty')) -%}
+              {%- set _miss_reason = 'provider_disabled' if not _p_enabled else ('provider_offline' if _p_reg_status != 'available' else ('' if doc_ns.was_called else 'anchor_type_unsupported')) -%}
+              {%- set _prov_entry = {
+                'status': _prov_status,
+                'department': pdecl.get('department', pdecl.get('section', '')),
+                'consumes': pdecl.get('consumes', []),
+                'returns': pdecl.get('returns', []),
+                'count': doc_ns.docs | length,
+                'documents': doc_ns.docs,
+                'debug': {
+                  'parsed_anchor_counts': {
+                    'label': _label_ids | length,
+                    'person': _person_ids | length,
+                    'area_id': _area_ids | length,
+                    'zone': _zone_ids | length,
+                    'company': _company_ids | length,
+                    'family': _family_ids | length,
+                    'household': _household_ids | length
+                  },
+                  'provider_call_counts': doc_ns.call_counts
+                }
+              } -%}
+              {%- set _prov_entry = _prov_entry | combine({'miss_reason': _miss_reason}) if _miss_reason != '' else _prov_entry -%}
+              {%- set ns.providers = ns.providers | combine({pkey: _prov_entry}, recursive=true) -%}
+            {%- endfor -%}
+            {{ ns.providers }}
+      - variables:
+          _all_documents: >-
+            {%- set ns = namespace(docs=[], seen=[]) -%}
+            {%- for pkey, provider in _providers_response.items() if _providers_response is mapping and provider is mapping -%}
+              {%- set docs = provider.get('documents', []) if provider.get('documents', []) is sequence and provider.get('documents', []) is not string else [] -%}
+              {%- for d in docs if d is mapping -%}
+                {%- set eid = d.get('evidence_id', pkey ~ ':evidence:' ~ loop.index | string) -%}
+                {%- if eid not in ns.seen -%}
+                  {%- set ns.seen = ns.seen + [eid] -%}
+                  {%- set ns.docs = ns.docs + [d] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.docs }}
+      - variables:
+          _response:
+            status: success
+            tool: Zen DojoTools Lens Dispatch
+            consumer: "{{ _consumer }}"
+            anchors: "{{ _anchors }}"
+            providers: "{{ _providers_response }}"
+            evidence_count: "{{ _all_documents | length }}"
+            evidence: "{{ _all_documents }}"
+            content_redacted: true
+            caller_token: "{{ caller_token | default('') }}"
+      - stop: lens dispatch complete
+        response_variable: _response
 

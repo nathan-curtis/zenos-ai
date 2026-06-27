@@ -1,6 +1,6 @@
 # ZenOS-AI: Install Guide
 
-> **Version:** 2026.6.0 'Clue' | **Last Updated:** May 2026
+> **Version:** 2026.7.0 'Neo' | **Last Updated:** June 2026
 
 ---
 
@@ -63,12 +63,20 @@ ha_bearer: "Bearer <your-long-lived-token>"
 
 Generate a token at **Profile → Security → Long-Lived Access Tokens** in your HA UI.
 
-> **Plugin secrets:** If you install the Mealie or Grocy plugins, add these too:
+> **Plugin secrets:** If you install any plugins, add the corresponding secrets. Add all keys for any plugin you install — HA will fail to load if a secret key is referenced but missing:
 > ```yaml
+> # Core plugins (Mealie + Grocy)
 > mealie_bearer: "Bearer <mealie-api-token>"
 > grocy_api_key: "<grocy-api-key>"
+>
+> # Neo plugins (2026.7.0)
+> zammad_token: "Token token=<your-zammad-api-token>"
+> wikijs_token_bearer: "Bearer <wikijs-api-token>"
+> paperless_ngx_token: "Token <paperless-ngx-api-token>"
+> twenty_bearer: "Bearer <twenty-crm-api-token>"
+> firefly_iii_bearer: "Bearer <firefly-iii-personal-access-token>"
 > ```
-> **Not using Mealie or Grocy?** Add dummy values anyway — HA will fail to load if the secret keys are referenced but missing from `secrets.yaml`. A placeholder like `"unused"` is fine and harmless.
+> **Not using a plugin?** Add a dummy value anyway (`"unused"`) — HA will fail to load if the key is referenced but absent.
 >
 > *(Doc bug credit: [lucianoj](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/481) — caught `Secret mealie_bearer not defined` on a fresh install.)*
 
@@ -225,13 +233,20 @@ If any other sensor shows `warn` or `error`, check its attributes for detail. Fl
 
 Plugins live under `packages/zenos_ai/plugins/`. Install only the integrations you need — each is independent.
 
-| Plugin | File | Requires |
-|---|---|---|
-| Mealie | `plugins/mealie/mealie.yaml` | Mealie instance + `input_text.mealie_url` |
-| Grocy | `plugins/grocy/grocy.yaml` | Grocy instance + `input_text.grocy_url` |
-| Kitchen Sync | `plugins/kitchen_sync/` | (see plugin readme) |
+Plugins compound. Tier 1 (Mealie + Grocy) gives food and inventory. Tier 2 (2026.7.0 Neo) connects external knowledge: tickets, documents, wiki, contacts, and finance. Each is independent — install only what you have running.
 
-SpaMaster is no longer an optional plugin in 2026.6.0. It ships as the core DojoTool `dojotools/dojotools_spa_manager.yaml` and discovers ESPHome spa hardware through `spa_*` labels.
+| Plugin | File | Requires | Secret Key(s) |
+|---|---|---|---|
+| Mealie | `plugins/mealie/mealie.yaml` | Mealie instance + `input_text.mealie_url` | `mealie_bearer` |
+| Grocy | `plugins/grocy/grocy.yaml` | Grocy instance + `input_text.grocy_url` | `grocy_api_key` |
+| Kitchen Sync | `plugins/kitchen_sync/kitchen_sync.yaml` | Mealie + Grocy both installed | — |
+| Zammad | `plugins/zammad/zammad.yaml` | Zammad instance + `input_text.zammad_url` | `zammad_token` |
+| Wiki.js | `plugins/wikijs/wikijs.yaml` | Wiki.js instance + `input_text.wikijs_url` | `wikijs_token_bearer` |
+| Paperless-NGX | `plugins/paperless/paperless.yaml` | Paperless-NGX instance + `input_text.paperless_url` | `paperless_ngx_token` |
+| Twenty CRM | `plugins/twenty/twenty.yaml` | Twenty instance + `input_text.twenty_url` | `twenty_bearer` |
+| Firefly III | `plugins/firefly_iii/firefly_iii.yaml` | Firefly III instance + `input_text.firefly_iii_url` | `firefly_iii_bearer` |
+
+SpaMaster is no longer an optional plugin. It ships as the core DojoTool `dojotools/dojotools_spa_manager.yaml` and discovers ESPHome spa hardware through `spa_*` labels.
 
 ---
 

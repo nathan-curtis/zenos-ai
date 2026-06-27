@@ -150,6 +150,15 @@ script:
         selector:
           boolean:
 
+      mode:
+        description: 'run = execute summarization. tool_manifest = return tool identity.'
+        default: run
+        selector:
+          select:
+            options:
+            - run
+            - tool_manifest
+
     sequence:
 
       # --------------------------------------------------------------
@@ -157,6 +166,36 @@ script:
       # --------------------------------------------------------------
       - variables:
           caller_token: "{{- caller_token | default('') -}}"
+
+      # --- tool_manifest ---
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{- mode | default('run') == 'tool_manifest' -}}"
+          sequence:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{- MF.tool_manifest(
+                  tool='zen_dojotools_supersummary',
+                  display_name='SuperSummary - Whole-Home Synthesizer',
+                  tier='dojotools',
+                  version='4.5.0',
+                  health={'configured': true, 'status': 'ok', 'notes': []},
+                  required_labels=['dojotools'],
+                  optional_labels=['ai_summarizer'],
+                  consumes=['query', 'supplemental_prompt', 'force'],
+                  returns=['zen_summary'],
+                  failure_policy='soft',
+                  modes={'run': 'run', 'manifest': 'tool_manifest'},
+                  icon='mdi:brain',
+                  color='purple',
+
+                  caller_token=caller_token | default('')
+                ) | from_json -}}
+          - stop: supersummary tool manifest
+            response_variable: result
+
 
       # ── 0a. Kill switch — master + supersummarizer ─────────────────────────
       - alias: SuperSummary kill switch
@@ -210,9 +249,19 @@ script:
                 elapsed_secs: "{{ _super_elapsed }}"
                 burnout_secs: "{{ _super_burnout }}"
                 severity: info
+          - variables:
+              final_response:
+                status: blocked
+                reason: cooldown_window
+                elapsed_secs: "{{ _super_elapsed }}"
+                burnout_secs: "{{ _super_burnout }}"
+                message: >-
+                  SuperSummary governor — last run {{ _super_elapsed }}s ago
+                  (< {{ _super_burnout }}s cooldown). Use force: true to override.
           - stop: >-
               SuperSummary governor — last run {{ _super_elapsed }}s ago
               (< {{ _super_burnout }}s cooldown). Skipping.
+            response_variable: final_response
 
       # ── 0c. Start timer + emit summarizer_start ──────────────────────────
       - alias: Capture start time and emit summarizer_start
@@ -239,15 +288,25 @@ script:
       - alias: Load zen_template schema
         variables:
           zen_template: >-
-            {{
-              (
-                (state_attr(kata_cabinet, 'variables') or {})
-                .get('zen_template', {})
-                .get('value', {})
-                .get('structure', {})
-              )
-              | to_json
-            }}
+            {%- set _raw = (state_attr(kata_cabinet, 'variables') or {}).get('zen_template', {}) -%}
+            {%- set _v1 = _raw.get('value', _raw) if _raw is mapping else {} -%}
+            {%- set _v2 = _v1 if _v1 is mapping else (_v1 | from_json(none) if _v1 is string else none) -%}
+            {{ (_v2 or {}).get('structure', {}) | to_json }}
+
+      # ── 2b. Guard: abort if zen_template schema missing ───────────────────
+      - if:
+          - condition: template
+            value_template: "{{ zen_template | trim in ['{}', '\"{}\"', ''] }}"
+        then:
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "zen_template_missing",
+                    "hint": "kata_cabinet zen_template drawer is empty or missing — publish or reload the KFC template",
+                    "kata_cabinet": kata_cabinet | default(''),
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
+          - stop: "supersummary aborted — zen_template schema missing from kata cabinet"
+            response_variable: final_response
 
       # ── 3. Build prompt context ───────────────────────────────────────────
       - alias: Build prompt context
@@ -283,10 +342,11 @@ script:
         response_variable: _zen_sum_fc_read
       - variables:
           last_summary: >-
-            {%- set r = _zen_sum_fc_read.get('result', {}) -%}
-            {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
+            {%- set _fc = _zen_sum_fc_read if _zen_sum_fc_read is mapping else (_zen_sum_fc_read | from_json(none) if _zen_sum_fc_read is string else none) -%}
+            {%- set r = (_fc or {}).get('result', {}) -%}
+            {%- set r = r | from_json({}) if r is string else (r if r is mapping else {}) -%}
             {%- set raw = r.get('zen_summary', {}) -%}
-            {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
+            {%- set raw = raw if raw is mapping else (raw | from_json({}) if raw is string else {}) -%}
             {{ raw.get('value', raw) | tojson if raw is mapping else '{}' }}
 
       # ── 5. Collect active components — direct tier only ──────────────────
@@ -411,12 +471,10 @@ script:
               }
             }}
           example_data: >-
-            {{
-              (state_attr(kata_cabinet, 'variables') or {})
-              .get('zen_template', {})
-              .get('value', {})
-              .get('example', {})
-            }}
+            {%- set _raw = (state_attr(kata_cabinet, 'variables') or {}).get('zen_template', {}) -%}
+            {%- set _v1 = _raw.get('value', _raw) if _raw is mapping else {} -%}
+            {%- set _v2 = _v1 if _v1 is mapping else (_v1 | from_json(none) if _v1 is string else none) -%}
+            {{ (_v2 or {}).get('example', {}) }}
           prompt: >-
             {{
               {
@@ -483,15 +541,15 @@ script:
               milliseconds: 250
           - action: script.zen_dojotools_filecabinet
             data:
-              action_type: update
+              action_type: upsert
+              mode: replace
               set_timestamp: true
               show_hidden_volumes: false
-              force_action: true
               volume_entity_id:
                 - "{{ kata_cabinet }}"
-              key: ZEN_SUMMARY
+              path: ZEN_SUMMARY
               value: "{{ zen_summary }}"
-              label_input: Zen Summary
+              tags: Zen Summary
             response_variable: filecabinet_response
 
       # ── 10. Build response + emit ─────────────────────────────────────────
@@ -631,12 +689,51 @@ script:
         selector:
           text:
 
+      mode:
+        description: 'run = execute summarization. tool_manifest = return tool identity.'
+        default: run
+        selector:
+          select:
+            options:
+            - run
+            - tool_manifest
+
     sequence:
       # --------------------------------------------------------------
       # Always normalize User/AI inputs so we don't have to react JIT
       # --------------------------------------------------------------
       - variables:
           caller_token: "{{- caller_token | default('') -}}"
+
+      # --- tool_manifest ---
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{- mode | default('run') == 'tool_manifest' -}}"
+          sequence:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{- MF.tool_manifest(
+                  tool='zen_dojotools_ninja_summarizer',
+                  display_name='Ninja Summarizer - Per-Component Kata Writer',
+                  tier='dojotools',
+                  version='4.5.0',
+                  health={'configured': true, 'status': 'ok', 'notes': []},
+                  required_labels=['dojotools'],
+                  optional_labels=['ninja_summarizer', 'ai_summarizer'],
+                  consumes=['kung_fu_component_id', 'query', 'supplemental_prompt', 'force', 'area_id'],
+                  returns=['kata_drawer'],
+                  failure_policy='soft',
+                  modes={'run': 'run', 'manifest': 'tool_manifest'},
+                  icon='mdi:ninja',
+                  color='blue-grey',
+
+                  caller_token=caller_token | default('')
+                ) | from_json -}}
+          - stop: ninja_summarizer tool manifest
+            response_variable: result
+
 
       # ── 0a. Kill switch — master + ninja summarizer ────────────────────────
       - alias: Ninja Summarizer kill switch
@@ -646,9 +743,15 @@ script:
               {{ is_state('input_boolean.zen_summarizers_enabled', 'off')
                  or is_state('input_boolean.zen_ninja_summarizer_enabled', 'off') }}
         then:
+          - variables:
+              final_response: >-
+                {{ {"status": "skipped", "reason": "kill_switch",
+                    "component": kung_fu_component_id | default(''),
+                    "caller_token": caller_token | default("")} }}
           - stop: >-
               Ninja Summarizer skipped — zen_summarizers_enabled or
               zen_ninja_summarizer_enabled is off.
+            response_variable: final_response
 
       # ── 0. Guard — fail fast if ai_task entity unset ─────────────────────
       - alias: Validate ai_task entity
@@ -1165,6 +1268,29 @@ script:
               | to_json
             }}
 
+      # ── 6a. Guard: abort if kata_template schema missing ─────────────────
+      - if:
+          - condition: template
+            value_template: "{{ kata_template is not mapping or (kata_template | tojson) in ['{}', '\"{}\"'] }}"
+        then:
+          - event: zen_event
+            event_data:
+              event:
+                kind: ninja_failure
+                component: "{{ component_slug }}"
+                reason: kata_template_missing
+                severity: error
+          - variables:
+              final_response: >-
+                {{ {"status": "error", "error": "kata_template_missing",
+                    "component": component_slug,
+                    "hint": "kata_template drawer missing from kata cabinet — publish or reload the KFC template",
+                    "kata_cabinet": kata_cabinet | default(''),
+                    "caller_token": caller_token | default(""),
+                    "run_started_at": started_at | default("")} }}
+          - stop: "ninja aborted — kata_template schema missing for {{ component_slug }}"
+            response_variable: final_response
+
       # ── 6b. Context budget guard ─────────────────────────────────────
       - alias: Context budget guard — abort if prompt exceeds model context window
         variables:
@@ -1539,9 +1665,9 @@ script:
             {%- set _base = _kata_parsed if _kata_parsed is mapping else {} -%}
             {%- set _with_period = _base | combine({'period': _current_period}) -%}
             {%- if _emission_fired -%}
-              {{ _with_period | combine({'last_emission_at': now().timestamp() | string}) | tojson }}
+              {{ _with_period | combine({'last_emission_at': now().timestamp() | string}) }}
             {%- else -%}
-              {{ _with_period | tojson }}
+              {{ _with_period }}
             {%- endif -%}
 
       # ── 8. Post to kata cabinet ───────────────────────────────────────────
@@ -1555,18 +1681,17 @@ script:
               milliseconds: 250
           - action: script.zen_dojotools_filecabinet
             data:
-              action_type: update
+              action_type: upsert
+              mode: replace
               set_timestamp: true
               show_hidden_volumes: false
-              force_action: true
               expires_after: >-
                 {{ (now() + timedelta(minutes=(staleness_minutes | int(1440)) * 2)).isoformat() }}
               volume_entity_id:
                 - "{{ kata_cabinet }}"
-              key: "{{ component_slug }}"
+              path: "{{ component_slug }}"
               value: "{{ _kata_write_value }}"
-              # Guard: if index_command empty, omit leading comma
-              label_input: "{{ (index_command + ', ') if index_command else '' }}Ninja Summary"
+              tags: "{{ (index_command + ', ') if index_command else '' }}Ninja Summary"
             response_variable: filecabinet_response
 
       # ── 8b. Compute run duration ──────────────────────────────────────────

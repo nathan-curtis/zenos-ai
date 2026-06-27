@@ -2,8 +2,10 @@ ZenOS-AI Template Engine: zen_os_1.jinja
 
 Technical Specification & Prompt Loader Requirements
 
-Version: 2026.4.0 'Ectoplasm'
+Version: 2026.7.0
 Status: Stable & Required for All Front-Line Agents
+
+> **2026.7.0:** Version scheme changed from semantic (e.g. `4.5.5`) to date-based (`YYYY.M.patch`) aligned with Home Assistant release conventions. `{%- import 'zenos_ai/flynn_onboarding.jinja' as flynn %}` added at the top of the template. `~COMMANDS~` / `command_interpreter.jinja` interface fully retired — replaced by `zen_dojotools_library` + KFC. Library Commands Window removed from the prompt.
 
 
 ---
@@ -246,7 +248,7 @@ All drawer reads use `zenos_cabinets.jinja` macros internally — `CABS.cabinet_
 
 | Import | Alias | Purpose |
 |--------|-------|---------|
-| `zenos_ai/command_interpreter.jinja` | `command_interpreter` | `~COMMANDS~` dispatch engine (retiring) |
+| `zenos_ai/command_interpreter.jinja` | `command_interpreter` | `~COMMANDS~` dispatch engine — **retired** in 4.5.5; replaced by `zen_dojotools_library` + KFC. Import retained for compatibility only. |
 | `zenos_ai/flynn_onboarding.jinja` | `flynn` | Flynn persistent notification surface |
 | `zenos_ai/zenos_cabinets.jinja` | `CABS` | All cabinet drawer I/O — the canonical safe-read layer |
 

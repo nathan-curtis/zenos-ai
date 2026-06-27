@@ -1,4 +1,4 @@
-# Zen DojoTools AdminTools — v5.1.0
+# Zen DojoTools AdminTools — v5.2.0
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -23,7 +23,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.5.0 | No | Inspect, restore, reset, hammer, init, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 5.1.0 | No | Load versioned Cortex, Directives, and Purpose (v42 = The Answer (default/latest), v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist` and `zen_summarizer_seed_whitelist` via `mode=whitelist`. |
+| `zen_admintools_prompt_loader` | 5.2.0 | No | Load versioned Cortex, Directives, and Purpose (v43 = Rule Zero (default/latest), v42 = The Answer, v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist` and `zen_summarizer_seed_whitelist` via `mode=whitelist`. |
 | `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -271,7 +271,7 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
-| `cortex_version` | select | `latest` | `latest` or `42` = The Answer (default). `40` = Room First. `38` = Kata First. Only used when `mode=load`. |
+| `cortex_version` | select | `latest` | `latest` or `43` = Rule Zero (default). `42` = The Answer. `40` = Room First. `38` = Kata First. Only used when `mode=load`. |
 | `ship_zen_system` | boolean | `true` | Write the `zen_system` KFC to the Dojo after loading. |
 | `ship_alert_manager` | boolean | `false` | Write the `alert_manager` KFC to the Dojo. |
 | `ship_taskmaster` | boolean | `false` | Write the `taskmaster` KFC to the Dojo. |
@@ -285,9 +285,10 @@ Use the `cortex_version` field to select which version to load. The three primit
 |---|---|---|
 | `38` | Kata First | Kata/supersummary hierarchy first. INDEX FIRST elevated. GetLiveContext last resort. |
 | `40` | Room First | Room Manager `home_overview` as spatial map before any room-aware task. |
-| `42` / `latest` | The Answer | v10.0.0. INSTALLATION OVERRIDE (GetLiveContext blocked). WHO/WHAT/WHEN/WHERE/WHY/HOW tool map. MANAGED MACHINES directive. `inventory` replaces `grocy_helper` in core and domain tools. |
+| `42` | The Answer | v10.0.0. INSTALLATION OVERRIDE (GetLiveContext blocked). WHO/WHAT/WHEN/WHERE/WHY/HOW tool map. MANAGED MACHINES directive. `inventory` replaces `grocy_helper` in core and domain tools. |
+| `43` / `latest` | Rule Zero | DojoTools supersede all HA built-ins. Not preference. Authority. Domain routing table in directives. Successor to v42 'The Answer'. |
 
-Selecting `latest` or passing no `cortex_version` loads v42.
+Selecting `latest` or passing no `cortex_version` loads v43.
 
 ### Whitelist Management
 
@@ -371,6 +372,7 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 
 | Version | Change |
 |---------|--------|
+| v5.2.0 | Cortex v43 "Rule Zero" added as latest. DojoTools supersede all HA built-ins — domain routing table in directives. v42 'The Answer' retained as prior slot. |
 | v5.1.0 | Cortex v42 "The Answer" (v10.0.0) added as latest. Trimmed to 3 version slots: v42/v40/v38. `mode=whitelist` added to prompt_loader — absorbs `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` (both deleted). Dispatcher compat shim routes legacy `summarizer_act` calls to `prompt_loader mode=whitelist type=act`. |
 | v4.6.1 | KFC schema v1.4.0: `seed` and `area_seed` fields. `reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab. |
 | v4.6.0 | Cortex v39 (Home First). Dispatcher spamaster route. |

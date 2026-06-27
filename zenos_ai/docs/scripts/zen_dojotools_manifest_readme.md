@@ -1,211 +1,216 @@
-# Zen DojoTools Manifest — 2026.6.0 'Clue'
-**File:** `zen_dojotools_manifest_readme.md`  
-**Type:** Technical Documentation  
+# Zen DojoTools Manifest — v6.1.0 (ZenOS-AI 2026.7.0 'Neo')
+**File:** `zen_dojotools_manifest_readme.md`
+**Type:** Technical Documentation
 
 ---
 
 ## Overview
 
-The **Zen DojoTools Manifest** is the authoritative runtime scanner for all  
-**AI_Cabinet** volumes inside ZenOS-AI. It performs a complete structural and  
-health-oriented analysis of every cabinet volume, extracting metadata, drawers,  
-ACLs, schema details, labels, context, timestamps, capacity metrics, and access  
-flags — all without modifying the underlying cabinets.
+The **Zen DojoTools Manifest** is the ZenOS-AI system manifest broker. As of v6.0.0 it is no longer a cabinet-only scanner — it is the single introspection lens for the entire system: cabinets, tools, identity, labels, automations, and topology.
 
-The Manifest performs **zero persistent health storage**.  
-All health, warnings, and compatibility decisions are computed fresh on every run.  
-The Manifest then writes **one thing and one thing only**:
+The broker is **pure read-and-aggregate**. It calls authoritative subsystem scripts and assembles their results. It does not make repairs, rewrite data, or mutate any target system. Mode `cabinets` retains the zero-persistence, read-only cabinet scanner behavior from v5.x. All other modes follow the same discipline.
 
-> The compiled library manifest JSON object, stored in the Family Cabinet under  
-> `zen_library_manifest`.
-
-No repairs. No rewrites. No silent mutations.  
-This script is the system’s MRI — *never* the surgeon.
-
-Friday, Veronica, Kronk, and the High Priestess depend on this manifest to  
-understand the boundaries, rules, and safety states of the Cabinet space.
+The crew — Friday, Veronica, Kronk, the High Priestess — rely on this broker as their ground truth for the system's internal geography.
 
 ---
 
-## ✨ Key Capabilities
+## Discovery Model
 
-### 🔍 Volume Scanning
-- Enumerates **all** Home Assistant sensor entities
-- Detects those containing `AI_Cabinet_VolumeInfo`
-- Extracts structural metadata and runtime attributes
+v6.0.0 replaced the old label-registry approach with **entity namespace scanning**.
 
-### 🧱 Drawer Discovery
-- Lists all drawers except:
-  - system/hidden drawers
-  - drawers starting with `_` or `.`
-  - `AI_Cabinet_VolumeInfo` (always hidden)
-- Detects mount-point drawers:
-  - Annotates using target `entity_id` or `volume_id`
+Tools are discovered by scanning Home Assistant entity namespaces:
 
-### 🔐 ACL Extraction
-- Reads `acls` from the volume metadata
-- Normalizes ACLs across categories:
-  - `entity_guid`
-  - `family_guid`
-  - `household_guid`
-- Fully resolves nested structures
+| Namespace prefix | Tier |
+|---|---|
+| `script.zen_dojotools_*` | dojotools |
+| `script.zen_admintools_*` | admintools |
+| `script.zen_stack_*` | stacks |
+| `script.zen_sutra_*` | sutra |
 
-### 🏷 Label Processing
-- Returns canonical label list
-- Supports hidden/system label filtering
-- Optional override via script variable `show_hidden: true`
+The domain+prefix combination is canonical. There is no static list maintained anywhere. Any script that appears in these namespaces and is in a callable state (`on` or `off`) is treated as a live tool. Scripts in any other state are tracked as unavailable.
 
-### 🩺 Health Model (Runtime-Only)
-Health is computed, never stored.
-
-Status:  
-- **ready** — all conditions nominal  
-- **warning** — capacity threshold exceeded  
-- **error** — GUID mismatch or unreadable volume  
-
-Computed from:
-- GUID consistency  
-- schema_version safety  
-- read-only flags  
-- storage thresholds  
-
-### 📦 Capacity & Access
-- Character-based capacity analysis  
-- Percent usage  
-- Storage warning if over threshold  
-- Read/write permissions:
-  - Block write on read-only, schema mismatch, or warnings  
-  - Block read only in severe cases  
-
-### 🧩 Drawer Index Extraction
-Reads `_label_index` drawer metadata to reconstruct the label→drawer map.
-
-### 🧬 Metadata Extraction
-- Volume GUID  
-- Friendly name  
-- Schema version  
-- Context blocks  
-- Flags  
-- Timestamps: `last_changed`, `last_updated`
-
-### 🧾 Manifest Output
-After scanning all valid volumes, the script:
-1. Builds a complete manifest object  
-2. Emits it to `set_variable_legacy` for storage  
-3. Returns the manifest in `response_variable: manifest`
+The `tier` field on inputs to modes like `tools`, `audit`, and `autotag` can filter results to a single namespace.
 
 ---
 
-## 📤 Output Shape (Per Volume)
+## Modes
 
+The `mode` field routes the broker to the appropriate subsystem. Default is `cabinets`.
+
+| Mode | What it does |
+|---|---|
+| `cabinets` | Cabinet volume scanner — full structural and health snapshot of every AI_Cabinet volume. Default behavior, preserved verbatim from v5.x. |
+| `identity` | Household, agent, and persona roster. Calls `zen_dojotools_identity` with `build_identity_manifest`. |
+| `labels` | Full label index. Calls `zen_dojotools_labels`. |
+| `tools` | Discovers all `zen_*` scripts by namespace scan. Optional `name` field for single-tool lookup; optional `tier` field to filter by namespace. |
+| `automations` | Roster of all `automation.zen_*` entities including state and last-triggered timestamps. |
+| `structure` | Lens registry topology. |
+| `audit` | Gap analysis: unlabeled, broken, and ghost tools. Optionally filtered by `tier`. |
+| `health` | Aggregate health roll-up across subsystems. |
+| `autotag` | Tag discovered tools. Optionally filtered by `tier`. |
+| `publish` | Writes three mini-manifests to the household cabinet: `zen_tool_manifest`, `zen_label_manifest`, `zen_automation_manifest`. Also writes the domain routing table. |
+| `mcp_sync` | Reconciles MCP-visible tools against the known tool roster. Requires `mcp_tool_list` (JSON array of entity_ids the agent can see). |
+| `bootstrap_stacks` | Auto-registers Lens Bus stack providers. Scans all `zen_stack_*` and `zen_sutra_*` scripts **plus** `script.zen_dojotools_library` (which has no `zen_stack_*` wrapper but is a Lens Bus owner). Calls `tool_manifest` on each, registers any that declare `register_mode` and are not already in `lens_registry`. Idempotent — safe to run repeatedly. See [Lens Bus Auto-Registration](../plugins/lens_bus_autoreg.md). |
+| `all` | Full system manifest. Calls subsystems directly and aggregates. If `force_refresh: true`, runs `publish` first to refresh cached drawers. |
+| `tool_manifest` | Self-description. See below. |
+
+### Mode fields
+
+| Field | Relevant modes | Description |
+|---|---|---|
+| `mode` | all | Broker operation. Default: `cabinets`. |
+| `show_hidden` | `cabinets` | Include hidden/system volumes. |
+| `show_stacks` | `cabinets` | Include `online_unmounted` (stacks) cabinets. Default false. |
+| `extended` | `cabinets`, `all` | Return full metadata (cabinets) or extended manifests (all). |
+| `name` | `tools` | Filter to a single tool by entity_id. |
+| `tier` | `tools`, `audit`, `autotag` | Filter by namespace tier: `dojotools`, `admintools`, `stacks`, `sutra`. |
+| `force_refresh` | `all` | Bypass cached drawer reads, force live subsystem calls. |
+| `mcp_tool_list` | `mcp_sync` | JSON array of entity_ids visible to the calling agent via MCP. |
+| `caller_token` | all | Governance stub — echoed in response. |
+
+---
+
+## Domain Routing Table
+
+`mode=publish` writes a domain routing table to the household cabinet under `zen_tool_manifest`. This table is the system's authoritative answer to "which tool owns which domain."
+
+It is defined statically in the broker and written out on every `publish` run. Agents that need to route a user request to the right tool should read this table rather than guessing from tool names.
+
+| Domain | Script |
+|---|---|
+| `rooms` | `script.zen_dojotools_room_manager` |
+| `food` | `script.zen_dojotools_kitchen` |
+| `knowledge` | `script.zen_dojotools_filecabinet` |
+| `calendar` | `script.zen_dojotools_calendar` |
+| `identity` | `script.zen_dojotools_identity` |
+| `lights` | `script.zen_dojotools_lights` |
+| `climate` | `script.zen_dojotools_climate` |
+| `covers` | `script.zen_dojotools_covers` |
+| `todos` | `script.zen_dojotools_todo` |
+| `announce` | `script.zen_dojotools_announce` |
+| `security` | `script.zen_dojotools_security_manager` |
+| `media` | `script.zen_dojotools_media_manager` |
+| `contacts` | `script.zen_dojotools_rolodex` |
+| `tickets` | `script.zen_dojotools_servicedesk` |
+| `inventory` | `script.zen_dojotools_inventory` |
+| `wiki` | `script.zen_dojotools_filecabinet` |
+| `finance` | `script.zen_dojotools_finance` |
+| `system` | `script.zen_dojotools_manifest` |
+
+Design note: room-oriented queries prefer `room_manager` over raw entity state queries.
+
+---
+
+## `mode=tool_manifest` — Self-Description
+
+When called with `mode=tool_manifest`, the broker returns its own structured self-description and exits immediately without running any subsystem. This is the UMP (Unified Manifest Protocol) contract: every tool that supports `tool_manifest` describes itself in a standard shape.
+
+The self-description is produced by `MF.tool_manifest()` from `zenos_ai/zenos_manifest.jinja`:
+
+```yaml
+tool: zen_dojotools_manifest
+display_name: System Manifest Broker
+tier: dojotools
+version: 6.0.0
+health:
+  configured: true
+  status: ok
+  notes: []
+required_labels: [dojotools]
+optional_labels: [manifest, audit]
+consumes: []
+returns: [system_manifest]
+icon: mdi:sitemap
+color: blue
 ```
 
+Response variable: `result` (containing `system_manifest`).
+
+---
+
+## Cabinet Scanning (`mode=cabinets`)
+
+This is the v5.x behavior, preserved verbatim as one mode among many.
+
+The cabinet scanner enumerates all Home Assistant sensor entities, detects those containing `AI_Cabinet_VolumeInfo`, and produces a complete structural and health snapshot. It performs **zero persistent health storage** — all health is computed fresh on every run. The only write it performs is emitting the compiled manifest JSON to `zen_library_manifest` in the Family Cabinet.
+
+No repairs. No rewrites. No silent mutations. The cabinet scanner is strictly an MRI — never the surgeon.
+
+### What it scans
+
+**Volume metadata** — GUID, friendly name, schema version, context blocks, flags, timestamps (`last_changed`, `last_updated`).
+
+**Drawers** — all drawers except system/hidden drawers, drawers starting with `_` or `.`, and `AI_Cabinet_VolumeInfo` (always hidden). Mount-point drawers are annotated with their target `entity_id` or `volume_id`.
+
+**ACLs** — reads `acls` from volume metadata and normalizes across `entity_guid`, `family_guid`, and `household_guid` categories.
+
+**Labels** — canonical label list with hidden/system label filtering. Override with `show_hidden: true`.
+
+**Health** (runtime-only, never stored):
+- `ready` — all conditions nominal
+- `warning` — capacity threshold exceeded (default: 80%)
+- `error` — GUID mismatch or unreadable volume
+
+Write access is blocked on: read-only flag, schema version mismatch, storage warning. Read access is blocked only in severe cases.
+
+**Capacity** — character-based, max 131,072 chars per volume, warning at 80%.
+
+### Output shape (per volume)
+
+```json
 {
-"<entity_id>": {
-"entity_id": "sensor.example_cabinet",
-"friendly_name": "Example Cabinet",
-"context": {...},
-"metadata": {
-"id": "<guid>",
-"schema_version": <float>,
-"labels": [...],
-"timestamps": {
-"last_changed": "ISO-8601",
-"last_updated": "ISO-8601"
+  "<entity_id>": {
+    "entity_id": "sensor.example_cabinet",
+    "friendly_name": "Example Cabinet",
+    "context": {},
+    "metadata": {
+      "id": "<guid>",
+      "schema_version": 1.0,
+      "labels": [],
+      "timestamps": {
+        "last_changed": "ISO-8601",
+        "last_updated": "ISO-8601"
+      }
+    },
+    "stats": {
+      "drawer_count": 0
+    },
+    "capacity": {
+      "chars_used": 0,
+      "chars_max": 131072,
+      "percent_used": 0.0,
+      "warning": false
+    },
+    "access": {
+      "writeable": true,
+      "readable": true
+    },
+    "drawers": [
+      "drawerA",
+      "drawerB [mount:sensor.target_volume]"
+    ],
+    "drawer_index": {
+      "label1": ["drawerA"]
+    },
+    "acls_by_category": {
+      "allow": [],
+      "deny": []
+    },
+    "health": {
+      "status": "ready",
+      "guid_mismatch": false,
+      "storage_warning": false,
+      "writeable": true,
+      "readable": true
+    }
+  }
 }
-},
-"stats": {
-"drawer_count": <int>
-},
-"capacity": {
-"chars_used": <int>,
-"chars_max": 131072,
-"percent_used": <float>,
-"warning": true|false
-},
-"access": {
-"writeable": true|false,
-"readable": true|false
-},
-"drawers": [
-"drawerA",
-"drawerB [mount:sensor.target_volume]",
-...
-],
-"drawer_index": {
-"label1": ["drawerA"],
-...
-},
-"acls_by_category": {
-"allow": [...],
-"deny": [...],
-...
-},
-"health": {
-"status": "ready|warning|error",
-"guid_mismatch": true|false,
-"storage_warning": true|false,
-"writeable": true|false,
-"readable": true|false
-}
-}
-}
-
 ```
 
 ---
 
-## ⚙️ Script Behavior Notes
+## MCP Exposure
 
-- **Zero-persistence health:** All health is recomputed every run  
-- **Hidden/system volumes** excluded unless explicitly shown  
-- **GUID mismatch** → immediate `error`  
-- **Storage warning** → `warning`, write blocked  
-- **Read-only flag** enforced strictly  
-- **Schema version mismatch** blocks writes  
-- **Drawer indexing** only pulls from `_label_index`  
-- **No mutation of volumes** — the Manifest is strictly read-only  
-- **Manifest write** is performed via the hardened legacy event pipeline  
-- **Response Variable** includes the full manifest JSON for the calling agent  
+The manifest broker is exposed to agents via MCP as `zen_dojotools_manifest`. Agents should call `mode=tool_manifest` first to confirm the tool is live and read its self-description. Use `mode=all` for a full system snapshot; use `mode=publish` before `mode=all` with `force_refresh: true` if stale cached data is a concern.
 
----
-
-## 🧠 Why This Exists
-
-The Manifest is how Friday perceives the Cabinet ecosystem.  
-Without it, she would have:
-
-- no reliable map of drawers  
-- no idea which cabinets are writable  
-- no safety signal for schema mismatch  
-- no capacity warnings  
-- no ACL visibility  
-- no recursive mount-point awareness  
-- no universal Cabinet boundary definition  
-
-This module establishes the ground truth.
-
-Friday uses it during:
-- startup  
-- reflex safety scans  
-- merging new volumes  
-- mounting drawers  
-- validating writes  
-- ACL enforcement  
-- debugging  
-- distributed Cabinet loading (future)
-
-If Friday thinks a Cabinet is safe to touch, trusts its identity, or refuses to write to it —  
-**it’s because the Manifest told her to.**
-
----
-
-## 🏁 Summary
-
-The Zen DojoTools Manifest is the backbone of Cabinet introspection in ZenOS-AI.  
-It provides a complete structural, capability, and health snapshot of every volume  
-with zero side effects and maximum safety.
-
-This is the module the rest of ZenOS leans on when it needs to speak confidently  
-about the system’s internal geography.
-
+The `mcp_sync` mode exists specifically to reconcile what an agent can see through MCP against what the broker knows is registered. Use it to detect gaps in MCP tool visibility.

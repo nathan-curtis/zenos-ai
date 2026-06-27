@@ -114,7 +114,7 @@ Reloads all YAML domains: automations, scripts, scenes, groups, helpers, timers,
 
 **Config check runs first** — blocked on nogo. **Deferred via scheduler** — script fires `zen_event(kind: deferred_reload_all)` and exits; the Scheduler automation handles the actual reload from automation context. This avoids the `asyncio.InvalidStateError` that occurs when a script calls `homeassistant.reload_all` directly after a `response_variable` child call. Returns immediately with `result: success` and `config_check: passed` when queued.
 
-**Default choice for most reloads.**
+**LAST RESORT ONLY** — use targeted reload modes (`ha_reload_scripts`, `ha_reload_automations`, etc.) whenever possible. `ha_reload_all` reloads every domain and should only be used when targeted reloads cannot resolve the issue.
 
 ---
 
@@ -177,6 +177,30 @@ Fix a single HA repair issue. Delegates to `script.zen_dojotools_ectoplasm` with
 #### `notice_dashboard`
 
 Aggregate system health view. Pulls ZenOS active alerts + persistent notifications + HA repairs in one call. Returns `action_queue[]` — a pre-built list of `{priority, item, tool, call}` entries ready to fire, ordered by urgency. Use this first for triage rather than calling `alertmanager`, `pnotif_list`, and `repairs_list` separately.
+
+---
+
+#### `render_dojo`
+
+Returns a rendered copy of the Dojo cabinet contents in prompt-ready format — the same view Friday sees at inference time. Read-only. Useful for debugging what the AI has access to and verifying KFC content is loading correctly.
+
+---
+
+#### `render_system`
+
+Returns a rendered copy of the System cabinet (Cortex, Directives, Purpose) in prompt-ready format. Read-only. Useful for verifying that `zen_admintools_prompt_loader` wrote the expected version of each prompt primitive.
+
+---
+
+#### `prompt_health`
+
+Returns a prompt health report: token counts per major prompt section (Cortex, identity, active components, zen_summary, home_overview), total estimated context size, and a `budget_ok` flag. Use to diagnose context stuffiness before it degrades agent quality.
+
+---
+
+#### `pipeline`
+
+Returns live pipeline status: which kill switches are active, the last Ninja and SuperSummary run timestamps, component count, and `zen_agent_health` sensor state. Single-call triage view without needing to read individual health sensors.
 
 ---
 
@@ -371,5 +395,7 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.1.1 | `render_dojo`, `render_system`, `prompt_health` — prompt inspection tools. `pipeline` — pipeline status view. `tool` field resolves `(mode \| default...) or (tool \| default...)` alias for backward compat. Safer `int()` defaults throughout (`\| int(600)`, `\| int(300)`). |
+| v5.1.0 | `ha_reload_all` / `ha_reload_scripts` deferred via `zen_event` kinds (`deferred_reload_all`, `deferred_script_reload`). `zen_health_report` reads 7 resolvers + 5 health sensors incl. `zen_agent_health`. HALMark FG-35/36/37 surfaced in help response. |
 | v4.8.0 | `pnotif_list`, `pnotif_raise`, `pnotif_edit`, `pnotif_dismiss` — persistent notification CRUD. `repairs_list`, `repair_fix` — HA repairs surface. `notice_dashboard` — aggregate triage view with pre-built `action_queue[]`. |
 | v4.5.9 | `ha_reload_all` and `ha_reload_scripts` deferred via `zen_event`. Closes asyncio `InvalidStateError` WONT FIX. All four reload modes now config-check gated. Requires Scheduler support for deferred reload events. |

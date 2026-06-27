@@ -10,33 +10,36 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Stable: 2026.6.0 'Clue'** | Previous: 2026.5.0 'Fry's Grandpa'
+**Stable: 2026.7.0 'Neo'** | Previous: 2026.6.0 'Clue'
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-**What's in Clue:** The AI knows which room. Every room. And what's connected to it — including the robot that cleans it. And now she knows exactly which tool answers every question.
+**What's in Neo:** *I know Kung Fu.* Neo turns a collection of well-made tools into a system that knows itself, talks to itself, and reasons from live structured memory.
 
-- **Cortex v42.1 — The Answer** — Friday's new worldview. Every question has a tool. WHO: Room Manager `home_overview`. WHAT: index + kata. WHEN: history + calendar. WHERE: Room Manager. WHY: index + domain context. HOW: library + help. MANAGED MACHINES: `plant mode=managed`. 42 is the answer. Now she knows where to look. (The 0.1 makes it smaller!)
+**Graph Memory**
+- **CabCeption — FileCabinet v6.2.0** — nested drawer trees via `/` path separator. VirtualDrawer (softlink to another path), LiveDrawer (fires a tool call on read, warm/cold cache, never empty). Every drawer is a graph node with meta, labels, and children at every level.
+- **Tapestry** — `weave`/`weave_preview`/`weave_save`: compose any combination of cabinet drawers from any cabinets into a single live nested dict. Store the definition once as a labeled drawer. Friday navigates to a name; the name becomes the context.
 
-- **Room Manager v5.1.0** — full spatial topology: portals, adjacency, exits, safety equipment, emergency routing. Context slices now carry action envelopes — `replace_action`, `chore_actions`, `task_actions` embedded in the response so the AI knows what to do, not just what exists.
-- **AutoVac v5.1.0** — autonomous vacuum management: room election, schedule-aware runs, consumables ERP via Grocy, wear sensor alerting, post-dock map analysis. `mode=setup` deploys the KFC dojo entry and inits the cabinet drawer in one call. Controller automation included in the package — no per-schedule automations to wire up.
-- **Grocy v5.2.0** — full ERP stack: 96 operations. New: `object_lens` place lens, three-path chore discovery (`room_brief`), userentities/userobjects/userfields CRUD — custom domain objects (rooms, vehicles, appliances) as first-class Grocy assets. `provision_bom` 3-tier product resolution.
-- **Identity v5.1.0** — presence block on every person resolve (zone, at_home, area — consent-gated), new `zen_identity.jinja` template resolver, three-plane navigation: cabinet ↔ person ↔ area from any direction.
-- **Plant Manager v5.4.0** — electric, water, gas, HVAC, sump, circuits, motors, validation. `include_inventory` attaches Grocy room context to mechanical load nodes. `mode=managed` surfaces all provision_bom machines with chores, stock, and fix-command advisories.
-- **Media Manager v5.1.0** — whole-home media discovery and intent routing.
-- **Security Manager v5.1.0** — room-aware zone inventory, replaces alarm_panel.
-- **OOBE v5.1.0** — Room Manager-native first-run room setup.
-- **ZenShade v5.1.0** — cover management with ZenLux sync.
+**Self-Knowing Tools**
+- **Tool Manifest** — `zenos_manifest.jinja` + `MF.tool_manifest()`. Every tool self-describes. Manifest broker v6.0.0 aggregates by namespace discovery. The system knows what it is.
+- **Cortex 43 — Rule Zero** — DojoTools supersede all HA built-ins. Not preference. Authority. GetLiveContext overridden. Domain routing table in directives.
+- **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter.
 
-→ [Release Notes — Clue](zenos_ai/docs/releases/clue.md)
+**Connected Knowledge**
+- **Lens Bus `stack=` routing** — Library v6.10.0 routes generic verbs to registered providers: `radar` (Zammad), `paperless`, `wiki`, `media`. Unified works catalog (`section=catalog item_type=book|game|…`) + compounding capability tiers.
+- **Media Manager v6.0.0 (NyxMau5)** — `now_playing` feeds room context with full playback fidelity. `stacks_by_anchor` returns evidence with `playback_hint`. Set prefs once in Profile Editor; every future Lens call auto-applies them.
+- **New plugins** — Zammad (service desk), Wiki.js, Paperless-NGX, Twenty CRM, Firefly III. Five new `!secret` keys.
+- **ZenZork v1.6.0** — text adventure on live Room Manager topology. DUNGEONMIND narrator. Quest system, item commands, character sheet in AI user cabinet.
+
+→ [Release Notes — Neo](zenos_ai/docs/releases/neo.md)
 
 ---
 
-**Stable: 2026.5.0 'Fry's Grandpa'** — shipped 2026-05-03. Priority inject system, Alertmanager v1.2.0, Camera v1.3.0, Identity `provision_member`, ZQ-1 v4.6.0, profile editor read fix.
+**2026.6.0 'Clue'** — shipped 2026-06-01. Room Manager spatial topology, AutoVac, Grocy v5.2.0, Identity presence block, Plant Manager v5.4.0, Media Manager, Security Manager, ZenShade, Cortex v42 'The Answer'.
 
-Release notes: [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights, Camera, Action](zenos_ai/docs/releases/lights_camera_action.md) | [Action Jackson 2](zenos_ai/docs/releases/action_jackson_2.md) | [Action Jackson](zenos_ai/docs/releases/action_jackson.md) | [Ectoplasm](zenos_ai/docs/releases/ectoplasm.md) | [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md)
+Release notes: [Clue](zenos_ai/docs/releases/clue.md) | [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights, Camera, Action](zenos_ai/docs/releases/lights_camera_action.md) | [Action Jackson 2](zenos_ai/docs/releases/action_jackson_2.md) | [Action Jackson](zenos_ai/docs/releases/action_jackson.md) | [Ectoplasm](zenos_ai/docs/releases/ectoplasm.md) | [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md)
 
 ---
 
@@ -222,7 +225,7 @@ packages/zenos_ai/
 
   dojotools/
     — Core infrastructure —
-    dojotools_filecabinet.yaml — FileCabinet v4 — typed drawer I/O
+    dojotools_filecabinet.yaml — FileCabinet v6.2.0 — CabCeption nested drawer trees, VirtualDrawer, LiveDrawer
     dojotools_core.yaml        — Core operations + FileCabinet GC
     dojotools_scheduler.yaml   — Scheduled automation triggers
     dojotools_manifest.yaml    — Manifest engine
@@ -260,6 +263,7 @@ packages/zenos_ai/
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
     dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
+    dojotools_zenzork.yaml        — ZenZork v1.6.0 — text adventure on live RM topology, DUNGEONMIND narrator, item commands, character sheet, quests
 
     — Productivity —
     dojotools_office.yaml      — Office integrations (Teams, mail)
@@ -280,22 +284,32 @@ packages/zenos_ai/
   plugins/                     — Optional — install only what you need
     grocy/grocy.yaml
     mealie/mealie.yaml
-    kitchen_sync/kitchen_sync.yaml
+    mealie/kitchen_sync.yaml   — companion to mealie
+    zammad/zammad.yaml
+    wiki_js/dojotools_wikijs.yaml
+    paperless_ngx/paperless_ngx.yaml
+    twenty/twenty.yaml
+    firefly_iii/firefly_iii.yaml
 
 custom_templates/zenos_ai/
   zen_os_1.jinja               — Prompt engine and macro library
   zen_query.jinja              — ZenQuery filter engine
   zenos_cabinets.jinja         — Cabinet macro library (safe drawer I/O, FG-38 normalization)
   zen_identity.jinja           — Template-surface identity resolver (Jinja2 contexts, sensors, cortex macros)
+  zenos_manifest.jinja         — Tool manifest macro: MF.tool_manifest() — every tool self-describes
+  zenos_health.jinja           — Health template surface
+  flynn_onboarding.jinja       — Flynn first-boot onboarding flow
   library_index.jinja          — Library index
   conversation_agent_prompt_template.yaml — Paste into conversation agent system prompt
 ```
 
 ---
 
-# FileCabinet v4
+# FileCabinet v6.2.0
 
 FileCabinet provides the **structured storage interface** for ZenOS-AI. Every memory slot accessible to AI agents is stored as a **Drawer** within a **Cabinet** — typed, described, and garbage-collected on a 15-minute cycle. Drawers follow a Unix-style visibility model: active (`foo`), hidden (`.foo`), system-protected (`_foo`). Described drawers receive full context access; undescribed drawers are truncated.
+
+v6.2.0 introduces **CabCeption** — nested drawer trees via `/` path separator. A drawer is now a node in a graph: it carries meta, labels, and children at every level. Three drawer types compose the graph: **StaticDrawer** (key-value, as before), **VirtualDrawer** (softlink to another cabinet path), and **LiveDrawer** (KF4 schema absorbed into a drawer — fires a tool call on read, warm cache auto-expiring, never returns empty).
 
 → **[FileCabinet Reference](zenos_ai/docs/scripts/zen_dojotools_filecabinet_readme.md)**
 

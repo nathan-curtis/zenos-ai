@@ -1,0 +1,3577 @@
+###############################################################################
+# ZenOS-AI Plugin: Firefly III — Finance
+# Version: 2.2.0
+#
+# Scripts:
+#   zen_dojotools_finance  ← MCP-facing finance tool (transactions, accounts, budgets)
+#   zen_stack_firefly      ← Lens Bus stack provider (internal, NOT MCP-exposed)
+#
+# Lens Bus — Auto-Registration (introduced this version):
+#   zen_stack_firefly is the first ZenOS lens provider to use bootstrap auto-registration.
+#   tool_manifest returns: tier=stacks, provider_key=firefly_iii, register_mode=register.
+#   On boot/daily, zen_dojotools_manifest mode=bootstrap_stacks calls tool_manifest on all
+#   zen_stack_*/zen_sutra_* scripts, then calls mode=register for any that declare
+#   register_mode and are not already in lens_registry.
+#   zen_stack_firefly registers as "available" even if the URL is unconfigured — consumers
+#   get empty evidence (soft fail) until the integration is set up. Registration confirms
+#   capability, not reachability.
+#   Skip: add 'firefly_iii' to household cabinet key lens_bootstrap_skip to suppress.
+#
+# SETUP
+#
+# 1. Add to secrets.yaml:
+#      firefly_iii_bearer: "Bearer YOUR_PERSONAL_ACCESS_TOKEN"
+#    Get your token: Firefly III → Profile → OAuth → Personal Access Tokens
+#    Include "Bearer " prefix in the secret value.
+#
+# 2. Set input_text.firefly_url in HA (Settings > Helpers):
+#      https://<your-firefly-host>   (no trailing slash, use HTTPS)
+#    Set once — persists across restarts.
+#    *** USE HTTPS *** — HTTP will cause POST→GET redirect on writes.
+#
+# 3. (Optional) configure n8n on <your-host> for bank feed → Firefly sync.
+#    n8n pushes transactions to Firefly via POST /api/v1/transactions.
+#    HA side webhook registration is Phase 2.
+###############################################################################
+
+input_text:
+  firefly_url:
+    name: Firefly III URL
+    max: 255
+    mode: text
+    icon: mdi:bank
+
+rest_command:
+
+  firefly_api_advanced_get:
+    url: >-
+      {%- set ep = endpoint | default('') | string | trim -%}
+      {%- set ep = ep | replace('/api/v1/', '') | replace('api/v1/', '') -%}
+      {%- if ep and ep[0] == '/' -%}{%- set ep = ep[1:] -%}{%- endif -%}
+      {%- set base = states('input_text.firefly_url') | trim | regex_replace('/$', '') -%}
+      {%- set sep = '&' if '?' in ep else '?' -%}
+      {{ base }}/api/v1/{{ ep }}{{ sep }}limit={{ perPage | default(50) | int }}&page={{ pageNumber | default(1) | int }}{% if search is defined and search | trim != '' %}&query={{ search | trim | urlencode }}{% endif %}
+    method: GET
+    headers:
+      Authorization: !secret firefly_iii_bearer
+      Accept: application/json
+    timeout: 30
+
+  firefly_api_advanced_post:
+    url: >-
+      {%- set ep = endpoint | default('') | string | trim -%}
+      {%- set ep = ep | replace('/api/v1/', '') | replace('api/v1/', '') -%}
+      {%- if ep and ep[0] == '/' -%}{%- set ep = ep[1:] -%}{%- endif -%}
+      {%- set base = states('input_text.firefly_url') | trim | regex_replace('/$', '') -%}
+      {{ base }}/api/v1/{{ ep }}
+    method: POST
+    headers:
+      Authorization: !secret firefly_iii_bearer
+      Content-Type: application/json
+      Accept: application/json
+    payload: "{{ payload | default('{}') }}"
+    timeout: 30
+
+  firefly_api_advanced_put:
+    url: >-
+      {%- set ep = endpoint | default('') | string | trim -%}
+      {%- set ep = ep | replace('/api/v1/', '') | replace('api/v1/', '') -%}
+      {%- if ep and ep[0] == '/' -%}{%- set ep = ep[1:] -%}{%- endif -%}
+      {%- set base = states('input_text.firefly_url') | trim | regex_replace('/$', '') -%}
+      {{ base }}/api/v1/{{ ep }}
+    method: PUT
+    headers:
+      Authorization: !secret firefly_iii_bearer
+      Content-Type: application/json
+      Accept: application/json
+    payload: "{{ payload | default('{}') }}"
+    timeout: 30
+
+  firefly_api_advanced_delete:
+    url: >-
+      {%- set ep = endpoint | default('') | string | trim -%}
+      {%- set ep = ep | replace('/api/v1/', '') | replace('api/v1/', '') -%}
+      {%- if ep and ep[0] == '/' -%}{%- set ep = ep[1:] -%}{%- endif -%}
+      {%- set base = states('input_text.firefly_url') | trim | regex_replace('/$', '') -%}
+      {{ base }}/api/v1/{{ ep }}
+    method: DELETE
+    headers:
+      Authorization: !secret firefly_iii_bearer
+      Accept: application/json
+    timeout: 30
+
+script:
+
+  zen_sutra_firefly:
+    alias: Zen DojoTools Firefly Advanced
+    description: >
+      Internal Firefly III API broker. Raw REST dispatcher — GET, POST, PUT, DELETE.
+      NOT for direct AI or MCP use. Call zen_dojotools_finance instead.
+    mode: queued
+    max: 10
+    icon: mdi:api
+    fields:
+      action_type:
+        selector:
+          select:
+            options: [get, post, put, delete]
+        default: get
+      endpoint:
+        description: Firefly III API path (e.g. accounts, transactions/5, autocomplete/accounts?query=check)
+        selector:
+          text:
+      payload:
+        description: JSON string for POST/PUT body
+        selector:
+          text:
+            multiline: true
+      search:
+        description: Optional search query appended as &query=
+        selector:
+          text:
+      pageNumber:
+        selector:
+          number:
+            min: 1
+            max: 1000
+        default: 1
+      perPage:
+        selector:
+          number:
+            min: 1
+            max: 100
+        default: 50
+    sequence:
+    - variables:
+        _ff_action: '{{ action_type | default("get") | lower | trim }}'
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ _ff_action == "get" }}'
+        sequence:
+        - action: rest_command.firefly_api_advanced_get
+          response_variable: _ff_raw
+          data:
+            endpoint: '{{ endpoint | default("") }}'
+            search: '{{ search | default("") }}'
+            pageNumber: '{{ pageNumber | default(1) | int }}'
+            perPage: '{{ perPage | default(50) | int }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ _ff_action == "post" }}'
+        sequence:
+        - action: rest_command.firefly_api_advanced_post
+          response_variable: _ff_raw
+          data:
+            endpoint: '{{ endpoint | default("") }}'
+            payload: '{{ payload | default("{}") }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ _ff_action == "put" }}'
+        sequence:
+        - action: rest_command.firefly_api_advanced_put
+          response_variable: _ff_raw
+          data:
+            endpoint: '{{ endpoint | default("") }}'
+            payload: '{{ payload | default("{}") }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ _ff_action == "delete" }}'
+        sequence:
+        - action: rest_command.firefly_api_advanced_delete
+          response_variable: _ff_raw
+          data:
+            endpoint: '{{ endpoint | default("") }}'
+    - variables:
+        _ff_http: '{{ _ff_raw["status"] | int(0) if _ff_raw is defined else 0 }}'
+    - variables:
+        _ff_content: >-
+          {%- if _ff_raw is defined -%}
+            {%- set c = _ff_raw["content"] | default(none) -%}
+            {%- if c is string and c | trim != '' -%}
+              {{ c | from_json | default({}) }}
+            {%- elif c is mapping or (c is sequence and c is not string) -%}
+              {{ c }}
+            {%- else -%}{{ {} }}{%- endif -%}
+          {%- else -%}{{ {} }}{%- endif -%}
+    - variables:
+        final_response:
+          status: '{{ "success" if _ff_http in [200, 201, 204] else "error" }}'
+          http_status: '{{ _ff_http }}'
+          result:
+            content: '{{ _ff_content }}'
+    - stop: return
+      response_variable: final_response
+
+  #####################################################################
+  # zen_stack_firefly v1.0.0
+  # Firefly III Lens Provider — ZenOS Lens Bus integration.
+  # Consume anchors (label, person) → transaction_evidence.
+  # Internal only: not MCP-exposed. Consumers call zen_dojotools_lens_dispatch.
+  # Security: r-only gate. All writes go through zen_dojotools_finance directly.
+  #####################################################################
+  zen_stack_firefly:
+    alias: Zen Stack Firefly III
+    description: >-
+      Firefly III Lens Provider (v1.0.0). Internal stack adapter for the ZenOS Lens Bus.
+      Provides transaction_evidence for label and person anchors. Not MCP-exposed —
+      consumers call zen_dojotools_lens_dispatch.
+    mode: queued
+    max: 5
+    fields:
+      mode:
+        description: Provider mode (stacks_by_anchor, register, unregister, health, inspect, audit, tool_manifest, help)
+        selector:
+          text:
+      action:
+        description: Alias for mode (lens dispatcher compat)
+        selector:
+          text:
+      anchor_type:
+        description: Anchor type — label or person
+        selector:
+          text:
+      anchor_ids:
+        description: JSON array of anchor ID strings
+        selector:
+          text:
+      caller_token:
+        description: Caller token for audit trail
+        selector:
+          text:
+    sequence:
+    - variables:
+        _mode_norm: >-
+          {{ (mode | default('') if mode is defined and mode | string | trim != ''
+              else (action | default('help') if action is defined else 'help'))
+              | string | trim | lower }}
+        _anchor_type_norm: "{{ anchor_type | default('') | string | trim | lower }}"
+        _anchor_ids_raw: "{{ anchor_ids | default('[]') }}"
+        _anchor_ids: >-
+          {%- set _v = _anchor_ids_raw -%}
+          {%- if _v is sequence and _v is not string -%}{{ _v }}
+          {%- elif _v is string and _v | trim != '' -%}{{ _v | from_json(none) | default([]) }}
+          {%- else -%}[]{%- endif -%}
+        tool_name: zen_stack_firefly
+        tool_version: 1.0.0
+
+    # ── tool_manifest ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "tool_manifest" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              tier: stacks
+              domain: finance
+              provider_key: firefly_iii
+              register_mode: register
+              consumes: [label, person]
+              returns: [transaction_evidence]
+              failure_policy: soft
+              content_policy: redacted_by_default
+              risk_class: read_redacted
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+        - stop: return
+          response_variable: final_response
+
+    # ── inspect ────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "inspect" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: inspect
+              provider: firefly_iii
+              consumes: [label, person]
+              returns: [transaction_evidence]
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+              failure_policy: soft
+              content_policy: redacted_by_default
+              description: >-
+                Maps label anchors to Firefly tag searches (tag_is:"label:{anchor_id}"),
+                person anchors to payee description searches. Returns redacted
+                transaction_evidence — amounts included but max 10 items per anchor.
+        - stop: return
+          response_variable: final_response
+
+    # ── audit ──────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "audit" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: audit
+              provider: firefly_iii
+              consumes: [label, person]
+              returns: [transaction_evidence]
+              security_violations: []
+              notes: >-
+                Read-only lens path. Calls zen_dojotools_finance (case: transactions_search)
+                internally — all writes must go through zen_dojotools_finance directly.
+                Strictly r-only per security_act.
+        - stop: return
+          response_variable: final_response
+
+    # ── health ─────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "health" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          continue_on_error: true
+          response_variable: _sf_health_raw
+          data:
+            action_type: get
+            endpoint: about
+        - variables:
+            _sf_health_ok: >-
+              {{ _sf_health_raw is defined and _sf_health_raw is mapping
+                 and _sf_health_raw.get('status', '') == 'success' }}
+            final_response:
+              status: "{{ 'ok' if _sf_health_ok else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: health
+              provider: firefly_iii
+              firefly_reachable: '{{ _sf_health_ok }}'
+              message: >-
+                {{ 'Firefly III reachable.' if _sf_health_ok else
+                   'Firefly III unreachable: ' ~ (_sf_health_raw.get('error', 'no response')
+                   if _sf_health_raw is mapping else 'no response') }}
+        - stop: return
+          response_variable: final_response
+
+    # ── register ───────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "register" }}'
+        sequence:
+        - variables:
+            _sf_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sf_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sf_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sf_existing_reg: >-
+              {%- set raw = _sf_reg_read if _sf_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sf_provider_decl:
+              provider: firefly_iii
+              configured_by: zen_stack_firefly
+              department: stacks
+              enabled: true
+              status: available
+              tool: zen_stack_firefly
+              mode: stacks_by_anchor
+              consumes: [label, person]
+              returns: [transaction_evidence]
+              failure_policy: soft
+              content_policy: redacted_by_default
+              risk_class: read_redacted
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+        - variables:
+            _sf_new_reg: "{{ _sf_existing_reg | combine({'firefly_iii': _sf_provider_decl}) }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sf_reg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sf_household_entity }}"
+            key: lens_registry
+            value: "{{ _sf_new_reg | tojson }}"
+        - variables:
+            _sf_reg_ok: >-
+              {{ _sf_reg_write is mapping and _sf_reg_write.get('status', '') == 'success' }}
+            final_response:
+              status: "{{ 'success' if _sf_reg_ok else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: register
+              provider: firefly_iii
+              message: >-
+                {{ 'Provider firefly_iii registered in lens_registry.' if _sf_reg_ok else
+                   'Registration failed: ' ~ (_sf_reg_write.get('error', 'unknown')
+                   if _sf_reg_write is mapping else 'no response') }}
+        - stop: return
+          response_variable: final_response
+
+    # ── unregister ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "unregister" }}'
+        sequence:
+        - variables:
+            _sf_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sf_ureg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sf_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sf_ureg_existing: >-
+              {%- set raw = _sf_ureg_read if _sf_ureg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sf_ureg_new: >-
+              {%- set ns = namespace(result={}) -%}
+              {%- for k, v in _sf_ureg_existing.items() if k != 'firefly_iii' -%}
+                {%- set ns.result = ns.result | combine({k: v}) -%}
+              {%- endfor -%}
+              {{ ns.result }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sf_ureg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sf_household_entity }}"
+            key: lens_registry
+            value: "{{ _sf_ureg_new | tojson }}"
+        - variables:
+            final_response:
+              status: "{{ 'success' if _sf_ureg_write is mapping and _sf_ureg_write.get('status', '') == 'success' else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: unregister
+              provider: firefly_iii
+              message: Provider firefly_iii removed from lens_registry.
+        - stop: return
+          response_variable: final_response
+
+    # ── stacks_by_anchor ───────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "stacks_by_anchor" }}'
+        sequence:
+        - variables:
+            _sf_evidence: []
+        - repeat:
+            for_each: >-
+              {{ _anchor_ids if _anchor_ids is sequence and _anchor_ids is not string else [] }}
+            sequence:
+            - variables:
+                _sf_anchor_id: "{{ repeat.item | string | trim }}"
+            - choose:
+              # label anchor → tag_is:"label:{anchor_id}"
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "label" and _sf_anchor_id != "" }}'
+                sequence:
+                - action: script.zen_dojotools_finance
+                  continue_on_error: true
+                  response_variable: _sf_txn_raw
+                  data:
+                    case: transactions_search
+                    label: "{{ _sf_anchor_id }}"
+                    limit: 10
+                - variables:
+                    _sf_loop_txns: >-
+                      {%- set r = _sf_txn_raw if _sf_txn_raw is mapping else {} -%}
+                      {%- set result = r.get('result', {}) if r is mapping else {} -%}
+                      {%- set txns = result.get('transactions', []) if result is mapping else [] -%}
+                      {{ txns if txns is sequence and txns is not string else [] }}
+                - variables:
+                    _sf_evidence: >-
+                      {%- set ns = namespace(items=_sf_evidence) -%}
+                      {%- for t in _sf_loop_txns if t is mapping -%}
+                        {%- set ns.items = ns.items + [{
+                          'id': 'txn_' ~ (t.get('id', '') | string),
+                          'type': 'transaction_evidence',
+                          'date': t.get('date', ''),
+                          'description': t.get('description', ''),
+                          'amount': t.get('amount', ''),
+                          'currency': t.get('currency_code', 'USD'),
+                          'transaction_type': t.get('type', ''),
+                          'source': t.get('source_account_name', ''),
+                          'destination': t.get('destination_account_name', ''),
+                          'category': (t.get('category_name') or ''),
+                          'tags': t.get('tags', []),
+                          'anchor_type': _anchor_type_norm,
+                          'anchor_id': _sf_anchor_id
+                        }] -%}
+                      {%- endfor -%}
+                      {{ ns.items }}
+
+              # person anchor → description_contains search
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "person" and _sf_anchor_id != "" }}'
+                sequence:
+                - action: script.zen_dojotools_finance
+                  continue_on_error: true
+                  response_variable: _sf_person_raw
+                  data:
+                    case: transactions_search
+                    description: "{{ _sf_anchor_id }}"
+                    limit: 10
+                - variables:
+                    _sf_loop_person_txns: >-
+                      {%- set r = _sf_person_raw if _sf_person_raw is mapping else {} -%}
+                      {%- set result = r.get('result', {}) if r is mapping else {} -%}
+                      {%- set txns = result.get('transactions', []) if result is mapping else [] -%}
+                      {{ txns if txns is sequence and txns is not string else [] }}
+                - variables:
+                    _sf_evidence: >-
+                      {%- set ns = namespace(items=_sf_evidence) -%}
+                      {%- for t in _sf_loop_person_txns if t is mapping -%}
+                        {%- set ns.items = ns.items + [{
+                          'id': 'txn_' ~ (t.get('id', '') | string),
+                          'type': 'transaction_evidence',
+                          'date': t.get('date', ''),
+                          'description': t.get('description', ''),
+                          'amount': t.get('amount', ''),
+                          'currency': t.get('currency_code', 'USD'),
+                          'transaction_type': t.get('type', ''),
+                          'source': t.get('source_account_name', ''),
+                          'destination': t.get('destination_account_name', ''),
+                          'category': (t.get('category_name') or ''),
+                          'tags': t.get('tags', []),
+                          'anchor_type': _anchor_type_norm,
+                          'anchor_id': _sf_anchor_id
+                        }] -%}
+                      {%- endfor -%}
+                      {{ ns.items }}
+
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: stacks_by_anchor
+              provider: firefly_iii
+              anchor_type: '{{ _anchor_type_norm }}'
+              anchor_ids: '{{ _anchor_ids }}'
+              evidence: '{{ _sf_evidence }}'
+              count: '{{ _sf_evidence | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── help / unknown mode ────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: info
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          mode: help
+          provider: firefly_iii
+          description: >-
+            Firefly III Lens Provider. Internal stack adapter for the ZenOS Lens Bus.
+            Call via zen_dojotools_lens_dispatch, not directly.
+          modes:
+            stacks_by_anchor: Fetch transaction_evidence for label or person anchors
+            register: Register this provider in the household lens_registry cabinet drawer
+            unregister: Remove this provider from lens_registry
+            health: Check Firefly III API reachability
+            inspect: Show provider capabilities and contract
+            audit: Security and compliance summary
+            tool_manifest: Full tool manifest declaration
+    - stop: return
+      response_variable: final_response
+
+  zen_dojotools_finance:
+    alias: Zen DojoTools Finance
+    description: >
+      Finance (v2.2.0) — Household ledger. Authoritative for all money questions.
+      Read: health, catalog, account_balance, transactions_list/search, budget_overview,
+      bills_list, bill_status, piggy_banks_list, piggybank_status, category_spend,
+      net_worth_snapshot, liability_summary. Write (confirm=true): account_create,
+      account_update, transaction_add, transaction_update, transfer, budget_limit_set,
+      piggybank_update. Compound: spend_summary, reconcile_prepare, transaction_normalize,
+      project_account_status. For stock/chores use zen_dojotools_inventory. mode=help lists all.
+    mode: queued
+    max: 5
+    icon: mdi:cash-multiple
+    fields:
+      mode:
+        selector:
+          select:
+            options: [help, run, tool_manifest]
+        default: help
+      case:
+        selector:
+          select:
+            options:
+            - summary
+            - accounts_list
+            - account_get
+            - account_balance
+            - account_create
+            - account_update
+            - transactions_list
+            - transactions_search
+            - transaction_add
+            - transaction_update
+            - transfer
+            - transaction_normalize
+            - budget_overview
+            - budget_limit_set
+            - bills_list
+            - bill_status
+            - piggy_banks_list
+            - piggybank_status
+            - piggybank_update
+            - category_spend
+            - net_worth_snapshot
+            - liability_summary
+            - reconcile_prepare
+            - project_account_status
+            - spend_summary
+            - health
+            - catalog
+            - budget_create
+            - piggybank_create
+            - bill_create
+            - transaction_link
+      item:
+        description: Account, budget, or category name (resolves to ID)
+        selector:
+          text:
+      item_id:
+        description: Explicit Firefly ID (skips name resolution)
+        selector:
+          text:
+      amount:
+        description: Transaction amount
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+      description:
+        description: Transaction description
+        selector:
+          text:
+      source_account:
+        description: Source account name (withdrawals and transfers)
+        selector:
+          text:
+      dest_account:
+        description: Destination account name (deposits and transfers)
+        selector:
+          text:
+      category:
+        description: Category name
+        selector:
+          text:
+      budget:
+        description: Budget name
+        selector:
+          text:
+      tags:
+        description: Comma-separated tags
+        selector:
+          text:
+      date:
+        description: Transaction date YYYY-MM-DD (default today)
+        selector:
+          text:
+      start_date:
+        description: Range start YYYY-MM-DD (default first of current month)
+        selector:
+          text:
+      end_date:
+        description: Range end YYYY-MM-DD (default today)
+        selector:
+          text:
+      account_type:
+        description: Filter accounts_list by type
+        selector:
+          select:
+            options: [all, asset, expense, revenue, liability, cash]
+        default: all
+      transaction_type:
+        description: Transaction type for transaction_add
+        selector:
+          select:
+            options: [withdrawal, deposit, transfer]
+        default: withdrawal
+      page:
+        selector:
+          number:
+            min: 1
+            max: 1000
+        default: 1
+      per_page:
+        selector:
+          number:
+            min: 1
+            max: 100
+        default: 25
+      show_trace:
+        selector:
+          boolean:
+        default: false
+      confirm:
+        description: Confirm write/mutation operations before executing
+        selector:
+          boolean:
+        default: false
+      target_date:
+        description: Reference date for balance/snapshot YYYY-MM-DD
+        selector:
+          text:
+      currency_code:
+        description: Currency code (e.g. USD, EUR)
+        selector:
+          text:
+      notes:
+        description: Notes or memo for account/goal
+        selector:
+          text:
+            multiline: true
+      statement_balance:
+        description: Statement ending balance for reconcile_prepare
+        selector:
+          number:
+            min: -9999999
+            max: 9999999
+            step: 0.01
+            mode: box
+      limit_amount:
+        description: Budget limit amount for budget_limit_set
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+      limit_period:
+        description: Budget limit period for budget_limit_set
+        selector:
+          select:
+            options: [monthly, weekly, quarterly, yearly]
+        default: monthly
+      piggybank_amount:
+        description: New current amount for piggybank_update
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+      piggybank_target:
+        description: New target amount for piggybank_update
+        selector:
+          number:
+            min: 0
+            step: 0.01
+            mode: box
+      external_ref:
+        description: External reference ID to link (e.g. grocy:product:389, paperless:42)
+        selector:
+          text:
+      label:
+        description: HA label slug to tag this transaction/account (e.g. zen_energy, zen_kitchen)
+        selector:
+          text:
+    sequence:
+    - if: "{{ (mode | default('') | lower) == 'tool_manifest' }}"
+      then:
+      - variables:
+          result: >-
+            {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+            {{ MF.tool_manifest(
+                tool='zen_dojotools_finance',
+                display_name='Finance',
+                tier='dojotools',
+                version='2.2.0',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['firefly'],
+                optional_labels=['finance', 'banking'],
+                consumes=['firefly_request'],
+                returns=['firefly_response'],
+                icon='mdi:bank',
+                color='green',
+
+                caller_token=caller_token | default('')
+            ) | from_json }}
+      - stop: tool_manifest
+        response_variable: result
+    - variables:
+        tool_name: Zen DojoTools Finance
+        tool_version: 2.2.0
+        mode_norm: '{{ mode | default("help") | string | trim | lower }}'
+        case_norm: '{{ case | default("") | string | trim | lower }}'
+        item_norm: '{{ item | default("") | string | trim }}'
+        item_id_norm: '{{ item_id | default("") | string | trim }}'
+        src_acct_norm: '{{ source_account | default("") | string | trim }}'
+        dst_acct_norm: '{{ dest_account | default("") | string | trim }}'
+        cat_norm: '{{ category | default("") | string | trim }}'
+        bgt_norm: '{{ budget | default("") | string | trim }}'
+        date_norm: '{{ date | default(now().strftime("%Y-%m-%d")) | string | trim }}'
+        start_norm: '{{ start_date | default(now().strftime("%Y-%m-01")) | string | trim }}'
+        end_norm: '{{ end_date | default(now().strftime("%Y-%m-%d")) | string | trim }}'
+        amount_norm: '{{ amount | default(0) | float(0) | round(2) }}'
+        page_norm: '{{ page | default(1) | int }}'
+        per_norm: '{{ per_page | default(25) | int }}'
+        acct_type_norm: '{{ account_type | default("all") | string | trim | lower }}'
+        txn_type_norm: '{{ transaction_type | default("withdrawal") | string | trim | lower }}'
+        label_norm: '{{ label | default("") | string | trim | lower | replace(" ", "_") }}'
+        cases:
+          summary:
+            intent: Net worth, income, expenses, and left-to-spend for a date range.
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'summary'}"
+          accounts_list:
+            intent: List all accounts with current balances. Filter by type.
+            needs: []
+            optional: [account_type, page, per_page]
+            example: "{'mode':'run','case':'accounts_list','account_type':'asset'}"
+          account_get:
+            intent: Get a single account's details and balance by name or ID.
+            needs: [item OR item_id]
+            optional: []
+            example: "{'mode':'run','case':'account_get','item':'Checking'}"
+          transactions_list:
+            intent: List recent transactions, optionally filtered by account and date range.
+            needs: []
+            optional: [item, start_date, end_date, transaction_type, page, per_page]
+            example: "{'mode':'run','case':'transactions_list','start_date':'2026-06-01'}"
+          transactions_search:
+            intent: Full-text search across transaction descriptions with optional date range.
+            needs: [item]
+            optional: [start_date, end_date, page, per_page]
+            example: "{'mode':'run','case':'transactions_search','item':'HEB','start_date':'2026-06-01'}"
+          budget_overview:
+            intent: All budgets — limit, spent, remaining for the current or specified period.
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'budget_overview'}"
+          bills_list:
+            intent: All recurring bills — next due date, paid status, overdue flag.
+            needs: []
+            optional: [page, per_page]
+            example: "{'mode':'run','case':'bills_list'}"
+          piggy_banks_list:
+            intent: Savings goals — name, current amount, target, percentage complete.
+            needs: []
+            optional: [page, per_page]
+            example: "{'mode':'run','case':'piggy_banks_list'}"
+          category_spend:
+            intent: Spending for a category over a date range.
+            needs: [item OR item_id]
+            optional: [start_date, end_date, page, per_page]
+            example: "{'mode':'run','case':'category_spend','item':'Groceries','start_date':'2026-06-01'}"
+          transaction_add:
+            intent: Log an expense (withdrawal), income (deposit), or transfer.
+            needs: [description, amount]
+            optional: [transaction_type, source_account, dest_account, category, budget, tags, date]
+            example: "{'mode':'run','case':'transaction_add','description':'HEB groceries','amount':87.50,'source_account':'Checking','category':'Groceries','transaction_type':'withdrawal'}"
+          transaction_update:
+            intent: Fix an existing transaction — category, description, amount, or date.
+            needs: [item_id]
+            optional: [description, amount, category, budget, date, tags]
+            example: "{'mode':'run','case':'transaction_update','item_id':'42','category':'Dining Out'}"
+          transfer:
+            intent: Move money between two asset accounts.
+            needs: [amount, source_account, dest_account]
+            optional: [description, date, tags]
+            example: "{'mode':'run','case':'transfer','amount':500,'source_account':'Checking','dest_account':'Savings','description':'Monthly savings transfer'}"
+          spend_summary:
+            intent: Compound briefing — net worth + budget snapshot + upcoming bills in one call. Writes snapshot to household cabinet.
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'spend_summary'}"
+          health:
+            intent: Check API reachability, auth, Firefly version, and default currency.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'health'}"
+          catalog:
+            intent: Full financial world map — all accounts, categories, tags, budgets, piggy banks, currencies.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'catalog'}"
+          account_balance:
+            intent: Current balance for an account. Pass target_date for as-of lookup.
+            needs: [item OR item_id]
+            optional: [target_date]
+            example: "{'mode':'run','case':'account_balance','item':'Checking'}"
+          account_create:
+            intent: Create a new account. confirm=true required to execute.
+            needs: [item, account_type]
+            optional: [currency_code, notes, confirm]
+            example: "{'mode':'run','case':'account_create','item':'Emergency Fund','account_type':'asset','confirm':true}"
+          account_update:
+            intent: Update notes/type/currency on an existing account. Fetches current, merges, PUTs. confirm=true required.
+            needs: [item OR item_id]
+            optional: [notes, account_type, currency_code, confirm]
+            example: "{'mode':'run','case':'account_update','item_id':'12','notes':'Primary checking','confirm':true}"
+          bill_status:
+            intent: Single bill detail — paid history, next due, matched transactions, variance.
+            needs: [item OR item_id]
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'bill_status','item':'Mortgage'}"
+          piggybank_status:
+            intent: Single piggy bank / savings goal detail with percentage to target.
+            needs: [item OR item_id]
+            optional: []
+            example: "{'mode':'run','case':'piggybank_status','item':'Emergency Fund'}"
+          piggybank_update:
+            intent: Update current or target amount for a savings goal. confirm=true required.
+            needs: [item OR item_id]
+            optional: [piggybank_amount, piggybank_target, notes, confirm]
+            example: "{'mode':'run','case':'piggybank_update','item':'Vacation','piggybank_amount':1500,'confirm':true}"
+          budget_limit_set:
+            intent: Create or update a budget limit for a period. Checks for existing limit first. confirm=true required.
+            needs: [item, limit_amount]
+            optional: [start_date, end_date, limit_period, currency_code, confirm]
+            example: "{'mode':'run','case':'budget_limit_set','item':'Food','limit_amount':800,'limit_period':'monthly','confirm':true}"
+          net_worth_snapshot:
+            intent: Assets minus liabilities as of today. Includes all asset and liability accounts.
+            needs: []
+            optional: [target_date]
+            example: "{'mode':'run','case':'net_worth_snapshot'}"
+          liability_summary:
+            intent: All liability accounts — balances, liability type, interest rate, notes.
+            needs: []
+            optional: [page, per_page]
+            example: "{'mode':'run','case':'liability_summary'}"
+          reconcile_prepare:
+            intent: Fetch transactions for an account/period, calculate Firefly period net, compare to statement balance. Returns unreconciled candidates for AI review.
+            needs: [item OR item_id, statement_balance]
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'reconcile_prepare','item':'Chase Checking','statement_balance':4821.55,'start_date':'2026-05-01','end_date':'2026-05-31'}"
+          transaction_normalize:
+            intent: Fetch uncategorized withdrawals for a date range. AI proposes merchant, category, budget, tags — then use transaction_update to apply.
+            needs: []
+            optional: [start_date, end_date, page, per_page]
+            example: "{'mode':'run','case':'transaction_normalize','start_date':'2026-06-01'}"
+          project_account_status:
+            intent: Dashboard for a project tag — all transactions + matching piggy bank goal.
+            needs: [item]
+            optional: [start_date, end_date, page, per_page]
+            example: "{'mode':'run','case':'project_account_status','item':'deck-project','start_date':'2026-01-01'}"
+          budget_create:
+            intent: Create a new named budget container. confirm=true required.
+            needs: [item]
+            optional: [notes, confirm]
+            example: "{'mode':'run','case':'budget_create','item':'Food','confirm':true}"
+          piggybank_create:
+            intent: Create a new savings goal / sinking fund. Links to a savings account. confirm=true required.
+            needs: [item, source_account]
+            optional: [piggybank_target, target_date, notes, confirm]
+            example: "{'mode':'run','case':'piggybank_create','item':'Vacation Fund','source_account':'USAA Savings','piggybank_target':5000,'confirm':true}"
+          bill_create:
+            intent: Create a recurring bill. confirm=true required.
+            needs: [item, amount]
+            optional: [date, limit_period, notes, confirm]
+            example: "{'mode':'run','case':'bill_create','item':'Electric','amount':150,'limit_period':'monthly','confirm':true}"
+          transaction_link:
+            intent: Link a Firefly transaction to an external record (inventory purchase, Paperless doc). Appends structured ref to transaction notes. confirm=true required.
+            needs: [item_id, external_ref]
+            optional: [confirm]
+            example: "{'mode':'run','case':'transaction_link','item_id':'42','external_ref':'grocy:product:389','confirm':true}"
+
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "help" }}'
+        sequence:
+        - variables:
+            help_json:
+              status: info
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: help
+              description: Household finance assistant over Firefly III. Read accounts/budgets/bills/savings, log transactions. Speak household vocab not bookkeeping jargon.
+              cases: '{{ cases }}'
+        - stop: return
+          response_variable: help_json
+
+    # ── case: summary ────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "summary" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _sum_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'summary/basic?start={{ start_norm }}&end={{ end_norm }}'
+        - variables:
+            _sum_raw: >-
+              {%- if _sum_resp is mapping and 'result' in _sum_resp and _sum_resp['result'] is mapping -%}
+                {{ _sum_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _sum_resp["status"] | default("error") if _sum_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: summary
+              result:
+                start_date: '{{ start_norm }}'
+                end_date: '{{ end_norm }}'
+                data: '{{ _sum_raw }}'
+              error: '{{ none if (_sum_resp is mapping and _sum_resp.get("status") == "success") else "Firefly summary fetch failed (http_status=" ~ (_sum_resp.get("http_status", 0) if _sum_resp is mapping else 0) ~ ")" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: accounts_list ──────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "accounts_list" }}'
+        sequence:
+        - variables:
+            _al_ep: '{{ "accounts?type=" ~ acct_type_norm if acct_type_norm != "all" else "accounts" }}'
+        - action: script.zen_sutra_firefly
+          response_variable: _al_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: '{{ _al_ep }}'
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _al_raw: >-
+              {%- if _al_resp is mapping and 'result' in _al_resp and _al_resp['result'] is mapping -%}
+                {{ _al_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _al_data: >-
+              {%- set d = _al_raw.get('data', []) if _al_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set _ns.out = _ns.out + [attrs | combine({'id': obj.get('id', '')})] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _al_meta: '{{ _al_raw.get("meta", {}) if _al_raw is mapping else {} }}'
+        - variables:
+            final_response:
+              status: '{{ _al_resp["status"] | default("error") if _al_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: accounts_list
+              result:
+                accounts: '{{ _al_data }}'
+                count: '{{ _al_data | length }}'
+                account_type: '{{ acct_type_norm }}'
+              pagination:
+                page: '{{ page_norm }}'
+                per_page: '{{ per_norm }}'
+                meta: '{{ _al_meta }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: account_get ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "account_get" }}'
+        sequence:
+        - variables:
+            _ag_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ag_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _ag_ac_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ item_norm | urlencode }}&limit=20'
+            - variables:
+                _ag_ac_data: >-
+                  {%- if _ag_ac_resp is mapping and 'result' in _ag_ac_resp and _ag_ac_resp['result'] is mapping -%}
+                    {%- set c = _ag_ac_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _ag_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _ag_ac_data -%}
+                    {%- if (a.get('name', '') | lower) == (item_norm | lower) -%}
+                      {%- set _ns.found = a.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+                _ag_candidates: >-
+                  {{ _ag_ac_data | map(attribute='name') | list }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ag_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_get
+                  result: null
+                  error: 'No account found matching "{{ item_norm }}". Candidates: {{ _ag_candidates | default([]) }}'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _ag_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'accounts/{{ _ag_id }}'
+        - variables:
+            _ag_raw: >-
+              {%- if _ag_resp is mapping and 'result' in _ag_resp and _ag_resp['result'] is mapping -%}
+                {%- set d = _ag_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', d) -%}
+                  {%- if obj is mapping -%}
+                    {{ obj.get('attributes', {}) | combine({'id': obj.get('id', _ag_id)}) }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _ag_resp["status"] | default("error") if _ag_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: account_get
+              result: '{{ _ag_raw }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: transactions_list ──────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transactions_list" }}'
+        sequence:
+        - variables:
+            _tl_acct_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tl_acct_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _tl_ac_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ item_norm | urlencode }}&limit=20'
+            - variables:
+                _tl_ac_data: >-
+                  {%- if _tl_ac_resp is mapping and 'result' in _tl_ac_resp and _tl_ac_resp['result'] is mapping -%}
+                    {%- set c = _tl_ac_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _tl_acct_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _tl_ac_data -%}
+                    {%- if (a.get('name', '') | lower) == (item_norm | lower) -%}
+                      {%- set _ns.found = a.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        - variables:
+            _tl_ep: >-
+              {%- if _tl_acct_id is not none -%}
+                accounts/{{ _tl_acct_id }}/transactions?start={{ start_norm }}&end={{ end_norm }}{% if txn_type_norm != "all" %}&type={{ txn_type_norm }}{% endif %}
+              {%- else -%}
+                transactions?start={{ start_norm }}&end={{ end_norm }}{% if txn_type_norm != "all" %}&type={{ txn_type_norm }}{% endif %}
+              {%- endif -%}
+        - action: script.zen_sutra_firefly
+          response_variable: _tl_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: '{{ _tl_ep }}'
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _tl_raw: >-
+              {%- if _tl_resp is mapping and 'result' in _tl_resp and _tl_resp['result'] is mapping -%}
+                {{ _tl_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _tl_data: >-
+              {%- set d = _tl_raw.get('data', []) if _tl_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'description': first.get('description', ''), 'amount': first.get('amount', ''), 'type': first.get('type', ''), 'source': first.get('source_name', ''), 'destination': first.get('destination_name', ''), 'category': first.get('category_name', ''), 'budget': first.get('budget_name', ''), 'tags': first.get('tags', [])}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: '{{ _tl_resp["status"] | default("error") if _tl_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transactions_list
+              result:
+                transactions: '{{ _tl_data }}'
+                count: '{{ _tl_data | length }}'
+                account_filter: '{{ item_norm if item_norm != "" else "all" }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+              pagination:
+                page: '{{ page_norm }}'
+                per_page: '{{ per_norm }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: transactions_search ────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transactions_search" }}'
+        sequence:
+        - variables:
+            _ts_query: >-
+              {%- set q = item_norm -%}
+              {%- if label_norm != '' -%}{%- set q = 'tag_is:"label:' ~ label_norm ~ '"' ~ (' ' ~ q if q != '' else '') -%}{%- endif -%}
+              {{ q | urlencode }}
+        - action: script.zen_sutra_firefly
+          response_variable: _ts_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'search/transactions?query={{ _ts_query }}&start={{ start_norm }}&end={{ end_norm }}'
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _ts_raw: >-
+              {%- if _ts_resp is mapping and 'result' in _ts_resp and _ts_resp['result'] is mapping -%}
+                {{ _ts_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _ts_data: >-
+              {%- set d = _ts_raw.get('data', []) if _ts_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'description': first.get('description', ''), 'amount': first.get('amount', ''), 'type': first.get('type', ''), 'source': first.get('source_name', ''), 'destination': first.get('destination_name', ''), 'category': first.get('category_name', '')}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: '{{ _ts_resp["status"] | default("error") if _ts_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transactions_search
+              result:
+                query: '{{ item_norm }}'
+                transactions: '{{ _ts_data }}'
+                count: '{{ _ts_data | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: budget_overview ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "budget_overview" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _bo_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'budgets?start={{ start_norm }}&end={{ end_norm }}'
+            perPage: 100
+        - action: script.zen_sutra_firefly
+          response_variable: _ba_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'available-budgets?start={{ start_norm }}&end={{ end_norm }}'
+            perPage: 100
+        - variables:
+            _bo_raw: >-
+              {%- if _bo_resp is mapping and 'result' in _bo_resp and _bo_resp['result'] is mapping -%}
+                {{ _bo_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _ba_raw: >-
+              {%- if _ba_resp is mapping and 'result' in _ba_resp and _ba_resp['result'] is mapping -%}
+                {{ _ba_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _bo_data: >-
+              {%- set d = _bo_raw.get('data', []) if _bo_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set spent = attrs.get('spent', []) -%}
+                {%- set spent_sum = spent | sum(attribute='sum') | default(0) | float(0) | abs -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'active': attrs.get('active', true), 'auto_budget': attrs.get('auto_budget_amount', none), 'spent': spent_sum}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _ba_data: >-
+              {%- set d = _ba_raw.get('data', []) if _ba_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set _ns.out = _ns.out + [{'budget_id': attrs.get('budget_id', ''), 'period': attrs.get('period', ''), 'amount': attrs.get('amount', '0'), 'start': attrs.get('start', ''), 'end': attrs.get('end', '')}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: '{{ _bo_resp["status"] | default("error") if _bo_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: budget_overview
+              result:
+                budgets: '{{ _bo_data }}'
+                available_budgets: '{{ _ba_data }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: bills_list ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "bills_list" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _bl_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: bills
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _bl_raw: >-
+              {%- if _bl_resp is mapping and 'result' in _bl_resp and _bl_resp['result'] is mapping -%}
+                {{ _bl_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _bl_data: >-
+              {%- set d = _bl_raw.get('data', []) if _bl_raw is mapping else [] -%}
+              {%- set today = now().strftime('%Y-%m-%d') -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set next_exp = attrs.get('next_expected_match', '') | string -%}
+                {%- set overdue = (next_exp != '' and next_exp < today) -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'amount_min': attrs.get('amount_min', ''), 'amount_max': attrs.get('amount_max', ''), 'currency': attrs.get('currency_code', ''), 'repeat_freq': attrs.get('repeat_freq', ''), 'next_expected_match': next_exp, 'overdue': overdue, 'active': attrs.get('active', true), 'paid_dates': attrs.get('paid_dates', [])}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: '{{ _bl_resp["status"] | default("error") if _bl_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: bills_list
+              result:
+                bills: '{{ _bl_data }}'
+                count: '{{ _bl_data | length }}'
+                overdue_count: '{{ _bl_data | selectattr("overdue") | list | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: piggy_banks_list ───────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "piggy_banks_list" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _pb_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: piggy-banks
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _pb_raw: >-
+              {%- if _pb_resp is mapping and 'result' in _pb_resp and _pb_resp['result'] is mapping -%}
+                {{ _pb_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _pb_data: >-
+              {%- set d = _pb_raw.get('data', []) if _pb_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set curr = attrs.get('current_amount', '0') | float(0) -%}
+                {%- set tgt = attrs.get('target_amount', '0') | float(0) -%}
+                {%- set pct = ((curr / tgt * 100) | round(1)) if tgt > 0 else 0 -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'current_amount': curr, 'target_amount': tgt, 'percentage': pct, 'currency': attrs.get('currency_code', ''), 'target_date': attrs.get('target_date', none)}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: '{{ _pb_resp["status"] | default("error") if _pb_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: piggy_banks_list
+              result:
+                piggy_banks: '{{ _pb_data }}'
+                count: '{{ _pb_data | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: category_spend ─────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "category_spend" }}'
+        sequence:
+        - variables:
+            _cs_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cs_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _cs_ac_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/categories?query={{ item_norm | urlencode }}&limit=20'
+            - variables:
+                _cs_ac_data: >-
+                  {%- if _cs_ac_resp is mapping and 'result' in _cs_ac_resp and _cs_ac_resp['result'] is mapping -%}
+                    {%- set c = _cs_ac_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _cs_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _cs_ac_data -%}
+                    {%- if (a.get('name', '') | lower) == (item_norm | lower) -%}
+                      {%- set _ns.found = a.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+                _cs_candidates: '{{ _cs_ac_data | map(attribute="name") | list }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cs_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: category_spend
+                  result: null
+                  error: 'No category found matching "{{ item_norm }}". Candidates: {{ _cs_candidates | default([]) }}'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _cs_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'categories/{{ _cs_id }}/transactions?start={{ start_norm }}&end={{ end_norm }}'
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _cs_raw: >-
+              {%- if _cs_resp is mapping and 'result' in _cs_resp and _cs_resp['result'] is mapping -%}
+                {{ _cs_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _cs_data: >-
+              {%- set d = _cs_raw.get('data', []) if _cs_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[], total=0.0) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- set amt = first.get('amount', '0') | float(0) -%}
+                {%- set _ns.total = _ns.total + amt -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'description': first.get('description', ''), 'amount': amt, 'source': first.get('source_name', '')}] -%}
+              {%- endfor -%}
+              {{ {'transactions': _ns.out, 'total_spent': _ns.total | round(2)} }}
+        - variables:
+            final_response:
+              status: '{{ _cs_resp["status"] | default("error") if _cs_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: category_spend
+              result:
+                category: '{{ item_norm }}'
+                category_id: '{{ _cs_id }}'
+                data: '{{ _cs_data }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: transaction_add ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transaction_add" }}'
+        sequence:
+        # Resolve source account
+        - variables:
+            _ta_src_id: none
+            _ta_dst_id: none
+            _ta_cat_id: none
+            _ta_bgt_id: none
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ src_acct_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _ta_src_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ src_acct_norm | urlencode }}&limit=20'
+            - variables:
+                _ta_src_data: >-
+                  {%- if _ta_src_resp is mapping and 'result' in _ta_src_resp and _ta_src_resp['result'] is mapping -%}
+                    {%- set c = _ta_src_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _ta_src_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _ta_src_data -%}
+                    {%- if (a.get('name', '') | lower) == (src_acct_norm | lower) -%}
+                      {%- set _ns.found = a.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        # Resolve dest account
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ dst_acct_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _ta_dst_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ dst_acct_norm | urlencode }}&limit=20'
+            - variables:
+                _ta_dst_data: >-
+                  {%- if _ta_dst_resp is mapping and 'result' in _ta_dst_resp and _ta_dst_resp['result'] is mapping -%}
+                    {%- set c = _ta_dst_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _ta_dst_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _ta_dst_data -%}
+                    {%- if (a.get('name', '') | lower) == (dst_acct_norm | lower) -%}
+                      {%- set _ns.found = a.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        # Resolve category
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ cat_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _ta_cat_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/categories?query={{ cat_norm | urlencode }}&limit=20'
+            - variables:
+                _ta_cat_data: >-
+                  {%- if _ta_cat_resp is mapping and 'result' in _ta_cat_resp and _ta_cat_resp['result'] is mapping -%}
+                    {%- set c = _ta_cat_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _ta_cat_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _ta_cat_data -%}
+                    {%- if (a.get('name', '') | lower) == (cat_norm | lower) -%}
+                      {%- set _ns.found = a.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        # Resolve budget
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ bgt_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _ta_bgt_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/budgets?query={{ bgt_norm | urlencode }}&limit=20'
+            - variables:
+                _ta_bgt_data: >-
+                  {%- if _ta_bgt_resp is mapping and 'result' in _ta_bgt_resp and _ta_bgt_resp['result'] is mapping -%}
+                    {%- set c = _ta_bgt_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _ta_bgt_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _ta_bgt_data -%}
+                    {%- if (a.get('name', '') | lower) == (bgt_norm | lower) -%}
+                      {%- set _ns.found = a.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        # Build and POST transaction
+        - variables:
+            _ta_payload: >-
+              {%- set txn = {'type': txn_type_norm, 'date': date_norm, 'amount': amount_norm | string, 'description': description | default('') | string | trim} -%}
+              {%- if _ta_src_id and _ta_src_id | string | trim not in ['', 'none', 'None'] -%}{%- set txn = txn | combine({'source_id': _ta_src_id | string}) -%}{%- endif -%}
+              {%- if _ta_dst_id and _ta_dst_id | string | trim not in ['', 'none', 'None'] -%}{%- set txn = txn | combine({'destination_id': _ta_dst_id | string}) -%}{%- endif -%}
+              {%- if _ta_cat_id and _ta_cat_id | string | trim not in ['', 'none', 'None'] -%}{%- set txn = txn | combine({'category_id': _ta_cat_id | string}) -%}{%- endif -%}
+              {%- if _ta_bgt_id and _ta_bgt_id | string | trim not in ['', 'none', 'None'] -%}{%- set txn = txn | combine({'budget_id': _ta_bgt_id | string}) -%}{%- endif -%}
+              {%- set tag_list = (tags | trim).split(',') | map('trim') | select | list if (tags is defined and tags | default('') | trim != '') else [] -%}
+              {%- if label_norm != '' -%}{%- set tag_list = tag_list + ['label:' ~ label_norm] -%}{%- endif -%}
+              {%- if tag_list | length > 0 -%}{%- set txn = txn | combine({'tags': tag_list}) -%}{%- endif -%}
+              {{ {'transactions': [txn]} | tojson }}
+        - action: script.zen_sutra_firefly
+          response_variable: _ta_post_resp
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: transactions
+            payload: '{{ _ta_payload }}'
+        - variables:
+            _ta_result: >-
+              {%- if _ta_post_resp is mapping and 'result' in _ta_post_resp and _ta_post_resp['result'] is mapping -%}
+                {%- set d = _ta_post_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {%- if obj is mapping -%}
+                    {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _ta_post_resp["status"] | default("error") if _ta_post_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transaction_add
+              result: '{{ _ta_result }}'
+              resolution:
+                source_account_id: '{{ _ta_src_id }}'
+                dest_account_id: '{{ _ta_dst_id }}'
+                category_id: '{{ _ta_cat_id }}'
+                budget_id: '{{ _ta_bgt_id }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: transaction_update ─────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transaction_update" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: transaction_update
+                  result: null
+                  error: item_id is required for transaction_update
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _tu_cat_id: none
+            _tu_bgt_id: none
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ cat_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _tu_cat_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/categories?query={{ cat_norm | urlencode }}&limit=20'
+            - variables:
+                _tu_cat_data: >-
+                  {%- if _tu_cat_resp is mapping and 'result' in _tu_cat_resp and _tu_cat_resp['result'] is mapping -%}
+                    {%- set c = _tu_cat_resp['result']['content'] | default([]) -%}
+                    {{ c if c is sequence and c is not string and c is not mapping else [] }}
+                  {%- else -%}{{ [] }}{%- endif -%}
+            - variables:
+                _tu_cat_id: >-
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in _tu_cat_data -%}
+                    {%- if (a.get('name', '') | lower) == (cat_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        - variables:
+            _tu_payload: >-
+              {%- set txn = {} -%}
+              {%- if description is defined and description | default('') | trim != '' -%}{%- set txn = txn | combine({'description': description | trim}) -%}{%- endif -%}
+              {%- if amount is defined and amount | default(0) | float(0) > 0 -%}{%- set txn = txn | combine({'amount': amount | float(0) | string}) -%}{%- endif -%}
+              {%- if date is defined and date | default('') | trim != '' -%}{%- set txn = txn | combine({'date': date | trim}) -%}{%- endif -%}
+              {%- if _tu_cat_id is not none -%}{%- set txn = txn | combine({'category_id': _tu_cat_id | string}) -%}{%- endif -%}
+              {%- set tag_list = (tags | trim).split(',') | map('trim') | select | list if (tags is defined and tags | default('') | trim != '') else [] -%}
+              {%- if label_norm != '' -%}{%- set tag_list = tag_list + ['label:' ~ label_norm] -%}{%- endif -%}
+              {%- if tag_list | length > 0 -%}{%- set txn = txn | combine({'tags': tag_list}) -%}{%- endif -%}
+              {{ {'transactions': [txn]} | tojson }}
+        - action: script.zen_sutra_firefly
+          response_variable: _tu_resp
+          continue_on_error: true
+          data:
+            action_type: put
+            endpoint: 'transactions/{{ item_id_norm }}'
+            payload: '{{ _tu_payload }}'
+        - variables:
+            final_response:
+              status: '{{ _tu_resp["status"] | default("error") if _tu_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transaction_update
+              result:
+                transaction_id: '{{ item_id_norm }}'
+                updated: '{{ _tu_resp["status"] | default("error") == "success" if _tu_resp is mapping else false }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: transfer ───────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transfer" }}'
+        sequence:
+        - variables:
+            _tr_src_id: none
+            _tr_dst_id: none
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ src_acct_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _tr_src_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ src_acct_norm | urlencode }}&limit=20'
+            - variables:
+                _tr_src_id: >-
+                  {%- set c = (_tr_src_resp['result']['content'] | default([])) if (_tr_src_resp is mapping and 'result' in _tr_src_resp and _tr_src_resp['result'] is mapping) else [] -%}
+                  {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in c -%}{%- if (a.get('name','') | lower) == (src_acct_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ dst_acct_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _tr_dst_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ dst_acct_norm | urlencode }}&limit=20'
+            - variables:
+                _tr_dst_id: >-
+                  {%- set c = (_tr_dst_resp['result']['content'] | default([])) if (_tr_dst_resp is mapping and 'result' in _tr_dst_resp and _tr_dst_resp['result'] is mapping) else [] -%}
+                  {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in c -%}{%- if (a.get('name','') | lower) == (dst_acct_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+                  {{ _ns.found }}
+        - variables:
+            _tr_payload: >-
+              {%- set txn = {'type': 'transfer', 'date': date_norm, 'amount': amount_norm | string, 'description': description | default('Transfer') | string | trim} -%}
+              {%- if _tr_src_id and _tr_src_id | string | trim not in ['', 'none', 'None'] -%}{%- set txn = txn | combine({'source_id': _tr_src_id | string}) -%}{%- endif -%}
+              {%- if _tr_dst_id and _tr_dst_id | string | trim not in ['', 'none', 'None'] -%}{%- set txn = txn | combine({'destination_id': _tr_dst_id | string}) -%}{%- endif -%}
+              {%- set tag_list = (tags | trim).split(',') | map('trim') | select | list if (tags is defined and tags | default('') | trim != '') else [] -%}
+              {%- if label_norm != '' -%}{%- set tag_list = tag_list + ['label:' ~ label_norm] -%}{%- endif -%}
+              {%- if tag_list | length > 0 -%}{%- set txn = txn | combine({'tags': tag_list}) -%}{%- endif -%}
+              {{ {'transactions': [txn]} | tojson }}
+        - action: script.zen_sutra_firefly
+          response_variable: _tr_resp
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: transactions
+            payload: '{{ _tr_payload }}'
+        - variables:
+            final_response:
+              status: '{{ _tr_resp["status"] | default("error") if _tr_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transfer
+              result:
+                source_account: '{{ src_acct_norm }}'
+                dest_account: '{{ dst_acct_norm }}'
+                amount: '{{ amount_norm }}'
+                source_id: '{{ _tr_src_id }}'
+                dest_id: '{{ _tr_dst_id }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: spend_summary (compound briefing) ───────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "spend_summary" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _ss_sum_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'summary/basic?start={{ start_norm }}&end={{ end_norm }}'
+        - action: script.zen_sutra_firefly
+          response_variable: _ss_bgt_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'budgets?start={{ start_norm }}&end={{ end_norm }}'
+            perPage: 50
+        - action: script.zen_sutra_firefly
+          response_variable: _ss_bil_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: bills
+            perPage: 50
+        - variables:
+            _ss_summary: >-
+              {%- if _ss_sum_resp is mapping and 'result' in _ss_sum_resp and _ss_sum_resp['result'] is mapping -%}
+                {{ _ss_sum_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _ss_budgets: >-
+              {%- set raw = (_ss_bgt_resp['result']['content'] | default({})) if (_ss_bgt_resp is mapping and 'result' in _ss_bgt_resp and _ss_bgt_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set spent = attrs.get('spent', []) -%}
+                {%- set spent_sum = spent | sum(attribute='sum') | default(0) | float(0) | abs -%}
+                {%- set _ns.out = _ns.out + [{'name': attrs.get('name', ''), 'spent': spent_sum}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _ss_bills: >-
+              {%- set raw = (_ss_bil_resp['result']['content'] | default({})) if (_ss_bil_resp is mapping and 'result' in _ss_bil_resp and _ss_bil_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set today = now().strftime('%Y-%m-%d') -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set next_exp = attrs.get('next_expected_match', '') | string -%}
+                {%- if next_exp != '' and next_exp >= today -%}
+                  {%- set _ns.out = _ns.out + [{'name': attrs.get('name', ''), 'next_due': next_exp, 'amount': attrs.get('amount_max', ''), 'overdue': (next_exp < today)}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out | sort(attribute='next_due') }}
+        - variables:
+            _ss_hh: '{{ states("sensor.zen_default_household_cabinet_resolved") }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ss_hh != "" }}'
+            sequence:
+            - action: script.zen_dojotools_filecabinet
+              continue_on_error: true
+              data:
+                action_type: update
+                force_action: true
+                volume_entity_id: '{{ _ss_hh }}'
+                key: finance_daily_snapshot
+                value: '{{ {"summary": _ss_summary, "budgets": _ss_budgets, "bills_due": _ss_bills, "as_of": now().isoformat()} | tojson }}'
+                set_timestamp: true
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: spend_summary
+              result:
+                summary: '{{ _ss_summary }}'
+                budgets: '{{ _ss_budgets }}'
+                bills_upcoming: '{{ _ss_bills }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+                snapshot_written: '{{ _ss_hh != "" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: health ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "health" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _hlt_about_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: about
+        - action: script.zen_sutra_firefly
+          response_variable: _hlt_user_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: about/user
+        - action: script.zen_sutra_firefly
+          response_variable: _hlt_cur_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: currencies/default
+        - variables:
+            _hlt_about: >-
+              {%- if _hlt_about_resp is mapping and 'result' in _hlt_about_resp and _hlt_about_resp['result'] is mapping -%}
+                {{ _hlt_about_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _hlt_user: >-
+              {%- if _hlt_user_resp is mapping and 'result' in _hlt_user_resp and _hlt_user_resp['result'] is mapping -%}
+                {{ _hlt_user_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _hlt_about_data: '{{ _hlt_about.get("data", {}) if _hlt_about is mapping else {} }}'
+            _hlt_user_data: '{{ _hlt_user.get("data", {}) if _hlt_user is mapping else {} }}'
+            _hlt_cur_attrs: >-
+              {%- if _hlt_cur_resp is mapping and 'result' in _hlt_cur_resp and _hlt_cur_resp['result'] is mapping -%}
+                {%- set c = _hlt_cur_resp['result']['content'] | default({}) -%}
+                {%- set obj = c.get('data', {}) if c is mapping else {} -%}
+                {{ obj.get('attributes', {}) if obj is mapping else {} }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ "success" if (_hlt_about_resp is mapping and _hlt_about_resp.get("status") == "success") else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: health
+              result:
+                reachable: '{{ _hlt_about_resp is mapping and _hlt_about_resp.get("status") == "success" }}'
+                firefly_version: '{{ _hlt_about_data.get("version", "unknown") if _hlt_about_data is mapping else "unknown" }}'
+                api_version: '{{ _hlt_about_data.get("api_version", "unknown") if _hlt_about_data is mapping else "unknown" }}'
+                user_email: '{{ _hlt_user_data.get("email", "unknown") if _hlt_user_data is mapping else "unknown" }}'
+                user_role: '{{ _hlt_user_data.get("role", "unknown") if _hlt_user_data is mapping else "unknown" }}'
+                default_currency: '{{ _hlt_cur_attrs.get("code", "unknown") if _hlt_cur_attrs is mapping else "unknown" }}'
+                default_currency_name: '{{ _hlt_cur_attrs.get("name", "") if _hlt_cur_attrs is mapping else "" }}'
+                firefly_url: '{{ states("input_text.firefly_url") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: catalog ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "catalog" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _ctlg_accts_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: accounts
+            perPage: 100
+        - action: script.zen_sutra_firefly
+          response_variable: _ctlg_cats_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: categories
+            perPage: 100
+        - action: script.zen_sutra_firefly
+          response_variable: _ctlg_tags_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: tags
+            perPage: 100
+        - action: script.zen_sutra_firefly
+          response_variable: _ctlg_bgts_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: budgets
+            perPage: 100
+        - action: script.zen_sutra_firefly
+          response_variable: _ctlg_pigs_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: piggy-banks
+            perPage: 100
+        - action: script.zen_sutra_firefly
+          response_variable: _ctlg_curs_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: currencies
+            perPage: 100
+        - variables:
+            _ctlg_accounts: >-
+              {%- set raw = (_ctlg_accts_resp['result']['content'] | default({})) if (_ctlg_accts_resp is mapping and 'result' in _ctlg_accts_resp and _ctlg_accts_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'type': attrs.get('type', ''), 'balance': attrs.get('current_balance', ''), 'currency': attrs.get('currency_code', ''), 'active': attrs.get('active', true)}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _ctlg_categories: >-
+              {%- set raw = (_ctlg_cats_resp['result']['content'] | default({})) if (_ctlg_cats_resp is mapping and 'result' in _ctlg_cats_resp and _ctlg_cats_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}{%- set _ns.out = _ns.out + [obj.get('attributes', {}).get('name', '')] -%}{%- endfor -%}
+              {{ _ns.out }}
+            _ctlg_tags: >-
+              {%- set raw = (_ctlg_tags_resp['result']['content'] | default({})) if (_ctlg_tags_resp is mapping and 'result' in _ctlg_tags_resp and _ctlg_tags_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}{%- set _ns.out = _ns.out + [obj.get('attributes', {}).get('tag', '')] -%}{%- endfor -%}
+              {{ _ns.out }}
+            _ctlg_budgets: >-
+              {%- set raw = (_ctlg_bgts_resp['result']['content'] | default({})) if (_ctlg_bgts_resp is mapping and 'result' in _ctlg_bgts_resp and _ctlg_bgts_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'active': attrs.get('active', true)}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _ctlg_piggybanks: >-
+              {%- set raw = (_ctlg_pigs_resp['result']['content'] | default({})) if (_ctlg_pigs_resp is mapping and 'result' in _ctlg_pigs_resp and _ctlg_pigs_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set curr = attrs.get('current_amount', '0') | float(0) -%}
+                {%- set tgt = attrs.get('target_amount', '0') | float(0) -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'current': curr, 'target': tgt}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+            _ctlg_currencies: >-
+              {%- set raw = (_ctlg_curs_resp['result']['content'] | default({})) if (_ctlg_curs_resp is mapping and 'result' in _ctlg_curs_resp and _ctlg_curs_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- if attrs.get('enabled', false) -%}
+                  {%- set _ns.out = _ns.out + [{'code': attrs.get('code', ''), 'name': attrs.get('name', ''), 'default': attrs.get('default', false)}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: catalog
+              result:
+                accounts: '{{ _ctlg_accounts }}'
+                categories: '{{ _ctlg_categories }}'
+                tags: '{{ _ctlg_tags }}'
+                budgets: '{{ _ctlg_budgets }}'
+                piggy_banks: '{{ _ctlg_piggybanks }}'
+                currencies: '{{ _ctlg_currencies }}'
+                counts:
+                  accounts: '{{ _ctlg_accounts | length }}'
+                  categories: '{{ _ctlg_categories | length }}'
+                  tags: '{{ _ctlg_tags | length }}'
+                  budgets: '{{ _ctlg_budgets | length }}'
+                  piggy_banks: '{{ _ctlg_piggybanks | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: account_balance ─────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "account_balance" }}'
+        sequence:
+        - variables:
+            _ab_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+            _ab_date: '{{ target_date | default("") | string | trim }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ab_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _ab_ac_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ item_norm | urlencode }}&limit=20'
+            - variables:
+                _ab_id: >-
+                  {%- set c = (_ab_ac_resp['result']['content'] | default([])) if (_ab_ac_resp is mapping and 'result' in _ab_ac_resp and _ab_ac_resp['result'] is mapping) else [] -%}
+                  {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in c -%}{%- if (a.get('name','') | lower) == (item_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ab_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_balance
+                  result: null
+                  error: 'No account found matching "{{ item_norm }}".'
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _ab_ep: '{{ "accounts/" ~ _ab_id ~ "?date=" ~ _ab_date if _ab_date != "" else "accounts/" ~ _ab_id }}'
+        - action: script.zen_sutra_firefly
+          response_variable: _ab_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: '{{ _ab_ep }}'
+        - variables:
+            _ab_raw: >-
+              {%- if _ab_resp is mapping and 'result' in _ab_resp and _ab_resp['result'] is mapping -%}
+                {%- set d = _ab_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', d) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', _ab_id)}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _ab_resp["status"] | default("error") if _ab_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: account_balance
+              result:
+                id: '{{ _ab_id }}'
+                name: '{{ _ab_raw.get("name", "") if _ab_raw is mapping else "" }}'
+                current_balance: '{{ _ab_raw.get("current_balance", "") if _ab_raw is mapping else "" }}'
+                balance_date: '{{ _ab_date if _ab_date != "" else now().strftime("%Y-%m-%d") }}'
+                currency: '{{ _ab_raw.get("currency_code", "") if _ab_raw is mapping else "" }}'
+                account_type: '{{ _ab_raw.get("type", "") if _ab_raw is mapping else "" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: account_create ──────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "account_create" }}'
+        sequence:
+        - variables:
+            _ac_name: '{{ item_norm }}'
+            _ac_type: '{{ acct_type_norm if acct_type_norm not in ["all"] else "asset" }}'
+            _ac_cur: '{{ currency_code | default("") | string | trim }}'
+            _ac_notes: '{{ notes | default("") | string | trim }}'
+            _ac_confirm: '{{ confirm | default(false) | bool }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ac_name == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_create
+                  result: null
+                  error: item (account name) is required for account_create
+            - stop: return
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _ac_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_create
+                  result:
+                    planned:
+                      name: '{{ _ac_name }}'
+                      type: '{{ _ac_type }}'
+                      currency: '{{ _ac_cur if _ac_cur != "" else "default" }}'
+                      notes: '{{ _ac_notes }}'
+                  message: Set confirm=true to create this account.
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _ac_payload: >-
+              {%- set body = {'name': _ac_name, 'type': _ac_type} -%}
+              {%- if _ac_cur != '' -%}{%- set body = body | combine({'currency_code': _ac_cur}) -%}{%- endif -%}
+              {%- if _ac_notes != '' -%}{%- set body = body | combine({'notes': _ac_notes}) -%}{%- endif -%}
+              {{ body | tojson }}
+        - action: script.zen_sutra_firefly
+          response_variable: _ac_post_resp
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: accounts
+            payload: '{{ _ac_payload }}'
+        - variables:
+            _ac_result: >-
+              {%- if _ac_post_resp is mapping and 'result' in _ac_post_resp and _ac_post_resp['result'] is mapping -%}
+                {%- set d = _ac_post_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _ac_post_resp["status"] | default("error") if _ac_post_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: account_create
+              result: '{{ _ac_result }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: account_update ──────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "account_update" }}'
+        sequence:
+        - variables:
+            _au_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+            _au_confirm: '{{ confirm | default(false) | bool }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _au_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _au_ac_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ item_norm | urlencode }}&limit=20'
+            - variables:
+                _au_id: >-
+                  {%- set c = (_au_ac_resp['result']['content'] | default([])) if (_au_ac_resp is mapping and 'result' in _au_ac_resp and _au_ac_resp['result'] is mapping) else [] -%}
+                  {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in c -%}{%- if (a.get('name','') | lower) == (item_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _au_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_update
+                  result: null
+                  error: 'No account found matching "{{ item_norm }}". Provide item_id for safety.'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _au_get_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'accounts/{{ _au_id }}'
+        - variables:
+            _au_current: >-
+              {%- if _au_get_resp is mapping and 'result' in _au_get_resp and _au_get_resp['result'] is mapping -%}
+                {%- set d = _au_get_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _au_overrides: >-
+              {%- set o = {} -%}
+              {%- if notes is defined and notes | default('') | trim != '' -%}{%- set o = o | combine({'notes': notes | trim}) -%}{%- endif -%}
+              {%- if currency_code is defined and currency_code | default('') | trim != '' -%}{%- set o = o | combine({'currency_code': currency_code | trim}) -%}{%- endif -%}
+              {%- if acct_type_norm not in ['all', ''] -%}{%- set o = o | combine({'type': acct_type_norm}) -%}{%- endif -%}
+              {{ o }}
+            _au_merged: '{{ _au_current | combine(_au_overrides) if _au_current is mapping else _au_overrides }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _au_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_update
+                  result:
+                    current: '{{ _au_current }}'
+                    planned_overrides: '{{ _au_overrides }}'
+                    merged_payload: '{{ _au_merged }}'
+                  message: 'Review changes above. Set confirm=true to apply PUT to account {{ _au_id }}.'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _au_put_resp
+          continue_on_error: true
+          data:
+            action_type: put
+            endpoint: 'accounts/{{ _au_id }}'
+            payload: '{{ _au_merged | tojson }}'
+        - variables:
+            final_response:
+              status: '{{ _au_put_resp["status"] | default("error") if _au_put_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: account_update
+              result:
+                account_id: '{{ _au_id }}'
+                updated: '{{ _au_put_resp["status"] | default("error") == "success" if _au_put_resp is mapping else false }}'
+                applied_overrides: '{{ _au_overrides }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: bill_status ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "bill_status" }}'
+        sequence:
+        - variables:
+            _bst_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _bst_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _bst_list_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: bills
+                perPage: 100
+            - variables:
+                _bst_id: >-
+                  {%- set raw = (_bst_list_resp['result']['content'] | default({})) if (_bst_list_resp is mapping and 'result' in _bst_list_resp and _bst_list_resp['result'] is mapping) else {} -%}
+                  {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for obj in d -%}
+                    {%- if (obj.get('attributes', {}).get('name', '') | lower) == (item_norm | lower) -%}
+                      {%- set _ns.found = obj.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _bst_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: bill_status
+                  result: null
+                  error: 'No bill found matching "{{ item_norm }}".'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _bst_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'bills/{{ _bst_id }}'
+        - action: script.zen_sutra_firefly
+          response_variable: _bst_txn_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'bills/{{ _bst_id }}/transactions?start={{ start_norm }}&end={{ end_norm }}'
+            perPage: 50
+        - variables:
+            _bst_bill: >-
+              {%- if _bst_resp is mapping and 'result' in _bst_resp and _bst_resp['result'] is mapping -%}
+                {%- set d = _bst_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', _bst_id)}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _bst_txns: >-
+              {%- set raw = (_bst_txn_resp['result']['content'] | default({})) if (_bst_txn_resp is mapping and 'result' in _bst_txn_resp and _bst_txn_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'amount': first.get('amount', ''), 'description': first.get('description', '')}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            _bst_today: '{{ now().strftime("%Y-%m-%d") }}'
+            _bst_next: '{{ _bst_bill.get("next_expected_match", "") | string if _bst_bill is mapping else "" }}'
+            _bst_amt_max: '{{ _bst_bill.get("amount_max", "0") | float(0) if _bst_bill is mapping else 0 }}'
+        - variables:
+            _bst_matched_total: >-
+              {%- set _ns = namespace(total=0.0) -%}
+              {%- for t in _bst_txns -%}{%- set _ns.total = _ns.total + (t.get('amount', '0') | float(0)) -%}{%- endfor -%}
+              {{ _ns.total | round(2) }}
+        - variables:
+            final_response:
+              status: '{{ _bst_resp["status"] | default("error") if _bst_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: bill_status
+              result:
+                id: '{{ _bst_id }}'
+                name: '{{ _bst_bill.get("name", "") if _bst_bill is mapping else "" }}'
+                active: '{{ _bst_bill.get("active", true) if _bst_bill is mapping else true }}'
+                amount_min: '{{ _bst_bill.get("amount_min", "") if _bst_bill is mapping else "" }}'
+                amount_max: '{{ _bst_amt_max }}'
+                repeat_freq: '{{ _bst_bill.get("repeat_freq", "") if _bst_bill is mapping else "" }}'
+                next_expected_match: '{{ _bst_next }}'
+                overdue: '{{ _bst_next != "" and _bst_next < _bst_today }}'
+                paid_dates: '{{ _bst_bill.get("paid_dates", []) if _bst_bill is mapping else [] }}'
+                matched_transactions: '{{ _bst_txns }}'
+                matched_total: '{{ _bst_matched_total }}'
+                variance: '{{ (_bst_matched_total - _bst_amt_max) | round(2) if _bst_amt_max > 0 else 0 }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: piggybank_status ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "piggybank_status" }}'
+        sequence:
+        - variables:
+            _pbs_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _pbs_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _pbs_list_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: piggy-banks
+                perPage: 100
+            - variables:
+                _pbs_id: >-
+                  {%- set raw = (_pbs_list_resp['result']['content'] | default({})) if (_pbs_list_resp is mapping and 'result' in _pbs_list_resp and _pbs_list_resp['result'] is mapping) else {} -%}
+                  {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for obj in d -%}
+                    {%- if (obj.get('attributes', {}).get('name', '') | lower) == (item_norm | lower) -%}
+                      {%- set _ns.found = obj.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _pbs_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: piggybank_status
+                  result: null
+                  error: 'No piggy bank found matching "{{ item_norm }}".'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _pbs_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'piggy-banks/{{ _pbs_id }}'
+        - variables:
+            _pbs_raw: >-
+              {%- if _pbs_resp is mapping and 'result' in _pbs_resp and _pbs_resp['result'] is mapping -%}
+                {%- set d = _pbs_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', _pbs_id)}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _pbs_curr: '{{ _pbs_raw.get("current_amount", "0") | float(0) if _pbs_raw is mapping else 0 }}'
+            _pbs_tgt: '{{ _pbs_raw.get("target_amount", "0") | float(0) if _pbs_raw is mapping else 0 }}'
+        - variables:
+            final_response:
+              status: '{{ _pbs_resp["status"] | default("error") if _pbs_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: piggybank_status
+              result:
+                id: '{{ _pbs_id }}'
+                name: '{{ _pbs_raw.get("name", "") if _pbs_raw is mapping else "" }}'
+                current_amount: '{{ _pbs_curr }}'
+                target_amount: '{{ _pbs_tgt }}'
+                percentage: '{{ ((_pbs_curr / _pbs_tgt * 100) | round(1)) if _pbs_tgt > 0 else 0 }}'
+                remaining: '{{ (_pbs_tgt - _pbs_curr) | round(2) if _pbs_tgt > 0 else 0 }}'
+                target_date: '{{ _pbs_raw.get("target_date", none) if _pbs_raw is mapping else none }}'
+                currency: '{{ _pbs_raw.get("currency_code", "") if _pbs_raw is mapping else "" }}'
+                notes: '{{ _pbs_raw.get("notes", "") if _pbs_raw is mapping else "" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: piggybank_update ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "piggybank_update" }}'
+        sequence:
+        - variables:
+            _pbu_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+            _pbu_confirm: '{{ confirm | default(false) | bool }}'
+            _pbu_amount: '{{ piggybank_amount | default(none) }}'
+            _pbu_target: '{{ piggybank_target | default(none) }}'
+            _pbu_notes: '{{ notes | default("") | string | trim }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _pbu_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _pbu_list_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: piggy-banks
+                perPage: 100
+            - variables:
+                _pbu_id: >-
+                  {%- set raw = (_pbu_list_resp['result']['content'] | default({})) if (_pbu_list_resp is mapping and 'result' in _pbu_list_resp and _pbu_list_resp['result'] is mapping) else {} -%}
+                  {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for obj in d -%}
+                    {%- if (obj.get('attributes', {}).get('name', '') | lower) == (item_norm | lower) -%}
+                      {%- set _ns.found = obj.get('id') | string -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _pbu_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: piggybank_update
+                  result: null
+                  error: 'No piggy bank found matching "{{ item_norm }}".'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _pbu_get_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'piggy-banks/{{ _pbu_id }}'
+        - variables:
+            _pbu_current: >-
+              {%- if _pbu_get_resp is mapping and 'result' in _pbu_get_resp and _pbu_get_resp['result'] is mapping -%}
+                {%- set d = _pbu_get_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _pbu_overrides: >-
+              {%- set o = {} -%}
+              {%- if _pbu_amount is not none -%}{%- set o = o | combine({'current_amount': _pbu_amount | float(0) | string}) -%}{%- endif -%}
+              {%- if _pbu_target is not none -%}{%- set o = o | combine({'target_amount': _pbu_target | float(0) | string}) -%}{%- endif -%}
+              {%- if _pbu_notes != '' -%}{%- set o = o | combine({'notes': _pbu_notes}) -%}{%- endif -%}
+              {{ o }}
+            _pbu_merged: '{{ _pbu_current | combine(_pbu_overrides) if _pbu_current is mapping else _pbu_overrides }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _pbu_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: piggybank_update
+                  result:
+                    current: '{{ _pbu_current }}'
+                    planned_overrides: '{{ _pbu_overrides }}'
+                  message: 'Review changes above. Set confirm=true to apply update to piggy bank {{ _pbu_id }}.'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _pbu_put_resp
+          continue_on_error: true
+          data:
+            action_type: put
+            endpoint: 'piggy-banks/{{ _pbu_id }}'
+            payload: '{{ _pbu_merged | tojson }}'
+        - variables:
+            final_response:
+              status: '{{ _pbu_put_resp["status"] | default("error") if _pbu_put_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: piggybank_update
+              result:
+                piggybank_id: '{{ _pbu_id }}'
+                updated: '{{ _pbu_put_resp["status"] | default("error") == "success" if _pbu_put_resp is mapping else false }}'
+                applied_overrides: '{{ _pbu_overrides }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: budget_limit_set ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "budget_limit_set" }}'
+        sequence:
+        - variables:
+            _bls_confirm: '{{ confirm | default(false) | bool }}'
+            _bls_amount: '{{ limit_amount | default(0) | float(0) }}'
+            _bls_period: '{{ limit_period | default("monthly") | string | trim | lower }}'
+            _bls_cur: '{{ currency_code | default("") | string | trim }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: budget_limit_set
+                  result: null
+                  error: item (budget name) is required for budget_limit_set
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _bls_ac_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'autocomplete/budgets?query={{ item_norm | urlencode }}&limit=20'
+        - variables:
+            _bls_bgt_id: >-
+              {%- set c = (_bls_ac_resp['result']['content'] | default([])) if (_bls_ac_resp is mapping and 'result' in _bls_ac_resp and _bls_ac_resp['result'] is mapping) else [] -%}
+              {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+              {%- set _ns = namespace(found=none) -%}
+              {%- for a in c -%}{%- if (a.get('name','') | lower) == (item_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+              {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _bls_bgt_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: budget_limit_set
+                  result: null
+                  error: 'No budget found matching "{{ item_norm }}".'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _bls_lim_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'budgets/{{ _bls_bgt_id }}/limits?start={{ start_norm }}&end={{ end_norm }}'
+        - variables:
+            _bls_existing_id: >-
+              {%- set raw = (_bls_lim_resp['result']['content'] | default({})) if (_bls_lim_resp is mapping and 'result' in _bls_lim_resp and _bls_lim_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- if d | length > 0 -%}{{ d[0].get('id', '') }}{%- else -%}{{ none }}{%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _bls_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: budget_limit_set
+                  result:
+                    budget: '{{ item_norm }}'
+                    budget_id: '{{ _bls_bgt_id }}'
+                    action: '{{ "update existing limit " ~ _bls_existing_id if _bls_existing_id is not none else "create new limit" }}'
+                    planned_amount: '{{ _bls_amount }}'
+                    period: '{{ _bls_period }}'
+                    start: '{{ start_norm }}'
+                    end: '{{ end_norm }}'
+                  message: Set confirm=true to apply this budget limit change.
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _bls_payload: >-
+              {%- set body = {'amount': _bls_amount | string, 'period': _bls_period, 'start': start_norm, 'end': end_norm} -%}
+              {%- if _bls_cur != '' -%}{%- set body = body | combine({'currency_code': _bls_cur}) -%}{%- endif -%}
+              {{ body | tojson }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _bls_existing_id is not none }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _bls_resp
+              continue_on_error: true
+              data:
+                action_type: put
+                endpoint: 'budget-limits/{{ _bls_existing_id }}'
+                payload: '{{ _bls_payload }}'
+          - conditions:
+            - condition: template
+              value_template: '{{ true }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _bls_resp
+              continue_on_error: true
+              data:
+                action_type: post
+                endpoint: 'budgets/{{ _bls_bgt_id }}/limits'
+                payload: '{{ _bls_payload }}'
+        - variables:
+            final_response:
+              status: '{{ _bls_resp["status"] | default("error") if _bls_resp is defined and _bls_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: budget_limit_set
+              result:
+                budget: '{{ item_norm }}'
+                budget_id: '{{ _bls_bgt_id }}'
+                action: '{{ "updated" if _bls_existing_id is not none else "created" }}'
+                amount: '{{ _bls_amount }}'
+                period: '{{ _bls_period }}'
+                start: '{{ start_norm }}'
+                end: '{{ end_norm }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: net_worth_snapshot ──────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "net_worth_snapshot" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _nw_asset_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: accounts?type=asset
+            perPage: 100
+        - action: script.zen_sutra_firefly
+          response_variable: _nw_liab_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: accounts?type=liabilities
+            perPage: 100
+        - variables:
+            _nw_assets: >-
+              {%- set raw = (_nw_asset_resp['result']['content'] | default({})) if (_nw_asset_resp is mapping and 'result' in _nw_asset_resp and _nw_asset_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[], total=0.0) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set bal = attrs.get('current_balance', '0') | float(0) -%}
+                {%- set _ns.total = _ns.total + bal -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'balance': bal, 'currency': attrs.get('currency_code', ''), 'type': attrs.get('account_type', attrs.get('type', ''))}] -%}
+              {%- endfor -%}
+              {{ {'accounts': _ns.out, 'total': _ns.total | round(2)} }}
+            _nw_liabs: >-
+              {%- set raw = (_nw_liab_resp['result']['content'] | default({})) if (_nw_liab_resp is mapping and 'result' in _nw_liab_resp and _nw_liab_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[], total=0.0) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set bal = attrs.get('current_balance', '0') | float(0) | abs -%}
+                {%- set _ns.total = _ns.total + bal -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'balance': bal, 'currency': attrs.get('currency_code', ''), 'liability_type': attrs.get('liability_type', '')}] -%}
+              {%- endfor -%}
+              {{ {'accounts': _ns.out, 'total': _ns.total | round(2)} }}
+        - variables:
+            _nw_asset_total: '{{ _nw_assets.get("total", 0) | float(0) if _nw_assets is mapping else 0 }}'
+            _nw_liab_total: '{{ _nw_liabs.get("total", 0) | float(0) if _nw_liabs is mapping else 0 }}'
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: net_worth_snapshot
+              result:
+                as_of: '{{ target_date | default(now().strftime("%Y-%m-%d")) }}'
+                net_worth: '{{ (_nw_asset_total - _nw_liab_total) | round(2) }}'
+                total_assets: '{{ _nw_asset_total }}'
+                total_liabilities: '{{ _nw_liab_total }}'
+                assets: '{{ _nw_assets }}'
+                liabilities: '{{ _nw_liabs }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: liability_summary ───────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "liability_summary" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _ls_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: accounts?type=liabilities
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _ls_raw: >-
+              {%- if _ls_resp is mapping and 'result' in _ls_resp and _ls_resp['result'] is mapping -%}
+                {{ _ls_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _ls_data: >-
+              {%- set d = _ls_raw.get('data', []) if _ls_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[], total=0.0) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set bal = attrs.get('current_balance', '0') | float(0) | abs -%}
+                {%- set _ns.total = _ns.total + bal -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'balance': bal, 'currency': attrs.get('currency_code', ''), 'liability_type': attrs.get('liability_type', ''), 'interest': attrs.get('interest', ''), 'interest_period': attrs.get('interest_period', ''), 'notes': attrs.get('notes', '')}] -%}
+              {%- endfor -%}
+              {{ {'liabilities': _ns.out, 'total_owed': _ns.total | round(2)} }}
+        - variables:
+            final_response:
+              status: '{{ _ls_resp["status"] | default("error") if _ls_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: liability_summary
+              result: '{{ _ls_data }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: reconcile_prepare ───────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "reconcile_prepare" }}'
+        sequence:
+        - variables:
+            _rp_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+            _rp_stmt_bal: '{{ statement_balance | default(none) }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rp_stmt_bal is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: reconcile_prepare
+                  result: null
+                  error: statement_balance is required for reconcile_prepare
+            - stop: return
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rp_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_sutra_firefly
+              response_variable: _rp_ac_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ item_norm | urlencode }}&limit=20'
+            - variables:
+                _rp_id: >-
+                  {%- set c = (_rp_ac_resp['result']['content'] | default([])) if (_rp_ac_resp is mapping and 'result' in _rp_ac_resp and _rp_ac_resp['result'] is mapping) else [] -%}
+                  {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in c -%}{%- if (a.get('name','') | lower) == (item_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rp_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: reconcile_prepare
+                  result: null
+                  error: 'No account found matching "{{ item_norm }}".'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _rp_acct_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'accounts/{{ _rp_id }}'
+        - action: script.zen_sutra_firefly
+          response_variable: _rp_txn_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'accounts/{{ _rp_id }}/transactions?start={{ start_norm }}&end={{ end_norm }}'
+            perPage: 100
+        - variables:
+            _rp_acct: >-
+              {%- if _rp_acct_resp is mapping and 'result' in _rp_acct_resp and _rp_acct_resp['result'] is mapping -%}
+                {%- set d = _rp_acct_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', _rp_id)}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rp_txns: >-
+              {%- set raw = (_rp_txn_resp['result']['content'] | default({})) if (_rp_txn_resp is mapping and 'result' in _rp_txn_resp and _rp_txn_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'description': first.get('description', ''), 'amount': first.get('amount', '0'), 'type': first.get('type', ''), 'source': first.get('source_name', ''), 'destination': first.get('destination_name', ''), 'reconciled': first.get('reconciled', false)}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            _rp_period_net: >-
+              {%- set _ns = namespace(total=0.0) -%}
+              {%- for t in _rp_txns -%}
+                {%- set amt = t.get('amount', '0') | float(0) -%}
+                {%- set typ = t.get('type', '') -%}
+                {%- if typ == 'deposit' -%}{%- set _ns.total = _ns.total + amt -%}
+                {%- elif typ == 'withdrawal' -%}{%- set _ns.total = _ns.total - amt -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.total | round(2) }}
+            _rp_stmt_float: '{{ _rp_stmt_bal | float(0) | round(2) }}'
+        - variables:
+            final_response:
+              status: '{{ _rp_txn_resp["status"] | default("error") if _rp_txn_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: reconcile_prepare
+              result:
+                account: '{{ _rp_acct.get("name", "") if _rp_acct is mapping else "" }}'
+                account_id: '{{ _rp_id }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+                firefly_period_net: '{{ _rp_period_net }}'
+                statement_balance: '{{ _rp_stmt_float }}'
+                discrepancy: '{{ (_rp_stmt_float - _rp_period_net) | round(2) }}'
+                transaction_count: '{{ _rp_txns | length }}'
+                transactions: '{{ _rp_txns }}'
+                unreconciled: '{{ _rp_txns | selectattr("reconciled", "equalto", false) | list }}'
+                unreconciled_count: '{{ _rp_txns | selectattr("reconciled", "equalto", false) | list | length }}'
+                instructions: Pass this result to the AI for matching against your bank statement rows. Use transaction_update to mark reconciled.
+        - stop: return
+          response_variable: final_response
+
+    # ── case: transaction_normalize ───────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transaction_normalize" }}'
+        sequence:
+        - action: script.zen_sutra_firefly
+          response_variable: _tn_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'transactions?start={{ start_norm }}&end={{ end_norm }}&type=withdrawal'
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _tn_raw: >-
+              {%- if _tn_resp is mapping and 'result' in _tn_resp and _tn_resp['result'] is mapping -%}
+                {{ _tn_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _tn_uncategorized: >-
+              {%- set d = _tn_raw.get('data', []) if _tn_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- if (first.get('category_name') or '') | trim == '' -%}
+                  {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'description': first.get('description', ''), 'amount': first.get('amount', ''), 'source': first.get('source_name', ''), 'destination': first.get('destination_name', ''), 'tags': first.get('tags', [])}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            final_response:
+              status: '{{ _tn_resp["status"] | default("error") if _tn_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transaction_normalize
+              result:
+                uncategorized_transactions: '{{ _tn_uncategorized }}'
+                count: '{{ _tn_uncategorized | length }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+                instructions: For each transaction propose merchant, category, budget, and tags. Then call transaction_update per transaction to apply.
+        - stop: return
+          response_variable: final_response
+
+    # ── case: project_account_status ──────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "project_account_status" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: project_account_status
+                  result: null
+                  error: item (project tag name) is required for project_account_status
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _pas_txn_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'search/transactions?query=tag_is%3A{{ item_norm | urlencode }}&start={{ start_norm }}&end={{ end_norm }}'
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - action: script.zen_sutra_firefly
+          response_variable: _pas_pig_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: piggy-banks
+            perPage: 100
+        - variables:
+            _pas_txns: >-
+              {%- set raw = (_pas_txn_resp['result']['content'] | default({})) if (_pas_txn_resp is mapping and 'result' in _pas_txn_resp and _pas_txn_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[], total=0.0) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- set amt = first.get('amount', '0') | float(0) -%}
+                {%- set _ns.total = _ns.total + amt -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'description': first.get('description', ''), 'amount': amt, 'category': first.get('category_name', ''), 'source': first.get('source_name', '')}] -%}
+              {%- endfor -%}
+              {{ {'transactions': _ns.out, 'total_spent': _ns.total | round(2)} }}
+            _pas_pig: >-
+              {%- set raw = (_pas_pig_resp['result']['content'] | default({})) if (_pas_pig_resp is mapping and 'result' in _pas_pig_resp and _pas_pig_resp['result'] is mapping) else {} -%}
+              {%- set d = raw.get('data', []) if raw is mapping else [] -%}
+              {%- set _ns = namespace(found=none) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- if (attrs.get('name', '') | lower) == (item_norm | lower) -%}
+                  {%- set curr = attrs.get('current_amount', '0') | float(0) -%}
+                  {%- set tgt = attrs.get('target_amount', '0') | float(0) -%}
+                  {%- set _ns.found = {'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'current': curr, 'target': tgt, 'percentage': ((curr / tgt * 100) | round(1)) if tgt > 0 else 0} -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ _ns.found }}
+        - variables:
+            final_response:
+              status: '{{ _pas_txn_resp["status"] | default("error") if _pas_txn_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: project_account_status
+              result:
+                project_tag: '{{ item_norm }}'
+                transactions: '{{ _pas_txns }}'
+                piggy_bank: '{{ _pas_pig }}'
+                date_range:
+                  start: '{{ start_norm }}'
+                  end: '{{ end_norm }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: budget_create ───────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "budget_create" }}'
+        sequence:
+        - variables:
+            _bc_confirm: '{{ confirm | default(false) | bool }}'
+            _bc_notes: '{{ notes | default("") | string | trim }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: budget_create
+                  result: null
+                  error: item (budget name) is required for budget_create
+            - stop: return
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _bc_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: budget_create
+                  result:
+                    planned:
+                      name: '{{ item_norm }}'
+                      notes: '{{ _bc_notes }}'
+                  message: Set confirm=true to create this budget.
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _bc_payload: >-
+              {%- set body = {'name': item_norm, 'active': true} -%}
+              {%- if _bc_notes != '' -%}{%- set body = body | combine({'notes': _bc_notes}) -%}{%- endif -%}
+              {{ body | tojson }}
+        - action: script.zen_sutra_firefly
+          response_variable: _bc_resp
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: budgets
+            payload: '{{ _bc_payload }}'
+        - variables:
+            _bc_result: >-
+              {%- if _bc_resp is mapping and 'result' in _bc_resp and _bc_resp['result'] is mapping -%}
+                {%- set d = _bc_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _bc_resp["status"] | default("error") if _bc_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: budget_create
+              result: '{{ _bc_result }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: piggybank_create ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "piggybank_create" }}'
+        sequence:
+        - variables:
+            _pbc_confirm: '{{ confirm | default(false) | bool }}'
+            _pbc_notes: '{{ notes | default("") | string | trim }}'
+            _pbc_target: '{{ piggybank_target | default(none) }}'
+            _pbc_tdate: '{{ target_date | default("") | string | trim }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" or src_acct_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: piggybank_create
+                  result: null
+                  error: item (piggy bank name) and source_account (savings account name) are both required
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _pbc_ac_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'autocomplete/accounts?query={{ src_acct_norm | urlencode }}&limit=20'
+        - variables:
+            _pbc_acct_id: >-
+              {%- set c = (_pbc_ac_resp['result']['content'] | default([])) if (_pbc_ac_resp is mapping and 'result' in _pbc_ac_resp and _pbc_ac_resp['result'] is mapping) else [] -%}
+              {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+              {%- set _ns = namespace(found=none) -%}
+              {%- for a in c -%}{%- if (a.get('name','') | lower) == (src_acct_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+              {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _pbc_acct_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: piggybank_create
+                  result: null
+                  error: 'No account found matching "{{ src_acct_norm }}".'
+            - stop: return
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _pbc_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: piggybank_create
+                  result:
+                    planned:
+                      name: '{{ item_norm }}'
+                      account_id: '{{ _pbc_acct_id }}'
+                      account: '{{ src_acct_norm }}'
+                      target_amount: '{{ _pbc_target }}'
+                      target_date: '{{ _pbc_tdate }}'
+                  message: Set confirm=true to create this piggy bank.
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _pbc_payload: >-
+              {%- set body = {'name': item_norm, 'account_id': _pbc_acct_id | int} -%}
+              {%- if _pbc_target is not none -%}{%- set body = body | combine({'target_amount': _pbc_target | float(0) | string}) -%}{%- endif -%}
+              {%- if _pbc_tdate != '' -%}{%- set body = body | combine({'target_date': _pbc_tdate}) -%}{%- endif -%}
+              {%- if _pbc_notes != '' -%}{%- set body = body | combine({'notes': _pbc_notes}) -%}{%- endif -%}
+              {{ body | tojson }}
+        - action: script.zen_sutra_firefly
+          response_variable: _pbc_resp
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: piggy-banks
+            payload: '{{ _pbc_payload }}'
+        - variables:
+            _pbc_result: >-
+              {%- if _pbc_resp is mapping and 'result' in _pbc_resp and _pbc_resp['result'] is mapping -%}
+                {%- set d = _pbc_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _pbc_resp["status"] | default("error") if _pbc_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: piggybank_create
+              result: '{{ _pbc_result }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: bill_create ─────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "bill_create" }}'
+        sequence:
+        - variables:
+            _bilc_confirm: '{{ confirm | default(false) | bool }}'
+            _bilc_notes: '{{ notes | default("") | string | trim }}'
+            _bilc_amt: '{{ amount_norm }}'
+            _bilc_freq: '{{ limit_period | default("monthly") | string | trim | lower }}'
+            _bilc_date: '{{ date_norm }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" or _bilc_amt == 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: bill_create
+                  result: null
+                  error: item (bill name) and amount are both required for bill_create
+            - stop: return
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _bilc_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: bill_create
+                  result:
+                    planned:
+                      name: '{{ item_norm }}'
+                      amount: '{{ _bilc_amt }}'
+                      repeat_freq: '{{ _bilc_freq }}'
+                      start_date: '{{ _bilc_date }}'
+                  message: Set confirm=true to create this bill.
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _bilc_payload: >-
+              {%- set body = {'name': item_norm, 'amount_min': _bilc_amt | string, 'amount_max': _bilc_amt | string, 'date': _bilc_date, 'repeat_freq': _bilc_freq, 'active': true, 'currency_code': 'USD'} -%}
+              {%- if _bilc_notes != '' -%}{%- set body = body | combine({'notes': _bilc_notes}) -%}{%- endif -%}
+              {{ body | tojson }}
+        - action: script.zen_sutra_firefly
+          response_variable: _bilc_resp
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: bills
+            payload: '{{ _bilc_payload }}'
+        - variables:
+            _bilc_result: >-
+              {%- if _bilc_resp is mapping and 'result' in _bilc_resp and _bilc_resp['result'] is mapping -%}
+                {%- set d = _bilc_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _bilc_resp["status"] | default("error") if _bilc_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: bill_create
+              result: '{{ _bilc_result }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: transaction_link ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transaction_link" }}'
+        sequence:
+        - variables:
+            _tl2_confirm: '{{ confirm | default(false) | bool }}'
+            _tl2_ref: '{{ external_ref | default("") | string | trim }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" or _tl2_ref == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: transaction_link
+                  result: null
+                  error: item_id (transaction ID) and external_ref are both required for transaction_link
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_firefly
+          response_variable: _tl2_get_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'transactions/{{ item_id_norm }}'
+        - variables:
+            _tl2_existing: >-
+              {%- if _tl2_get_resp is mapping and 'result' in _tl2_get_resp and _tl2_get_resp['result'] is mapping -%}
+                {%- set d = _tl2_get_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {%- if obj is mapping -%}
+                    {%- set attrs = obj.get('attributes', {}) -%}
+                    {%- set txns = attrs.get('transactions', []) -%}
+                    {{ txns[0] if txns | length > 0 else {} }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _tl2_existing_notes: '{{ _tl2_existing.get("notes", "") | default("") | string | trim if _tl2_existing is mapping else "" }}'
+            _tl2_link_tag: '[ref:{{ _tl2_ref }}]'
+        - variables:
+            _tl2_already_linked: '{{ _tl2_link_tag in _tl2_existing_notes }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _tl2_already_linked }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: success
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: transaction_link
+                  result:
+                    transaction_id: '{{ item_id_norm }}'
+                    external_ref: '{{ _tl2_ref }}'
+                    already_linked: true
+                    notes: '{{ _tl2_existing_notes }}'
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _tl2_new_notes: '{{ (_tl2_existing_notes ~ " " ~ _tl2_link_tag) | trim }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _tl2_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: transaction_link
+                  result:
+                    transaction_id: '{{ item_id_norm }}'
+                    external_ref: '{{ _tl2_ref }}'
+                    existing_notes: '{{ _tl2_existing_notes }}'
+                    new_notes: '{{ _tl2_new_notes }}'
+                  message: Set confirm=true to append this reference to the transaction notes.
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _tl2_payload: '{{ {"transactions": [{"notes": _tl2_new_notes}]} | tojson }}'
+        - action: script.zen_sutra_firefly
+          response_variable: _tl2_put_resp
+          continue_on_error: true
+          data:
+            action_type: put
+            endpoint: 'transactions/{{ item_id_norm }}'
+            payload: '{{ _tl2_payload }}'
+        - variables:
+            final_response:
+              status: '{{ _tl2_put_resp["status"] | default("error") if _tl2_put_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transaction_link
+              result:
+                transaction_id: '{{ item_id_norm }}'
+                external_ref: '{{ _tl2_ref }}'
+                linked: '{{ _tl2_put_resp["status"] | default("error") == "success" if _tl2_put_resp is mapping else false }}'
+                notes: '{{ _tl2_new_notes }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── default: unknown case ────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: error
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          case: '{{ case_norm }}'
+          result: null
+          error: 'Unknown case "{{ case_norm }}". Call mode=help for available cases.'
+    - stop: return
+      response_variable: final_response

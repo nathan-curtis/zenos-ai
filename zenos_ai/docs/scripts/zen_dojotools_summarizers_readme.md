@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — v4.6.0
+# Zen DojoTools Summarizers — v5.1.0
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
@@ -75,6 +75,9 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 | `supplemental_prompt` | No | Extra data or instructions appended to the monk prompt. |
 | `force` | No | Bypass the run governor (dedup burnout window). For admin overrides or emergency on-demand runs. Default `false`. |
 | `area_id` | No | HA area ID. When set and the KFC defines `area_seed`, the `{{area_id}}` slot in `area_seed.params` is filled at runtime. Used for per-area rollup patterns. |
+| `index_call_override` | No | Override the component's configured index call with a custom dict DSL for this single run. Does not persist. |
+| `parent_component_id` | No | Component slug to treat as the logical parent of this run (for compound/nested component patterns). Echoed in the response for correlation. |
+| `staleness_minutes` | No | If the component's last kata drawer is newer than this value, skip the monk call and return the cached kata. Sets `expires_after` on the kata write. Default: uses `staleness_minutes` from the KFC drawer if present, else no staleness check. |
 | `caller_token` | No | Opaque pass-through token for correlation. |
 
 ### What It Does
@@ -168,6 +171,7 @@ Synthesizes all active component kata drawers into a single `zen_summary` — th
 | `query` | No | Override the default summarization query. |
 | `post_to_kata_cabinet` | No | Write `zen_summary` to Kata cabinet? Default: `false`. |
 | `supplemental_prompt` | No | Extra instructions appended to the prompt. |
+| `force` | No | Bypass the `super_burnout_seconds` cooldown governor. Default `false`. |
 | `caller_token` | No | Opaque pass-through token for correlation. |
 
 ### What It Does
@@ -184,6 +188,23 @@ Synthesizes all active component kata drawers into a single `zen_summary` — th
 10. **Write `zen_supersummary_status`** — records run status + component count to Kata cabinet
 11. **Post `zen_summary`** — if `post_to_kata_cabinet` is true and monk returned data, writes to Kata cabinet as `ZEN_SUMMARY`
 12. **Emit event** — fires `zen_dojotools_event_emitter`
+
+### Pipeline Tier Split (v5.1.0)
+
+v5.1.0 separates components into three pipeline tiers. Tier is set by the `pipeline_tier` field in the KFC Dojo drawer:
+
+| Tier | Values | How SuperSummary handles it |
+|------|--------|----------------------------|
+| `direct` | default when field absent | Full `component_data` included in the monk prompt |
+| `ambient` | `ambient` | Excluded from direct `component_data`. Pre-digested by **Trapper Keeper** into a compact breadcrumb + navigation index. Urgency ≥ 4 promotes the component to `active_components`. |
+| `system` | `system` | Excluded from direct `component_data`. Summary provided via a separate system_summary block. |
+
+**Ambient urgency promotion rule:**
+- Urgency 0–3 → ambient_nav breadcrumb only
+- Urgency 4–5 → also added to `attention` list
+- Urgency 6–10 → promoted to `active_components` (same as direct tier)
+
+**Trapper Keeper** is SuperSummary's ambient pre-processor. It reads all ambient-tier component kata drawers, extracts a compact breadcrumb (component name, urgency, one-line summary), and builds a navigation index of which ambient components are available and how to reach them via a targeted Ninja run. The Trapper Keeper output is injected into the SuperSummary monk prompt as a navigation aid rather than full data.
 
 ### Active Component Selection
 
@@ -207,6 +228,19 @@ Components with `meta.enabled: false` are excluded. Components with no `meta` bl
 ```
 
 ---
+
+## SuperSummary Run Governor
+
+SuperSummary has its own cooldown window separate from the Ninja governor. Controlled by `super_burnout_seconds` in the `zen_ninja_config` drawer in the household cabinet. Default: **600 seconds (10 min)**.
+
+If SuperSummary ran less than `super_burnout_seconds` ago, the call returns immediately with `reason: dedup_window`. Set `force: true` to bypass.
+
+## Size Guard and Context Budget
+
+SuperSummary enforces two guards before the monk call:
+
+- **Size guard:** if the assembled prompt exceeds **200,000 bytes**, SuperSummary aborts with `status: error, reason: prompt_size_exceeded`. Reduce component count or trim kata drawer values.
+- **Context budget:** `max_context_tokens` (from `zen_ninja_config`, default **28,000**) caps the total token estimate. If the assembled prompt would exceed the budget, ambient/system-tier components are dropped before direct-tier components.
 
 ## Forcing Runs
 
@@ -283,5 +317,6 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| v5.1.0 | Pipeline tier split: `direct`/`ambient`/`system` tiers via `pipeline_tier` KFC field. Trapper Keeper pre-digests ambient-tier components (breadcrumb + navigation index). Ambient urgency promotion rule (0–3=breadcrumb only; 4–5=attention; 6–10=active_components). SuperSummary run governor (`super_burnout_seconds`, default 600s, `force` bypass). Size guard (>200K bytes → abort). Context budget guard (`max_context_tokens`, default 28K). Ninja: `index_call_override`, `parent_component_id`, `staleness_minutes` input fields. `response_variable: result` on all stop steps. Namespace scoping fix on `active_components` iteration. `ZEN_SUMMARY` key case fix. Event→action migration. `library_console` rename. Kata cabinet variable fix. |
 | v4.6.0 | Step 3d — label description resolution: when `component_summary` is empty after reading the Dojo drawer (Scribe `trim_description` path), ninja resolves it from the base label description via `zen_dojotools_labels`. `zen_action_emission_enabled` boolean added (operator-only gate for `suggested_act_event` emission). `emission_cooldown_minutes` Dojo drawer field (default 60 min) gates per-component action event emission; emits `emission_suppressed` on cooldown. FG-38 `from_json` guards on all FileCabinet drawer reads. |
 | v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist gate (`zen_summarizer_seed_whitelist`). Backward compatible — no seed = old behavior. |
