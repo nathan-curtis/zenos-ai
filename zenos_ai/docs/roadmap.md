@@ -10,7 +10,7 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.7.0 'Neo' — Beta (feat/2026.7.0)**
+**2026.7.0 'Neo' — Shipped (2026-06-27)**
 
 The cabinet is a graph. Tools talk to each other by design. Friday navigates a mind, not a file system.
 

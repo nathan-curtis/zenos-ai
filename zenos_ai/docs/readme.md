@@ -8,7 +8,7 @@
 
 ---
 
-> ### 2026.7.0 'Neo' — Beta (ETA 1 Jul 2026)
+> ### 2026.7.0 'Neo' — Released 2026-06-27
 >
 > **1. CabCeption — FileCabinet v6.2.0.** Nested drawer trees via `/` path separator. VirtualDrawer (softlink), LiveDrawer (KF4 schema absorbed into a drawer — fires a tool call on read, warm/cold cache, never empty). Every drawer is a node with meta, labels, and children.
 >
@@ -312,7 +312,7 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 
 **File:** `docs/roadmap.md`
 
-**2026.7.0 'Neo' — Beta (ETA 2026-07-01)**
+**2026.7.0 'Neo' — Shipped (2026-06-27)**
 
 * CabCeption — FileCabinet v6.2.0: nested drawer trees, VirtualDrawer, LiveDrawer (KF4 schema absorbed into FC)
 * Tool Manifest — `zenos_manifest.jinja`, namespace discovery broker v6.0.0, every tool self-describes
@@ -329,7 +329,7 @@ See: [Release Notes — Neo](releases/neo.md)
 
 ---
 
-**2026.6.0 'Clue' — Beta (ETA 2026-06-01)**
+**2026.6.0 'Clue' — Shipped (2026-06-01)**
 
 * Room Manager (RoomReg) v1.48.0 — spatial topology hub, context slices, home_overview; +inventory via `object_lens` place lens (slim per-entity + full in `domain_context`); +chores with `replace_action` envelopes; area_create/area_update guards; emergency mode safety inventory enrichment
 * Plant Manager v5.4.0 — physical plant + energy: electric, water, gas, HVAC, mechanical, circuits; thermal + water_management + motors + ignore/unignore modes; `include_inventory` attaches Grocy room_brief to load nodes; `mode=managed` universal machine rollup

@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Beta: 2026.7.0 'Neo'** | Stable: 2026.6.0 'Clue'
+**Stable: 2026.7.0 'Neo'** | Previous: 2026.6.0 'Clue'
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -37,7 +37,7 @@ And a few things that are.
 
 ---
 
-**Stable: 2026.6.0 'Clue'** — shipped 2026-06-01. Room Manager spatial topology, AutoVac, Grocy v5.2.0, Identity presence block, Plant Manager v5.4.0, Media Manager, Security Manager, ZenShade, Cortex v42 'The Answer'.
+**2026.6.0 'Clue'** — shipped 2026-06-01. Room Manager spatial topology, AutoVac, Grocy v5.2.0, Identity presence block, Plant Manager v5.4.0, Media Manager, Security Manager, ZenShade, Cortex v42 'The Answer'.
 
 Release notes: [Clue](zenos_ai/docs/releases/clue.md) | [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights, Camera, Action](zenos_ai/docs/releases/lights_camera_action.md) | [Action Jackson 2](zenos_ai/docs/releases/action_jackson_2.md) | [Action Jackson](zenos_ai/docs/releases/action_jackson.md) | [Ectoplasm](zenos_ai/docs/releases/ectoplasm.md) | [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md)
 

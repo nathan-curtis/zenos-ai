@@ -1,13 +1,15 @@
 # Release Notes — 2026.7.0 'Neo'
 
-**Status:** Beta
-**Branch:** `feat/2026.7.0` (target: `main`)
+**Status:** Released — 2026-06-27
+**Branch:** `main`
 **Base:** 2026.6.0 'Clue'
-**UAT:** Nyx (H:\) — in progress
+**UAT:** Nyx (H:\) — complete
 
 ---
 
 *I know Kung Fu.*
+
+> Released early — 2026-06-27. Travel window. Neo is solid.
 
 ---
 
