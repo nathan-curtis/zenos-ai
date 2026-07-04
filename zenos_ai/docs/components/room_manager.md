@@ -270,6 +270,26 @@ GPS coordinates are **not** stored — read live from `zone.home` at query time.
 
 ---
 
+## Tax / Real-Estate Fields (v5.4.1)
+
+Per-room fields for depreciation and business-use calculations, set via `mode=set`:
+
+| Field | Values | Notes |
+|-------|--------|-------|
+| `tax_bucket` | `conditioned` \| `conditioned_storage` \| `conditioned_circulation` \| `conditioned_utility` \| `under_roof_porch` \| `under_roof_garage` \| `under_roof_attic` | IRS/appraisal space classification. Feeds the denominator for `zen_codex_finance_depreciation`'s `asset_allocation_*` business-use-percent suggestions — see [Firefly III — Codex Tier](../plugins/firefly_iii.md#codex-tier). |
+| `home_office_claimed` | boolean | Whether this room is claimed as a home-office deduction. |
+| `parent_area_id` | area_id | Override for area hierarchy where the physical/logical parent isn't derivable from HA's own area-parent relationship. |
+
+All three are optional and additive — omitting them preserves existing values on `mode=set`, same non-destructive merge behavior as the household profile fields above.
+
+---
+
+## KFC Registration (KF5)
+
+`zen_dojotools_room_manager` self-registers its dojo drawer via `mode=kfc_manifest` (`room_manager` component, no seed — pure rollup) — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
+
+---
+
 ## home_overview — Whole-House Snapshot
 
 Returns everything needed for AI home-state reasoning in a single call.

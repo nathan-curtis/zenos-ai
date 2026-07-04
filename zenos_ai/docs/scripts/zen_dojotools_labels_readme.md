@@ -16,9 +16,12 @@ This script is **MCP-exposed**. Friday can read the label index and create or up
 
 ## Input Fields
 
+**`mode` is now the primary selector (v5.1.0+), per the project-wide standardization on `mode:` across all dojotools.** `action_type` still works — resolution order is `mode` → `action_type` → default `read` — but is a deprecated alias going forward. Every example in this doc using `action_type:` still works unchanged; new callers should use `mode:` instead.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `action_type` | select | `read` | `create`, `read`, `update`, `delete`, `tag`, `untag`, `reset` |
+| `mode` | select | `read` | `create`, `read`, `update`, `delete`, `tag`, `untag`, `reset`. Primary selector. |
+| `action_type` | select | — | Deprecated alias for `mode`. Still accepted for backward compatibility. |
 | `label_list` | list of text | `[]` | Label names (case-insensitive). Required for create, update, delete, tag, untag |
 | `target_entities` | list of entity_ids | `[]` | Entities to tag/untag. Required for tag and untag |
 | `new_description` | text | — | Description to set on the label (create and update) |

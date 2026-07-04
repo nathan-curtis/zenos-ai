@@ -53,6 +53,10 @@ script:
           resolve — read side: resolve authority stack, return what would
           happen. No dispatch, no log write. Use for browse and debug.
           resolve_and_dispatch — resolve + dispatch + log. Full send.
+          direct_dispatch — backwards-compat NR replacement. Bypasses authority
+          stack; dispatches straight to notify.* like the old notification_router.
+          Requires override=true — the "I know what I'm doing" switch. Both
+          successful dispatches and blocked attempts are logged.
           author_policy — write/update a postman_profile in a cabinet drawer.
           clear_tag — remove a log entry from zen_postman_log by pm_tag (pass as tag=<pm_tag>).
           help — return drawer schemas and example calls for setup.
@@ -62,6 +66,7 @@ script:
             options:
               - resolve
               - resolve_and_dispatch
+              - direct_dispatch
               - author_policy
               - clear_tag
               - help
@@ -354,6 +359,34 @@ script:
         selector:
           object:
 
+      notification_targets:
+        name: Notification Targets
+        description: >-
+          direct_dispatch only. Named target group(s) to send to — same targets
+          as the old notification_router. Admin Devices always fires; all others
+          check quiet/work hours unless breakthrough=true.
+        required: false
+        selector:
+          select:
+            multiple: true
+            options:
+              - Admin Devices
+              - Family Devices
+              - Family Devices (Verbose)
+              - Default User Phone
+              - Secondary User Phone
+
+      override:
+        name: Direct Dispatch Override
+        description: >-
+          direct_dispatch only. Must be true to proceed — the "I know what I'm
+          doing" switch. Confirms you asked the operator before bypassing the
+          authority stack. Blocked attempts are logged regardless.
+        required: false
+        default: false
+        selector:
+          boolean:
+
       caller_token:
         name: Caller Token
         description: Opaque correlation token.
@@ -388,6 +421,8 @@ script:
           _force_audio:         "{{ force_audio | default(false) | bool(false) }}"
           _kata_raw:            "{{ kata_input | default({}, true) }}"
           _breakthrough:        "{{ breakthrough | default(false) | bool(false) }}"
+          _override:            "{{ override | default(false, true) | bool(false) }}"
+          _notif_targets_raw:   "{{ notification_targets | default('Admin Devices', true) }}"
           _ack_depth:           "{{ ack_depth | default(0) | int(0) }}"
           _ack_owner:           "{{ ack_owner | default('', true) | string | trim }}"
           _ack_context:         "{{ ack_context | default('', true) | string | trim }}"
@@ -789,9 +824,9 @@ script:
                 {%- endfor -%}
                 {{ (ns.chans if ns.chans | length > 0 else ['push']) | tojson }}
               # Push targets: read from postman_profile.push_targets.
-              # Default: Admin Devices (notify.admin_devices via notification_router).
+              # Default: Admin Devices (notify.admin_devices).
               # Override: set push_targets in user postman_profile drawer — list of
-              # notification_router target names ("Default User Phone", "Family Devices", etc).
+              # direct_dispatch target names ("Default User Phone", "Family Devices", etc).
               # SP2: when zen_postman + zen_channel_push + person labels are applied to
               # device_tracker.* entities, set push_device_labels: true to use label
               # intersection instead of target names.
@@ -1263,6 +1298,189 @@ script:
                   }
                 }}
           - stop: "Dispatched"
+            response_variable: _final_response
+
+
+      # ══════════════════════════════════════════════════════════════════════
+      # MODE: direct_dispatch
+      # Backwards-compat replacement for zen_dojotools_notification_router.
+      # Bypasses authority stack — no cabinet reads, no tier mapping, no gate.
+      # Requires override=true. Both dispatches and blocked attempts are logged.
+      # ══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'direct_dispatch' }}"
+        then:
+
+          # ── Gate: override=true required ────────────────────────────────
+          - if: "{{ not _override }}"
+            then:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: read
+                  volume_entity_id: "{{ _kata_cab }}"
+                  key: zen_postman_log
+                  force_action: true
+                response_variable: _dd_block_log_read
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  volume_entity_id:
+                    - "{{ _kata_cab }}"
+                  key: zen_postman_log
+                  value: >-
+                    {%- set r = (_dd_block_log_read.get('result', {}) if _dd_block_log_read is mapping else {}) -%}
+                    {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+                    {%- set raw = r.get('zen_postman_log', none) -%}
+                    {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else none) -%}
+                    {%- set log_val = (raw.get('value', none) if raw is mapping else none) -%}
+                    {%- set cur = log_val if log_val is sequence and log_val is not string else (log_val | from_json if log_val is string else []) -%}
+                    {%- set cur = cur if cur is sequence else [] -%}
+                    {%- set entry = {
+                      'pm_tag': (_tag if _tag != '' else 'dd_blocked_' ~ now().timestamp() | int | string),
+                      'status': 'direct_dispatch_blocked',
+                      'timestamp': now().isoformat(),
+                      'ttl_s': 86400,
+                      'mode': 'direct_dispatch',
+                      'override': false,
+                      'caller_token': _caller_token,
+                      'note': 'direct_dispatch attempted without override=true. Operator approval was not obtained.'
+                    } -%}
+                    {{ (cur + [entry])[-10:] | tojson }}
+              - variables:
+                  _final_response:
+                    status: error
+                    mode: direct_dispatch
+                    message: >-
+                      direct_dispatch requires override=true. You must ask the
+                      operator for explicit approval before bypassing the authority
+                      stack. This attempt has been logged.
+                    coaching:
+                      - "direct_dispatch skips all authority stack resolution — no quiet/work hours gate, no cabinet reads, no tier mapping."
+                      - "You are required to ask the operator before using this mode. Do not assume permission."
+                      - "This blocked attempt has been written to zen_postman_log. Misuse will be reviewed with the operator."
+                    caller_token: "{{ _caller_token }}"
+              - stop: "direct_dispatch blocked — override=true not set"
+                response_variable: _final_response
+
+          # ── Normalize targets ──────────────────────────────────────────
+          - variables:
+              _dd_targets: >-
+                {%- set raw = _notif_targets_raw -%}
+                {%- if raw is sequence and raw is not string -%}{{ raw }}
+                {%- else -%}
+                  {%- set s = raw | string | trim -%}
+                  {%- if s.startswith('[') -%}
+                    {%- set parsed = s | from_json(none) -%}
+                    {{ parsed if parsed is sequence else ['Admin Devices'] }}
+                  {%- else -%}{{ [s] }}{%- endif -%}
+                {%- endif -%}
+              _dd_gate_ok: >-
+                {{ _breakthrough or (
+                   not is_state('binary_sensor.zen_quiet_hours', 'on')
+                   and not is_state('binary_sensor.zen_work_hours', 'on')
+                ) }}
+
+          # ── Build payload ──────────────────────────────────────────────
+          - variables:
+              _dd_data: >-
+                {%- set ns = namespace(d=(_notif_extra if _notif_extra is mapping else {})) -%}
+                {%- if _tag != '' -%}{%- set ns.d = ns.d | combine({'tag': _tag}) -%}{%- endif -%}
+                {{ ns.d }}
+
+          # ── Dispatch loop ──────────────────────────────────────────────
+          - repeat:
+              for_each: "{{ _dd_targets }}"
+              sequence:
+                - choose:
+                  - conditions: "{{ repeat.item == 'Admin Devices' }}"
+                    sequence:
+                      - action: notify.admin_devices
+                        data:
+                          title: "{{ _title }}"
+                          message: "{{ _message }}"
+                          data: "{{ _dd_data }}"
+                  - conditions:
+                    - condition: template
+                      value_template: "{{ repeat.item == 'Family Devices' and _dd_gate_ok }}"
+                    sequence:
+                      - action: notify.family_devices
+                        data:
+                          title: "{{ _title }}"
+                          message: "{{ _message }}"
+                          data: "{{ _dd_data }}"
+                  - conditions:
+                    - condition: template
+                      value_template: "{{ repeat.item == 'Family Devices (Verbose)' and _dd_gate_ok }}"
+                    sequence:
+                      - action: notify.family_devices_verbose
+                        data:
+                          title: "{{ _title }}"
+                          message: "{{ _message }}"
+                          data: "{{ _dd_data }}"
+                  - conditions:
+                    - condition: template
+                      value_template: "{{ repeat.item == 'Default User Phone' and _dd_gate_ok }}"
+                    sequence:
+                      - action: notify.default_user
+                        data:
+                          title: "{{ _title }}"
+                          message: "{{ _message }}"
+                          data: "{{ _dd_data }}"
+                  - conditions:
+                    - condition: template
+                      value_template: "{{ repeat.item == 'Secondary User Phone' and _dd_gate_ok }}"
+                    sequence:
+                      - action: notify.secondary_user
+                        data:
+                          title: "{{ _title }}"
+                          message: "{{ _message }}"
+                          data: "{{ _dd_data }}"
+
+          # ── Log the dispatch ───────────────────────────────────────────
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              volume_entity_id: "{{ _kata_cab }}"
+              key: zen_postman_log
+              force_action: true
+            response_variable: _dd_log_read
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: create
+              force_action: true
+              volume_entity_id:
+                - "{{ _kata_cab }}"
+              key: zen_postman_log
+              value: >-
+                {%- set r = (_dd_log_read.get('result', {}) if _dd_log_read is mapping else {}) -%}
+                {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
+                {%- set raw = r.get('zen_postman_log', none) -%}
+                {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else none) -%}
+                {%- set log_val = (raw.get('value', none) if raw is mapping else none) -%}
+                {%- set cur = log_val if log_val is sequence and log_val is not string else (log_val | from_json if log_val is string else []) -%}
+                {%- set cur = cur if cur is sequence else [] -%}
+                {%- set entry = {
+                  'pm_tag': (_tag if _tag != '' else 'dd_' ~ now().timestamp() | int | string),
+                  'status': 'direct_dispatch',
+                  'timestamp': now().isoformat(),
+                  'ttl_s': 86400,
+                  'mode': 'direct_dispatch',
+                  'targets': _dd_targets,
+                  'override': true,
+                  'caller_token': _caller_token,
+                  'note': 'Authority stack bypassed via direct_dispatch with operator override.'
+                } -%}
+                {{ (cur + [entry])[-10:] | tojson }}
+
+          # ── Return ─────────────────────────────────────────────────────
+          - variables:
+              _final_response:
+                status: dispatched
+                mode: direct_dispatch
+                targets: "{{ _dd_targets }}"
+                gate_ok: "{{ _dd_gate_ok }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: direct_dispatch complete
             response_variable: _final_response
 
 
@@ -1748,8 +1966,12 @@ script:
                       "content_policy per channel"
                     ],
                     "sp2_label_routing": "When zen_postman + zen_channel_push + person labels applied to device_tracker.* entities, set push_device_labels: true in user postman_profile to enable label intersection routing. Until then push_targets list (notify group names) is the override mechanism."
-                  }
+                  } | tojson
                 }}
+          - variables:
+              _dom_inner: "{{ (_final_response | from_json) | combine({'domain': 'comms', 'peers': {'event_emitter': 'zen_dojotools_event_emitter'}, 'see_also': 'zen_dojotools_manifest mode=domains name=comms'}) }}"
+          - variables:
+              _final_response: "{{ {'status': 'help', 'help': _dom_inner} }}"
           - stop: "Help"
             response_variable: _final_response
 
@@ -1770,9 +1992,12 @@ script:
                 consumes=['household_cabinet:postman_profile','user_cabinet:postman_profile','family_cabinet:postman_profile'],
                 returns='resolve|dispatch|author_policy|clear_tag result with delivery record',
                 failure_policy='return error shape',
-                modes=['resolve','resolve_and_dispatch','author_policy','clear_tag','help','tool_manifest'],
+                modes=['resolve','resolve_and_dispatch','direct_dispatch','author_policy','clear_tag','help','tool_manifest'],
                 icon='mdi:send',
                 color='cyan',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
 
                 caller_token=''
               ) | from_json -}}
@@ -1883,6 +2108,17 @@ script:
             {%- set _v = voice_answers | default('[]', true) -%}
             {{ _v | from_json if _v is string else (_v if _v is iterable and _v is not string else []) }}
           _ack_action:       ''
+
+      # ── 0.5. Guard: abort if message is empty (prevents blank TTS dings) ───
+      - if: "{{ _msg == '' }}"
+        then:
+        - variables:
+            result:
+              status: error
+              tool: zen_dojotools_announce
+              message: "message is required"
+        - stop: announce aborted — no message
+          response_variable: result
 
       # ── 1. Resolve target satellites ──────────────────────────────────────
       - variables:

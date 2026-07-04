@@ -160,3 +160,18 @@ zen_dojotools_security_manager:
 - **Room Manager** — `mode=get context_slices=+security` returns per-room zone + camera inventory derived from Security Manager data.
 - **AlertManager** — use `notify_target: postman` with `zen_event(kind: alert_fire)` to route panel events through the standard alert pipeline.
 - **Camera** — `zen_dojotools_camera tool=look` on any entity listed in `cameras_by_area` for visual analysis.
+
+---
+
+## KFC Registration (KF5)
+
+`zen_dojotools_security_manager` self-registers via `mode=kfc_manifest`, declaring **4 components** — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools):
+
+| Component | Role |
+|---|---|
+| `security_manager` | Rollup — seeds from `zen_dojotools_room_manager mode=home_overview`, synthesizes panel + perimeter + camera cache into one picture |
+| `security_perimeter` | Sub-component — door/lock/garage state transitions, security-context filtered (panel armed or Night mode) |
+| `security_panel` | Sub-component — DSC alarm state machine: `panel_state`, `arming_mode`, `zones`, `system_health` |
+| `security_cameras` | Sub-component — which cameras triggered, `detected_subjects`, `activity_type` |
+
+The three sub-components each declare `parent_component_key: security_manager` — the rollup component reads their cached katas (`panel_cache`, `perimeter_cache`, `camera_cache`) rather than re-querying each subsystem itself.

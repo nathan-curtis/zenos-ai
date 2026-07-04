@@ -181,6 +181,50 @@ The compact index (Friday's boot payload `index` key) is a pre-built view across
 
 ---
 
+## KF5: Self-Registering Tools
+
+The decisions above still apply — trigger philosophy, scope, output contract, chain control, downstream tier. KF5 changes *how a component gets wired into the dojo*, not what it decides.
+
+Under KF4, a component's dojo drawer is authored via Scribe (`new_thought` → `publish_kfc`) as a standalone artifact. Under KF5, a **tool self-declares** its KFC contract by implementing `mode=kfc_manifest`, and a generic bootstrap scanner (`zen_dojotools_manifest mode=bootstrap_kfc`) discovers it and writes the live drawer mount automatically — no Scribe authoring step required for tools that already exist as scripts.
+
+**The pattern:**
+
+1. Add `mode=kfc_manifest` to your tool. It returns `{status: ok, kfc: {...}}` where the `kfc` block is shaped like a dojo drawer definition (`kata_key`, `component_summary`, `component_instructions`, `seed`, `trigger_subscriptions`, `drift_threshold`, `meta.enabled`).
+2. Inside that same `kfc_manifest` sequence, self-register your tool on the FC callout whitelist: `tool:kfc_manifest` — hardcoded to your own tool name and this mode only. No dynamic or open whitelist writes.
+3. Add `script.zen_dojotools_yourtool` to the `_bkfc_known` list in `dojotools_manifest.yaml`.
+4. Run `zen_dojotools_manifest mode=bootstrap_kfc` (or wait for its automatic firing on `homeassistant_start` + daily `00:01`).
+
+**FC whitelist mode-scoping** (what makes this safe): the FileCabinet callout whitelist supports three entry formats:
+
+| Format | Meaning |
+|---|---|
+| `tool` | Plain tool name, all modes reachable via a live drawer — **deprecated, backcompat only** |
+| `tool:*` | All modes reachable — preferred for tools where every mode is FC-safe |
+| `tool:mode` | Restricted to exactly one mode — **required for any tool with write-capable modes** |
+
+A finance-domain tool, for example, is scoped `zen_dojotools_finance:kfc_manifest` — the live drawer can only ever reach that one read-only, self-describing mode, never a write path. `kfc_manifest` registering only its own hardcoded `tool:mode` pair (never a wildcard, never another tool's name) is what keeps self-registration from becoming an open write vector.
+
+**Live drawer shape** written by `bootstrap_kfc` (both the FC mount and the breadcrumb fields the summarizer resolves at runtime):
+
+```json
+{
+  "mount_point": true,
+  "fc_args": {"tool": "zen_dojotools_yourtool", "params": {"mode": "kfc_manifest"}},
+  "friendly_name": "Your Tool",
+  "label": "Your Component",
+  "kata_key": "your_component",
+  "meta": {"enabled": true, "requires": {"cert": "", "level": 0}}
+}
+```
+
+**`component_summary` is intentionally left out of the written drawer, but not out of the picture.** `bootstrap_kfc` still reads `component_summary` from your `kfc_manifest` response and returns it in its own result (`_bkfc_registered` entries) — so direct callers of `bootstrap_kfc` or `kfc_manifest` can see it. What it deliberately does NOT do is persist it into the cabinet drawer — this mirrors the space-saving convention Scribe already uses on the KF4 path (`trim_description`, see `dojotools_scribe.yaml`). The ninja summarizer resolves an empty `component_summary` from the HA label's description at read time instead (`dojotools_summarizers.yaml`, step 3d) — the summary lives once, on the label, not duplicated into every cabinet drawer. Set a real label description for your component; that's what the summarizer actually reads at runtime, not the drawer field.
+
+Because the live drawer resolves `kfc_manifest` fresh on every ninja run, changing `component_instructions` and reloading scripts takes effect on the next run — no re-bootstrap needed.
+
+KF4's Scribe-authored path and KF5's self-registration path are not mutually exclusive — both ultimately produce a dojo drawer the summarizer reads the same way. KF5 is the better fit when the KFC contract belongs to a tool that already exists as a script (Firefly, Finance, any `zen_dojotools_*`); Scribe authoring remains the path for components that aren't backed by an existing tool.
+
+---
+
 ## Appendix: KFC Template
 
 Use this as a starting scaffold. Replace everything in `<angle brackets>`. Scribe is the preferred tool for maintaining this definition after initial creation.

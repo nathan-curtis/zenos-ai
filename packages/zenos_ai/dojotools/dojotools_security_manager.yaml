@@ -2,6 +2,13 @@
 # ZenOS-AI DojoTools: Security Manager
 # Version: 5.2.0
 #
+# v5.2.0 (Zen pull, 2026-07-04): near-wholesale new kfc_manifest — 4
+#   components: security_manager (rollup, seeds from
+#   zen_dojotools_room_manager mode=home_overview), security_perimeter,
+#   security_panel (DSC alarm state machine), security_cameras — each a
+#   sub-component with parent_component_key. Purely additive, no other logic
+#   changed.
+#
 # Scripts:
 #   zen_dojotools_security_manager — Alarm panel query + control + policy
 #
@@ -111,6 +118,7 @@ script:
           select:
             options:
               - tool_manifest
+              - kfc_manifest
 
       caller_token:
         name: Caller Token
@@ -135,16 +143,354 @@ script:
                     tier='dojotools',
                     version='1.0.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
-                    required_labels=['dojotools'],
+                    required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['security_manager', 'alarm'],
                     consumes=['lock_or_alarm'],
                     returns=['security_state'],
                     icon='mdi:shield-lock',
                     color='red',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
-                ) | from_json }}
+                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['security_manager', 'security_perimeter', 'security_panel', 'security_cameras']}) }}
           - stop: tool_manifest
+            response_variable: result
+        - conditions: "{{ _tm_check == 'kfc_manifest' }}"
+          sequence:
+          - variables:
+              _kfc_filter: "{{ component | default('') | string | trim | lower if component is defined else '' }}"
+              _kfc_defs:
+              - kata_key: security_manager
+                friendly_name: Security Manager
+                label: security_manager
+                version: "1.0.1"
+                component_summary: ""
+                component_instructions: >-
+                  Synthesize unified home security picture. RM spatial snapshot is your ground truth — open with it, then layer events on top.
+                  SEED OUTPUT (zen_dojotools_room_manager, mode=home_overview):
+                    Spatial foundation: who is home, which rooms are occupied, which entry/exit
+                    points (portals, doors, garage) are open or secured. Read this before
+                    interpreting any event stream.
+
+                  INPUT (supplemental context from coalescer — read these fields from event data):
+                    panel_cache      — security_panel kata: panel_state, arming_mode, zones, system_health, urgency
+                    perimeter_cache  — security_perimeter kata: door/lock/garage state transitions, urgency
+                    camera_cache     — security_cameras kata: which cameras triggered, detected_subjects, activity_type, urgency
+                    camera_analysis  — camera_manager kata: full LLM vision analysis (ready ~15-30s after trigger). May be absent — degrade gracefully.
+
+                  STATE FIELD READING RULES — read state verbatim before assigning urgency:
+                    perimeter_cache.state: locked   = door/lock is SECURED. Not a breach. Not open.
+                    perimeter_cache.state: unlocked = door/lock is UNSECURED. May be noteworthy if armed.
+                    perimeter_cache.state: on       = contact sensor OPEN (door/window physically open).
+                    perimeter_cache.state: off      = contact sensor CLOSED (door/window physically closed/secured).
+                    perimeter_cache.state: open     = cover (garage door) physically open.
+                    perimeter_cache.state: closed   = cover (garage door) physically closed/secured.
+                    NEVER infer open/breach from entity name or event type alone. Always read state field first.
+
+                  EVENT DIRECTION — last_event tells you what HAPPENED, state tells you what IS:
+                    last_event: lock_*_locked   = lock transitioned TO locked = SECURING action. Urgency 0 unless other signals.
+                    last_event: lock_*_unlocked = lock transitioned TO unlocked = OPENING action. Noteworthy if armed.
+                    last_event: door_*_on       = door opened.
+                    last_event: door_*_off      = door closed.
+                    last_event: garage_open     = garage door opened.
+                    last_event: garage_closed   = garage door closed/secured.
+                    A securing event (locked, closed, off) while armed = panel doing its job. Not an alert.
+
+                  SPATIAL COMPOUND INFERENCE:
+                    Cross-reference RM state with event streams before assigning urgency.
+                    Person outside + house occupied: lower urgency than person outside + house vacant.
+                    Door opened + occupant in adjacent room: likely known; door opened + vacant house: suspicious.
+                    Alarm triggered + RM shows occupant in that zone + known time of day: likely false trigger.
+                    Alarm triggered + zone vacant + camera_analysis confirms presence: high-confidence real event.
+
+                  CAMERA ABSENT MODE:
+                    If camera_cache and camera_analysis are both empty or missing: proceed with RM + panel + perimeter.
+                    Explicitly note "Assessing from spatial state + panel + perimeter (cameras unavailable)."
+                    Flag ambiguous events as "unable to visually confirm" — confidence is lower, say so.
+
+                  SYNTHESIS RULES:
+                    Open with RM spatial snapshot: who is home, what is open or secured.
+                    Highest urgency from any sub-component drives rollup urgency after cross-domain adjustment.
+                    Safety-class events (triggered, unknown intruder) always override all other signals.
+                    If a sub-component cache is missing or stale (>15 min): note it, proceed with available data.
+
+                  ALERT POLICY: household cabinet -> security_manager drawer -> _alert_policy.
+                    If unavailable: apply default escalation rules below.
+
+                  DOOR OPEN POLICY:
+                    If panel_armed=false AND door has been open < 2 min: urgency 0, not message-worthy. Drop.
+                    If panel_armed=false AND door open >= 2 min: urgency 3 (climate/animals/weather). Note only.
+                    If panel_armed=true AND any door/contact OPEN (state=on): urgency 7+. Treat as perimeter breach.
+                    If panel_armed=true AND lock UNLOCKED (state=unlocked): urgency 5. Unsecured entry point.
+                    If panel_armed=true AND lock LOCKED (state=locked): urgency 0. Securing event — not an alert.
+                    garage_entry_door lock state=locked while armed = normal. urgency 0.
+
+                  ESCALATION:
+                    Panel triggered: urgency 10. action_required. suggested_act_event: zen_dojotools_postman.
+                    Unknown person + armed_away: urgency 8. suggested_act_event: zen_dojotools_postman.
+                    Perimeter breach while armed (door/contact open): urgency 7. suggested_act_event: zen_dojotools_postman.
+                    Lock unlocked while armed: urgency 5. note, no postman unless camera confirms presence.
+                    Door open >= 2 min while disarmed: urgency 3. note only, no postman.
+                    urgency < 5: suggested_act_event: null.
+
+                  MASTER SWITCH: input_boolean.security_manager. If OFF: urgency 0, no escalation, no postman.
+                  OUTPUT: spatial_context, panel_state, perimeter_summary, camera_summary, combined_urgency, suggested_act_event.
+                  NOMINAL: "Security nominal. [who is home]. Panel disarmed. Perimeter secure. Cameras clear."
+                  ALERT: "Security [warn|critical]: [specific issue]. [spatial context]. [sub-component detail]."
+                trigger_subscriptions:
+                - force_summary
+                - daily_midnight
+                drift_threshold: 5
+                emission_cooldown_minutes: 60
+                delay_seconds: 0
+                suggested_act_event: null
+                seed:
+                  tool: zen_dojotools_room_manager
+                  params:
+                    mode: home_overview
+                master_switch: input_boolean.security_manager
+                index_call:
+                  domain_inspect_domains: []
+                  domain_inspect_limit: 25
+                  expand_entities: false
+                  filter_json: {}
+                  label_1: security_manager
+                  label_2: ""
+                  operator: AND
+                  output_fields: ""
+                meta:
+                  enabled: true
+                  requires:
+                    cert: ""
+                    level: 0
+
+              - kata_key: security_perimeter
+                component_key: security_perimeter
+                parent_component_key: security_manager
+                primary_index_key: security_perimeter
+                friendly_name: Security Perimeter
+                label: security_manager
+                version: "1.0.1"
+                component_summary: >-
+                  Monitors perimeter entry points — doors (front/back), locks (front/back/garage entry),
+                  and garage covers — with security-context filtering (panel armed or Night mode).
+                component_instructions: >-
+                  Synthesize perimeter entry point state in security context.
+
+                  DATA ACCESS (label: security_manager, filter for door/lock/cover domains):
+                    Doors: front, back — open/closed
+                    Locks: front door, back door, garage entry — locked/unlocked
+                    Garage covers: main garage, secondary — open/closed
+                    Context: panel arm state, home mode from review_data
+
+                  SECURITY CONTEXT RULES:
+                    armed_away: any unlocked lock or open door → deviation, urgency ≥ 6.
+                    armed_home: garage entry unlocked or cover open → deviation.
+                    night/sleep mode: front/back unlocked → flag at urgency 4.
+                    disarmed, occupant home: garage entry unlocked → informational only (urgency 1).
+
+                  URGENCY:
+                    Door physically open while armed_away → 8.
+                    Lock unlocked while armed_away → 6.
+                    Garage cover open at night or armed → 5.
+                    Unlocked entry, disarmed, no occupancy context → 2.
+                    All entry points secure → 0.
+
+                  OUTPUT: door_states {open/closed}, lock_states {locked/unlocked}, garage_state, security_context, urgency.
+                  NOMINAL: "Perimeter secure. All doors locked. Garage closed."
+                tool: ""
+                trigger_subscriptions:
+                - security_perimeter
+                drift_threshold: 5
+                emission_cooldown_minutes: 60
+                delay_seconds: 0
+                suggested_act_event: null
+                master_switch: ""
+                more_info: ""
+                schedules: []
+                custom_trigger_override: []
+                component_group:
+                  component_key: security_perimeter
+                  parent_component_key: security_manager
+                  primary_index_key: security_perimeter
+                  shared_delay_seconds: 0
+                  shared_labelset: []
+                  shared_schedule_group: ""
+                  shared_trigger_subscriptions: []
+                index_call:
+                  label_1: security_manager
+                  label_2: ""
+                  operator: AND
+                  domain_inspect_domains: []
+                  domain_inspect_limit: 25
+                  expand_entities: false
+                  filter_json: {}
+                  output_fields: ""
+                meta:
+                  enabled: true
+                  published_from: security_perimeter
+                  requires:
+                    cert: ""
+                    level: 0
+
+              - kata_key: security_panel
+                component_key: security_panel
+                parent_component_key: security_manager
+                primary_index_key: security_panel
+                friendly_name: Security Panel
+                label: security_manager
+                version: "1.0.1"
+                component_summary: >-
+                  Monitors DSC alarm panel state — arm/disarm transitions, triggered/pending states,
+                  zone faults, and system health (AC, battery, fire).
+                component_instructions: >-
+                  Synthesize DSC alarm panel state for the home security subsystem.
+
+                  DATA ACCESS (label: security_manager, filter for alarm/panel domain):
+                    alarm_control_panel.home_alarm: disarmed / armed_home / armed_away / triggered / pending
+                    Panel zones: individual zone open/fault sensors
+                    System health: AC power, battery, fire zone states
+
+                  STATES:
+                    disarmed — nominal occupancy. Not a deviation unless zones faulted.
+                    armed_home — perimeter + interior excluded. Occupants inside.
+                    armed_away — full arm, no occupants expected. Any zone fault = deviation.
+                    triggered — CRITICAL. Immediate escalation regardless of mode.
+                    pending — entry delay countdown. Escalate if countdown completes without disarm.
+
+                  URGENCY:
+                    triggered → 10. Always action_required.
+                    pending → 8.
+                    armed_away + zone fault → 7.
+                    armed_home + interior zone fault → 6.
+                    AC loss or battery fault → 4.
+                    disarmed + zone fault → 2.
+                    All nominal → 0.
+
+                  OUTPUT: panel_state, arm_mode, active_zones (any faulted), system_health {ac, battery, fire}, urgency.
+                  NOMINAL: "Panel disarmed. All zones clear. System health nominal."
+                tool: ""
+                trigger_subscriptions:
+                - security_panel
+                drift_threshold: 5
+                emission_cooldown_minutes: 60
+                delay_seconds: 0
+                suggested_act_event: null
+                master_switch: ""
+                more_info: ""
+                schedules: []
+                custom_trigger_override: []
+                component_group:
+                  component_key: security_panel
+                  parent_component_key: security_manager
+                  primary_index_key: security_panel
+                  shared_delay_seconds: 0
+                  shared_labelset: []
+                  shared_schedule_group: ""
+                  shared_trigger_subscriptions: []
+                index_call:
+                  label_1: security_manager
+                  label_2: ""
+                  operator: AND
+                  domain_inspect_domains: []
+                  domain_inspect_limit: 25
+                  expand_entities: false
+                  filter_json: {}
+                  output_fields: ""
+                meta:
+                  enabled: true
+                  published_from: security_panel
+                  requires:
+                    cert: ""
+                    level: 0
+
+              - kata_key: security_cameras
+                component_key: security_cameras
+                parent_component_key: security_manager
+                primary_index_key: security_cameras
+                friendly_name: Security Cameras
+                label: security_manager
+                version: "1.0.1"
+                component_summary: >-
+                  Synthesizes camera activity from the camera_manager pipeline — receives
+                  camera_scan_complete events and produces a security-context camera status summary.
+                component_instructions: >-
+                  Synthesize camera activity scan results in security context.
+
+                  DATA SOURCE: camera_cache supplemental context (passed by trigger coalescer).
+                    Fields: last_event, label, cameras (list), panel_state, home_mode, ts.
+                    Camera scene detail: cross-reference camera_manager kata from sensor.zenos_kata_cabinet.
+
+                  ACTIVITY CLASSIFICATION (from camera_cache label field):
+                    cadence — routine scan, no event trigger. Urgency 0 unless anomaly found.
+                    motion_trigger — motion detected. Classify subject from camera_manager kata.
+                    person_detected — identify: known resident, delivery, unknown person.
+
+                  SECURITY ESCALATION:
+                    Unknown person at entry point, panel armed_away → urgency 8.
+                    Unknown person after hours (22:00–06:00) → urgency 6.
+                    Person at garage/back entry, home occupied → urgency 3 (verify).
+                    Known resident activity, any mode → urgency 1.
+                    Cadence scan, no subjects → urgency 0.
+
+                  Cross-reference panel_state and home_mode for mode-aware escalation.
+                  If camera_manager kata unavailable: use camera_cache label/cameras as best effort.
+
+                  OUTPUT: cameras_scanned [], detected_subjects [], activity_type, threat_assessment, urgency.
+                  NOMINAL: "Cameras clear. Routine scan. No subjects detected."
+                tool: ""
+                trigger_subscriptions:
+                - security_cameras
+                drift_threshold: 5
+                emission_cooldown_minutes: 60
+                delay_seconds: 0
+                suggested_act_event: null
+                master_switch: ""
+                more_info: ""
+                schedules: []
+                custom_trigger_override: []
+                component_group:
+                  component_key: security_cameras
+                  parent_component_key: security_manager
+                  primary_index_key: security_cameras
+                  shared_delay_seconds: 0
+                  shared_labelset: []
+                  shared_schedule_group: ""
+                  shared_trigger_subscriptions: []
+                index_call:
+                  label_1: security_manager
+                  label_2: ""
+                  operator: AND
+                  domain_inspect_domains: []
+                  domain_inspect_limit: 25
+                  expand_entities: false
+                  filter_json: {}
+                  output_fields: ""
+                meta:
+                  enabled: true
+                  published_from: security_cameras
+                  requires:
+                    cert: ""
+                    level: 0
+
+          - variables:
+              _kfc_out: >-
+                {%- if _kfc_filter == '' -%}
+                  {{ _kfc_defs }}
+                {%- else -%}
+                  {{ _kfc_defs | selectattr('kata_key', 'equalto', _kfc_filter) | list }}
+                {%- endif -%}
+              result:
+                status: ok
+                tool: zen_dojotools_security_manager
+                version: "5.2.0"
+                mode: kfc_manifest
+                kfc: "{{ _kfc_out }}"
+                count: "{{ _kfc_out | length }}"
+                caller_token: "{{ caller_token | default('') }}"
+          - stop: kfc_manifest
             response_variable: result
       # ── Normalize inputs ──────────────────────────────────────────────────
       - variables:

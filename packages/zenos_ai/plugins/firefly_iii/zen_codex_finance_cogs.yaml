@@ -1,0 +1,821 @@
+###############################################################################
+# ZenOS-AI Finance Codex: COGS (Cost of Goods Sold) Tracking
+# Version: 1.2.0
+#
+# Scripts:
+#   zen_codex_finance_cogs  ← Domain logic (codex tier)
+#
+# Codex Tier Contract:
+#   Parent tool: zen_dojotools_finance
+#   Registered via: codex_registry drawer in household cabinet
+#   Bootstrap: zen_dojotools_finance mode=run case=bootstrap_codices
+#
+# Requires: Grocy (stock source) + Firefly III (money story)
+# Cabinet footprint: ONE drawer — household cabinet key `cogs_accounting`,
+#   holding {enabled, default_source_account, default_category}. No per-item
+#   data stored — every consume event is posted live.
+#
+# SETUP:
+#   1. Run zen_dojotools_finance mode=run case=cogs_configure to pick a real
+#      Firefly account + category (lists live accounts to choose from).
+#   2. Tag any Grocy product with ha_labels=cogs_tracked to opt it into COGS
+#      posting. zen_dojotools_inventory mode=stock_consume checks for this
+#      label and calls case=cogs_post automatically — fail-soft if this codex
+#      or the finance tool isn't installed.
+#
+# v1.2.0 comptroller-grade additions:
+#   - cogs_summary / cogs_reconcile modes (period rollup + Grocy-vs-Firefly
+#     variance check).
+#   - grocy.yaml coaches (not in this file): cost-basis + zone-tag warnings on
+#     read paths, and an undo-reversal reminder on stock_undo_booking — see
+#     zen_dojotools_inventory mode=help.
+###############################################################################
+
+script:
+
+  ###########################################################################
+  # zen_codex_finance_cogs
+  # Domain logic for posting Grocy stock consumption as Firefly COGS expense.
+  # NOT MCP-exposed — called by zen_dojotools_finance catch-all dispatch.
+  ###########################################################################
+  zen_codex_finance_cogs:
+    alias: Zen Codex Finance — COGS
+    description: >-
+      Cost of Goods Sold tracking codex (v1.2.0). Grocy stock consumption →
+      Firefly expense transaction, for products explicitly tagged
+      ha_labels=cogs_tracked. Not MCP-exposed — call via zen_dojotools_finance.
+      Modes: tool_manifest, health, help, cogs_configure, cogs_post,
+      cogs_summary, cogs_reconcile.
+    mode: parallel
+    fields:
+      mode:
+        description: "tool_manifest|health|help|cogs_configure|cogs_post|cogs_summary|cogs_reconcile|cogs_report"
+        selector:
+          text:
+      start_date:
+        description: Period start YYYY-MM-DD (cogs_summary/cogs_reconcile, default 1st of current month)
+        selector:
+          text:
+      end_date:
+        description: Period end YYYY-MM-DD (cogs_summary/cogs_reconcile, default today)
+        selector:
+          text:
+      default_source_account:
+        description: Firefly account name to withdraw COGS from (cogs_configure)
+        selector:
+          text:
+      default_category:
+        description: Firefly category name for COGS transactions (cogs_configure)
+        selector:
+          text:
+      enabled:
+        description: Enable/disable COGS posting without deleting the config (cogs_configure)
+        selector:
+          boolean:
+        default: true
+      product_id:
+        description: Grocy product ID being consumed (cogs_post)
+        selector:
+          text:
+      product_name:
+        description: Product display name for the transaction description (cogs_post)
+        selector:
+          text:
+      amount:
+        description: Quantity consumed (cogs_post)
+        selector:
+          text:
+      unit_price:
+        description: Per-unit cost basis (cogs_post)
+        selector:
+          text:
+      stock_entry_id:
+        description: Grocy stock entry ID — used as the idempotency key (cogs_post)
+        selector:
+          text:
+      confirm:
+        description: Explicit commit gate for cogs_post (default false)
+        selector:
+          boolean:
+        default: false
+      caller_token:
+        description: Opaque correlation token
+        selector:
+          text:
+
+    sequence:
+
+    # ── Input normalization ────────────────────────────────────────────────
+    - variables:
+        tool_name:    zen_codex_finance_cogs
+        tool_version: 1.2.0
+        _mode:            "{{ mode | default('help') | string | trim | lower }}"
+        _confirm:         "{{ confirm | default(false) | bool }}"
+        _caller_token:    "{{ caller_token | default('') | string | trim }}"
+        _now:             "{{ now().isoformat() }}"
+        _today:           "{{ now().strftime('%Y-%m-%d') }}"
+        _household_cab: >-
+          {{ label_entities('Zen Household Cabinet')
+             | select('match', 'sensor\\.') | list | first | default('') }}
+
+    ###########################################################################
+    # tool_manifest
+    ###########################################################################
+    - if: "{{ _mode == 'tool_manifest' }}"
+      then:
+      - variables:
+          final_response:
+            status: ok
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            display_name: Finance COGS
+            tier: codex
+            domain: finance
+            feature_key: cogs
+            parent_tool: zen_dojotools_finance
+            register_mode: register
+            requires: [grocy, firefly]
+            health_check: mode=health
+            modes:
+              - tool_manifest
+              - health
+              - help
+              - cogs_configure
+              - cogs_post
+              - cogs_summary
+              - cogs_reconcile
+              - cogs_report
+            description: >-
+              Cost of Goods Sold tracking codex. Posts a Firefly expense
+              transaction whenever zen_dojotools_inventory consumes stock for
+              a product tagged ha_labels=cogs_tracked. Fail-soft by design —
+              never blocks or fails the underlying Grocy stock consumption.
+              Comptroller-grade guardrails: zen_dojotools_inventory surfaces
+              coaching on stock_check_item/stock_where_is_item/
+              stock_entries_for_item (missing cost basis, cogs_zone-tagged
+              location vs untracked product) and on stock_undo_booking
+              (Firefly is NOT auto-reversed — undo only touches Grocy).
+            preferred_state:
+              stripe: 2
+              impact: soft
+      - stop: tool_manifest
+        response_variable: final_response
+
+    ###########################################################################
+    # health
+    ###########################################################################
+    - if: "{{ _mode == 'health' }}"
+      then:
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _h_cfg_raw
+        data:
+          action_type: read
+          volume_entity_id:
+            - "{{ _household_cab }}"
+          key: cogs_accounting
+      - variables:
+          _h_cfg: >-
+            {%- set raw = _h_cfg_raw if _h_cfg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          final_response:
+            status: ok
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            configured: "{{ _h_cfg | length > 0 }}"
+            enabled: "{{ _h_cfg.get('enabled', false) }}"
+            default_source_account: "{{ _h_cfg.get('default_source_account', '') }}"
+            default_category: "{{ _h_cfg.get('default_category', '') }}"
+      - stop: health
+        response_variable: final_response
+
+    ###########################################################################
+    # cogs_configure — guided setup. Lists real Firefly accounts, writes the
+    # cogs_accounting drawer. Calls zen_root_firefly directly (low-level HTTP
+    # layer) — avoids a re-entrant call back through zen_dojotools_finance.
+    ###########################################################################
+    - if: "{{ _mode == 'cogs_configure' }}"
+      then:
+      - variables:
+          _cc_src: "{{ default_source_account | default('') | string | trim }}"
+          _cc_cat: "{{ default_category | default('') | string | trim }}"
+          _cc_enabled: "{{ enabled | default(true) | bool }}"
+      # No account/category supplied yet — list real accounts to help the user pick.
+      - if: "{{ _cc_src == '' }}"
+        then:
+        - action: script.zen_root_firefly
+          continue_on_error: true
+          response_variable: _cc_acct_raw
+          data:
+            action_type: get
+            endpoint: accounts
+        - variables:
+            _cc_accounts: >-
+              {%- set _c = _cc_acct_raw.get('result', {}).get('content', {}) if _cc_acct_raw is mapping else {} -%}
+              {%- set _d = _c.get('data', []) if _c is mapping else [] -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for a in _d if a is mapping -%}
+                {%- set attrs = a.get('attributes', {}) -%}
+                {%- set ns.out = ns.out + [{'name': attrs.get('name', ''), 'type': attrs.get('type', '')}] -%}
+              {%- endfor -%}
+              {{ ns.out }}
+            final_response:
+              status: needs_input
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              message: >-
+                Pass default_source_account=<name> and default_category=<name> to
+                complete setup. Pick default_source_account from the real accounts
+                listed below (matches an existing Firefly account by name —
+                Firefly auto-matches on post, no ID lookup needed). default_category
+                can be any name — Firefly creates it if it doesn't exist yet.
+              available_accounts: "{{ _cc_accounts }}"
+        - stop: cogs_configure needs input
+          response_variable: final_response
+      # Account name supplied — write the config drawer.
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _cc_write_raw
+        data:
+          action_type: upsert
+          volume_entity_id:
+            - "{{ _household_cab }}"
+          key: cogs_accounting
+          value: >-
+            {{ {'enabled': _cc_enabled, 'default_source_account': _cc_src,
+                'default_category': _cc_cat if _cc_cat != '' else 'COGS'} | tojson }}
+      - variables:
+          _cc_write_ok: >-
+            {{ _cc_write_raw is mapping and _cc_write_raw.get('status', '') == 'success' }}
+          final_response:
+            status: "{{ 'ok' if _cc_write_ok else 'error' }}"
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            enabled: "{{ _cc_enabled }}"
+            default_source_account: "{{ _cc_src }}"
+            default_category: "{{ _cc_cat if _cc_cat != '' else 'COGS' }}"
+            message: >-
+              {{ 'cogs_accounting drawer saved.' if _cc_write_ok else 'Failed to write cogs_accounting drawer — check household cabinet.' }}
+      - stop: cogs_configure done
+        response_variable: final_response
+
+    ###########################################################################
+    # cogs_post — called automatically by zen_dojotools_inventory stock_consume
+    # for cogs_tracked products. Fail-soft: returns status=skipped rather than
+    # erroring whenever config is missing/disabled, so the caller's
+    # continue_on_error path always sees a clean, defined response.
+    ###########################################################################
+    - if: "{{ _mode == 'cogs_post' }}"
+      then:
+      - variables:
+          _cp_product_id:  "{{ product_id | default('') | string | trim }}"
+          _cp_product_name: "{{ product_name | default('') | string | trim }}"
+          _cp_amount:      "{{ amount | default(0) | float(0) }}"
+          _cp_unit_price:  "{{ unit_price | default(0) | float(0) }}"
+          _cp_stock_entry: "{{ stock_entry_id | default('') | string | trim }}"
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _cp_cfg_raw
+        data:
+          action_type: read
+          volume_entity_id:
+            - "{{ _household_cab }}"
+          key: cogs_accounting
+      - variables:
+          _cp_cfg: >-
+            {%- set raw = _cp_cfg_raw if _cp_cfg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          _cp_configured: >-
+            {{ _cp_cfg | length > 0 and _cp_cfg.get('enabled', false) | bool(false)
+               and _cp_cfg.get('default_source_account', '') | string | trim != '' }}
+      # Not configured / disabled — skip cleanly, never error. This is the
+      # expected steady-state for households that never ran cogs_configure.
+      - if: "{{ not _cp_configured }}"
+        then:
+        - variables:
+            final_response:
+              status: skipped
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              reason: >-
+                cogs_accounting not configured or disabled. Run
+                zen_dojotools_finance mode=run case=cogs_configure to enable
+                COGS posting for cogs_tracked products.
+        - stop: cogs_post skipped — not configured
+          response_variable: final_response
+      # Guard against nonsensical posts.
+      - if: "{{ _cp_amount <= 0 or _cp_unit_price <= 0 }}"
+        then:
+        - variables:
+            final_response:
+              status: skipped
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              reason: "amount and unit_price must both be > 0 — nothing to post."
+        - stop: cogs_post skipped — no cost basis
+          response_variable: final_response
+      - variables:
+          _cp_total: "{{ (_cp_amount * _cp_unit_price) | round(2) }}"
+          _cp_idem_key: "grocy_stock_entry:{{ _cp_stock_entry if _cp_stock_entry != '' else _cp_product_id ~ '-' ~ _now }}"
+          _cp_desc: "COGS: {{ _cp_product_name if _cp_product_name != '' else ('product ' ~ _cp_product_id) }}"
+      - if: "{{ not _confirm }}"
+        then:
+        - variables:
+            final_response:
+              status: confirm_required
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              would_post:
+                amount: "{{ _cp_total }}"
+                description: "{{ _cp_desc }}"
+                source_account: "{{ _cp_cfg.get('default_source_account', '') }}"
+                category: "{{ _cp_cfg.get('default_category', 'COGS') }}"
+              message: Pass confirm=true to post the COGS transaction.
+        - stop: cogs_post confirm required
+          response_variable: final_response
+      - variables:
+          _cp_payload: >-
+            {{ {'transactions': [{'type': 'withdrawal', 'date': _today,
+                'amount': _cp_total | string, 'description': _cp_desc,
+                'source_name': _cp_cfg.get('default_source_account', ''),
+                'category_name': _cp_cfg.get('default_category', 'COGS'),
+                'tags': ['cogs', _cp_idem_key]}]} | tojson }}
+      # Post directly via zen_root_firefly — avoids re-entrant call to
+      # zen_dojotools_finance (same pattern as zen_codex_finance_depreciation).
+      - action: script.zen_root_firefly
+        continue_on_error: true
+        response_variable: _cp_post_raw
+        data:
+          action_type: post
+          endpoint: transactions
+          payload: '{{ _cp_payload }}'
+      - variables:
+          _cp_ok: >-
+            {%- if _cp_post_raw is mapping and 'result' in _cp_post_raw and _cp_post_raw['result'] is mapping -%}
+              {{ _cp_post_raw.get('status', '') == 'success' }}
+            {%- else -%}false{%- endif -%}
+          _cp_txn_id: >-
+            {%- if _cp_ok -%}
+              {%- set d = _cp_post_raw['result'].get('content', {}) -%}
+              {%- set obj = (d.get('data', d) if d is mapping else {}) -%}
+              {{ obj.get('id', '') if obj is mapping else '' }}
+            {%- else -%}''{%- endif -%}
+          final_response:
+            status: "{{ 'ok' if _cp_ok else 'error' }}"
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            product_id: "{{ _cp_product_id }}"
+            amount_posted: "{{ _cp_total }}"
+            idempotency_key: "{{ _cp_idem_key }}"
+            firefly_transaction_id: "{{ _cp_txn_id }}"
+            reversal_hint: >-
+              {{ ('To reverse: zen_dojotools_finance mode=run case=compensate firefly_transaction_id=' ~ _cp_txn_id ~ ' confirm=true') if _cp_ok else '' }}
+            message: "{{ 'COGS transaction posted.' if _cp_ok else 'COGS transaction failed to post — Grocy stock was still consumed normally.' }}"
+      - stop: cogs_post done
+        response_variable: final_response
+
+    ###########################################################################
+    # cogs_summary — period rollup of net COGS posted to Firefly (postings
+    # minus reversals, matched by category + tags). Read-only, calls
+    # zen_root_firefly directly (avoids re-entrant call).
+    ###########################################################################
+    - if: "{{ _mode == 'cogs_summary' }}"
+      then:
+      - variables:
+          _cs_start: "{{ start_date | default(now().strftime('%Y-%m-01'), true) | string | trim }}"
+          _cs_end: "{{ end_date | default(_today, true) | string | trim }}"
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _cs_cfg_raw
+        data:
+          action_type: read
+          volume_entity_id:
+            - "{{ _household_cab }}"
+          key: cogs_accounting
+      - variables:
+          _cs_cfg: >-
+            {%- set raw = _cs_cfg_raw if _cs_cfg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          _cs_category: "{{ _cs_cfg.get('default_category', 'COGS') }}"
+          _cs_configured: "{{ _cs_cfg | length > 0 }}"
+      - if: "{{ not _cs_configured }}"
+        then:
+        - variables:
+            final_response:
+              status: not_configured
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              message: >-
+                cogs_accounting not configured. Run zen_dojotools_finance
+                mode=run case=cogs_configure first.
+        - stop: cogs_summary not configured
+          response_variable: final_response
+      - action: script.zen_root_firefly
+        continue_on_error: true
+        response_variable: _cs_txn_raw
+        data:
+          action_type: get
+          endpoint: "transactions?start={{ _cs_start }}&end={{ _cs_end }}&limit=200"
+      - variables:
+          _cs_all: >-
+            {%- set d = _cs_txn_raw.get('result', {}).get('content', {}) if _cs_txn_raw is mapping else {} -%}
+            {{ (d.get('data', []) if d is mapping else []) }}
+          _cs_matches: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for t in _cs_all if t is mapping -%}
+              {%- set attrs = t.get('attributes', {}) -%}
+              {%- for s in attrs.get('transactions', []) -%}
+                {%- set _tags = s.get('tags', []) or [] -%}
+                {%- if s.get('category_name', '') == _cs_category and ('cogs' in _tags or 'reversal' in _tags) -%}
+                  {%- set _signed = (s.get('amount', 0) | float(0)) * (1 if s.get('type', '') == 'withdrawal' else -1) -%}
+                  {%- set ns.out = ns.out + [{'id': t.get('id', ''), 'amount': _signed, 'type': s.get('type', ''), 'description': s.get('description', '')}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.out }}
+      - variables:
+          final_response:
+            status: ok
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            period:
+              start: "{{ _cs_start }}"
+              end: "{{ _cs_end }}"
+            category: "{{ _cs_category }}"
+            transaction_count: "{{ _cs_matches | length }}"
+            net_total: "{{ (_cs_matches | map(attribute='amount') | sum) | round(2) }}"
+            transactions: "{{ _cs_matches }}"
+      - stop: cogs_summary done
+        response_variable: final_response
+
+    ###########################################################################
+    # cogs_reconcile — compares Grocy-side cogs_tracked consumption value
+    # against Firefly-side net COGS for the period. O(n) in tracked-product
+    # count — ad hoc/period-end report, not run per-consume.
+    ###########################################################################
+    - if: "{{ _mode == 'cogs_reconcile' }}"
+      then:
+      - variables:
+          _cr_start: "{{ start_date | default(now().strftime('%Y-%m-01'), true) | string | trim }}"
+          _cr_end: "{{ end_date | default(_today, true) | string | trim }}"
+      - variables:
+          _cr_offset: 0
+          _cr_page_done: false
+          _cr_tracked_ids: []
+      - repeat:
+          until: "{{ _cr_page_done or _cr_offset >= 100000 }}"
+          sequence:
+          - action: script.zen_sutra_grocy
+            continue_on_error: true
+            response_variable: _cr_prod_raw
+            data:
+              action_type: read
+              endpoint: "/objects/products?limit=500&offset={{ _cr_offset }}"
+          - variables:
+              _cr_page: >-
+                {{ _cr_prod_raw['result']['content']
+                   if _cr_prod_raw is mapping and 'result' in _cr_prod_raw
+                      and _cr_prod_raw['result']['content'] is sequence
+                   else [] }}
+          - variables:
+              _cr_page_matches: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- for p in _cr_page if p is mapping -%}
+                  {%- set _uf = p.get('userfields', {}) if p.get('userfields') is mapping else {} -%}
+                  {%- set _hl = (_uf.get('ha_labels', '') | default('', true)) | string | regex_findall('[^,]+') | map('trim') | list -%}
+                  {%- if 'cogs_tracked' in _hl -%}
+                    {%- set ns.r = ns.r + [p.id | int] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.r }}
+          - variables:
+              _cr_tracked_ids: >-
+                {%- set _prev = _cr_tracked_ids if _cr_tracked_ids is sequence and _cr_tracked_ids is not string else [] -%}
+                {%- set _cur = _cr_page_matches if _cr_page_matches is sequence else [] -%}
+                {{ (_prev | list) + (_cur | list) }}
+              _cr_page_done: "{{ (_cr_page | length) < 500 }}"
+              _cr_offset: "{{ (_cr_offset | int) + 500 }}"
+      - variables:
+          _cr_grocy_total: 0
+      - repeat:
+          count: "{{ _cr_tracked_ids | length }}"
+          sequence:
+          - variables:
+              _cr_pid: "{{ _cr_tracked_ids[repeat.index - 1] }}"
+          - action: script.zen_sutra_grocy
+            continue_on_error: true
+            response_variable: _cr_log_raw
+            data:
+              action_type: read
+              endpoint: "/objects/stock_log?query[]=product_id={{ _cr_pid }}&limit=500"
+          - variables:
+              _cr_log_entries: >-
+                {{ (_cr_log_raw.get('result', {}).get('content') or []) if _cr_log_raw is mapping else [] }}
+              _cr_pid_total: >-
+                {%- set ns = namespace(sum=0.0) -%}
+                {%- for e in _cr_log_entries if e is mapping -%}
+                  {%- if e.get('transaction_type', '') == 'consume'
+                        and (e.get('undone', 0) | int(0)) != 1
+                        and (e.get('used_date', '') | string) >= _cr_start
+                        and (e.get('used_date', '') | string) <= _cr_end -%}
+                    {%- set ns.sum = ns.sum + ((e.get('amount', 0) | abs | float(0)) * (e.get('price', 0) | float(0))) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.sum }}
+          - variables:
+              _cr_grocy_total: "{{ (_cr_grocy_total | float(0)) + (_cr_pid_total | float(0)) }}"
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _cr_cfg_raw
+        data:
+          action_type: read
+          volume_entity_id:
+            - "{{ _household_cab }}"
+          key: cogs_accounting
+      - variables:
+          _cr_cfg: >-
+            {%- set raw = _cr_cfg_raw if _cr_cfg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          _cr_category: "{{ _cr_cfg.get('default_category', 'COGS') }}"
+      - action: script.zen_root_firefly
+        continue_on_error: true
+        response_variable: _cr_txn_raw
+        data:
+          action_type: get
+          endpoint: "transactions?start={{ _cr_start }}&end={{ _cr_end }}&limit=200"
+      - variables:
+          _cr_ff_all: >-
+            {%- set d = _cr_txn_raw.get('result', {}).get('content', {}) if _cr_txn_raw is mapping else {} -%}
+            {{ (d.get('data', []) if d is mapping else []) }}
+          _cr_firefly_total: >-
+            {%- set ns = namespace(sum=0.0) -%}
+            {%- for t in _cr_ff_all if t is mapping -%}
+              {%- set attrs = t.get('attributes', {}) -%}
+              {%- for s in attrs.get('transactions', []) -%}
+                {%- set _tags = s.get('tags', []) or [] -%}
+                {%- if s.get('category_name', '') == _cr_category and ('cogs' in _tags or 'reversal' in _tags) -%}
+                  {%- set _signed = (s.get('amount', 0) | float(0)) * (1 if s.get('type', '') == 'withdrawal' else -1) -%}
+                  {%- set ns.sum = ns.sum + _signed -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.sum }}
+      - variables:
+          _cr_variance: "{{ ((_cr_grocy_total | float(0)) - (_cr_firefly_total | float(0))) | round(2) }}"
+          final_response:
+            status: ok
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            period:
+              start: "{{ _cr_start }}"
+              end: "{{ _cr_end }}"
+            tracked_product_count: "{{ _cr_tracked_ids | length }}"
+            grocy_total: "{{ _cr_grocy_total | round(2) }}"
+            firefly_total: "{{ _cr_firefly_total | round(2) }}"
+            variance: "{{ _cr_variance }}"
+            reconciled: "{{ _cr_variance == 0 }}"
+            likely_causes: >-
+              {{ (["Check for price=0 stock entries on cogs_tracked products (silent skip — see stock_check_item coaching).",
+                   "Check cogs_accounting.enabled — was it toggled off during part of this period?",
+                   "Check whether zen_dojotools_finance was installed for the entire period.",
+                   "Check for stock_undo_booking calls on cogs_tracked consumes never manually reversed in Firefly (zen_dojotools_finance mode=run case=transactions_search tags=grocy_stock_entry:<id>)."]
+                  if _cr_variance != 0 else []) }}
+      - stop: cogs_reconcile done
+        response_variable: final_response
+
+    ###########################################################################
+    # cogs_report — comptroller weave: configuration health + period summary +
+    # reconciliation in one call. Read-only, same underlying logic as
+    # cogs_summary/cogs_reconcile (duplicated here rather than refactored into
+    # shared steps — keeps each mode independently readable).
+    ###########################################################################
+    - if: "{{ _mode == 'cogs_report' }}"
+      then:
+      - variables:
+          _crep_start: "{{ start_date | default(now().strftime('%Y-%m-01'), true) | string | trim }}"
+          _crep_end: "{{ end_date | default(_today, true) | string | trim }}"
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _crep_cfg_raw
+        data:
+          action_type: read
+          volume_entity_id:
+            - "{{ _household_cab }}"
+          key: cogs_accounting
+      - variables:
+          _crep_cfg: >-
+            {%- set raw = _crep_cfg_raw if _crep_cfg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          _crep_configured: >-
+            {{ _crep_cfg | length > 0 and _crep_cfg.get('default_source_account', '') | string | trim != '' }}
+          _crep_enabled: "{{ _crep_cfg.get('enabled', false) }}"
+          _crep_account: "{{ _crep_cfg.get('default_source_account', '') }}"
+          _crep_category: "{{ _crep_cfg.get('default_category', 'COGS') }}"
+      - if: "{{ not _crep_configured }}"
+        then:
+        - variables:
+            final_response:
+              status: not_configured
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              headline: >-
+                COGS is not configured. Run zen_dojotools_finance mode=run
+                case=cogs_configure to get started.
+        - stop: cogs_report not configured
+          response_variable: final_response
+      - action: script.zen_root_firefly
+        continue_on_error: true
+        response_variable: _crep_txn_raw
+        data:
+          action_type: get
+          endpoint: "transactions?start={{ _crep_start }}&end={{ _crep_end }}&limit=200"
+      - variables:
+          _crep_ff_all: >-
+            {%- set d = _crep_txn_raw.get('result', {}).get('content', {}) if _crep_txn_raw is mapping else {} -%}
+            {{ (d.get('data', []) if d is mapping else []) }}
+      - variables:
+          _crep_ff_matches: >-
+            {%- set ns = namespace(out=[], sum=0.0) -%}
+            {%- for t in _crep_ff_all if t is mapping -%}
+              {%- set attrs = t.get('attributes', {}) -%}
+              {%- for s in attrs.get('transactions', []) -%}
+                {%- set _tags = s.get('tags', []) or [] -%}
+                {%- if s.get('category_name', '') == _crep_category and ('cogs' in _tags or 'reversal' in _tags) -%}
+                  {%- set _signed = (s.get('amount', 0) | float(0)) * (1 if s.get('type', '') == 'withdrawal' else -1) -%}
+                  {%- set ns.out = ns.out + [{'id': t.get('id', ''), 'amount': _signed}] -%}
+                  {%- set ns.sum = ns.sum + _signed -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ {'transactions': ns.out, 'net_total': ns.sum} }}
+      - variables:
+          _crep_offset: 0
+          _crep_page_done: false
+          _crep_tracked_ids: []
+      - repeat:
+          until: "{{ _crep_page_done or _crep_offset >= 100000 }}"
+          sequence:
+          - action: script.zen_sutra_grocy
+            continue_on_error: true
+            response_variable: _crep_prod_raw
+            data:
+              action_type: read
+              endpoint: "/objects/products?limit=500&offset={{ _crep_offset }}"
+          - variables:
+              _crep_page: >-
+                {{ _crep_prod_raw['result']['content']
+                   if _crep_prod_raw is mapping and 'result' in _crep_prod_raw
+                      and _crep_prod_raw['result']['content'] is sequence
+                   else [] }}
+          - variables:
+              _crep_page_matches: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- for p in _crep_page if p is mapping -%}
+                  {%- set _uf = p.get('userfields', {}) if p.get('userfields') is mapping else {} -%}
+                  {%- set _hl = (_uf.get('ha_labels', '') | default('', true)) | string | regex_findall('[^,]+') | map('trim') | list -%}
+                  {%- if 'cogs_tracked' in _hl -%}
+                    {%- set ns.r = ns.r + [p.id | int] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.r }}
+          - variables:
+              _crep_tracked_ids: >-
+                {%- set _prev = _crep_tracked_ids if _crep_tracked_ids is sequence and _crep_tracked_ids is not string else [] -%}
+                {%- set _cur = _crep_page_matches if _crep_page_matches is sequence else [] -%}
+                {{ (_prev | list) + (_cur | list) }}
+              _crep_page_done: "{{ (_crep_page | length) < 500 }}"
+              _crep_offset: "{{ (_crep_offset | int) + 500 }}"
+      - variables:
+          _crep_grocy_total: 0
+      - repeat:
+          count: "{{ _crep_tracked_ids | length }}"
+          sequence:
+          - variables:
+              _crep_pid: "{{ _crep_tracked_ids[repeat.index - 1] }}"
+          - action: script.zen_sutra_grocy
+            continue_on_error: true
+            response_variable: _crep_log_raw
+            data:
+              action_type: read
+              endpoint: "/objects/stock_log?query[]=product_id={{ _crep_pid }}&limit=500"
+          - variables:
+              _crep_log_entries: >-
+                {{ (_crep_log_raw.get('result', {}).get('content') or []) if _crep_log_raw is mapping else [] }}
+              _crep_pid_total: >-
+                {%- set ns = namespace(sum=0.0) -%}
+                {%- for e in _crep_log_entries if e is mapping -%}
+                  {%- if e.get('transaction_type', '') == 'consume'
+                        and (e.get('undone', 0) | int(0)) != 1
+                        and (e.get('used_date', '') | string) >= _crep_start
+                        and (e.get('used_date', '') | string) <= _crep_end -%}
+                    {%- set ns.sum = ns.sum + ((e.get('amount', 0) | abs | float(0)) * (e.get('price', 0) | float(0))) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.sum }}
+          - variables:
+              _crep_grocy_total: "{{ (_crep_grocy_total | float(0)) + (_crep_pid_total | float(0)) }}"
+      - variables:
+          _crep_variance: "{{ ((_crep_grocy_total | float(0)) - (_crep_ff_matches.net_total | float(0))) | round(2) }}"
+          _crep_reconciled: "{{ _crep_variance == 0 }}"
+      - variables:
+          final_response:
+            status: ok
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            headline: >-
+              {{ ('COGS clean: $' ~ (_crep_ff_matches.net_total | round(2) | string) ~ ' net across '
+                  ~ (_crep_tracked_ids | length | string) ~ ' tracked products, books reconciled.')
+                 if (_crep_reconciled and _crep_enabled)
+                 else (('COGS configured but disabled — nothing posting right now.')
+                       if not _crep_enabled
+                       else ('COGS variance of $' ~ (_crep_variance | string) ~ ' needs attention — see likely_causes.')) }}
+            period:
+              start: "{{ _crep_start }}"
+              end: "{{ _crep_end }}"
+            config:
+              enabled: "{{ _crep_enabled }}"
+              source_account: "{{ _crep_account }}"
+              category: "{{ _crep_category }}"
+            tracked_product_count: "{{ _crep_tracked_ids | length }}"
+            net_total: "{{ _crep_ff_matches.net_total | round(2) }}"
+            transaction_count: "{{ _crep_ff_matches.transactions | length }}"
+            grocy_total: "{{ _crep_grocy_total | round(2) }}"
+            firefly_total: "{{ _crep_ff_matches.net_total | round(2) }}"
+            variance: "{{ _crep_variance }}"
+            reconciled: "{{ _crep_reconciled }}"
+            likely_causes: >-
+              {{ (["Check for price=0 stock entries on cogs_tracked products (silent skip — see stock_check_item coaching).",
+                   "Check cogs_accounting.enabled — was it toggled off during part of this period?",
+                   "Check whether zen_dojotools_finance was installed for the entire period.",
+                   "Check for stock_undo_booking calls on cogs_tracked consumes never manually reversed in Firefly (zen_dojotools_finance mode=run case=transactions_search tags=grocy_stock_entry:<id>)."]
+                  if not _crep_reconciled else []) }}
+      - stop: cogs_report done
+        response_variable: final_response
+
+    ###########################################################################
+    # help
+    ###########################################################################
+    - variables:
+        final_response:
+          status: info
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          mode: help
+          feature_key: cogs
+          description: >-
+            Cost of Goods Sold tracking codex. Automatically posts a Firefly
+            expense transaction whenever a product tagged ha_labels=cogs_tracked
+            is consumed via zen_dojotools_inventory mode=stock_consume.
+          setup: >-
+            Run mode=run case=cogs_configure (no default_source_account arg) to
+            see real Firefly accounts, then re-run with
+            default_source_account=<name> default_category=<name> to save.
+          modes:
+            cogs_configure: Guided setup — writes the cogs_accounting household cabinet drawer.
+            cogs_post: Posts one COGS transaction. Called automatically by stock_consume; fail-soft (status=skipped) if not configured.
+            cogs_summary: Period rollup — net COGS posted to Firefly (postings minus reversals). start_date/end_date default to current month.
+            cogs_reconcile: Compares Grocy-side cogs_tracked consumption value against Firefly-side net COGS for the period; reports variance + likely causes if non-zero.
+            cogs_report: Comptroller weave — configuration health + cogs_summary + cogs_reconcile in one call, with a plain-English headline. Best single entry point for "how's COGS doing."
+          cfo_view_pattern: >-
+            For a household CFO dashboard, do NOT build a monolithic cfo_summary
+            codex case. Use zen_dojotools_finance mode=report instead — it
+            auto-discovers all codex report modes from codex_registry and composes
+            them with the native finance rollup (budget, bills, net worth). The
+            agent reads one call and synthesizes the narrative. Correct division:
+            codex owns server-side computation (reconcile, post, compensate); agent
+            owns synthesis and judgment. Pieces: include=rollup,cogs (or omit for
+            all). Exclude specific pieces with exclude=rollup. New codices with a
+            feature_key_report mode auto-appear with no wiring. For FC live drawer
+            use: action_type=set_mount path=cfo/report
+            fc_args={tool:zen_dojotools_finance,params:{mode:report}} — whitelisted
+            as zen_dojotools_finance:report in _hard_wl (read-only by design).
+            Already configured on sensor.zenos_dojo_cabinet at cfo/report.
+          fail_soft_contract: >-
+            cogs_post NEVER raises on missing config — it returns status=skipped.
+            stock_consume calls this codex with continue_on_error=true and also
+            checks the finance tool is installed before calling at all, so a
+            household without Firefly/finance installed sees zero impact.
+            zen_dojotools_inventory also surfaces coaching (never blocks) on:
+            stock_check_item/stock_where_is_item/stock_entries_for_item — warns
+            if a cogs_tracked product has no positive-price stock entries, or if
+            an untracked product sits in a cogs_zone-tagged location; and on
+            stock_undo_booking — warns that undoing Grocy stock does NOT
+            auto-reverse any paired Firefly COGS transaction (use cogs_reconcile
+            or transactions_search tags=grocy_stock_entry:<booking_id> to find
+            and manually compensate it).
+    - variables:
+        _dom_inner: "{{ final_response | combine({'domain': 'finance', 'peers': {'inventory': 'zen_dojotools_inventory'}, 'see_also': 'zen_dojotools_manifest mode=domains name=finance'}) }}"
+    - variables:
+        final_response: "{{ {'status': 'help', 'help': _dom_inner} }}"
+    - stop: help
+      response_variable: final_response

@@ -1,9 +1,10 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 5.2.0  
+**Version:** 5.3.1  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
-**Internal REST dispatcher:** `zen_sutra_grocy`
+**Internal REST dispatcher:** `zen_sutra_grocy`  
+**KFC provider (sibling file):** `zen_sutra_logistics` — `packages/zenos_ai/plugins/grocy/sutra_logistics.yaml`, see [Logistics KFC Components](#logistics-kfc-components)
 
 ---
 
@@ -103,7 +104,7 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `chores_tag` | Set `homeassistant_area` and/or `entity_id` userfields on an existing chore — required for `chores_by_area` and `room_brief` area discovery |
 | `tasks_add` | Create a new Grocy task |
 | `tasks_tag` | Set `homeassistant_area` userfield on an existing task |
-| `stock_entry_update` | Edit a stock entry (best_before_date, location, price). Returns `{product_id, product_name, entry_id, updated_entry}` |
+| `stock_entry_update` | Edit a stock entry (best_before_date, location, price). Returns `{product_id, product_name, entry_id, updated_entry}`. **Fixed (v5.3.1):** calling this with only `entry_id` (no product context to resolve first) previously left the pre-fetch `current_entry_base` as `none`, silently sending an empty PUT payload. It now fetches the entry directly via `objects/stock?query[]=id=<entry_id>` when only `entry_id` is given, and derives the true `stock_id` from that fetched record rather than trusting the caller-supplied `entry_id` directly. |
 | `stock_register_asset` | Register a permanent physical asset and stock one unit |
 | `locations_metadata_set` | Bind Grocy locations to HA area and parent/container metadata |
 | `provision_bom` | Native BOM provisioner — unit resolution, product create/find, meta update, HA label tagging, chore create/find, chore tag, installed stock seed — all in one call. Requires `bom` (JSON string) and `confirm_action: true`. Returns `catalog` dict keyed by part key with `product_id`, `unit_id`, `chore_id`, `storage_location_id`, `consume_location_id`, `is_new`. |
@@ -422,6 +423,68 @@ The `inventory` slice in the response carries the kitchen's volatile items from 
 
 **`unit_conversions_add` global guard:** Calling `unit_conversions_add` without a `product_id` (global scope) now requires `confirm_action: true`. Global unit conversions affect all products in the instance and are a common source of accidental side effects. Scoped (per-product) conversions do not require confirmation.
 
+**`units_add` reactivation (v5.3.1):** if a unit name matches an existing but inactive unit, `units_add` now reactivates it instead of erroring on the duplicate name.
+
+---
+
+## update_product_meta
+
+Update fields on an existing product. Notable fields (v5.3.1):
+
+| Field | Purpose |
+|-------|---------|
+| `best_before_days` | Default shelf-life-after-purchase for this product, in days. `-1` disables. Feeds Perishable Storage Coaching's recommendation flow. |
+| `due_days_after_open` | Days until due once opened (distinct from `best_before_days`, which is unopened shelf life). |
+| `no_own_stock` | Grocy's "does not have its own stock" flag — for parent/grouping products that track child products' stock instead of their own. |
+
+---
+
+## Perishable Storage Coaching
+
+New in v5.3.1. Locations and products can be tagged `catalog_class: perishable_storage` or `catalog_class: non_perishable`. Classification is inherited by walking up the location's parent chain (`grocy_child_location_ids`) if not set directly, so tagging one shelf tags its whole sub-tree.
+
+- **`stock_audit_perishable`** — paginated cross-reference of all locations/stock against never-expire products stored in a `perishable_storage`-classed location. Surfaces products that likely should have a `best_before_days` set but don't.
+- **Perishable Storage Coach hook** — fires on `stock_buy_product`/purchase/transfer into a perishable-classed location. If the product has no `best_before_days` set, the response includes a soft recommendation to set one — never blocks the write.
+
+---
+
+## COGS Coaching
+
+New in v5.3.1, works alongside [`zen_codex_finance_cogs`](firefly_iii.md#codex-tier). Products tagged with the HA label `cogs_tracked` get cost-of-goods-sold treatment:
+
+- **COGS Zone Coach** — buy/purchase/transfer/adjust actions into a `cogs_zone`-tagged location warn (non-blocking) if the product isn't `cogs_tracked` yet.
+- **COGS Read Coach** — `stock_check_item`/`stock_where_is_item`/`stock_entries_for_item` warn on cost-basis gaps for tracked products.
+- **COGS Undo Coach** — `stock_undo_booking` warns that Firefly is not automatically reversed; a matching reversal must be posted separately via the finance codex.
+- **Auto-post hook** — consuming a `cogs_tracked` product automatically calls `zen_dojotools_finance mode=run case=cogs_post`, posting the COGS transaction to Firefly.
+
+---
+
+## Battery Management
+
+New in v5.3.1. Grocy-side tracking of rechargeable batteries as stock, cross-referenced against the HA "Battery Notes" integration for non-rechargeable device batteries. This is distinct from the Lens Bus `zen_stack_battery` provider ([Battery Notes Plugin](battery_notes.md)) — that provider answers "what needs a battery, by area" for the Lens Bus; these Grocy modes answer "manage rechargeable battery stock and charge cycles" and "cross-reference Battery Notes sensors against Grocy stock for replacement/shopping decisions." They read the same underlying HA sensors but serve different callers.
+
+| Mode | Purpose |
+|------|---------|
+| `batteries_due` | Rechargeable batteries bucketed by charge status: `overdue`, `due_today`, `due_soon`, `ok` |
+| `batteries_journal` | Charge-cycle history, optionally filtered to one battery |
+| `batteries_charge_undo` | Undo a specific charge cycle by its journal entry ID |
+| `battery_status` | Low-battery triage across the house — groups HA Battery Notes devices by area with a Grocy stock cross-reference |
+| `battery_overdue` | Devices not replaced in `days_threshold` days (template-only, reads Battery Notes sensors) |
+| `battery_replace` | Atomic: logs the replacement in Battery Notes (`battery_notes.set_battery_replaced`) AND consumes one unit from Grocy stock |
+
+---
+
+## Logistics KFC Components
+
+`zen_sutra_logistics` (`packages/zenos_ai/plugins/grocy/sutra_logistics.yaml`) is a sibling KFC-manifest-only file — no FileCabinet calls, no REST calls, pure `zen_dojotools_manifest mode=bootstrap_kfc` registration. It declares two components:
+
+| Component | Seeds | Trigger |
+|---|---|---|
+| `logistics_intake` | `zen_dojotools_inventory mode=stock_list_by_location` (Kitchen Island catalog intake) | Daily midnight + noon |
+| `logistics_volatile` | `zen_dojotools_inventory mode=stock_list_volatile` (overdue/expiring stock) | Daily midnight + noon |
+
+Battery KFC was deliberately moved out of this file to `zen_stack_battery` (see [Battery Notes Plugin](battery_notes.md)) — it is not duplicated here.
+
 ---
 
 ## Userfields Schema Management
@@ -473,6 +536,9 @@ zen_dojotools_inventory:
 | `products` | `homeassistant_area` | Direct product-to-area link |
 | `products` | `hazmat_class` | `flammable\|corrosive\|toxic\|oxidizer\|other` |
 | `products` | `zen_asset_type` | `consumable\|asset\|equipment` |
+| `products` | `catalog_class` | `perishable_storage\|non_perishable` (also used on `locations` — see [Perishable Storage Coaching](#perishable-storage-coaching)) |
+| `products` | `cogs_tracked` (`ha_labels`) | Not a userfield — an HA label. Presence triggers COGS auto-posting on consume; see [COGS Coaching](#cogs-coaching) |
+| `userentity-depreciable_asset` | `tax_context`, `owner_entity`, `paid_by_entity`, `reimbursement_status`, `allocation_method`, `business_area_anchor`, `evidence_refs`, `tax_review_status` | Tax/allocation fields feeding `zen_codex_finance_depreciation` — see [Firefly III](firefly_iii.md#codex-tier) |
 | `chores` | `homeassistant_area` | HA area ID — required for `chores_by_area` and `room_brief` discovery |
 | `chores` | `homeassistant_entity_id` | HA schedule or todo entity linked to this chore |
 | `tasks` | `homeassistant_area` | HA area ID for area-based task queries |
@@ -568,5 +634,8 @@ This page is derived from:
 
 * `packages/zenos_ai/plugins/grocy/readme.md`
 * `packages/zenos_ai/plugins/grocy/grocy.yaml`
+* `packages/zenos_ai/plugins/grocy/sutra_logistics.yaml`
 * [AutoVac](../components/autovac.md)
 * [SpaMaster](../components/spamaster.md)
+* [Firefly III — Codex Tier](firefly_iii.md#codex-tier)
+* [Battery Notes Plugin](battery_notes.md)

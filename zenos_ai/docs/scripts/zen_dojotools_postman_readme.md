@@ -82,7 +82,32 @@ AlertManager uses this same path when `notify_target: postman` and `response_typ
 | `resolve_and_dispatch` | yes | yes | Full send — resolve + dispatch + kata log + audit event. |
 | `author_policy` | no (policy write) | no | Write or update a `postman_profile` drawer in any cabinet. |
 | `clear_tag` | no | yes (removes) | Remove a log entry from `zen_postman_log` by `pm_tag`. Requires `tag=<pm_tag>`. Returns `{removed: true/false}`. |
+| `direct_dispatch` | yes | yes | Bypass the entire authority stack — no cabinet reads, no quiet/work-hours tier mapping — and dispatch straight to `notify.*` against a caller-supplied `notification_targets` list. Requires `override: true` or it logs a blocked attempt and returns an error coaching the caller to ask the operator instead. See [direct_dispatch](#direct_dispatch) below. |
 | `help` | no | no | Return full schema, drawer seeds, and example calls. |
+
+---
+
+## `direct_dispatch`
+
+Backwards-compat replacement for the retired `zen_dojotools_notification_router` script — if you're migrating an old caller that used to hit `notification_router` directly, this is the equivalent path, now inside Postman.
+
+**This is an escape hatch, not the normal path.** `resolve_and_dispatch` (the authority-stack-aware mode above) is almost always what you want — `direct_dispatch` exists for callers that need to hit a `notify.*` target directly and don't want the ceiling/floor/preference resolution in the way.
+
+```yaml
+zen_dojotools_postman:
+  mode: direct_dispatch
+  notification_targets: "Admin Devices"
+  title: "..."
+  message: "..."
+  override: true   # required — omit or false and the call is blocked
+```
+
+**Fields:** `notification_targets` (one or more of the 5 named groups: `Admin Devices`, `Family Devices`, `Family Devices (Verbose)`, `Default User Phone`, `Secondary User Phone`), `override` (boolean, default `false` — the "I know what I'm doing" switch).
+
+**Gates:**
+- **`override: true` is required.** Without it, the call is refused, logged to `zen_postman_log` as `direct_dispatch_blocked`, and the error response coaches the caller to ask the operator rather than retry with `override`.
+- **Non-Admin targets are still quiet/work-hours gated** unless `breakthrough: true` is also passed. `Admin Devices` always fires regardless of hours.
+- A successful dispatch logs a `direct_dispatch` entry to `zen_postman_log` (targets, override, caller_token) — same audit trail as `resolve_and_dispatch`.
 
 ---
 

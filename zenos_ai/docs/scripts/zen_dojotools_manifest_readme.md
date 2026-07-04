@@ -1,4 +1,4 @@
-# Zen DojoTools Manifest — v6.1.0 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Manifest — v6.2.0 (ZenOS-AI 2026.7.1)
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 
@@ -48,9 +48,13 @@ The `mode` field routes the broker to the appropriate subsystem. Default is `cab
 | `audit` | Gap analysis: unlabeled, broken, and ghost tools. Optionally filtered by `tier`. |
 | `health` | Aggregate health roll-up across subsystems. |
 | `autotag` | Tag discovered tools. Optionally filtered by `tier`. |
-| `publish` | Writes three mini-manifests to the household cabinet: `zen_tool_manifest`, `zen_label_manifest`, `zen_automation_manifest`. Also writes the domain routing table. |
+| `publish` | Writes three mini-manifests to the household cabinet: `zen_tool_manifest`, `zen_label_manifest`, `zen_automation_manifest`. Also writes the domain routing table — built dynamically from `label_entities('zen_domain_*')`, no hardcoded domain:entity_id list. |
 | `mcp_sync` | Reconciles MCP-visible tools against the known tool roster. Requires `mcp_tool_list` (JSON array of entity_ids the agent can see). |
 | `bootstrap_stacks` | Auto-registers Lens Bus stack providers. Scans all `zen_stack_*` and `zen_sutra_*` scripts **plus** `script.zen_dojotools_library` (which has no `zen_stack_*` wrapper but is a Lens Bus owner). Calls `tool_manifest` on each, registers any that declare `register_mode` and are not already in `lens_registry`. Idempotent — safe to run repeatedly. See [Lens Bus Auto-Registration](../plugins/lens_bus_autoreg.md). |
+| `bootstrap_kfc` | Auto-registers KFC self-declaring tools. Scans tools in `_bkfc_known`, calls `kfc_manifest` on each, writes live drawer mounts into the dojo cabinet. Fires on `homeassistant_start` + daily `00:01`. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). |
+| `health_refresh` | Runs a full per-tool compliance scan and caches the result to the `_health_report` cabinet drawer. `mode=health` reads this cache first, falling back to a live check only if the cache is absent. |
+| `domains` | Live tool/domain/peers graph — which tool owns which domain and what else shares that domain. |
+| `audit_help` | Scans `mode=help` across every discovered `zen_*` tool — surfaces tools with a missing or malformed help surface. |
 | `all` | Full system manifest. Calls subsystems directly and aggregates. If `force_refresh: true`, runs `publish` first to refresh cached drawers. |
 | `tool_manifest` | Self-description. See below. |
 
@@ -111,7 +115,7 @@ The self-description is produced by `MF.tool_manifest()` from `zenos_ai/zenos_ma
 tool: zen_dojotools_manifest
 display_name: System Manifest Broker
 tier: dojotools
-version: 6.0.0
+version: 6.2.0
 health:
   configured: true
   status: ok

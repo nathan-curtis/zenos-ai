@@ -2,6 +2,11 @@
 # ZenOS-AI DojoTools: Camera
 # Version: 5.1.0
 #
+# v5.1.0 (Zen pull, 2026-07-04): kfc_manifest mode added (camera_manager
+#   component, KF5 self-registration, cache-freshness thresholds). 8 inline
+#   cabinet-read blocks refactored to CABS.cabinet_drawer_value_mounted — no
+#   semantic change.
+#
 # Scripts:
 #   zen_dojotools_camera — Camera analysis, caching, and scanning (v5.1.0)
 #
@@ -78,16 +83,112 @@ script:
                     tier='dojotools',
                     version='1.0.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
-                    required_labels=['dojotools'],
+                    required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['camera', 'security_camera'],
                     consumes=['camera_entity'],
                     returns=['camera_image'],
                     icon='mdi:cctv',
                     color='grey',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
-                ) | from_json }}
+                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['camera_manager']}) }}
           - stop: tool_manifest
+            response_variable: result
+        - conditions: "{{ _tm_check == 'kfc_manifest' }}"
+          sequence:
+          - variables:
+              _kfc_filter: "{{ component | default('') | string | trim | lower if component is defined else '' }}"
+              _kfc_defs:
+              - kata_key: camera_manager
+                friendly_name: Camera Manager
+                label: camera_manager
+                component_summary: ""
+                component_instructions: >-
+                  SCOPE: Camera perimeter monitoring. Entity scope resolved from label: security_camera.
+                  Camera scene data arrives via domain_context.camera in the inspect result — each entry
+                  keyed by entity_id with: analysis (LLM scene description), cached_at (ISO timestamp),
+                  cache_age_minutes, found (bool).
+
+                  DATA SURFACE:
+                    - domain_context.camera — per-camera LLM analysis + cache age
+                    - Entity state (idle/streaming/unavailable) for each camera
+                    - Labels on each camera entity (area, zone context)
+
+                  CACHE FRESHNESS:
+                    cache_age_minutes < 30  — fresh, use confidently
+                    cache_age_minutes 30-60 — note age in output, still usable
+                    cache_age_minutes > 60  — flag as stale, recommend scan
+                    found: false            — no cache entry, camera has not been scanned yet
+
+                  SUBJECT DETECTION — read the analysis text for:
+                    People: any mention of person, figure, individual, silhouette
+                    Vehicles: car, truck, van, motorcycle, bicycle in driveway/street
+                    Animals: dog, cat, wildlife
+                    Packages: parcel, box, delivery on porch or step
+                    Activity: motion, movement, unusual, suspicious
+
+                  TONE:
+                    Calm and factual. Security-aware without alarm language.
+                    Good: "Front yard camera shows a vehicle parked in the driveway — unfamiliar make."
+                    Bad: "ALERT: UNKNOWN VEHICLE DETECTED — POSSIBLE INTRUSION."
+                    Only use elevated language when urgency >= 6 (confirmed perimeter breach pattern).
+
+                  TIME CONTEXT:
+                    Odd hours = 22:00-05:00 local time. Bump urgency +1 for any person/vehicle
+                    detection in this window.
+                    Daytime delivery detections (packages, postal vehicles): urgency 2-3, informational only.
+
+                  AVAILABLE ACTIONS:
+                    zen_dojotools_camera — look (refresh single camera), scan (refresh all labeled cameras), read (retrieve cache)
+
+                  OUTPUT SHAPE:
+                    cameras: array of { entity_id, friendly_name, scene, cache_age_minutes, found, subjects[] }
+                    overall: one-sentence perimeter status
+                    notable: array of entity_ids with detected subjects or issues
+                    stale_cameras: array of entity_ids where cache_age_minutes > 60 or found=false
+                    urgency: 1-8
+                    general_inference: <=300 chars, ambient read or action recommendation
+                trigger_subscriptions:
+                - force_summary
+                drift_threshold: 5
+                emission_cooldown_minutes: 60
+                delay_seconds: 30
+                suggested_act_event: null
+                seed: null
+                master_switch: ""
+                index_call:
+                  domain_inspect_domains: []
+                  domain_inspect_limit: 25
+                  expand_entities: false
+                  filter_json: {}
+                  label_1: security_camera
+                  label_2: ""
+                  operator: AND
+                  output_fields: ""
+                meta:
+                  enabled: true
+                  requires:
+                    cert: ""
+                    level: 0
+          - variables:
+              _kfc_out: >-
+                {%- if _kfc_filter == '' -%}
+                  {{ _kfc_defs }}
+                {%- else -%}
+                  {{ _kfc_defs | selectattr('kata_key', 'equalto', _kfc_filter) | list }}
+                {%- endif -%}
+              result:
+                status: ok
+                tool: zen_dojotools_camera
+                version: "5.1.0"
+                mode: kfc_manifest
+                kfc: "{{ _kfc_out }}"
+                count: "{{ _kfc_out | length }}"
+                caller_token: "{{ caller_token | default('') }}"
+          - stop: kfc_manifest
             response_variable: result
       # ── 0. Normalize inputs ───────────────────────────────────────────────
       - variables:
@@ -169,8 +270,7 @@ script:
           - variables:
               _default_ctx_raw: >-
                 {%- set _ck = _camera_entity | replace('.', '_') | replace('-', '_') -%}
-                {%- set v = (state_attr(_household_cab, 'variables') or {}).get(_ck, {}) -%}
-                {%- set v1 = v.get('value', v) if v is mapping else {} -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set v1 = CABS.cabinet_drawer_value_mounted(_household_cab, _ck) | from_json -%}
                 {%- set v1 = v1 if v1 is mapping else {} -%}
                 {{ v1.get('_default_ctx', {}) }}
               _ctx_call: >-
@@ -454,8 +554,7 @@ script:
           - variables:
               _cache_key: "{{ _camera_entity | replace('.', '_') | replace('-', '_') }}"
               _raw: >-
-                {%- set v = (state_attr(_household_cab, 'variables') or {}).get(_cache_key, {}) -%}
-                {%- set v1 = v.get('value', v) if v is mapping else {} -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set v1 = CABS.cabinet_drawer_value_mounted(_household_cab, _cache_key) | from_json -%}
                 {{ v1 if v1 is mapping else {} }}
               _cached_at_str: "{{ _raw.get('cached_at', '') if _raw is mapping else '' }}"
               _cache_age_minutes: >-
@@ -487,8 +586,7 @@ script:
               _info_cache_key: "{{ _camera_entity | replace('.', '_') | replace('-', '_') }}"
               _info_labels: "{{ labels(_camera_entity) | list }}"
               _info_raw: >-
-                {%- set v = (state_attr(_household_cab, 'variables') or {}).get(_info_cache_key, {}) -%}
-                {%- set v1 = v.get('value', v) if v is mapping else {} -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set v1 = CABS.cabinet_drawer_value_mounted(_household_cab, _info_cache_key) | from_json -%}
                 {{ v1 if v1 is mapping else {} }}
               _info_cached_at: "{{ (_info_raw.get('cached_at', '') if _info_raw is mapping else '') }}"
               _info_cache_age: >-
@@ -556,9 +654,7 @@ script:
           - variables:
               _look_cache_key: "{{ _camera_entity | replace('.', '_') | replace('-', '_') }}"
               _look_existing_private: >-
-                {%- set v = (state_attr(_household_cab, 'variables') or {}).get(_look_cache_key, {}) -%}
-                {%- set v1 = v.get('value', v) if v is mapping else {} -%}
-                {%- set v1 = v1 if v1 is mapping else (v1 | from_json if v1 is string else {}) -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set v1 = CABS.cabinet_drawer_value_mounted(_household_cab, _look_cache_key) | from_json -%}
                 {%- set v1 = v1 if v1 is mapping else {} -%}
                 {%- set ns = namespace(d={}) -%}
                 {%- for k, val in v1.items() if k.startswith('_') -%}
@@ -628,11 +724,7 @@ script:
               - variables:
                   _sendto_person: >-
                     {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
-                    {%- set _hh_vars = state_attr(_hh, 'variables') | default({}, true) -%}
-                    {%- set _hh_vars = _hh_vars if _hh_vars is mapping else {} -%}
-                    {%- set _mani_raw = _hh_vars.get('members', {}) -%}
-                    {%- set _mani = _mani_raw.get('value', _mani_raw) if _mani_raw is mapping and 'value' in _mani_raw else _mani_raw -%}
-                    {%- set _mani = _mani if _mani is mapping else (_mani | from_json if _mani is string else {}) -%}
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set _mani = CABS.cabinet_drawer_value_mounted(_hh, 'members') | from_json -%}
                     {%- set _all = _mani.get('users', []) + _mani.get('ai_users', []) -%}
                     {%- set _hit = _all | selectattr('entity_id', 'defined')
                                         | selectattr('entity_id', 'equalto', _sendto)
@@ -742,9 +834,7 @@ script:
                 - variables:
                     _scan_cache_key: "{{ repeat.item | replace('.', '_') | replace('-', '_') }}"
                     _scan_existing_private: >-
-                      {%- set v = (state_attr(_household_cab, 'variables') or {}).get(_scan_cache_key, {}) -%}
-                      {%- set v1 = v.get('value', v) if v is mapping else {} -%}
-                      {%- set v1 = v1 if v1 is mapping else (v1 | from_json if v1 is string else {}) -%}
+                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set v1 = CABS.cabinet_drawer_value_mounted(_household_cab, _scan_cache_key) | from_json -%}
                       {%- set v1 = v1 if v1 is mapping else {} -%}
                       {%- set ns = namespace(d={}) -%}
                       {%- for k, val in v1.items() if k.startswith('_') -%}
@@ -869,8 +959,7 @@ script:
           - variables:
               _sdc_cache_key: "{{ _camera_entity | replace('.', '_') | replace('-', '_') }}"
               _sdc_existing: >-
-                {%- set v = (state_attr(_household_cab, 'variables') or {}).get(_sdc_cache_key, {}) -%}
-                {%- set v1 = v.get('value', v) if v is mapping else {} -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set v1 = CABS.cabinet_drawer_value_mounted(_household_cab, _sdc_cache_key) | from_json -%}
                 {{ v1 if v1 is mapping else {} }}
               _sdc_new_value: >-
                 {{ (_sdc_existing if _sdc_existing is mapping else {}) | combine({'_default_ctx': _sdc_ctx}) | tojson }}
@@ -935,8 +1024,7 @@ script:
           - variables:
               _sap_cache_key: "{{ _camera_entity | replace('.', '_') | replace('-', '_') }}"
               _sap_existing: >-
-                {%- set v = (state_attr(_household_cab, 'variables') or {}).get(_sap_cache_key, {}) -%}
-                {%- set v1 = v.get('value', v) if v is mapping else {} -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set v1 = CABS.cabinet_drawer_value_mounted(_household_cab, _sap_cache_key) | from_json -%}
                 {%- set v1 = v1 if v1 is mapping else (v1 | from_json if v1 is string else {}) -%}
                 {{ v1 if v1 is mapping else {} }}
               _sap_new_value: >-
@@ -975,6 +1063,7 @@ script:
           select:
             options:
               - tool_manifest
+              - kfc_manifest
       tool:
         selector:
           select:

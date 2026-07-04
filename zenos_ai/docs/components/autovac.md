@@ -1,6 +1,6 @@
 # ZenOS-AI AutoVac
 
-**Version:** 5.2.0
+**Version:** 5.3.0
 **Script:** `zen_dojotools_autovac`
 
 ---
@@ -38,6 +38,11 @@ Apply these labels in HA to wire up the integration:
 | `autovac_wear` | Optional | Roborock wear sensors | Wear % sensors — wired to consumables catalog at provision time |
 | `autovac_calendar` | Optional | `calendar.*` | Calendar entities — events with "AUTOVAC HOLD" in summary/description block runs; others surfaced as soft warnings in briefing |
 | `autovac_current_room` | Optional | `sensor.*` | Live current-room sensor |
+| `autovac_room_schedule` | Optional | Schedule entities | Room-scoped schedule — mapped to a room via matching `area_id` |
+| `autovac_blackout` | Optional | Schedule entities | While `on`: blocks the room matching its `area_id`, or all rooms if the entity has no area |
+| `autovac_mon` … `autovac_sun` | Optional | Schedule entities | Day-specific override — highest priority in day resolution |
+| `autovac_weekday` | Optional | Schedule entities | Applies Mon–Fri when no day-specific label matches |
+| `autovac_weekend` | Optional | Schedule entities | Applies Sat–Sun when no day-specific label matches |
 | `Zen Household Cabinet` | Yes | `sensor.*` | Household cabinet (shared with other dojotools) |
 
 Schedules are discovered dynamically from `autovac_schedule` label — add or remove schedule entities without changing the script.
@@ -71,6 +76,32 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `handle_ack` | Process Postman push notification ack — go now, skip this run, or pause all day |
 | `nightly_reset` | Reset daily run flags and pause state (call at midnight) |
 | `morning_reset` | Clear `is_ready` flags after morning run starts |
+| `schedule` | Day-resolved schedule summary — see [Scheduling](#scheduling) |
+| `schedule_blocks` | Raw `schedule.get_schedule` response for all `autovac_schedule` entities, enriched with labels/state/area |
+| `kfc_manifest` | KFC dojo manifest — component summary, seed call, and drift/trigger config for the Ninja Summarizer |
+| `stacks_by_anchor` | Lens Bus provider — `area_id` anchor → `cleaning_evidence`. See [Lens Bus Provider](#lens-bus-provider) |
+| `register` | Lens Bus — register this tool as a `cleaning_evidence` provider in the cabinet's `lens_registry` |
+| `unregister` | Lens Bus — remove this tool's `lens_registry` entry |
+| `health` | Lens Bus — health check (vacuum entity live, cabinet reachable, rooms configured, inventory provisioned) |
+| `inspect` | Lens Bus — static capability descriptor (consumes/returns/fields) for provider discovery |
+
+---
+
+## Scheduling
+
+`mode=schedule` resolves which `autovac_schedule` entity is authoritative right now, using a priority system so day-specific and room-scoped overrides win over generic weekday/weekend schedules:
+
+| Priority | Match | Labels |
+|----------|-------|--------|
+| 1 (highest) | Today's specific day | `autovac_mon` … `autovac_sun` |
+| 2 | Weekday/weekend class | `autovac_weekday`, `autovac_weekend` |
+| 3 (lowest) | No day label at all | Generic `autovac_schedule` entity |
+
+A schedule entity with no matching label for today is excluded from resolution entirely. Response includes `valid_today` (all candidates ranked), `next` (soonest upcoming fire, priority-aware), `in_window` (any candidate firing within `window_start`/`window_end` seconds — defaults 1770–2400s), `active` (currently-open window, if any), and `schedule_7day` (7-day forecast per day-of-week).
+
+`mode=schedule_blocks` returns the raw `schedule.get_schedule` block/event data per `autovac_schedule` entity (area, notes, custom fields) plus per-entity metadata (labels, state, area, next_event) — used when a caller needs the underlying schedule structure rather than the resolved summary.
+
+**Room-scoped and blackout schedules** (separate from the day-resolution system above): a schedule entity labeled `autovac_room_schedule` is mapped to a room by matching its `area_id` against each room's configured `area_id`. A schedule entity labeled `autovac_blackout` that is `on` blocks its matching room (or all rooms, if the entity has no area) — evaluated as a blocker in room election alongside `enabled`/`skip_next`/readiness/water checks.
 
 ---
 
@@ -332,11 +363,27 @@ automation:
 
 ---
 
+## Lens Bus Provider
+
+Autovac registers itself as a Lens Bus provider of `cleaning_evidence`, keyed on `area_id` anchors (the room slug must match the HA area_id exactly):
+
+| Mode | Purpose |
+|------|---------|
+| `stacks_by_anchor` | Given `anchor_type=area_id` and `anchor_ids=[...]`, returns `cleaning_evidence` per matched room: `last_cleaned`, `days_since_cleaned`, `days_between`, `due`, `queued`, `elected`, `blockers`, `requires_mop`. Any anchor type other than `area_id` returns an empty evidence list. |
+| `register` | Writes an entry for `autovac` into the cabinet's `lens_registry` drawer (provider metadata: tool, department, consumes/returns, `failure_policy: soft`, `risk_class: read_only`). Merges with existing registry content. |
+| `unregister` | Removes the `autovac` entry from `lens_registry`. Reports `was_registered`. |
+| `health` | Reports `available`/`degraded` based on vacuum entity liveness, cabinet reachability, room config presence, and inventory provisioning. Degraded state lists which capabilities (`consumables`, `check_wear`, `stacks_by_anchor`) are affected. |
+| `inspect` | Static capability descriptor — consumes/returns types, anchor-matching rule, evidence field list, failure policy, currently registered rooms. For provider discovery, not live evidence. |
+
+---
+
 ## Dispatcher Registration
 
-`zen_dojotools_autovac` is registered in `dojotools_dispatcher.yaml` as `zen_dojotools_autovac v1`. All 17 fields are passed through from `_payload`:
+`zen_dojotools_autovac` is registered in `dojotools_dispatcher.yaml` as `zen_dojotools_autovac v1`. Fields passed through from `_payload`:
 
 `mode`, `caller_token`, `room`, `config`, `rooms`, `dry_run`, `action`, `part`, `amount`, `wear_entity`, `preset`, `model_preset`, `schedule_entity_id`, `trigger_id`, `ack_action`, `ack_context`, `pm_tag`
+
+**Gap:** the dispatcher's field passthrough has not been updated for the new modes — `window_start`, `window_end`, `component`, `anchor_type`, and `anchor_ids` are not in the list above (confirmed same on H:\, not a Zen-side omission). `schedule`, `kfc_manifest`, `stacks_by_anchor`, `register`, `unregister`, `health`, and `inspect` are therefore only reachable via a direct `script.zen_dojotools_autovac` call, not through a `dojotool_call` event.
 
 ---
 

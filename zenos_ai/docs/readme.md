@@ -92,6 +92,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * `components/alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
 * `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
+* `components/systemtools.md` — SystemTools: home mode, quiet/work hours, scheduler anchors, guest/entertaining toggles, home_status rollup
 * `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
 * `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
 * `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
