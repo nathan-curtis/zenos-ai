@@ -221,6 +221,13 @@ Unified household communications layer. Supersedes `zen_dojotools_notification_r
 
 ---
 
+## 22b. Zen DojoTool Dispatcher — v5.3.0
+**File:** `zen_dojotools_dispatcher_readme.md`
+
+Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_call)`, routes through a single registered `choose` arm per tool, fires correlated `dojotool_return`. Unregistered tools get a structured `unknown_tool` fault instead of a hard crash. Single-automation architecture since v5.2.0 (2026.6.0) — the old two-tier dispatcher/tool-router split and its `dojotool_route` event are gone. v5.3.0 (2026.7.1) removed the dead `zen_dojotools_notification_router` compat arm (no backing script existed) and added `zen_stack_battery`.
+
+---
+
 # Summary
 
 If Friday performs an action, reads something, correlates entities, inspects a device, updates a drawer, or leaves a breadcrumb — it came from here.
