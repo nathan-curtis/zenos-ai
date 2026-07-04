@@ -49,7 +49,7 @@ zen_dojotools_rolodex:
   config_json: '{"url": "http://your-twenty-host:3000"}'
 ```
 
-The URL is stored in `household.integrations_config.twenty.url`. The legacy `input_text.twenty_url` helper is a fallback that remains until configure is run.
+The URL is stored in `household.integrations_config.twenty.url`. The legacy `input_text.twenty_url` helper is a fallback that remains until configure is run. (2026.7.1: the `integrations_config` drawer read is now guarded against the value coming back as a JSON-encoded string instead of an already-parsed mapping — matters if the drawer was written by an older tool version or an external cabinet edit.)
 
 3. Label HA entities for property operations:
 
@@ -159,7 +159,7 @@ Tags are comma-separated label slugs, e.g. `plumber,vendor,active`.
 | `tags` | Comma-separated HA label slugs |
 | `config_json` | JSON dict for configure — keys: `url`, `stays_label`, `appointments_label`, `reminders_label`, `tasks_label` |
 | `area_id` | HA area ID for `area_vendors` or to tag a stay to a room |
-| `person_entity_id` | HA person entity ID for `person_link` (e.g. `person.nathan`) |
+| `person_entity_id` | HA person entity ID for `person_link` (e.g. `person.member_name`) |
 | `role` | Job title / relationship role for `contact_link` |
 | `grocy_entity` | `shopping_lists` or `shopping_locations` for `vendor_link` |
 | `grocy_id` | Grocy record integer ID for `vendor_link` |

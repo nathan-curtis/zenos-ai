@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Summarizers Package
-# Version: 5.1.0
+# Version: 5.1.1
+#
+# v5.1.1 (2026-07-04): Fixed duplicate household_drawer: key in the drawer-unwrap
+#   variables step (FC-routed refactor left both the new FileCabinet-routed read
+#   and the old state_attr read defined under the same key — YAML last-key-wins
+#   meant the FC-routed read was silently dead code since the refactor landed).
+#   Removed the stale state_attr definition, kept the FC-routed one. Downstream
+#   unwrap logic already handled both shapes defensively, no other changes needed.
+#   Caught and confirmed by Cayt.
 #
 # Migrated from scripts.yaml. Fixes applied (v5.1.0):
 #   - supersummary: active_components namespace() fix (Jinja2 scoping — was always {})
@@ -158,6 +166,7 @@ script:
             options:
             - run
             - tool_manifest
+            - kfc_manifest
 
     sequence:
 
@@ -182,7 +191,7 @@ script:
                   tier='dojotools',
                   version='4.5.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
-                  required_labels=['dojotools'],
+                  required_labels=['dojotools', 'zen_kfc_provider'],
                   optional_labels=['ai_summarizer'],
                   consumes=['query', 'supplemental_prompt', 'force'],
                   returns=['zen_summary'],
@@ -190,10 +199,123 @@ script:
                   modes={'run': 'run', 'manifest': 'tool_manifest'},
                   icon='mdi:brain',
                   color='purple',
+                  stripe=3,
+                  impact='soft',
+                  mcp_exposed=true,
 
                   caller_token=caller_token | default('')
-                ) | from_json -}}
+                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['trapper_keeper']}) -}}
           - stop: supersummary tool manifest
+            response_variable: result
+        - conditions:
+          - condition: template
+            value_template: "{{- mode | default('run') == 'kfc_manifest' -}}"
+          sequence:
+          - variables:
+              _kfc_filter: "{{ component | default('') | string | trim | lower if component is defined else '' }}"
+              _kfc_defs:
+              - kata_key: trapper_keeper
+                friendly_name: Trapper Keeper (Ambient Index Aggregator)
+                label: trapper_keeper
+                component_summary: ""
+                component_instructions: >-
+                  SCOPE: Ambient pre-digest layer. Runs BEFORE supersummarizer. Reads ambient KFC katas
+                  directly, compresses into compact breadcrumb digest + navigation index. The supersummarizer
+                  reads this output instead of raw ambient katas — keeping the prompt tight and oriented.
+
+                  ROLE IN THE PIPELINE:
+                    ninja runs (leaves) → katas (branches) → Trapper Keeper (index) → SuperSummary (alert root)
+                    The Keeper is the navigation layer. The prompt is the root. The agent reads the root,
+                    knows her world, and traverses down on demand — she never needs the full tree at once.
+
+                  AMBIENT KFC KATAS TO PROCESS:
+                    Process ALL ambient kata data provided as input.
+
+                  OUTPUT FORMAT — breadcrumb digest per component:
+                    Each entry = one line max. Lead with most actionable signal. No entity IDs.
+                    If nothing notable: one word or short phrase (e.g. 'nominal', 'all clear', 'idle').
+                    Include kata_key pointer so agent knows exactly where to pull detail.
+
+                    Format each component as:
+                    {
+                      "breadcrumb": "<1-line ambient state — most actionable signal>",
+                      "kata_key":   "<drawer key in kata cabinet>",
+                      "urgency":    <0-10>,
+                      "detail_available": true
+                    }
+
+                    Room manager exception: include a sub-index of room_* kata keys with one-word state each.
+                    e.g. { "office": "occupied", "kitchen": "vacant", "garage": "active" }
+
+                  NAVIGATION INDEX — output at top level:
+                    kata_cabinet: sensor.zenos_kata_cabinet
+                    All ambient katas live here. Agent can cold-read any key on demand.
+                    Room detail keys: room_<slug> (e.g. room_kitchen, room_garage, room_office)
+
+                  AMBIENT URGENCY PROMOTION RULE (supersummarizer enforces this — set urgency accurately):
+                    urgency 0-3  → ambient_nav only. No mention in zen_summary.attention.
+                    urgency 4-5  → one line in zen_summary.attention. NOT in active_components.
+                    urgency 6-10 → zen_summary.attention + active_components entry (direct-tier treatment).
+                    Set urgency truthfully — the downstream promotion rule depends on it.
+
+                  TONE:
+                    Terse. This is a pointer document, not a report. No elaboration.
+                    Flag urgency > 3 accurately — downstream promotion rule depends on it.
+
+                  DO NOT summarize: alert_manager, security_manager, energy_manager, water_manager,
+                    zen_system, zen_fusion, hot_tub_manager — those are SuperSummary tier.
+                  DO NOT generate person-scoped briefings here — that is downstream of the Keeper.
+
+                  PIPELINE ORDERING:
+                    delay_seconds: 15 — runs early in scheduler dispatch queue.
+                    SuperSummary reads this kata as its ambient context input.
+                    This component must complete before supersummarizer runs.
+
+                  CONVERSATIONAL REFERENCE:
+                    When the user says "what's in the trapper keeper", "what does the keeper say",
+                    "keeper status", "what's the keeper showing", or any variation — he is asking
+                    about THIS component's current output. Read the trapper_keeper kata from
+                    sensor.zenos_kata_cabinet and present the ambient digest conversationally:
+                    lead with anything urgency > 3, sweep remaining components in one breath.
+                    Don't enumerate the full structure — summarize like a colleague giving a quick rundown.
+                    If the kata is stale (> 20 min), note it and offer to trigger a refresh.
+                trigger_subscriptions: "ha_start,home_occupancy_change,home_mode_updates,start_home_wake,start_home_evening,force_summary,every_10_minutes"
+                drift_threshold: 1
+                emission_cooldown_minutes: 20
+                delay_seconds: 15
+                suggested_act_event: null
+                seed: null
+                master_switch: ""
+                index_call:
+                  domain_inspect_domains: []
+                  domain_inspect_limit: 25
+                  expand_entities: false
+                  filter_json: {}
+                  label_1: trapper_keeper
+                  label_2: ""
+                  operator: AND
+                  output_fields: ""
+                meta:
+                  enabled: true
+                  requires:
+                    cert: ""
+                    level: 0
+          - variables:
+              _kfc_out: >-
+                {%- if _kfc_filter == '' -%}
+                  {{ _kfc_defs }}
+                {%- else -%}
+                  {{ _kfc_defs | selectattr('kata_key', 'equalto', _kfc_filter) | list }}
+                {%- endif -%}
+              result:
+                status: ok
+                tool: zen_dojotools_supersummary
+                version: "4.5.0"
+                mode: kfc_manifest
+                kfc: "{{ _kfc_out }}"
+                count: "{{ _kfc_out | length }}"
+                caller_token: "{{ caller_token }}"
+          - stop: kfc_manifest
             response_variable: result
 
 
@@ -728,6 +850,9 @@ script:
                   modes={'run': 'run', 'manifest': 'tool_manifest'},
                   icon='mdi:ninja',
                   color='blue-grey',
+                  stripe=3,
+                  impact='soft',
+                  mcp_exposed=true,
 
                   caller_token=caller_token | default('')
                 ) | from_json -}}
@@ -795,14 +920,36 @@ script:
           _parent_slug: "{{ parent_component_id | default('', true) | slugify }}"
           _index_override_raw: "{{ index_call_override | default('', true) }}"
 
-      # ── 2. Read dojo + household drawers ──────────────────────────────────
-      - alias: Read dojo drawer
+      # ── 2. Read dojo + household drawers via FileCabinet ────────────────────
+      # Both reads go through FC — dojo resolves live KF5 mounts; household has
+      # no mount concept today but must not bypass FC per cabinet access rule.
+      - alias: Resolve dojo drawer key
+        variables:
+          _dojo_key: "{{ _parent_slug if _parent_slug | trim != '' else component_slug }}"
+      - alias: Read dojo drawer via FileCabinet
+        action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _dojo_fc
+        data:
+          action_type: get
+          volume_entity_id: "{{ dojo_cabinet }}"
+          key: "{{ _dojo_key }}"
+      - alias: Read household drawer via FileCabinet
+        action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _household_fc
+        data:
+          action_type: get
+          volume_entity_id: "{{ household_cabinet }}"
+          key: "{{ component_slug }}"
+      - alias: Unwrap dojo drawer (raw KF4 blob or live-mounted KF5 kfc payload)
         variables:
           dojo_drawer: >-
-            {%- set _key = _parent_slug if _parent_slug | trim != '' else component_slug -%}
-            {{ (state_attr(dojo_cabinet, 'variables') or {}).get(_key, {}) }}
+            {%- set _v = _dojo_fc.get('value', {}) if _dojo_fc is mapping else {} -%}
+            {%- set _kfc = _v.get('kfc', none) if _v is mapping else none -%}
+            {{ _kfc if _kfc is mapping else (_v if _v is mapping else {}) }}
           household_drawer: >-
-            {{ (state_attr(household_cabinet, 'variables') or {}).get(component_slug, {}) }}
+            {{ {'value': _household_fc.get('value', {})} if _household_fc is mapping else {} }}
 
       - alias: Unpack drawer values
         variables:

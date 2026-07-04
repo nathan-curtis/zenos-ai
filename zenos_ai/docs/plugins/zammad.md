@@ -54,6 +54,8 @@ Use `mode=help` for the full field catalog. Key modes:
 
 **Note on ticket IDs:** `ticket_id` accepts either the display number (e.g. `10073`) or the raw Zammad DB id (e.g. `73`) — both resolve correctly.
 
+**Note on `priority` (2026.7.1):** `ticket_create` and `ticket_update` accept `priority` as either a bare number/word (`1`/`low`, `2`/`normal`, `3`/`high`, `4`/`"very high"`, `5`/`critical`, case-insensitive) or Zammad's canonical string form (`"1 low"`, `"2 normal"`, etc.) — both are normalized to the canonical form before the API call. **This normalization is required**: Zammad's ticket API silently ignores an unrecognized priority string rather than erroring, leaving the ticket at its default priority (`"2 normal"` on create, unchanged on update) with no error surfaced. Before this fix, passing `priority: high` or `priority: 3` produced a normal-priority ticket with no indication anything was wrong.
+
 ---
 
 ## zen_stack_radar — Lens Bus Stack Provider
@@ -151,5 +153,6 @@ A successful configure call connects to Zammad, writes the URL to `integrations_
 
 | Version | Change |
 |---------|--------|
+| v0.4.0 (2026.7.1 fix) | `ticket_create`/`ticket_update` priority normalization — bare numbers/words (`high`, `3`) now map to Zammad's canonical `"3 high"` form; previously silently ignored by the Zammad API, leaving tickets at default priority with no error. `zen_stack_radar` lens manifest: `required_labels` changed `["radar"]` → `["zammad"]`, `radar` moved to optional alongside `servicedesk`/`tickets`. |
 | v0.4.0 (Radar) | `radar_setup` mode: idempotent init wizard (find-or-creates house/zenos personas, writes `radar_defaults` to household cabinet). `ticket_assign` mode. `batch_update` mode. `object_attribute_create` mode. `reporter` shorthand on `ticket_create`: `house`=household persona, `zenos`=dev persona. `ticket_id` accepts display number (e.g. `10073`) or raw DB id. |
 | v0.3.1 | Baseline Radar: `configure`, `ticket_create/get/find/list/search/update/close/complete`, `article_add/list`, `triage_set/get`, `tickets_by_anchor`, `ticket_link/unlink`, `customer_find/create`, `org_find/create`, `queue_get`, `view_get`, `workflow_context_get`. `zen_stack_radar` Lens Bus registration. |

@@ -372,7 +372,7 @@ The two labels are orthogonal. A camera can carry either, both, or neither.
   data:
     tool: look
     camera_entity: camera.front_doorbell_camera
-    sendto: person.nathan
+    sendto: person.member_name
 
 # 6. Audit camera configuration
 - action: script.zen_dojotools_camera
