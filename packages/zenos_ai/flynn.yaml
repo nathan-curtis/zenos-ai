@@ -292,6 +292,14 @@ automation:
             {%- set ns = namespace(found=false) -%}
             {%- for slot, eid in _sde.items() -%}{%- if states(eid) == 'init' -%}{%- set ns.found = true -%}{%- endif -%}{%- endfor -%}
             {{ ns.found }}
+          _early_unmounted_history: >-
+            {%- set _hist = [
+                'sensor.zenos_default_household_history_cabinet',
+                'sensor.zenos_default_family_history_cabinet',
+                'sensor.zenos_default_user_history_cabinet',
+                'sensor.zenos_default_ai_user_history_cabinet'
+            ] -%}
+            {{ _hist | select('has_value') | map('states') | select('eq', 'online_unmounted') | list | count > 0 }}
       # Early exit: skip when all gates truly green AND oobe done AND no init cabs.
       # Optional slots stay ok in cabinet_health even with init-state cabs — we
       # check cabinet_states directly so Flynn can't be fooled by health rollup.
@@ -302,6 +310,7 @@ automation:
              and is_state('sensor.zen_monastery_health', ['ok', 'warn'])
              and not _oobe_pending
              and not _early_init_cabs
+             and not _early_unmounted_history
              and 'kfc_template' in (state_attr(states('sensor.zen_dojo_cabinet_resolved'), 'variables') or {})
              and 'zen_template'  in (state_attr(states('sensor.zen_kata_cabinet_resolved'), 'variables') or {}) }}
         then:
@@ -486,7 +495,15 @@ automation:
             {%- set ns = namespace(found=false) -%}
             {%- for slot, eid in _sde.items() -%}{%- if states(eid) == 'init' -%}{%- set ns.found = true -%}{%- endif -%}{%- endfor -%}
             {{ ns.found }}
-      - if: "{{ _has_init_cabs and not _in_warmup and not _is_ha_start }}"
+          _has_unmounted_history: >-
+            {%- set _hist = [
+                'sensor.zenos_default_household_history_cabinet',
+                'sensor.zenos_default_family_history_cabinet',
+                'sensor.zenos_default_user_history_cabinet',
+                'sensor.zenos_default_ai_user_history_cabinet'
+            ] -%}
+            {{ _hist | select('has_value') | map('states') | select('eq', 'online_unmounted') | list | count > 0 }}
+      - if: "{{ (_has_init_cabs or _has_unmounted_history) and not _in_warmup and not _is_ha_start }}"
         then:
           - action: script.flynn_initialize_cabinets
             data: {}
@@ -839,6 +856,10 @@ script:
             expansion_5: "Expansion Cabinet"
             history: "History Cabinet"
             index: "Index Cabinet"
+            default_household_history: "History Cabinet"
+            default_family_history: "History Cabinet"
+            default_user_history: "History Cabinet"
+            default_ai_user_history: "History Cabinet"
 
       - repeat:
           for_each: "{{ missing_list }}"
@@ -887,6 +908,95 @@ script:
                     confirm_action: true
                     target_cabinet: "{{ entity_id }}"
                     cab_type: "{{ cabinet_type }}"
+                  response_variable: _init_result
+                - if: "{{ (_init_result | default({})).get('reason', '') == 'rearm_required' }}"
+                  then:
+                    - action: persistent_notification.create
+                      data:
+                        notification_id: "flynn_cab_init_blocked_{{ entity_id | replace('.', '_') }}"
+                        title: "Flynn: Cabinet needs manual init"
+                        message: >-
+                          Cabinet **{{ entity_id }}** (slot: {{ slot }}) has residue data
+                          and cannot be auto-initialized. Human action required.
+
+                          **Think first: do you need what's in there?**
+                          Check the contents via AdminTools → inspect before you do anything.
+
+                          **Option A — Repair (stamp a fresh header, preserve residue):**
+                          Developer Tools → Actions →
+                          `script.zen_admintools_cabinetadmin` → mode: `repair_volumeinfo`, target_cabinet: `{{ entity_id }}`, cab_type: `{{ cabinet_type }}`, confirm_action: `true`
+
+                          **Option B — Hammer (cab is busted, contents not needed):**
+                          Developer Tools → Actions →
+                          `script.zen_admintools_cabinetadmin` → mode: `hammer`, target_cabinet: `{{ entity_id }}`, confirm_action: `true`
+
+                          Flynn will complete mount and wiring automatically after either succeeds.
+
+      # Post-init: mount per-construct history cabinets and wire history mount in parent.
+      # Runs for all 4 slots unconditionally — skips already-mounted cabs, handles
+      # fresh init and online_unmounted (VolumeInfo present, just needs mount + pointer).
+      - variables:
+          _history_parent_map:
+            default_household_history: sensor.zenos_default_household_cabinet
+            default_family_history: sensor.zenos_default_family_cabinet
+            default_user_history: sensor.zenos_default_user_cabinet
+            default_ai_user_history: sensor.zenos_default_ai_user_cabinet
+          _history_entity_map:
+            default_household_history: sensor.zenos_default_household_history_cabinet
+            default_family_history: sensor.zenos_default_family_history_cabinet
+            default_user_history: sensor.zenos_default_user_history_cabinet
+            default_ai_user_history: sensor.zenos_default_ai_user_history_cabinet
+
+      - repeat:
+          for_each: "{{ _history_parent_map.keys() | list }}"
+          sequence:
+            - variables:
+                _h_slot: "{{ repeat.item }}"
+                _h_entity: "{{ _history_entity_map.get(_h_slot, '') }}"
+                _h_parent: "{{ _history_parent_map.get(_h_slot, '') }}"
+            - if: "{{ _h_entity != '' and states(_h_entity) not in ['online_mounted', 'unknown'] }}"
+              then:
+                # Wait for state to stabilize after cabinetadmin init (may still be transitioning)
+                - wait_template: "{{ states(_h_entity) in ['online_mounted', 'online_unmounted'] }}"
+                  timeout: "00:00:15"
+                  continue_on_timeout: true
+                # 1. Mount the history cabinet
+                - action: script.zen_sutra_filecabinet
+                  data:
+                    action: mount_cabinet
+                    volume_entity_id: "{{ _h_entity }}"
+                  continue_on_error: true
+                - wait_template: "{{ states(_h_entity) == 'online_mounted' }}"
+                  timeout: "00:00:10"
+                  continue_on_timeout: true
+                # 2. Read GUID from VolumeInfo (bootstrap infrastructure — direct state_attr read)
+                - variables:
+                    _h_vars: "{{ state_attr(_h_entity, 'variables') or {} }}"
+                - variables:
+                    _h_vi_raw: "{{ (_h_vars.get('AI_Cabinet_VolumeInfo') or {}) if _h_vars is mapping else {} }}"
+                - variables:
+                    _h_vi_val: "{{ (_h_vi_raw.get('value', {}) if _h_vi_raw is mapping else {}) }}"
+                - variables:
+                    _h_vi: "{{ _h_vi_val if _h_vi_val is mapping else (_h_vi_val | from_json(none) if _h_vi_val is string and _h_vi_val | trim != '' else {}) }}"
+                - variables:
+                    _h_guid: "{{ (_h_vi if _h_vi is mapping else {}).get('id', '') }}"
+                # 3. Wire history mount in parent cab — skip if GUID missing or mount already exists
+                - if: "{{ _h_guid != '' and _h_parent != '' }}"
+                  then:
+                    - variables:
+                        _h_parent_vars: "{{ state_attr(_h_parent, 'variables') or {} }}"
+                        _h_mount_exists: >-
+                          {%- set _pm = (_h_parent_vars.get('history') or {}) if _h_parent_vars is mapping else {} -%}
+                          {{ (_pm if _pm is mapping else {}).get('mount_point', false) | bool }}
+                    - if: "{{ not _h_mount_exists }}"
+                      then:
+                        - action: script.zen_sutra_filecabinet
+                          data:
+                            action: set_mount
+                            volume_entity_id: "{{ _h_parent }}"
+                            path: history
+                            target_guid: "{{ _h_guid }}"
+                          continue_on_error: true
 
       - event: flynn_stepgate_event
         event_data:

@@ -144,6 +144,8 @@ Propagation rules:
 
 Requires Room Manager topology to be populated (portals with `light_tx` values). See Room Manager docs.
 
+**Fixed (2026.7.1):** the `room_topology` cabinet read (used by bleed and discovery) now goes through the shared `CABS.cabinet_drawer_value_mounted()` macro instead of hand-rolled inline logic. The inline version dropped mount-pointer following — if `room_topology` was ever stored behind a mount pointer rather than directly in the household cabinet, bleed propagation would silently see empty topology instead of following the pointer to the real data.
+
 ---
 
 ## Room Manager Integration
