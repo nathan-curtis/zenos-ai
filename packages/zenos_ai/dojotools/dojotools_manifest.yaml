@@ -1,17 +1,37 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Manifest
-# Version: 6.1.0
+# Version: 6.2.0
 #
 # Scripts:
-#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.1.0)
+#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.2.0)
 #   system_tools_stamp_default_family_cabinet — Cabinet stamping utility
 #   dojotools_zen_inspect — Entity inspection tool
 #
 # REBUILT: 2026-06-11 (was 5.1.0 — cabinet scanner only)
 #
+# v6.2.0 changes (Zen pull, 2026-07-04 — header bump, content already live on H):
+#   - mode=bootstrap_kfc: scans zen_kfc_provider-labeled scripts, calls kfc_manifest,
+#     writes live drawer mounts into dojo cabinet + registers tool:mode callout
+#     whitelist entries. Fires on homeassistant_start + daily 00:01.
+#   - Zen-side fix (not on H): bootstrap_kfc no longer writes component_summary
+#     into the live drawer (dropped from both the write payload and the
+#     idempotency comparison) — space-saving, matches Scribe's KF4
+#     trim_description convention. The ninja summarizer already resolves an
+#     empty component_summary from the HA label's description at read time
+#     (dojotools_summarizers.yaml step 3d), so persisting it in the drawer
+#     was pure duplication. Still READ from each tool's kfc_manifest response
+#     and RETURNED in bootstrap_kfc's own result (_bkfc_registered entries) —
+#     only the cabinet write is skipped, not the read/return.
+#   - mode=health_refresh: full per-tool compliance scan, cached to _health_report
+#     drawer; mode=health now reads this cache first, falls back to live check.
+#   - mode=domains: live tool/domain/peers graph.
+#   - mode=audit_help: scans mode=help across every zen_* tool.
+#   - mode=publish: domain routing table now built from label_entities('zen_domain_*')
+#     instead of a hardcoded domain:entity_id dict.
+#
 # v6.1.0 changes (2026-06-18):
 #   - mode=bootstrap_stacks: auto-registration for Lens Bus providers
-#     Scans all zen_stack_* and zen_sutra_* scripts, calls tool_manifest on each,
+#     Scans all zen_* scripts, calls tool_manifest on each,
 #     registers any that declare register_mode and are not already in lens_registry.
 #     Skip list: household cabinet key lens_bootstrap_skip (list of provider_key values).
 #     Fires automatically on homeassistant_started and daily at 00:00:30.
@@ -59,6 +79,9 @@ script:
       all zen_stack_* providers, call tool_manifest, register any unregistered
       that declare register_mode (skip list: lens_bootstrap_skip cabinet key).
       mode=all: full system manifest. mode=tool_manifest: self-description.
+      mode=bootstrap_kfc: discover tools with kfc_manifest, upsert live drawer
+      mounts into dojo cabinet — summarizer resolves them at runtime.
+      mode=health_refresh: run full per-tool compliance scan, write to _health_report cabinet cache.
     icon: mdi:home-map-marker
     fields:
       show_hidden:
@@ -94,13 +117,17 @@ script:
               - automations
               - structure
               - audit
+              - audit_help
               - health
               - autotag
               - publish
               - all
               - mcp_sync
               - bootstrap_stacks
+              - bootstrap_kfc
               - tool_manifest
+              - health_refresh
+              - domains
       name:
         description: Tool entity_id for single-tool lookup (tools mode with name filter).
         required: false
@@ -126,6 +153,23 @@ script:
         required: false
         selector:
           text:
+      tool:
+        description: 'domains mode: filter to all clusters a specific tool participates in (e.g. zen_dojotools_inventory).'
+        required: false
+        selector:
+          text:
+      page:
+        description: 'audit_help: page number (1-based). Default 1.'
+        required: false
+        default: '1'
+        selector:
+          text:
+      page_size:
+        description: 'audit_help: tools per page. Default 20.'
+        required: false
+        default: '20'
+        selector:
+          text:
       caller_token:
         name: Caller Token
         required: false
@@ -144,7 +188,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.1.0',
+                version='6.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -507,9 +551,10 @@ script:
             _bs_stack_scripts: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for e in states.script -%}
-                {%- if (e.entity_id.startswith('script.zen_stack_') or e.entity_id.startswith('script.zen_sutra_')
-                    or e.entity_id in ['script.zen_dojotools_library'])
-                    and e.state in ('off', 'on') -%}
+                {%- if e.state in ('off', 'on')
+                    and (e.entity_id.startswith('script.zen_stack_')
+                      or e.entity_id.startswith('script.zen_sutra_')
+                      or e.entity_id.startswith('script.zen_dojotools_')) -%}
                   {%- set ns.out = ns.out + [e.entity_id] -%}
                 {%- endif -%}
               {%- endfor -%}
@@ -574,6 +619,11 @@ script:
                     _bs_skipped: "{{ _bs_skipped + [_bs_provider_key] }}"
               - conditions: "{{ _bs_provider_key != '' and _bs_provider_key in _bs_registry }}"
                 sequence:
+                - action: "{{ _bs_script_eid }}"
+                  continue_on_error: true
+                  response_variable: _bs_reg_result
+                  data:
+                    mode: "{{ _bs_register_mode }}"
                 - variables:
                     _bs_already_registered: "{{ _bs_already_registered + [_bs_provider_key] }}"
               default:
@@ -593,6 +643,29 @@ script:
                     _bs_errors: >-
                       {{ _bs_errors + [{'script': _bs_script_name,
                          'error': (_bs_reg_result.get('error', 'unknown') if _bs_reg_result is mapping else 'no response')}] }}
+        # ── Codex bootstrap — label_entities('zen_codex_host') drives discovery ──
+        - variables:
+            _bs_codex_hosts: "{{ label_entities('zen_codex_host') | select('match', 'script\\.') | list }}"
+            _bs_codex_results: []
+        - repeat:
+            for_each: "{{ _bs_codex_hosts }}"
+            sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _bs_codex_raw
+              data:
+                mode: run
+                case: bootstrap_codices
+            - variables:
+                _bs_codex_results: >-
+                  {{ _bs_codex_results + [_bs_codex_raw if _bs_codex_raw is mapping else {'status': 'error', 'script': repeat.item}] }}
+        - variables:
+            _bs_codex_result: "{{ _bs_codex_results | first | default({'status': 'skipped', 'reason': 'no zen_codex_host scripts found'}) }}"
+        # ── Health refresh (background — populates _health_report cache) ──────
+        - action: "{{ this.entity_id }}"
+          continue_on_error: true
+          data:
+            mode: health_refresh
         - variables:
             result:
               status: "{{ 'success' if _bs_errors | length == 0 else 'partial' }}"
@@ -603,8 +676,194 @@ script:
               no_register_mode: "{{ _bs_no_register_mode }}"
               errors: "{{ _bs_errors }}"
               total_scanned: "{{ _bs_stack_scripts | length }}"
+              codex_bootstrap: "{{ _bs_codex_result }}"
               caller_token: "{{ caller_token }}"
         - stop: bootstrap_stacks complete
+          response_variable: result
+
+      # ── mode: bootstrap_kfc ──────────────────────────────────────────────────
+      # Scans all zen_dojotools_* + zen_stack_* + zen_sutra_* scripts, calls
+      # tool_manifest on each, and collects those that declare kfc_manifest=true.
+      # Then calls kfc_manifest on each discovered tool and upserts a LIVE DRAWER
+      # MOUNT per component into the dojo cabinet. Summarizer resolves mounts at
+      # runtime — always-current KFC config, zero drift. Idempotent upsert.
+      - conditions: "{{ mode_norm == 'bootstrap_kfc' }}"
+        sequence:
+        - variables:
+            _dojo_cab: "{{ states('sensor.zen_dojo_cabinet_resolved') }}"
+            _bkfc_known: "{{ label_entities('zen_kfc_provider') | select('match', 'script\\.') | list }}"
+            _bkfc_registered: []
+            _bkfc_errors: []
+            _bkfc_wl_entries: []
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _bkfc_dojo_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _dojo_cab }}"
+            key: '*'
+        - variables:
+            _bkfc_existing_keys: >-
+              {%- set raw = _bkfc_dojo_read if _bkfc_dojo_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ (parsed if parsed is mapping else {}).keys() | list }}
+            _bkfc_dojo_vars: "{{ state_attr(_dojo_cab, 'variables') | default({}, true) }}"
+            _bkfc_registered: []
+            _bkfc_errors: []
+        - repeat:
+            for_each: "{{ _bkfc_known }}"
+            sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _bkfc_mfst_raw
+              data:
+                mode: kfc_manifest
+            # Capture tool name before inner repeat shadows repeat.item.
+            - variables:
+                _bkfc_tool_name: "{{ repeat.item | replace('script.', '') }}"
+                _bkfc_tool_script: "{{ repeat.item }}"
+                _bkfc_kfc_raw: >-
+                  {%- set _r = _bkfc_mfst_raw.get('kfc', none) if _bkfc_mfst_raw is mapping else none -%}
+                  {%- if _r is string and _r | trim not in ['', 'None', 'none', 'null'] -%}
+                    {{ _r | from_json(none) }}
+                  {%- else -%}
+                    {{ _r }}
+                  {%- endif -%}
+                _bkfc_ok: >-
+                  {{ _bkfc_mfst_raw is mapping
+                     and _bkfc_mfst_raw.get('status', '') in ['ok', 'success']
+                     and _bkfc_kfc_raw is not none }}
+            - variables:
+                # Normalize kfc to list — handles both single-component (mapping)
+                # and multi-component (list) responses. Backcompat: single mapping
+                # → wrapped in list, processed identically.
+                _bkfc_kfc_list: >-
+                  {%- if _bkfc_kfc_raw is sequence and _bkfc_kfc_raw is not string and _bkfc_kfc_raw is not mapping -%}
+                    {{ _bkfc_kfc_raw }}
+                  {%- elif _bkfc_kfc_raw is mapping -%}
+                    {{ [_bkfc_kfc_raw] }}
+                  {%- else -%}
+                    {{ [] }}
+                  {%- endif -%}
+            - if: "{{ _bkfc_ok and _bkfc_kfc_list | length > 0 }}"
+              then:
+              # Write one live drawer per component into the dojo cabinet.
+              # Each drawer contains BOTH:
+              #   - breadcrumb fields dojo_loader reads directly from state
+              #     (friendly_name, label, kata_key, meta)
+              #   - mount_point + fc_args so FC resolves live when scripts call get
+              # fc_args.params includes component= so FC gets the single-component dict.
+              # No cache (ttl_seconds omitted) = always-live resolution.
+              # component_summary is intentionally NOT persisted here (space-saving —
+              # same convention as Scribe's KF4 trim_description path). The ninja
+              # summarizer resolves an empty component_summary from the HA label's
+              # description at read time (dojotools_summarizers.yaml step 3d). A
+              # kfc_manifest response may still return component_summary for callers
+              # that want it directly (e.g. index/report listings) — it just never
+              # gets written into the cabinet drawer.
+              - repeat:
+                  for_each: "{{ _bkfc_kfc_list }}"
+                  sequence:
+                  - variables:
+                      _bkfc_comp: "{{ repeat.item if repeat.item is mapping else {} }}"
+                      _bkfc_kata_key: >-
+                        {{ repeat.item.get('kata_key', '') if repeat.item is mapping else '' }}
+                  - variables:
+                      # Skip write if drawer is already a live mount pointing to the same
+                      # tool+component with matching breadcrumbs. Saves cab writes on boot.
+                      # state_attr structure: {drawer_key: {timestamp, value: {actual_data}}}
+                      _bkfc_needs_write: >-
+                        {%- set ex_raw = _bkfc_dojo_vars.get(_bkfc_kata_key, {}) -%}
+                        {%- set ex_val = ex_raw.get('value', {}) if ex_raw is mapping else {} -%}
+                        {%- set ex = ex_val if ex_val is mapping else {} -%}
+                        {%- set ex_args = ex.get('fc_args', {}) if ex is mapping else {} -%}
+                        {{ (force_refresh | default(false) | bool(false)) or not (
+                          ex.get('mount_point') == true
+                          and ex_args.get('tool', '') == _bkfc_tool_name
+                          and ex_args.get('params', {}).get('component', '') == _bkfc_kata_key
+                          and ex.get('trigger_subscriptions') == _bkfc_comp.get('trigger_subscriptions', '')
+                          and ex.get('component_instructions', '') == ''
+                        ) }}
+                  - if: "{{ _bkfc_kata_key != '' and _bkfc_needs_write }}"
+                    then:
+                    - action: script.zen_dojotools_filecabinet
+                      continue_on_error: true
+                      response_variable: _bkfc_write_raw
+                      data:
+                        action_type: update
+                        force_action: true
+                        volume_entity_id:
+                          - "{{ _dojo_cab }}"
+                        key: '{{ _bkfc_kata_key }}'
+                        no_autoexpire: true
+                        no_autorecycle: true
+                        value: >-
+                          {{
+                            {
+                              'mount_point': true,
+                              'fc_args': {
+                                'tool': _bkfc_tool_name,
+                                'params': {'mode': 'kfc_manifest', 'component': _bkfc_kata_key}
+                              },
+                              'friendly_name': _bkfc_comp.get('friendly_name', ''),
+                              'label': _bkfc_comp.get('label', ''),
+                              'seed': _bkfc_comp.get('seed', {}),
+                              'trigger_subscriptions': _bkfc_comp.get('trigger_subscriptions', ''),
+                              'drift_threshold': _bkfc_comp.get('drift_threshold', 6),
+                              'emission_cooldown_minutes': _bkfc_comp.get('emission_cooldown_minutes', 1440),
+                              'delay_seconds': _bkfc_comp.get('delay_seconds', 0),
+                              'kata_key': _bkfc_kata_key,
+                              'meta': _bkfc_comp.get('meta', {'enabled': true})
+                            } | tojson
+                          }}
+                    - variables:
+                        _bkfc_registered: >-
+                          {{ _bkfc_registered + [{'kata_key': _bkfc_kata_key,
+                             'tool': _bkfc_tool_script,
+                             'component_summary': _bkfc_comp.get('component_summary', ''),
+                             'written': _bkfc_write_raw is mapping and _bkfc_write_raw.get('status', '') == 'success'}] }}
+                  - if: "{{ _bkfc_kata_key != '' and not _bkfc_needs_write }}"
+                    then:
+                    - variables:
+                        _bkfc_registered: >-
+                          {{ _bkfc_registered + [{'kata_key': _bkfc_kata_key,
+                             'tool': _bkfc_tool_script,
+                             'component_summary': _bkfc_comp.get('component_summary', ''),
+                             'written': false, 'skipped': true}] }}
+              # Accumulate this tool's whitelist entry — mode sourced from its own response
+              - variables:
+                  _bkfc_wl_mode: "{{ (_bkfc_mfst_raw.get('mode', '') if _bkfc_mfst_raw is mapping else '') | string | trim }}"
+              - variables:
+                  _bkfc_wl_entries: >-
+                    {%- set _entry = _bkfc_tool_name ~ ':' ~ _bkfc_wl_mode -%}
+                    {{ _bkfc_wl_entries + [_entry] if _bkfc_wl_mode != '' and _entry not in _bkfc_wl_entries else _bkfc_wl_entries }}
+            - if: "{{ not _bkfc_ok }}"
+              then:
+              - variables:
+                  _bkfc_errors: >-
+                    {{ _bkfc_errors + [{'tool': _bkfc_tool_script,
+                       'error': 'kfc_manifest call failed or returned no kfc block'}] }}
+        # Register accumulated tool:mode entries into the FC mount callout whitelist via admintools
+        - if: "{{ _bkfc_wl_entries | length > 0 }}"
+          then:
+            - action: script.zen_admintools_prompt_loader
+              continue_on_error: true
+              data:
+                mode: whitelist
+                whitelist_type: fc
+                action_type: add
+                item: "{{ _bkfc_wl_entries | tojson }}"
+        - variables:
+            result:
+              status: "{{ 'success' if _bkfc_errors | length == 0 else 'partial' }}"
+              mode: bootstrap_kfc
+              registered: "{{ _bkfc_registered }}"
+              errors: "{{ _bkfc_errors }}"
+              total_scanned: "{{ _bkfc_known | length }}"
+              caller_token: "{{ caller_token }}"
+        - stop: bootstrap_kfc complete
           response_variable: result
 
       # ── mode: automations ────────────────────────────────────────────────────
@@ -667,11 +926,30 @@ script:
           response_variable: result
 
       # ── mode: audit ──────────────────────────────────────────────────────────
-      # Inlines tools scan — no self-call (HA queued scripts don't reliably return
-      # response_variable when called reentrant from the same script instance).
+      # Full drift scan — calls tool_manifest on every zen_* script and reports:
+      #   level_0_gap      — tools that don't respond to tool_manifest (#10247)
+      #   lens_provider    — declared vs registered in lens_registry (#10247)
+      #   managed          — tools declaring managed: true, informational (#10247)
+      #   mcp_exposed      — declared count only; drift check pending #10176
+      #   help_shape       — tools declaring preferred_state.help_shape; gap = undeclared (#10117)
+      # Slow (30-60s). Operator diagnostic only.
       - conditions: "{{ mode_norm == 'audit' }}"
         sequence:
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _a_lr_raw
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: lens_registry
         - variables:
+            _a_lens_registry: >-
+              {%- set raw = _a_lr_raw if _a_lr_raw is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {%- set reg = parsed if parsed is mapping else {} -%}
+              {{ reg.get('providers', reg) if reg is mapping else {} }}
             _a_callable: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for e in states.script -%}
@@ -695,38 +973,327 @@ script:
               {%- endfor -%}
               {{ ns.out | list }}
         - variables:
+            _a_scan_targets: >-
+              {%- set _self = this.entity_id -%}
+              {%- set _no_mode = label_entities('zen_no_mode') | list -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for eid in _a_callable -%}
+                {%- if not eid.startswith('script.zen_admintools_') and eid != _self and eid not in _no_mode -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _a_results: []
+
+        - repeat:
+            for_each: "{{ _a_scan_targets }}"
+            sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _a_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _a_tm: >-
+                  {{ _a_tm_raw if _a_tm_raw is mapping else {} }}
+            - variables:
+                _a_tm_ok: >-
+                  {%- set _tm = _a_tm if _a_tm is mapping else {} -%}
+                  {{ _tm.get('status', '') in ['ok', 'success'] }}
+                _a_lp: >-
+                  {%- set _tm = _a_tm if _a_tm is mapping else {} -%}
+                  {{ _tm.get('lens_provider', false) | bool }}
+                _a_pkey: >-
+                  {%- set _tm = _a_tm if _a_tm is mapping else {} -%}
+                  {{ _tm.get('provider_key', '') | string }}
+                _a_mgd: >-
+                  {%- set _tm = _a_tm if _a_tm is mapping else {} -%}
+                  {{ _tm.get('managed', false) | bool }}
+                _a_mcp: >-
+                  {%- set _tm = _a_tm if _a_tm is mapping else {} -%}
+                  {{ _tm.get('mcp_exposed', false) | bool }}
+            - variables:
+                _a_results: >-
+                  {{ _a_results + [{
+                    'tool': repeat.item | replace('script.', ''),
+                    'manifest_ok': _a_tm_ok,
+                    'lens_provider': _a_lp,
+                    'provider_key': _a_pkey,
+                    'managed': _a_mgd,
+                    'mcp_exposed': _a_mcp
+                  }] }}
+
+        - variables:
+            _a_level0_scan: >-
+              {{ _a_results | rejectattr('manifest_ok') | map(attribute='tool') | list }}
+            _a_level0_unavail: >-
+              {{ _a_unavailable | map('replace', 'script.', '') | list }}
+            _a_lp_declared: >-
+              {{ _a_results | selectattr('lens_provider') | list }}
+            _a_managed_list: >-
+              {{ _a_results | selectattr('managed') | map(attribute='tool') | list }}
+            _a_mcp_declared: >-
+              {{ _a_results | selectattr('mcp_exposed') | map(attribute='tool') | list }}
+
+        # Lens provider drift: declared lens_provider=true but provider_key absent from lens_registry
+        - variables:
+            _a_lp_gap: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for entry in _a_lp_declared -%}
+                {%- set pkey = entry.get('provider_key', '') -%}
+                {%- if pkey == '' -%}
+                  {%- set ns.out = ns.out + [{'tool': entry.get('tool'), 'issue': 'lens_declared_no_key'}] -%}
+                {%- elif pkey not in _a_lens_registry -%}
+                  {%- set ns.out = ns.out + [{'tool': entry.get('tool'), 'issue': 'lens_declared_not_registered', 'provider_key': pkey}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+
+        - variables:
+            _a_has_issues: >-
+              {{ (_a_level0_scan | length > 0)
+                 or (_a_level0_unavail | length > 0)
+                 or (_a_lp_gap | length > 0) }}
             result:
-              status: "{{ 'issues_found' if (_a_unavailable | length > 0) else 'clean' }}"
+              status: "{{ 'issues_found' if _a_has_issues else 'clean' }}"
               mode: audit
-              summary:
-                scanned: "{{ (_a_callable | length) + (_a_unavailable | length) }}"
-                callable: "{{ _a_callable | length }}"
-                broken: "{{ _a_unavailable | length }}"
-              detail:
-                broken: "{{ _a_unavailable }}"
+              generated_at: "{{ now().isoformat() }}"
+              scanned: "{{ _a_results | length }}"
+              drift:
+                level_0_gap:
+                  count: "{{ (_a_level0_scan | length) + (_a_level0_unavail | length) }}"
+                  no_manifest: "{{ _a_level0_scan }}"
+                  unavailable: "{{ _a_level0_unavail }}"
+                lens_provider:
+                  declared: "{{ _a_lp_declared | length }}"
+                  registered: "{{ _a_lens_registry | length }}"
+                  gap: "{{ _a_lp_gap }}"
+                managed:
+                  count: "{{ _a_managed_list | length }}"
+                  tools: "{{ _a_managed_list }}"
+                mcp_exposed:
+                  declared: "{{ _a_mcp_declared | length }}"
+                  note: "drift check on hold — MCP allowlist not yet implemented"
+                help_surface:
+                  note: "run mode=audit_help for live help compliance scan"
               caller_token: "{{ caller_token }}"
         - stop: audit complete
           response_variable: result
 
+      # ── mode: audit_help ─────────────────────────────────────────────────────
+      # Calls mode=help on every zen_* tool, checks if response.cases is a mapping.
+      # Separate from mode=audit to avoid timeout (~71 additional calls).
+      # compliant = tool returns {cases: {…}} mapping. gap = anything else.
+      - conditions: "{{ mode_norm == 'audit_help' }}"
+        sequence:
+        - variables:
+            _ah_page: "{{ [page | default(1) | int, 1] | max }}"
+            _ah_page_size: "{{ [page_size | default(20) | int, 1] | max }}"
+            _ah_all: >-
+              {%- set _self = this.entity_id -%}
+              {%- set _skip = label_entities('zen_no_mode') | list -%}
+              {%- set _pfx = ['script.zen_dojotools_', 'script.zen_stack_', 'script.zen_sutra_', 'script.zen_codex_'] -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in states.script -%}
+                {%- set ok = namespace(v=false) -%}
+                {%- for p in _pfx -%}{%- if e.entity_id.startswith(p) -%}{%- set ok.v = true -%}{%- endif -%}{%- endfor -%}
+                {%- if ok.v and e.state in ('off', 'on') and e.entity_id != _self and e.entity_id not in _skip -%}
+                  {%- set ns.out = ns.out + [e.entity_id] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+        - variables:
+            _ah_start: "{{ (_ah_page - 1) * _ah_page_size }}"
+            _ah_end: "{{ _ah_page * _ah_page_size }}"
+            _ah_callable: "{{ _ah_all[_ah_start:_ah_end] }}"
+            _ah_total: "{{ _ah_all | length }}"
+            _ah_results: []
+        - repeat:
+            for_each: "{{ _ah_callable }}"
+            sequence:
+            - variables:
+                _ah_help_raw: {}
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _ah_help_raw
+              data:
+                mode: help
+            - variables:
+                _ah_ok: >-
+                  {%- set r = _ah_help_raw if _ah_help_raw is mapping else {} -%}
+                  {{ r.get('cases') is mapping }}
+            - variables:
+                _ah_results: >-
+                  {{ _ah_results + [{
+                    'tool': repeat.item | replace('script.', ''),
+                    'compliant': _ah_ok
+                  }] }}
+        - variables:
+            _ah_compliant: "{{ _ah_results | selectattr('compliant') | map(attribute='tool') | list }}"
+            _ah_gap: "{{ _ah_results | rejectattr('compliant') | map(attribute='tool') | list }}"
+            result:
+              status: "{{ 'clean' if _ah_gap | length == 0 else 'issues_found' }}"
+              mode: audit_help
+              generated_at: "{{ now().isoformat() }}"
+              page: "{{ _ah_page }}"
+              page_size: "{{ _ah_page_size }}"
+              total_tools: "{{ _ah_total }}"
+              total_pages: "{{ ((_ah_total / _ah_page_size) | float | round(0, 'ceil')) | int }}"
+              scanned: "{{ _ah_results | length }}"
+              compliant: "{{ _ah_compliant | length }}"
+              gap: "{{ _ah_gap | length }}"
+              compliant_tools: "{{ _ah_compliant }}"
+              gap_tools: "{{ _ah_gap }}"
+              note: "compliant = mode=help returns {cases: mapping}; gap = missing handler or non-cases shape"
+              caller_token: "{{ caller_token }}"
+        - stop: audit_help complete
+          response_variable: result
+
       # ── mode: health ─────────────────────────────────────────────────────────
-      # Calls identity + labels externally (non-self). Inlines tool scan.
-      # Reads zen_cabinet_health sensor for cabinets facet (no self-call needed).
+      # Reads pre-computed _health_report cabinet drawer (written by health_refresh).
+      # Falls back to lightweight binary check if cache absent.
+      # Run mode=health_refresh (or wait for bootstrap_stacks) to populate cache.
       - conditions: "{{ mode_norm == 'health' }}"
         sequence:
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _h_cache_raw
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: _health_report
+        - variables:
+            _h_cache: >-
+              {%- set raw = _h_cache_raw if _h_cache_raw is mapping else {} -%}
+              {%- set val = raw.get('value', none) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else none }}
+        - choose:
+          - conditions: "{{ _h_cache is mapping }}"
+            sequence:
+            - variables:
+                _h_tools: "{{ (_h_cache.get('facets', {}) or {}).get('tools', {}) or {} }}"
+                _h_devs: "{{ _h_tools.get('deviating', []) or [] }}"
+                result:
+                  status: "{{ _h_cache.get('status', 'unknown') }}"
+                  mode: health
+                  cache_hit: true
+                  last_refresh: "{{ _h_cache.get('generated_at', 'unknown') }}"
+                  summary:
+                    identity: "{{ (_h_cache.get('facets', {}) or {}).get('identity', 'unknown') }}"
+                    labels: "{{ (_h_cache.get('facets', {}) or {}).get('labels', 'unknown') }}"
+                    cabinets: "{{ (_h_cache.get('facets', {}) or {}).get('cabinets', 'unknown') }}"
+                    tools_scanned: "{{ _h_tools.get('total_scanned', 0) }}"
+                    compliant: "{{ _h_tools.get('compliant', 0) }}"
+                    warnings: "{{ _h_tools.get('warnings', 0) }}"
+                    errors: "{{ _h_tools.get('errors', 0) }}"
+                    deviating: "{{ _h_devs }}"
+                  detail_hint: "Call mode=health_refresh for a fresh per-tool compliance scan."
+                  caller_token: "{{ caller_token }}"
+            - stop: health cache hit
+              response_variable: result
+          default:
+          # Cache absent — lightweight fallback (no per-tool manifest calls)
+          - action: script.zen_dojotools_identity
+            response_variable: _h_identity
+            continue_on_error: true
+            data:
+              mode: build_identity_manifest
+          - action: script.zen_dojotools_labels
+            response_variable: _h_labels
+            continue_on_error: true
+            data:
+              action_type: read
+          - variables:
+              _h_cab_sensor: "{{ states('sensor.zen_cabinet_health') | default('unknown') }}"
+              _id_ok: "{{ _h_identity is mapping and (_h_identity.get('status') in ['ok', 'success']) }}"
+              _lbl_ok: "{{ _h_labels is mapping and _h_labels.get('status') == 'ok' }}"
+              _h_callable_ct: >-
+                {%- set ns = namespace(n=0) -%}
+                {%- for e in states.script -%}
+                  {%- if (e.entity_id.startswith('script.zen_dojotools_') or e.entity_id.startswith('script.zen_admintools_')
+                      or e.entity_id.startswith('script.zen_stack_') or e.entity_id.startswith('script.zen_sutra_'))
+                      and e.state in ('off', 'on') -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+                {%- endfor -%}{{ ns.n }}
+              _h_unavail_ct: >-
+                {%- set ns = namespace(n=0) -%}
+                {%- for e in states.script -%}
+                  {%- if (e.entity_id.startswith('script.zen_dojotools_') or e.entity_id.startswith('script.zen_admintools_')
+                      or e.entity_id.startswith('script.zen_stack_') or e.entity_id.startswith('script.zen_sutra_'))
+                      and e.state not in ('off', 'on') -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+                {%- endfor -%}{{ ns.n }}
+          - variables:
+              result:
+                status: >-
+                  {{ 'issues_found' if (not _id_ok or not _lbl_ok
+                     or _h_unavail_ct | int > 0
+                     or _h_cab_sensor not in ('ok', 'warn'))
+                     else 'ok' }}
+                mode: health
+                cache_hit: false
+                refresh_hint: "Cache absent — run mode=health_refresh to populate per-tool compliance data."
+                facets:
+                  identity: "{{ 'ok' if _id_ok else 'error' }}"
+                  labels: "{{ 'ok' if _lbl_ok else 'error' }}"
+                  cabinets: "{{ _h_cab_sensor }}"
+                  tools:
+                    healthy: "{{ _h_callable_ct }}"
+                    broken: "{{ _h_unavail_ct }}"
+                    deviating: []
+                caller_token: "{{ caller_token }}"
+          - stop: health fallback
+            response_variable: result
+
+      # ── mode: health_refresh ─────────────────────────────────────────────────
+      # Runs full per-tool compliance scan (slow — 10-30s). Writes result to
+      # _health_report cabinet drawer. Called by bootstrap_stacks on startup/daily.
+      # Also callable manually: zen_dojotools_manifest mode=health_refresh
+      - conditions: "{{ mode_norm == 'health_refresh' }}"
+        sequence:
         - action: script.zen_dojotools_identity
-          response_variable: _h_identity
+          response_variable: _hr_identity
           continue_on_error: true
           data:
             mode: build_identity_manifest
-            caller_token: "{{ caller_token }}"
         - action: script.zen_dojotools_labels
-          response_variable: _h_labels
+          response_variable: _hr_labels
           continue_on_error: true
           data:
             action_type: read
-            caller_token: "{{ caller_token }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _hr_lr_raw
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: lens_registry
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _hr_cr_raw
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: codex_registry
+        # Setup step A: registries + facet flags + script lists (no cross-dependencies)
         - variables:
-            _h_callable: >-
+            _hr_lens_registry: >-
+              {%- set raw = _hr_lr_raw if _hr_lr_raw is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {%- set reg = parsed if parsed is mapping else {} -%}
+              {{ reg.get('providers', reg) if reg is mapping else {} }}
+            _hr_codex_registry: >-
+              {%- set raw = _hr_cr_raw if _hr_cr_raw is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+            _hr_cab_sensor: "{{ states('sensor.zen_cabinet_health') | default('unknown') }}"
+            _hr_id_ok: "{{ _hr_identity is mapping and (_hr_identity.get('status') in ['ok', 'success']) }}"
+            _hr_lbl_ok: "{{ _hr_labels is mapping and _hr_labels.get('status') == 'ok' }}"
+            _hr_callable: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for e in states.script -%}
                 {%- set eid = e.entity_id -%}
@@ -737,7 +1304,7 @@ script:
                 {%- endif -%}
               {%- endfor -%}
               {{ ns.out | list }}
-            _h_unavailable: >-
+            _hr_unavailable: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for e in states.script -%}
                 {%- set eid = e.entity_id -%}
@@ -748,31 +1315,531 @@ script:
                 {%- endif -%}
               {%- endfor -%}
               {{ ns.out | list }}
+        # Setup step B: scan_targets filters _hr_callable (now available from step A)
         - variables:
-            _h_cab_sensor: "{{ states('sensor.zen_cabinet_health') | default('unknown') }}"
-            _id_ok: "{{ _h_identity is mapping and (_h_identity.get('status') in ['ok', 'success']) }}"
-            _lbl_ok: "{{ _h_labels is mapping and _h_labels.get('status') == 'ok' }}"
+            # Exclude: admintools (security perimeter), self (queued deadlock),
+            # announce (no mode dispatch — runs TTS immediately on call)
+            _hr_scan_targets: >-
+              {%- set _self = this.entity_id -%}
+              {%- set _no_mode = label_entities('zen_no_mode') | list -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for eid in _hr_callable -%}
+                {%- if not eid.startswith('script.zen_admintools_') and eid != _self and eid not in _no_mode -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _hr_tool_results: []
+            _hr_sweep_delay_s: 3
+
+        # Stripe split: partition scan_targets by naming convention approximation.
+        # stripe=0: zen_sutra_filecabinet (core infra primitive)
+        # stripe=1: systemtools, kata_gc (system services)
+        # stripe=2: zen_sutra_*/zen_stack_* minus filecabinet (plugin/adapter layer)
+        # stripe=3: zen_dojotools_* minus stripe=1 (user-facing, default)
         - variables:
-            _has_issues: >-
-              {{
-                (not _id_ok)
-                or (not _lbl_ok)
-                or (_h_unavailable | length > 0)
-                or _h_cab_sensor not in ('ok', 'warn')
-              }}
+            _hr_fc_kernel: "{{ label_entities('zen_fc_kernel') | select('match', 'script\\.') | list }}"
+            _hr_kernel: "{{ label_entities('zen_kernel') | select('match', 'script\\.') | list }}"
+            _hr_sweep0: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for eid in _hr_scan_targets -%}
+                {%- if eid in _hr_fc_kernel -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+            _hr_sweep1: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for eid in _hr_scan_targets -%}
+                {%- if eid in _hr_kernel -%}{%- set ns.out = ns.out + [eid] -%}{%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+            _hr_sweep2: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for eid in _hr_scan_targets -%}
+                {%- if (eid.startswith('script.zen_sutra_') or eid.startswith('script.zen_stack_'))
+                    and eid not in _hr_fc_kernel -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+            _hr_sweep3: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for eid in _hr_scan_targets -%}
+                {%- if eid.startswith('script.zen_dojotools_') and eid not in _hr_kernel -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+
+        # ── Sweep 0: core infra ──────────────────────────────────────────────────
+        - repeat:
+            for_each: "{{ _hr_sweep0 }}"
+            sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _hr_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _hr_tm: >-
+                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+            - variables:
+                _hr_tm_ok: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {{ _tm.get('status', '') in ['ok', 'success'] }}
+                _hr_ps: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {%- set _ps = _tm.get('preferred_state', none) -%}
+                  {{ _ps if _ps is mapping else none }}
+            - variables:
+                _hr_devs: >-
+                  {%- set ns = namespace(devs=[]) -%}
+                  {%- if not _hr_tm_ok -%}
+                    {%- set ns.devs = ns.devs + ['manifest_unavailable'] -%}
+                  {%- elif not (_hr_ps is mapping) -%}
+                    {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
+                  {%- else -%}
+                    {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
+                      {%- if label_entities(lbl) | list | length == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
+                      {%- if lkey not in _hr_lens_registry -%}
+                        {%- set ns.devs = ns.devs + ['lens_not_registered:' ~ lkey] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for cmod in (_hr_ps.get('codex_modules') or []) -%}
+                      {%- set _ckey = cmod | replace('zen_codex_finance_', '') | replace('zen_codex_', '') -%}
+                      {%- if _ckey not in _hr_codex_registry -%}
+                        {%- set ns.devs = ns.devs + ['codex_not_registered:' ~ cmod] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set _prereqs = _hr_ps.get('prerequisites') -%}
+                    {%- if _prereqs is mapping -%}
+                      {%- for eid in (_prereqs.get('tools') or []) -%}
+                        {%- if states(eid) not in ('off', 'on') -%}
+                          {%- set ns.devs = ns.devs + ['prereq_tool_down:' ~ eid] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for sig in (_prereqs.get('health_signals') or []) -%}
+                        {%- set _sig_ent = sig.get('entity', '') if sig is mapping else '' -%}
+                        {%- set _sig_eq  = sig.get('eq', 'ok') if sig is mapping else 'ok' -%}
+                        {%- if _sig_ent != '' and states(_sig_ent) != _sig_eq -%}
+                          {%- set ns.devs = ns.devs + ['prereq_signal_fail:' ~ _sig_ent] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for ckey in (_prereqs.get('config_keys') or []) -%}
+                        {%- if states(ckey) | trim == '' -%}
+                          {%- set ns.devs = ns.devs + ['prereq_config_missing:' ~ ckey] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {{ ns.devs }}
+            - variables:
+                _hr_status: >-
+                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
+                  {%- set ns = namespace(s='ok') -%}
+                  {%- for d in _hr_devs -%}
+                    {%- set _pfx = d | regex_findall('[^:]+') | first | default('') -%}
+                    {%- if _pfx in _err_codes -%}{%- set ns.s = 'error' -%}
+                    {%- elif _pfx in _warn_codes and ns.s != 'error' -%}{%- set ns.s = 'warn' -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set _impact = (_hr_ps.get('impact', '') if _hr_ps is mapping else '') -%}
+                  {%- if _impact == 'hard' and _hr_devs | length > 0 -%}{%- set ns.s = 'error' -%}{%- endif -%}
+                  {{ ns.s }}
+            - variables:
+                _hr_tool_results: >-
+                  {{ _hr_tool_results + [{
+                    'tool': repeat.item | replace('script.', ''),
+                    'status': _hr_status,
+                    'deviations': _hr_devs
+                  }] }}
+
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          data:
+            action_type: upsert
+            force_action: true
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: _health_report
+            value: >-
+              {{ {'status': 'scanning', 'sweep_complete': 0, 'sweep_total': 4,
+                  'generated_at': now().isoformat(),
+                  'facets': {'tools': {
+                    'total_scanned': _hr_tool_results | length,
+                    'deviating': _hr_tool_results | rejectattr('status', 'equalto', 'ok') | list
+                  }}} | tojson }}
+        - delay:
+            seconds: "{{ _hr_sweep_delay_s }}"
+
+        # ── Sweep 1: system services ─────────────────────────────────────────────
+        - repeat:
+            for_each: "{{ _hr_sweep1 }}"
+            sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _hr_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _hr_tm: >-
+                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+            - variables:
+                _hr_tm_ok: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {{ _tm.get('status', '') in ['ok', 'success'] }}
+                _hr_ps: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {%- set _ps = _tm.get('preferred_state', none) -%}
+                  {{ _ps if _ps is mapping else none }}
+            - variables:
+                _hr_devs: >-
+                  {%- set ns = namespace(devs=[]) -%}
+                  {%- if not _hr_tm_ok -%}
+                    {%- set ns.devs = ns.devs + ['manifest_unavailable'] -%}
+                  {%- elif not (_hr_ps is mapping) -%}
+                    {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
+                  {%- else -%}
+                    {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
+                      {%- if label_entities(lbl) | list | length == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
+                      {%- if lkey not in _hr_lens_registry -%}
+                        {%- set ns.devs = ns.devs + ['lens_not_registered:' ~ lkey] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for cmod in (_hr_ps.get('codex_modules') or []) -%}
+                      {%- set _ckey = cmod | replace('zen_codex_finance_', '') | replace('zen_codex_', '') -%}
+                      {%- if _ckey not in _hr_codex_registry -%}
+                        {%- set ns.devs = ns.devs + ['codex_not_registered:' ~ cmod] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set _prereqs = _hr_ps.get('prerequisites') -%}
+                    {%- if _prereqs is mapping -%}
+                      {%- for eid in (_prereqs.get('tools') or []) -%}
+                        {%- if states(eid) not in ('off', 'on') -%}
+                          {%- set ns.devs = ns.devs + ['prereq_tool_down:' ~ eid] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for sig in (_prereqs.get('health_signals') or []) -%}
+                        {%- set _sig_ent = sig.get('entity', '') if sig is mapping else '' -%}
+                        {%- set _sig_eq  = sig.get('eq', 'ok') if sig is mapping else 'ok' -%}
+                        {%- if _sig_ent != '' and states(_sig_ent) != _sig_eq -%}
+                          {%- set ns.devs = ns.devs + ['prereq_signal_fail:' ~ _sig_ent] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for ckey in (_prereqs.get('config_keys') or []) -%}
+                        {%- if states(ckey) | trim == '' -%}
+                          {%- set ns.devs = ns.devs + ['prereq_config_missing:' ~ ckey] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {{ ns.devs }}
+            - variables:
+                _hr_status: >-
+                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
+                  {%- set ns = namespace(s='ok') -%}
+                  {%- for d in _hr_devs -%}
+                    {%- set _pfx = d | regex_findall('[^:]+') | first | default('') -%}
+                    {%- if _pfx in _err_codes -%}{%- set ns.s = 'error' -%}
+                    {%- elif _pfx in _warn_codes and ns.s != 'error' -%}{%- set ns.s = 'warn' -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set _impact = (_hr_ps.get('impact', '') if _hr_ps is mapping else '') -%}
+                  {%- if _impact == 'hard' and _hr_devs | length > 0 -%}{%- set ns.s = 'error' -%}{%- endif -%}
+                  {{ ns.s }}
+            - variables:
+                _hr_tool_results: >-
+                  {{ _hr_tool_results + [{
+                    'tool': repeat.item | replace('script.', ''),
+                    'status': _hr_status,
+                    'deviations': _hr_devs
+                  }] }}
+
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          data:
+            action_type: upsert
+            force_action: true
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: _health_report
+            value: >-
+              {{ {'status': 'scanning', 'sweep_complete': 1, 'sweep_total': 4,
+                  'generated_at': now().isoformat(),
+                  'facets': {'tools': {
+                    'total_scanned': _hr_tool_results | length,
+                    'deviating': _hr_tool_results | rejectattr('status', 'equalto', 'ok') | list
+                  }}} | tojson }}
+        - delay:
+            seconds: "{{ _hr_sweep_delay_s }}"
+
+        # ── Sweep 2: plugin sutras + stacks ──────────────────────────────────────
+        - repeat:
+            for_each: "{{ _hr_sweep2 }}"
+            sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _hr_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _hr_tm: >-
+                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+            - variables:
+                _hr_tm_ok: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {{ _tm.get('status', '') in ['ok', 'success'] }}
+                _hr_ps: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {%- set _ps = _tm.get('preferred_state', none) -%}
+                  {{ _ps if _ps is mapping else none }}
+            - variables:
+                _hr_devs: >-
+                  {%- set ns = namespace(devs=[]) -%}
+                  {%- if not _hr_tm_ok -%}
+                    {%- set ns.devs = ns.devs + ['manifest_unavailable'] -%}
+                  {%- elif not (_hr_ps is mapping) -%}
+                    {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
+                  {%- else -%}
+                    {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
+                      {%- if label_entities(lbl) | list | length == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
+                      {%- if lkey not in _hr_lens_registry -%}
+                        {%- set ns.devs = ns.devs + ['lens_not_registered:' ~ lkey] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for cmod in (_hr_ps.get('codex_modules') or []) -%}
+                      {%- set _ckey = cmod | replace('zen_codex_finance_', '') | replace('zen_codex_', '') -%}
+                      {%- if _ckey not in _hr_codex_registry -%}
+                        {%- set ns.devs = ns.devs + ['codex_not_registered:' ~ cmod] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set _prereqs = _hr_ps.get('prerequisites') -%}
+                    {%- if _prereqs is mapping -%}
+                      {%- for eid in (_prereqs.get('tools') or []) -%}
+                        {%- if states(eid) not in ('off', 'on') -%}
+                          {%- set ns.devs = ns.devs + ['prereq_tool_down:' ~ eid] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for sig in (_prereqs.get('health_signals') or []) -%}
+                        {%- set _sig_ent = sig.get('entity', '') if sig is mapping else '' -%}
+                        {%- set _sig_eq  = sig.get('eq', 'ok') if sig is mapping else 'ok' -%}
+                        {%- if _sig_ent != '' and states(_sig_ent) != _sig_eq -%}
+                          {%- set ns.devs = ns.devs + ['prereq_signal_fail:' ~ _sig_ent] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for ckey in (_prereqs.get('config_keys') or []) -%}
+                        {%- if states(ckey) | trim == '' -%}
+                          {%- set ns.devs = ns.devs + ['prereq_config_missing:' ~ ckey] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {{ ns.devs }}
+            - variables:
+                _hr_status: >-
+                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
+                  {%- set ns = namespace(s='ok') -%}
+                  {%- for d in _hr_devs -%}
+                    {%- set _pfx = d | regex_findall('[^:]+') | first | default('') -%}
+                    {%- if _pfx in _err_codes -%}{%- set ns.s = 'error' -%}
+                    {%- elif _pfx in _warn_codes and ns.s != 'error' -%}{%- set ns.s = 'warn' -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set _impact = (_hr_ps.get('impact', '') if _hr_ps is mapping else '') -%}
+                  {%- if _impact == 'hard' and _hr_devs | length > 0 -%}{%- set ns.s = 'error' -%}{%- endif -%}
+                  {{ ns.s }}
+            - variables:
+                _hr_tool_results: >-
+                  {{ _hr_tool_results + [{
+                    'tool': repeat.item | replace('script.', ''),
+                    'status': _hr_status,
+                    'deviations': _hr_devs
+                  }] }}
+
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          data:
+            action_type: upsert
+            force_action: true
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: _health_report
+            value: >-
+              {{ {'status': 'scanning', 'sweep_complete': 2, 'sweep_total': 4,
+                  'generated_at': now().isoformat(),
+                  'facets': {'tools': {
+                    'total_scanned': _hr_tool_results | length,
+                    'deviating': _hr_tool_results | rejectattr('status', 'equalto', 'ok') | list
+                  }}} | tojson }}
+        - delay:
+            seconds: "{{ _hr_sweep_delay_s }}"
+
+        # ── Sweep 3: user-facing dojotools ───────────────────────────────────────
+        - repeat:
+            for_each: "{{ _hr_sweep3 }}"
+            sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _hr_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _hr_tm: >-
+                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+            - variables:
+                _hr_tm_ok: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {{ _tm.get('status', '') in ['ok', 'success'] }}
+                _hr_ps: >-
+                  {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
+                  {%- set _ps = _tm.get('preferred_state', none) -%}
+                  {{ _ps if _ps is mapping else none }}
+            - variables:
+                _hr_devs: >-
+                  {%- set ns = namespace(devs=[]) -%}
+                  {%- if not _hr_tm_ok -%}
+                    {%- set ns.devs = ns.devs + ['manifest_unavailable'] -%}
+                  {%- elif not (_hr_ps is mapping) -%}
+                    {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
+                  {%- else -%}
+                    {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
+                      {%- if label_entities(lbl) | list | length == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
+                      {%- if lkey not in _hr_lens_registry -%}
+                        {%- set ns.devs = ns.devs + ['lens_not_registered:' ~ lkey] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- for cmod in (_hr_ps.get('codex_modules') or []) -%}
+                      {%- set _ckey = cmod | replace('zen_codex_finance_', '') | replace('zen_codex_', '') -%}
+                      {%- if _ckey not in _hr_codex_registry -%}
+                        {%- set ns.devs = ns.devs + ['codex_not_registered:' ~ cmod] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set _prereqs = _hr_ps.get('prerequisites') -%}
+                    {%- if _prereqs is mapping -%}
+                      {%- for eid in (_prereqs.get('tools') or []) -%}
+                        {%- if states(eid) not in ('off', 'on') -%}
+                          {%- set ns.devs = ns.devs + ['prereq_tool_down:' ~ eid] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for sig in (_prereqs.get('health_signals') or []) -%}
+                        {%- set _sig_ent = sig.get('entity', '') if sig is mapping else '' -%}
+                        {%- set _sig_eq  = sig.get('eq', 'ok') if sig is mapping else 'ok' -%}
+                        {%- if _sig_ent != '' and states(_sig_ent) != _sig_eq -%}
+                          {%- set ns.devs = ns.devs + ['prereq_signal_fail:' ~ _sig_ent] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for ckey in (_prereqs.get('config_keys') or []) -%}
+                        {%- if states(ckey) | trim == '' -%}
+                          {%- set ns.devs = ns.devs + ['prereq_config_missing:' ~ ckey] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {{ ns.devs }}
+            - variables:
+                _hr_status: >-
+                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
+                  {%- set ns = namespace(s='ok') -%}
+                  {%- for d in _hr_devs -%}
+                    {%- set _pfx = d | regex_findall('[^:]+') | first | default('') -%}
+                    {%- if _pfx in _err_codes -%}{%- set ns.s = 'error' -%}
+                    {%- elif _pfx in _warn_codes and ns.s != 'error' -%}{%- set ns.s = 'warn' -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set _impact = (_hr_ps.get('impact', '') if _hr_ps is mapping else '') -%}
+                  {%- if _impact == 'hard' and _hr_devs | length > 0 -%}{%- set ns.s = 'error' -%}{%- endif -%}
+                  {{ ns.s }}
+            - variables:
+                _hr_tool_results: >-
+                  {{ _hr_tool_results + [{
+                    'tool': repeat.item | replace('script.', ''),
+                    'status': _hr_status,
+                    'deviations': _hr_devs
+                  }] }}
+
+        # ── Unavailable tools (no stripe — always append last) ───────────────────
+        - repeat:
+            for_each: "{{ _hr_unavailable }}"
+            sequence:
+            - variables:
+                _hr_tool_results: >-
+                  {{ _hr_tool_results + [{
+                    'tool': repeat.item | replace('script.', ''),
+                    'status': 'error',
+                    'deviations': ['tool_unavailable']
+                  }] }}
+
         - variables:
-            result:
-              status: "{{ 'issues_found' if _has_issues else 'ok' }}"
-              mode: health
-              facets:
-                identity: "{{ 'ok' if _id_ok else 'error' }}"
-                labels: "{{ 'ok' if _lbl_ok else 'error' }}"
-                tools:
-                  healthy: "{{ _h_callable | length }}"
-                  broken: "{{ _h_unavailable | length }}"
-                cabinets: "{{ _h_cab_sensor }}"
-              caller_token: "{{ caller_token }}"
-        - stop: health roll-up complete
+            _hr_warn_count: "{{ _hr_tool_results | selectattr('status', 'equalto', 'warn') | list | length }}"
+            _hr_err_count:  "{{ _hr_tool_results | selectattr('status', 'equalto', 'error') | list | length }}"
+            # Lean cache: store only deviating tools (status != ok)
+            _hr_deviating: >-
+              {{ _hr_tool_results | rejectattr('status', 'equalto', 'ok') | list }}
+        # _hr_report must be in a separate step — sibling keys can't reference each other
+        - variables:
+            _hr_report: >-
+              {{ {
+                'status': 'issues_found' if (_hr_err_count > 0 or not _hr_id_ok or not _hr_lbl_ok
+                           or _hr_cab_sensor not in ('ok', 'warn'))
+                           else 'warn' if _hr_warn_count > 0
+                           else 'ok',
+                'generated_at': now().isoformat(),
+                'sweep_complete': 4,
+                'sweep_total': 4,
+                'facets': {
+                  'identity': 'ok' if _hr_id_ok else 'error',
+                  'labels': 'ok' if _hr_lbl_ok else 'error',
+                  'cabinets': _hr_cab_sensor,
+                  'tools': {
+                    'total_scanned': _hr_tool_results | length,
+                    'compliant': _hr_tool_results | selectattr('status','equalto','ok') | list | length,
+                    'warnings': _hr_warn_count,
+                    'errors': _hr_err_count,
+                    'deviating': _hr_deviating
+                  }
+                }
+              } }}
+
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _hr_write_raw
+          data:
+            action_type: upsert
+            force_action: true
+            volume_entity_id:
+              - "{{ _hh_cab }}"
+            key: _health_report
+            value: "{{ _hr_report | tojson }}"
+
+        - variables:
+            result: >-
+              {{ _hr_report | combine({
+                'mode': 'health_refresh',
+                'cache_written': (_hr_write_raw is mapping and _hr_write_raw.get('status') == 'success'),
+                'caller_token': caller_token
+              }) }}
+        - stop: health_refresh complete
           response_variable: result
 
       # ── mode: autotag ────────────────────────────────────────────────────────
@@ -880,29 +1947,23 @@ script:
                 {%- endif -%}
               {%- endfor -%}
               {{ ns.out | list }}
-        # ── static domain routing map — GO HERE FIRST ──
+        # ── label-driven domain routing map — GO HERE FIRST ──
         # What the MCP manifest can't tell Friday: which tool owns which domain.
+        # Assign label zen_domain_<name> to a script to register it for that domain.
         # Room-oriented: prefer room_manager over raw entity state queries.
         - variables:
-            _pub_domain_map:
-              rooms: script.zen_dojotools_room_manager
-              food: script.zen_dojotools_kitchen
-              knowledge: script.zen_dojotools_filecabinet
-              calendar: script.zen_dojotools_calendar
-              identity: script.zen_dojotools_identity
-              lights: script.zen_dojotools_lights
-              climate: script.zen_dojotools_climate
-              covers: script.zen_dojotools_covers
-              todos: script.zen_dojotools_todo
-              announce: script.zen_dojotools_announce
-              security: script.zen_dojotools_security_manager
-              media: script.zen_dojotools_media_manager
-              contacts: script.zen_dojotools_rolodex
-              tickets: script.zen_dojotools_servicedesk
-              inventory: script.zen_dojotools_inventory
-              wiki: script.zen_dojotools_filecabinet
-              finance: script.zen_dojotools_finance
-              system: script.zen_dojotools_manifest
+            _pub_domain_map: >-
+              {%- set _domains = ['rooms','food','knowledge','calendar','identity','lights',
+                  'climate','covers','todos','announce','security','media','contacts',
+                  'tickets','inventory','wiki','finance','system','maintenance','logistics'] -%}
+              {%- set ns = namespace(dm={}) -%}
+              {%- for d in _domains -%}
+                {%- set _ents = label_entities('zen_domain_' ~ d) | select('match', 'script\\.') | list -%}
+                {%- if _ents | length > 0 -%}
+                  {%- set ns.dm = ns.dm | combine({d: _ents | first}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.dm }}
         # ── inline automations scan ──
         - variables:
             _pub_autos: >-
@@ -1017,7 +2078,7 @@ script:
         - choose:
           - conditions: "{{ force_refresh | default(false) }}"
             sequence:
-            - action: script.zen_dojotools_manifest
+            - action: "{{ this.entity_id }}"
               continue_on_error: true
               data:
                 mode: publish
@@ -1150,6 +2211,75 @@ script:
         - stop: mcp_sync complete
           response_variable: result
 
+    # ── mode: domains ────────────────────────────────────────────────────────
+    # Scans all zen_ tool_manifests for domain + peers declarations.
+    # Returns live graph — zero storage, zero hardcoding.
+    # Filters: name=<domain> (single cluster), tool=<script> (all clusters for a tool).
+    - choose:
+      - conditions: "{{ mode_norm == 'domains' }}"
+        sequence:
+        - variables:
+            _dom_scripts: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in states.script -%}
+                {%- set eid = e.entity_id -%}
+                {%- if (eid.startswith('script.zen_dojotools_') or eid.startswith('script.zen_stack_')
+                       or eid.startswith('script.zen_sutra_') or eid.startswith('script.zen_codex_'))
+                    and e.state in ('off', 'on') -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _dom_graph: []
+            _dom_name_filter: "{{ name | default('') | string | trim | lower }}"
+            _dom_tool_filter: "{{ tool | default('') | string | trim | lower }}"
+        - repeat:
+            for_each: "{{ _dom_scripts }}"
+            sequence:
+            - variables:
+                _dom_script: "{{ repeat.item | string | trim }}"
+            - action: "{{ _dom_script }}"
+              continue_on_error: true
+              response_variable: _dom_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _dom_tm: "{{ _dom_tm_raw if _dom_tm_raw is mapping else {} }}"
+            - variables:
+                _dom_modes: "{{ _dom_tm.get('modes', {}) if _dom_tm is mapping else {} }}"
+            - variables:
+                _dom_has_help: "{{ 'help' in _dom_modes }}"
+            - if: "{{ _dom_has_help }}"
+              then:
+              - action: "{{ _dom_script }}"
+                continue_on_error: true
+                response_variable: _dom_help_raw
+                data:
+                  mode: help
+              - variables:
+                  _dom_help: "{{ ((_dom_help_raw if _dom_help_raw is mapping else {}).get('help') or {}) }}"
+              - variables:
+                  _dom_domain: "{{ _dom_help.get('domain', '') | string | trim if _dom_help is mapping else '' }}"
+                  _dom_peers: "{{ _dom_help.get('peers', {}) if _dom_help is mapping else {} }}"
+              - if: "{{ _dom_domain != '' }}"
+                then:
+                - variables:
+                    _dom_graph: "{{ _dom_graph + [{'tool': _dom_script | replace('script.', ''), 'display_name': _dom_tm.get('display_name', ''), 'domain': _dom_domain, 'peers': _dom_peers}] }}"
+        - variables:
+            _dom_tgt_bare: "{{ (_dom_tool_filter if _dom_tool_filter.startswith('script.') else 'script.' ~ _dom_tool_filter) | replace('script.', '') }}"
+        - variables:
+            _dom_filtered: "{{ _dom_graph | selectattr('tool', 'eq', _dom_tgt_bare) | list if _dom_tool_filter != '' else (_dom_graph | selectattr('domain', 'eq', _dom_name_filter) | list if _dom_name_filter != '' else _dom_graph) }}"
+        - variables:
+            result:
+              status: ok
+              mode: domains
+              filter: "{{ 'tool=' ~ _dom_tool_filter if _dom_tool_filter != '' else ('name=' ~ _dom_name_filter if _dom_name_filter != '' else 'none') }}"
+              count: "{{ (_dom_filtered | default([])) | length }}"
+              graph: "{{ _dom_filtered | default([]) }}"
+              caller_token: "{{ caller_token | default('') }}"
+        - stop: domains complete
+          response_variable: result
+
     # ── default: unknown mode ────────────────────────────────────────────────
     - variables:
         result:
@@ -1157,8 +2287,8 @@ script:
           mode: "{{ mode_norm }}"
           message: >-
             Unknown mode '{{ mode_norm }}'. Valid: cabinets, identity, labels,
-            tools, bootstrap_stacks, automations, structure, audit, health,
-            autotag, publish, all, tool_manifest
+            tools, bootstrap_stacks, bootstrap_kfc, automations, structure,
+            audit, health, autotag, publish, all, tool_manifest, domains
           caller_token: "{{ caller_token }}"
     - stop: unknown mode
       response_variable: result
@@ -1509,3 +2639,21 @@ automation:
         data:
           mode: bootstrap_stacks
           caller_token: zen_manifest_bootstrap_stacks
+
+  - id: zen_manifest_bootstrap_kfc
+    alias: "ZenOS: Bootstrap KFC Dojo Drawers"
+    description: >-
+      Runs zen_dojotools_manifest bootstrap_kfc on HA startup and daily at
+      midnight. Writes live drawer mounts into the dojo cabinet for each tool
+      that declares mode=kfc_manifest. Summarizer resolves mounts at runtime.
+      Idempotent — safe to run repeatedly.
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time
+        at: "00:01:00"
+    actions:
+      - action: script.zen_dojotools_manifest
+        data:
+          mode: bootstrap_kfc
+          caller_token: zen_manifest_bootstrap_kfc

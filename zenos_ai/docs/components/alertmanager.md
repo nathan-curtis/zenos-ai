@@ -81,6 +81,8 @@ flowchart LR
 
 Acknowledging a Postman button response and clearing an alert are separate operations. A response records what the human said. A clear removes the active alert and any priority inject provider.
 
+**Write-verification (v5.1.0):** `alert_clear` now wraps the removal/write in an `if: _key in _alerts` guard and always falls through to inject/notification cleanup regardless of whether the key was present — a clear on an already-cleared or unknown alert key no longer silently skips the priority-inject and notification-dismiss steps.
+
 ---
 
 ## How to Fire an Alert
@@ -242,6 +244,12 @@ This sensor is the integration point for Room Manager `home_overview`. Its state
 | `_zen_priority_inject` | `{alert_<alert_key>: {summary, urgency, expires, since, entities}}` | Provider expiry, usually 60 minutes for error alerts |
 
 Both drawers are created automatically on first write. The `_` prefix marks them hidden and protected from generic FileCabinet expiry. AlertManager/Core still perform purpose-built TTL cleanup by emitting `alert_clear` for expired alert entries.
+
+---
+
+## KFC Registration (KF5)
+
+`zen_dojotools_alertmanager` self-registers its dojo drawer via `mode=kfc_manifest` (`alert_manager` component) — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). No Scribe authoring step is needed; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts it automatically.
 
 ---
 

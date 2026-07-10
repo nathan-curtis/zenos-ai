@@ -81,6 +81,14 @@ script:
               - handle_ack
               - nightly_reset
               - morning_reset
+              - schedule
+              - schedule_blocks
+              - kfc_manifest
+              - stacks_by_anchor
+              - register
+              - unregister
+              - health
+              - inspect
               - tool_manifest
       caller_token:
         name: Caller Token
@@ -166,6 +174,22 @@ script:
         description: "Postman log tag for cleanup. For mode=handle_ack."
         selector:
           text:
+      window_start:
+        name: Window Start
+        description: "Briefing window lower bound in seconds. Default 1770. For mode=schedule."
+        default: 1770
+        selector:
+          number:
+            min: 0
+            step: 1
+      window_end:
+        name: Window End
+        description: "Briefing window upper bound in seconds. Default 2400. For mode=schedule."
+        default: 2400
+        selector:
+          number:
+            min: 0
+            step: 1
     sequence:
 
       # -- 0 Normalize inputs --------------------------------------------------
@@ -222,69 +246,389 @@ script:
       # -- help (early exit — no cabinet state needed) -------------------------
       - if: "{{ _mode == 'help' }}"
         then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: read
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+            response_variable: _fc_help
+          - variables:
+              _h_raw: >-
+                {%- set val = _fc_help.get('value', {}) -%}
+                {{ (val | from_json) if val is string else val }}
+              _h_sys:  "{{ _h_raw.get('system', {}) }}"
+              _h_rms:  "{{ _h_raw.get('rooms', {}) }}"
+          - variables:
+              _help_system: >-
+                {{ {
+                  'enabled':          _h_sys.get('enabled', true) | bool(true),
+                  'pause_today':      _h_sys.get('pause_today', false) | bool(false),
+                  'water_low_action': _h_sys.get('water_low_action', 'warn'),
+                  'minimum_battery':  _h_sys.get('minimum_battery', 20) | int(20)
+                } }}
+              _help_rooms: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- for slug, cfg in _h_rms.items() -%}
+                  {%- set ns.r = ns.r + [{'room': slug,
+                    'enabled':        cfg.get('enabled', true) | bool(true),
+                    'days_between':   cfg.get('days_between', 0) | int(0),
+                    'requires_ready': cfg.get('requires_ready', false) | bool(false),
+                    'requires_mop':   cfg.get('requires_mop', false) | bool(false),
+                    'last_cleaned':   cfg.get('last_cleaned', 'never'),
+                    'is_ready':       cfg.get('is_ready', false) | bool(false),
+                    'skip_next':      cfg.get('skip_next', false) | bool(false),
+                    'queued':         cfg.get('queued', false) | bool(false)
+                  }] -%}
+                {%- endfor -%}
+                {{ ns.r | sort(attribute='room') }}
+              _help_labels: >-
+                {{ {
+                  'autovac':              _vac_ent if _vac_ent != '' else 'NOT WIRED',
+                  'autovac_dnd':          _dnd_ent if _dnd_ent != '' else 'NOT WIRED (optional)',
+                  'autovac_water_low':    _water_low_ent if _water_low_ent != '' else 'NOT WIRED (optional)',
+                  'autovac_camera':       _cam_ent if _cam_ent != '' else 'NOT WIRED (optional)',
+                  'autovac_schedule':     label_entities('autovac_schedule') | list,
+                  'autovac_current_room': label_entities('autovac_current_room') | select('match', 'sensor\.') | list | first | default('NOT WIRED (optional)'),
+                  'autovac_wear':         label_entities('autovac_wear') | list
+                } }}
+              _help_schedules: >-
+                {%- set ns = namespace(s=[]) -%}
+                {%- for e in label_entities('autovac_schedule') | list -%}
+                  {%- set ne = state_attr(e, 'next_event') -%}
+                  {%- set ne_str = as_datetime(ne).strftime('%Y-%m-%dT%H:%M:%S') if ne is not none else 'unknown' -%}
+                  {%- set ns.s = ns.s + [{'entity': e, 'state': states(e), 'next_event': ne_str}] -%}
+                {%- endfor -%}
+                {{ ns.s }}
+              _help_setup_status: >-
+                {%- if _vac_ent == '' -%}not_configured — vacuum entity not labeled autovac
+                {%- elif label_entities('autovac_schedule') | list | length == 0 -%}not_configured — no schedule entities labeled autovac_schedule
+                {%- elif _h_rms | length == 0 -%}no_rooms — system wired but no rooms configured yet
+                {%- elif not _h_sys.get('enabled', true) | bool(true) -%}disabled — system enabled=false in cabinet
+                {%- else -%}ok — {{ _h_rms | length }} room(s) configured, {{ label_entities('autovac_schedule') | list | length }} schedule(s) wired
+                {%- endif -%}
           - variables:
               response: >-
                 {{ {
                   'mode': 'help',
                   'result': 'ok',
                   'caller_token': _caller_token,
-                  'quick_start': 'Label your vacuum entity with autovac, DnD sensor with autovac_dnd (optional), water-low sensor with autovac_water_low (optional), schedule entities with autovac_schedule, vacuum current-room sensor with autovac_current_room (optional). Add rooms via mode=configure. Run mode=setup to verify wiring. Roborock native: use mode=configure room=<slug> config={"area_id":"<ha_area>"} if HA area name differs from room slug.',
-                  'modes': {
-                    'consumables': 'ERP+IoT consumables loop. Parts: dust_bags, hepa_filter, main_brush, side_brushes, washable_pad, disposable_pads. action=status (default): stock levels for all parts — returns consumables[] (part/name/sku/amount/status ok|low|out) + shopping_actions[] for low/out items. action=add_to_shopping: auto-queue all low/out parts to shopping list in one call. action=log_replaced part=<key>: record a swap — consumes one spare from stock + executes linked maintenance chore. action=log_purchased part=<key> amount=<n>: log buying spares — adds stock at the configured storage location. action=provision: flagship first-time setup — reads robot SN from HA entity, creates inventory dock location + catalog products + maintenance chores, stores full catalog in household cabinet under autovac.grocy_catalog. Idempotent (SN key). Re-run with config={"force":true} to re-provision. Cabinet catalog overrides hardcoded product IDs after first provision.',
-                  'status': 'Full system snapshot: vacuum_state/battery, system_config (enabled/pause/water_low_action/min_battery), integration (roborock_native|xiaomi_miio), current_room (if live), schedule_entities (per-schedule state+has_run_today+next_event), last_run, next_schedule, schedule_active, elected/queued/skipped rooms, room_decisions, run_readiness.',
-                    'setup': 'Verify label wiring and audit all room configs. result=ok|warn|error|needs_config. room_audit has per-room issues + suggestions. action_queue lists all fix commands. config={"create_labels":true} creates missing label objects.',
-                    'configure': 'room=<slug> alone: show current settings. room=<slug> config=<json>: update (enabled, segment, area_id, days_between, requires_ready, notes, requires_mop). require_confirmation accepted as alias for requires_ready (normalized on write). area_id: overrides default room-slug when mapping to HA areas for roborock native vacuum.clean_area. No room=: view/set system config (water_low_action=warn|stop, enabled).',
-                    'preset': 'Apply a named config bundle to one or more rooms in one call. preset=<name> rooms=<csv> (or room=<slug>). No args: list all presets + their settings. Presets patch specified fields only — other settings preserved. Available: obstacle_prone, mop_room, guest_room, high_traffic, twice_weekly, weekly, disabled, standard.',
-                    'queue': 'Force-add a room to the next run. room=<slug> required.',
-                    'dequeue': 'Remove a room from force-queue. room=<slug> required.',
-                    'clear': 'Clear all force-queued rooms.',
-                    'skip': 'Skip a room on the next scheduled run. room=<slug> required.',
-                    'unskip': 'Clear skip-next flag. room=<slug> required.',
-                    'ready': 'Mark a room ready for confirmed cleaning. room=<slug> required.',
-                    'unready': 'Clear ready flag. room=<slug> required.',
-                    'mark_cleaned': 'Record today as last cleaned date. room=<slug> required.',
-                    'pause': 'Pause all scheduled runs for today.',
-                    'unpause': 'Resume scheduled runs today.',
-                    'clean': 'Immediate clean by room slug(s). rooms=<csv> required. Uses vacuum.clean_area (roborock native) or segment IDs (xiaomi_miio). Vacuum must be docked or idle.',
-                    'run_elected': 'Run all currently elected rooms now. dry_run=true previews and sends Postman notification without firing vacuum.',
-                    'run': 'Run scheduled clean with all guards. schedule_entity_id required. Called by automation.',
-                    'analyze': 'Analyze last job map via camera tool. trigger_id=docked|error. Called by automation.',
-                    'briefing': 'Build and send pre-run briefing via Postman ~30 min before a run. Called by automation.',
-                    'handle_ack': 'Process a Postman ack. ack_action + ack_context + pm_tag. Called by automation.',
-                    'nightly_reset': 'Reset daily run flags and pause state. Called at midnight by automation.',
-                    'morning_reset': 'Clear is_ready flags after morning run starts. Called by automation.',
-                    'check_wear': 'IoT wear trigger — wear_entity= required (HA entity_id of the sensor that fired). Resolves part from catalog wear_entity map, reads current wear %, compares against catalog threshold. If worn: checks stock; if out-of-stock adds to shopping list; sends Postman push alert; executes linked maintenance chore if chore_id set. category field in catalog distinguishes bot parts (brushes/pads, wear-sensor wired) from dock parts (bags/HEPA). Called by KFC wear automation via HA 2025.12+ label-based numeric_state trigger on autovac_wear label.'
+                  'live': {
+                    'setup_status':   _help_setup_status | trim,
+                    'current_system': _help_system,
+                    'current_rooms':  _help_rooms,
+                    'current_labels': _help_labels,
+                    'current_schedules': _help_schedules
                   },
+
+                  'summary': 'Autonomous vacuum scheduler with per-room election, schedule-aware runs, consumables ERP, and IoT wear tracking. Rooms are configured once; the system elects them automatically based on days since last clean, readiness gates, and schedule availability. Runs fire from HA schedule entities. The robot does the rest.',
+
+                  'understand': {
+                    'election_flow': 'A room fires when ALL three layers pass: (1) Global gates — enabled=true, due (days_since_cleaned >= days_between OR force-queued), requires_ready=false OR is_ready=true, skip_next=false. (2) Per-room schedule — if room has an autovac_room_schedule entity, it only fires when that entity is on; otherwise it participates in global runs normally. (3) Blackout — rooms vetoed by an active autovac_blackout entity (or block data blackout_rooms key) are excluded regardless.',
+                    'schedule_model': 'Schedule entities (HA schedule helper) define WHEN the vacuum runs. Label them autovac_schedule. Day scoping: label a schedule autovac_weekday, autovac_weekend, or autovac_mon/tue/wed/thu/fri/sat/sun to restrict it. No day label = fires every day. Priority order when multiple match: specific-day (1) > day-class weekday/weekend (2) > universal (3).',
+                    'room_schedule_model': 'Per-room exception schedule: create a schedule helper, assign it to the room area in HA, label it autovac_room_schedule + autovac_schedule (+ day labels). Room is excluded from all global runs and only fires when its own entity is on. Existing trigger automation picks it up automatically via autovac_schedule label.',
+                    'blackout_model': 'Blackout window: create a schedule helper, label it autovac_blackout. Area-assigned = vetoes only rooms in that area. No area = full house blackout while entity is on. Blackout always wins — overrides per-room schedule and block data.',
+                    'requires_ready': 'Safety gate for rooms that need human confirmation before cleaning (obstacle-prone rooms, rooms with pets/guests). Set requires_ready=true. Room will not fire until mode=ready room=<slug> is called. morning_reset re-gates after each morning run.',
+                    'water_low_action': 'Controls mop-room behavior when water tank is low. warn=run proceeds with a briefing warning. stop=mop rooms (requires_mop=true) are blocked entirely until tank is refilled.',
+                    'integration_types': 'roborock_native: uses vacuum.clean_area with HA area names — room slug must match HA area name, or set area_id override. xiaomi_miio: uses segment IDs from the robot map — set segment= on each room via configure.'
+                  },
+
+                  'init': {
+                    'step_1_labels': 'Apply HA labels to entities. Required: label vacuum entity with autovac. Optional but recommended: autovac_dnd (DnD binary_sensor), autovac_water_low (water-low binary_sensor), autovac_schedule (schedule helpers), autovac_current_room (current-room sensor for timing stats), autovac_wear (Roborock wear sensors).',
+                    'step_2_setup': 'Run mode=setup — audits label wiring, reports missing entities, lists room issues. Add config={"create_labels":true} to auto-create missing label objects (still need to assign entities in HA UI afterward).',
+                    'step_3_rooms': 'Add rooms: mode=configure room=<slug> config={"days_between":7}. Or apply a preset bundle: mode=preset preset=<name> rooms=<csv>. Presets: obstacle_prone, mop_room, guest_room, high_traffic, twice_weekly, weekly, disabled, standard.',
+                    'step_4_schedules': 'Create HA schedule helpers and label them autovac_schedule. Scope by day with autovac_weekday / autovac_weekend / autovac_mon etc. The automation controller wires the rest automatically. Optional: per-room schedule (autovac_room_schedule + autovac_schedule, area-assigned); blackout window (autovac_blackout, area optional). See schedule_setup_guide for step-by-step instructions.',
+                    'step_5_consumables': 'Optional ERP loop. Run mode=consumables action=provision model_preset=<key> to create Grocy inventory locations, products, and maintenance chores. Parts: main_brush, side_brushes, hepa_filter, dust_bags, washable_pad, disposable_pads. Model presets: roborock_s7_plus, roborock_s8_plus, roborock_s8_pro_ultra, roborock_s7_maxv_ultra, roborock_q7_max_plus (generics also available). Idempotent — safe to re-run.',
+                    'roborock_area_id': 'If room slug does not match the HA area name exactly: mode=configure room=<slug> config={"area_id":"<exact_ha_area_name>"}. This overrides the slug-based lookup for vacuum.clean_area calls.',
+                    'xiaomi_segments': 'For xiaomi_miio integration: mode=configure room=<slug> config={"segment":<map_id>} for each room. Segment IDs come from the robot map in the Xiaomi app.'
+                  },
+
+                  'daily_ops': {
+                    'status': 'Full live snapshot. Returns: vacuum_state, battery, run_readiness (can_run_now + blockers[]), elected_rooms[], schedule_entities[], last_run, next_schedule, room_decisions[] per room. Start here for any question about what the vacuum is doing or why it is not running.',
+                    'run_elected': 'Fire all currently elected rooms now. dry_run=true previews election + sends Postman notification without starting the vacuum. Use to test election logic.',
+                    'clean': 'Immediate clean — bypasses election. rooms=<csv of slugs> required. Vacuum must be docked or idle.',
+                    'pause': 'Block all scheduled runs for the rest of today. Postman briefings still fire.',
+                    'unpause': 'Re-enable scheduled runs for today.',
+                    'queue': 'Force-add a room to the next run regardless of days_between or due state. room=<slug>. Cleared after the run.',
+                    'dequeue': 'Remove a room from the force queue. room=<slug>.',
+                    'clear': 'Clear all force-queued rooms at once.',
+                    'skip': 'Keep a room out of the next scheduled run only. room=<slug>. Auto-clears after the run.',
+                    'unskip': 'Clear skip flag. room=<slug>.',
+                    'ready': 'Mark a requires_ready room as confirmed OK to clean. room=<slug>.',
+                    'unready': 'Revoke ready confirmation. room=<slug>.',
+                    'mark_cleaned': 'Manually record today as last_cleaned for a room (e.g. hand-mopped). room=<slug>. Resets the due timer.'
+                  },
+
+                  'configure': {
+                    'view_room': 'mode=configure room=<slug> — show all current settings for that room.',
+                    'update_room': 'mode=configure room=<slug> config=<json> — patch room fields. Fields: enabled (bool), days_between (int), requires_ready (bool), requires_mop (bool), segment (int, xiaomi only), area_id (str, roborock override), notes (str).',
+                    'view_system': 'mode=configure (no room) — show system config: enabled, water_low_action, minimum_battery.',
+                    'update_system': 'mode=configure config={"enabled":false} or {"water_low_action":"stop"} — update system-level settings.',
+                    'presets': 'mode=preset preset=<name> rooms=<csv> — apply a named bundle. mode=preset alone lists all presets. Available: obstacle_prone (requires_ready=true), mop_room (requires_mop=true), guest_room (days_between=14 + requires_ready), high_traffic (days_between=1), twice_weekly (days_between=3), weekly (days_between=7), disabled (enabled=false), standard (enabled=true, days_between=7, requires_ready=false).'
+                  },
+
+                  'consumables': {
+                    'status': 'mode=consumables action=status — stock levels for all parts. Returns consumables[] (part/name/amount/status ok|low|out) + shopping_actions[] listing what needs ordering.',
+                    'add_to_shopping': 'mode=consumables action=add_to_shopping — auto-queue all low/out parts to Grocy shopping list in one call.',
+                    'log_replaced': 'mode=consumables action=log_replaced part=<key> — record installing a spare. Consumes one from stock and executes the linked maintenance chore.',
+                    'log_purchased': 'mode=consumables action=log_purchased part=<key> amount=<n> — record buying spares. Adds to stock at the configured storage location.',
+                    'part_keys': 'main_brush, side_brushes, hepa_filter, dust_bags, washable_pad, disposable_pads',
+                    'wear_alerts': 'IoT wear loop fires automatically after each dock. If a part crosses its wear threshold: stock is checked, item is added to shopping list if out, Postman push sent. Recover: mode=consumables action=status to confirm, then action=log_replaced part=<key> after physically installing the spare. If result=not_found on check_wear — re-run action=provision to rebuild the wear_entity map.'
+                  },
+
+                  'troubleshoot': {
+                    'room_not_cleaning': 'Run mode=status and check room_decisions[<slug>]. Gates in order: (1) enabled=false → mode=configure room=<slug> config={"enabled":true}. (2) not due → days_since_cleaned < days_between; use mode=queue to force one-off or mode=mark_cleaned to reset timer. (3) requires_ready + not is_ready → call mode=ready room=<slug>. (4) skip_next=true → call mode=unskip room=<slug>. (5) At run time: vacuum busy/error, low battery, or water_low blocking mop room.',
+                    'vacuum_not_running': 'Check run_readiness.blockers in mode=status. Blockers: system_disabled (mode=configure config={"enabled":true}), paused_today (mode=unpause), dnd (DnD sensor is on — will resume when DnD clears), low_battery (vacuum charging — will run on next schedule), vacuum_not_ready (vacuum in error or unavailable — check HA vacuum entity), water_low_mop_required (fill tank or set water_low_action=warn), no_rooms_elected (no rooms pass election — check room_decisions).',
+                    'schedule_not_firing': 'Verify: (1) schedule entity is labeled autovac_schedule. (2) Schedule has correct day scoping labels (autovac_weekday / autovac_weekend / autovac_mon etc). (3) Schedule entity is enabled in HA. (4) mode=schedule returns valid_today with this schedule listed.',
+                    'room_excluded_from_global': 'Room has an autovac_room_schedule entity assigned — it opts out of global election. Check mode=schedule_blocks entity_meta for layer=room_sched. Room will only run when its own schedule entity is on or when triggered directly as schedule_entity_id.',
+                    'room_schedule_not_triggering': 'Per-room schedule entity must carry autovac_schedule label (so trigger automation catches it) AND autovac_room_schedule label (so mode=run scopes to that room). Confirm both labels in mode=schedule_blocks entity_meta.',
+                    'unexpected_blackout': 'A room or full run is excluded that should not be. Check mode=schedule_blocks entity_meta for any layer=blackout entities currently on. Blackout entities veto regardless of other settings.',
+                    'no_briefing': 'Briefing fires ~30 min before a schedule via zen_event autovac_prerun_briefing. Check: (1) automation zen_autovac_controller is enabled. (2) mode=schedule returns in_window with an entity when tested in the 5-30 min pre-run window.',
+                    'consumables_unavailable': 'Grocy catalog not provisioned. Run mode=consumables action=provision model_preset=<key> to enable ERP and wear tracking. Idempotent — safe to re-run if partially provisioned.',
+                    'wear_entity_not_found': 'check_wear returned result=not_found. The wear sensor is not in the catalog wear_entity map. Re-run mode=consumables action=provision to rebuild the map from current HA entities.'
+                  },
+
+                  'disable': {
+                    'pause_today': 'mode=pause — skip all scheduled runs today only. Resets at midnight. Briefings still fire.',
+                    'disable_system': 'mode=configure config={"enabled":false} — halt all automated runs until re-enabled. mode=status will show system_disabled blocker. Re-enable: mode=configure config={"enabled":true}.',
+                    'disable_one_room': 'mode=configure room=<slug> config={"enabled":false} — remove one room from election permanently. Room stays in cabinet but never fires. Shortcut: mode=preset preset=disabled rooms=<slug>. Re-enable: mode=preset preset=standard rooms=<slug>.',
+                    'skip_one_run': 'mode=skip room=<slug> — keep a room out of the next scheduled run only. Auto-clears after that run.',
+                    'disable_schedule': 'Disable the HA schedule helper entity directly in HA UI or via mode=configure config — autovac will not see it as active.',
+                    'full_stop': 'To completely disable autovac: (1) mode=configure config={"enabled":false} stops all runs. (2) mode=pause as backup for today. (3) Optionally disable schedule entities in HA to prevent any triggers. System state is preserved in cabinet — re-enable at any time.'
+                  },
+
+                  'schedule_setup_guide': {
+                    'docs': 'Official HA schedule integration docs: https://www.home-assistant.io/integrations/schedule/',
+                    'what_is_a_schedule': 'An HA Schedule helper is a calendar-style entity that turns on and off on a weekly repeating timetable. Autovac uses it purely as a clock signal — when the schedule turns on, the run triggers. Think of it as a smart timer with day-of-week awareness.',
+                    'create_global_schedule': 'Settings → Devices & Services → Helpers → + Create Helper → Schedule. Give it a name (e.g. "AutoVac Weekday Morning"). Add time blocks for each day you want it to fire (e.g. Mon–Fri 7:00–7:30 AM). Save. Then in HA Labels, assign it: autovac_schedule + autovac_weekday (or autovac_weekend, or autovac_mon etc for day-specific). That is all — autovac discovers it automatically.',
+                    'create_room_schedule': 'Same as above but: (1) Assign the entity to the room area in HA (entity settings → Area). This is how autovac knows which room it governs — no config needed. (2) Label it autovac_room_schedule + autovac_schedule + a day/scope label. The room will now opt out of all global runs and only clean when this schedule is on.',
+                    'create_blackout': 'Same helper creation. Label it autovac_blackout. If you assign it to an area, only rooms in that area are blocked while the schedule is on. No area = full house blackout. Does not need autovac_schedule — it is never a run trigger, only a veto.',
+                    'block_data': 'Optional per-run overrides: in the schedule block editor, expand Advanced and add Data fields (key/value). Supported keys: skip_rooms (CSV of room slugs to exclude this run), rooms (CSV whitelist — only these rooms run), mode (vacuum mode string). Data only applies to the specific block it is set on.',
+                    'verify': 'After creating and labeling a schedule, run mode=schedule_blocks to confirm it appears with the correct layer (global / room_sched / blackout) and mode=schedule to verify it is seen as valid_today on the right days.'
+                  },
+
+                  'labels': {
+                    'autovac': 'REQUIRED. Assign to: vacuum entity, map camera (optional), last-clean area/duration/start sensors (optional).',
+                    'autovac_schedule': 'REQUIRED for scheduled runs. Assign to HA schedule helper entities. All schedule types use this label — global runs, per-room schedules, and room-specific triggers.',
+                    'autovac_weekday': 'Day-scope. Schedule fires Mon–Fri only. Priority p=2.',
+                    'autovac_weekend': 'Day-scope. Schedule fires Sat–Sun only. Priority p=2.',
+                    'autovac_mon/tue/wed/thu/fri/sat/sun': 'Day-scope. Schedule fires on that specific day only. Priority p=1 (beats weekday/weekend).',
+                    'autovac_room_schedule': 'Per-room exception schedule. Assign to a schedule helper that is ALSO area-assigned in HA. Room opts out of all global runs and only fires when this entity is on. Must also carry autovac_schedule + day label so the existing trigger automation catches it.',
+                    'autovac_blackout': 'Blackout window. Assign to a schedule helper. Area-assigned = vetoes rooms in that area while on. No area = full house blackout. Layer 3 — overrides everything including per-room schedules.',
+                    'autovac_dnd': 'Optional. Binary sensor. Gates all runs while on.',
+                    'autovac_water_low': 'Optional. Binary sensor. Triggers water_low_action behavior.',
+                    'autovac_current_room': 'Optional. Current-room sensor. Enables per-room timing stats.',
+                    'autovac_wear': 'Optional (auto-applied at provision). Roborock wear sensors for IoT→ERP wear loop.',
+                    'Zen Household Cabinet': 'REQUIRED (system label). Cabinet sensor must exist.'
+                  },
+
+                  'automation_only_modes': 'These are called by the zen_autovac_controller automation — do not call them manually: run (schedule trigger), analyze (post-dock map), briefing (pre-run notice), handle_ack (Postman response), nightly_reset (midnight), morning_reset (post-morning-run), check_wear (IoT wear trigger).',
+
                   'cabinet_schema': {
-                    'drawer': 'autovac',
+                    'drawer': 'autovac (in household cabinet)',
                     'system_keys': 'enabled, pause_today, minimum_battery, water_low_action, <schedule_slug>_has_run',
-                    'room_keys': 'enabled, segment, area_id, days_between, requires_ready, notes, requires_mop, last_cleaned, queued, skip_next, is_ready',
-                    'grocy_catalog': 'Written by action=provision. Top-level: robot_name, model, entity_id, serial_number, model_preset, machine_product_id, dock_location_id, bot_location_id, dock_bins_location_id, spare_location_id. parts dict keyed by part slug — each entry: product_id, name, sku, storage_location_id (spare bin), installed_location_id (bot or dock_bins), min_stock, chore_id, category (bot|dock), wear_sensor_key, wear_threshold, wear_entity.'
-                  },
-                  'label_conventions': {
-                    'autovac': 'vacuum entity + map camera + last-clean area/duration/start sensors',
-                    'autovac_dnd': 'DnD binary_sensor — gates runs when on (optional)',
-                    'autovac_water_low': 'water-low binary_sensor — warns in briefing; gates mop-room runs when water_low_action=stop (optional)',
-                    'autovac_schedule': 'schedule entities that trigger mode=run (and mode=morning_reset)',
-                    'autovac_wear': 'Roborock wear sensors (main_brush_left, side_brush_left, filter_remaining, mop_lifespan) — applied at provision time to wire IoT→ERP alerts. Post-dock wear check fires mode=check_wear scan-all after each dock via vacuum.docked label trigger (HA 2025.12+). Real-time per-sensor alert pending numeric_state label target support.',
-                    'autovac_current_room': 'vacuum current-room sensor — enables per-room timing stats; state=unavailable silently skipped (optional)',
-                    'Zen Household Cabinet': 'system label — household cabinet sensor (required)'
-                  },
-                  'agent_hints': 'When onboarding or troubleshooting: (1) suggest applying HA labels first — autovac_current_room: <sensor_entity_id>; (2) use mode=preset preset=<name> rooms=<csv> to apply a named config bundle to one or more rooms in one call — faster than configure for common scenarios; (3) use mode=configure room=<slug> config={"key": "value"} for custom settings not covered by a preset; (4) area_id: key sets HA area override for roborock native vacuum.clean_area — suggest it when room slug does not match HA area name; (5) consumables ERP loop: mode=consumables action=provision (first-time setup — creates inventory locations/products/chores, idempotent via HA entity_id); action=status (check stock, get shopping_actions[]); action=add_to_shopping (auto-queue out/low to shopping list); action=log_replaced part=<key> (record a swap, consumes spare); action=log_purchased part=<key> amount=<n> (log buying spares); (6) wear alert recovery: when check_wear fires, result=alert means the part is worn. If stock=0 it was added to the shopping list automatically — confirm with action=status. If stock>0 user just needs to physically install the spare then run action=log_replaced part=<key>. If result=not_found the wear_entity is not in the catalog — re-provision to rebuild the wear_entity map.',
-                  'config_recipes': {
-                    'obstacle_prone_room': 'Room where socks/cables/chairs get left out: requires_ready=true — blocked until mode=ready room=<slug>. Once marked ready AND due AND vacuum available (AND water OK if requires_mop), fires automatically on next scheduled run. morning_reset re-gates after the run. Shortcut: mode=preset preset=obstacle_prone rooms=<csv>',
-                    'mop_room': 'Kitchen, bathroom, hallway that needs mopping: requires_mop=true. When water tank is low: water_low_action=warn lets run proceed with a warning; water_low_action=stop blocks mop rooms entirely (mode=configure config={"water_low_action":"stop"}). Shortcut: mode=preset preset=mop_room rooms=<csv>',
-                    'guest_room': 'Room only cleaned between guests: days_between=14 + requires_ready=true. Sits idle until mode=ready after guest leaves — then auto-fires next election cycle. Shortcut: mode=preset preset=guest_room rooms=<csv>',
-                    'high_traffic': 'Kitchen or entry hall cleaned daily: days_between=1 — elected every run as long as vacuum available. Also twice_weekly (days_between=3) and weekly (days_between=7). Shortcut: mode=preset preset=high_traffic rooms=<csv>',
-                    'seasonal_disable': 'Room under renovation or skipped indefinitely: enabled=false — completely removed from election, no briefing mention. Shortcut: mode=preset preset=disabled rooms=<csv>',
-                    'force_one_off': 'Add any room to the next run regardless of days_between: mode=queue room=<slug>. Cleared automatically after the run.',
-                    'skip_next': 'Keep a room out of one specific run: mode=skip room=<slug>. Auto-clears after the next scheduled run passes.',
-                    'election_flow': 'A room is elected when: enabled=true AND due (days_since_cleaned >= days_between OR queued=true) AND (requires_ready=false OR is_ready=true) AND skip_next=false. All gates must pass. Vacuum state + water checks happen at run time, not election time.'
-                  },
-                  'trigger_automation_modes': 'Most trigger routing is handled by zen_autovac_controller (included in this package). dock → analyze+check_wear+ninja_summarizer+latch event. schedule.turned_on → run (+morning_reset if morning). template 30min window → briefing. zen_event autovac_prerun_briefing → briefing. time 00:00:00 → nightly_reset. zen_event postman_ack ack_owner=autovac → handle_ack. ha_start → catch-up analyze. Named-entity triggers (vacuum error state, camera blueprint) stay in the personal KFC file.',
-                  'model_presets': 'action=provision requires model_preset=<key>. Generics (REPLACE_SKU placeholders): roborock_generic_dock (VibraRise + standard dock), roborock_generic_dock_ultra (VibraRise + ultra dock), roborock_generic_dock_nomop (no mop). Runnable: roborock_s7_plus, roborock_s7_maxv_ultra, roborock_s8_plus*, roborock_s8_pro_ultra*, roborock_q7_max_plus* (* = VERIFY_SKU on 1-2 parts). Preset files in .autovac_presets/ dir alongside engine. Add new models by dropping a YAML file and adding an !include entry to the _preset_lib block in provision Step 0.'
-                } }}
+                    'room_keys': 'enabled, segment, area_id, days_between, requires_ready, requires_mop, notes, last_cleaned, queued, skip_next, is_ready',
+                    'grocy_catalog': 'Written by consumables action=provision. Contains robot SN, location IDs, and per-part product/chore/wear_entity data. Stored under autovac.grocy_catalog in household cabinet.'
+                  }
+                } | tojson }}
+          - variables:
+              _dom_inner: "{{ (response | from_json) | combine({'domain': 'household_ops', 'peers': {'room_manager': 'zen_dojotools_room_manager'}, 'see_also': 'zen_dojotools_manifest mode=domains name=household_ops'}) }}"
+          - variables:
+              response: "{{ {'status': 'help', 'help': _dom_inner} }}"
           - stop: "autovac help"
+            response_variable: response
+
+      # -- mode=schedule (early exit — no cabinet needed) ----------------------
+      # Single source of truth for all schedule day-validity logic.
+      # Every consumer calls this. Zero inline schedule logic elsewhere.
+      - if: "{{ _mode == 'schedule' }}"
+        then:
+          - variables:
+              _sc_win_start: "{{ window_start | default(1770) | int(1770) }}"
+              _sc_win_end:   "{{ window_end   | default(2400) | int(2400) }}"
+              _sc_schedules: "{{ label_entities('autovac_schedule') | list }}"
+              _sc_today_abbr: "{{ ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] }}"
+              _sc_is_weekend: "{{ now().weekday() >= 5 }}"
+          - variables:
+              _sc_l_today:   "{{ label_entities('autovac_' ~ _sc_today_abbr) | list }}"
+              _sc_l_weekday: "{{ label_entities('autovac_weekday') | list }}"
+              _sc_l_weekend: "{{ label_entities('autovac_weekend') | list }}"
+              _sc_l_any_day: >-
+                {%- set ns = namespace(all=[]) -%}
+                {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
+                  {%- set ns.all = ns.all + label_entities('autovac_' ~ _d) | list -%}
+                {%- endfor -%}
+                {{ (ns.all + _sc_l_weekday + _sc_l_weekend) | unique | list }}
+          - variables:
+              _sc_valid_today: >-
+                {%- set ns = namespace(v=[]) -%}
+                {%- for s in _sc_schedules -%}
+                  {%- set np = namespace(p=99) -%}
+                  {%- if s in _sc_l_today -%}{%- set np.p = 1 -%}
+                  {%- elif not (s in _sc_l_any_day) -%}{%- set np.p = 3 -%}
+                  {%- elif (s in _sc_l_weekday and not _sc_is_weekend) or (s in _sc_l_weekend and _sc_is_weekend) -%}{%- set np.p = 2 -%}
+                  {%- endif -%}
+                  {%- if np.p < 99 -%}
+                    {%- set ns.v = ns.v + [{'entity': s, 'priority': np.p}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.v | sort(attribute='priority') }}
+              _sc_active: >-
+                {%- set ns = namespace(entity='', label='') -%}
+                {%- set valid_eids = [] -%}
+                {%- for s in _sc_schedules -%}
+                  {%- set np = namespace(p=99) -%}
+                  {%- if s in _sc_l_today -%}{%- set np.p = 1 -%}
+                  {%- elif not (s in _sc_l_any_day) -%}{%- set np.p = 3 -%}
+                  {%- elif (s in _sc_l_weekday and not _sc_is_weekend) or (s in _sc_l_weekend and _sc_is_weekend) -%}{%- set np.p = 2 -%}
+                  {%- endif -%}
+                  {%- if np.p < 99 and states(s) == 'on' -%}
+                    {%- set ne = state_attr(s, 'next_event') -%}
+                    {%- if ne is not none -%}
+                      {%- set h = as_datetime(ne).hour | int -%}
+                      {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' window open until ' ~ as_datetime(ne).strftime('%I:%M %p') -%}
+                    {%- else -%}
+                      {%- set ns.label = 'active' -%}
+                    {%- endif -%}
+                    {%- set ns.entity = s -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'entity': ns.entity, 'label': ns.label} if ns.entity != '' else none }}
+          - variables:
+              _sc_next: >-
+                {%- set ns = namespace(entity='', secs=999999, label='', priority=99) -%}
+                {%- for item in _sc_valid_today -%}
+                  {%- set s = item.entity -%}
+                  {%- set p = item.priority -%}
+                  {%- if states(s) == 'off' -%}
+                    {%- set ne = state_attr(s, 'next_event') -%}
+                    {%- if ne is not none -%}
+                      {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
+                      {%- if delta > 0 and (p < ns.priority or (p == ns.priority and delta < ns.secs)) -%}
+                        {%- set ns.secs = delta -%}
+                        {%- set ns.priority = p -%}
+                        {%- set h = as_datetime(ne).hour | int -%}
+                        {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' at ' ~ as_datetime(ne).strftime('%I:%M %p') -%}
+                        {%- set ns.entity = s -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'entity': ns.entity, 'priority': ns.priority, 'in_seconds': (ns.secs if ns.secs < 999999 else -1), 'label': ns.label} if ns.entity != '' else none }}
+              _sc_in_window: >-
+                {%- set ns = namespace(entity='', priority=99) -%}
+                {%- for item in _sc_valid_today -%}
+                  {%- set s = item.entity -%}
+                  {%- set p = item.priority -%}
+                  {%- if states(s) == 'off' -%}
+                    {%- set ne = state_attr(s, 'next_event') -%}
+                    {%- if ne is not none and as_datetime(ne).date() == now().date() -%}
+                      {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
+                      {%- if delta > 0 and delta >= _sc_win_start and delta <= _sc_win_end and p < ns.priority -%}
+                        {%- set ns.entity = s -%}
+                        {%- set ns.priority = p -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'entity': ns.entity, 'priority': ns.priority} if ns.entity != '' else none }}
+              _sc_7day: >-
+                {%- set day_abbrs = ['mon','tue','wed','thu','fri','sat','sun'] -%}
+                {%- set ns = namespace(days=[]) -%}
+                {%- for offset in range(7) -%}
+                  {%- set target_dt = now() + timedelta(days=offset) -%}
+                  {%- set target_dow = (now().weekday() + offset) % 7 -%}
+                  {%- set target_abbr = day_abbrs[target_dow] -%}
+                  {%- set target_is_weekend = target_dow >= 5 -%}
+                  {%- set l_day = label_entities('autovac_' ~ target_abbr) | list -%}
+                  {%- set l_any = (l_day + _sc_l_weekday + _sc_l_weekend) | unique | list -%}
+                  {%- set nw = namespace(scheds=[]) -%}
+                  {%- for s in _sc_schedules -%}
+                    {%- set np = namespace(p=99) -%}
+                    {%- if s in l_day -%}{%- set np.p = 1 -%}
+                    {%- elif not (s in l_any) -%}
+                      {%- if ('weekday' in s and not target_is_weekend) or ('weekend' in s and target_is_weekend) or ('weekday' not in s and 'weekend' not in s) -%}{%- set np.p = 3 -%}{%- endif -%}
+                    {%- elif (s in _sc_l_weekday and not target_is_weekend) or (s in _sc_l_weekend and target_is_weekend) -%}{%- set np.p = 2 -%}
+                    {%- endif -%}
+                    {%- if np.p < 99 -%}
+                      {%- set ne = state_attr(s, 'next_event') -%}
+                      {%- if ne is not none -%}
+                        {%- set confirmed = as_datetime(ne).date() == target_dt.date() -%}
+                        {%- set nw.scheds = nw.scheds + [{'entity': s, 'fire_at': as_datetime(ne).strftime('%I:%M %p'), 'confirmed': confirmed}] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set ns.days = ns.days + [{'date': target_dt.strftime('%Y-%m-%d'), 'day': target_abbr, 'schedules': nw.scheds, 'has_run': none}] -%}
+                {%- endfor -%}
+                {{ ns.days }}
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'schedule',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'valid_today': _sc_valid_today,
+                  'next': _sc_next,
+                  'in_window': _sc_in_window,
+                  'active': _sc_active,
+                  'schedule_7day': _sc_7day,
+                  'window_start': _sc_win_start,
+                  'window_end': _sc_win_end
+                } }}
+          - stop: "autovac schedule"
+            response_variable: response
+
+      # -- mode=schedule_blocks — raw schedule.get_schedule response ----------
+      # Calls schedule.get_schedule targeting label:autovac_schedule.
+      # Returns the raw block/event structure so we can see all fields
+      # (area, notes, custom data) available for room-scoped scheduling.
+      - if: "{{ _mode == 'schedule_blocks' }}"
+        then:
+          - action: schedule.get_schedule
+            continue_on_error: true
+            response_variable: _sb_raw
+            data: {}
+            target:
+              label_id: autovac_schedule
+          - variables:
+              _sb_parsed: >-
+                {%- set r = _sb_raw | string -%}
+                {{ r | regex_replace("'data': \\{\\},?\\s*", "") }}
+              # Enrich each schedule entity with labels, state, area, and attributes
+              _sb_entity_meta: >-
+                {%- set ns = namespace(items={}) -%}
+                {%- for e in label_entities('autovac_schedule') -%}
+                  {%- set lbl_ids = labels(e) | list -%}
+                  {%- set lbl_descs = namespace(d={}) -%}
+                  {%- for l in lbl_ids -%}
+                    {%- set lbl_descs.d = lbl_descs.d | combine({l: label_description(l) | default('')}) -%}
+                  {%- endfor -%}
+                  {%- set _lyr = 'room_sched' if e in label_entities('autovac_room_schedule')
+                      else 'blackout' if e in label_entities('autovac_blackout')
+                      else 'global' -%}
+                  {%- set meta = {
+                    'state': states(e),
+                    'friendly_name': state_attr(e, 'friendly_name') | default(''),
+                    'icon': state_attr(e, 'icon') | default(''),
+                    'next_event': state_attr(e, 'next_event') | string if state_attr(e, 'next_event') is not none else none,
+                    'area': area_name(e) | default(none),
+                    'labels': lbl_ids,
+                    'label_descriptions': lbl_descs.d,
+                    'layer': _lyr
+                  } -%}
+                  {%- set ns.items = ns.items | combine({e: meta}) -%}
+                {%- endfor -%}
+                {{ ns.items }}
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'schedule_blocks',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'hint': 'blocks: raw schedule.get_schedule per entity. entity_meta: labels, state, area, next_event per entity.',
+                  'blocks': _sb_parsed,
+                  'entity_meta': _sb_entity_meta
+                } }}
+          - stop: "autovac schedule_blocks"
             response_variable: response
 
       # -- 0.6 Cabinet — read autovac config drawer ----------------------------
@@ -303,6 +647,35 @@ script:
             {%- set val = _fc_av.get('value', {}) -%}
             {%- set cfg = (val | from_json) if val is string else val -%}
             {{ cfg.get('system', {}) }}
+      - variables:
+          _room_sched_map: >-
+            {%- set ns = namespace(m={}) -%}
+            {%- for ent in label_entities('autovac_room_schedule') | select('match', 'schedule\\.') | list -%}
+              {%- set aid = area_id(ent) -%}
+              {%- for rn, rv in _av_rooms.items() -%}
+                {%- if rv.get('area_id', '') == aid and aid not in ['', none] -%}
+                  {%- set ns.m = ns.m | combine({rn: ent}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.m }}
+          _blackout_rooms: >-
+            {%- set ns = namespace(rooms=[]) -%}
+            {%- for ent in label_entities('autovac_blackout') | select('match', 'schedule\\.') | list -%}
+              {%- if states(ent) == 'on' -%}
+                {%- set aid = area_id(ent) -%}
+                {%- if aid in ['', none] -%}
+                  {%- set ns.rooms = ['*'] -%}
+                {%- else -%}
+                  {%- for rn, rv in _av_rooms.items() -%}
+                    {%- if rv.get('area_id', '') == aid -%}
+                      {%- set ns.rooms = ns.rooms + [rn] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.rooms | unique | list }}
 
       # -- setup (after cabinet read so drawer status can be reported) ---------
       - if: "{{ _mode == 'setup' }}"
@@ -451,69 +824,12 @@ script:
               - variables:
                   _drawer_initialized: true
 
-          # -- setup: KFC dojo deploy (idempotent via Scribe) ----------------------
+          # -- setup: KFC dojo deploy — handled by bootstrap_kfc (mode=kfc_manifest) --
+          # Removed: single hardcoded Scribe stamp replaced by three-component
+          # kfc_manifest (autovac_status, autovac_run, autovac_briefing).
+          # Run zen_dojotools_manifest mode=bootstrap_kfc to register all drawers.
           - variables:
               _kfc_deployed: false
-          - if: "{{ _cabinet_ok and not _dry_run }}"
-            then:
-              - alias: 'Autovac KFC — new_thought'
-                action: script.zen_dojotools_scribe
-                data:
-                  mode: new_thought
-                  key: autovac
-                  friendly_name: Autovac
-                  label: autovac
-                  version_semantic: "5.2.0"
-                  seed: >-
-                    {"tool": "zen_dojotools_autovac", "params": {"mode": "status"}}
-                  component_summary: >-
-                    Autonomous vacuum surface — room election, schedule-aware runs,
-                    consumables ERP. Consult for cleaning schedule, robot state, and part stock.
-                  component_instructions: >-
-                    You are reading the vacuum system state for this household.
-
-                    SEED OUTPUT (zen_dojotools_autovac, mode=status — when whitelisted):
-                      Full cabinet snapshot: system config (enabled, pause_today, min_battery,
-                      water_low_action), elected rooms with days_since/days_between, schedule
-                      entities with has_run_today and next_event, last_run, run_readiness,
-                      consumables stock. Use this as ground truth for all vacuum questions.
-
-                    INDEX-ONLY PATH (label:autovac entity surface — automatic fallback):
-                      Vacuum entity: state (cleaning/docked/idle/error/returning), battery_level,
-                      fan_speed. Schedule entities: state (on/off), next fire time.
-                      Last-clean sensors: duration, area, start time.
-                      Current-room sensor if live. Interpret from entity state alone — no cabinet.
-
-                    REPORTING:
-                      Active run: name state, elapsed time, current room if available.
-                      Docked + battery < 50%: note charging, include battery %.
-                      Error state: surface error detail and last clean time.
-                      Elected rooms: list names with days_since/days_between. Note if due today.
-                      Consumables: surface only worn (wear < threshold) or out-of-stock parts.
-                      DnD or pause active: mention if a run was gated by it.
-
-                    NOMINAL: "Vacuum docked. [N] rooms elected. Last cleaned [room] [X] days ago."
-                    ALERT: "Vacuum [error|worn part|low water]: [specific issue]."
-                  trigger_subscriptions: "daily_midnight,ha_start"
-                  drift_threshold: 30
-                  emission_cooldown_minutes: 120
-                  caller_id: zen_dojotools_autovac
-              - alias: 'Autovac KFC — formalize_scroll'
-                action: script.zen_dojotools_scribe
-                data:
-                  mode: formalize_scroll
-                  key: autovac
-                  caller_id: zen_dojotools_autovac
-              - alias: 'Autovac KFC — publish_kfc'
-                action: script.zen_dojotools_scribe
-                data:
-                  mode: publish_kfc
-                  key: autovac
-                  publish_confirm: true
-                  caller_id: zen_dojotools_autovac
-                response_variable: _kfc_result
-              - variables:
-                  _kfc_deployed: true
 
           # -- setup: optional Grocy ERP provision (explicit flag only) -----------
           - variables:
@@ -538,7 +854,7 @@ script:
                   'ninja_integration': {
                     'seed_path': 'zen_admintools_prompt_loader mode=whitelist whitelist_type=seed action_type=add item=zen_dojotools_autovac — whitelist for full cabinet snapshot on each ninja run',
                     'index_path': 'label:autovac entity surface — automatic fallback when seed not whitelisted (no extra setup needed)',
-                    'kfc_key': 'autovac'
+                    'kfc_keys': 'autovac_status, autovac_run, autovac_briefing — registered via zen_dojotools_manifest mode=bootstrap_kfc'
                   },
                   'inventory_provision': _prov_result
                 }) | combine(
@@ -606,103 +922,30 @@ script:
             {{ ns.rooms }}
 
       # -- 4 Next schedule + active window + 7-day projection ----------------
+      - action: script.zen_dojotools_autovac
+        data:
+          mode: schedule
+        response_variable: _sched_resp
       - variables:
-          _next_schedule: >-
-            {%- set schedules = label_entities('autovac_schedule') | list -%}
-            {%- set today_abbr = ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] -%}
-            {%- set is_weekend = now().weekday() >= 5 -%}
-            {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
-            {%- set l_weekday = label_entities('autovac_weekday') | list -%}
-            {%- set l_weekend = label_entities('autovac_weekend') | list -%}
-            {%- set _ns_ld = namespace(all=[]) -%}
-            {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
-              {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
-            {%- endfor -%}
-            {%- set l_any_day = (_ns_ld.all + l_weekday + l_weekend) | unique | list -%}
-            {%- set ns = namespace(entity='', secs=999999, label='', priority=99) -%}
-            {%- for s in schedules -%}
-              {%- set np = namespace(p=99) -%}
-              {%- if s in l_today -%}{%- set np.p = 1 -%}
-              {%- elif not (s in l_any_day) -%}{%- set np.p = 3 -%}
-              {%- elif (s in l_weekday and not is_weekend) or (s in l_weekend and is_weekend) -%}{%- set np.p = 2 -%}
-              {%- endif -%}
-              {%- if np.p < 99 and states(s) == 'off' -%}
-                {%- set ne = state_attr(s, 'next_event') -%}
-                {%- if ne is not none -%}
-                  {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
-                  {%- if delta > 0 and (np.p < ns.priority or (np.p == ns.priority and delta < ns.secs)) -%}
-                    {%- set ns.secs = delta -%}
-                    {%- set ns.priority = np.p -%}
-                    {%- set h = as_datetime(ne).hour | int -%}
-                    {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' at ' ~ as_datetime(ne).strftime('%I:%M %p') -%}
-                    {%- set ns.entity = s -%}
-                  {%- endif -%}
-                {%- endif -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ {'entity': ns.entity, 'priority': ns.priority, 'in_seconds': (ns.secs if ns.secs < 999999 else -1), 'label': ns.label} }}
+          _next_schedule:      "{{ _sched_resp.get('next', none) }}"
+          _schedule_active:    "{{ _sched_resp.get('active', none) }}"
+          _schedule_7day_raw:  "{{ _sched_resp.get('schedule_7day', []) }}"
+      - variables:
           _schedule_7day: >-
-            {%- set schedules = label_entities('autovac_schedule') | list -%}
-            {%- set day_abbrs = ['mon','tue','wed','thu','fri','sat','sun'] -%}
-            {%- set l_weekday = label_entities('autovac_weekday') | list -%}
-            {%- set l_weekend = label_entities('autovac_weekend') | list -%}
             {%- set ns = namespace(days=[]) -%}
-            {%- for offset in range(7) -%}
-              {%- set target_dt = now() + timedelta(days=offset) -%}
-              {%- set target_dow = (now().weekday() + offset) % 7 -%}
-              {%- set target_abbr = day_abbrs[target_dow] -%}
-              {%- set target_is_weekend = target_dow >= 5 -%}
-              {%- set l_day   = label_entities('autovac_' ~ target_abbr) | list -%}
-              {%- set l_any   = (l_day + l_weekday + l_weekend) | unique | list -%}
-              {%- set nw = namespace(scheds=[]) -%}
-              {%- for s in schedules -%}
-                {%- set ne = state_attr(s, 'next_event') -%}
-                {%- if ne is not none -%}
-                  {%- set fires_on_day = as_datetime(ne).date() == target_dt.date() -%}
-                  {%- if fires_on_day -%}
-                    {%- set nw.scheds = nw.scheds + [{'entity': s, 'fire_at': as_datetime(ne).strftime('%I:%M %p'), 'confirmed': true}] -%}
-                  {%- else -%}
-                    {%- set np = namespace(p=99) -%}
-                    {%- if s in l_day -%}{%- set np.p = 1 -%}
-                    {%- elif (s in l_weekday and not target_is_weekend) or (s in l_weekend and target_is_weekend) -%}{%- set np.p = 2 -%}
-                    {%- elif not (s in l_any) -%}
-                      {%- if ('weekday' in s and not target_is_weekend) or ('weekend' in s and target_is_weekend) or ('weekday' not in s and 'weekend' not in s) -%}{%- set np.p = 3 -%}
-                      {%- endif -%}
-                    {%- endif -%}
-                    {%- if np.p < 99 -%}
-                      {%- set nw.scheds = nw.scheds + [{'entity': s, 'fire_at': as_datetime(ne).strftime('%I:%M %p'), 'confirmed': false}] -%}
-                    {%- endif -%}
-                  {%- endif -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {%- set hr = namespace(any=false) -%}
-              {%- for sched in nw.scheds -%}
-                {%- set has_run_key = (sched.entity | replace('.','_') | replace('-','_') ~ '_has_run') -%}
-                {%- if offset == 0 and _av_system.get(has_run_key, false) -%}{%- set hr.any = true -%}{%- endif -%}
-              {%- endfor -%}
-              {%- set ns.days = ns.days + [{
-                'date': target_dt.strftime('%Y-%m-%d'),
-                'day': target_abbr,
-                'schedules': nw.scheds,
-                'has_run': hr.any if offset == 0 else none
-              }] -%}
+            {%- for day in _schedule_7day_raw -%}
+              {%- if loop.index0 == 0 -%}
+                {%- set hr = namespace(any=false) -%}
+                {%- for sched in day.get('schedules', []) -%}
+                  {%- set hrk = (sched.entity | replace('.','_') | replace('-','_') ~ '_has_run') -%}
+                  {%- if _av_system.get(hrk, false) -%}{%- set hr.any = true -%}{%- endif -%}
+                {%- endfor -%}
+                {%- set ns.days = ns.days + [day | combine({'has_run': hr.any})] -%}
+              {%- else -%}
+                {%- set ns.days = ns.days + [day | combine({'has_run': none})] -%}
+              {%- endif -%}
             {%- endfor -%}
             {{ ns.days }}
-          _schedule_active: >-
-            {%- set ns = namespace(entity='', label='') -%}
-            {%- for s in label_entities('autovac_schedule') -%}
-              {%- if states(s) == 'on' -%}
-                {%- set ne = state_attr(s, 'next_event') -%}
-                {%- if ne is not none -%}
-                  {%- set h = as_datetime(ne).hour | int -%}
-                  {%- set ns.label = ('morning' if h < 12 else 'evening') ~ ' window open until ' ~ as_datetime(ne).strftime('%I:%M %p') -%}
-                {%- else -%}
-                  {%- set ns.label = 'active' -%}
-                {%- endif -%}
-                {%- set ns.entity = s -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ {'entity': ns.entity, 'label': ns.label} if ns.entity != '' else none }}
 
       # -- 5 Room lookup -------------------------------------------------------
       - variables:
@@ -2226,6 +2469,48 @@ script:
                         'note': 'vacuum not ready — state: ' ~ _vacuum_state} }}
               - stop: "autovac run — vacuum not ready"
                 response_variable: response
+          - alias: Apply schedule block_data overrides (skip/whitelist) to elected list
+            variables:
+              _run_block_data: >-
+                {{ (_av_system.get('schedule_block_data') or {}) if _av_system is mapping else {} }}
+              _run_skip: >-
+                {{ (_run_block_data if _run_block_data is mapping else {}).get('skip_rooms', '') | regex_findall('[^,]+') | map('trim') | list }}
+              _run_wl: >-
+                {{ (_run_block_data if _run_block_data is mapping else {}).get('rooms', '') | regex_findall('[^,]+') | map('trim') | list }}
+              _run_is_room_sched: >-
+                {{ _schedule_entity_id in label_entities('autovac_room_schedule') }}
+              _run_room_scope: >-
+                {%- if _schedule_entity_id in label_entities('autovac_room_schedule') -%}
+                  {%- set aid = area_id(_schedule_entity_id) -%}
+                  {%- set ns = namespace(rooms=[]) -%}
+                  {%- for rn, rv in _av_rooms.items() -%}
+                    {%- if rv.get('area_id', '') == aid -%}{%- set ns.rooms = ns.rooms + [rn] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.rooms }}
+                {%- else -%}{{ [] }}{%- endif -%}
+          - variables:
+              _elected: >-
+                {%- set ns = namespace(e=[]) -%}
+                {%- set _skip = _run_skip | default([]) -%}
+                {%- set _wl   = _run_wl   | default([]) -%}
+                {%- set _rsm  = _room_sched_map if _room_sched_map is mapping else {} -%}
+                {%- for r in _elected -%}
+                  {%- set rn = r.get('room', '') -%}
+                  {%- if _run_is_room_sched -%}
+                    {%- set _bo_all = '*' in (_blackout_rooms | default([])) -%}
+                    {%- set _bd_pass = rn in _run_room_scope and not _bo_all and rn not in (_blackout_rooms | default([])) -%}
+                  {%- else -%}
+                    {%- set _rse = _rsm.get(rn, '') -%}
+                    {%- set _layer2_pass = (_rse == '') or (states(_rse) == 'on') -%}
+                    {%- set _bo_all = '*' in (_blackout_rooms | default([])) -%}
+                    {%- set _layer3_pass = not _bo_all and rn not in (_blackout_rooms | default([])) -%}
+                    {%- set _bd_pass = (rn not in _skip) and (_wl | length == 0 or rn in _wl) and _layer2_pass and _layer3_pass -%}
+                  {%- endif -%}
+                  {%- if _bd_pass -%}
+                    {%- set ns.e = ns.e + [r] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.e }}
           - variables:
               _elected_valid: >-
                 {%- set ns = namespace(valid=[]) -%}
@@ -2276,9 +2561,11 @@ script:
                 {%- endfor -%}
                 {{ {'rooms': ns.r, 'system': _av_system | combine({
                       _has_run_key: true,
+                      'schedule_block_data': {},
                       'current_run': {
                         'started_at': now().isoformat(),
                         'schedule_entity_id': _schedule_entity_id,
+                        'block_data': _run_block_data | default({}),
                         'rooms': _elected_valid | map(attribute='room') | list,
                         'segments': _elected_segments,
                         'areas': _elected_areas
@@ -2457,39 +2744,14 @@ script:
               - stop: "autovac briefing skipped — vacuum active"
                 response_variable: response
           - alias: Find cascade-winning schedule firing in ~30 min
-            variables:
-              _schedule_entity: >-
-                {%- set schedules = label_entities('autovac_schedule') | list -%}
-                {%- set today_abbr = ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] -%}
-                {%- set is_weekend = now().weekday() >= 5 -%}
-                {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
-                {%- set l_weekday = label_entities('autovac_weekday') | list -%}
-                {%- set l_weekend = label_entities('autovac_weekend') | list -%}
-                {%- set _ns_ld = namespace(all=[]) -%}
-                {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
-                  {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
-                {%- endfor -%}
-                {%- set l_any_day = (_ns_ld.all + l_weekday + l_weekend) | unique | list -%}
-                {%- set ns = namespace(found='', best_p=99) -%}
-                {%- for s in schedules -%}
-                  {%- set np = namespace(p=99) -%}
-                  {%- if s in l_today -%}{%- set np.p = 1 -%}
-                  {%- elif not (s in l_any_day) -%}{%- set np.p = 3 -%}
-                  {%- elif (s in l_weekday and not is_weekend) or (s in l_weekend and is_weekend) -%}{%- set np.p = 2 -%}
-                  {%- endif -%}
-                  {%- if np.p < ns.best_p -%}
-                    {%- set ne = state_attr(s, 'next_event') -%}
-                    {%- if ne is not none and states(s) == 'off'
-                        and as_datetime(ne).date() == now().date() -%}
-                      {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
-                      {%- if delta > 0 and delta >= 1770 and delta <= 2400 -%}
-                        {%- set ns.found = s -%}
-                        {%- set ns.best_p = np.p -%}
-                      {%- endif -%}
-                    {%- endif -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {{ ns.found }}
+            action: script.zen_dojotools_autovac
+            data:
+              mode: schedule
+              window_start: 1770
+              window_end: 2400
+            response_variable: _briefing_sched_resp
+          - variables:
+              _schedule_entity: "{{ (_briefing_sched_resp.get('in_window') or {}).get('entity', '') }}"
           - if: "{{ _schedule_entity == '' }}"
             then:
               - variables:
@@ -2556,6 +2818,29 @@ script:
                         'reason': 'calendar_hold', 'hold_event': _cal_hold.get('event', '')} }}
               - stop: "autovac briefing blocked by calendar hold"
                 response_variable: response
+          - alias: Extract per-block data from winning schedule entity
+            action: schedule.get_schedule
+            continue_on_error: true
+            response_variable: _briefing_bd_raw
+            data: {}
+            target:
+              entity_id: "{{ _schedule_entity }}"
+          - variables:
+              _briefing_block_data: >-
+                {%- set raw = _briefing_bd_raw | string -%}
+                {%- set dow = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'][now().weekday()] -%}
+                {%- set day_section = raw | regex_findall("'" ~ dow ~ "':\\s*\\[([^\\[\\]]+)\\]") | first | default('') -%}
+                {%- if 'data' in day_section -%}
+                  {%- set data_str = day_section | regex_findall("'data':\\s*(\\{[^}]+\\})") | first | default('') -%}
+                  {%- if data_str -%}
+                    {{ data_str | replace("'", '"') | from_json(none) | default({}) }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                {%- else -%}{{ {} }}{%- endif -%}
+          - variables:
+              _briefing_skip:  "{{ (_briefing_block_data if _briefing_block_data is mapping else {}).get('skip_rooms', '') | regex_findall('[^,]+') | map('trim') | list }}"
+              _briefing_wl:    "{{ (_briefing_block_data if _briefing_block_data is mapping else {}).get('rooms', '') | regex_findall('[^,]+') | map('trim') | list }}"
+              _briefing_bmode: "{{ (_briefing_block_data if _briefing_block_data is mapping else {}).get('mode', '') | trim }}"
+
           - alias: Build run label from next_event
             variables:
               _run_label: >-
@@ -2599,8 +2884,16 @@ script:
             variables:
               _message: >-
                 {%- set ns = namespace(will_run=[], blocked=[], parts=[]) -%}
+                {%- set _skip = _briefing_skip | default([]) -%}
+                {%- set _wl   = _briefing_wl   | default([]) -%}
                 {%- for rn, rv in _av_rooms.items() -%}
-                  {%- if rv.get('enabled', false) and not rv.get('skip_next', false) -%}
+                  {%- set _rsm = _room_sched_map if _room_sched_map is mapping else {} -%}
+                  {%- set _rse = _rsm.get(rn, '') -%}
+                  {%- set _layer2_pass = (_rse == '') or (states(_rse) == 'on') -%}
+                  {%- set _bo_all = '*' in (_blackout_rooms | default([])) -%}
+                  {%- set _layer3_pass = not _bo_all and rn not in (_blackout_rooms | default([])) -%}
+                  {%- set _bd_pass = (rn not in _skip) and (_wl | length == 0 or rn in _wl) and _layer2_pass and _layer3_pass -%}
+                  {%- if rv.get('enabled', false) and not rv.get('skip_next', false) and _bd_pass -%}
                     {%- set last = rv.get('last_cleaned', '') -%}
                     {%- set ds = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
                     {%- set due = ds >= rv.get('days_between', 7) -%}
@@ -2637,12 +2930,28 @@ script:
                 {%- if _cal_soft | default([]) | length > 0 -%}
                   {%- set ns.parts = ns.parts + ["Note: " ~ (_cal_soft | join(', ')) ~ " during run window."] -%}
                 {%- endif -%}
+                {%- if _briefing_skip | default([]) | length > 0 -%}
+                  {%- set ns.parts = ns.parts + ["Schedule override: skipping " ~ (_briefing_skip | join(', ')) ~ " this run."] -%}
+                {%- endif -%}
+                {%- if _briefing_wl | default([]) | length > 0 -%}
+                  {%- set ns.parts = ns.parts + ["Schedule override: only running " ~ (_briefing_wl | join(', ')) ~ " this run."] -%}
+                {%- endif -%}
+                {%- if '*' in (_blackout_rooms | default([])) -%}
+                  {%- set ns.parts = ns.parts + ["Active blackout — full house excluded this run."] -%}
+                {%- elif (_blackout_rooms | default([])) | length > 0 -%}
+                  {%- set ns.parts = ns.parts + ["Active blackout for: " ~ (_blackout_rooms | join(', ')) ~ "."] -%}
+                {%- endif -%}
+                {%- set _rsm = _room_sched_map if _room_sched_map is mapping else {} -%}
+                {%- set _own_excluded = _rsm.keys() | reject('in', ns.will_run) | list -%}
+                {%- if _own_excluded | length > 0 -%}
+                  {%- set ns.parts = ns.parts + [(_own_excluded | join(', ')) ~ " on personal schedule — skipped from global run."] -%}
+                {%- endif -%}
                 {{ ns.parts | join(' ') }}
               _urgency: >-
                 {{ 7 if ((_water_low_ent != '' and is_state(_water_low_ent, 'on'))
                     or (_vac_ent != '' and (state_attr(_vac_ent, 'battery_level') | int(100)) < 50))
                    else 4 }}
-          - alias: Auto-mark require_confirmation=false due rooms ready
+          - alias: Auto-mark ready + stamp block_data for run to consume
             action: script.zen_dojotools_filecabinet
             data:
               action_type: update
@@ -2650,6 +2959,7 @@ script:
               key: autovac
               value: >-
                 {%- set ns = namespace(r=_av_rooms) -%}
+                {%- set _sys_upd = _av_system | combine({'schedule_block_data': _briefing_block_data | default({})}) -%}
                 {%- for rn, rv in _av_rooms.items() -%}
                   {%- if rv.get('enabled', false) and not rv.get('requires_ready', rv.get('require_confirmation', false))
                          and not rv.get('skip_next', false) -%}
@@ -2660,7 +2970,7 @@ script:
                     {%- endif -%}
                   {%- endif -%}
                 {%- endfor -%}
-                {{ {'rooms': ns.r, 'system': _av_system} | tojson }}
+                {{ {'rooms': ns.r, 'system': _sys_upd} | tojson }}
           - alias: Dispatch via Postman
             action: script.zen_dojotools_postman
             data:
@@ -2877,29 +3187,308 @@ script:
           - stop: "autovac morning_reset complete"
             response_variable: response
 
+      # ---- kfc_manifest --------------------------------------------------------
+      # Multi-component KFC definition. bootstrap_kfc reads this and writes one
+      # live drawer per component into the dojo cabinet.
+      # No component → returns full list (bootstrap). component → single dict (FC live drawer).
+      #
+      # Inventory unavailability note:
+      #   grocy_catalog absent (mode=consumables action=provision not yet run) →
+      #   consumables (action=status/add_to_shopping/log_replaced/log_purchased) and
+      #   check_wear are unavailable. All other modes including status, run, briefing,
+      #   schedule, and room management remain fully functional.
+      - if: "{{ _mode == 'kfc_manifest' }}"
+        then:
+          - variables:
+              _kfc_defs:
+                - kata_key: autovac
+                  friendly_name: Autovac
+                  label: autovac
+                  component_summary: >-
+                    Autonomous vacuum surface — room election, schedule-aware runs,
+                    consumables ERP. Consult for cleaning schedule, robot state, and part stock.
+                  component_instructions: >-
+                    You are reading the vacuum system state for this household.
+
+                    SEED OUTPUT (zen_dojotools_autovac, mode=status — when whitelisted):
+                      Full cabinet snapshot: system config (enabled, pause_today, min_battery,
+                      water_low_action), elected rooms with days_since/days_between, schedule
+                      entities with has_run_today and next_event, last_run, run_readiness,
+                      consumables stock. Use this as ground truth for all vacuum questions.
+
+                    INDEX-ONLY PATH (label:autovac entity surface — automatic fallback):
+                      Vacuum entity: state (cleaning/docked/idle/error/returning), battery_level,
+                      fan_speed. Schedule entities: state (on/off), next fire time.
+                      Last-clean sensors: duration, area, start time.
+                      Current-room sensor if live. Interpret from entity state alone — no cabinet.
+
+                    REPORTING:
+                      Active run: name state, elapsed time, current room if available.
+                      Docked + battery < 50%: note charging, include battery %.
+                      Error state: surface error detail and last clean time.
+                      Elected rooms: list names with days_since/days_between. Note if due today.
+                      Consumables: surface only worn (wear < threshold) or out-of-stock parts.
+                      DnD or pause active: mention if a run was gated by it.
+
+                    NOMINAL: "Vacuum docked. [N] rooms elected. Last cleaned [room] [X] days ago."
+                    ALERT: "Vacuum [error|worn part|low water]: [specific issue]."
+                  tool: zen_dojotools_autovac
+                  seed:
+                    tool: zen_dojotools_autovac
+                    params:
+                      mode: status
+                  trigger_subscriptions: "daily_midnight,ha_start"
+                  drift_threshold: 30
+                  emission_cooldown_minutes: 120
+                  meta:
+                    enabled: true
+                    requires:
+                      cert: ''
+                      level: 0
+          - variables:
+              _component: "{{ component | default('') | lower | trim }}"
+          - variables:
+              result: >-
+                {%- if _component == '' -%}
+                  {{ {'mode': 'kfc_manifest', 'result': 'ok', 'status': 'ok', 'caller_token': _caller_token, 'kfc': _kfc_defs} }}
+                {%- else -%}
+                  {%- set match = _kfc_defs | selectattr('kata_key', 'equalto', _component) | list | first | default(none) -%}
+                  {%- if match is not none -%}
+                    {{ {'mode': 'kfc_manifest', 'result': 'ok', 'status': 'ok', 'caller_token': _caller_token, 'kfc': match} }}
+                  {%- else -%}
+                    {{ {'mode': 'kfc_manifest', 'result': 'not_found', 'status': 'not_found', 'caller_token': _caller_token,
+                        'error': 'component not found: ' ~ _component,
+                        'available': _kfc_defs | map(attribute='kata_key') | list} }}
+                  {%- endif -%}
+                {%- endif -%}
+          - stop: "autovac kfc manifest"
+            response_variable: result
+
+      # ---- lens: stacks_by_anchor -----------------------------------------------
+      # Lens Bus provider — area_id anchor → cleaning_evidence per matched room.
+      # Room slug must match the HA area_id exactly.
+      - if: "{{ _mode == 'stacks_by_anchor' }}"
+        then:
+          - variables:
+              _anchor_type:  "{{ anchor_type | default('') | lower | trim }}"
+              _anchor_ids:   "{{ anchor_ids if anchor_ids is sequence and anchor_ids is not string else (anchor_ids | from_json(none) if anchor_ids is string and anchor_ids | trim != '' else []) }}"
+          - if: "{{ _anchor_type != 'area_id' }}"
+            then:
+              - variables:
+                  result: >-
+                    {{ {'mode': 'stacks_by_anchor', 'result': 'ok', 'caller_token': _caller_token,
+                        'provider': 'autovac', 'evidence': [],
+                        'note': 'autovac only handles area_id anchors'} }}
+              - stop: "autovac lens stacks_by_anchor — unsupported anchor type"
+                response_variable: result
+          - variables:
+              _lens_evidence: >-
+                {%- set ns = namespace(ev=[]) -%}
+                {%- for aid in _anchor_ids -%}
+                  {%- set rv = _av_rooms.get(aid, none) -%}
+                  {%- if rv is not none -%}
+                    {%- set last = rv.get('last_cleaned', '') -%}
+                    {%- set days_since = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) if last != '' else -1 -%}
+                    {%- set db = rv.get('days_between', 7) -%}
+                    {%- set due = days_since >= db if days_since >= 0 else false -%}
+                    {%- set queued = rv.get('queued', false) -%}
+                    {%- set skip_next = rv.get('skip_next', false) -%}
+                    {%- set req_ready = rv.get('requires_ready', rv.get('require_confirmation', false)) -%}
+                    {%- set is_rdy = rv.get('is_ready', rv.get('ready_to_clean', false)) -%}
+                    {%- set elected = _elected | selectattr('room', 'equalto', aid) | list | length > 0 -%}
+                    {%- set wla = _av_system.get('water_low_action', 'warn') | lower -%}
+                    {%- set b0 = ['disabled'] if not rv.get('enabled', true) else [] -%}
+                    {%- set b1 = b0 + ['not_due'] if (not due and not queued) else b0 -%}
+                    {%- set b2 = b1 + ['skip_next'] if skip_next else b1 -%}
+                    {%- set b3 = b2 + ['not_ready'] if (req_ready and not is_rdy) else b2 -%}
+                    {%- set blockers = b3 + ['water_low'] if (rv.get('requires_mop', false) and _water_low and wla == 'stop') else b3 -%}
+                    {%- set ns.ev = ns.ev + [{
+                      'id': aid,
+                      'type': 'cleaning_evidence',
+                      'area_id': aid,
+                      'provider': 'autovac',
+                      'content_redacted': false,
+                      'enabled': rv.get('enabled', true),
+                      'last_cleaned': last,
+                      'days_since_cleaned': days_since,
+                      'days_between': db,
+                      'due': due,
+                      'queued': queued,
+                      'elected': elected,
+                      'blockers': blockers,
+                      'requires_mop': rv.get('requires_mop', false)
+                    }] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.ev }}
+          - variables:
+              result: >-
+                {{ {'mode': 'stacks_by_anchor', 'result': 'ok',
+                    'caller_token': _caller_token, 'provider': 'autovac',
+                    'evidence': _lens_evidence,
+                    'matched': _lens_evidence | count,
+                    'unmatched': (_anchor_ids | list | count) - (_lens_evidence | count)} }}
+          - stop: "autovac lens stacks_by_anchor"
+            response_variable: result
+
+      # ---- lens: register -------------------------------------------------------
+      - if: "{{ _mode == 'register' }}"
+        then:
+          - variables:
+              _reg_entry: >-
+                {{ {
+                  'autovac': {
+                    'provider': 'autovac',
+                    'tool': 'zen_dojotools_autovac',
+                    'configured_by': 'zen_dojotools_autovac',
+                    'department': 'dojotools',
+                    'consumes': ['area_id'],
+                    'returns': ['cleaning_evidence'],
+                    'failure_policy': 'soft',
+                    'content_policy': 'standard',
+                    'risk_class': 'read_only',
+                    'enabled': true,
+                    'status': 'available'
+                  }
+                } }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: lens_registry
+            response_variable: _reg_read_raw
+          - variables:
+              _reg_current: >-
+                {%- set raw = _reg_read_raw if _reg_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: write
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: lens_registry
+              value: "{{ (_reg_current | combine(_reg_entry)) | tojson }}"
+          - variables:
+              result: >-
+                {{ {'mode': 'register', 'result': 'ok', 'status': 'success', 'caller_token': _caller_token,
+                    'provider': 'autovac', 'registered': true} }}
+          - stop: "autovac lens register"
+            response_variable: result
+
+      # ---- lens: unregister -----------------------------------------------------
+      - if: "{{ _mode == 'unregister' }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: lens_registry
+            response_variable: _unreg_read_raw
+          - variables:
+              _unreg_current: >-
+                {%- set raw = _unreg_read_raw if _unreg_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+              _unreg_removed: "{{ 'autovac' in _unreg_current }}"
+          - variables:
+              _unreg_new: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- for k, v in _unreg_current.items() -%}
+                  {%- if k != 'autovac' -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.d }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: write
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: lens_registry
+              value: "{{ _unreg_new | tojson }}"
+          - variables:
+              result: >-
+                {{ {'mode': 'unregister', 'result': 'ok', 'caller_token': _caller_token,
+                    'provider': 'autovac', 'was_registered': _unreg_removed} }}
+          - stop: "autovac lens unregister"
+            response_variable: result
+
+      # ---- lens: health ---------------------------------------------------------
+      - if: "{{ _mode == 'health' }}"
+        then:
+          - variables:
+              _health_vac_ok: "{{ _vac_ent != '' and states(_vac_ent) not in ['unavailable', 'unknown'] }}"
+              _health_cab_ok: "{{ _hh_cabinet != '' }}"
+              _health_rooms_ok: "{{ _av_rooms | length > 0 }}"
+              _health_gc_ok: "{{ _av_system.get('grocy_catalog', {}) | length > 0 }}"
+          - variables:
+              result: >-
+                {{ {
+                  'mode': 'health', 'result': 'ok', 'caller_token': _caller_token,
+                  'provider': 'autovac',
+                  'status': 'available' if (_health_vac_ok and _health_cab_ok and _health_rooms_ok) else 'degraded',
+                  'checks': {
+                    'vacuum_entity': _health_vac_ok,
+                    'cabinet': _health_cab_ok,
+                    'rooms_configured': _health_rooms_ok,
+                    'inventory_provisioned': _health_gc_ok
+                  },
+                  'degraded_capabilities': (
+                    ['consumables', 'check_wear'] if not _health_gc_ok else []
+                  ) + (
+                    ['stacks_by_anchor'] if not _health_rooms_ok else []
+                  )
+                } }}
+          - stop: "autovac lens health"
+            response_variable: result
+
+      # ---- lens: inspect --------------------------------------------------------
+      - if: "{{ _mode == 'inspect' }}"
+        then:
+          - variables:
+              result: >-
+                {{ {
+                  'mode': 'inspect', 'result': 'ok', 'caller_token': _caller_token,
+                  'provider': 'autovac',
+                  'tool': 'zen_dojotools_autovac',
+                  'consumes': ['area_id'],
+                  'returns': ['cleaning_evidence'],
+                  'anchor_match': 'area_id must match room slug (key in autovac cabinet rooms dict)',
+                  'evidence_fields': ['id', 'type', 'area_id', 'last_cleaned', 'days_since_cleaned',
+                    'days_between', 'due', 'queued', 'elected', 'blockers', 'requires_mop'],
+                  'failure_policy': 'soft',
+                  'rooms_registered': _av_rooms | list,
+                  'inventory_provisioned': _av_system.get('grocy_catalog', {}) | length > 0
+                } }}
+          - stop: "autovac lens inspect"
+            response_variable: result
+
       # ---- tool_manifest -------------------------------------------------------
       - if: "{{ _mode == 'tool_manifest' }}"
         then:
         - variables:
             result: >-
               {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
-              {{- MF.tool_manifest(
+              {%- set _tm = MF.tool_manifest(
                 tool='zen_dojotools_autovac',
                 display_name='Autovac',
                 tier='dojotools',
-                version='5.2.0',
+                version='5.3.0',
                 health='sensor.zen_autovac_health',
                 required_labels=['autovac'],
                 optional_labels=['autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room'],
                 consumes=['household_cabinet:autovac'],
-                returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear results',
+                returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear|cleaning_evidence results',
                 failure_policy='return error shape',
-                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','analyze','briefing','handle_ack','nightly_reset','morning_reset','tool_manifest'],
+                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest'],
                 icon='mdi:robot-vacuum',
                 color='teal',
-
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
+                lens_provider=true,
                 caller_token='{{ _caller_token }}'
-              ) | from_json -}}
+              ) | from_json -%}
+              {{- _tm | combine({'provider_key': 'autovac', 'register_mode': 'register'}) -}}
         - stop: autovac tool manifest
           response_variable: result
 
@@ -3076,7 +3665,7 @@ script:
       - stop: "autovac {{ _mode }} complete"
         response_variable: response
 
-    mode: queued
+    mode: parallel
     max: 5
     icon: mdi:robot-vacuum
 
@@ -3098,52 +3687,22 @@ automation:
       personal KFC file.
     triggers:
 
-      - trigger: vacuum.docked
+      - trigger: vacuum.returned_to_dock
         target:
           label_id: autovac
         options:
-          behavior: any
+          behavior: each
+          for: "00:00:05"
         id: dock
-
-      - trigger: schedule.turned_on
-        target:
-          label_id: autovac_schedule
-        options:
-          behavior: any
-        id: schedule_on
 
       - trigger: template
         value_template: >-
-          {%- set schedules = label_entities('autovac_schedule') | list -%}
-          {%- set today_abbr = ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] -%}
-          {%- set is_weekend = now().weekday() >= 5 -%}
-          {%- set l_today   = label_entities('autovac_' ~ today_abbr) | list -%}
-          {%- set l_weekday = label_entities('autovac_weekday') | list -%}
-          {%- set l_weekend = label_entities('autovac_weekend') | list -%}
-          {%- set _ns_ld = namespace(all=[]) -%}
-          {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
-            {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
-          {%- endfor -%}
-          {%- set l_any_day = (_ns_ld.all + l_weekday + l_weekend) | unique | list -%}
-          {%- set ns = namespace(hit=false) -%}
-          {%- for s in schedules -%}
-            {%- set np = namespace(p=99) -%}
-            {%- if s in l_today -%}{%- set np.p = 1 -%}
-            {%- elif not (s in l_any_day) -%}{%- set np.p = 3 -%}
-            {%- elif (s in l_weekday and not is_weekend) or (s in l_weekend and is_weekend) -%}{%- set np.p = 2 -%}
-            {%- endif -%}
-            {%- if np.p < 99 -%}
-              {%- set ne = state_attr(s, 'next_event') -%}
-              {%- if ne is not none and states(s) == 'off'
-                  and as_datetime(ne).date() == now().date() -%}
-                {%- set delta = (as_datetime(ne) - now()).total_seconds() | int(-1) -%}
-                {%- if delta > 0 and delta >= 1770 and delta <= 1830 -%}
-                  {%- set ns.hit = true -%}
-                {%- endif -%}
-              {%- endif -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {{ ns.hit }}
+          {{ expand(label_entities('autovac_schedule'))
+             | selectattr('state', 'equalto', 'on') | list | count > 0 }}
+        id: schedule_on
+
+      - trigger: time_pattern
+        minutes: /30
         id: briefing_timer
 
       - trigger: event
@@ -3202,25 +3761,22 @@ automation:
                 id: schedule_on
             sequence:
               - variables:
-                  _s: "{{ trigger.entity_id }}"
-                  _today_abbr: "{{ ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] }}"
-                  _is_weekend: "{{ now().weekday() >= 5 }}"
-              - variables:
-                  _l_today:   "{{ label_entities('autovac_' ~ _today_abbr) | list }}"
-                  _l_weekday: "{{ label_entities('autovac_weekday') | list }}"
-                  _l_weekend: "{{ label_entities('autovac_weekend') | list }}"
-                  _l_any_day: >-
-                    {%- set _ns_ld = namespace(all=[]) -%}
-                    {%- for _d in ['mon','tue','wed','thu','fri','sat','sun'] -%}
-                      {%- set _ns_ld.all = _ns_ld.all + label_entities('autovac_' ~ _d) | list -%}
-                    {%- endfor -%}
-                    {{ (_ns_ld.all + _l_weekday + _l_weekend) | unique | list }}
+                  _s: >-
+                    {{ expand(label_entities('autovac_schedule'))
+                       | selectattr('state', 'equalto', 'on')
+                       | sort(attribute='last_changed', reverse=True)
+                       | map(attribute='entity_id') | list | first | default('') }}
+              - if: "{{ _s == '' }}"
+                then:
+                  - stop: "no autovac schedule currently on — race condition, skipping"
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: schedule
+                response_variable: _run_sched_resp
               - variables:
                   _sched_p: >-
-                    {%- if _s in _l_today -%}1
-                    {%- elif not (_s in _l_any_day) -%}3
-                    {%- elif (_s in _l_weekday and not _is_weekend) or (_s in _l_weekend and _is_weekend) -%}2
-                    {%- else -%}99{%- endif -%}
+                    {{ ((_run_sched_resp.get('valid_today', [])
+                         | selectattr('entity', 'equalto', _s) | list | first) or {}).get('priority', 99) }}
               - if: "{{ _sched_p | int >= 99 }}"
                 then:
                   - stop: "autovac schedule not valid for today"
@@ -3229,12 +3785,9 @@ automation:
                     {%- set ns = namespace(w=true) -%}
                     {%- for other in label_entities('autovac_schedule') | list -%}
                       {%- if other != _s and states(other) == 'on' -%}
-                        {%- set np = namespace(p=99) -%}
-                        {%- if other in _l_today -%}{%- set np.p = 1 -%}
-                        {%- elif not (other in _l_any_day) -%}{%- set np.p = 3 -%}
-                        {%- elif (other in _l_weekday and not _is_weekend) or (other in _l_weekend and _is_weekend) -%}{%- set np.p = 2 -%}
-                        {%- endif -%}
-                        {%- if np.p | int < _sched_p | int -%}{%- set ns.w = false -%}{%- endif -%}
+                        {%- set op = ((_run_sched_resp.get('valid_today', [])
+                                       | selectattr('entity', 'equalto', other) | list | first) or {}).get('priority', 99) -%}
+                        {%- if op | int < _sched_p | int -%}{%- set ns.w = false -%}{%- endif -%}
                       {%- endif -%}
                     {%- endfor -%}
                     {{ ns.w }}
@@ -3280,14 +3833,30 @@ automation:
 
           - conditions:
               - condition: trigger
-                id:
-                  - briefing_timer
-                  - briefing_manual
+                id: briefing_timer
+            sequence:
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: schedule
+                  window_start: 300
+                  window_end: 1800
+                response_variable: _precheck_resp
+              - if: "{{ (_precheck_resp.get('in_window') or {}).get('entity', '') != '' }}"
+                then:
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: autovac_prerun_briefing
+            alias: Pre-run window check — fire zen_event once if valid schedule upcoming
+
+          - conditions:
+              - condition: trigger
+                id: briefing_manual
             sequence:
               - action: script.zen_dojotools_autovac
                 data:
                   mode: briefing
-            alias: Pre-run briefing
+            alias: Pre-run briefing (zen_event or manual trigger)
 
           - conditions:
               - condition: trigger

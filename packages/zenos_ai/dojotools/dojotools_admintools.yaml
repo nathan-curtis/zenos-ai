@@ -1,6 +1,18 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.1.0
+# Version: 5.3.0
+#
+# v5.3.0 (Zen pull, 2026-07-04):
+#   - cabinetadmin: new mode=expand_drawer — atomic single-drawer migration to
+#     an expansion cabinet (space-threshold check, mount-pointer replacement,
+#     round-trip verify, auto-rollback on any failure).
+#   - cabinetadmin: repair_volumeinfo now also self-heals the missing-header
+#     case (init state, no VolumeInfo at all) via cabinetadmin_factory, not
+#     just the JSON-string-instead-of-mapping case.
+#   - prompt_loader: mode=whitelist add path now rejects bare '*' and
+#     empty-suffix 'tool:' entries (KF5 mode-scoped whitelist guard).
+#     fc-type whitelist field renamed allowed_action_types -> allowed_tools
+#     to match the tool:mode entry format.
 #
 # Scripts:
 #   zen_admintools_reset_template        — Kata + Dojo template press (v5.1.0)
@@ -606,6 +618,7 @@ script:
             - mount_status
             - repair_mount
             - repair_dismount
+            - expand_drawer
             - reset_all
             - flip_schema_version
             - repair_volumeinfo
@@ -670,6 +683,31 @@ script:
           number:
             min: 0
             max: 9
+            mode: box
+      source_cabinet:
+        name: Source Cabinet (expand_drawer only)
+        description: Entity ID of the cabinet that currently holds the drawer to migrate.
+        required: false
+        default: ''
+        selector:
+          entity:
+            filter:
+            - domain: sensor
+      source_drawer:
+        name: Source Drawer Path (expand_drawer only)
+        description: Key path of the drawer to migrate. Must be a leaf key (no Cabception children).
+        required: false
+        default: ''
+        selector:
+          text:
+      space_threshold:
+        name: Space Threshold % (expand_drawer only)
+        description: Abort if source cabinet stays at or above this % after migration. Default 85.
+        required: false
+        selector:
+          number:
+            min: 50
+            max: 99
             mode: box
       caller_token:
         name: Caller Token
@@ -815,8 +853,11 @@ script:
                 Fix a cabinet whose VolumeInfo is stored as a JSON string instead
                 of a mapping. Parses the string, adds the validation key, and
                 rewrites it as a proper dict. Run when inspect shows
-                volume.degraded=true or repair_hint is set. Safe to run on any
-                cabinet — skips silently if VolumeInfo is already a mapping.
+                volume.degraded=true or repair_hint is set. Also handles the
+                missing-header case: if the cabinet is in init state with no
+                VolumeInfo at all (e.g. residue data from a probe), stamps a
+                fresh header via factory — no rearm required. Safe targeted
+                repair; skips silently if VolumeInfo is already a valid mapping.
               flip_schema_version: >-
                 Toggle cab_schema_version in syscab (0=legacy, 1+=mount-aware).
                 Controls Flynn operating mode. Normally not needed — only use
@@ -922,8 +963,22 @@ script:
               - condition: template
                 value_template: "{{ not _vi_is_string }}"
               then:
-              - variables:
-                  _repair_note: "{{ 'skipped — VolumeInfo already a mapping' if _vi_raw.get('value') is mapping else 'skipped — no VolumeInfo found' }}"
+              - if:
+                - condition: template
+                  value_template: "{{ 'AI_Cabinet_VolumeInfo' not in vars and states(cab) == 'init' }}"
+                then:
+                # No VolumeInfo + init state → stamp a fresh header directly, no rearm needed
+                - action: script.zen_admintools_cabinetadmin_factory
+                  data:
+                    confirm_action: true
+                    cabinet_entity: "{{- cab -}}"
+                    cabinet_type: "{{- cab_type | default('') -}}"
+                  response_variable: _stamp_result
+                - variables:
+                    _repair_note: stamped — no VolumeInfo present, fresh header written
+                else:
+                - variables:
+                    _repair_note: "{{ 'skipped — VolumeInfo already a mapping' if (_vi_raw is mapping and _vi_raw.get('value') is mapping) else 'skipped — no VolumeInfo found (cab not in init state — use hammer to fully reset)' }}"
             - if:
               - condition: template
                 value_template: "{{ _vi_is_string }}"
@@ -1311,6 +1366,279 @@ script:
             wiped_count: "{{- canon_ring0_cabinets | length -}}"
             caller_token: "{{- caller_token -}}"
       - stop: reset_all complete
+        response_variable: result
+
+    # ── expand_drawer — atomic drawer migration to expansion cabinet ─────────
+    - if:
+      - condition: template
+        value_template: "{{- op == 'expand_drawer' -}}"
+      then:
+      # Step 0: Validate inputs
+      - variables:
+          _ed_src: "{{ source_cabinet | default('', true) | string | trim }}"
+          _ed_tgt: "{{ target_cabinet | default('', true) | string | trim }}"
+          _ed_key: "{{ source_drawer | default('', true) | string | trim }}"
+          _ed_thresh: "{{ space_threshold | default(85) | int(85) }}"
+          _ed_max: 131072
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_src == '' or _ed_tgt == '' or _ed_key == '' }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                op: expand_drawer
+                step_failed: validate
+                reason: source_cabinet, target_cabinet, and source_drawer are all required
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer validate failed
+            response_variable: result
+      # Step 1: Read source/target vars, validate drawer exists, no subtree
+      - variables:
+          _ed_src_vars: "{{ state_attr(_ed_src, 'variables') or {} }}"
+          _ed_tgt_vars: "{{ state_attr(_ed_tgt, 'variables') or {} }}"
+      - variables:
+          _ed_subtree_keys: >-
+            {%- set _prefix = _ed_key ~ '/' -%}
+            {%- set ns = namespace(keys=[]) -%}
+            {%- for k in (_ed_src_vars.keys() | list) -%}
+              {%- if k == _ed_key or k.startswith(_prefix) -%}
+                {%- set ns.keys = ns.keys + [k] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.keys }}
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_key not in _ed_src_vars }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                op: expand_drawer
+                step_failed: validate
+                reason: source_drawer key not found in source_cabinet
+                source_cabinet: "{{ _ed_src }}"
+                source_drawer: "{{ _ed_key }}"
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer key not found
+            response_variable: result
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_subtree_keys | length > 1 }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                op: expand_drawer
+                step_failed: validate
+                reason: >-
+                  subtree_not_supported — drawer has Cabception children.
+                  expand_drawer requires a leaf key only.
+                subtree_keys: "{{ _ed_subtree_keys }}"
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer subtree not supported
+            response_variable: result
+      # Step 2: Space check
+      - variables:
+          _ed_drawer_size: >-
+            {{ {_ed_key: _ed_src_vars.get(_ed_key, {})} | tojson | length }}
+          _ed_src_size: "{{ _ed_src_vars | tojson | length }}"
+          _ed_tgt_size: "{{ _ed_tgt_vars | tojson | length }}"
+      - variables:
+          _ed_tgt_post_size: "{{ _ed_tgt_size + _ed_drawer_size }}"
+          _ed_src_post_pct: "{{ ((_ed_src_size - _ed_drawer_size + 100) * 100 / _ed_max) | round(1) }}"
+          _ed_src_pre_pct: "{{ (_ed_src_size * 100 / _ed_max) | round(1) }}"
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_tgt_post_size > _ed_max }}"
+          sequence:
+          - variables:
+              result:
+                status: abort
+                op: expand_drawer
+                step_failed: space_check
+                reason: insufficient_target_space
+                target_cabinet: "{{ _ed_tgt }}"
+                target_current_size: "{{ _ed_tgt_size }}"
+                drawer_size: "{{ _ed_drawer_size }}"
+                target_max: "{{ _ed_max }}"
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer insufficient target space
+            response_variable: result
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ _ed_src_post_pct | float >= _ed_thresh }}"
+          sequence:
+          - variables:
+              result:
+                status: abort
+                op: expand_drawer
+                step_failed: space_check
+                reason: source_will_remain_above_threshold
+                source_cabinet: "{{ _ed_src }}"
+                space_before_pct: "{{ _ed_src_pre_pct }}"
+                space_after_pct: "{{ _ed_src_post_pct }}"
+                threshold: "{{ _ed_thresh }}"
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer threshold not met
+            response_variable: result
+      # Step 3: Copy drawer to target cabinet
+      - variables:
+          _ed_copy_value: "{{ _ed_src_vars.get(_ed_key, {}).get('value') }}"
+      - event: set_variable_legacy
+        event_data:
+          key: "{{- _ed_key -}}"
+          value: "{{ _ed_copy_value }}"
+          volume_entity: "{{- _ed_tgt -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {{ (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) is not none }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      - variables:
+          _ed_copy_ok: "{{ wait.completed }}"
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ not _ed_copy_ok }}"
+          sequence:
+          - variables:
+              result:
+                status: error
+                op: expand_drawer
+                step_failed: copy
+                reason: copy_to_target_not_confirmed
+                source_cabinet: "{{ _ed_src }}"
+                target_cabinet: "{{ _ed_tgt }}"
+                source_drawer: "{{ _ed_key }}"
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer copy failed
+            response_variable: result
+      # Step 4: Set mount pointer in source (overwrites original with pointer)
+      - event: set_variable_legacy
+        event_data:
+          key: "{{- _ed_key -}}"
+          value: '{"mount_point": true, "target_entity_id": "{{ _ed_tgt }}"}'
+          volume_entity: "{{- _ed_src -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {%- set _dr = (state_attr(_ed_src, 'variables') or {}).get(_ed_key) -%}
+          {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+          {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+          {{ _dv is mapping and _dv.get('mount_point', false) == true }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      - variables:
+          _ed_mount_set: "{{ wait.completed }}"
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ not _ed_mount_set }}"
+          sequence:
+          # Undo: restore original data to source, delete target copy
+          - event: set_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              value: "{{ _ed_copy_value }}"
+              volume_entity: "{{- _ed_src -}}"
+              set_timestamp: true
+          - event: remove_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              volume_entity: "{{- _ed_tgt -}}"
+          - variables:
+              result:
+                status: error
+                op: expand_drawer
+                step_failed: mount_set
+                reason: mount_pointer_not_confirmed_in_source
+                source_cabinet: "{{ _ed_src }}"
+                source_drawer: "{{ _ed_key }}"
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer mount set failed
+            response_variable: result
+      # Step 5: Round trip — write sentinel through mount via FileCabinet (validates Sprint 1)
+      - action: script.zen_dojotools_filecabinet
+        data:
+          mode: upsert
+          path: "{{ _ed_key }}"
+          value: '{"_ed_rt": true}'
+          volume_entity_id: "{{ _ed_src }}"
+        response_variable: _ed_rt_result
+      - variables:
+          _ed_rt_fc_ok: >-
+            {{ _ed_rt_result is mapping
+               and _ed_rt_result.get('status') == 'success'
+               and _ed_rt_result.get('write_verified') == true }}
+      - variables:
+          _ed_rt_target_ok: >-
+            {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
+            {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+            {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+            {{ _dv is mapping and _dv.get('_ed_rt') == true }}
+      # Step 6: Restore original data to target (undo sentinel)
+      - event: set_variable_legacy
+        event_data:
+          key: "{{- _ed_key -}}"
+          value: "{{ _ed_copy_value }}"
+          volume_entity: "{{- _ed_tgt -}}"
+          set_timestamp: true
+      - wait_template: >-
+          {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
+          {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+          {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+          {{ not (_dv is mapping and _dv.get('_ed_rt') == true) }}
+        timeout: "00:00:15"
+        continue_on_timeout: true
+      # Evaluate round trip result
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{ not _ed_rt_fc_ok or not _ed_rt_target_ok }}"
+          sequence:
+          # Undo: restore original to source, remove target copy
+          - event: set_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              value: "{{ _ed_copy_value }}"
+              volume_entity: "{{- _ed_src -}}"
+              set_timestamp: true
+          - event: remove_variable_legacy
+            event_data:
+              key: "{{- _ed_key -}}"
+              volume_entity: "{{- _ed_tgt -}}"
+          - variables:
+              result:
+                status: error
+                op: expand_drawer
+                step_failed: round_trip
+                reason: write_through_mount_not_verified
+                fc_ok: "{{ _ed_rt_fc_ok }}"
+                target_ok: "{{ _ed_rt_target_ok }}"
+                fc_result: "{{ _ed_rt_result }}"
+                caller_token: "{{ caller_token }}"
+          - stop: expand_drawer round trip failed
+            response_variable: result
+      # SUCCESS
+      - variables:
+          result:
+            status: success
+            op: expand_drawer
+            source_cabinet: "{{ _ed_src }}"
+            source_drawer: "{{ _ed_key }}"
+            target_cabinet: "{{ _ed_tgt }}"
+            space_before_pct: "{{ _ed_src_pre_pct }}"
+            space_after_pct: "{{ _ed_src_post_pct }}"
+            drawer_size_bytes: "{{ _ed_drawer_size }}"
+            mount_installed: true
+            round_trip_verified: true
+            caller_token: "{{ caller_token }}"
+      - stop: expand_drawer complete
         response_variable: result
 
     - variables:
@@ -2163,7 +2491,7 @@ script:
               {%- elif _wl_type == 'fc' -%}fc_mount_callout_whitelist
               {%- else -%}zen_summarizer_act_whitelist{%- endif -%}
             _wl_field: >-
-              {%- if _wl_type == 'seed' -%}allowed_scripts
+              {%- if _wl_type == 'seed' -%}allowed_tools
               {%- elif _wl_type == 'fc' -%}allowed_action_types
               {%- else -%}allowed_events{%- endif -%}
             _system: "{{- states('sensor.zen_system_cabinet_resolved') -}}"
@@ -2232,11 +2560,15 @@ script:
         - variables:
             _wl_updated: >-
               {%- if _wl_action == 'add' -%}
-                {%- set ns = namespace(out=_wl_current) -%}
+                {%- set ns = namespace(out=_wl_current, bad='') -%}
                 {%- for i in _wl_items -%}
-                  {%- if i not in ns.out -%}{%- set ns.out = ns.out + [i] -%}{%- endif -%}
+                  {%- if i == '*' or i | regex_search(':$') -%}
+                    {%- set ns.bad = i -%}
+                  {%- elif i not in ns.out -%}
+                    {%- set ns.out = ns.out + [i] -%}
+                  {%- endif -%}
                 {%- endfor -%}
-                {{ ns.out | tojson }}
+                {%- if ns.bad != '' -%}INVALID:{{ ns.bad }}{%- else -%}{{ ns.out | tojson }}{%- endif -%}
               {%- else -%}
                 {%- set ns = namespace(out=[]) -%}
                 {%- for e in _wl_current -%}
@@ -2244,6 +2576,18 @@ script:
                 {%- endfor -%}
                 {{ ns.out | tojson }}
               {%- endif -%}
+        - if:
+          - condition: template
+            value_template: "{{- _wl_updated is string and _wl_updated[:8] == 'INVALID:' -}}"
+          then:
+          - variables:
+              _wl_err:
+                status: error
+                message: >-
+                  Invalid whitelist entry '{{ _wl_updated[8:] }}'. Use 'tool:mode', 'tool:*', or plain 'tool' (deprecated). Bare '*' and 'tool:' are not allowed.
+                caller_token: "{{- caller_token -}}"
+          - stop: invalid whitelist entry
+            response_variable: _wl_err
         - event: set_variable_zenos_system_cabinet
           event_data:
             key: "{{- _wl_key -}}"

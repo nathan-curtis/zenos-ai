@@ -1,7 +1,7 @@
-# Zen DojoTool Dispatcher — v5.1.0
+# Zen DojoTool Dispatcher — v5.3.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_dispatcher.yaml`
-**Automations:** `zen_dojotool_dispatcher`, `zen_dojotool_tool_router`, and supporting routers
+**Automations:** `zen_dojotool_dispatcher` and supporting routers (single dispatch automation as of v5.2.0 — see below)
 
 ---
 
@@ -19,37 +19,21 @@ Direct `action: script.*` calls still work and are unaffected. Migrate opportuni
 
 ---
 
-## Two-Tier Architecture
+## Single-Automation Architecture (v5.2.0+)
 
-HA does not support templated action names (`action: script.{{ _tool }}`). The dispatcher solves this with two automations in series.
+Before v5.2.0, this was a two-automation design: `zen_dojotool_dispatcher` handled explicit field-mapped tools directly and forwarded everything else via a `zen_event(kind: dojotool_route)` to a second automation, `zen_dojotool_tool_router`, which held the generic arms. As of **v5.2.0 (2026.6.0)**, that split was merged into one automation with one routing table — the `dojotool_route` event and the Tool Router automation are both gone. If you see either mentioned anywhere (comments, old handoffs, memory), it's describing the pre-merge architecture.
 
 ```
 Caller
   └─ fires zen_event(kind: dojotool_call)
-       └─ zen_dojotool_dispatcher (Tier 1)
-            ├─ Explicit branch (custom field-mapping needed) → calls script directly → fires dojotool_return
-            └─ Generic arm (standard payload shape) → fires zen_event(kind: dojotool_route)
-                 └─ zen_dojotool_tool_router (Tier 2)
-                      └─ Explicit branch → calls backing script → fires dojotool_return
+       └─ zen_dojotool_dispatcher
+            ├─ Registered arm (choose block, one per tool) → calls backing script → fires dojotool_return
+            └─ default (no matching arm) → fires zen_event(kind: dojotool_dispatch_error), error: unknown_tool
 ```
 
-### Tier 1 — `zen_dojotool_dispatcher`
+Listens for `zen_event(kind: dojotool_call)`. The registry is a single `choose` block — one arm per `tool` + `version` pair. Every arm maps payload fields to script fields, calls the script, captures `response_variable: _result`; the automation then fires `dojotool_return` once at the end for every path (including the `default` unknown-tool fault) with the accumulated `_result`.
 
-Listens for `zen_event(kind: dojotool_call)`. The registry is a `choose` block:
-
-- **Explicit arms** handle tools that need custom field-mapping (e.g. `zen_dojotools_provisioner`, `zen_dojotools_filecabinet`). The arm maps payload fields to script fields, calls the script, captures `response_variable: _result`, then fires `dojotool_return`.
-- **Generic arm** matches `^zen_dojotools_|^zen_admintools_` tools not listed above. Fires `zen_event(kind: dojotool_route)` with full routing info. Tier 2 handles dispatch.
-- **Default (unknown tool)** fires `zen_event(kind: dojotool_dispatch_error)` with `error: unknown_tool`. No hard crash.
-
-The generic arm is also the natural seam for a future event-bus audit logger — every generic dispatch emits `dojotool_route` with full metadata.
-
-### Tier 2 — `zen_dojotool_tool_router`
-
-Listens for `zen_event(kind: dojotool_route)`. Handles tools that need standard dispatch but not custom field-mapping. Fires `dojotool_return` directly after calling the backing script.
-
-**Adding a new generic tool:** add one arm to the Tool Router. No dispatcher change required. The dispatcher generic arm catches it automatically.
-
-**Adding a tool with custom field-mapping:** add an explicit arm in the Dispatcher instead.
+**Adding a new tool:** add one `choose` arm mapping `_payload.get(field, default)` to the backing script's fields. That's the entire API surface — no second automation, no routing event to fire.
 
 ---
 
@@ -97,8 +81,7 @@ The `correlation_id` field is required. A call without it returns `dojotool_disp
 | Event | Direction | Key Fields |
 |---|---|---|
 | `dojotool_call` | Caller → Dispatcher | `tool`, `version`, `correlation_id`, `payload` |
-| `dojotool_route` | Dispatcher → Tool Router | `tool`, `version`, `correlation_id`, `payload` |
-| `dojotool_return` | Dispatcher or Router → Caller | `correlation_id`, `tool`, `version`, `result` |
+| `dojotool_return` | Dispatcher → Caller | `correlation_id`, `tool`, `version`, `result` |
 | `dojotool_dispatch_error` | Dispatcher → Bus | `tool`, `version`, `correlation_id`, `error`, `message` |
 
 All events are `zen_event` type. Filter by `event_data.event.kind`.
@@ -107,9 +90,7 @@ All events are `zen_event` type. Filter by `event_data.event.kind`.
 
 ## Tool Registry
 
-### Tier 1 Explicit Arms (Dispatcher)
-
-Tools with custom payload mapping handled in `zen_dojotool_dispatcher`:
+One flat `choose` block, one arm per `tool` + `version` pair — no tiering, no duplicate arms:
 
 | Tool | Notes |
 |---|---|
@@ -122,22 +103,11 @@ Tools with custom payload mapping handled in `zen_dojotool_dispatcher`:
 | `zen_dojotools_index` v1 | Index build — index_command, filter_json (JSON-safe deserialization) |
 | `zen_dojotools_manifest` v1 | Manifest rebuild — show_hidden, show_stacks, extended |
 | `zen_admintools_summarizer_act` v1 | Routes to `zen_admintools_prompt_loader` mode=whitelist |
-| `zen_dojotools_notification_router` v1 | Legacy notification router (deprecated — prefer Postman) |
 | `zen_dojotools_urgency_handler` v1 | **Stub** — registered, handler not yet implemented |
-
-### Tier 2 Arms (Tool Router)
-
-Tools dispatched generically via `zen_dojotool_tool_router`:
-
-| Tool | Notes |
-|---|---|
-| `zen_dojotools_inspect` v1 | Standard field-pass (duplicate arm for direct route path) |
 | `zen_dojotools_todo` v1 | To-do list CRUD |
 | `zen_dojotools_calendar` v1 | Calendar read/write |
-| `zen_admintools_summarizer_act` v1 | Duplicate arm (prompt_loader whitelist) |
-| `zen_dojotools_notification_router` v1 | Legacy (deprecated) |
 | `zen_dojotools_security_manager` v1 | Security panel — arm/disarm/read_state |
-| `zen_dojotools_postman` v1 | Canonical notification dispatch |
+| `zen_dojotools_postman` v1 | Canonical notification dispatch (`resolve_and_dispatch` default mode) |
 | `zen_dojotools_room_manager` v1 | Room topology — portals, occupants, boundary links |
 | `zen_dojotools_labels` v1 | Label CRUD — target_entities, label_list |
 | `zen_dojotools_covers` v1 | Cover control — position, tilt, scene |
@@ -145,6 +115,10 @@ Tools dispatched generically via `zen_dojotool_tool_router`:
 | `zen_dojotools_spamaster` v1 | Spa master controller — full field set |
 | `zen_dojotools_announce` v1 | TTS announcement |
 | `zen_dojotools_autovac` v1 | Vacuum management |
+| `zen_stack_firefly` v1 | Firefly III Lens Bus provider — direct dispatch arm alongside its registry-based Lens Bus routing |
+| `zen_stack_battery` v1 | Battery Notes Lens Bus provider (2026.7.1) — same dual-path shape as firefly above |
+
+**`zen_dojotools_notification_router` was removed entirely in v5.3.0 (2026-07-04)** — no backing script existed for it. A caller using that legacy tool name now falls through to `default` (`unknown_tool`). Use `zen_dojotools_postman` directly instead.
 
 ---
 
@@ -171,6 +145,6 @@ Catches `cabinet_vi_degraded` events emitted by Inspect when a cabinet VolumeInf
 
 - **`correlation_id` is mandatory.** Calls without it are rejected with `dojotool_dispatch_error` before touching the registry.
 - **`zen_dojotools_urgency_handler` is a stub.** It is registered and will accept calls, but the backing implementation does not exist yet. Response: `status: stub`.
-- **`zen_dojotools_notification_router` is deprecated.** The dispatcher still routes it for backwards compatibility. Prefer `zen_dojotools_postman`.
-- **Routed tools fire `dojotool_return` from the Tool Router**, not from the Dispatcher. The Dispatcher skips its own return-fire step when `_route_externally: true`. Do not rely on the Dispatcher firing `dojotool_return` for tools that went through the generic arm.
+- **`zen_dojotools_notification_router` no longer exists.** Removed entirely in v5.3.0 — there was never a backing script behind it, only the dispatcher arm. A caller using the old tool name gets `unknown_tool` now. Use `zen_dojotools_postman` directly.
 - **The dispatcher runs `mode: parallel, max: 20`.** Twenty concurrent dojotool calls can be in flight simultaneously. Each receives its own correlated return.
+- **`zen_stack_firefly` and `zen_stack_battery` have direct dispatcher arms** in addition to being Lens Bus registry providers. `lens_bus_autoreg.md` states stack providers don't need a dispatcher arm (the registry is the routing mechanism) — these two have one anyway, likely predating or running alongside that pattern. Not a conflict in practice: the arm here is for direct `dojotool_call` invocation, the Lens Bus registry is for `stacks_by_anchor` consumer routing. Worth a look if you're touching either path.

@@ -1,4 +1,4 @@
-# Zen DojoTools AdminTools — v5.2.0
+# Zen DojoTools AdminTools — v5.3.0
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -20,10 +20,10 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 |---|---|---|---|
 | `zen_admintools_reset_template` | 1.1.0 | **No** | Press zen_template and kfc_template into cabinets |
 | `zen_admintools_reset_labels` | 4.5.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild |
-| `zen_admintools_cabinetadmin` | 4.5.0 | No | Inspect, restore, reset, hammer, init, or reset_all Ring-0 cabinets |
+| `zen_admintools_cabinetadmin` | 4.6.0 | No | Inspect, restore, reset, hammer, init, expand_drawer, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 5.2.0 | No | Load versioned Cortex, Directives, and Purpose (v43 = Rule Zero (default/latest), v42 = The Answer, v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist` and `zen_summarizer_seed_whitelist` via `mode=whitelist`. |
+| `zen_admintools_prompt_loader` | 5.2.0 | No | Load versioned Cortex, Directives, and Purpose (v43 = Rule Zero (default/latest), v42 = The Answer, v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
 | `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -105,6 +105,9 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `confirm_init` | boolean | `false` | `hammer` only — re-stamp fresh VolumeInfo immediately after wipe. Set `cab_type` accordingly |
 | `hammer_ok` | boolean | `false` | Required `true` for `hammer` mode |
 | `confirm` | boolean | `false` | Required `true` for `reset_all` |
+| `source_cabinet` | entity (sensor) | — | `expand_drawer` only — cabinet the drawer currently lives on (target_cabinet is the destination) |
+| `source_drawer` | text | — | `expand_drawer` only — leaf drawer key to migrate. Subtree/Cabception parent keys are rejected |
+| `space_threshold` | number | — | `expand_drawer` only — abort if either source or target cabinet would cross this capacity percentage |
 
 ### Modes
 
@@ -119,8 +122,10 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `mount_status` | No | Return mounted/unmounted state for all `zen_cabinet` entities. No target needed |
 | `repair_mount` | No | Force `meta.mounted: true` on a stuck cabinet. Does not touch drawer content |
 | `repair_dismount` | No | Force `meta.mounted: false` on a stuck cabinet. Mirror of `repair_mount` |
+| `expand_drawer` | **Yes** (has rollback) | Atomically migrate one leaf drawer from `target_cabinet` to an expansion cabinet: validates the key is a leaf (rejects subtrees/Cabception children), checks space threshold on both source and target, copies the value, replaces the source entry with a `mount_point` pointer, then round-trip verifies the mount resolves through `zen_dojotools_filecabinet` before declaring success. Any failure at any step rolls back (restores original value, deletes target copy). Requires `source_cabinet`, `source_drawer`, optional `space_threshold` |
 | `reset_all` | **NUCLEAR** | Wipe all Ring-0 cabinets + reseed schemas + trigger Flynn bootstrap. `confirm: true` required. User and expansion cabinets untouched |
 | `flip_schema_version` | No | Toggle `cab_schema_version` in syscab (0=legacy, 1+=mount-aware). Controls Flynn operating mode |
+| `repair_volumeinfo` | No | Targeted repair for a cabinet whose `VolumeInfo` is a JSON string instead of a mapping — parses and rewrites as a proper dict. Also self-heals the missing-header case (cabinet in `init` state with no VolumeInfo at all): stamps a fresh header via `cabinetadmin_factory`, no `hammer`/rearm needed. Skips silently if VolumeInfo is already a valid mapping |
 
 ### Init classifier
 
@@ -292,7 +297,15 @@ Selecting `latest` or passing no `cortex_version` loads v43.
 
 ### Whitelist Management
 
-`mode=whitelist` manages the summarizer act and seed whitelists in syscab. Replaces the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts.
+`mode=whitelist` manages three whitelists in syscab, selected via `whitelist_type`:
+
+| `whitelist_type` | Drawer | Field | Entry format |
+|---|---|---|---|
+| `act` | `zen_summarizer_act_whitelist` | — | Event kind string |
+| `seed` | `zen_summarizer_seed_whitelist` | `allowed_scripts` | Script name |
+| `fc` | `fc_mount_callout_whitelist` | `allowed_tools` | `tool` (deprecated) \| `tool:*` (preferred) \| `tool:mode` (KF5 mode-scoped) |
+
+`seed` and `act` replace the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts. `fc` is the FileCabinet live-drawer callout whitelist used by KF5 self-registering tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
 
 ```yaml
 # Add Room Manager as a seed source
@@ -303,6 +316,8 @@ data:
   action_type: add
   item: zen_dojotools_room_manager
 ```
+
+**`fc`-type add validation:** an `add` request containing a bare `*` (unrestricted wildcard) or a `tool:` entry with an empty mode suffix is rejected outright — the whitelist is never written, and the response is an error naming the offending entry with the expected formats (`tool:mode`, `tool:*`, or plain `tool` — deprecated). This exists specifically so a KF5 tool's `kfc_manifest` self-registration step can never accidentally (or maliciously) open a wildcard or malformed entry on the FC callout whitelist.
 
 ### KFC Schema v1.4.0 and Seed Whitelist
 
@@ -372,6 +387,7 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 
 | Version | Change |
 |---------|--------|
+| v5.3.0 | cabinetadmin: `expand_drawer` (atomic drawer migration with rollback), `repair_volumeinfo` self-heals missing-header case. prompt_loader: `fc`-type whitelist add rejects bare `*`/empty-suffix `tool:` entries; field renamed `allowed_action_types` → `allowed_tools` (KF5 mode-scoped whitelist). |
 | v5.2.0 | Cortex v43 "Rule Zero" added as latest. DojoTools supersede all HA built-ins — domain routing table in directives. v42 'The Answer' retained as prior slot. |
 | v5.1.0 | Cortex v42 "The Answer" (v10.0.0) added as latest. Trimmed to 3 version slots: v42/v40/v38. `mode=whitelist` added to prompt_loader — absorbs `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` (both deleted). Dispatcher compat shim routes legacy `summarizer_act` calls to `prompt_loader mode=whitelist type=act`. |
 | v4.6.1 | KFC schema v1.4.0: `seed` and `area_seed` fields. `reset_template` now seeds `zen_summarizer_seed_whitelist` into syscab. |

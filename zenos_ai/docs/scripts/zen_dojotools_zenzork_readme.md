@@ -1,6 +1,6 @@
 # zen_dojotools_zenzork
 
-**ZenZork Adventure Engine** — v1.6.0
+**ZenZork Adventure Engine** — v1.7.0
 **File:** `packages/zenos_ai/dojotools/dojotools_zenzork.yaml`
 
 ---
@@ -167,6 +167,12 @@ Set with `narrator=` field (default: `zork`).
 
 The `narrator_prompt` key in every response tells Friday how to narrate from the evidence block. Static flavor (darkness, heat, cold, move milestones) is also baked directly into the `narration` string for conditions the template can evaluate.
 
+**`llm_narration` (v1.7.0):** boolean toggle, default `false`. When `true` (and `narrator != straight`), narration is generated live via `ai_task.generate_data` using the selected narrator's persona prompt, instead of the static template flavor.
+
+Two independent fallback paths, both silently returning template narration rather than erroring:
+- **Pipe gated off** (`zen_summarizers_enabled` or `zen_ninja_summarizer_enabled` is `off`, or no `ai_task` entity configured): template narration is used, but prefixed with a visible `[LLM narration unavailable — <reason>]` line so it's obvious in-game that the LLM path didn't fire.
+- **LLM response too short** (10 characters or fewer after trim — an empty or degenerate `ai_task.generate_data` response): falls back to template narration with **no visible marker** — from the player's perspective this looks identical to a normal template-narrated room.
+
 ---
 
 ## Notes
@@ -184,6 +190,7 @@ The `narrator_prompt` key in every response tells Friday how to narrate from the
 
 | Version | Change |
 |---------|--------|
+| v1.7.0 | `llm_narration` toggle — live LLM-generated narration via `ai_task.generate_data` with per-narrator persona prompts, falling back to template narration if the pipe is gated off or the response is too short. Domain-linking block on `help` mode (`domain: entertainment`). Cabinet reads refactored to `CABS.cabinet_drawer_value_mounted`. |
 | v1.6.0 | DUNGEONMIND narrator ("Primal AI, IBM AT 5170, binding active since 1984"). Character sheet in AI user cabinet `character_sheet` drawer (CabCeption sub-drawer `character_sheet/inventory` for carried items). Item commands: `take/get`, `drop`, `inventory/i`, `put`, `push`, `pull`. Interaction commands: `open/unlock`, `close/lock/shut`, `use`. Navigation additions: `face/turn`, `again/g` (`_last_cmd` tracking). Landmark survey wizard (FC-backed state machine). `game_mode`: `free_roam/treasure_hunt/timed_treasure_hunt`. `harassment_freq` and `difficulty` session fields. Post-game RM quality report on `stop`. |
 | v1.5.0 | DUNGEONMIND persona introduced. Quest mode (`explore_all`, `discover_all_landmarks`, `reach:<area_id>`). `narrator=` field. |
 | v1.1.0 | Baseline: `start/look/go/examine/map/status/stop/help/setup`. Compass navigation. RM topology as dungeon. Session state in AI user cabinet `zenzork_state`. North calibration and direct portal setter in setup. |

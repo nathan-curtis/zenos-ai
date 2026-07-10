@@ -1,10 +1,26 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.7.0 'Neo' | **Last Updated:** Jun 2026 | **License:** MIT
+> **Version:** 2026.7.1 (patch) | **Base:** 2026.7.0 'Neo' | **Last Updated:** Jul 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 
 → [Project Overview & Install](../../README.md)
+
+---
+
+> ### 2026.7.1 — Patch
+>
+> **1. KF5 — Self-Registering Tools.** Tools declare their own KFC dojo-drawer contract via `mode=kfc_manifest`; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts them automatically. 5 dojotools files adopted it (Room Manager, AlertManager, Camera, Security Manager, SystemTools).
+>
+> **2. Firefly III — Codex Tier.** `zen_dojotools_finance` v2.3.0 gains sibling codex modules: `zen_codex_finance_depreciation` (asset depreciation) and `zen_codex_finance_cogs` (COGS auto-posting from Grocy).
+>
+> **3. Grocy v5.3.1.** `stock_entry_update` fix (was silently sending empty PUT payloads on entry-id-only calls). Perishable Storage Coaching, COGS Coaching, battery-stock tracking, tax/depreciable-asset userfields.
+>
+> **4. Battery Notes — new Lens Bus provider.** `zen_stack_battery` v1.2.1, HALMark PASS — first stack provider sourced from a HACS integration (`ha-battery-notes`) rather than a self-hosted backend.
+>
+> **5. Postman `direct_dispatch`.** Authority-stack bypass mode, migration path for the retired `zen_dojotools_notification_router`.
+>
+> → [Full Patch Notes — 2026.7.1](releases/neo.md#20267-1-patch)
 
 ---
 
@@ -92,6 +108,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * `components/alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
 * `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
+* `components/systemtools.md` — SystemTools: home mode, quiet/work hours, scheduler anchors, guest/entertaining toggles, home_status rollup
 * `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
 * `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
 * `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
@@ -311,6 +328,15 @@ This is Friday’s trust spine — the system that decides which parts of the wo
 ## 🗺️ **12. Roadmap**
 
 **File:** `docs/roadmap.md`
+
+**2026.7.1 — Patch**
+
+* KF5 self-registration — `bootstrap_kfc`, adopted by Room Manager, AlertManager, Camera, Security Manager, SystemTools
+* Firefly III codex tier — `zen_codex_finance_depreciation`, `zen_codex_finance_cogs`
+* Grocy v5.3.1 — `stock_entry_update` fix, perishable/COGS coaching, battery tracking
+* Battery Notes — new Lens Bus provider (`zen_stack_battery`), first HACS-integration-backed provider
+* Postman `direct_dispatch` — migration path for retired `notification_router`
+* ZenZork v1.7.0 — `llm_narration` toggle
 
 **2026.7.0 'Neo' — Shipped (2026-06-27)**
 

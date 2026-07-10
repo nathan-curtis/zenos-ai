@@ -1,6 +1,13 @@
 ###############################################################################
-# zen_dojotools_room_manager v5.3.0 (codename: RoomReg)
+# zen_dojotools_room_manager v5.4.1 (codename: RoomReg)
 # Physical room definition registry — spatial topology, adjacency, portals
+#
+# v5.4.1 (Zen pull, 2026-07-04): kfc_manifest mode added (room_manager
+#   component, KF5 self-registration, no seed). New tax/real-estate room
+#   fields (tax_bucket, dimension/area-override fields, home_office_claimed,
+#   parent_area_id) with validation guards. Cabinet-write template dedup via
+#   CABS.cabinet_drawer_value_mounted. adjacent[] build now filters
+#   non-strings via | select('string') in two places.
 #
 # ── TODO: VAC_SYNC v2 — RE-ENGINEER, DO NOT REMOVE ───────────────────────────
 # vac_sync was removed in v1.5.0 because the v1 implementation was fragile:
@@ -85,7 +92,7 @@ script:
         description: "get/set/list: room data. zone_set/zone_remove/zones: sub-room zones. landmark_set/landmark_remove/landmarks: named anchors. link/unlink/boundary_*: adjacency. home_overview/emergency: whole-home. area_create/update/delete: manage HA areas. setup/help."
         selector:
           select:
-            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, setup, pathfind, tool_manifest, help]
+            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, setup, pathfind, tool_manifest, kfc_manifest, help]
       area:
         description: "Area to operate on. Required for get, set, link, unlink, area_update, area_delete."
         selector:
@@ -101,6 +108,11 @@ script:
             min: 0
             max: 20
             mode: box
+      tax_bucket:
+        description: "IRS/appraisal space classification. conditioned|conditioned_storage|conditioned_circulation|conditioned_utility|under_roof_porch|under_roof_garage|under_roof_attic. Used by depreciation suggest_business_use denominator."
+        selector:
+          select:
+            options: [conditioned, conditioned_storage, conditioned_circulation, conditioned_utility, under_roof_porch, under_roof_garage, under_roof_attic]
       windows:
         description: "One window to add/update. Pass as JSON: {name:string (upsert key — allows multiple per direction), direction:N|NE|E|SE|S|SW|W|NW, type:single|double|sliding|casement|fixed|skylight, exit:bool, emerg_exit:bool, drop_ft:num, exit_priority:primary|secondary|tertiary|bail_out, light_tx:0.0-1.0}. name beats direction as upsert key. Extra fields OK."
         selector:
@@ -207,6 +219,42 @@ script:
         description: "Item name for zone_remove and landmark_remove — the name of the zone or landmark to delete."
         selector:
           text:
+      length:
+        description: "Room length in unit (ft default). Stored with width+unit; area_calc=length×width computed at write."
+        selector:
+          number:
+            min: 0
+            max: 10000
+            step: 0.01
+            mode: box
+      width:
+        description: "Room width in unit (ft default). Required when length is provided."
+        selector:
+          number:
+            min: 0
+            max: 10000
+            step: 0.01
+            mode: box
+      unit:
+        description: "Measurement unit for length/width/area_override. ft (default) or m get full sqft/sqm conversions; any other string stores area_calc only."
+        selector:
+          text:
+      area_override:
+        description: "Explicit area in unit — overrides length×width calc. Use for irregular/L-shaped rooms. Requires area_override_reason."
+        selector:
+          number:
+            min: 0
+            max: 100000
+            step: 0.01
+            mode: box
+      area_override_reason:
+        description: "Required when area_override is provided. Audit trail for why measured area differs from l×w (e.g. 'L-shaped room', 'measured to exterior walls per CPA')."
+        selector:
+          text:
+      home_office_claimed:
+        description: "Tag this room as part of a home office claim for business-use % calculation."
+        selector:
+          boolean:
       spatial_meta:
         description: "Room spatial metadata. JSON: {north_wall_bearing:int, bbox_ft:{x,y}, origin_offset:{x,y}, floor_height_ft:float, floor_number:int}. Merged into existing."
         selector:
@@ -281,6 +329,10 @@ script:
         description: "Mark area as exterior/outdoor (back yard, deck, porch, etc). Automatically excluded from shelter classification."
         selector:
           boolean:
+      parent_area_id:
+        description: "Parent area this space belongs to (e.g. closet→bedroom, pantry→kitchen). HA area_id of the containing room."
+        selector:
+          text:
       shelter_eligible:
         description: "Set false to exclude this room from emergency shelter classification. Overrides structural detection (no exterior portals + no windows = primary)."
         selector:
@@ -381,9 +433,9 @@ script:
                 tool='zen_dojotools_room_manager',
                 display_name='Room Manager',
                 tier='dojotools',
-                version='5.3.0',
+                version='5.4.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
-                required_labels=['zen_household_cabinet'],
+                required_labels=['zen_household_cabinet', 'zen_kfc_provider'],
                 optional_labels=['room_layout', 'hps'],
                 consumes=['area', 'mode', 'context_slices'],
                 returns=['topology', 'context_slices', 'home_overview', 'emergency'],
@@ -401,14 +453,116 @@ script:
                   'area_delete': 'Delete area + topology entry',
                   'setup': 'Deploy RM KFC to dojo',
                   'pathfind': 'Shortest path between two areas or persons',
-                  'tool_manifest': 'Return tool identity'
+                  'tool_manifest': 'Return tool identity',
+                  'kfc_manifest': 'Return KFC component definitions'
                 },
                 icon='mdi:floor-plan',
                 color='teal',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
 
                 caller_token=_caller_token
-              ) | from_json -}}
+              ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['room_manager']}) -}}
         - stop: room_manager tool manifest
+          response_variable: result
+      - if: "{{ _mode == 'kfc_manifest' }}"
+        then:
+        - variables:
+            _kfc_filter: "{{ component | default('') | string | trim | lower if component is defined else '' }}"
+            _kfc_defs:
+            - kata_key: room_manager
+              friendly_name: Room Manager
+              label: room_manager
+              component_summary: ""
+              component_instructions: >-
+                SCOPE: Spatial topology and live room context for the household.
+                  Room data: zen_dojotools_room_manager (household cabinet, key: room_topology).
+                  Registered rooms have label room_layout on their HA area.
+
+                DATA ACCESS:
+                  Primary: zen_dojotools_room_manager mode=home_overview — whole-house snapshot.
+                    Returns: registered_room_count, floor_count, floors[]{floor_id, rooms[]{area_id,
+                    display_name, context{topo,light,climate,covers,media}}}, domain_summaries,
+                    domain_summaries.maintenance{battery_count,alert_count}.
+                  Per-room: zen_dojotools_room_manager mode=get area={area_id} with context_slices=+topo,+light,+climate,+covers,+media.
+                    Returns: spatial{portals[], windows[], walls, adjacent[], occupants[]}, features[], exits[].
+                  Registered rooms: areas with label room_layout. Use inspect mode=area_list to enumerate.
+
+                WHAT TO SURFACE:
+                  1. Rooms with active domains — lights on, climate running, media playing, covers open.
+                     Lead with what is running: "Kitchen: lights 72%, climate cooling 72°F. Office: lights on."
+                  2. Floor-grouped summary when multiple floors are active.
+                  3. Maintenance: if battery_count > 0 or alert_count > 0, surface the counts.
+                  4. Exterior portals (exit=true) — note if open when mode is away or sleep.
+                  5. Egress summary only if safety context (away mode, alarm active, force_summary).
+
+                TRIGGER CONTEXT:
+                  ha_start — ambient topology snapshot. Flag any rooms with unexpected active states.
+                  home_occupancy_change — re-derive active rooms. Surface context for the arriving or
+                    departing person's rooms (cross-reference occupants[] from mode=get).
+                  home_mode_updates — re-evaluate room relevance for new mode.
+                    away: flag lights or media still running in any room.
+                    sleep: flag non-bedroom lights on or covers open.
+                    home: ambient context only.
+                  force_summary — full home_overview across all floors and all active rooms.
+
+                NAVIGATION:
+                  Registered rooms: label room_layout on HA area.
+                  Room topology: zen_dojotools_room_manager mode=get area={slug}.
+                  Domain routing per room: zen_dojotools_room_manager mode=help → domain_routing.
+                  Adjacent rooms for bleed: spatial.adjacent[] in get response.
+                  Whole-house snapshot: mode=home_overview (no area= needed).
+
+                OUTPUT FORMAT:
+                  Active rooms: lead with floor, then room — one line per room with domain signals.
+                  Nominal: "House nominal. N rooms across F floors. Maintenance: X batteries low, Y alerts."
+                  Active: "[Floor]: [Room] — [domain signals]. [Room] — ..."
+                  Keep per-room lines to one. Reserve detail for on-demand mode=get calls.
+
+                TONE: Spatial and ambient. This is the house map, not the alert surface.
+                  Speak like a crew chief walking the building — concise, positional, factual.
+              trigger_subscriptions:
+              - ha_start
+              - home_occupancy_change
+              - home_mode_updates
+              - force_summary
+              drift_threshold: 5
+              emission_cooldown_minutes: 30
+              delay_seconds: 0
+              suggested_act_event: null
+              seed: null
+              master_switch: ""
+              index_call:
+                domain_inspect_domains: []
+                domain_inspect_limit: 25
+                expand_entities: false
+                filter_json: {}
+                label_1: room_manager
+                label_2: ""
+                operator: AND
+                output_fields: ""
+              meta:
+                enabled: true
+                requires:
+                  cert: ""
+                  level: 0
+        - variables:
+            _kfc_out: >-
+              {%- if _kfc_filter == '' -%}
+                {{ _kfc_defs }}
+              {%- else -%}
+                {{ _kfc_defs | selectattr('kata_key', 'equalto', _kfc_filter) | list }}
+              {%- endif -%}
+            result:
+              status: ok
+              tool: zen_dojotools_room_manager
+              version: "5.4.1"
+              mode: kfc_manifest
+              kfc: "{{ _kfc_out }}"
+              count: "{{ _kfc_out | length }}"
+              caller_token: "{{ _caller_token }}"
+        - stop: kfc_manifest
           response_variable: result
 
       # ── 0b. Household cabinet entity ────────────────────────────────────────
@@ -1191,6 +1345,14 @@ script:
                     {%- if 'drop_ft' not in windows -%}{%- set ns.e=ns.e+['windows: drop_ft (number, 0=ground) required'] -%}{%- endif -%}
                   {%- endif -%}
                 {%- endif -%}
+                {%- if area_override is defined and area_override is not none -%}
+                  {%- if area_override_reason is not defined or area_override_reason|default('',true)|trim == '' -%}
+                    {%- set ns.e=ns.e+['area_override requires area_override_reason — explain why measured area differs from length×width'] -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- if length is defined and length is not none and (width is not defined or width is none) -%}
+                  {%- set ns.e=ns.e+['width required when length is provided'] -%}
+                {%- endif -%}
                 {{ ns.e }}
 
           - if: "{{ _schema_errors | length > 0 }}"
@@ -1212,6 +1374,7 @@ script:
                 {%- for _k,_v in _ex0.items() -%}{%- if _k not in _skip -%}{%- set ns.p=ns.p|combine({_k:_v}) -%}{%- endif -%}{%- endfor -%}
 
                 {%- if walls is defined and walls is not none -%}{%- set ns.p=ns.p|combine({'walls':walls|int}) -%}{%- endif -%}
+                {%- if tax_bucket is defined and tax_bucket is not none and tax_bucket|trim != '' -%}{%- set ns.p=ns.p|combine({'tax_bucket':tax_bucket|trim}) -%}{%- endif -%}
 
                 {%- if clear_portals is defined and clear_portals -%}{%- set ns.p=ns.p|combine({'portals':[]}) -%}{%- endif -%}
                 {%- if portals is defined and portals is not none and portals is mapping -%}
@@ -1226,7 +1389,7 @@ script:
                     {%- set ns.p=ns.p|combine({'portals':_ep+[portals]}) -%}
                   {%- endif -%}
                 {%- endif -%}
-                {%- set _padj=ns.p.get('portals',[])|selectattr('to','defined')|map(attribute='to')|list -%}{%- set ns.p=ns.p|combine({'adjacent':(ns.p.get('adjacent',[])|list+_padj)|unique|list}) -%}
+                {%- set _padj=ns.p.get('portals',[])|selectattr('to','defined')|map(attribute='to')|select('string')|list -%}{%- set ns.p=ns.p|combine({'adjacent':(ns.p.get('adjacent',[])|select('string')|list+_padj)|unique|list}) -%}
                 {%- if clear_windows is defined and clear_windows -%}{%- set ns.p=ns.p|combine({'windows':[]}) -%}{%- endif -%}
                 {%- if windows is defined and windows is not none and windows is mapping -%}
                   {%- set _ew=ns.p.get('windows',[])|list -%}
@@ -1259,6 +1422,7 @@ script:
                 {%- if grocy_location_id is defined and grocy_location_id is not none and grocy_location_id|trim != '' -%}{%- set ns.p=ns.p|combine({'grocy_location_id':grocy_location_id|trim}) -%}{%- endif -%}
                 {%- if wiki_path is defined and wiki_path is not none and wiki_path|trim != '' -%}{%- set ns.p=ns.p|combine({'wiki_path':wiki_path|trim}) -%}{%- endif -%}
                 {%- if exterior is defined and exterior is not none -%}{%- set ns.p=ns.p|combine({'exterior':exterior}) -%}{%- endif -%}
+                {%- if parent_area_id is defined and parent_area_id is not none and parent_area_id|trim != '' -%}{%- set ns.p=ns.p|combine({'parent_area_id':parent_area_id|trim}) -%}{%- endif -%}
                 {%- if shelter_eligible is defined and shelter_eligible is not none -%}{%- set ns.p=ns.p|combine({'shelter_eligible':shelter_eligible}) -%}{%- endif -%}
                 {%- if area_note is defined and area_note is not none -%}{%- set ns.p=ns.p|combine({'area_note':area_note|string}) -%}{%- endif -%}
                 {%- if clear_room_zones is defined and clear_room_zones -%}{%- set ns.p=ns.p|combine({'room_zones':[]}) -%}{%- endif -%}
@@ -1286,6 +1450,25 @@ script:
                   {%- set _sm=_sm if _sm is mapping else {} -%}
                   {%- set ns.p=ns.p|combine({'spatial_meta':_sm|combine(spatial_meta)}) -%}
                 {%- endif -%}
+                {%- if length is defined and length is not none and width is defined and width is not none -%}
+                  {%- set _len=length|float -%}
+                  {%- set _wid=width|float -%}
+                  {%- set _u=(unit|default('ft','true')|lower|trim) -%}
+                  {%- set _ac=_len*_wid -%}
+                  {%- set _sqft=_ac if _u=='ft' else (_ac*10.764 if _u=='m' else none) -%}
+                  {%- set _sqm=(_sqft*0.0929) if _sqft is not none else none -%}
+                  {%- if area_override is defined and area_override is not none -%}
+                    {%- set _aov=area_override|float -%}
+                    {%- set _sqft=_aov if _u=='ft' else (_aov*10.764 if _u=='m' else none) -%}
+                    {%- set _sqm=(_sqft*0.0929) if _sqft is not none else none -%}
+                    {%- set ns.p=ns.p|combine({'length':_len,'width':_wid,'unit':_u,'area_calc':_ac,'area_sqft':_sqft,'area_sqm':_sqm,'area_override':_aov,'area_override_reason':area_override_reason|default('',true)|trim}) -%}
+                  {%- else -%}
+                    {%- set ns.p=ns.p|combine({'length':_len,'width':_wid,'unit':_u,'area_calc':_ac,'area_sqft':_sqft,'area_sqm':_sqm}) -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {%- if home_office_claimed is defined and home_office_claimed is not none -%}
+                  {%- set ns.p=ns.p|combine({'home_office_claimed':home_office_claimed|bool}) -%}
+                {%- endif -%}
                 {{ ns.p }}
               _set_is_new: >-
                 {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set topo = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'room_topology') | from_json -%}
@@ -1307,7 +1490,6 @@ script:
               - stop: set dry_run
                 response_variable: _result
 
-          # value: uses string rendering — merge replicated inline, no cross-context _set_merged ref
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: >-
@@ -1316,64 +1498,9 @@ script:
               key: room_topology
               volume_entity_id: "{{ _hh_cabinet }}"
               value: >-
-                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set topo = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'room_topology') | from_json -%}
-                {%- set _ex0=topo.get(_area_id,{}) -%}
-                {%- set _ex=_ex0 if _ex0 is mapping else {} -%}
-                {%- set _skip=['display_name','floor_level'] -%}
-                {%- set ns=namespace(p={}) -%}
-                {%- for _k,_v in _ex.items() -%}{%- if _k not in _skip -%}{%- set ns.p=ns.p|combine({_k:_v}) -%}{%- endif -%}{%- endfor -%}
-
-                {%- if walls is defined and walls is not none -%}{%- set ns.p=ns.p|combine({'walls':walls|int}) -%}{%- endif -%}
-
-                {%- if clear_portals is defined and clear_portals -%}{%- set ns.p=ns.p|combine({'portals':[]}) -%}{%- endif -%}
-                {%- if portals is defined and portals is not none and portals is mapping -%}
-                  {%- set _ep=ns.p.get('portals',[])|list -%}
-                  {%- set _pname=portals.get('name',none) -%}
-                  {%- set _pto=portals.get('to',none) -%}
-                  {%- if _pname is not none -%}
-                    {%- set _named=_ep|rejectattr('name','eq',_pname)|selectattr('name','defined')|list -%}{%- set _unnamed=_ep|rejectattr('name','defined')|rejectattr('to','eq',_pto)|list -%}{%- set ns.p=ns.p|combine({'portals':_named+_unnamed+[portals]}) -%}
-                  {%- elif _pto is not none -%}
-                    {%- set ns.p=ns.p|combine({'portals':(_ep|rejectattr('to','eq',_pto)|list)+[portals]}) -%}
-                  {%- else -%}
-                    {%- set ns.p=ns.p|combine({'portals':_ep+[portals]}) -%}
-                  {%- endif -%}
-                {%- endif -%}
-                {%- set _padj=ns.p.get('portals',[])|selectattr('to','defined')|map(attribute='to')|list -%}{%- set ns.p=ns.p|combine({'adjacent':(ns.p.get('adjacent',[])|list+_padj)|unique|list}) -%}
-                {%- if clear_windows is defined and clear_windows -%}{%- set ns.p=ns.p|combine({'windows':[]}) -%}{%- endif -%}
-                {%- if windows is defined and windows is not none and windows is mapping -%}
-                  {%- set _ew=ns.p.get('windows',[])|list -%}
-                  {%- set _wname=windows.get('name',none) -%}
-                  {%- set _wdir=windows.get('direction',none) -%}
-                  {%- if _wname is not none -%}
-                    {%- set ns.p=ns.p|combine({'windows':(_ew|rejectattr('name','eq',_wname)|list)+[windows]}) -%}
-                  {%- elif _wdir is not none -%}
-                    {%- set ns.p=ns.p|combine({'windows':(_ew|rejectattr('direction','eq',_wdir)|list)+[windows]}) -%}
-                  {%- else -%}
-                    {%- set ns.p=ns.p|combine({'windows':_ew+[windows]}) -%}
-                  {%- endif -%}
-                {%- endif -%}
-                {%- if clear_occupants is defined and clear_occupants -%}{%- set ns.p=ns.p|combine({'occupants':[]}) -%}{%- endif -%}
-                {%- if occupant is defined and occupant is not none and occupant|trim != '' -%}
-                  {%- set _eo=ns.p.get('occupants',[])|list -%}
-                  {%- if occupant|trim not in _eo -%}{%- set ns.p=ns.p|combine({'occupants':_eo+[occupant|trim]}) -%}{%- endif -%}
-                {%- endif -%}
-                {%- if clear_safety is defined and clear_safety -%}{%- set ns.p=ns.p|combine({'safety':[]}) -%}{%- endif -%}
-                {%- if safety is defined and safety is not none and safety is mapping -%}
-                  {%- set _es=ns.p.get('safety',[])|list -%}
-                  {%- set _sname=safety.get('name',none) -%}
-                  {%- if _sname is not none -%}
-                    {%- set ns.p=ns.p|combine({'safety':(_es|rejectattr('name','eq',_sname)|list)+[safety]}) -%}
-                  {%- else -%}
-                    {%- set ns.p=ns.p|combine({'safety':_es+[safety]}) -%}
-                  {%- endif -%}
-                {%- endif -%}
-                {%- if description is defined and description is not none -%}{%- set ns.p=ns.p|combine({'description':description|string}) -%}{%- endif -%}
-                {%- if grocy_location_id is defined and grocy_location_id is not none and grocy_location_id|trim != '' -%}{%- set ns.p=ns.p|combine({'grocy_location_id':grocy_location_id|trim}) -%}{%- endif -%}
-                {%- if wiki_path is defined and wiki_path is not none and wiki_path|trim != '' -%}{%- set ns.p=ns.p|combine({'wiki_path':wiki_path|trim}) -%}{%- endif -%}
-                {%- if exterior is defined and exterior is not none -%}{%- set ns.p=ns.p|combine({'exterior':exterior}) -%}{%- endif -%}
-                {%- if shelter_eligible is defined and shelter_eligible is not none -%}{%- set ns.p=ns.p|combine({'shelter_eligible':shelter_eligible}) -%}{%- endif -%}
-                {%- if area_note is defined and area_note is not none -%}{%- set ns.p=ns.p|combine({'area_note':area_note|string}) -%}{%- endif -%}
-                {{ (topo | combine({_area_id: ns.p})) | tojson }}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set topo = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'room_topology') | from_json -%}
+                {{ (topo | combine({_area_id: _set_merged})) | tojson }}
             response_variable: _fc_result
 
           - action: script.zen_dojotools_labels
@@ -3442,7 +3569,7 @@ script:
                     {%- if cur == _pf_dest_id -%}
                       {%- set ns.found = path -%}
                     {%- else -%}
-                      {%- for n in (_pf_topo.get(cur, {}) if _pf_topo is mapping else {}).get('adjacent', []) | list -%}
+                      {%- for n in (_pf_topo.get(cur, {}) if _pf_topo is mapping else {}).get('adjacent', []) | select('string') | list -%}
                         {%- if n not in ns.visited -%}
                           {%- set ns.queue = ns.queue + [path + [n]] -%}
                           {%- set ns.visited = ns.visited + [n] -%}

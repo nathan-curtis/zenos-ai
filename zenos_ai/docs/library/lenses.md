@@ -48,7 +48,7 @@ This keeps `Inspect`, `Service Desk`, `Inventory`, `Rolodex`, Room Manager, and 
 |------|---------|
 | Consumer | A tool asking for enrichment, such as Inspect or Service Desk. |
 | Provider | A knowledge source registered in `lens_registry`. |
-| Anchor | A typed reference to something already known, such as `person.nathan_curtis`, `area_id: office`, or `label: medical`. |
+| Anchor | A typed reference to something already known, such as `person.member_name`, `area_id: office`, or `label: medical`. |
 | Evidence | A redacted provider result with provenance and stable IDs. |
 | Lens | The projection from anchor to evidence through a provider. |
 | Registry | The household cabinet drawer that declares active providers and their capabilities. |

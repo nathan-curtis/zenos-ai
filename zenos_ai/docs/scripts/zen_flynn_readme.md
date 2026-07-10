@@ -135,6 +135,8 @@ Detects cabinets that are present but genuinely uninitialized — `state=init` w
 
 **Event fired:** Handled internally by `script.flynn_initialize_cabinets`.
 
+**History cabinet mount lifecycle (2026.7.1):** Gate 2.1's re-init trigger now also fires when any of the 4 history cabinets (`default_household_history`, `default_family_history`, `default_user_history`, `default_ai_user_history`) is `online_unmounted` — mounted but not yet wired to its parent cabinet's `history` mount point. When that happens, Flynn: waits for the cabinet's state to stabilize (bounded `wait_template`s, each with `continue_on_timeout: true`), calls `mount_cabinet`, extracts the mounted cabinet's GUID from its `VolumeInfo` (guarded against the value being a JSON string vs. an already-parsed mapping), then calls `set_mount` to wire that GUID into the parent's `history` mount point — skipping if already wired. If a cabinet has residue data that blocks auto-init (`reason: rearm_required`), Flynn posts a persistent notification asking a human to run `repair_volumeinfo` or `hammer` manually rather than guessing. This whole path degrades gracefully (`continue_on_error: true` throughout) rather than blocking boot — a stuck history cabinet delays its own mount wiring, not the rest of the system, and Gate 2.1 re-evaluates it on the same 5-minute Stepgate Sentinel cadence as everything else (see [Troubleshooting](#troubleshooting) below), not a tight retry loop.
+
 ---
 
 ### Gate 3 — Schema Seeding + Content Bootstrap
@@ -267,6 +269,7 @@ Options resolve dynamically at render time. The persona select only shows person
 | `zen_cabinet_health: warn` (outside warmup) | Gate 2 (non-blocking) | Schema upgrade notification — system continues |
 | `zen_cabinet_health: warn` (warmup/ha_start) | Gate 2 (log only) | Logged, system continues — no notification |
 | Init-state cabs detected (post-warmup) | Gate 2.1 (silent, auto) | Auto-initialize virgin cabinets via `flynn_initialize_cabinets` |
+| History cabinet `online_unmounted` (post-warmup) | Gate 2.1 (silent, auto) | Mount + wire GUID into parent's `history` mount point; notifies human only if residue blocks auto-init |
 | `zen_monastery_health: critical` | Gate 3 | Full content bootstrap |
 | `zen_monastery_health: warn` | Gate 3 (partial) | Schema seed only |
 | All green + monastery/agent confirmed + OOBE complete | Gate 4 | System ready notification |

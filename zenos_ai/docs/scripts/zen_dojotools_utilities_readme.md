@@ -1,4 +1,4 @@
-# Zen DojoTools Utilities — v5.1.0
+# Zen DojoTools Utilities — v5.1.0 (zen_dojotools_help v3.0.0)
 
 *Calculator, dice, announcements, music search, system help, wait, cabinet audit, and canonical HA domain control tools*
 
@@ -20,7 +20,7 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `zen_dojotools_dice_roller` | D&D dice, coin flip, random numbers |
 | `zen_dojotools_announce` | TTS announcement router with urgency + dedup gates |
 | `zen_sutra_music_search` | Music Assistant search — **internal sutra, not MCP-exposed**. Use `zen_dojotools_media_manager` mode=search or mode=stacks_by_anchor. |
-| `zen_dojotools_help` | Live ZenOS-AI system overview and script inventory |
+| `zen_dojotools_help` | Global help front door — system overview, help-proxy to any tool, tool-directory auto-discovery |
 | `zen_dojotools_wait` | Timed delay (1–120 seconds) |
 | `dojotools_volume_auditor` | Cabinet volume accessibility scanner |
 | `zen_dojotools_notification_router` | **Deprecated** — legacy push notification router |
@@ -133,15 +133,35 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 
 ---
 
-## zen_dojotools_help
+## zen_dojotools_help — Global Help Front Door (v3.0.0)
 
-Returns a live system overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA.
+`zen_dojotools_help` is now more than the system-overview tool — it's the front door for discovering and proxying to any tool's own help. Four modes:
+
+| Mode | Does |
+|------|------|
+| `about` (default) | System overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA. |
+| `help` | Proxy to a specific tool's own `mode=help` — pass `tool=<script_name>`. Returns that tool's canonical help schema directly. Requires `tool`; without it, returns an error naming `mode=directory` as the discovery path. |
+| `directory` | Auto-discover every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) and check each one's `tool_manifest` for `help` in its supported modes — no static list to maintain, new tools appear automatically as long as they implement `mode=help`. |
+| `tool_manifest` | Self-description (UMP contract). |
 
 ```yaml
-action: about
+# System overview
+zen_dojotools_help:
+  mode: about
+
+# Proxy to another tool's help
+zen_dojotools_help:
+  mode: help
+  tool: zen_dojotools_finance
+
+# Discover every help-capable tool currently loaded
+zen_dojotools_help:
+  mode: directory
 ```
 
-Useful for giving the AI a fresh picture of what's available when its context is stale.
+`action=` remains as a backward-compatible alias for `about`/`tool_manifest` only — use `mode=` for the full mode set, including `help` and `directory`.
+
+Useful for giving the AI a fresh picture of what's available when its context is stale, or for routing a "how do I use X" question straight to X's own documentation instead of guessing.
 
 ---
 
@@ -186,11 +206,9 @@ Use this when a script can't find a cabinet it expects — it shows which volume
 
 ---
 
-## zen_dojotools_notification_router
+## zen_dojotools_notification_router — Retired
 
-**Deprecated.** New sends should use `zen_dojotools_postman` with `mode: resolve_and_dispatch`. Postman owns the current authority stack, kata_input derivation, image payloads, actionable response buttons, and full notification_data passthrough.
-
-This script remains for backwards compatibility with existing automations and will be removed in a future release. The dispatcher still routes `zen_dojotools_notification_router` calls for this reason.
+**No longer exists (2026.7.1).** There was never a backing script behind this name — only a dispatcher compat arm forwarding the tool name. That arm was removed in dispatcher v5.3.0 (2026-07-04); a caller using this name now gets the dispatcher's `unknown_tool` structured fault. Use `zen_dojotools_postman` with `mode: resolve_and_dispatch` directly — it owns the authority stack, `kata_input` derivation, image payloads, actionable response buttons, and full `notification_data` passthrough.
 
 ---
 

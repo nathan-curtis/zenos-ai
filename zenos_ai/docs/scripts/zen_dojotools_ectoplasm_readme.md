@@ -1,4 +1,4 @@
-# Zen DojoTools Ectoplasm — 5.1.0
+# Zen DojoTools Ectoplasm — 6.0.0
 
 *Spook/HA extended surface wrapper — repairs, areas, floors, entity lifecycle, labels, integrations*
 
@@ -22,6 +22,8 @@ Ectoplasm is ZenOS-AI's interface to the extended HA surface provided by the [Sp
 **Fully MCP-exposed.** Friday can use it directly for structural home management tasks.
 
 ---
+
+**`mode` is now the primary selector (v6.0.0), per the project-wide standardization on `mode:` across all dojotools.** `action_type` still works — `mode` takes priority, `action_type` is the fallback — but is a deprecated alias going forward. Every example below using `action_type:` still works unchanged.
 
 ## The Confirm Gate
 
@@ -101,6 +103,8 @@ data:
 
 **Floor level convention:** `0` = ground, `1` = first/upper, `-1` = basement. Optional — purely informational.
 
+**Fixed (v6.0.0):** `floor_assign_area`/`floor_unassign_area` previously called the underlying HA service directly and reported `status: success` unconditionally — a silent no-op (e.g. a non-existent floor or area) was reported as a success with no way to detect it. Both actions now route through the REST API, check the actual HTTP status, and report `status: error` with the real response body when the assignment didn't take.
+
 ---
 
 ### Entity Lifecycle
@@ -158,11 +162,23 @@ Use `ghost_list` first to preview what would be removed.
 
 ---
 
+### Input Numbers (v6.0.0, requires Spook v5.0.0+)
+
+| Action | What It Does | Key Fields |
+|---|---|---|
+| `input_number_create` | Create a new `input_number` helper. | `number_name` (required), `number_entity_id` (optional — auto-generated if blank), `number_min`, `number_max`, `number_initial`, `number_step`, `number_display_mode`, `number_unit`, `number_icon` |
+| `input_number_delete` | Delete an `input_number` helper by entity_id. | `number_entity_id` |
+
+Same confirm-gate pattern as everything else here — preview first, `confirm_action: true` to execute.
+
+---
+
 ## Field Reference
 
 | Field | Required | Used By | Description |
 |---|---|---|---|
-| `action_type` | Yes | All | Operation to perform (see action tables above) |
+| `mode` | Yes (or `action_type`) | All | Operation to perform (see action tables above). Primary selector as of v6.0.0. |
+| `action_type` | Deprecated alias | All | Deprecated fallback for `mode` — still fully supported. |
 | `issue_id` | Conditional | `repair_create`, `repair_remove` | Repair issue ID. Auto-prefixed `zenos_` if not already. |
 | `title` | Conditional | `repair_create` | Human-readable repair title |
 | `issue_description` | Conditional | `repair_create` | Repair body text |

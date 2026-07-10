@@ -74,8 +74,9 @@ This separation is intentional: **registration confirms capability, not reachabi
 | `firefly_iii` | `zen_stack_firefly` | **Bootstrap (introduced this release)** | label, person | transaction_evidence |
 | `wiki_js` | `zen_sutra_wikijs` | Previously manual; now bootstrap | label, concept, area_id, zone, person | article_evidence |
 | `paperless_ngx` | `zen_stack_paperless` | Previously manual; now bootstrap | label, person, area_id, zone | document_evidence |
+| `battery_notes` | `zen_stack_battery` | Pulled 2026-07-04 — HALMark: PASS | area_id | battery_evidence |
 
-`zen_stack_firefly` introduced the pattern. WikiJS and Paperless-NGX adopted it in the same release.
+`zen_stack_firefly` introduced the pattern. WikiJS and Paperless-NGX adopted it in the same release. `battery_notes` is the first provider sourced from a third-party HACS integration rather than a self-hosted backend — see [Battery Notes Plugin](battery_notes.md).
 
 ---
 
@@ -123,3 +124,4 @@ The Lens dispatcher (`zen_dojotools_lens_dispatch`) does **not** need an arm for
 - [Firefly III Plugin](firefly_iii.md) — first provider to use auto-registration
 - [Paperless-NGX Plugin](paperless_ngx.md)
 - [WikiJS Plugin](wiki_js.md)
+- [Battery Notes Plugin](battery_notes.md) — HACS-integration-backed provider

@@ -304,3 +304,65 @@ Full docs: see Clue release notes — ships as part of the v5.1.0 identity surfa
 **Cortex v43:** Load via `zen_admintools_prompt_loader: cortex_version: latest`. Previous v42 slot remains available at `cortex_version: v42`.
 
 **LiveDrawer setup:** No migration needed. LiveDrawers are new drawer types — existing drawers are unaffected. Compose new LiveDrawers via Scribe with the KF4 schema fields (`tool`, `seed`, `area_seed`) in the drawer value.
+
+---
+
+# 2026.7.1 Patch
+
+**Base:** 2026.7.0 'Neo'
+
+## Summary
+
+A pull from the live reference install (H:\) covering the KF5 self-registration pattern, a Firefly III codex tier (finance domain modules that plug into `zen_dojotools_finance` without living in its main file), a Grocy backport, a new Lens Bus provider, and a batch of dojotools fixes. Every file's docs were read against the actual code — not diffed against H's copy of the same doc, which can be equally stale — before being called done.
+
+## KF5 — Self-Registering Tools
+
+Tools can now declare their own KFC dojo-drawer contract via `mode=kfc_manifest` and have `zen_dojotools_manifest mode=bootstrap_kfc` discover and mount them automatically — no Scribe authoring step required for tools that already exist as scripts. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
+
+- **`dojotools_manifest.yaml`** (v6.2.0) — `bootstrap_kfc`, `health_refresh` (cached per-tool compliance scan), `domains` (tool/domain/peers graph), `audit_help`. `bootstrap_kfc` reads `component_summary` from each tool's response and returns it in its own result, but does not persist it into the cabinet drawer — matches Scribe's KF4 `trim_description` space-saving convention; the ninja summarizer resolves an empty drawer field from the HA label's description at read time.
+- **`dojotools_filecabinet.yaml`** — mode-scoped `tool:mode` callout whitelist entries alongside legacy plain/`tool:*` forms.
+- **`dojotools_admintools.yaml`** (v5.3.0) — `prompt_loader mode=whitelist whitelist_type=fc` add path rejects bare `*`/empty-suffix `tool:` entries. Also (pulled as a dependency, not originally scoped): `cabinetadmin mode=expand_drawer` (atomic single-drawer migration to an expansion cabinet, with rollback) and a `repair_volumeinfo` fix for the missing-header case.
+- **5 dojotools files gained `kfc_manifest`:** `room_manager` (v5.4.1, plus tax/real-estate room fields feeding the Firefly depreciation codex), `alertmanager` (write-verification fix on `alert_clear`), `camera` (pure refactor, no behavior change), `security_manager` (4 components: rollup + perimeter/panel/cameras sub-components), `systemtools` (v5.2.0, plus `home_status`/`home_mode`/`quiet_hours`/`work_hours`/`scheduler_anchors`/`guest_mode` — see [components/systemtools.md](../components/systemtools.md)).
+
+## Firefly III — Codex Tier
+
+`zen_dojotools_finance` (v2.3.0) gains a **codex tier**: sibling YAML files that register into `codex_registry` and dispatch through the main tool via new `index`/`inspect`/`bootstrap_codices`/`report` cases, without living inside `firefly_iii.yaml` itself. See [Firefly III — Codex Tier](../plugins/firefly_iii.md#codex-tier).
+
+- **`zen_codex_finance_depreciation`** (v1.0.0) — household asset depreciation: SL/DDB schedules, Firefly posting, business-use % splits, disposal, warranty tracking. Zero cabinet footprint for asset data.
+- **`zen_codex_finance_cogs`** (v1.2.0) — auto-posts COGS to Firefly when Grocy stock tagged `cogs_tracked` is consumed.
+- Also: `transaction_get`, `budget_summary`, `finance_rollup`, `category_create` cases. REST dispatcher renamed `zen_sutra_firefly` → `zen_root_firefly`.
+
+## Grocy (v5.3.1)
+
+- **Fixed:** `stock_entry_update` called with only `entry_id` (no product context) silently sent an empty PUT payload — now fetches the entry directly and derives the true `stock_id` from it.
+- **New:** Perishable Storage Coaching (`best_before_days`, `stock_audit_perishable`), COGS Coaching hooks, a Grocy-side battery-stock management suite (distinct from the Lens Bus battery provider below), and depreciable-asset/tax userfields feeding the Firefly depreciation codex.
+- **New file:** `sutra_logistics.yaml` — KFC manifest for `logistics_intake`/`logistics_volatile`. Battery KFC lives in `zen_stack_battery` instead, not duplicated here.
+
+## Battery Notes — New Lens Bus Provider
+
+`zen_stack_battery` (v1.2.1, HALMark PASS) — Lens Bus provider over the HACS **Battery Notes** integration (`andrew-codechimp/ha-battery-notes`, a required third-party dependency — this is the first ZenOS stack provider sourced from a HACS integration rather than a self-hosted backend). See [Battery Notes Plugin](../plugins/battery_notes.md).
+
+## Postman — `direct_dispatch`
+
+New mode: an authority-stack bypass, straight to `notify.*` targets. Requires `override: true` or the call is blocked and logged. This is the migration path for any caller still using the retired `zen_dojotools_notification_router` script name. The dispatcher's two legacy compat arms for that script name were removed (dead code — the script no longer exists); an old-style caller now gets the dispatcher's normal `unknown_tool` structured fault instead.
+
+## Other Fixes
+
+- **ZenZork** (v1.7.0) — `llm_narration` toggle: live LLM-generated narration via `ai_task.generate_data`, falling back to template narration if the pipe is gated off or the response is too short.
+- **Labels** — `mode` is now the primary selector, matching the project-wide standardization on `mode:` across all dojotools calls. `action_type` remains a deprecated, fully-supported alias.
+- **AutoVac** (v5.3.0) — new day-of-week priority scheduler (`mode=schedule`, `schedule_blocks`) and Lens Bus provider modes (`stacks_by_anchor`/`register`/`unregister`/`health`/`inspect`) — reachable only via direct script call, not yet wired into the dispatcher.
+
+## HALMark Hardening Beyond Straight Copies
+
+Several FG-class guard gaps were found and fixed during this pull (not present in the pulled-from copies as-is):
+
+| File | Fix |
+|---|---|
+| `dojotools_autovac.yaml`, `battery_notes.yaml`, `grocy.yaml` (`battery_overdue`) | FG-41 — `as_datetime()` calls guarded against silent-`None` on unparseable timestamps |
+| `grocy.yaml` (`stock_audit_perishable`) | Numeric-cast guard on `grocy_child_location_ids` child-walk — malformed entries now skip that child instead of raising |
+| `dojotools_alertmanager.yaml` | `tool_manifest` reported `1.0.0` while `kfc_manifest` reported `5.1.0` for the same tool — aligned |
+| `dojotools_systemtools.yaml` | Same stale-version bug, caught by Nyx after the first fix shipped — `tool_manifest`/`kfc_manifest` said `5.1.1`, header said `5.2.0` — aligned. Also: anchor-conflict string comparison lacked an unknown/unavailable guard in **two** places (`home_status` display and the `scheduler_anchors` setter itself) |
+| `dojotools_security_manager.yaml` | Missing `version` field on the parent `security_manager` component (sub-components had it) |
+| `zen_codex_finance_depreciation.yaml` | Unguarded date-slice on a null `placed_in_service_date`; bare `float()` casts in business-use split math; `_setup_canonical_names` was missing the 8 new tax/allocation userfields Grocy now writes |
+
+All fixes verified live by Nyx against the actual instance (config check, reload, and targeted test cases against real data) before being called done.

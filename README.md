@@ -10,11 +10,33 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Stable: 2026.7.0 'Neo'** | Previous: 2026.6.0 'Clue'
+**Stable: 2026.7.1** | Base: 2026.7.0 'Neo' | Previous: 2026.6.0 'Clue'
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
+
+**What's in 2026.7.1:** A patch on top of Neo — tools can now self-register their own KFC contract (KF5), Firefly III gains a codex tier for depreciation and COGS, Grocy gets a real fix plus new coaching features, and there's a new Lens Bus provider for battery health.
+
+**KF5 — Self-Registering Tools**
+- **`bootstrap_kfc`** — tools declare their own KFC dojo-drawer contract via `mode=kfc_manifest`; `zen_dojotools_manifest` discovers and mounts them automatically, no Scribe authoring step needed. Adopted by Room Manager, AlertManager, Camera, Security Manager, and SystemTools.
+- **FileCabinet mode-scoped whitelist** — `tool:mode` callout entries let a live drawer reach exactly one mode on a tool (e.g. a read-only self-description), never a write path.
+
+**Finance & Inventory**
+- **Firefly III codex tier** — `zen_codex_finance_depreciation` (asset depreciation: SL/DDB schedules, business-use splits, disposal) and `zen_codex_finance_cogs` (auto-posts COGS to Firefly from Grocy stock consumption).
+- **Grocy v5.3.1** — fixed `stock_entry_update` silently sending empty payloads on entry-id-only calls. New: Perishable Storage Coaching, COGS Coaching, battery-stock tracking, tax/depreciable-asset userfields.
+
+**New Lens Bus Provider**
+- **Battery Notes** (`zen_stack_battery`) — first ZenOS stack provider backed by a HACS integration (`ha-battery-notes`) rather than a self-hosted service. Battery health by area, cross-referenced with Grocy stock.
+
+**Other**
+- **Postman `direct_dispatch`** — authority-stack bypass mode, the migration path for the retired `notification_router` script.
+- **ZenZork v1.7.0** — `llm_narration` toggle for live LLM-generated room narration, template fallback.
+- **Labels** — `mode` is now the primary selector across all dojotools, matching the project-wide move away from `action_type`.
+
+→ [Patch Notes — 2026.7.1](zenos_ai/docs/releases/neo.md#20267-1-patch)
+
+---
 
 **What's in Neo:** *I know Kung Fu.* Neo turns a collection of well-made tools into a system that knows itself, talks to itself, and reasons from live structured memory.
 
@@ -263,7 +285,7 @@ packages/zenos_ai/
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
     dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
-    dojotools_zenzork.yaml        — ZenZork v1.6.0 — text adventure on live RM topology, DUNGEONMIND narrator, item commands, character sheet, quests
+    dojotools_zenzork.yaml        — ZenZork v1.7.0 — text adventure on live RM topology, DUNGEONMIND narrator, item commands, character sheet, quests, LLM narration
 
     — Productivity —
     dojotools_office.yaml      — Office integrations (Teams, mail)
@@ -283,6 +305,7 @@ packages/zenos_ai/
 
   plugins/                     — Optional — install only what you need
     grocy/grocy.yaml
+    grocy/sutra_logistics.yaml — KFC manifest: logistics_intake, logistics_volatile
     mealie/mealie.yaml
     mealie/kitchen_sync.yaml   — companion to mealie
     zammad/zammad.yaml
@@ -290,6 +313,9 @@ packages/zenos_ai/
     paperless_ngx/paperless_ngx.yaml
     twenty/twenty.yaml
     firefly_iii/firefly_iii.yaml
+    firefly_iii/zen_codex_finance_depreciation.yaml — codex tier: household asset depreciation
+    firefly_iii/zen_codex_finance_cogs.yaml         — codex tier: COGS auto-posting from Grocy
+    battery_notes/battery_notes.yaml — Lens Bus provider: HACS Battery Notes cross-reference
 
 custom_templates/zenos_ai/
   zen_os_1.jinja               — Prompt engine and macro library

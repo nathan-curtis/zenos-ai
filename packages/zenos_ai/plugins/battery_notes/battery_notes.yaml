@@ -1,0 +1,536 @@
+###############################################################################
+# zen_stack_battery v1.2.1
+# Battery Notes Lens Provider — ZenOS Lens Bus integration.
+# Consume area_id anchors → battery_evidence per device.
+# Internal only: not MCP-exposed. Consumers call zen_dojotools_lens_dispatch.
+# Source: HACS "Battery Notes" integration (github.com/andrew-codechimp/ha-battery-notes)
+#   — battery_plus sensors + attributes. Not a native HA/ZenOS capability; requires
+#   this third-party integration installed and configured for evidence to be non-empty.
+# HALMark: PASS 2026-07-04
+#
+# v1.2.1 (Nyx fix, 2026-07-04): stacks_by_anchor was returning zero evidence to the
+#   Lens dispatcher despite matching devices — HA's implicit literal_eval-based
+#   native-type coercion was silently stringifying _sb_evidence (a list of dicts),
+#   and the dispatcher's `is not string` guard dropped it. Fixed via explicit
+#   tojson/from_json round-tripping instead of relying on implicit coercion. Also
+#   stringified battery_last_reported (was a native datetime, broke tojson
+#   serialization). UAT confirmed live against a real low-battery device — a
+#   remote-control entity at 3%, battery_low=true — surfaced correctly end to end.
+#   Config check clean, reloaded live.
+#
+# v1.2.0 (Zen pull, 2026-07-04): added inspect + audit modes (Lens Contract was
+#   missing both). Guarded as_datetime(_lrt) against silent-None on unparseable
+#   battery_last_replaced (FG-41). Guarded register/unregister against empty
+#   household cabinet resolution.
+#
+# Lens Bus — Auto-Registration:
+#   tool_manifest returns: tier=stacks, provider_key=battery_notes, register_mode=register.
+#   On boot/daily, zen_dojotools_manifest mode=bootstrap_stacks calls tool_manifest on all
+#   zen_stack_* scripts, then calls mode=register for any that declare register_mode
+#   and are not already in lens_registry.
+#   mode=register:   writes battery_notes entry to lens_registry household cabinet key.
+#   mode=unregister: removes battery_notes entry from lens_registry.
+#   Skip: add 'battery_notes' to household cabinet key lens_bootstrap_skip to suppress.
+###############################################################################
+script:
+  zen_stack_battery:
+    alias: Zen Stack Battery
+    description: >-
+      Battery Notes Lens Provider (v1.0.0). Internal stack adapter for the ZenOS Lens Bus.
+      Provides battery_evidence for area_id anchors — per-device battery level, type,
+      low status, and last-replaced timestamp. Not MCP-exposed —
+      consumers call zen_dojotools_lens_dispatch.
+    mode: parallel
+    fields:
+      mode:
+        description: Provider mode (stacks_by_anchor, kfc_manifest, register, unregister, health, inspect, audit, tool_manifest, help)
+        selector:
+          text:
+      component:
+        description: Filter to a single KFC component key (for live drawer resolution)
+        selector:
+          text:
+      action:
+        description: Alias for mode (lens dispatcher compat)
+        selector:
+          text:
+      anchor_type:
+        description: Anchor type — area_id
+        selector:
+          text:
+      anchor_ids:
+        description: JSON array of anchor ID strings (HA area_ids)
+        selector:
+          text:
+      caller_token:
+        description: Caller token for audit trail
+        selector:
+          text:
+    sequence:
+    - variables:
+        _mode_norm: >-
+          {{ (mode | default('') if mode is defined and mode | string | trim != ''
+              else (action | default('help') if action is defined else 'help'))
+              | string | trim | lower }}
+        _anchor_type_norm: "{{ anchor_type | default('') | string | trim | lower }}"
+        _anchor_ids_raw: "{{ anchor_ids | default('[]') }}"
+        _anchor_ids: >-
+          {%- set _v = _anchor_ids_raw -%}
+          {%- if _v is sequence and _v is not string -%}{{ _v }}
+          {%- elif _v is string and _v | trim != '' -%}{{ _v | from_json(none) | default([]) }}
+          {%- else -%}[]{%- endif -%}
+        _component_filter: "{{ component | default('') | string | trim | lower if component is defined else '' }}"
+        tool_name: zen_stack_battery
+        tool_version: 1.2.1
+
+    # ── tool_manifest ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "tool_manifest" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              tier: stacks
+              domain: maintenance
+              provider_key: battery_notes
+              register_mode: register
+              consumes: [area_id]
+              returns: [battery_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              lens_provider: true
+              kfc_manifest: true
+              kfc_components:
+              - battery_health
+              preferred_state:
+                stripe: 2
+                impact: soft
+        - stop: return
+          response_variable: final_response
+
+    # ── kfc_manifest ───────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "kfc_manifest" }}'
+        sequence:
+        - variables:
+            _batt_kfc_defs:
+            - kata_key: battery_health
+              friendly_name: Battery Health
+              label: Battery Health
+              component_summary: >-
+                Devices with low batteries, grouped by area. Cross-referenced against
+                Grocy disposable stock to show on-hand supply for needed types.
+              component_instructions: >-
+                You will receive a battery_status result. Work only from the data provided.
+
+                result.total_low is the count of low-battery devices.
+                result.all_ok is true if no devices are low.
+                result.areas is a dict keyed by area_id, each with devices[] and types_needed[].
+                result.stock is a dict keyed by battery type (e.g. "2× AA") with stock_amount.
+
+                If result.all_ok == true or total_low == 0:
+                urgency=0, attention=null, watchlist=[], error=null,
+                general_inference: "All batteries OK."
+
+                If low devices present:
+                urgency=2. attention: "{{ total_low }} device(s) with low batteries."
+                watchlist: list each device_name + area.
+                If any types_needed have stock_amount == 0 or null: bump urgency to 3,
+                note in attention that stock is depleted for that type.
+                general_inference: brief summary by area. Mention stock status for needed types.
+              tool: zen_stack_battery
+              seed:
+                tool: zen_dojotools_inventory
+                params:
+                  mode: battery_status
+              trigger_subscriptions: daily_midnight,daily_noon
+              drift_threshold: 24
+              emission_cooldown_minutes: 1440
+              delay_seconds: 10
+              meta:
+                enabled: true
+                requires:
+                  cert: ''
+                  level: 0
+
+        - variables:
+            _batt_kfc_filtered: >-
+              {%- if _component_filter == '' -%}
+                {{ _batt_kfc_defs }}
+              {%- else -%}
+                {{ _batt_kfc_defs | selectattr('kata_key', 'equalto', _component_filter) | list }}
+              {%- endif -%}
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: kfc_manifest
+              kfc: '{{ _batt_kfc_filtered }}'
+              count: '{{ _batt_kfc_filtered | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── health ─────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "health" }}'
+        sequence:
+        - variables:
+            _sb_all: >-
+              {{ integration_entities('battery_notes')
+                 | select('match', 'sensor\\..*_battery_plus')
+                 | list }}
+            _sb_count: "{{ _sb_all | length }}"
+            _sb_ok: "{{ _sb_count | int(0) > 0 }}"
+        - variables:
+            final_response:
+              status: "{{ 'ok' if _sb_ok else 'warn' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: health
+              provider: battery_notes
+              battery_notes_entities: '{{ _sb_count | int(0) }}'
+              message: >-
+                {{ 'Battery Notes integration healthy — ' ~ _sb_count ~ ' battery+ sensor(s) found.'
+                   if _sb_ok else
+                   'No battery_plus sensors found. Battery Notes may not be configured or no devices are tracked yet.' }}
+        - stop: return
+          response_variable: final_response
+
+    # ── inspect ────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "inspect" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: inspect
+              provider: battery_notes
+              consumes: [area_id]
+              returns: [battery_evidence]
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              failure_policy: soft
+              content_policy: standard
+              description: >-
+                Maps area_id anchors to devices via the HACS "Battery Notes" integration
+                (andrew-codechimp/ha-battery-notes) — reads battery_plus sensor attributes
+                (battery_type, battery_quantity, battery_low, battery_last_replaced,
+                battery_last_reported) for every entity in the anchor's area. Requires
+                the Battery Notes HACS integration to be installed and configured;
+                without it, no battery_plus sensors exist and evidence is always empty.
+        - stop: return
+          response_variable: final_response
+
+    # ── audit ──────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "audit" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: audit
+              provider: battery_notes
+              consumes: [area_id]
+              returns: [battery_evidence]
+              security_violations: []
+              notes: >-
+                Read-only lens path — battery_plus sensor attributes are read via
+                state_attr only, no writes to the Battery Notes integration itself.
+                register/unregister write only to the lens_registry cabinet key.
+                Strictly r-only per security_act.
+        - stop: return
+          response_variable: final_response
+
+    # ── register ───────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "register" }}'
+        sequence:
+        - variables:
+            _sb_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _sb_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: register
+                  provider: battery_notes
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot register
+                    without a household cabinet to write into.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sb_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sb_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sb_existing_reg: >-
+              {%- set raw = _sb_reg_read if _sb_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sb_provider_decl:
+              provider: battery_notes
+              configured_by: zen_stack_battery
+              department: stacks
+              enabled: true
+              status: available
+              tool: zen_stack_battery
+              mode: stacks_by_anchor
+              consumes: [area_id]
+              returns: [battery_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+        - variables:
+            _sb_new_reg: "{{ _sb_existing_reg | combine({'battery_notes': _sb_provider_decl}) }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sb_reg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sb_household_entity }}"
+            key: lens_registry
+            value: "{{ _sb_new_reg | tojson }}"
+        - variables:
+            _sb_reg_ok: >-
+              {{ _sb_reg_write is mapping and _sb_reg_write.get('status', '') == 'success' }}
+            final_response:
+              status: "{{ 'success' if _sb_reg_ok else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: register
+              provider: battery_notes
+              message: >-
+                {{ 'Provider battery_notes registered in lens_registry.' if _sb_reg_ok else
+                   'Registration failed: ' ~ (_sb_reg_write.get('error', 'unknown')
+                   if _sb_reg_write is mapping else 'no response') }}
+        - stop: return
+          response_variable: final_response
+
+    # ── unregister ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "unregister" }}'
+        sequence:
+        - variables:
+            _sb_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _sb_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: unregister
+                  provider: battery_notes
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot unregister
+                    without a household cabinet to read/write.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sb_ureg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sb_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sb_ureg_existing: >-
+              {%- set raw = _sb_ureg_read if _sb_ureg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sb_ureg_new: >-
+              {%- set ns = namespace(result={}) -%}
+              {%- for k, v in _sb_ureg_existing.items() if k != 'battery_notes' -%}
+                {%- set ns.result = ns.result | combine({k: v}) -%}
+              {%- endfor -%}
+              {{ ns.result }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sb_ureg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sb_household_entity }}"
+            key: lens_registry
+            value: "{{ _sb_ureg_new | tojson }}"
+        - variables:
+            final_response:
+              status: "{{ 'success' if _sb_ureg_write is mapping and _sb_ureg_write.get('status', '') == 'success' else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: unregister
+              provider: battery_notes
+              message: Provider battery_notes removed from lens_registry.
+        - stop: return
+          response_variable: final_response
+
+    # ── stacks_by_anchor ───────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "stacks_by_anchor" }}'
+        sequence:
+        - variables:
+            _sb_evidence: []
+            _sb_all_plus: >-
+              {{ integration_entities('battery_notes')
+                 | select('match', 'sensor\\..*_battery_plus')
+                 | list }}
+        - repeat:
+            for_each: >-
+              {{ _anchor_ids if _anchor_ids is sequence and _anchor_ids is not string else [] }}
+            sequence:
+            - variables:
+                _sb_anchor_id: "{{ repeat.item | string | trim }}"
+            - choose:
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "area_id" and _sb_anchor_id != "" }}'
+                sequence:
+                - variables:
+                    _sb_area_entities: >-
+                      {%- set ns = namespace(ents=[]) -%}
+                      {%- for ent in _sb_all_plus -%}
+                        {%- if area_id(ent) == _sb_anchor_id -%}
+                          {%- set ns.ents = ns.ents + [ent] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.ents }}
+                - variables:
+                    _sb_evidence_prev: >-
+                      {%- set _v = _sb_evidence -%}
+                      {%- if _v is sequence and _v is not string -%}{{ _v }}
+                      {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+                      {%- else -%}[]{%- endif -%}
+                - variables:
+                    _sb_evidence: >-
+                      {%- set ns = namespace(items=_sb_evidence_prev) -%}
+                      {%- for ent in _sb_area_entities -%}
+                        {%- set _st  = states(ent) -%}
+                        {%- set _att = state_attr(ent, 'battery_type') | default('', true) -%}
+                        {%- set _qty = state_attr(ent, 'battery_quantity') | default(1, true) -%}
+                        {%- set _taq = state_attr(ent, 'battery_type_and_quantity') | default('', true) -%}
+                        {%- set _low = state_attr(ent, 'battery_low') | default(false, true) -%}
+                        {%- set _lrt = state_attr(ent, 'battery_last_replaced') | default('', true) -%}
+                        {%- set _lrp = state_attr(ent, 'battery_last_reported') | default('', true) | string -%}
+                        {%- set _dn  = state_attr(ent, 'device_name') | default('', true) -%}
+                        {%- set _thr = state_attr(ent, 'battery_low_threshold') | default(10, true) -%}
+                        {%- set _dsr = ((now() - as_datetime(_lrt)).days)
+                                       if (_lrt and _lrt | trim != '' and as_datetime(_lrt) is not none) else none -%}
+                        {%- set ns.items = ns.items + [{
+                          'id': 'batt_' ~ _sb_anchor_id ~ '_' ~ (ent | replace('.', '_')),
+                          'type': 'battery_evidence',
+                          'provider': 'battery_notes',
+                          'area_id': _sb_anchor_id,
+                          'entity_id': ent,
+                          'device_name': _dn,
+                          'battery_pct': (_st | int(none)),
+                          'battery_type': _att,
+                          'battery_quantity': _qty,
+                          'battery_type_and_quantity': _taq,
+                          'battery_low': _low,
+                          'battery_low_threshold': _thr,
+                          'last_replaced': _lrt | string,
+                          'last_reported': _lrp | string,
+                          'days_since_replaced': _dsr,
+                          'anchor_type': _anchor_type_norm,
+                          'anchor_id': _sb_anchor_id,
+                          'content_redacted': false
+                        }] -%}
+                      {%- endfor -%}
+                      {{ ns.items | tojson }}
+
+        - variables:
+            _sb_evidence_final: >-
+              {%- set _v = _sb_evidence -%}
+              {%- if _v is sequence and _v is not string -%}{{ _v }}
+              {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+              {%- else -%}[]{%- endif -%}
+        - variables:
+            final_response:
+              status: success
+              result: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: stacks_by_anchor
+              provider: battery_notes
+              anchor_type: '{{ _anchor_type_norm }}'
+              anchor_ids: '{{ _anchor_ids }}'
+              evidence: '{{ _sb_evidence_final }}'
+              count: '{{ _sb_evidence_final | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── help / unknown mode ────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: info
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          mode: help
+          provider: battery_notes
+          description: >-
+            Battery Notes Lens Provider. Internal stack adapter for the ZenOS Lens Bus.
+            Call via zen_dojotools_lens_dispatch, not directly.
+          modes:
+            stacks_by_anchor: Fetch battery_evidence for area_id anchors — per-device battery level, type, low status, days since replaced
+            kfc_manifest: Returns KFC component definitions for bootstrap_kfc wiring (battery_health component)
+            register: Register this provider in the household lens_registry cabinet drawer
+            unregister: Remove this provider from lens_registry
+            health: Check Battery Notes integration entity count
+            inspect: Static capability descriptor — consumes/returns/security_act/description
+            audit: Read-only compliance self-attestation — security_violations + notes
+            tool_manifest: Full tool manifest declaration
+    - stop: return
+      response_variable: final_response

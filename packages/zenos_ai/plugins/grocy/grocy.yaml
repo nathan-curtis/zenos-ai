@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI Plugin: Grocy ERP Integration
-# Version: 5.2.3
+# Version: 5.3.1
 #
 # UAT:     Critical path PASS — 2026-03-02
 #          (locations_add, stock_buy_product, stock_check_item,
@@ -15,6 +15,17 @@
 # HALMark: PASS — 2026-03-02 (v0.9.10-draft)
 #          (selectors, default(none), selectattr guards, no hardcoded IDs,
 #           no initial: on input_text, filter ordering — all clean)
+#
+# v5.3.1 (Zen pull, 2026-07-04 — hardening on top of H's content, no behavior
+#   change on valid input): guarded as_datetime(_lrt) in battery_overdue against
+#   silent-None on unparseable battery_last_replaced (FG-41). Guarded the
+#   grocy_child_location_ids cid|int casts in stock_audit_perishable's child-walk
+#   against non-numeric entries — malformed userfield content now skips that
+#   child instead of raising.
+#   Verified live (2026-07-04): config check clean, reload confirmed live.
+#   battery_overdue returned 12 devices cleanly, no regression from the guard.
+#   stock_audit_perishable walked 16 perishable locations, correctly flagged
+#   1 real violation, no crash from the cid numeric-safety guard.
 #
 # SETUP
 #
@@ -163,6 +174,28 @@ script:
             step: 1
         default: 20
     sequence:
+    # --- tool_manifest early exit ---
+    - if: "{{ (action_type | default('') | lower) == 'tool_manifest' or (mode | default('') | lower) == 'tool_manifest' }}"
+      then:
+      - variables:
+          result: >-
+            {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+            {{- MF.tool_manifest(
+              tool='zen_sutra_grocy',
+              display_name='Grocy Sutra (Internal)',
+              tier='sutra',
+              version='1.7.0',
+              health={'configured': true, 'status': 'ok', 'notes': []},
+              required_labels=['dojotools'],
+              optional_labels=['grocy', 'inventory'],
+              failure_policy='soft',
+              mcp_exposed=false,
+              stripe=2,
+              impact='soft',
+              caller_token=caller_token | default('')
+            ) | from_json -}}
+      - stop: zen_sutra_grocy tool_manifest
+        response_variable: result
     - variables:
         inv_action_type: "{% set v = action_type | default('help') %} {% if v in ['post','create']
           %}\n  create\n{% elif v in ['get','read'] %}\n  read\n{% elif v in ['put','update']
@@ -445,9 +478,9 @@ script:
   zen_dojotools_inventory:
     alias: Zen DojoTools Inventory
     description: >-
-      Household inventory (5.2.3) — full ERP stack. Stock, shopping, catalog, locations,
+      Household inventory (5.3.0) — full ERP stack. Stock, shopping, catalog, locations,
       chores, tasks, recipes, units, batteries, userentities, userobjects, userfields CRUD.
-      99 operations. Names resolve to IDs.
+      102 operations. Names resolve to IDs.
       mode=help returns a structured cases dict — CONTRACT for tool-to-tool calls.
       TASK TAXONOMY — use this (not zen_dojotools_todo) for tasks tied to a product/location.
       Inventory Task = asset todo. Inventory Chore = task + stock action on execution.
@@ -461,6 +494,16 @@ script:
       zen_dojotools_library section=catalog. Inventory owns the Grocy product (the Work);
       Library owns the physical copy (the Item). locations_reparent_bulk inherits
       homeassistant_area from parent — idempotent, safe to re-run.
+      COGS COACHING (soft, never blocks): stock_check_item/stock_where_is_item/
+      stock_entries_for_item may return coaching hints in the response — e.g. a
+      cogs_tracked product with no positive-price stock entries (COGS will be skipped
+      silently on consume), or an untracked product sitting in a cogs_zone-tagged
+      location. stock_undo_booking does NOT auto-reverse any paired Firefly COGS
+      transaction — if the product was cogs_tracked, coaching will point at
+      zen_dojotools_finance mode=run case=transactions_search tags=grocy_stock_entry:<id>
+      to find it, then case=compensate firefly_transaction_id=<id> confirm=true to reverse.
+      Period-level rollup/reconciliation: zen_dojotools_finance mode=run
+      case=cogs_summary|cogs_reconcile.
     mode: single
     icon: mdi:cart-variant
     fields:
@@ -568,6 +611,13 @@ script:
             - batteries_list
             - batteries_get
             - batteries_charge
+            - batteries_due
+            - batteries_journal
+            - batteries_charge_undo
+            - battery_status
+            - battery_overdue
+            - battery_replace
+            - stock_audit_perishable
             - userfields_list
             - userfields_deploy
             - userfields_repair
@@ -649,12 +699,27 @@ script:
         description: When opened via stock_open_item, auto-move to default consume location.
         selector:
           boolean:
+      no_own_stock:
+        name: No Own Stock
+        description: >-
+          update_product_meta only. Grocy flag meaning "this product has no stock of its
+          own — only aggregate child products' stock". Set false to fix a product that
+          rejects direct stock writes (HTTP 500 / SQLSTATE 23000 constraint violation)
+          despite having no actual child products — an orphaned/inconsistent flag.
+        selector:
+          boolean:
       due_days_after_open:
         name: Due Days After Open
         description: Best-before days after opening (e.g. 180 for a 6-month filter).
         selector:
           number:
             min: 0
+      best_before_days:
+        name: Best Before Days
+        description: Default days from purchase to best-before. -1 = never expires (clears expiry tracking for non-perishables like TP, batteries, paper).
+        selector:
+          number:
+            min: -1
       amount:
         name: Amount
         description: Quantity used for stock math such as buy, consume, or transfer.
@@ -849,7 +914,18 @@ script:
             min: 1
       battery_id:
         name: Battery ID
-        description: Grocy battery ID for batteries_get and batteries_charge.
+        description: Grocy battery ID for batteries_get, batteries_charge, batteries_due, batteries_journal.
+        selector:
+          number:
+            min: 1
+      ha_entity_id:
+        name: HA Entity ID
+        description: Battery Notes source entity ID for battery_replace (e.g. sensor.office_remote_battery_plus).
+        selector:
+          text:
+      days_threshold:
+        name: Days Threshold
+        description: Days since last battery replaced — cutoff for battery_overdue.
         selector:
           number:
             min: 1
@@ -919,7 +995,7 @@ script:
           text:
       catalog_class:
         name: Catalog Class
-        description: "locations_metadata_set: item_type slug (music_recording/book/…) or __intake__ for global intake location."
+        description: "locations_metadata_set: item_type slug, __intake__ for global intake location, or perishable_storage for fridges/pantries/freezers."
         selector:
           text:
       expand:
@@ -1000,11 +1076,15 @@ script:
                 optional_labels=['grocy'],
                 consumes=['grocy_request'],
                 returns=['inventory_data'],
+                modes={'help': 'help', 'manifest': 'tool_manifest', 'register': 'register'},
                 icon='mdi:fridge-outline',
                 color='green',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'inventory', 'lens_anchors': ['area_id'], 'lens_returns': ['player_hint']}) }}
+            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'inventory', 'lens_provider': true, 'lens_anchors': ['area_id'], 'lens_returns': ['player_hint']}) }}
       - stop: tool_manifest
         response_variable: result
 
@@ -1017,14 +1097,15 @@ script:
         response_variable: _inv_reg_raw
         continue_on_error: true
         data:
-          mode: get
-          cabinet: "{{ _inv_hh }}"
+          action_type: get
+          volume_entity_id: "{{ _inv_hh }}"
           key: lens_registry
       - variables:
           _inv_registry: >-
-            {%- set r = _inv_reg_raw.get('value') if _inv_reg_raw is mapping else none -%}
-            {%- set r = r if r is mapping else (r | from_json(none) if r is string and r | trim != '' else none) -%}
-            {{ r if r is mapping else {} }}
+            {%- set raw = _inv_reg_raw if _inv_reg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
           _inv_provider:
             consumes: [area_id]
             returns: [player_hint]
@@ -1034,15 +1115,16 @@ script:
       - variables:
           _inv_merged: "{{ _inv_registry | combine({'inventory': _inv_provider}) }}"
       - action: script.zen_dojotools_filecabinet
+        response_variable: _inv_reg_write
         continue_on_error: true
         data:
-          mode: set
-          cabinet: "{{ _inv_hh }}"
+          action_type: update
+          volume_entity_id: "{{ _inv_hh }}"
           key: lens_registry
           value: "{{ _inv_merged | tojson }}"
       - variables:
           result:
-            status: ok
+            status: "{{ 'success' if _inv_reg_write is mapping and _inv_reg_write.get('status', '') == 'success' else 'error' }}"
             mode: register
             provider: inventory
             registry_entry: "{{ _inv_provider }}"
@@ -1091,7 +1173,7 @@ script:
     - variables:
         show_trace: '{{ show_trace | default(false) }}'
         tool_name: Zen DojoTools Inventory
-        tool_version: 5.3.0
+        tool_version: 5.3.1
         schema_version: "1.3.0"
     # ─── CASE AUTHORING CHECKLIST ────────────────────────────────────────────────
     # When adding a new mode/case to this script, update ALL of the following:
@@ -1131,7 +1213,9 @@ script:
         pid_remove_in: '{{ product_id_remove | default(none) }}'
         product_group_id_in: '{{ product_group_id | default(none) }}'
         move_on_open_in: "{{ move_on_open | default(none) }}"
+        no_own_stock_in: "{{ no_own_stock | default(none) }}"
         due_days_after_open_in: "{{ due_days_after_open | default(none) }}"
+        best_before_days_in: "{{ best_before_days | default(none) }}"
         uid_in: '{{ unit_id | default(none) }}'
         purchase_uid_in: '{{ purchase_unit_id | default(none) }}'
         pid_in: "{% set pid = product_id | default(none) %} {% if pid is not none %}\n
@@ -1214,14 +1298,14 @@ script:
             needs:
             - item
             - location OR location_id
+            - unit OR unit_id (REQUIRED — omitting leaves qu_id_stock null, blocking all stock operations)
             optional:
             - sku
             - brand
             - note
-            - unit OR unit_id
             - confirm_action (bypass dupe guard)
             does: GET dupe-check + POST /objects/products
-            example: "{'mode':'catalog_add_product','item':'Roborock HEPA Filter','location_id':80,'sku':'8.02.0104','brand':'Roborock'}"
+            example: "{'mode':'catalog_add_product','item':'Roborock HEPA Filter','location_id':80,'unit':'each','sku':'8.02.0104','brand':'Roborock'}"
           provision_bom:
             intent: Idempotent BOM provisioner — catalog + meta + labels + chores + stock seed for a set of parts.
             needs:
@@ -1295,6 +1379,7 @@ script:
             - product_group_id (sets product group/category)
             - move_on_open (bool — stock_open_item auto-moves to default_consume_location)
             - due_days_after_open (int — best_before = open_date + N days, e.g. 180 for a 6-month filter)
+            - best_before_days (int — default days from purchase to best-before; -1 = never expires)
             does: PUT /objects/products/{productId}
             supported_fields:
             - description
@@ -1307,13 +1392,23 @@ script:
             - shopping_location_id (preferred shopping/store location)
             - to_location_id (sets default_consume_location_id)
             - product_group_id (product category group ID — use product_groups_list to find IDs)
+            - best_before_days (-1 = never expires; use for non-perishables like paper goods, batteries, cleaning supplies)
+            - due_days_after_open (days until best_before after opening — for filters, open bags, etc.)
+            expiry_semantics:
+              best_before_days=-1: product never expires — no best_before date set on purchase; never appears in volatile/overdue
+              best_before_days=0: best_before set to purchase date (expires immediately — rarely useful)
+              best_before_days=N: best_before = purchase_date + N days
+              due_days_after_open=N: when stock_open_item is called, stamps best_before = open_date + N days
             constraints:
             - No stock semantics are modified
             - description only sent when note/brand/sku provided
             - purchase_unit_id != unit_id requires global QU conversion — run unit_conversions_list first
             - setting unit_id alone preserves existing qu_id_purchase (no self-referential conversion)
             - CANNOT update unit_id if product has null qu_id_stock — delete and recreate instead
-            example: "{'mode':'update_product_meta','item':'pH Up','unit_id':4,'purchase_unit_id':18}"
+            examples:
+            - "{'mode':'update_product_meta','item':'pH Up','unit_id':4,'purchase_unit_id':18}"
+            - "{'mode':'update_product_meta','item':'Toilet Paper','best_before_days':-1}"
+            - "{'mode':'update_product_meta','item':'HVAC Filter','due_days_after_open':90,'move_on_open':true}"
           set_default_location_for_product:
             intent: Set the default storage location for new purchases.
             needs:
@@ -1535,9 +1630,17 @@ script:
             needs:
             - location OR location_id
             - at least one of parent_location, parent_location_id, location_subclass,
-              area_id, placement_priority, note, ha_labels
+              area_id, placement_priority, note, ha_labels, catalog_class
             does: PUT /userfields/locations/{locationId}
-            example: "{'mode':'locations_metadata_set','location':'Left Twin Bookcase','ha_labels':'bookshelf','area_id':'living_room'}"
+            catalog_class_values:
+              __intake__: global catalog intake location (triggers intake semaphore in KFC)
+              perishable_storage: location holds perishable items (fridge, pantry, freezer) — triggers best_before coaching when buying/moving a never-expires product here. Children inherit via parent walk.
+              non_perishable: explicit override — suppresses perishable_storage inheritance from parent. Use on sub-locations inside a perishable parent that don't hold food (e.g. fridge filter slots, wine racks inside pantry).
+            examples:
+            - "{'mode':'locations_metadata_set','location':'Left Twin Bookcase','ha_labels':'bookshelf','area_id':'living_room'}"
+            - "{'mode':'locations_metadata_set','location':'Refrigerator','catalog_class':'perishable_storage'}"
+            - "{'mode':'locations_metadata_set','location':'Pantry','catalog_class':'perishable_storage'}"
+            - "{'mode':'locations_metadata_set','location':'Kitchen Refrigerator - Water Filter Slot','catalog_class':'non_perishable'}"
           locations_delete:
             intent: Permanently delete a Grocy location. Only call when the location has no stock.
             needs:
@@ -1848,7 +1951,8 @@ script:
             notes:
               - match_source field on each result — name | tag | both
               - name match — case-insensitive substring on product name
-              - tag match — exact token match against ha_labels userfield + native Grocy tags
+              - tag match — case-insensitive substring match on ha_labels + native tags; "printer" finds the printer tag, "epson" finds epson products
+              - START HERE for inventory search — name OR tag in one call; run catalog_detail after to get full product details
           object_lens:
             intent: Assemble complete operational object for a product — identity, stock (installed vs spares), maintenance chore, safety, context, actions. One call replaces 5+ manual joins. Use after catalog_find_by_tag, catalog_search, or catalog_find_product to get the full picture.
             needs: [item OR product_id OR homeassistant_area_id]
@@ -1870,6 +1974,76 @@ script:
             - amount
             does: POST /batteries/{batteryId}/charge
             example: "{'mode':'batteries_charge','battery_id':1}"
+          batteries_due:
+            intent: List rechargeable batteries bucketed by charge status (overdue/due_today/due_soon/ok).
+            needs: []
+            does: GET /batteries (shaped)
+            example: "{'mode':'batteries_due'}"
+          batteries_journal:
+            intent: List charge cycle history. Optional battery_id to filter to one device.
+            needs: []
+            optional:
+            - battery_id
+            - page
+            - per_page
+            does: GET /objects/battery_charge_cycles
+            example: "{'mode':'batteries_journal'}"
+          batteries_charge_undo:
+            intent: Undo a specific charge cycle by entry_id (from batteries_journal).
+            needs:
+            - entry_id
+            does: POST /batteries/charge-cycles/{id}/undo
+            example: "{'mode':'batteries_charge_undo','entry_id':42}"
+          battery_status:
+            intent: Low-battery triage across the house grouped by area with Grocy stock cross-ref.
+            needs: []
+            does: HA Battery Notes sensors + Grocy /stock/products (template-only)
+            example: "{'mode':'battery_status'}"
+          battery_overdue:
+            intent: Devices not replaced in N days, sorted by days_since_replaced descending.
+            needs:
+            - days_threshold
+            does: HA Battery Notes sensors (template-only)
+            example: "{'mode':'battery_overdue','days_threshold':180}"
+          battery_replace:
+            intent: Atomic — log battery replacement in Battery Notes AND consume from Grocy stock.
+            needs:
+            - ha_entity_id
+            optional:
+            - item
+            - amount
+            does: battery_notes.set_battery_replaced + /stock/products/{id}/consume
+            example: "{'mode':'battery_replace','ha_entity_id':'sensor.office_remote_battery_plus','item':'AA Batteries','amount':2}"
+          stock_audit_perishable:
+            intent: Audit — find stock in perishable locations with default_best_before_days=-1 (never-expires products that need expiry tracking). Reverse complement of coaching — catches existing violations in live stock.
+            needs: []
+            does: /objects/locations + /objects/stock + /objects/products (paginated, template cross-ref)
+            example: "{'mode':'stock_audit_perishable'}"
+            best_before_days_defaults:
+              guidance: >-
+                When a human asks what best_before_days to set, use these as starting points.
+                Always defer to the product label if available. These are reasonable defaults
+                for products without a printed date or when cataloging in bulk.
+              canned_goods: 1825
+              canned_goods_note: Tomatoes, beans, chili, broth — 5 years is the USDA guidance for low-acid canned goods
+              jarred_sauces: 730
+              jarred_sauces_note: Pasta sauces, pesto, simmer sauces, curry paste, coconut cream — 2 years sealed
+              pickled_and_preserved: 730
+              pickled_and_preserved_note: Jalapeños, olives, peppers, relish, tahini — 2 years sealed
+              condiments: 365
+              condiments_note: Mayo, mustard, salsa, hot sauce — 1 year (refrigerate after opening)
+              dry_spices_and_seasonings: 1095
+              dry_spices_and_seasonings_note: Ground spices lose potency in 2-3 years; whole spices last longer
+              cooking_oils: 730
+              cooking_oils_note: Olive oil, avocado oil — 2 years unopened; 6 months after opening
+              wine: 1825
+              wine_note: Table wine 3-5 years; fine wine longer — use label guidance
+              beer_and_canned_drinks: 365
+              beer_and_canned_drinks_note: 1 year for most; IPAs closer to 90 days
+              dry_pasta_and_rice: 1825
+              dry_pasta_and_rice_note: 5 years dry — effectively indefinite if sealed
+              never_expires_candidates: [batteries, filters, paper_products, cleaning_supplies, tools]
+              never_expires_note: Set best_before_days=-1 for non-food items in perishable locations (e.g. fridge water filters)
           locations_reparent_bulk:
             intent: "Bulk-set parent on child locations. Idempotent — safe to re-run. Inherits parent homeassistant_area to each child. Preserves child area if parent has none (unless confirm_action=true clears it)."
             needs:
@@ -2153,7 +2327,7 @@ script:
               \       \"constraints\": [\n          \"unit_id is required\",\n          \"Renames
               must differ from current name\",\n          \"No stock math is affected\"\n
               \       ]\n      },\n\n      \"shopping_add_product\": {\"intent\": \"Add a specific product to a shopping list.\", \"needs\": [\"item OR product_id\"], \"optional\": [\"amount\", \"list_id\"], \"writes\": \"POST /stock/shoppinglist/add-product\"},\n      \"shopping_remove_product\": {\"intent\": \"Remove a product from a shopping list.\", \"needs\": [\"item OR product_id\"], \"optional\": [\"amount\", \"list_id\"], \"writes\": \"POST /stock/shoppinglist/remove-product\"},\n      \"shopping_clear_list\": {\"intent\": \"Clear a shopping list.\", \"optional\": [\"list_id\", \"done_only\"], \"writes\": \"POST /stock/shoppinglist/clear\"},\n      \"recipes_list\": {\"intent\": \"List all Grocy recipes.\", \"reads\": \"GET /objects/recipes\"},\n      \"recipes_fulfillment\": {\"intent\": \"What recipes can I make with current stock?\", \"reads\": \"GET /recipes/fulfillment\"},\n      \"recipe_check_fulfillment\": {\"intent\": \"Can I make a specific recipe?\", \"needs\": [\"item OR recipe_id\"], \"reads\": \"GET /recipes/{recipeId}/fulfillment\"},\n      \"recipes_add_to_shopping\": {\"intent\": \"Add missing recipe ingredients to shopping list.\", \"needs\": [\"item OR recipe_id\"], \"optional\": [\"list_id\"], \"writes\": \"POST /recipes/{recipeId}/add-not-fulfilled-products-to-shoppinglist\"},\n      \"recipes_consume\": {\"intent\": \"Mark recipe as made and consume stock ingredients.\", \"needs\": [\"item OR recipe_id\"], \"writes\": \"POST /recipes/{recipeId}/consume\"},\n      \"recipes_copy\": {\"intent\": \"Duplicate a recipe.\", \"needs\": [\"item OR recipe_id\"], \"writes\": \"POST /recipes/{recipeId}/copy\"},\n      \"stock_overview\": {\"intent\": \"Overview of all products currently in stock.\", \"reads\": \"GET /stock\"},\n      \"stock_list_volatile\": {\"intent\": \"List products due soon, overdue, or expired.\", \"reads\": \"GET /stock/volatile\"},\n      \"stock_get_product_details\": {\"intent\": \"Get stock-context details for a product (amount, value, best_before).\", \"needs\": [\"item OR product_id\"], \"reads\": \"GET /stock/products/{productId}\"},\n      \"stock_open_item\": {\"intent\": \"Mark a product as opened.\", \"needs\": [\"item OR product_id\"], \"optional\": [\"amount\", \"best_before_date\"], \"writes\": \"POST /stock/products/{productId}/open\"},\n      \"stock_entry_update\": {\"intent\": \"Edit a specific stock entry (best_before_date, location, price).\", \"needs\": [\"entry_id\"], \"optional\": [\"amount\", \"best_before_date\", \"location\", \"price\"], \"writes\": \"PUT /stock/entry/{entryId}\", \"notes\": [\"Get entry_id via stock_entries_for_item\"]},\n      \"stock_undo_booking\": {\"intent\": \"Undo a stock booking.\", \"needs\": [\"booking_id\"], \"writes\": \"POST /stock/bookings/{bookingId}/undo\"},\n      \"tasks_undo\": {\"intent\": \"Undo a completed task.\", \"needs\": [\"item OR task_id\"], \"writes\": \"POST /tasks/{taskId}/undo\"},
-      \"tasks_add\": {\"intent\": \"Create a new Grocy task.\", \"needs\": [\"item\"], \"optional\": [\"note\", \"best_before_date\"], \"writes\": \"POST /objects/tasks\"},\n      \"chores_undo\": {\"intent\": \"Undo a chore execution.\", \"needs\": [\"execution_id\"], \"notes\": [\"execution_id is the execution ID, not the chore_id\"], \"writes\": \"POST /chores/executions/{executionId}/undo\"},\n      \"catalog_find_by_barcode\": {\"intent\": \"Find a product by barcode.\", \"needs\": [\"barcode\"], \"reads\": \"GET /stock/products/by-barcode/{barcode}\"},\n      \"stock_add_by_barcode\": {\"intent\": \"Purchase into stock by barcode.\", \"needs\": [\"barcode\"], \"optional\": [\"amount\", \"location\", \"price\", \"best_before_date\"], \"writes\": \"POST /stock/products/by-barcode/{barcode}/add\"},\n      \"stock_consume_by_barcode\": {\"intent\": \"Consume from stock by barcode.\", \"needs\": [\"barcode\"], \"optional\": [\"amount\"], \"writes\": \"POST /stock/products/by-barcode/{barcode}/consume\"},\n      \"batteries_list\": {\"intent\": \"List all tracked rechargeable batteries.\", \"reads\": \"GET /batteries\"},\n      \"batteries_get\": {\"intent\": \"Get details for a specific battery.\", \"needs\": [\"battery_id\"], \"reads\": \"GET /batteries/{batteryId}\"},\n      \"batteries_charge\": {\"intent\": \"Record a charge cycle for a battery.\", \"needs\": [\"battery_id\"], \"optional\": [\"amount\"], \"writes\": \"POST /batteries/{batteryId}/charge\"}\n    },\n\n    \"hints\": {\n      \"location_metadata\":
+      \"tasks_add\": {\"intent\": \"Create a new Grocy task.\", \"needs\": [\"item\"], \"optional\": [\"note\", \"best_before_date\"], \"writes\": \"POST /objects/tasks\"},\n      \"chores_undo\": {\"intent\": \"Undo a chore execution.\", \"needs\": [\"execution_id\"], \"notes\": [\"execution_id is the execution ID, not the chore_id\"], \"writes\": \"POST /chores/executions/{executionId}/undo\"},\n      \"catalog_find_by_barcode\": {\"intent\": \"Find a product by barcode.\", \"needs\": [\"barcode\"], \"reads\": \"GET /stock/products/by-barcode/{barcode}\"},\n      \"stock_add_by_barcode\": {\"intent\": \"Purchase into stock by barcode.\", \"needs\": [\"barcode\"], \"optional\": [\"amount\", \"location\", \"price\", \"best_before_date\"], \"writes\": \"POST /stock/products/by-barcode/{barcode}/add\"},\n      \"stock_consume_by_barcode\": {\"intent\": \"Consume from stock by barcode.\", \"needs\": [\"barcode\"], \"optional\": [\"amount\"], \"writes\": \"POST /stock/products/by-barcode/{barcode}/consume\"},\n      \"batteries_list\": {\"intent\": \"List all tracked rechargeable batteries.\", \"reads\": \"GET /batteries\"},\n      \"batteries_get\": {\"intent\": \"Get details for a specific battery.\", \"needs\": [\"battery_id\"], \"reads\": \"GET /batteries/{batteryId}\"},\n      \"batteries_charge\": {\"intent\": \"Record a charge cycle for a battery.\", \"needs\": [\"battery_id\"], \"optional\": [\"amount\"], \"writes\": \"POST /batteries/{batteryId}/charge\"},\n      \"batteries_due\": {\"intent\": \"List rechargeable batteries bucketed by charge status: overdue, due_today, due_soon, ok. Use for maintenance triage.\", \"reads\": \"GET /batteries (shaped)\"},\n      \"batteries_journal\": {\"intent\": \"List charge cycle history across all batteries. Optional battery_id to filter to one device.\", \"optional\": [\"battery_id\", \"page\", \"per_page\"], \"reads\": \"GET /objects/battery_charge_cycles\"},\n      \"batteries_charge_undo\": {\"intent\": \"Undo a specific charge cycle. entry_id = the charge cycle ID (from batteries_journal).\", \"needs\": [\"entry_id\"], \"writes\": \"POST /batteries/charge-cycles/{id}/undo\"},\n      \"battery_status\": {\"intent\": \"Low-battery triage across the house. Groups HA Battery Notes devices by area with Grocy stock cross-reference. Template-only — no Grocy call for reading.\", \"reads\": \"HA Battery Notes sensors + Grocy /stock/products\"},\n      \"battery_overdue\": {\"intent\": \"Devices not replaced in N days. Requires days_threshold.\", \"needs\": [\"days_threshold\"], \"reads\": \"HA Battery Notes sensors (template)\"},\n      \"battery_replace\": {\"intent\": \"Atomic: log battery replacement in Battery Notes AND consume from Grocy stock. ha_entity_id required. item optional (Grocy product name for stock consume).\", \"needs\": [\"ha_entity_id\"], \"optional\": [\"item\", \"amount\"], \"writes\": \"battery_notes.set_battery_replaced + /stock/products/{id}/consume\"}\n    },\n\n    \"hints\": {\n      \"location_metadata\":
               \"Apply homeassistant metadata to grocy fields and grocy location id pointers
               to cabinet drawers, use labels liberally. These are the things that bind
               Grocy data to HA to become searchable by the Hyperindex.\",\n      \"unit_interop\":
@@ -2366,6 +2540,118 @@ script:
                 entry_point: "zen_dojotools_library section=books — modes: status | browse | checkout | return | overdue | setup"
         - variables:
             help_json: "{{ help_json | combine({'suggested_constructs': suggested_constructs_block}) }}"
+        - variables:
+            systems_block:
+              perishable_storage:
+                overview: >-
+                  A classification system that tags Grocy locations as perishable storage (fridges,
+                  pantries, freezers) and enforces expiry tracking discipline on the products stored
+                  in them. Two mechanisms: a real-time coach (fires when buying/moving stock) and an
+                  audit (scans all live stock for violations). Together they catch violations as they
+                  happen and find ones that already exist.
+                catalog_class_values:
+                  perishable_storage: >-
+                    Tag on a Grocy location. Marks it as a zone where perishable goods live.
+                    Triggers coaching when a never-expires product (default_best_before_days=-1) is
+                    purchased or moved into this location. Children of this location inherit the flag
+                    automatically via a one-level parent walk — tag the fridge, all fridge shelves
+                    and drawers are implicitly covered without manual tagging.
+                  non_perishable: >-
+                    Explicit override. Place on a sub-location inside a perishable parent to suppress
+                    the inheritance. Use for zones that hold non-food items inside a perishable
+                    container — fridge water filter slots, ice maker, consumables bin, etc. Short-
+                    circuits before the parent walk so the check is cheap. Set via
+                    locations_metadata_set catalog_class=non_perishable.
+                  __intake__: >-
+                    Unrelated to perishable system. Marks the catalog intake staging location
+                    (Kitchen Island). Drives the logistics KFC intake component.
+                hierarchy_and_inheritance:
+                  rule: >-
+                    When coaching or audit evaluates a destination location, it checks:
+                    (1) Does the location itself have catalog_class=perishable_storage? Yes → perishable.
+                    (2) Does the location itself have catalog_class=non_perishable? Yes → not perishable (short-circuit).
+                    (3) Does the location's grocy_parent_location_id point to a location with
+                        catalog_class=perishable_storage? Yes → perishable (inherited).
+                    (4) Otherwise → not perishable.
+                  depth: One level only. Grandchild locations do not inherit from grandparent.
+                  what_to_tag: >-
+                    Tag the root containers — Kitchen Refrigerator (3), Kitchen Freezer (4),
+                    Garage - Freezer (16), Pantry (97), North Wall Pantry (437). Sub-locations
+                    inherit automatically. Only override with non_perishable where needed.
+                coaching:
+                  when_it_fires: >-
+                    On stock_buy_product, stock_add_purchase, or stock_transfer_location when ALL:
+                    (1) the product has default_best_before_days=-1 (never expires), AND
+                    (2) the destination location resolves as perishable_storage (direct or inherited).
+                  what_it_returns: >-
+                    A coaching[] list on the response with a message recommending the agent either
+                    set a best_before_date on this stock entry or run update_product_meta
+                    best_before_days=N to enable expiry tracking for the product going forward.
+                  cost: >-
+                    Lazy — only fetches location userfields when the product is already -1.
+                    Zero overhead on normal (non-never-expires) purchases.
+                audit:
+                  mode: stock_audit_perishable
+                  what_it_does: >-
+                    Paginated cross-reference: loads all locations, all raw stock entries, and all
+                    never-expires products. Builds perishable_location_ids set from tagged locations
+                    plus their children (excluding non_perishable children). Returns every stock entry
+                    where a never-expires product sits in a perishable location as a violation.
+                  response_shape:
+                    perishable_location_ids: List of Grocy location IDs currently classified as perishable
+                    never_expires_product_count: How many products in catalog have default_best_before_days=-1
+                    violations.count: Number of never-expires products currently stocked in perishable locations
+                    violations.items: >-
+                      Each item has product_id, product_name, location_id, location_name, amount,
+                      best_before_date, and a fix command ready to copy-paste.
+                  how_to_act_on_violations: >-
+                    For each violation, decide: is this product genuinely perishable (food in a fridge)?
+                    → run the fix command: update_product_meta item='X' best_before_days=N where N
+                    comes from the best_before_days_defaults table in the cases.stock_audit_perishable
+                    help entry. Or is it a non-food item in a perishable zone (filter, battery, etc.)?
+                    → either set best_before_days=-1 is already correct (leave it) or tag its location
+                    non_perishable to silence it permanently.
+                  known_acknowledged_violations:
+                    - "Chemex Filter Natural Squares (product 182, Pantry) — paper filters, legitimately -1. Acknowledged non-issue."
+                management_workflow:
+                  tag_a_new_perishable_location: >-
+                    locations_metadata_set location='Name' catalog_class=perishable_storage
+                    Children inherit immediately — no need to tag sub-locations unless overriding.
+                  suppress_a_sub_location: >-
+                    locations_metadata_set location='Name' catalog_class=non_perishable
+                    Use for non-food sub-zones inside a tagged parent (fridge slots, consumables bins).
+                  fix_a_violation: >-
+                    update_product_meta item='Product Name' best_before_days=N
+                    This enables expiry tracking for all future purchases of that product.
+                    Does not retroactively set best_before on existing stock entries — those keep
+                    best_before_date=2999-12-31 (Grocy's never-expires sentinel). Update them
+                    individually with stock_entry_update if needed.
+                  run_the_audit: "zen_dojotools_inventory mode=stock_audit_perishable"
+                current_tagged_locations:
+                  directly_tagged:
+                    - "Kitchen Refrigerator (3) — catalog_class=perishable_storage"
+                    - "Kitchen Freezer (4) — catalog_class=perishable_storage"
+                    - "Garage - Freezer (16) — catalog_class=perishable_storage"
+                    - "Pantry (97) — catalog_class=perishable_storage"
+                    - "North Wall Pantry (437) — catalog_class=perishable_storage"
+                  non_perishable_overrides:
+                    - "Ice Maker (439) — inside Kitchen Refrigerator"
+                    - "Water Dispenser (440) — inside Kitchen Refrigerator"
+                    - "Water Filter Slot (441) — inside Kitchen Refrigerator"
+                    - "Fresh Air Filter Slot (442) — inside Kitchen Refrigerator"
+                    - "Consumables (443) — inside Kitchen Refrigerator"
+                    - "Water Filters (444) — inside Kitchen Refrigerator"
+                    - "Fresh Air Filters (445) — inside Kitchen Refrigerator"
+                    - "Garage Freezer (426) — ghost location, immortal in Grocy DB, tagged non_perishable to suppress"
+        - variables:
+            help_json: "{{ help_json | combine({'systems': systems_block}) }}"
+        - variables:
+            help_json: >-
+              {{ help_json | combine({
+                'domain': 'inventory',
+                'peers': {'finance': 'zen_dojotools_finance'},
+                'see_also': 'zen_dojotools_manifest mode=domains name=inventory'
+              }) }}
         - variables:
             final_response:
               status: help
@@ -2831,7 +3117,7 @@ script:
     - alias: Pre-fetch Entry for stock_entry_update
       choose:
       - conditions:
-        - alias: Pre-fetch stock entry for read-modify-write
+        - alias: Pre-fetch via product entries (product known)
           condition: template
           value_template: "{{ mode_norm == 'stock_entry_update'
             and entry_id_in is not none
@@ -2848,6 +3134,22 @@ script:
             current_entry_base: "{{ (entry_fetch_list
               | selectattr('id', 'equalto', entry_id_in | int)
               | list | first) | default(none) }}"
+      - conditions:
+        - alias: Pre-fetch via direct stock table query (entry_id only, no product)
+          condition: template
+          value_template: "{{ mode_norm == 'stock_entry_update'
+            and entry_id_in is not none
+            and product_id_resolved is none }}"
+        sequence:
+        - action: script.zen_sutra_grocy
+          response_variable: entry_fetch_raw
+          data:
+            action_type: read
+            endpoint: "objects/stock?query[]=id={{ entry_id_in }}"
+        - variables:
+            entry_fetch_list: "{{ entry_fetch_raw['result']['content'] | default([]) }}"
+        - variables:
+            current_entry_base: "{{ entry_fetch_list | first | default(none) }}"
     - alias: Guards Before Endpoint Resolution
       choose:
       - conditions:
@@ -3059,13 +3361,50 @@ script:
           data:
             action_type: read
             endpoint: /objects/quantity_units
+        - action: script.zen_sutra_grocy
+          response_variable: _units_preflight_inactive_raw
+          data:
+            action_type: read
+            endpoint: "/objects/quantity_units?query%5B%5D=active%3D0"
         - variables:
-            _units_preflight_list: "{{ _units_preflight_raw['result']['content'] if _units_preflight_raw is mapping and 'result' in _units_preflight_raw else [] }}"
-            _units_preflight_match: "{{ (_units_preflight_list | selectattr('name','equalto',unit_norm) | list | first) | default(none) }}"
+            _units_preflight_list: >-
+              {{ ((_units_preflight_raw['result']['content'] if _units_preflight_raw is mapping and 'result' in _units_preflight_raw else [])
+                 + (_units_preflight_inactive_raw['result']['content'] if _units_preflight_inactive_raw is mapping and 'result' in _units_preflight_inactive_raw else []))
+                 | unique(attribute='id') | list }}
+            _units_preflight_matches: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for u in _units_preflight_list -%}
+                {%- if u.name | lower == unit_norm -%}{%- set ns.out = ns.out + [u] -%}{%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            _units_preflight_found: "{{ _units_preflight_matches | length > 0 }}"
+            _units_preflight_match: "{{ _units_preflight_matches | first | default({}) }}"
         - choose:
           - conditions:
             - condition: template
-              value_template: "{{ _units_preflight_match is not none }}"
+              value_template: "{{ _units_preflight_found and (_units_preflight_match.get('active', 1) | int) == 0 }}"
+            sequence:
+            # Unit exists but inactive — reactivate it
+            - action: script.zen_sutra_grocy
+              continue_on_error: true
+              response_variable: _units_reactivate_raw
+              data:
+                action_type: put
+                endpoint: "/objects/quantity_units/{{ _units_preflight_match.id }}"
+                payload: "{{ _units_preflight_match | combine({'active': 1, 'description': note_in if note_in else (_units_preflight_match.get('description') or '')}) | tojson }}"
+            - variables:
+                final_response:
+                  status: reactivated
+                  mode: units_add
+                  unit_id: "{{ _units_preflight_match.id }}"
+                  unit: "{{ _units_preflight_match.name }}"
+                  message: "Unit '{{ _units_preflight_match.name }}' was inactive — reactivated."
+            - stop: Unit Reactivated
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: "{{ _units_preflight_found }}"
             sequence:
             - variables:
                 final_response:
@@ -3168,7 +3507,60 @@ script:
                 {'entity':'userentity-catalog_item','name':'series','caption':'Series name (books/games)','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'userentity-catalog_item','name':'publisher','caption':'Publisher or label','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'userentity-catalog_item','name':'digital_uri','caption':'Digital equivalent URI (streaming link, audiobook URL, etc.)','type':'text-single-line','show_as_column_in_tables':0},
-                {'entity':'userentity-catalog_item','name':'preferred_service','caption':'Preferred digital service (tidal/spotify/jellyfin/audible/etc.)','type':'text-single-line','show_as_column_in_tables':0}
+                {'entity':'userentity-catalog_item','name':'preferred_service','caption':'Preferred digital service (tidal/spotify/jellyfin/audible/etc.)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'name','caption':'Asset name','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'description','caption':'Asset description','type':'text-multi-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'asset_type','caption':'appliance|hvac|electronics|furniture|fixture|vehicle|tool|equipment|structure|other','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'room_anchor','caption':'HA area_id where asset lives','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'grocy_product_id','caption':'Grocy product ID (optional FK)','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'purchase_date','caption':'Purchase date (YYYY-MM-DD)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'placed_in_service_date','caption':'Date placed in service — depreciation start (YYYY-MM-DD)','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'cost_basis','caption':'Total cost to place in service (purchase+delivery+install+tax)','type':'number-decimal','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'salvage_value','caption':'Estimated residual value at end of useful life (default 0)','type':'number-decimal','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'replacement_cost_estimate','caption':'Estimated cost to replace asset today','type':'number-decimal','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'useful_life_months','caption':'Expected service life in months','type':'number-integer','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'depreciation_method','caption':'straight_line|manual_no_post','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'business_use_percent','caption':'Business use percentage (0-100)','type':'number-decimal','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'household_use_percent','caption':'Household use percentage (0-100)','type':'number-decimal','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'status','caption':'active|sold|donated|scrapped|lost|replaced|retired','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'disposal_date','caption':'Date of disposal (YYYY-MM-DD)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'disposal_proceeds','caption':'Proceeds received on disposal','type':'number-decimal','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'firefly_asset_account_id','caption':'Firefly III asset account ID (optional)','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'firefly_asset_account_name','caption':'Firefly III asset account name (for transaction posting)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'firefly_expense_category_id','caption':'Firefly III depreciation expense category ID','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'firefly_depreciation_tag','caption':'Firefly III tag used to identify depreciation transactions','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'firefly_replacement_piggy_bank_id','caption':'Firefly III piggy bank ID for replacement reserve','type':'number-integer','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'last_depreciation_period_posted','caption':'Last period posted to Firefly (YYYY-MM)','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'serial_number','caption':'Serial number','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'model_number','caption':'Model number','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'manufacturer','caption':'Manufacturer name','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'vendor','caption':'Vendor / retailer','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'purchase_transaction_reference','caption':'Firefly purchase transaction ID or external ref','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'project_id','caption':'Project ID (Zammad or internal ref)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'warranty_expiration','caption':'Warranty expiration date (YYYY-MM-DD)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'notes','caption':'Free-form notes and audit trail','type':'text-multi-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'created_at','caption':'Record creation timestamp (ISO)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'updated_at','caption':'Last update timestamp (ISO)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'tax_context','caption':'home_office|business_equipment|mixed_use|personal|rental|other','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-depreciable_asset','name':'owner_entity','caption':'Legal owner name or entity (person, household, LLC, etc.)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'paid_by_entity','caption':'Who paid (person name, household, business entity)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'reimbursement_status','caption':'none|pending|partial|complete','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'allocation_method','caption':'How business/household split is derived: fixed_percent|area_sqm|time_log|receipt_split','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'business_area_anchor','caption':'HA area_id of the business-use space (for area_sqm allocation)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'evidence_refs','caption':'JSON array of typed Lens anchor refs: ["document:42","transaction:1448","ticket:87"]','type':'text-multi-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'tax_review_status','caption':'unreviewed|in_review|approved|flagged|excluded','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-asset_allocation','name':'asset_id','caption':'FK to depreciable_asset userobject ID','type':'number-integer','show_as_column_in_tables':1},
+                {'entity':'userentity-asset_allocation','name':'effective_date','caption':'Date this allocation row takes effect (YYYY-MM-DD)','type':'text-single-line','show_as_column_in_tables':1},
+                {'entity':'userentity-asset_allocation','name':'end_date','caption':'Date this row expires (YYYY-MM-DD); null = open-ended','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'business_use_percent','caption':'Business use percentage for this period (0-100)','type':'number-decimal','show_as_column_in_tables':1},
+                {'entity':'userentity-asset_allocation','name':'household_use_percent','caption':'Household use percentage for this period (0-100)','type':'number-decimal','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'allocation_method','caption':'fixed_percent|area_sqm|time_log|receipt_split','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'business_area_anchor','caption':'HA area_id of business-use space (for area_sqm method)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'basis','caption':'What drove this change: purchase|renovation|change_in_use|tax_election|correction','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'notes','caption':'Free-form notes for this allocation period','type':'text-multi-line','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'created_by','caption':'Caller identity that created this row','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'created_at','caption':'Record creation timestamp (ISO)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-asset_allocation','name':'updated_at','caption':'Last update timestamp (ISO)','type':'text-single-line','show_as_column_in_tables':0}
               ] -%}
               {{ _c }}
             _ue_existing: >-
@@ -3182,6 +3574,16 @@ script:
                 description: "FRBR Item record — one per physical copy of a cataloged work. Links to a Grocy product (the Work) via product_id."
                 show_in_sidebar_menu: 0
                 icon_css_class: "fas fa-cube"
+              - name: depreciable_asset
+                caption: Depreciable Asset
+                description: "Household asset subject to depreciation tracking. Stores cost basis, useful life, depreciation method, and Firefly III ledger references."
+                show_in_sidebar_menu: 0
+                icon_css_class: "fas fa-tools"
+              - name: asset_allocation
+                caption: Asset Allocation
+                description: "Date-ranged business/household use allocation records per depreciable asset. One row per allocation period. Current effective row overrides asset-level percentages."
+                show_in_sidebar_menu: 0
+                icon_css_class: "fas fa-percent"
 
         # mode=userfields_list
         - if: "{{ mode_norm == 'userfields_list' }}"
@@ -4192,7 +4594,7 @@ script:
           %}\n  /objects/quantity_units?limit=500&offset=0\n{% elif mode_norm == 'units_find' %}\n  /objects/quantity_units?limit=500&offset=0\n{%
           elif mode_norm == 'units_add' %}\n  /objects/quantity_units\n{% elif mode_norm
           == 'units_update'\n      and unit_id_resolved %}\n  /objects/quantity_units/{{
-          unit_id_resolved }}     \n{% elif mode_norm == 'unit_conversions_add' %}\n  /objects/quantity_unit_conversions\n{% elif mode_norm == 'unit_conversions_list' %}\n  /objects/quantity_unit_conversions?limit=500&offset=0\n{% elif mode_norm == 'unit_conversions_delete' and entry_id_in %}\n  /objects/quantity_unit_conversions/{{ entry_id_in }}\n{% elif mode_norm == 'stock_overview' %}\n  /objects/stock\n{% elif mode_norm == 'stock_list_volatile' %}\n  /stock/volatile\n{% elif mode_norm == 'stock_get_product_details' and product_id_resolved %}\n  /stock/products/{{ product_id_resolved }}\n{% elif mode_norm == 'stock_open_item' and product_id_resolved %}\n  /stock/products/{{ product_id_resolved }}/open\n{% elif mode_norm == 'stock_entry_update' and entry_id_in %}\n  /stock/entry/{{ entry_id_in }}\n{% elif mode_norm == 'stock_undo_booking' and booking_id_in %}\n  /stock/bookings/{{ booking_id_in }}/undo\n{% elif mode_norm == 'shopping_add_product' and product_id_resolved %}\n  /stock/shoppinglist/add-product\n{% elif mode_norm == 'shopping_remove_product' and product_id_resolved %}\n  /stock/shoppinglist/remove-product\n{% elif mode_norm == 'shopping_clear_list' %}\n  /stock/shoppinglist/clear\n{% elif mode_norm == 'recipes_list' %}\n  /objects/recipes\n{% elif mode_norm == 'recipes_fulfillment' %}\n  /recipes/fulfillment\n{% elif mode_norm == 'recipe_check_fulfillment' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/fulfillment\n{% elif mode_norm == 'recipes_add_to_shopping' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/add-not-fulfilled-products-to-shoppinglist\n{% elif mode_norm == 'recipes_consume' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/consume\n{% elif mode_norm == 'recipes_copy' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/copy\n{% elif mode_norm == 'tasks_undo' and task_id_resolved %}\n  /tasks/{{ task_id_resolved }}/undo\n{% elif mode_norm == 'chores_undo' and execution_id_in %}\n  /chores/executions/{{ execution_id_in }}/undo\n{% elif mode_norm == 'catalog_find_by_barcode' and has_barcode %}\n  /stock/products/by-barcode/{{ barcode_norm }}\n{% elif mode_norm == 'stock_add_by_barcode' and has_barcode %}\n  /stock/products/by-barcode/{{ barcode_norm }}/add\n{% elif mode_norm == 'stock_consume_by_barcode' and has_barcode %}\n  /stock/products/by-barcode/{{ barcode_norm }}/consume\n{% elif mode_norm == 'batteries_list' %}\n  /batteries\n{% elif mode_norm == 'batteries_get' and battery_id_in %}\n  /batteries/{{ battery_id_in }}\n{% elif mode_norm == 'batteries_charge' and battery_id_in %}\n  /batteries/{{ battery_id_in }}/charge\n{% elif mode_norm == 'locations_audit' %}\n  /objects/locations?limit=500&offset=0\n{% elif mode_norm in ['product_groups_list', 'product_groups_find'] %}\n  /objects/product_groups?limit=500&offset=0\n{% elif mode_norm == 'shopping_lists_list' %}\n  /objects/shopping_lists?limit=200&offset=0\n{% elif mode_norm == 'shopping_locations_list' %}\n  /objects/shopping_locations?limit=200&offset=0\n{% else %}\n  {{ none }}\n{% endif %}"
+          unit_id_resolved }}     \n{% elif mode_norm == 'unit_conversions_add' %}\n  /objects/quantity_unit_conversions\n{% elif mode_norm == 'unit_conversions_list' %}\n  /objects/quantity_unit_conversions?limit=500&offset=0\n{% elif mode_norm == 'unit_conversions_delete' and entry_id_in %}\n  /objects/quantity_unit_conversions/{{ entry_id_in }}\n{% elif mode_norm == 'stock_overview' %}\n  /objects/stock\n{% elif mode_norm == 'stock_list_volatile' %}\n  /stock/volatile\n{% elif mode_norm == 'stock_get_product_details' and product_id_resolved %}\n  /stock/products/{{ product_id_resolved }}\n{% elif mode_norm == 'stock_open_item' and product_id_resolved %}\n  /stock/products/{{ product_id_resolved }}/open\n{% elif mode_norm == 'stock_entry_update' and entry_id_in %}\n  /stock/entry/{{ current_entry_base.stock_id if current_entry_base is mapping else entry_id_in }}\n{% elif mode_norm == 'stock_undo_booking' and booking_id_in %}\n  /stock/bookings/{{ booking_id_in }}/undo\n{% elif mode_norm == 'shopping_add_product' and product_id_resolved %}\n  /stock/shoppinglist/add-product\n{% elif mode_norm == 'shopping_remove_product' and product_id_resolved %}\n  /stock/shoppinglist/remove-product\n{% elif mode_norm == 'shopping_clear_list' %}\n  /stock/shoppinglist/clear\n{% elif mode_norm == 'recipes_list' %}\n  /objects/recipes\n{% elif mode_norm == 'recipes_fulfillment' %}\n  /recipes/fulfillment\n{% elif mode_norm == 'recipe_check_fulfillment' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/fulfillment\n{% elif mode_norm == 'recipes_add_to_shopping' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/add-not-fulfilled-products-to-shoppinglist\n{% elif mode_norm == 'recipes_consume' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/consume\n{% elif mode_norm == 'recipes_copy' and recipe_id_resolved %}\n  /recipes/{{ recipe_id_resolved }}/copy\n{% elif mode_norm == 'tasks_undo' and task_id_resolved %}\n  /tasks/{{ task_id_resolved }}/undo\n{% elif mode_norm == 'chores_undo' and execution_id_in %}\n  /chores/executions/{{ execution_id_in }}/undo\n{% elif mode_norm == 'catalog_find_by_barcode' and has_barcode %}\n  /stock/products/by-barcode/{{ barcode_norm }}\n{% elif mode_norm == 'stock_add_by_barcode' and has_barcode %}\n  /stock/products/by-barcode/{{ barcode_norm }}/add\n{% elif mode_norm == 'stock_consume_by_barcode' and has_barcode %}\n  /stock/products/by-barcode/{{ barcode_norm }}/consume\n{% elif mode_norm == 'batteries_list' %}\n  /batteries\n{% elif mode_norm == 'batteries_get' and battery_id_in %}\n  /batteries/{{ battery_id_in }}\n{% elif mode_norm == 'batteries_charge' and battery_id_in %}\n  /batteries/{{ battery_id_in }}/charge\n{% elif mode_norm == 'batteries_journal' %}\n  /objects/battery_charge_cycles?limit={{ per_page_in }}&offset={{ (page_in - 1) * per_page_in }}\n{% elif mode_norm == 'batteries_charge_undo' and entry_id_in %}\n  /batteries/charge-cycles/{{ entry_id_in }}/undo\n{% elif mode_norm == 'locations_audit' %}\n  /objects/locations?limit=500&offset=0\n{% elif mode_norm in ['product_groups_list', 'product_groups_find'] %}\n  /objects/product_groups?limit=500&offset=0\n{% elif mode_norm == 'shopping_lists_list' %}\n  /objects/shopping_lists?limit=200&offset=0\n{% elif mode_norm == 'shopping_locations_list' %}\n  /objects/shopping_locations?limit=200&offset=0\n{% else %}\n  {{ none }}\n{% endif %}"
         supports_pagination: '{{  endpoint is not none and endpoint is string and (
           endpoint.startswith(''/objects/'') or endpoint.startswith(''objects/'') )
           }}'
@@ -4230,7 +4632,7 @@ script:
           [\n  'locations_add',\n  'products_merge',\n  'stock_transfer_location',\n
           \ 'stock_add_purchase',\n  'stock_buy_product',\n  'stock_consume',\n  'stock_inventory_adjust',\n
           \ 'shopping_add_missing',\n  'shopping_add_overdue',\n  'shopping_add_expired',\n
-          \ 'chores_execute',\n  'tasks_complete',\n  'units_add',\n  'unit_conversions_add',\n  'stock_open_item',\n  'stock_undo_booking',\n  'shopping_add_product',\n  'shopping_remove_product',\n  'shopping_clear_list',\n  'recipes_add_to_shopping',\n  'recipes_consume',\n  'recipes_copy',\n  'tasks_undo',\n  'chores_undo',\n  'stock_add_by_barcode',\n  'stock_consume_by_barcode',\n  'batteries_charge'\n] %}\n  create\n{%
+          \ 'chores_execute',\n  'tasks_complete',\n  'units_add',\n  'unit_conversions_add',\n  'stock_open_item',\n  'stock_undo_booking',\n  'shopping_add_product',\n  'shopping_remove_product',\n  'shopping_clear_list',\n  'recipes_add_to_shopping',\n  'recipes_consume',\n  'recipes_copy',\n  'tasks_undo',\n  'chores_undo',\n  'stock_add_by_barcode',\n  'stock_consume_by_barcode',\n  'batteries_charge',\n  'batteries_charge_undo',\n  'battery_replace'\n] %}\n  create\n{%
           elif mode_norm in ['locations_delete', 'unit_conversions_delete'] %}\n  delete\n{% else %}\n  read\n{% endif %}    "
     - variables:
         effective_payload: "{% if mode_norm in ['stock_add_purchase','stock_buy_product']
@@ -4294,7 +4696,7 @@ script:
           \     \"description\": (note_in if has_note else none)\n    }\n  }}\n{% elif
           mode_norm == 'units_update' %}\n  {{\n    {\n      \"name\": (unit_norm if
           has_unit_name else none),\n      \"name_plural\": (unit_norm if has_unit_name else none),\n      \"description\": (note_in if has_note else
-          none)\n    }\n  }}\n{% elif mode_norm in ['shopping_add_product','shopping_remove_product'] %}\n  {{\n    {\n      \"product_id\": product_id_resolved,\n      \"product_amount\": amt_in,\n      \"shopping_list_id\": (list_in | int if list_in is not none else none)\n    }\n  }}\n{% elif mode_norm == 'shopping_clear_list' %}\n  {{\n    {\n      \"done_only\": done_only_in,\n      \"shopping_list_id\": (list_in | int if list_in is not none else none)\n    }\n  }}\n{% elif mode_norm == 'recipes_add_to_shopping' %}\n  {{\n    {\n      \"shopping_list_id\": (list_in | int if list_in is not none else none)\n    }\n  }}\n{% elif mode_norm == 'stock_open_item' %}\n  {{\n    {\n      \"amount\": amt_in,\n      \"best_before_date\": (bbd_in if bbd_in is not none else none),\n      \"allow_subproduct_substitution\": false\n    }\n  }}\n{% elif mode_norm == 'stock_entry_update' %}\n  {% if current_entry_base is mapping %}\n    {% set ns = namespace(o={}) %}\n    {% if has_explicit_amount %}{% set ns.o = ns.o | combine({\"amount\": amt_in}) %}{% endif %}\n    {% if bbd_in is not none %}{% set ns.o = ns.o | combine({\"best_before_date\": bbd_in}) %}{% endif %}\n    {% if location_id_resolved is not none %}{% set ns.o = ns.o | combine({\"location_id\": location_id_resolved}) %}{% endif %}\n    {% if price_in is not none %}{% set ns.o = ns.o | combine({\"price\": price_in}) %}{% endif %}\n    {% if note_in | trim != '' %}{% set ns.o = ns.o | combine({\"note\": note_in}) %}{% endif %}\n    {{ current_entry_base | combine(ns.o) }}\n  {% else %}\n    {{ none }}\n  {% endif %}\n{% elif mode_norm == 'stock_add_by_barcode' %}\n  {{\n    {\n      \"amount\": amt_in,\n      \"best_before_date\": (bbd_in if bbd_in is not none else none),\n      \"transaction_type\": \"purchase\",\n      \"price\": (price_in if price_in is not none else none),\n      \"location_id\": (location_id_resolved if location_id_resolved is not none else none)\n    }\n  }}\n{% elif mode_norm == 'stock_consume_by_barcode' %}\n  {{ {\"amount\": amt_in} }}\n{% elif mode_norm == 'batteries_charge' %}\n  {{ {\"tracked_time\": none, \"amount\": (amt_in | int(1))} }}\n{% elif mode_norm in ['locations_delete', 'unit_conversions_delete'] %}\n  {{ {} }}\n{% else %}\n  {{ payload_obj }}\n{% endif %}"
+          none)\n    }\n  }}\n{% elif mode_norm in ['shopping_add_product','shopping_remove_product'] %}\n  {{\n    {\n      \"product_id\": product_id_resolved,\n      \"product_amount\": amt_in,\n      \"shopping_list_id\": (list_in | int if list_in is not none else none)\n    }\n  }}\n{% elif mode_norm == 'shopping_clear_list' %}\n  {{\n    {\n      \"done_only\": done_only_in,\n      \"shopping_list_id\": (list_in | int if list_in is not none else none)\n    }\n  }}\n{% elif mode_norm == 'recipes_add_to_shopping' %}\n  {{\n    {\n      \"shopping_list_id\": (list_in | int if list_in is not none else none)\n    }\n  }}\n{% elif mode_norm == 'stock_open_item' %}\n  {{\n    {\n      \"amount\": amt_in,\n      \"best_before_date\": (bbd_in if bbd_in is not none else none),\n      \"allow_subproduct_substitution\": false\n    }\n  }}\n{% elif mode_norm == 'stock_entry_update' %}\n  {% if current_entry_base is mapping %}\n    {% set ns = namespace(o={}) %}\n    {% if has_explicit_amount %}{% set ns.o = ns.o | combine({\"amount\": amt_in}) %}{% endif %}\n    {% if bbd_in is not none %}{% set ns.o = ns.o | combine({\"best_before_date\": bbd_in}) %}{% endif %}\n    {% if location_id_resolved is not none %}{% set ns.o = ns.o | combine({\"location_id\": location_id_resolved}) %}{% endif %}\n    {% if price_in is not none %}{% set ns.o = ns.o | combine({\"price\": price_in}) %}{% endif %}\n    {% if note_in | trim != '' %}{% set ns.o = ns.o | combine({\"note\": note_in}) %}{% endif %}\n    {{ current_entry_base | combine(ns.o) }}\n  {% else %}\n    {{ none }}\n  {% endif %}\n{% elif mode_norm == 'stock_add_by_barcode' %}\n  {{\n    {\n      \"amount\": amt_in,\n      \"best_before_date\": (bbd_in if bbd_in is not none else none),\n      \"transaction_type\": \"purchase\",\n      \"price\": (price_in if price_in is not none else none),\n      \"location_id\": (location_id_resolved if location_id_resolved is not none else none)\n    }\n  }}\n{% elif mode_norm == 'stock_consume_by_barcode' %}\n  {{ {\"amount\": amt_in} }}\n{% elif mode_norm == 'batteries_charge' %}\n  {{ {\"tracked_time\": none, \"amount\": (amt_in | int(1))} }}\n{% elif mode_norm in ['locations_delete', 'unit_conversions_delete', 'stock_undo_booking', 'tasks_undo', 'chores_undo', 'batteries_charge_undo'] %}\n  {{ '{\"confirm\":true}' }}\n{% else %}\n  {{ payload_obj }}\n{% endif %}"
     - variables:
         payload_data: "{{\n  {\n    \"action_type\": action_type,\n    \"endpoint\":
           final_endpoint\n  }\n  | combine(\n      {\"payload\": effective_payload}\n
@@ -4304,7 +4706,7 @@ script:
       - conditions:
         - alias: 'Error: Endpoint not Resolved'
           condition: template
-          value_template: "{{\n  (final_endpoint is none)\n  and mode_norm not in ['catalog_find_product', 'catalog_search', 'catalog_add_product', 'catalog_delete_product', 'catalog_audit', 'locations_reparent_bulk', 'locations_delete_safe', 'locations_hierarchy_rebuild', 'stock_register_asset', 'stock_area_summary', 'stock_area_volatile', 'stock_area_inventory', 'chores_by_area', 'room_brief', 'chores_add', 'chores_tag', 'products_tag', 'catalog_find_by_tag', 'object_lens', 'chores_delete', 'chores_edit', 'tasks_add', 'tasks_tag', 'update_product_meta', 'provision_bom', 'catalog_import_bom', 'product_refs_get', 'product_ref_add', 'product_ref_remove', 'bulk_tag', 'bulk_location_move', 'bulk_label_add', 'bulk_label_remove', 'bulk_stock_add', 'catalog_find_by_barcode', 'by_anchor']\n}}\n"
+          value_template: "{{\n  (final_endpoint is none)\n  and mode_norm not in ['catalog_find_product', 'catalog_search', 'catalog_add_product', 'catalog_delete_product', 'catalog_audit', 'locations_reparent_bulk', 'locations_delete_safe', 'locations_hierarchy_rebuild', 'stock_register_asset', 'stock_area_summary', 'stock_area_volatile', 'stock_area_inventory', 'chores_by_area', 'room_brief', 'chores_add', 'chores_tag', 'products_tag', 'catalog_find_by_tag', 'object_lens', 'chores_delete', 'chores_edit', 'tasks_add', 'tasks_tag', 'update_product_meta', 'provision_bom', 'catalog_import_bom', 'product_refs_get', 'product_ref_add', 'product_ref_remove', 'bulk_tag', 'bulk_location_move', 'bulk_label_add', 'bulk_label_remove', 'bulk_stock_add', 'catalog_find_by_barcode', 'by_anchor', 'batteries_due', 'battery_status', 'battery_overdue', 'battery_replace', 'stock_audit_perishable']\n}}\n"
         sequence:
         - variables:
             final_response:
@@ -4394,11 +4796,438 @@ script:
               product_name: "{{ _cfbb_name }}"
         - stop: catalog_find_by_barcode done
           response_variable: final_response
+    - alias: batteries_due — fetch + bucket by charge status
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'batteries_due' }}"
+        sequence:
+        - action: script.zen_sutra_grocy
+          response_variable: _bd_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: /batteries
+        - variables:
+            _bd_list: >-
+              {%- set r = _bd_raw if _bd_raw is mapping else {} -%}
+              {%- set c = r.get('result', {}).get('content', []) -%}
+              {{ c if c is sequence and c is not string else [] }}
+            _bd_now: "{{ now().strftime('%Y-%m-%dT%H:%M:%S') }}"
+        - variables:
+            _bd_overdue: >-
+              {%- set ns = namespace(b=[]) -%}
+              {%- for b in _bd_list -%}
+                {%- set nxt = b.get('next_estimated_charge_time', '') or '' -%}
+                {%- if nxt | trim != '' and nxt < _bd_now -%}
+                  {%- set ns.b = ns.b + [b] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.b }}
+            _bd_due_today: >-
+              {%- set ns = namespace(b=[]) -%}
+              {%- set _today = now().strftime('%Y-%m-%d') -%}
+              {%- for b in _bd_list -%}
+                {%- set nxt = b.get('next_estimated_charge_time', '') or '' -%}
+                {%- if nxt | trim != '' and nxt >= _bd_now and nxt[:10] == _today -%}
+                  {%- set ns.b = ns.b + [b] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.b }}
+            _bd_due_soon: >-
+              {%- set ns = namespace(b=[]) -%}
+              {%- set _today = now().strftime('%Y-%m-%d') -%}
+              {%- set _soon = (now() + timedelta(days=7)).strftime('%Y-%m-%d') -%}
+              {%- for b in _bd_list -%}
+                {%- set nxt = b.get('next_estimated_charge_time', '') or '' -%}
+                {%- if nxt | trim != '' and nxt >= _bd_now and nxt[:10] != _today and nxt[:10] <= _soon -%}
+                  {%- set ns.b = ns.b + [b] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.b }}
+            _bd_ok: >-
+              {%- set ns = namespace(b=[]) -%}
+              {%- set _soon = (now() + timedelta(days=7)).strftime('%Y-%m-%d') -%}
+              {%- for b in _bd_list -%}
+                {%- set nxt = b.get('next_estimated_charge_time', '') or '' -%}
+                {%- if nxt | trim == '' or nxt[:10] > _soon -%}
+                  {%- set ns.b = ns.b + [b] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.b }}
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: batteries_due
+              total: '{{ _bd_list | length }}'
+              overdue: '{{ _bd_overdue }}'
+              due_today: '{{ _bd_due_today }}'
+              due_soon: '{{ _bd_due_soon }}'
+              ok: '{{ _bd_ok }}'
+              generated: '{{ _bd_now }}'
+        - stop: batteries_due done
+          response_variable: final_response
+
+    - alias: battery_status — low-battery triage by area with Grocy stock cross-ref
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'battery_status' }}"
+        sequence:
+        - variables:
+            _bs_all_plus: >-
+              {{ integration_entities('battery_notes')
+                 | select('match', 'sensor\\..*_battery_plus')
+                 | list }}
+        - variables:
+            _bs_low: >-
+              {%- set ns = namespace(devs=[]) -%}
+              {%- for ent in _bs_all_plus -%}
+                {%- if state_attr(ent, 'battery_low') == true -%}
+                  {%- set _aid = area_id(ent) | default('', true) -%}
+                  {%- set _dn  = state_attr(ent, 'device_name') | default('', true) -%}
+                  {%- set _taq = state_attr(ent, 'battery_type_and_quantity') | default('', true) -%}
+                  {%- set _pct = states(ent) | int(none) -%}
+                  {%- set ns.devs = ns.devs + [{'entity_id': ent, 'device_name': _dn, 'battery_type_and_quantity': _taq, 'battery_pct': _pct, 'area_id': _aid}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.devs }}
+        - variables:
+            _bs_by_area: >-
+              {%- set ns = namespace(m={}) -%}
+              {%- for d in _bs_low -%}
+                {%- set _aid = d.get('area_id', '') -%}
+                {%- set _existing = ns.m.get(_aid, {'devices': [], 'types_needed': []}) -%}
+                {%- set _devs = _existing.get('devices', []) + [d] -%}
+                {%- set _types = _existing.get('types_needed', []) -%}
+                {%- set _taq = d.get('battery_type_and_quantity', '') -%}
+                {%- set _types_new = _types if _taq in _types or _taq == '' else _types + [_taq] -%}
+                {%- set ns.m = ns.m | combine({_aid: {'devices': _devs, 'types_needed': _types_new}}) -%}
+              {%- endfor -%}
+              {{ ns.m }}
+            _bs_unique_types: >-
+              {%- set ns = namespace(types=[]) -%}
+              {%- for d in _bs_low -%}
+                {%- set _taq = d.get('battery_type_and_quantity', '') -%}
+                {%- if _taq != '' and _taq not in ns.types -%}
+                  {%- set ns.types = ns.types + [_taq] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.types }}
+        - variables:
+            _bs_stock: {}
+        - repeat:
+            for_each: "{{ _bs_unique_types }}"
+            sequence:
+            - action: script.zen_sutra_grocy
+              response_variable: _bs_prod_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/products?query%5B%5D=name={{ repeat.item | urlencode }}&limit=5"
+            - variables:
+                _bs_prod_list: >-
+                  {%- set r = _bs_prod_raw if _bs_prod_raw is mapping else {} -%}
+                  {%- set c = r.get('result', {}).get('content', []) -%}
+                  {{ c if c is sequence and c is not string else [] }}
+                _bs_prod_id: >-
+                  {%- set r = _bs_prod_raw if _bs_prod_raw is mapping else {} -%}
+                  {%- set c = r.get('result', {}).get('content', []) -%}
+                  {%- set _list = c if c is sequence and c is not string else [] -%}
+                  {{ (_list | first | default({})).get('id', none) if _list | length > 0 else none }}
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: "{{ _bs_prod_id is not none }}"
+                sequence:
+                - action: script.zen_sutra_grocy
+                  response_variable: _bs_stock_raw
+                  continue_on_error: true
+                  data:
+                    action_type: read
+                    endpoint: "/stock/products/{{ _bs_prod_id }}"
+                - variables:
+                    _bs_stock_amt: >-
+                      {%- set r = _bs_stock_raw if _bs_stock_raw is mapping else {} -%}
+                      {%- set c = r.get('result', {}).get('content', {}) -%}
+                      {%- set _d = c if c is mapping else {} -%}
+                      {{ _d.get('stock_amount', none) }}
+                - variables:
+                    _bs_stock: "{{ _bs_stock | combine({repeat.item: {'product_id': _bs_prod_id, 'stock_amount': _bs_stock_amt}}) }}"
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: battery_status
+              total_low: '{{ _bs_low | length }}'
+              all_ok: '{{ _bs_low | length == 0 }}'
+              areas: '{{ _bs_by_area }}'
+              stock: '{{ _bs_stock }}'
+              generated: '{{ now().isoformat() }}'
+        - stop: battery_status done
+          response_variable: final_response
+
+    - alias: battery_overdue — devices not replaced in N days
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'battery_overdue' }}"
+        sequence:
+        - variables:
+            _bo_days: "{{ days_threshold | default(180) | int(180) }}"
+            _bo_all_plus: >-
+              {{ integration_entities('battery_notes')
+                 | select('match', 'sensor\\..*_battery_plus')
+                 | list }}
+        - variables:
+            _bo_overdue: >-
+              {%- set ns = namespace(devs=[]) -%}
+              {%- for ent in _bo_all_plus -%}
+                {%- set _lrt = state_attr(ent, 'battery_last_replaced') | default('', true) -%}
+                {%- if _lrt and _lrt | trim != '' and as_datetime(_lrt) is not none -%}
+                  {%- set _dsr = (now() - as_datetime(_lrt)).days -%}
+                  {%- if _dsr > _bo_days -%}
+                    {%- set _aid = area_id(ent) | default('', true) -%}
+                    {%- set _dn  = state_attr(ent, 'device_name') | default('', true) -%}
+                    {%- set _taq = state_attr(ent, 'battery_type_and_quantity') | default('', true) -%}
+                    {%- set _pct = states(ent) | int(none) -%}
+                    {%- set ns.devs = ns.devs + [{'entity_id': ent, 'device_name': _dn, 'battery_type_and_quantity': _taq, 'battery_pct': _pct, 'area_id': _aid, 'last_replaced': _lrt | string, 'days_since_replaced': _dsr}] -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.devs | sort(attribute='days_since_replaced', reverse=true) }}
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: battery_overdue
+              days_threshold: '{{ _bo_days }}'
+              overdue_count: '{{ _bo_overdue | length }}'
+              devices: '{{ _bo_overdue }}'
+              generated: '{{ now().isoformat() }}'
+        - stop: battery_overdue done
+          response_variable: final_response
+
+    - alias: battery_replace — atomic Battery Notes log + Grocy stock consume
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'battery_replace' }}"
+        sequence:
+        - variables:
+            _br_entity: "{{ ha_entity_id | default('') | string | trim if ha_entity_id is defined else '' }}"
+        - if: "{{ _br_entity == '' }}"
+          then:
+          - variables:
+              final_response:
+                status: error
+                tool: '{{ tool_name }}'
+                version: '{{ tool_version }}'
+                case: battery_replace
+                message: "ha_entity_id is required. Provide the Battery Notes source entity (e.g. sensor.office_remote_battery_plus)."
+          - stop: battery_replace — ha_entity_id required
+            response_variable: final_response
+        - variables:
+            _br_battery_type: "{{ state_attr(_br_entity, 'battery_type_and_quantity') | default('', true) }}"
+            _br_device_name: "{{ state_attr(_br_entity, 'device_name') | default(_br_entity, true) }}"
+            _br_replaced_at: "{{ now().isoformat() }}"
+        - action: battery_notes.set_battery_replaced
+          continue_on_error: true
+          data:
+            source_entity_id: "{{ _br_entity }}"
+            datetime_replaced: "{{ _br_replaced_at }}"
+        - variables:
+            _br_grocy_consumed: none
+            _br_has_item: "{{ item is defined and item | default('') | string | trim != '' }}"
+        - if: "{{ _br_has_item }}"
+          then:
+          - action: script.zen_sutra_grocy
+            response_variable: _br_prod_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "/objects/products?query%5B%5D=name={{ item_norm | urlencode }}&limit=5"
+          - variables:
+              _br_prod_list: >-
+                {%- set r = _br_prod_raw if _br_prod_raw is mapping else {} -%}
+                {%- set c = r.get('result', {}).get('content', []) -%}
+                {{ c if c is sequence and c is not string else [] }}
+              _br_prod_id: >-
+                {%- set r = _br_prod_raw if _br_prod_raw is mapping else {} -%}
+                {%- set c = r.get('result', {}).get('content', []) -%}
+                {%- set _list = c if c is sequence and c is not string else [] -%}
+                {{ (_list | first | default({})).get('id', none) if _list | length > 0 else none }}
+              _br_prod_name: >-
+                {%- set r = _br_prod_raw if _br_prod_raw is mapping else {} -%}
+                {%- set c = r.get('result', {}).get('content', []) -%}
+                {%- set _list = c if c is sequence and c is not string else [] -%}
+                {{ (_list | first | default({})).get('name', item_norm) if _list | length > 0 else item_norm }}
+          - if: "{{ _br_prod_id is not none }}"
+            then:
+            - action: script.zen_sutra_grocy
+              response_variable: _br_consume_raw
+              continue_on_error: true
+              data:
+                action_type: create
+                endpoint: "/stock/products/{{ _br_prod_id }}/consume"
+                payload: "{{ {'amount': (amt_in | int(1)), 'transaction_type': 'consume'} }}"
+            - variables:
+                _br_grocy_consumed:
+                  product: '{{ _br_prod_name }}'
+                  product_id: '{{ _br_prod_id }}'
+                  amount: '{{ amt_in | int(1) }}'
+        - variables:
+            final_response:
+              status: success
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: battery_replace
+              replaced: true
+              entity_id: '{{ _br_entity }}'
+              device_name: '{{ _br_device_name }}'
+              battery_type: '{{ _br_battery_type }}'
+              replaced_at: '{{ _br_replaced_at }}'
+              grocy_consumed: '{{ _br_grocy_consumed }}'
+        - stop: battery_replace done
+          response_variable: final_response
+
+    - alias: stock_audit_perishable — find never-expires stock in perishable locations
+      choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'stock_audit_perishable' }}"
+        sequence:
+        - variables:
+            _sap_all_locs: []
+            _sap_locs_page: 1
+            _sap_locs_done: false
+        - repeat:
+            while: "{{ not _sap_locs_done and _sap_locs_page <= 20 }}"
+            sequence:
+            - action: script.zen_sutra_grocy
+              response_variable: _sap_locs_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "objects/locations?limit=500&offset={{ (_sap_locs_page - 1) * 500 }}&query%5B%5D=active=1"
+            - variables:
+                _sap_locs_page_items: "{{ (_sap_locs_raw.get('result', {}).get('content') or []) if _sap_locs_raw is mapping else [] }}"
+                _sap_all_locs: "{{ _sap_all_locs + _sap_locs_page_items }}"
+                _sap_locs_page: "{{ _sap_locs_page + 1 }}"
+                _sap_locs_done: "{{ _sap_locs_page_items | length < 500 }}"
+        - variables:
+            _sap_all_stock: []
+            _sap_stock_page: 1
+            _sap_stock_done: false
+        - repeat:
+            while: "{{ not _sap_stock_done and _sap_stock_page <= 20 }}"
+            sequence:
+            - action: script.zen_sutra_grocy
+              response_variable: _sap_stock_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "objects/stock?limit=500&offset={{ (_sap_stock_page - 1) * 500 }}"
+            - variables:
+                _sap_stock_page_items: "{{ (_sap_stock_raw.get('result', {}).get('content') or []) if _sap_stock_raw is mapping else [] }}"
+                _sap_all_stock: "{{ _sap_all_stock + _sap_stock_page_items }}"
+                _sap_stock_page: "{{ _sap_stock_page + 1 }}"
+                _sap_stock_done: "{{ _sap_stock_page_items | length < 500 }}"
+        - variables:
+            _sap_never_products: []
+            _sap_never_page: 1
+            _sap_never_done: false
+        - repeat:
+            while: "{{ not _sap_never_done and _sap_never_page <= 20 }}"
+            sequence:
+            - action: script.zen_sutra_grocy
+              response_variable: _sap_never_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "objects/products?limit=500&offset={{ (_sap_never_page - 1) * 500 }}&query%5B%5D=default_best_before_days=-1"
+            - variables:
+                _sap_never_page_items: "{{ (_sap_never_raw.get('result', {}).get('content') or []) if _sap_never_raw is mapping else [] }}"
+                _sap_never_products: "{{ _sap_never_products + _sap_never_page_items }}"
+                _sap_never_page: "{{ _sap_never_page + 1 }}"
+                _sap_never_done: "{{ _sap_never_page_items | length < 500 }}"
+        - variables:
+            _sap_perishable_ids: >-
+              {%- set ns = namespace(ids=[]) -%}
+              {%- for loc in _sap_all_locs -%}
+                {%- if (loc.get('active') | int(1)) == 1 and (loc.get('userfields') or {}).get('catalog_class') == 'perishable_storage' -%}
+                  {%- set ns.ids = ns.ids + [loc.id | int] -%}
+                  {%- set _children_raw = (loc.get('userfields') or {}).get('grocy_child_location_ids') -%}
+                  {%- if _children_raw and _children_raw | trim not in ['', '[]', 'null'] -%}
+                    {%- set _children = _children_raw if (_children_raw is sequence and _children_raw is not string) else (_children_raw | from_json(none) | default([])) -%}
+                    {%- for cid in (_children if _children is sequence else []) -%}
+                      {%- if cid | string | trim | regex_search('^-?\d+$') -%}
+                        {%- set _co = _sap_all_locs | selectattr('id', 'equalto', cid | int) | list | first | default(none) -%}
+                        {%- set _co2 = _sap_all_locs | selectattr('id', 'equalto', cid | string) | list | first | default(_co) -%}
+                        {%- set _child = _co2 if _co2 is mapping else (_co if _co is mapping else {}) -%}
+                        {%- if (_child.get('userfields') or {}).get('catalog_class') != 'non_perishable' -%}
+                          {%- set ns.ids = ns.ids + [cid | int] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.ids | unique | list }}
+            _sap_never_ids: >-
+              {{ _sap_never_products | map(attribute='id') | map('int') | list }}
+        - variables:
+            _sap_violations: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for entry in _sap_all_stock -%}
+                {%- set lid = entry.get('location_id') | int(0) -%}
+                {%- set pid = entry.get('product_id') | int(0) -%}
+                {%- if lid in _sap_perishable_ids and pid in _sap_never_ids -%}
+                  {%- set prod = _sap_never_products | selectattr('id', 'equalto', pid) | list | first | default(none) -%}
+                  {%- set prod2 = _sap_never_products | selectattr('id', 'equalto', pid | string) | list | first | default(prod) -%}
+                  {%- set loc = _sap_all_locs | selectattr('id', 'equalto', lid) | list | first | default(none) -%}
+                  {%- set loc2 = _sap_all_locs | selectattr('id', 'equalto', lid | string) | list | first | default(loc) -%}
+                  {%- set _prod = prod2 if prod2 is mapping else (prod if prod is mapping else {}) -%}
+                  {%- set _loc = loc2 if loc2 is mapping else (loc if loc is mapping else {}) -%}
+                  {%- set ns.items = ns.items + [{
+                    'product_id': pid,
+                    'product_name': _prod.get('name', 'Unknown'),
+                    'location_id': lid,
+                    'location_name': _loc.get('name', 'Unknown'),
+                    'amount': entry.get('amount'),
+                    'best_before_date': entry.get('best_before_date'),
+                    'fix': "update_product_meta item='" ~ _prod.get('name', 'Unknown') ~ "' best_before_days=N"
+                  }] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.items }}
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: stock_audit_perishable
+              perishable_location_ids: '{{ _sap_perishable_ids }}'
+              never_expires_product_count: '{{ _sap_never_ids | length }}'
+              violations:
+                count: '{{ _sap_violations | length }}'
+                items: '{{ _sap_violations }}'
+                summary: >-
+                  {{ 'No violations — all products in perishable locations have expiry tracking.'
+                     if _sap_violations | length == 0 else
+                     (_sap_violations | length | string) ~ ' product(s) marked never-expires (-1) stocked at a perishable location. Use fix command to add expiry tracking.' }}
+        - stop: stock_audit_perishable done
+          response_variable: final_response
+
     - alias: Call Grocy API (if not barred by endpoint)
       choose:
       - conditions:
         - condition: template
-          value_template: '{{ mode_norm not in [''catalog_find_product'', ''catalog_search'', ''catalog_add_product'', ''catalog_delete_product'', ''locations_reparent_bulk'', ''locations_delete_safe'', ''locations_hierarchy_rebuild'', ''stock_register_asset'', ''stock_area_summary'', ''stock_area_volatile'', ''stock_area_inventory'', ''chores_by_area'', ''room_brief'', ''chores_add'', ''chores_tag'', ''products_tag'', ''catalog_find_by_tag'', ''object_lens'', ''chores_delete'', ''chores_edit'', ''tasks_add'', ''tasks_tag'', ''update_product_meta'', ''provision_bom'', ''product_refs_get'', ''product_ref_add'', ''product_ref_remove'', ''catalog_find_by_barcode'', ''by_anchor''] }}'
+          value_template: '{{ mode_norm not in [''catalog_find_product'', ''catalog_search'', ''catalog_add_product'', ''catalog_delete_product'', ''locations_reparent_bulk'', ''locations_delete_safe'', ''locations_hierarchy_rebuild'', ''stock_register_asset'', ''stock_area_summary'', ''stock_area_volatile'', ''stock_area_inventory'', ''chores_by_area'', ''room_brief'', ''chores_add'', ''chores_tag'', ''products_tag'', ''catalog_find_by_tag'', ''object_lens'', ''chores_delete'', ''chores_edit'', ''tasks_add'', ''tasks_tag'', ''update_product_meta'', ''provision_bom'', ''product_refs_get'', ''product_ref_add'', ''product_ref_remove'', ''catalog_find_by_barcode'', ''by_anchor'', ''batteries_due'', ''battery_status'', ''battery_overdue'', ''battery_replace'', ''stock_audit_perishable''] }}'
           alias: Not 'catalog_find_product'
         sequence:
         - action: script.zen_sutra_grocy
@@ -4706,6 +5535,21 @@ script:
                   coaching:
                   - Provide location name or location_id (default storage location for new stock).
             - stop: Product Location Required
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ unit_id_resolved is none }}"
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  mode: catalog_add_product
+                  message: unit is required — product cannot be created without a stock unit (qu_id_stock would be null, blocking all stock operations).
+                  coaching:
+                  - Provide unit= (e.g. unit=each, unit=gram, unit=sheet, unit=pack).
+                  - Use mode=units_list to see available units and their IDs.
+            - stop: Product Stock Unit Required
               response_variable: final_response
         - action: script.zen_sutra_grocy
           response_variable: _cprod_dupe_raw
@@ -6211,6 +7055,9 @@ script:
         sequence:
         - variables:
             _cs_q: "{{ (item | default('') | string | trim | lower) }}"
+            _cs_offset: 0
+            _cs_all: []
+            _cs_page_done: false
         - if:
           - condition: template
             value_template: "{{ _cs_q == '' }}"
@@ -6224,53 +7071,70 @@ script:
                 version: "{{ tool_version }}"
           - stop: catalog_search error
             response_variable: final_response
-        - action: script.zen_sutra_grocy
-          response_variable: _cs_raw
-          continue_on_error: true
-          data:
-            action_type: read
-            endpoint: "/objects/products?limit=500&offset=0"
-        - variables:
-            _cs_results: >-
-              {%- set _pg = _cs_raw['result']['content']
-                            if _cs_raw is mapping and 'result' in _cs_raw
-                               and _cs_raw['result']['content'] is sequence
-                            else [] -%}
-              {%- set ns = namespace(r=[]) -%}
-              {%- for p in _pg -%}
-                {%- set _name_match = _cs_q in (p.name | default('', true) | string | lower) -%}
-                {%- set uf = p.get('userfields', {}) if p.get('userfields') is mapping else {} -%}
-                {%- set _hl = (uf.get('ha_labels', '') | default('', true)) | string | trim -%}
-                {%- set _ntags = (p.get('tags', '') | default('', true)) | string | trim -%}
-                {%- set _author = (uf.get('book_author', '') | default('', true)) | string | trim | lower -%}
-                {%- set _all_tags = (_hl.split(',') + _ntags.split(',')) | map('trim') | reject('equalto', '') | list -%}
-                {%- set _tag_match = _cs_q in _all_tags -%}
-                {%- set _author_match = _author != '' and _cs_q in _author -%}
-                {%- if _name_match or _tag_match or _author_match -%}
-                  {%- set _src = 'name' if _name_match else ('author' if _author_match else 'tag') -%}
-                  {%- set ns.r = ns.r + [{'id': p.id, 'name': p.name,
-                    'match_source': _src,
-                    'ha_labels': _hl, 'native_tags': _ntags,
-                    'location_id': p.get('location_id'),
-                    'book_author': uf.get('book_author', none),
-                    'book_isbn': uf.get('book_isbn', none),
-                    'book_series': uf.get('book_series', none),
-                    'book_genre': uf.get('book_genre', none),
-                    'library_meta': uf.get('library_meta', none),
-                    'library_loan_borrower': uf.get('library_loan_borrower', none),
-                    'library_loan_date': uf.get('library_loan_date', none),
-                    'library_loan_due': uf.get('library_loan_due', none),
-                    'library_loan_home_location_id': uf.get('library_loan_home_location_id', none)}] -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.r }}
+        - repeat:
+            until: "{{ _cs_page_done or _cs_offset >= 100000 }}"
+            sequence:
+            - action: script.zen_sutra_grocy
+              response_variable: _cs_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "/objects/products?limit=500&offset={{ _cs_offset }}"
+            - variables:
+                _cs_page_size: >-
+                  {{ _cs_raw['result']['content'] | length
+                     if _cs_raw is mapping and 'result' in _cs_raw
+                        and _cs_raw['result']['content'] is sequence
+                     else 0 }}
+                _cs_page_matches: >-
+                  {%- set _pg = _cs_raw['result']['content']
+                                if _cs_raw is mapping and 'result' in _cs_raw
+                                   and _cs_raw['result']['content'] is sequence
+                                else [] -%}
+                  {%- set ns = namespace(r=[]) -%}
+                  {%- for p in _pg if p is mapping -%}
+                    {%- set _name_match = _cs_q in (p.name | default('', true) | string | lower) -%}
+                    {%- set uf = p.get('userfields', {}) if p.get('userfields') is mapping else {} -%}
+                    {%- set _hl = (uf.get('ha_labels', '') | default('', true)) | string | trim -%}
+                    {%- set _ntags = (p.get('tags', '') | default('', true)) | string | trim -%}
+                    {%- set _author = (uf.get('book_author', '') | default('', true)) | string | trim | lower -%}
+                    {%- set _all_tags = (_hl.split(',') + _ntags.split(',')) | map('trim') | map('lower') | reject('equalto', '') | list -%}
+                    {%- set ns_tm = namespace(match=false) -%}
+                    {%- for t in _all_tags if _cs_q in t -%}{%- set ns_tm.match = true -%}{%- endfor -%}
+                    {%- set _tag_match = ns_tm.match -%}
+                    {%- set _author_match = _author != '' and _cs_q in _author -%}
+                    {%- if _name_match or _tag_match or _author_match -%}
+                      {%- set _src = 'name' if _name_match else ('author' if _author_match else 'tag') -%}
+                      {%- set ns.r = ns.r + [{'id': p.id, 'name': p.name,
+                        'match_source': _src,
+                        'ha_labels': _hl, 'native_tags': _ntags,
+                        'location_id': p.get('location_id'),
+                        'book_author': uf.get('book_author', none),
+                        'book_isbn': uf.get('book_isbn', none),
+                        'book_series': uf.get('book_series', none),
+                        'book_genre': uf.get('book_genre', none),
+                        'library_meta': uf.get('library_meta', none),
+                        'library_loan_borrower': uf.get('library_loan_borrower', none),
+                        'library_loan_date': uf.get('library_loan_date', none),
+                        'library_loan_due': uf.get('library_loan_due', none),
+                        'library_loan_home_location_id': uf.get('library_loan_home_location_id', none)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.r }}
+            - variables:
+                _cs_all: >-
+                  {%- set _prev = _cs_all if _cs_all is sequence and _cs_all is not string else [] -%}
+                  {%- set _cur = _cs_page_matches if _cs_page_matches is sequence else [] -%}
+                  {{ (_prev | list) + (_cur | list) }}
+                _cs_page_done: "{{ (_cs_page_size | int(0)) < 500 }}"
+                _cs_offset: "{{ (_cs_offset | int) + 500 }}"
         - variables:
             final_response:
               status: ok
               mode: catalog_search
               query: "{{ _cs_q }}"
-              count: "{{ _cs_results | length }}"
-              products: "{{ _cs_results }}"
+              count: "{{ _cs_all | length }}"
+              products: "{{ _cs_all }}"
               tool: "{{ tool_name }}"
               version: "{{ tool_version }}"
         - stop: catalog_search done
@@ -7792,8 +8656,14 @@ script:
               {%- if move_on_open_in is not none -%}
                 {%- set _ns.p = _ns.p | combine({'move_on_open': 1 if move_on_open_in | bool else 0}) -%}
               {%- endif -%}
+              {%- if no_own_stock_in is not none -%}
+                {%- set _ns.p = _ns.p | combine({'no_own_stock': 1 if no_own_stock_in | bool else 0}) -%}
+              {%- endif -%}
               {%- if due_days_after_open_in is not none -%}
                 {%- set _ns.p = _ns.p | combine({'default_best_before_days_after_open': due_days_after_open_in | int}) -%}
+              {%- endif -%}
+              {%- if best_before_days_in is not none -%}
+                {%- set _ns.p = _ns.p | combine({'default_best_before_days': best_before_days_in | int}) -%}
               {%- endif -%}
               {%- set _desc_parts = [] -%}
               {%- if has_note -%}{%- set _desc_parts = _desc_parts + [note_in] -%}{%- endif -%}
@@ -7886,7 +8756,9 @@ script:
                 {%- if to_location_id_resolved is not none -%}{%- set out = out + ['default_consume_location_id'] -%}{%- endif -%}
                 {%- if product_group_id_in is not none -%}{%- set out = out + ['product_group_id'] -%}{%- endif -%}
                 {%- if move_on_open_in is not none -%}{%- set out = out + ['move_on_open'] -%}{%- endif -%}
+                {%- if no_own_stock_in is not none -%}{%- set out = out + ['no_own_stock'] -%}{%- endif -%}
                 {%- if due_days_after_open_in is not none -%}{%- set out = out + ['default_best_before_days_after_open'] -%}{%- endif -%}
+                {%- if best_before_days_in is not none -%}{%- set out = out + ['default_best_before_days'] -%}{%- endif -%}
                 {%- if parent_product_id_resolved is not none -%}{%- set out = out + ['parent_product_id'] -%}{%- endif -%}
                 {%- if purchase_date_in != '' -%}{%- set out = out + ['zen_purchase_date'] -%}{%- endif -%}
                 {{ out }}
@@ -8611,6 +9483,13 @@ script:
               version: "{{ tool_version }}"
         - stop: Area Inventory
           response_variable: final_response
+    - variables:
+        _perishable_storage_warn: false
+        _cogs_zone_warn: false
+        _cogs_coach_msg: "{{ none }}"
+        _cogs_cost_basis_warn: false
+        _cogs_zone_read_warn: false
+        _cogs_undo_warn_msg: "{{ none }}"
     - alias: Post Purchase inventory on 'Buy'
       choose:
       - conditions:
@@ -8638,6 +9517,206 @@ script:
               \     \"locations_now\": post_locations,\n      \"humor\": (\n        \"There
               are now \" ~ (post_total_amount | string)\n        ~ \" \" ~ (item_norm if item_norm else (grocy_product.name if grocy_product is defined and grocy_product is mapping else 'item'))
               ~ \" in inventory, boss.\"\n      )\n    }\n  }\n}}"
+    - alias: Perishable Storage Coach
+      choose:
+      - conditions:
+        - condition: template
+          value_template: >-
+            {{ mode_norm in ['stock_buy_product', 'stock_add_purchase', 'stock_transfer_location']
+               and grocy_product is mapping
+               and (grocy_product.default_best_before_days | int(-999)) == -1
+               and (location_id_resolved is not none or to_location_id_resolved is not none) }}
+        sequence:
+        - variables:
+            _ps_dest_id: "{{ to_location_id_resolved if mode_norm == 'stock_transfer_location' else location_id_resolved }}"
+        - action: script.zen_sutra_grocy
+          response_variable: _ps_loc_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "objects/locations/{{ _ps_dest_id }}"
+        - variables:
+            _ps_loc_content: >-
+              {{ (_ps_loc_raw.get('result', {}).get('content') or {}) if _ps_loc_raw is mapping else {} }}
+        - variables:
+            _ps_catalog_class: >-
+              {{ ((_ps_loc_content.get('userfields') or {}).get('catalog_class') or '') | string | trim }}
+            _ps_parent_id: >-
+              {{ ((_ps_loc_content.get('userfields') or {}).get('grocy_parent_location_id') or '') | string | trim }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _ps_catalog_class == 'non_perishable' }}"
+            sequence:
+            - variables:
+                _perishable_storage_warn: false
+          - conditions:
+            - condition: template
+              value_template: "{{ _ps_catalog_class != 'perishable_storage' and _ps_parent_id != '' }}"
+            sequence:
+            - action: script.zen_sutra_grocy
+              response_variable: _ps_parent_raw
+              continue_on_error: true
+              data:
+                action_type: read
+                endpoint: "objects/locations/{{ _ps_parent_id }}"
+            - variables:
+                _ps_parent_class: >-
+                  {{ (((_ps_parent_raw.get('result', {}).get('content') or {}).get('userfields') or {}).get('catalog_class') or '') | string | trim
+                     if _ps_parent_raw is mapping else '' }}
+                _perishable_storage_warn: "{{ _ps_parent_class == 'perishable_storage' }}"
+        - variables:
+            _perishable_storage_warn: >-
+              {{ true if _ps_catalog_class == 'perishable_storage'
+                 else (_perishable_storage_warn | default(false)) }}
+    - alias: COGS Zone Coach
+      choose:
+      - conditions:
+        - condition: template
+          value_template: >-
+            {{ mode_norm in ['stock_buy_product', 'stock_add_purchase', 'stock_transfer_location', 'stock_inventory_adjust']
+               and product_id_resolved is not none
+               and (location_id_resolved is not none or to_location_id_resolved is not none) }}
+        sequence:
+        - variables:
+            _cz_dest_id: "{{ to_location_id_resolved if mode_norm == 'stock_transfer_location' else location_id_resolved }}"
+        - action: script.zen_sutra_grocy
+          response_variable: _cz_loc_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "objects/locations/{{ _cz_dest_id }}"
+        - variables:
+            _cz_loc_content: >-
+              {{ (_cz_loc_raw.get('result', {}).get('content') or {}) if _cz_loc_raw is mapping else {} }}
+            _cz_catalog_class: >-
+              {{ ((_cz_loc_content.get('userfields') or {}).get('catalog_class') or '') | string | trim }}
+        - if:
+          - condition: template
+            value_template: "{{ _cz_catalog_class == 'cogs_zone' }}"
+          then:
+          - action: script.zen_sutra_grocy
+            response_variable: _cz_prod_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "objects/products/{{ product_id_resolved }}"
+          - variables:
+              _cz_prod_content: >-
+                {{ (_cz_prod_raw.get('result', {}).get('content') or {}) if _cz_prod_raw is mapping else {} }}
+              _cz_labels: >-
+                {{ ((_cz_prod_content.get('userfields') or {}).get('ha_labels', '') | default('', true)) | string | regex_findall('[^,]+') | map('trim') | list }}
+              _cogs_zone_warn: "{{ 'cogs_tracked' not in _cz_labels }}"
+        - variables:
+            _cogs_zone_warn: "{{ _cogs_zone_warn | default(false) }}"
+    - alias: "COGS Read Coach — cost-basis + zone-tag consistency"
+      choose:
+      - conditions:
+        - condition: template
+          value_template: >-
+            {{ mode_norm in ['stock_check_item', 'stock_where_is_item', 'stock_entries_for_item']
+               and product_id_resolved is not none and not is_error }}
+        sequence:
+        - action: script.zen_sutra_grocy
+          response_variable: _crc_prod_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "/objects/products/{{ product_id_resolved }}"
+        - action: script.zen_sutra_grocy
+          response_variable: _crc_entries_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "/stock/products/{{ product_id_resolved }}/entries"
+        - variables:
+            _crc_prod: >-
+              {{ (_crc_prod_raw.get('result', {}).get('content') or {}) if _crc_prod_raw is mapping else {} }}
+            _crc_labels: >-
+              {{ ((_crc_prod.get('userfields') or {}).get('ha_labels', '') | default('', true)) | string | regex_findall('[^,]+') | map('trim') | list }}
+            _crc_entries: >-
+              {{ (_crc_entries_raw.get('result', {}).get('content') or []) if _crc_entries_raw is mapping else [] }}
+        - variables:
+            _crc_is_tracked: "{{ 'cogs_tracked' in _crc_labels }}"
+        - variables:
+            _cogs_cost_basis_warn: >-
+              {{ _crc_is_tracked and _crc_entries | length > 0
+                 and (_crc_entries | map(attribute='price') | map('float', 0) | select('gt', 0) | list | length == 0) }}
+        - if:
+          - condition: template
+            value_template: "{{ not _crc_is_tracked and _crc_entries | length > 0 }}"
+          then:
+          - action: script.zen_sutra_grocy
+            response_variable: _crc_all_locs_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: /objects/locations?limit=500&offset=0
+          - variables:
+              _crc_all_locs: >-
+                {{ (_crc_all_locs_raw.get('result', {}).get('content') or []) if _crc_all_locs_raw is mapping else [] }}
+              _crc_entry_loc_ids: >-
+                {{ _crc_entries | map(attribute='location_id') | reject('none') | list | unique | list }}
+          - variables:
+              _cogs_zone_read_warn: >-
+                {{ (_crc_all_locs
+                    | selectattr('id', 'in', _crc_entry_loc_ids)
+                    | map(attribute='userfields')
+                    | select('mapping')
+                    | selectattr('catalog_class', 'defined')
+                    | selectattr('catalog_class', 'equalto', 'cogs_zone')
+                    | list | length > 0) }}
+      - conditions:
+        - condition: template
+          value_template: "{{ true }}"
+        sequence:
+        - variables:
+            _cogs_cost_basis_warn: false
+            _cogs_zone_read_warn: false
+    - variables:
+        _cogs_cost_basis_warn: "{{ _cogs_cost_basis_warn | default(false) }}"
+        _cogs_zone_read_warn: "{{ _cogs_zone_read_warn | default(false) }}"
+    - alias: "COGS Undo Coach — Firefly is not auto-reversed by stock_undo_booking"
+      choose:
+      - conditions:
+        - condition: template
+          value_template: >-
+            {{ mode_norm == 'stock_undo_booking' and not is_error and booking_id_in is not none }}
+        sequence:
+        - action: script.zen_sutra_grocy
+          response_variable: _cub_log_raw
+          continue_on_error: true
+          data:
+            action_type: read
+            endpoint: "/objects/stock_log/{{ booking_id_in }}"
+        - variables:
+            _cub_log: >-
+              {{ (_cub_log_raw.get('result', {}).get('content') or {}) if _cub_log_raw is mapping else {} }}
+            _cub_product_id: "{{ _cub_log.get('product_id') if _cub_log is mapping else none }}"
+        - if:
+          - condition: template
+            value_template: "{{ _cub_product_id is not none }}"
+          then:
+          - action: script.zen_sutra_grocy
+            response_variable: _cub_prod_raw
+            continue_on_error: true
+            data:
+              action_type: read
+              endpoint: "/objects/products/{{ _cub_product_id }}"
+          - variables:
+              _cub_prod: >-
+                {{ (_cub_prod_raw.get('result', {}).get('content') or {}) if _cub_prod_raw is mapping else {} }}
+              _cub_labels: >-
+                {{ ((_cub_prod.get('userfields') or {}).get('ha_labels', '') | default('', true)) | string | regex_findall('[^,]+') | map('trim') | list }}
+          - if:
+            - condition: template
+              value_template: "{{ 'cogs_tracked' in _cub_labels }}"
+            then:
+            - variables:
+                _cogs_undo_warn_msg: >-
+                  {{ "This was a cogs_tracked product — undoing Grocy stock does NOT auto-reverse any Firefly COGS transaction. If one was posted, find and reverse it: zen_dojotools_finance mode=run case=transactions_search tags=grocy_stock_entry:" ~ (booking_id_in | string) ~ ", then case=compensate firefly_transaction_id=<id> confirm=true." }}
+    - variables:
+        _cogs_undo_warn_msg: "{{ _cogs_undo_warn_msg | default(none) }}"
     - variables:
         grocy_result: "{% if grocy_response is mapping and 'result' in grocy_response
           %}\n  {{ grocy_response['result'] }}\n{% else %}\n  {{ none }}\n{% endif %}"
@@ -8740,7 +9819,75 @@ script:
           if is_error else none),\n\n    \"report\": (\n      inventory_report\n      if
           (not is_error)\n      and mode_norm == 'stock_buy_product'\n      and inventory_report
           is defined\n      else none\n    ),\n\n    \"pagination\": (\n      {\n        \"supported\": true,\n        \"applied\": true,\n        \"page\": page_effective | default(none),\n        \"per_page\": limit | default(none),\n        \"offset\": offset | default(none),\n        \"source\": (\"user\" if (page_in is number or per_page_in is number) else \"default\"),\n        \"has_more\": (result_payload | length == limit) if (limit is not none and result_payload is not none and result_payload is sequence and result_payload is not string) else none\n      }\n      if (supports_pagination | default(false)) and limit is not none and offset is not none\n      else {\"supported\": supports_pagination | default(false), \"applied\": false}\n    ),\n\n    \"endpoint\": final_endpoint
-          | default(endpoint),\n\n    \"hint\": (\n      (\n        \"One or more products have no parent set. If any are varietals/brands, link them: update_product_meta item='<name>' parent_product='<base>'\"\n        if (result_payload | selectattr('parent_product_id', 'equalto', none) | list | length > 0)\n        else none\n      )\n      if (mode_norm == 'catalog_find_product' and not is_error and result_payload is sequence and result_payload is not string)\n      else none\n    ),\n\n    \"trace\": trace\n  }\n}}"
+          | default(endpoint),\n\n    \"hint\": (\n      (\n        \"One or more products have no parent set. If any are varietals/brands, link them: update_product_meta item='<name>' parent_product='<base>'\"\n        if (result_payload | selectattr('parent_product_id', 'equalto', none) | list | length > 0)\n        else none\n      )\n      if (mode_norm == 'catalog_find_product' and not is_error and result_payload is sequence and result_payload is not string)\n      else none\n    ),\n\n    \"coaching\": (\n      (\n        ([\"Product has default_best_before_days=-1 (never expires) but destination is tagged perishable_storage. Consider adding best_before_date to this stock entry, or run update_product_meta best_before_days=N to enable expiry tracking.\"] if ((_perishable_storage_warn | default(false)) and not is_error) else [])\n        +\n        ([\"Destination location is tagged cogs_zone but this product is not ha_labels=cogs_tracked. If this is business-use inventory, tag it: products_tag item='<name>' ha_labels=cogs_tracked (appends, does not overwrite existing labels). If it's personal stock, consider a different location.\"] if ((_cogs_zone_warn | default(false)) and not is_error) else [])\n        +\n        ([\"Product is cogs_tracked but has no stock entries with a positive price — COGS will be skipped on consume (fails silently by design). Fix: stock_entry_update entry_id=<id> price=<amount>, or re-buy with price set. Check config: zen_dojotools_finance mode=run case=cogs_configure.\"] if ((_cogs_cost_basis_warn | default(false)) and not is_error) else [])\n        +\n        ([\"This item's location is tagged cogs_zone but the product is not ha_labels=cogs_tracked. If this is business-use inventory, tag it: products_tag item='<name>' ha_labels=cogs_tracked. If personal, consider a different location.\"] if ((_cogs_zone_read_warn | default(false)) and not is_error) else [])\n        +\n        ([_cogs_coach_msg] if (_cogs_coach_msg is not none and not is_error) else [])\n        +\n        ([_cogs_undo_warn_msg] if (_cogs_undo_warn_msg is not none and not is_error) else [])\n      ) or none\n    ),\n    \"trace\": trace\n  }\n}}"
+    - alias: "COGS hook: post stock_consume of cogs_tracked products to Firefly"
+      if:
+      - condition: template
+        value_template: >-
+          {{ mode_norm == 'stock_consume' and not is_error and product_id_resolved is not none }}
+      then:
+      - action: script.zen_sutra_grocy
+        response_variable: _cogs_prod_raw
+        continue_on_error: true
+        data:
+          action_type: read
+          endpoint: "/objects/products/{{ product_id_resolved }}"
+      - variables:
+          _cogs_prod: >-
+            {{ (_cogs_prod_raw.get('result', {}).get('content') or {}) if _cogs_prod_raw is mapping else {} }}
+          _cogs_uf: >-
+            {{ (_cogs_prod.get('userfields') or {}) if _cogs_prod is mapping else {} }}
+          _cogs_labels: >-
+            {{ (_cogs_uf.get('ha_labels', '') | default('', true)) | string | regex_findall('[^,]+') | map('trim') | list }}
+          _cogs_finance_installed: >-
+            {{ states('script.zen_dojotools_finance') not in ['unknown', 'unavailable', ''] }}
+      - if:
+        - condition: template
+          value_template: "{{ 'cogs_tracked' in _cogs_labels and not _cogs_finance_installed }}"
+        then:
+        - variables:
+            _cogs_coach_msg: >-
+              Product is cogs_tracked but zen_dojotools_finance is not installed on this
+              household — COGS was not posted for this consume.
+      - if:
+        - condition: template
+          value_template: "{{ 'cogs_tracked' in _cogs_labels and _cogs_finance_installed }}"
+        then:
+        - variables:
+            _cogs_consumed_entries: >-
+              {{ content if content is sequence and content is not string else [] }}
+            _cogs_unit_price: >-
+              {{ (_cogs_consumed_entries | map(attribute='price') | map('float', 0) | select('gt', 0) | list | first) | default(0, true) }}
+        - variables:
+            _cogs_stock_entry_id: >-
+              {{ (_cogs_consumed_entries | map(attribute='id') | list | first | default(none, true))
+                 if _cogs_consumed_entries | length > 0
+                 else (product_id_resolved ~ '-' ~ (now().timestamp() | int)) }}
+        - action: script.zen_dojotools_finance
+          continue_on_error: true
+          response_variable: _cogs_post_raw
+          data:
+            mode: run
+            case: cogs_post
+            product_id: "{{ product_id_resolved }}"
+            product_name: "{{ grocy_product.name if grocy_product is mapping else '' }}"
+            amount: "{{ amt_in }}"
+            unit_price: "{{ _cogs_unit_price }}"
+            stock_entry_id: "{{ _cogs_stock_entry_id }}"
+            confirm: true
+        - variables:
+            _cogs_coach_msg: >-
+              {{ ('COGS not posted for this consume — ' ~ (_cogs_post_raw.get('reason', 'unknown reason')) ~ ' Run zen_dojotools_finance mode=run case=cogs_configure to review setup, or fix cost basis: stock_entry_update entry_id=<id> price=<amount>.')
+                 if (_cogs_post_raw is mapping and _cogs_post_raw.get('status', '') == 'skipped')
+                 else (('COGS post failed for this consume: ' ~ (_cogs_post_raw.get('message', 'unknown error')) ~ ' Stock was still consumed normally — check Firefly connectivity or zen_dojotools_finance mode=run case=cogs_configure.')
+                       if (_cogs_post_raw is mapping and _cogs_post_raw.get('status', '') == 'error')
+                       else none) }}
+      - variables:
+          final_response: >-
+            {{ final_response | combine({'coaching': (
+                 (final_response.get('coaching') if final_response.get('coaching') is not none else [])
+                 + [_cogs_coach_msg]
+               ) if _cogs_coach_msg is not none else final_response.get('coaching')}) }}
     - stop: Return Response
       response_variable: final_response
 

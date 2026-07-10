@@ -1,10 +1,11 @@
 ###############################################################################
 # ZenOS-AI Plugin: Firefly III — Finance
-# Version: 2.2.0
+# Version: 2.3.0
 #
 # Scripts:
-#   zen_dojotools_finance  ← MCP-facing finance tool (transactions, accounts, budgets)
-#   zen_stack_firefly      ← Lens Bus stack provider (internal, NOT MCP-exposed)
+#   zen_dojotools_finance       ← MCP-facing finance tool (transactions, accounts, budgets, codex dispatch)
+#   zen_stack_firefly           ← Lens Bus stack provider (internal, NOT MCP-exposed)
+#   [zen_codex_finance_*.yaml]  ← Codex tier domain modules (loaded from sibling files)
 #
 # Lens Bus — Auto-Registration (introduced this version):
 #   zen_stack_firefly is the first ZenOS lens provider to use bootstrap auto-registration.
@@ -102,7 +103,7 @@ rest_command:
 
 script:
 
-  zen_sutra_firefly:
+  zen_root_firefly:
     alias: Zen DojoTools Firefly Advanced
     description: >
       Internal Firefly III API broker. Raw REST dispatcher — GET, POST, PUT, DELETE.
@@ -206,7 +207,7 @@ script:
   #####################################################################
   # zen_stack_firefly v1.0.0
   # Firefly III Lens Provider — ZenOS Lens Bus integration.
-  # Consume anchors (label, person) → transaction_evidence.
+  # Consume anchors (label, person, transaction) → transaction_evidence.
   # Internal only: not MCP-exposed. Consumers call zen_dojotools_lens_dispatch.
   # Security: r-only gate. All writes go through zen_dojotools_finance directly.
   #####################################################################
@@ -214,7 +215,7 @@ script:
     alias: Zen Stack Firefly III
     description: >-
       Firefly III Lens Provider (v1.0.0). Internal stack adapter for the ZenOS Lens Bus.
-      Provides transaction_evidence for label and person anchors. Not MCP-exposed —
+      Provides transaction_evidence for label, person, and transaction anchors. Not MCP-exposed —
       consumers call zen_dojotools_lens_dispatch.
     mode: queued
     max: 5
@@ -228,7 +229,7 @@ script:
         selector:
           text:
       anchor_type:
-        description: Anchor type — label or person
+        description: Anchor type — label, person, or transaction
         selector:
           text:
       anchor_ids:
@@ -270,7 +271,7 @@ script:
               domain: finance
               provider_key: firefly_iii
               register_mode: register
-              consumes: [label, person]
+              consumes: [label, person, transaction]
               returns: [transaction_evidence]
               failure_policy: soft
               content_policy: redacted_by_default
@@ -280,6 +281,10 @@ script:
                 required: r
                 allowed: [r]
                 denied: [w, x, d, a]
+              lens_provider: true
+              preferred_state:
+                stripe: 2
+                impact: soft
         - stop: return
           response_variable: final_response
 
@@ -296,7 +301,7 @@ script:
               version: '{{ tool_version }}'
               mode: inspect
               provider: firefly_iii
-              consumes: [label, person]
+              consumes: [label, person, transaction]
               returns: [transaction_evidence]
               security_act:
                 model: rwxda
@@ -324,7 +329,7 @@ script:
               version: '{{ tool_version }}'
               mode: audit
               provider: firefly_iii
-              consumes: [label, person]
+              consumes: [label, person, transaction]
               returns: [transaction_evidence]
               security_violations: []
               notes: >-
@@ -340,7 +345,7 @@ script:
           - condition: template
             value_template: '{{ _mode_norm == "health" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           continue_on_error: true
           response_variable: _sf_health_raw
           data:
@@ -397,7 +402,7 @@ script:
               status: available
               tool: zen_stack_firefly
               mode: stacks_by_anchor
-              consumes: [label, person]
+              consumes: [label, person, transaction]
               returns: [transaction_evidence]
               failure_policy: soft
               content_policy: redacted_by_default
@@ -580,6 +585,44 @@ script:
                       {%- endfor -%}
                       {{ ns.items }}
 
+              # transaction anchor → direct lookup by Firefly transaction ID
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "transaction" and _sf_anchor_id != "" }}'
+                sequence:
+                - action: script.zen_dojotools_finance
+                  continue_on_error: true
+                  response_variable: _sf_txn_id_raw
+                  data:
+                    mode: run
+                    case: transaction_get
+                    item_id: "{{ _sf_anchor_id }}"
+                - variables:
+                    _sf_t: >-
+                      {{ (_sf_txn_id_raw.get('result', {}) or {}) if _sf_txn_id_raw is mapping else {} }}
+                - variables:
+                    _sf_evidence: >-
+                      {%- set ns = namespace(items=_sf_evidence) -%}
+                      {%- if _sf_t is mapping and _sf_t.get('id', '') != '' -%}
+                        {%- set ns.items = ns.items + [{
+                          'id': 'txn_' ~ (_sf_t.get('id', '') | string),
+                          'type': 'transaction_evidence',
+                          'date': _sf_t.get('date', ''),
+                          'description': _sf_t.get('description', ''),
+                          'amount': _sf_t.get('amount', ''),
+                          'currency': _sf_t.get('currency_code', 'USD'),
+                          'transaction_type': _sf_t.get('type', ''),
+                          'source': _sf_t.get('source', ''),
+                          'destination': _sf_t.get('destination', ''),
+                          'category': (_sf_t.get('category') or ''),
+                          'tags': _sf_t.get('tags', []),
+                          'notes': (_sf_t.get('notes') or ''),
+                          'anchor_type': _anchor_type_norm,
+                          'anchor_id': _sf_anchor_id
+                        }] -%}
+                      {%- endif -%}
+                      {{ ns.items }}
+
         - variables:
             final_response:
               status: success
@@ -606,7 +649,7 @@ script:
             Firefly III Lens Provider. Internal stack adapter for the ZenOS Lens Bus.
             Call via zen_dojotools_lens_dispatch, not directly.
           modes:
-            stacks_by_anchor: Fetch transaction_evidence for label or person anchors
+            stacks_by_anchor: Fetch transaction_evidence for label, person, or transaction anchors
             register: Register this provider in the household lens_registry cabinet drawer
             unregister: Remove this provider from lens_registry
             health: Check Firefly III API reachability
@@ -619,21 +662,24 @@ script:
   zen_dojotools_finance:
     alias: Zen DojoTools Finance
     description: >
-      Finance (v2.2.0) — Household ledger. Authoritative for all money questions.
-      Read: health, catalog, account_balance, transactions_list/search, budget_overview,
-      bills_list, bill_status, piggy_banks_list, piggybank_status, category_spend,
-      net_worth_snapshot, liability_summary. Write (confirm=true): account_create,
-      account_update, transaction_add, transaction_update, transfer, budget_limit_set,
-      piggybank_update. Compound: spend_summary, reconcile_prepare, transaction_normalize,
-      project_account_status. For stock/chores use zen_dojotools_inventory. mode=help lists all.
-    mode: queued
-    max: 5
+      Finance (v2.5.0) — Household ledger + asset depreciation. Authoritative for all money
+      questions. Read: account_balance, transactions_list/search, budget_overview, bills_list,
+      category_spend, net_worth_snapshot. Write (confirm=true): transaction_add/update,
+      transfer, budget_limit_set, piggybank_update, account_create/update.
+      Depreciation codex: full asset lifecycle — create, schedule (straight-line/DDB/
+      declining_balance), post periods, business-use splits, book_value, replacement_plan,
+      dispose, dispose_with_post, reconcile_firefly, warranty_check, attachments,
+      cpa_summary. CFO DASHBOARD: mode=report — composable rollup of all finance pieces
+      (budget+bills+net_worth) + registered codex reports (COGS, etc.) in one call.
+      include=rollup,cogs or exclude=rollup to pick pieces. Agent synthesizes narrative.
+      Pass mode=help or case=help for full reference. For stock/chores use zen_dojotools_inventory.
+    mode: parallel
     icon: mdi:cash-multiple
     fields:
       mode:
         selector:
           select:
-            options: [help, run, tool_manifest]
+            options: [help, run, report, tool_manifest, kfc_manifest]
         default: help
       case:
         selector:
@@ -647,6 +693,7 @@ script:
             - account_update
             - transactions_list
             - transactions_search
+            - transaction_get
             - transaction_add
             - transaction_update
             - transfer
@@ -664,12 +711,51 @@ script:
             - reconcile_prepare
             - project_account_status
             - spend_summary
+            - budget_summary
+            - finance_rollup
             - health
             - catalog
             - budget_create
             - piggybank_create
             - bill_create
             - transaction_link
+            - index
+            - inspect
+            - bootstrap_codices
+            - category_create
+            - depreciable_asset_create
+            - depreciable_asset_get
+            - depreciable_asset_update
+            - depreciable_asset_list
+            - depreciable_asset_calculate_schedule
+            - depreciable_asset_book_value
+            - depreciable_asset_replacement_plan
+            - depreciable_asset_firefly_setup
+            - depreciable_asset_post_depreciation_period
+            - depreciable_asset_dispose
+            - depreciable_asset_report
+            - depreciable_asset_post_due_depreciation
+            - depreciable_asset_sync_piggy_reserves
+            - depreciable_asset_report_by_project
+            - depreciable_asset_report_by_room
+            - depreciable_asset_dispose_with_post
+            - depreciable_asset_reconcile_firefly
+            - depreciable_asset_warranty_check
+            - depreciable_asset_warranty_report
+            - depreciable_asset_attach
+            - depreciable_asset_attachments_get
+            - asset_allocation_create
+            - asset_allocation_get
+            - asset_allocation_list
+            - asset_allocation_update
+            - cpa_summary
+            - depreciable_asset_suggest_business_use
+            - compensate
+            - cogs_configure
+            - cogs_post
+            - cogs_summary
+            - cogs_reconcile
+            - cogs_report
       item:
         description: Account, budget, or category name (resolves to ID)
         selector:
@@ -810,6 +896,80 @@ script:
         description: HA label slug to tag this transaction/account (e.g. zen_energy, zen_kitchen)
         selector:
           text:
+      # ── mode=report filters (CSV of feature_key slugs; rollup = native finance_rollup) ──
+      include:
+        description: Report pieces to include (CSV of slugs e.g. rollup,cogs). Default all.
+        selector:
+          text:
+      exclude:
+        description: Report pieces to exclude (CSV of slugs). Ignored if include is set.
+        selector:
+          text:
+      # ── Codex pass-through fields (forwarded to zen_codex_finance_* dispatch) ──
+      asset_id:
+        description: Grocy userobject ID (int) or asset name for depreciation codex modes
+        selector:
+          text:
+      asset_data:
+        description: JSON dict of asset fields for depreciable_asset_create/update
+        selector:
+          text:
+            multiline: true
+      period:
+        description: Depreciation period YYYY-MM for depreciable_asset_post_depreciation_period
+        selector:
+          text:
+      posting_mode:
+        description: report_only (safe preview, default) or summary_post (writes to Firefly)
+        selector:
+          select:
+            options: [report_only, summary_post]
+      dry_run:
+        description: Validate + preview without writing. Overrides confirm.
+        selector:
+          boolean:
+        default: false
+      idempotency_key:
+        description: Caller-supplied idempotency key for write operations
+        selector:
+          text:
+      caller:
+        description: Caller identity for codex capability check
+        selector:
+          text:
+      audit_note:
+        description: Audit note appended to Grocy notes and Firefly transaction notes
+        selector:
+          text:
+      component:
+        description: KFC component key for kfc_manifest mode (e.g. finance_budget)
+        selector:
+          text:
+      firefly_transaction_id:
+        description: Firefly transaction ID — used by compensate to look up a transaction directly by ID
+        selector:
+          text:
+      include_evidence:
+        description: Resolve evidence_refs into evidence items inline (book_value only)
+        selector:
+          boolean:
+        default: false
+      project_id:
+        description: Project ID filter for depreciable_asset_report_by_project
+        selector:
+          text:
+      room_anchor:
+        description: Room anchor filter for depreciable_asset_report_by_room
+        selector:
+          text:
+      total_home_sqft_override:
+        description: Override total home area (sqft) for depreciable_asset_suggest_business_use — bypasses room-by-room sum
+        selector:
+          number:
+            min: 1
+            max: 100000
+            step: 0.01
+            mode: box
     sequence:
     - if: "{{ (mode | default('') | lower) == 'tool_manifest' }}"
       then:
@@ -820,22 +980,28 @@ script:
                 tool='zen_dojotools_finance',
                 display_name='Finance',
                 tier='dojotools',
-                version='2.2.0',
+                version='2.5.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['firefly'],
                 optional_labels=['finance', 'banking'],
                 consumes=['firefly_request'],
                 returns=['firefly_response'],
+                modes={'help': 'help', 'run': 'run', 'report': 'report', 'manifest': 'tool_manifest', 'kfc': 'kfc_manifest'},
                 icon='mdi:bank',
                 color='green',
-
+                preferred_state={
+                    'required_labels': ['firefly', 'dojotools'],
+                    'setup_steps': ['zen_dojotools_manifest mode=bootstrap_stacks'],
+                    'codex_modules': ['zen_codex_finance_depreciation'],
+                    'lens_registry_keys': ['firefly_iii']
+                },
                 caller_token=caller_token | default('')
             ) | from_json }}
       - stop: tool_manifest
         response_variable: result
     - variables:
         tool_name: Zen DojoTools Finance
-        tool_version: 2.2.0
+        tool_version: 2.5.0
         mode_norm: '{{ mode | default("help") | string | trim | lower }}'
         case_norm: '{{ case | default("") | string | trim | lower }}'
         item_norm: '{{ item | default("") | string | trim }}'
@@ -914,11 +1080,34 @@ script:
             needs: [amount, source_account, dest_account]
             optional: [description, date, tags]
             example: "{'mode':'run','case':'transfer','amount':500,'source_account':'Checking','dest_account':'Savings','description':'Monthly savings transfer'}"
+          report:
+            intent: >-
+              CFO dashboard — composable rollup. Calls all pieces in one shot: rollup
+              (budget+bills+net_worth) + every registered codex that has a *_report mode
+              (currently: cogs). Agent synthesizes the narrative from structured data.
+              Use include/exclude to pick pieces. Best entry point for "how are we doing?"
+            needs: []
+            optional: [include, exclude, start_date, end_date]
+            example: "{'mode':'report'}"
+            examples:
+              all: "{'mode':'report'}"
+              cogs_only: "{'mode':'report','include':'cogs'}"
+              no_rollup: "{'mode':'report','exclude':'rollup'}"
+              live_drawer: "zen_dojotools_filecabinet action_type=get path=cfo/report volume_entity_id=sensor.zenos_dojo_cabinet"
           spend_summary:
             intent: Compound briefing — net worth + budget snapshot + upcoming bills in one call. Writes snapshot to household cabinet.
             needs: []
             optional: [start_date, end_date]
             example: "{'mode':'run','case':'spend_summary'}"
+          budget_summary:
+            intent: >-
+              Budget vs actual synthesis — per-budget: allocated, spent, remaining,
+              pct_used, days_left_in_period. Only budgets with limits set are
+              included. Ninja/KFC-ready. Use this for "how are we doing on budget?"
+              questions and for the finance_budget KFC component.
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'budget_summary'}"
           health:
             intent: Check API reachability, auth, Firefly version, and default currency.
             needs: []
@@ -1009,6 +1198,181 @@ script:
             needs: [item_id, external_ref]
             optional: [confirm]
             example: "{'mode':'run','case':'transaction_link','item_id':'42','external_ref':'grocy:product:389','confirm':true}"
+          index:
+            intent: Live capability map — all known finance cases + registered codex modes from codex_registry.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'index'}"
+          inspect:
+            intent: Health + feature semaphore — Firefly reachability + all registered codex availability.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'inspect'}"
+          cogs_configure:
+            intent: Guided COGS setup — lists real Firefly accounts then writes cogs_accounting household cabinet drawer.
+            needs: []
+            optional: [default_source_account, default_category, enabled]
+            example: "{'mode':'run','case':'cogs_configure'}"
+          cogs_post:
+            intent: Post one COGS transaction. Called automatically by stock_consume on cogs_tracked products. Fail-soft (status=skipped) if not configured.
+            needs: [product_id, product_name, amount, unit_price, stock_entry_id, confirm]
+            optional: []
+            example: "{'mode':'run','case':'cogs_post','product_id':1009,'product_name':'Dichroic Sheet','amount':1,'unit_price':12.50,'stock_entry_id':99,'confirm':true}"
+          cogs_summary:
+            intent: Period rollup — net COGS posted to Firefly (postings minus reversals). Defaults to current month.
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'cogs_summary','start_date':'2026-07-01'}"
+          cogs_reconcile:
+            intent: Compare Grocy-side consumption value against Firefly-side net COGS. Reports variance and likely causes if non-zero.
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'cogs_reconcile','start_date':'2026-07-01'}"
+          cogs_report:
+            intent: Comptroller weave — config health + cogs_summary + cogs_reconcile in one call with a plain-English headline. Best single COGS entry point.
+            needs: []
+            optional: [start_date, end_date]
+            example: "{'mode':'run','case':'cogs_report'}"
+          bootstrap_codices:
+            intent: Scan zen_codex_finance_* scripts and register each in codex_registry household cabinet drawer.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'bootstrap_codices'}"
+          category_create:
+            intent: Create a Firefly category if it does not already exist. confirm=true required.
+            needs: [item]
+            optional: [confirm]
+            example: "{'mode':'run','case':'category_create','item':'Depreciation Expense','confirm':true}"
+          depreciable_asset_create:
+            intent: Create a new depreciable household asset record in Grocy. Routed to zen_codex_finance_depreciation.
+            needs: [asset_data]
+            optional: [dry_run, confirm, idempotency_key, caller, audit_note]
+            example: "{'mode':'run','case':'depreciable_asset_create','asset_data':'{\"name\":\"Kiln\",\"cost_basis\":1200,\"useful_life_months\":84,\"placed_in_service_date\":\"2026-01-01\",\"depreciation_method\":\"straight_line\"}','confirm':true}"
+          depreciable_asset_get:
+            intent: Retrieve a depreciable asset record from Grocy by ID or name.
+            needs: [asset_id]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_get','asset_id':'42'}"
+          depreciable_asset_update:
+            intent: Patch fields on an existing depreciable asset. confirm=true required.
+            needs: [asset_id, asset_data]
+            optional: [dry_run, confirm, idempotency_key, caller, audit_note]
+            example: "{'mode':'run','case':'depreciable_asset_update','asset_id':'42','asset_data':'{\"replacement_cost_estimate\":1500}','confirm':true}"
+          depreciable_asset_list:
+            intent: List all depreciable assets with summary fields.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_list'}"
+          depreciable_asset_calculate_schedule:
+            intent: Calculate full straight-line depreciation schedule for an asset (no write).
+            needs: [asset_id]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_calculate_schedule','asset_id':'42'}"
+          depreciable_asset_book_value:
+            intent: Current paper book value — cost basis minus accumulated posted depreciation.
+            needs: [asset_id]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_book_value','asset_id':'42'}"
+          depreciable_asset_replacement_plan:
+            intent: Monthly reserve needed to fund asset replacement. Reads Firefly piggy bank balance.
+            needs: [asset_id]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_replacement_plan','asset_id':'42'}"
+          depreciable_asset_firefly_setup:
+            intent: One-time setup — deploy Grocy schema + Firefly categories. confirm=true required.
+            needs: []
+            optional: [asset_id, dry_run, confirm, audit_note]
+            example: "{'mode':'run','case':'depreciable_asset_firefly_setup','confirm':true}"
+          depreciable_asset_post_depreciation_period:
+            intent: Post one month of depreciation to Firefly (idempotent). Use posting_mode=report_only first.
+            needs: [asset_id, period]
+            optional: [posting_mode, dry_run, confirm, idempotency_key, caller, audit_note]
+            example: "{'mode':'run','case':'depreciable_asset_post_depreciation_period','asset_id':'42','period':'2026-06','posting_mode':'report_only'}"
+          depreciable_asset_dispose:
+            intent: Mark asset as disposed/sold/donated. Calculates gain/loss. confirm=true required.
+            needs: [asset_id, asset_data, audit_note]
+            optional: [dry_run, confirm, idempotency_key, caller]
+            example: "{'mode':'run','case':'depreciable_asset_dispose','asset_id':'42','asset_data':'{\"disposal_type\":\"sold\",\"disposal_date\":\"2026-06-23\",\"disposal_proceeds\":50}','audit_note':'Sold at garage sale','confirm':true}"
+          depreciable_asset_report:
+            intent: Portfolio report — all assets with book value, accumulated depreciation, replacement exposure.
+            needs: []
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_report'}"
+          depreciable_asset_post_due_depreciation:
+            intent: Batch post prior-month depreciation for all active assets. Safe to run on 1st of month — idempotent per asset.
+            needs: []
+            optional: [posting_mode, dry_run, confirm, audit_note]
+            example: "{'mode':'run','case':'depreciable_asset_post_due_depreciation','dry_run':true}"
+          depreciable_asset_sync_piggy_reserves:
+            intent: Update Firefly piggy bank targets from replacement plan calculations. Assets must have firefly_replacement_piggy_bank_id set.
+            needs: []
+            optional: [dry_run, confirm, audit_note]
+            example: "{'mode':'run','case':'depreciable_asset_sync_piggy_reserves','confirm':true}"
+          depreciable_asset_report_by_project:
+            intent: Portfolio report filtered to a single project_id.
+            needs: [project_id]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_report_by_project','project_id':'kitchen-reno'}"
+          depreciable_asset_report_by_room:
+            intent: Portfolio report filtered to a single room_anchor.
+            needs: [room_anchor]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_report_by_room','room_anchor':'garage'}"
+          depreciable_asset_dispose_with_post:
+            intent: Dispose asset in Grocy (T7) then post final-depreciation and optional sale-proceeds to Firefly. Idempotent.
+            needs: [asset_id, asset_data.disposal_type, audit_note, confirm]
+            optional: [asset_data.disposal_date, asset_data.disposal_proceeds, dry_run, idempotency_key]
+            example: "{'mode':'run','case':'depreciable_asset_dispose_with_post','asset_id':'42','asset_data':'{\"disposal_type\":\"sold\",\"disposal_date\":\"2026-06-24\",\"disposal_proceeds\":500}','audit_note':'Sold on marketplace','confirm':true}"
+          depreciable_asset_reconcile_firefly:
+            intent: Diff expected depreciation schedule vs posted Firefly transactions. Returns missing, unexpected, matched counts. Read-only.
+            needs: [asset_id]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_reconcile_firefly','asset_id':'42'}"
+          depreciable_asset_attach:
+            intent: Append a Paperless or Grocy document reference to an asset's attachment_refs list. confirm=true required.
+            needs: [asset_id, asset_data.attachment_type, asset_data.attachment_id, confirm]
+            optional: [asset_data.attachment_label, dry_run, audit_note]
+            example: "{'mode':'run','case':'depreciable_asset_attach','asset_id':'42','asset_data':'{\"attachment_type\":\"paperless\",\"attachment_id\":\"88\",\"attachment_label\":\"Purchase receipt\"}','confirm':true}"
+          depreciable_asset_attachments_get:
+            intent: List all attachment references stored on an asset (Paperless and Grocy doc IDs). Read-only.
+            needs: [asset_id]
+            optional: []
+            example: "{'mode':'run','case':'depreciable_asset_attachments_get','asset_id':'42'}"
+          depreciable_asset_warranty_check:
+            intent: Classify active assets by warranty status — expired, expiring_soon (within days_threshold), ok. Read-only.
+            needs: []
+            optional: [asset_data.days_threshold]
+            example: "{'mode':'run','case':'depreciable_asset_warranty_check'}"
+          depreciable_asset_warranty_report:
+            intent: Same as warranty_check with report framing. Pass asset_data.days_threshold (default 90) to customize the expiring_soon window.
+            needs: []
+            optional: [asset_data.days_threshold]
+            example: "{'mode':'run','case':'depreciable_asset_warranty_report','asset_data':'{\"days_threshold\":60}'}"
+          asset_allocation_create:
+            intent: Create a date-ranged business/household allocation row for an asset.
+            needs: [asset_id, asset_data.effective_date, asset_data.business_use_percent]
+            optional: [asset_data.household_use_percent, asset_data.allocation_method, asset_data.business_area_anchor, asset_data.basis, asset_data.notes, dry_run, confirm, audit_note]
+            example: "{'mode':'run','case':'asset_allocation_create','asset_id':'21','asset_data':'{\"effective_date\":\"2024-01-01\",\"business_use_percent\":40,\"household_use_percent\":60,\"basis\":\"change_in_use\"}','confirm':true}"
+          asset_allocation_get:
+            intent: Get the current effective allocation row for an asset (as of today or a specific date).
+            needs: [asset_id]
+            optional: [period]
+            example: "{'mode':'run','case':'asset_allocation_get','asset_id':'21'}"
+          asset_allocation_list:
+            intent: List all allocation rows for an asset (full history). Omit asset_id to list all allocations.
+            needs: []
+            optional: [asset_id]
+            example: "{'mode':'run','case':'asset_allocation_list','asset_id':'21'}"
+          asset_allocation_update:
+            intent: Update fields on an existing allocation row by its allocation_id (userobject ID).
+            needs: [asset_id, asset_data, confirm]
+            optional: [audit_note]
+            example: "{'mode':'run','case':'asset_allocation_update','asset_id':'7','asset_data':'{\"end_date\":\"2024-12-31\"}','confirm':true}"
+          cpa_summary:
+            intent: Year-end CPA summary view — depreciation scheduled vs posted, business-use splits, disposal gain/loss, and Firefly category spend. Read-only.
+            needs: []
+            optional: [asset_data.year]
+            example: "{'mode':'run','case':'cpa_summary','asset_data':'{\"year\":\"2026\"}'}"
 
     - choose:
       - conditions:
@@ -1017,12 +1381,19 @@ script:
         sequence:
         - variables:
             help_json:
-              status: info
-              tool: '{{ tool_name }}'
-              version: '{{ tool_version }}'
-              mode: help
-              description: Household finance assistant over Firefly III. Read accounts/budgets/bills/savings, log transactions. Speak household vocab not bookkeeping jargon.
-              cases: '{{ cases }}'
+              status: help
+              help:
+                tool: '{{ tool_name }}'
+                version: '{{ tool_version }}'
+                overview: >-
+                  Household finance assistant over Firefly III. Budgets, bills,
+                  accounts, transactions, savings goals, COGS tracking, asset
+                  depreciation. Speaks household vocab not bookkeeping jargon.
+                domain: finance
+                peers:
+                  inventory: zen_dojotools_inventory
+                see_also: "zen_dojotools_manifest mode=domains name=finance"
+                cases: '{{ cases }}'
         - stop: return
           response_variable: help_json
 
@@ -1032,7 +1403,7 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "summary" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _sum_resp
           continue_on_error: true
           data:
@@ -1065,7 +1436,7 @@ script:
         sequence:
         - variables:
             _al_ep: '{{ "accounts?type=" ~ acct_type_norm if acct_type_norm != "all" else "accounts" }}'
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _al_resp
           continue_on_error: true
           data:
@@ -1118,7 +1489,7 @@ script:
             - condition: template
               value_template: '{{ _ag_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _ag_ac_resp
               continue_on_error: true
               data:
@@ -1156,7 +1527,7 @@ script:
                   error: 'No account found matching "{{ item_norm }}". Candidates: {{ _ag_candidates | default([]) }}'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ag_resp
           continue_on_error: true
           data:
@@ -1183,6 +1554,57 @@ script:
         - stop: return
           response_variable: final_response
 
+    # ── case: transaction_get ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "transaction_get" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: transaction_get
+                  result: null
+                  error: item_id is required for transaction_get
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_root_firefly
+          response_variable: _tg_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'transactions/{{ item_id_norm }}'
+        - variables:
+            _tg_raw: >-
+              {%- if _tg_resp is mapping and 'result' in _tg_resp and _tg_resp['result'] is mapping -%}
+                {%- set d = _tg_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', d) -%}
+                  {%- if obj is mapping -%}
+                    {%- set attrs = obj.get('attributes', {}) -%}
+                    {%- set splits = attrs.get('transactions', []) -%}
+                    {%- set split = splits[0] if splits | length > 0 else {} -%}
+                    {{ {'id': obj.get('id', item_id_norm), 'date': split.get('date', ''), 'description': split.get('description', ''), 'amount': split.get('amount', 0), 'type': split.get('type', ''), 'source': split.get('source_name', ''), 'destination': split.get('destination_name', ''), 'category': split.get('category_name', ''), 'tags': split.get('tags', []), 'notes': split.get('notes', ''), 'external_url': split.get('external_url', ''), 'group_title': attrs.get('group_title', '')} }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _tg_resp["status"] | default("error") if _tg_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: transaction_get
+              result: '{{ _tg_raw }}'
+        - stop: return
+          response_variable: final_response
+
     # ── case: transactions_list ──────────────────────────────────────────────
     - choose:
       - conditions:
@@ -1196,7 +1618,7 @@ script:
             - condition: template
               value_template: '{{ _tl_acct_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _tl_ac_resp
               continue_on_error: true
               data:
@@ -1224,7 +1646,7 @@ script:
               {%- else -%}
                 transactions?start={{ start_norm }}&end={{ end_norm }}{% if txn_type_norm != "all" %}&type={{ txn_type_norm }}{% endif %}
               {%- endif -%}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _tl_resp
           continue_on_error: true
           data:
@@ -1277,8 +1699,14 @@ script:
             _ts_query: >-
               {%- set q = item_norm -%}
               {%- if label_norm != '' -%}{%- set q = 'tag_is:"label:' ~ label_norm ~ '"' ~ (' ' ~ q if q != '' else '') -%}{%- endif -%}
+              {%- set _ts_tags_raw = tags | default('') | string | trim if tags is defined else '' -%}
+              {%- if _ts_tags_raw != '' -%}
+                {%- for _t in _ts_tags_raw | regex_findall('[^,]+') -%}
+                  {%- set q = 'tag_is:"' ~ (_t | trim) ~ '"' ~ (' ' ~ q if q != '' else '') -%}
+                {%- endfor -%}
+              {%- endif -%}
               {{ q | urlencode }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ts_resp
           continue_on_error: true
           data:
@@ -1321,14 +1749,14 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "budget_overview" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bo_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: 'budgets?start={{ start_norm }}&end={{ end_norm }}'
             perPage: 100
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ba_resp
           continue_on_error: true
           data:
@@ -1384,7 +1812,7 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "bills_list" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bl_resp
           continue_on_error: true
           data:
@@ -1405,7 +1833,7 @@ script:
               {%- for obj in d -%}
                 {%- set attrs = obj.get('attributes', {}) -%}
                 {%- set next_exp = attrs.get('next_expected_match', '') | string -%}
-                {%- set overdue = (next_exp != '' and next_exp < today) -%}
+                {%- set overdue = (next_exp not in ['', 'None', 'none'] and next_exp < today) -%}
                 {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'name': attrs.get('name', ''), 'amount_min': attrs.get('amount_min', ''), 'amount_max': attrs.get('amount_max', ''), 'currency': attrs.get('currency_code', ''), 'repeat_freq': attrs.get('repeat_freq', ''), 'next_expected_match': next_exp, 'overdue': overdue, 'active': attrs.get('active', true), 'paid_dates': attrs.get('paid_dates', [])}] -%}
               {%- endfor -%}
               {{ _ns.out }}
@@ -1428,7 +1856,7 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "piggy_banks_list" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pb_resp
           continue_on_error: true
           data:
@@ -1478,7 +1906,7 @@ script:
             - condition: template
               value_template: '{{ _cs_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _cs_ac_resp
               continue_on_error: true
               data:
@@ -1515,7 +1943,7 @@ script:
                   error: 'No category found matching "{{ item_norm }}". Candidates: {{ _cs_candidates | default([]) }}'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _cs_resp
           continue_on_error: true
           data:
@@ -1574,7 +2002,7 @@ script:
             - condition: template
               value_template: '{{ src_acct_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _ta_src_resp
               continue_on_error: true
               data:
@@ -1601,7 +2029,7 @@ script:
             - condition: template
               value_template: '{{ dst_acct_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _ta_dst_resp
               continue_on_error: true
               data:
@@ -1628,7 +2056,7 @@ script:
             - condition: template
               value_template: '{{ cat_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _ta_cat_resp
               continue_on_error: true
               data:
@@ -1655,7 +2083,7 @@ script:
             - condition: template
               value_template: '{{ bgt_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _ta_bgt_resp
               continue_on_error: true
               data:
@@ -1688,7 +2116,7 @@ script:
               {%- if label_norm != '' -%}{%- set tag_list = tag_list + ['label:' ~ label_norm] -%}{%- endif -%}
               {%- if tag_list | length > 0 -%}{%- set txn = txn | combine({'tags': tag_list}) -%}{%- endif -%}
               {{ {'transactions': [txn]} | tojson }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ta_post_resp
           continue_on_error: true
           data:
@@ -1750,7 +2178,7 @@ script:
             - condition: template
               value_template: '{{ cat_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _tu_cat_resp
               continue_on_error: true
               data:
@@ -1780,7 +2208,7 @@ script:
               {%- if label_norm != '' -%}{%- set tag_list = tag_list + ['label:' ~ label_norm] -%}{%- endif -%}
               {%- if tag_list | length > 0 -%}{%- set txn = txn | combine({'tags': tag_list}) -%}{%- endif -%}
               {{ {'transactions': [txn]} | tojson }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _tu_resp
           continue_on_error: true
           data:
@@ -1813,7 +2241,7 @@ script:
             - condition: template
               value_template: '{{ src_acct_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _tr_src_resp
               continue_on_error: true
               data:
@@ -1831,7 +2259,7 @@ script:
             - condition: template
               value_template: '{{ dst_acct_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _tr_dst_resp
               continue_on_error: true
               data:
@@ -1853,7 +2281,7 @@ script:
               {%- if label_norm != '' -%}{%- set tag_list = tag_list + ['label:' ~ label_norm] -%}{%- endif -%}
               {%- if tag_list | length > 0 -%}{%- set txn = txn | combine({'tags': tag_list}) -%}{%- endif -%}
               {{ {'transactions': [txn]} | tojson }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _tr_resp
           continue_on_error: true
           data:
@@ -1881,20 +2309,20 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "spend_summary" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ss_sum_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: 'summary/basic?start={{ start_norm }}&end={{ end_norm }}'
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ss_bgt_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: 'budgets?start={{ start_norm }}&end={{ end_norm }}'
             perPage: 50
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ss_bil_resp
           continue_on_error: true
           data:
@@ -1925,7 +2353,7 @@ script:
               {%- for obj in d -%}
                 {%- set attrs = obj.get('attributes', {}) -%}
                 {%- set next_exp = attrs.get('next_expected_match', '') | string -%}
-                {%- if next_exp != '' and next_exp >= today -%}
+                {%- if next_exp not in ['', 'None', 'none'] and next_exp >= today -%}
                   {%- set _ns.out = _ns.out + [{'name': attrs.get('name', ''), 'next_due': next_exp, 'amount': attrs.get('amount_max', ''), 'overdue': (next_exp < today)}] -%}
                 {%- endif -%}
               {%- endfor -%}
@@ -1963,25 +2391,198 @@ script:
         - stop: return
           response_variable: final_response
 
+    # ── case: budget_summary (KFC-ready budget vs actual) ────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "budget_summary" }}'
+        sequence:
+        # For budget_summary, end defaults to last day of current month (not today)
+        # so the full period picture is always visible, not just days elapsed.
+        - variables:
+            _bsum_start: '{{ start_norm }}'
+            _bsum_end: >-
+              {%- if end_date | default('') | trim != '' -%}
+                {{ end_norm }}
+              {%- else -%}
+                {%- set y = now().year -%}
+                {%- set m = now().month -%}
+                {%- set next_m = m + 1 if m < 12 else 1 -%}
+                {%- set next_y = y if m < 12 else y + 1 -%}
+                {%- set last_day = (('%04d-%02d-01' | format(next_y, next_m)) | as_datetime - timedelta(days=1)).strftime('%Y-%m-%d') -%}
+                {{ last_day }}
+              {%- endif -%}
+        # Fetch budgets with spent amounts for the period
+        - action: script.zen_root_firefly
+          response_variable: _bsum_bgt_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'budgets?start={{ _bsum_start }}&end={{ _bsum_end }}'
+            perPage: 100
+        # Fetch budget limits (allocated amounts) for the period
+        - action: script.zen_root_firefly
+          response_variable: _bsum_lim_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'budgets/limits?start={{ _bsum_start }}&end={{ _bsum_end }}'
+            perPage: 100
+        - variables:
+            _bsum_bgt_raw: >-
+              {%- if _bsum_bgt_resp is mapping and 'result' in _bsum_bgt_resp and _bsum_bgt_resp['result'] is mapping -%}
+                {{ _bsum_bgt_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _bsum_lim_raw: >-
+              {%- if _bsum_lim_resp is mapping and 'result' in _bsum_lim_resp and _bsum_lim_resp['result'] is mapping -%}
+                {{ _bsum_lim_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        # Build limit lookup: budget_id → allocated amount
+        - variables:
+            _bsum_limits: >-
+              {%- set d = _bsum_lim_raw.get('data', []) if _bsum_lim_raw is mapping else [] -%}
+              {%- set ns = namespace(out={}) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set bid = attrs.get('budget_id', '') | string -%}
+                {%- set amt = attrs.get('amount', '0') | float(0) -%}
+                {%- if bid != '' -%}
+                  {%- set ns.out = ns.out | combine({bid: ns.out.get(bid, 0.0) + amt}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        # Compute days left in period (all naive datetimes via string conversion)
+        - variables:
+            _bsum_days_total: >-
+              {%- set s = _bsum_start | as_datetime -%}
+              {%- set e = _bsum_end | as_datetime -%}
+              {{ ((e - s).days + 1) | int }}
+            _bsum_days_left: >-
+              {%- set today_str = now().strftime('%Y-%m-%d') -%}
+              {%- set today_dt = today_str | as_datetime -%}
+              {%- set end_dt = _bsum_end | as_datetime -%}
+              {%- set diff = (end_dt - today_dt).days + 1 -%}
+              {{ [diff, 0] | max | int }}
+        # Synthesize per-budget rows
+        - variables:
+            _bsum_rows: >-
+              {%- set d = _bsum_bgt_raw.get('data', []) if _bsum_bgt_raw is mapping else [] -%}
+              {%- set ns = namespace(out=[], total_alloc=0.0, total_spent=0.0) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- if attrs.get('active', true) -%}
+                  {%- set bid = obj.get('id', '') | string -%}
+                  {%- set name = attrs.get('name', '') -%}
+                  {%- set spent_list = attrs.get('spent', []) -%}
+                  {%- set spent = spent_list | sum(attribute='sum') | default(0) | float(0) | abs -%}
+                  {%- set allocated = _bsum_limits.get(bid, 0.0) | float(0) -%}
+                  {%- set remaining = [allocated - spent, 0] | max | round(2) -%}
+                  {%- set pct = ((spent / allocated * 100) | round(1)) if allocated > 0 else none -%}
+                  {%- set over = spent > allocated and allocated > 0 -%}
+                  {%- set ns.total_alloc = ns.total_alloc + allocated -%}
+                  {%- set ns.total_spent = ns.total_spent + spent -%}
+                  {%- if allocated > 0 -%}
+                  {%- set ns.out = ns.out + [{
+                    'budget_id': bid,
+                    'name': name,
+                    'allocated': allocated | round(2),
+                    'spent': spent | round(2),
+                    'remaining': remaining,
+                    'pct_used': pct,
+                    'over_budget': over
+                  }] -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ {
+                'budgets': ns.out | sort(attribute='name'),
+                'total_allocated': ns.total_alloc | round(2),
+                'total_spent': ns.total_spent | round(2),
+                'total_remaining': [ns.total_alloc - ns.total_spent, 0] | max | round(2),
+                'over_budget_count': ns.out | selectattr('over_budget') | list | length,
+                'days_left_in_period': _bsum_days_left,
+                'days_total_in_period': _bsum_days_total,
+                'period_start': _bsum_start,
+                'period_end': _bsum_end,
+                'generated_at': now().isoformat()
+              } }}
+        - variables:
+            final_response:
+              status: '{{ _bsum_bgt_resp["status"] | default("error") if _bsum_bgt_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: budget_summary
+              result: '{{ _bsum_rows }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: finance_rollup (KFC seed — budget + bills + net_worth inline) ──
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "finance_rollup" }}'
+        sequence:
+        - action: script.zen_dojotools_finance
+          response_variable: _fr_bgt_resp
+          continue_on_error: true
+          data:
+            mode: run
+            case: budget_summary
+        - action: script.zen_dojotools_finance
+          response_variable: _fr_bil_resp
+          continue_on_error: true
+          data:
+            mode: run
+            case: bills_list
+        - action: script.zen_dojotools_finance
+          response_variable: _fr_nw_resp
+          continue_on_error: true
+          data:
+            mode: run
+            case: net_worth_snapshot
+        - variables:
+            _fr_budget: >-
+              {%- set r = _fr_bgt_resp if _fr_bgt_resp is mapping else {} -%}
+              {{ r.get('result', {}) if r is mapping else {} }}
+            _fr_bills: >-
+              {%- set r = _fr_bil_resp if _fr_bil_resp is mapping else {} -%}
+              {{ r.get('result', {}) if r is mapping else {} }}
+            _fr_networth: >-
+              {%- set r = _fr_nw_resp if _fr_nw_resp is mapping else {} -%}
+              {{ r.get('result', {}) if r is mapping else {} }}
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: finance_rollup
+              result:
+                budget: '{{ _fr_budget }}'
+                bills: '{{ _fr_bills }}'
+                net_worth: '{{ _fr_networth }}'
+                generated_at: '{{ now().isoformat() }}'
+        - stop: return
+          response_variable: final_response
+
     # ── case: health ─────────────────────────────────────────────────────────
     - choose:
       - conditions:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "health" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _hlt_about_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: about
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _hlt_user_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: about/user
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _hlt_cur_resp
           continue_on_error: true
           data:
@@ -2029,42 +2630,42 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "catalog" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ctlg_accts_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: accounts
             perPage: 100
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ctlg_cats_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: categories
             perPage: 100
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ctlg_tags_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: tags
             perPage: 100
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ctlg_bgts_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: budgets
             perPage: 100
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ctlg_pigs_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: piggy-banks
             perPage: 100
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ctlg_curs_resp
           continue_on_error: true
           data:
@@ -2160,7 +2761,7 @@ script:
             - condition: template
               value_template: '{{ _ab_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _ab_ac_resp
               continue_on_error: true
               data:
@@ -2190,7 +2791,7 @@ script:
               response_variable: final_response
         - variables:
             _ab_ep: '{{ "accounts/" ~ _ab_id ~ "?date=" ~ _ab_date if _ab_date != "" else "accounts/" ~ _ab_id }}'
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ab_resp
           continue_on_error: true
           data:
@@ -2271,10 +2872,11 @@ script:
         - variables:
             _ac_payload: >-
               {%- set body = {'name': _ac_name, 'type': _ac_type} -%}
+              {%- if _ac_type == 'asset' -%}{%- set body = body | combine({'account_role': 'defaultAsset'}) -%}{%- endif -%}
               {%- if _ac_cur != '' -%}{%- set body = body | combine({'currency_code': _ac_cur}) -%}{%- endif -%}
               {%- if _ac_notes != '' -%}{%- set body = body | combine({'notes': _ac_notes}) -%}{%- endif -%}
               {{ body | tojson }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ac_post_resp
           continue_on_error: true
           data:
@@ -2314,7 +2916,7 @@ script:
             - condition: template
               value_template: '{{ _au_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _au_ac_resp
               continue_on_error: true
               data:
@@ -2342,7 +2944,7 @@ script:
                   error: 'No account found matching "{{ item_norm }}". Provide item_id for safety.'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _au_get_resp
           continue_on_error: true
           data:
@@ -2383,7 +2985,7 @@ script:
                   message: 'Review changes above. Set confirm=true to apply PUT to account {{ _au_id }}.'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _au_put_resp
           continue_on_error: true
           data:
@@ -2416,7 +3018,7 @@ script:
             - condition: template
               value_template: '{{ _bst_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _bst_list_resp
               continue_on_error: true
               data:
@@ -2449,13 +3051,13 @@ script:
                   error: 'No bill found matching "{{ item_norm }}".'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bst_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: 'bills/{{ _bst_id }}'
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bst_txn_resp
           continue_on_error: true
           data:
@@ -2484,7 +3086,9 @@ script:
               {{ _ns.out }}
         - variables:
             _bst_today: '{{ now().strftime("%Y-%m-%d") }}'
-            _bst_next: '{{ _bst_bill.get("next_expected_match", "") | string if _bst_bill is mapping else "" }}'
+            _bst_next: >-
+              {%- set _raw = _bst_bill.get('next_expected_match', '') if _bst_bill is mapping else '' -%}
+              {{ '' if _raw is none else _raw | string }}
             _bst_amt_max: '{{ _bst_bill.get("amount_max", "0") | float(0) if _bst_bill is mapping else 0 }}'
         - variables:
             _bst_matched_total: >-
@@ -2505,7 +3109,7 @@ script:
                 amount_max: '{{ _bst_amt_max }}'
                 repeat_freq: '{{ _bst_bill.get("repeat_freq", "") if _bst_bill is mapping else "" }}'
                 next_expected_match: '{{ _bst_next }}'
-                overdue: '{{ _bst_next != "" and _bst_next < _bst_today }}'
+                overdue: '{{ _bst_next not in ["", "None", "none"] and _bst_next < _bst_today }}'
                 paid_dates: '{{ _bst_bill.get("paid_dates", []) if _bst_bill is mapping else [] }}'
                 matched_transactions: '{{ _bst_txns }}'
                 matched_total: '{{ _bst_matched_total }}'
@@ -2529,7 +3133,7 @@ script:
             - condition: template
               value_template: '{{ _pbs_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _pbs_list_resp
               continue_on_error: true
               data:
@@ -2562,7 +3166,7 @@ script:
                   error: 'No piggy bank found matching "{{ item_norm }}".'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pbs_resp
           continue_on_error: true
           data:
@@ -2616,7 +3220,7 @@ script:
             - condition: template
               value_template: '{{ _pbu_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _pbu_list_resp
               continue_on_error: true
               data:
@@ -2649,7 +3253,7 @@ script:
                   error: 'No piggy bank found matching "{{ item_norm }}".'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pbu_get_resp
           continue_on_error: true
           data:
@@ -2689,7 +3293,7 @@ script:
                   message: 'Review changes above. Set confirm=true to apply update to piggy bank {{ _pbu_id }}.'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pbu_put_resp
           continue_on_error: true
           data:
@@ -2735,7 +3339,7 @@ script:
                   error: item (budget name) is required for budget_limit_set
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bls_ac_resp
           continue_on_error: true
           data:
@@ -2763,7 +3367,7 @@ script:
                   error: 'No budget found matching "{{ item_norm }}".'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bls_lim_resp
           continue_on_error: true
           data:
@@ -2806,7 +3410,7 @@ script:
             - condition: template
               value_template: '{{ _bls_existing_id is not none }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _bls_resp
               continue_on_error: true
               data:
@@ -2817,7 +3421,7 @@ script:
             - condition: template
               value_template: '{{ true }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _bls_resp
               continue_on_error: true
               data:
@@ -2847,14 +3451,14 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "net_worth_snapshot" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _nw_asset_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: accounts?type=asset
             perPage: 100
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _nw_liab_resp
           continue_on_error: true
           data:
@@ -2909,7 +3513,7 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "liability_summary" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _ls_resp
           continue_on_error: true
           data:
@@ -2972,7 +3576,7 @@ script:
             - condition: template
               value_template: '{{ _rp_id is none and item_norm != "" }}'
             sequence:
-            - action: script.zen_sutra_firefly
+            - action: script.zen_root_firefly
               response_variable: _rp_ac_resp
               continue_on_error: true
               data:
@@ -3000,13 +3604,13 @@ script:
                   error: 'No account found matching "{{ item_norm }}".'
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _rp_acct_resp
           continue_on_error: true
           data:
             action_type: get
             endpoint: 'accounts/{{ _rp_id }}'
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _rp_txn_resp
           continue_on_error: true
           data:
@@ -3074,7 +3678,7 @@ script:
         - condition: template
           value_template: '{{ mode_norm == "run" and case_norm == "transaction_normalize" }}'
         sequence:
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _tn_resp
           continue_on_error: true
           data:
@@ -3137,7 +3741,7 @@ script:
                   error: item (project tag name) is required for project_account_status
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pas_txn_resp
           continue_on_error: true
           data:
@@ -3145,7 +3749,7 @@ script:
             endpoint: 'search/transactions?query=tag_is%3A{{ item_norm | urlencode }}&start={{ start_norm }}&end={{ end_norm }}'
             pageNumber: '{{ page_norm }}'
             perPage: '{{ per_norm }}'
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pas_pig_resp
           continue_on_error: true
           data:
@@ -3242,7 +3846,7 @@ script:
               {%- set body = {'name': item_norm, 'active': true} -%}
               {%- if _bc_notes != '' -%}{%- set body = body | combine({'notes': _bc_notes}) -%}{%- endif -%}
               {{ body | tojson }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bc_resp
           continue_on_error: true
           data:
@@ -3294,7 +3898,7 @@ script:
                   error: item (piggy bank name) and source_account (savings account name) are both required
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pbc_ac_resp
           continue_on_error: true
           data:
@@ -3350,7 +3954,7 @@ script:
               {%- if _pbc_tdate != '' -%}{%- set body = body | combine({'target_date': _pbc_tdate}) -%}{%- endif -%}
               {%- if _pbc_notes != '' -%}{%- set body = body | combine({'notes': _pbc_notes}) -%}{%- endif -%}
               {{ body | tojson }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _pbc_resp
           continue_on_error: true
           data:
@@ -3428,7 +4032,7 @@ script:
               {%- set body = {'name': item_norm, 'amount_min': _bilc_amt | string, 'amount_max': _bilc_amt | string, 'date': _bilc_date, 'repeat_freq': _bilc_freq, 'active': true, 'currency_code': 'USD'} -%}
               {%- if _bilc_notes != '' -%}{%- set body = body | combine({'notes': _bilc_notes}) -%}{%- endif -%}
               {{ body | tojson }}
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _bilc_resp
           continue_on_error: true
           data:
@@ -3478,7 +4082,7 @@ script:
                   error: item_id (transaction ID) and external_ref are both required for transaction_link
             - stop: return
               response_variable: final_response
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _tl2_get_resp
           continue_on_error: true
           data:
@@ -3543,7 +4147,7 @@ script:
               response_variable: final_response
         - variables:
             _tl2_payload: '{{ {"transactions": [{"notes": _tl2_new_notes}]} | tojson }}'
-        - action: script.zen_sutra_firefly
+        - action: script.zen_root_firefly
           response_variable: _tl2_put_resp
           continue_on_error: true
           data:
@@ -3564,6 +4168,723 @@ script:
         - stop: return
           response_variable: final_response
 
+    # ── case: category_create ────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "category_create" }}'
+        sequence:
+        - variables:
+            _cc_confirm: '{{ confirm | default(false) | bool }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: category_create
+                  result: null
+                  error: item (category name) is required for category_create
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_root_firefly
+          continue_on_error: true
+          response_variable: _cc_check_resp
+          data:
+            action_type: get
+            endpoint: 'autocomplete/categories?query={{ item_norm | urlencode }}&limit=50'
+        - variables:
+            _cc_existing: >-
+              {%- set c = (_cc_check_resp['result']['content'] | default([])) if (_cc_check_resp is mapping and 'result' in _cc_check_resp and _cc_check_resp['result'] is mapping) else [] -%}
+              {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+              {%- set _ns = namespace(found=none) -%}
+              {%- for a in c -%}{%- if (a.get('name', '') | lower) == (item_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+              {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cc_existing is not none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: success
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: category_create
+                  result:
+                    name: '{{ item_norm }}'
+                    id: '{{ _cc_existing }}'
+                    already_existed: true
+            - stop: return
+              response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _cc_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: category_create
+                  result:
+                    planned:
+                      name: '{{ item_norm }}'
+                  message: Set confirm=true to create this category.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_root_firefly
+          response_variable: _cc_post_resp
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: categories
+            payload: '{{ {"name": item_norm} | tojson }}'
+        - variables:
+            _cc_result: >-
+              {%- if _cc_post_resp is mapping and 'result' in _cc_post_resp and _cc_post_resp['result'] is mapping -%}
+                {%- set d = _cc_post_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            final_response:
+              status: '{{ _cc_post_resp["status"] | default("error") if _cc_post_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: category_create
+              result: '{{ _cc_result }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: index ───────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "index" }}'
+        sequence:
+        - variables:
+            _idx_household: >-
+              {{ label_entities('Zen Household Cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _idx_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _idx_household }}"
+            key: codex_registry
+        - variables:
+            _idx_registry: >-
+              {%- set raw = _idx_reg_read if _idx_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+            _idx_known_cases: >-
+              {{ cases.keys() | list }}
+            _idx_codices: >-
+              {%- set ns = namespace(d={}) -%}
+              {%- for key, entry in _idx_registry.items() if entry is mapping -%}
+                {%- set ns.d = ns.d | combine({key: {
+                  'script': entry.get('script', ''),
+                  'modes': entry.get('modes', []),
+                  'status': entry.get('status', 'unknown'),
+                  'registered_at': entry.get('registered_at', '')
+                }}) -%}
+              {%- endfor -%}
+              {{ ns.d }}
+            _idx_codex_modes: >-
+              {%- set ns = namespace(modes=[]) -%}
+              {%- for key, entry in _idx_registry.items() if entry is mapping -%}
+                {%- set ns.modes = ns.modes + (entry.get('modes') or []) -%}
+              {%- endfor -%}
+              {{ ns.modes }}
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: index
+              result:
+                known_cases: '{{ _idx_known_cases }}'
+                codices: '{{ _idx_codices }}'
+                codex_modes: '{{ _idx_codex_modes }}'
+                all_cases: '{{ (_idx_known_cases + _idx_codex_modes) | unique | list }}'
+                total_cases: '{{ (_idx_known_cases + _idx_codex_modes) | unique | list | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: inspect ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "inspect" }}'
+        sequence:
+        - action: script.zen_root_firefly
+          continue_on_error: true
+          response_variable: _ins_ff_raw
+          data:
+            action_type: get
+            endpoint: about
+        - variables:
+            _ins_ff_ok: >-
+              {{ _ins_ff_raw is mapping and _ins_ff_raw.get('status', '') == 'success' }}
+            _ins_household: >-
+              {{ label_entities('Zen Household Cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _ins_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _ins_household }}"
+            key: codex_registry
+        - variables:
+            _ins_registry: >-
+              {%- set raw = _ins_reg_read if _ins_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+            _ins_features: {}
+        - repeat:
+            for_each: >-
+              {{ _ins_registry.keys() | list }}
+            sequence:
+            - variables:
+                _ins_entry: "{{ _ins_registry.get(repeat.item, {}) }}"
+                _ins_script: "{{ _ins_entry.get('script', '') }}"
+            - if: "{{ _ins_script != '' }}"
+              then:
+              - action: "script.{{ _ins_script }}"
+                continue_on_error: true
+                response_variable: _ins_tm_raw
+                data:
+                  mode: health
+              - variables:
+                  _ins_codex_ok: >-
+                    {{ _ins_tm_raw is mapping and _ins_tm_raw.get('enabled', false) }}
+                  _ins_features: >-
+                    {{ _ins_features | combine({repeat.item: {
+                      'script': _ins_script,
+                      'enabled': _ins_codex_ok,
+                      'modes_count': (_ins_entry.get('modes') or []) | length,
+                      'health_status': (_ins_tm_raw.get('status', 'error') if _ins_tm_raw is mapping else 'error'),
+                      'grocy_ok': (_ins_tm_raw.get('grocy_ok', false) if _ins_tm_raw is mapping else false),
+                      'firefly_ok': (_ins_tm_raw.get('firefly_ok', false) if _ins_tm_raw is mapping else false)
+                    }}) }}
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: inspect
+              result:
+                firefly_reachable: '{{ _ins_ff_ok }}'
+                codex_count: '{{ _ins_registry.keys() | list | length }}'
+                features: '{{ _ins_features }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: bootstrap_codices ───────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "bootstrap_codices" }}'
+        sequence:
+        - variables:
+            _bc2_household: >-
+              {{ label_entities('Zen Household Cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+            # Static list of known zen_codex_finance_* scripts.
+            # Add a new entry here when a new codex is created.
+            _bc2_known:
+              - zen_codex_finance_depreciation
+              - zen_codex_finance_cogs
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _bc2_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _bc2_household }}"
+            key: codex_registry
+        - variables:
+            _bc2_existing: >-
+              {%- set raw = _bc2_reg_read if _bc2_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+            _bc2_results: []
+        - repeat:
+            for_each: "{{ _bc2_known }}"
+            sequence:
+            - action: "script.{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _bc2_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _bc2_tm_ok: >-
+                  {{ _bc2_tm_raw is mapping and _bc2_tm_raw.get('status', '') in ['ok', 'success'] }}
+                _bc2_feature_key: >-
+                  {{ _bc2_tm_raw.get('feature_key', '') if _bc2_tm_raw is mapping else '' }}
+                _bc2_modes: >-
+                  {{ _bc2_tm_raw.get('modes', []) if _bc2_tm_raw is mapping else [] }}
+            - if: "{{ _bc2_tm_ok and _bc2_feature_key != '' }}"
+              then:
+              - variables:
+                  _bc2_entry:
+                    feature_key: '{{ _bc2_feature_key }}'
+                    script: '{{ repeat.item }}'
+                    parent_tool: zen_dojotools_finance
+                    version: "{{ _bc2_tm_raw.get('version', '') if _bc2_tm_raw is mapping else '' }}"
+                    tier: codex
+                    domain: finance
+                    modes: '{{ _bc2_modes }}'
+                    registered_at: '{{ now().isoformat() }}'
+                    status: available
+                  _bc2_existing: "{{ _bc2_existing | combine({_bc2_feature_key: _bc2_entry}) }}"
+                  _bc2_results: "{{ _bc2_results + [{'script': repeat.item, 'feature_key': _bc2_feature_key, 'status': 'registered'}] }}"
+            - if: "{{ not _bc2_tm_ok }}"
+              then:
+              - variables:
+                  _bc2_results: "{{ _bc2_results + [{'script': repeat.item, 'status': 'failed', 'error': 'tool_manifest call failed'}] }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _bc2_write_raw
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _bc2_household }}"
+            key: codex_registry
+            value: "{{ _bc2_existing | tojson }}"
+        - variables:
+            _bc2_write_ok: >-
+              {{ _bc2_write_raw is mapping and _bc2_write_raw.get('status', '') == 'success' }}
+            final_response:
+              status: "{{ 'success' if _bc2_write_ok else 'partial' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: bootstrap_codices
+              result:
+                scanned: '{{ _bc2_known }}'
+                results: '{{ _bc2_results }}'
+                registry_written: '{{ _bc2_write_ok }}'
+                codex_count: '{{ _bc2_results | selectattr("status", "equalto", "registered") | list | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── mode: kfc_manifest ───────────────────────────────────────────────────
+    # Multi-component KFC definition. bootstrap_kfc reads this and writes one
+    # live drawer per component into the dojo cabinet.
+    # No component param → returns full list (for bootstrap).
+    # component param → returns single dict (for FC live drawer resolution).
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "kfc_manifest" }}'
+        sequence:
+        - variables:
+            _kfc_defs:
+              - kata_key: finance_budget
+                friendly_name: Finance Budget Tracker
+                label: Finance Budget
+                component_summary: >-
+                  Monthly budget vs actual across all Firefly III budgets.
+                  Reports per-budget spend, remaining, % used, and days left
+                  in the current period. Flags over-budget categories.
+                component_instructions: >-
+                  You will receive a budget_summary result. Work only from the data provided —
+                  do not invent budget names, amounts, or watchlist entries.
+
+                  If result.budgets is empty or missing: urgency=0, attention=null, error=null,
+                  one sentence in general_inference: "No Firefly III budget limits configured." Nothing else.
+
+                  If budgets present: report only budgets in the data.
+                  urgency=4 if any over_budget=true.
+                  urgency=3 if any pct_used >= 80 and days_left_in_period < 7.
+                  urgency=2 if any pct_used >= 80.
+                  urgency=1 otherwise.
+                  attention: name the specific over-limit or high-pct budgets by name from the data.
+                  watchlist: include only budget names with over_budget=true or pct_used >= 80. Empty list if none qualify.
+                tool: zen_dojotools_finance
+                seed:
+                  tool: zen_dojotools_finance
+                  params:
+                    mode: run
+                    case: budget_summary
+                trigger_subscriptions: daily_midnight,weekly_trigger_monday
+                drift_threshold: 6
+                emission_cooldown_minutes: 1440
+                delay_seconds: 0
+                meta:
+                  enabled: true
+                  requires:
+                    cert: ''
+                    level: 0
+              - kata_key: finance_bills
+                friendly_name: Finance Bill Monitor
+                label: Finance Bills
+                component_summary: >-
+                  Upcoming and overdue recurring bills from Firefly III.
+                  Flags missed payments and bills due within the next 7 days.
+                component_instructions: >-
+                  You will receive a bills_list result. Work only from data provided.
+
+                  result.bills is a list. If empty or missing: urgency=0, attention=null, error=null,
+                  general_inference: "No bills configured in Firefly III." Nothing else.
+
+                  If bills present:
+                  urgency=4 if any overdue=true.
+                  urgency=2 if any bill has next_expected_match within 7 days from now and overdue=false.
+                  urgency=1 otherwise.
+                  attention: name overdue bills first, then bills due within 7 days.
+                  watchlist: only bill names that are overdue or due within 7 days. Empty list if none.
+                  Do not mention bills far in the future unless they are the only ones.
+                tool: zen_dojotools_finance
+                seed:
+                  tool: zen_dojotools_finance
+                  params:
+                    mode: run
+                    case: bills_list
+                trigger_subscriptions: daily_midnight,zen_finance_transaction_posted
+                drift_threshold: 12
+                emission_cooldown_minutes: 720
+                delay_seconds: 15
+                meta:
+                  enabled: true
+                  requires:
+                    cert: ''
+                    level: 0
+              - kata_key: finance_networth
+                friendly_name: Finance Net Worth
+                label: Finance Net Worth
+                component_summary: >-
+                  Balance sheet snapshot: total assets, total liabilities, and net worth
+                  across all Firefly III accounts.
+                component_instructions: >-
+                  You will receive a net_worth_snapshot result. Work only from data provided.
+
+                  If result is missing or empty: urgency=0, attention=null, error=null, watchlist=[],
+                  general_inference: "Net worth data unavailable — Firefly III may be unreachable." Nothing else.
+
+                  result has: net_worth (float), total_assets (float), total_liabilities (float),
+                  assets.accounts list [{name, balance}], liabilities.accounts list [{name, balance}].
+
+                  Ignore accounts whose name starts with "Test" — these are test fixtures, not real assets.
+                  Apply urgency to non-test accounts only.
+
+                  urgency=3 if total_liabilities > 0.
+                  urgency=2 if any non-test account balance < 0.
+                  urgency=1 if net_worth < 1000.
+                  urgency=0 otherwise (healthy balance sheet).
+                  attention: name accounts with negative balance or name the liability if any. null if all healthy.
+                  watchlist: non-test account names where balance < 0, or liability names. Empty list if all healthy.
+                  general_inference (always required, never null): one sentence — "Net worth $X. Total assets $Y,
+                  no liabilities, all accounts positive." or note any flagged items. Use actual values.
+                tool: zen_dojotools_finance
+                seed:
+                  tool: zen_dojotools_finance
+                  params:
+                    mode: run
+                    case: net_worth_snapshot
+                trigger_subscriptions: daily_midnight,zen_finance_transaction_posted
+                drift_threshold: 48
+                emission_cooldown_minutes: 1440
+                delay_seconds: 30
+                meta:
+                  enabled: true
+                  requires:
+                    cert: ''
+                    level: 0
+              - kata_key: finance_manager
+                friendly_name: Finance Manager Rollup
+                label: Finance Manager
+                component_summary: >-
+                  Synthesized finance overview: budget health, bill obligations, and
+                  balance sheet in one kata. Drives the daily finance briefing.
+                component_instructions: >-
+                  You will receive a finance_rollup result with keys: budget, bills, net_worth.
+                  Each is the result object from its sub-case. Work only from data provided.
+
+                  If result is missing or all three sub-keys are empty: urgency=0, attention=null,
+                  error=null, watchlist=[], general_inference: "Finance rollup unavailable." Nothing else.
+
+                  budget sub-result: {budgets: [...], days_total_in_period, period_start, period_end}
+                  bills sub-result: {bills: [...], today}
+                  net_worth sub-result: {net_worth, total_assets, total_liabilities, assets, liabilities}
+
+                  Ignore accounts/assets whose name starts with "Test".
+
+                  Per-domain urgency rules:
+                  budget: 4=any over_budget, 3=pct_used>=80+days_left<7, 2=pct_used>=80, 1=else, 0=empty.
+                  bills: 4=any overdue, 2=any due within 7 days, 1=else, 0=empty.
+                  net_worth: 3=liabilities>0, 2=non-test account<0, 1=net_worth<1000, 0=healthy.
+
+                  overall urgency = max of the three domain urgencies.
+                  attention: brief cross-domain summary of flagged items. null if all domains healthy/empty.
+                  watchlist: union of flagged items from all domains. Deduplicate. Empty list if none.
+                  general_inference (always required, never null): 1-2 sentences. Synthesize financial health.
+                  If budget/bills are unconfigured, say so briefly and focus on net worth. Use specific numbers.
+                tool: zen_dojotools_finance
+                seed:
+                  tool: zen_dojotools_finance
+                  params:
+                    mode: run
+                    case: finance_rollup
+                trigger_subscriptions: daily_midnight,zen_finance_transaction_posted
+                drift_threshold: 6
+                emission_cooldown_minutes: 720
+                delay_seconds: 60
+                meta:
+                  enabled: true
+                  requires:
+                    cert: ''
+                    level: 0
+        - variables:
+            _kfc_component: '{{ component | default("") | lower | trim }}'
+            _kfc_match: >-
+              {%- set ns = namespace(found=none) -%}
+              {%- for d in _kfc_defs if d.get("kata_key", "") == _kfc_component -%}
+                {%- set ns.found = d -%}
+              {%- endfor -%}
+              {{ ns.found }}
+        - variables:
+            # tojson → bootstrap_kfc parses with from_json → native list/dict for for_each.
+            _kfc_value: >-
+              {%- if _kfc_component != "" and _kfc_match is mapping -%}
+                {{ _kfc_match | tojson }}
+              {%- else -%}
+                {{ _kfc_defs | tojson }}
+              {%- endif -%}
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: kfc_manifest
+              kfc: '{{ _kfc_value }}'
+        # Register self on the FC callout whitelist — idempotent.
+        - action: script.zen_admintools_prompt_loader
+          continue_on_error: true
+          data:
+            mode: whitelist
+            whitelist_type: fc
+            action_type: add
+            item: zen_dojotools_finance:kfc_manifest
+            caller_token: zen_dojotools_finance_kfc_manifest
+        # Register self on the summarizer seed whitelist — idempotent.
+        - action: script.zen_admintools_prompt_loader
+          continue_on_error: true
+          data:
+            mode: whitelist
+            whitelist_type: seed
+            action_type: add
+            item: zen_dojotools_finance
+            caller_token: zen_dojotools_finance_kfc_seed
+        - stop: return
+          response_variable: final_response
+
+    # ── mode: report ─────────────────────────────────────────────────────────
+    # Composable CFO dashboard. Auto-discovers codex report modes from codex_registry.
+    # Whitelisted as zen_dojotools_finance:report for FC live drawer use (read-only by design).
+    # Pieces: 'rollup' = native finance_rollup; others = codex feature_key with *_report mode.
+    # include=a,b → only those; exclude=a,b → all except those; default → all pieces.
+    - if: "{{ mode_norm == 'report' }}"
+      then:
+      - variables:
+          _rpt_include_raw: "{{ include | default('') | string | trim | lower }}"
+          _rpt_exclude_raw: "{{ exclude | default('') | string | trim | lower }}"
+          _rpt_household: >-
+            {{ label_entities('Zen Household Cabinet')
+               | select('match', 'sensor\\.') | list | first | default('') }}
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        response_variable: _rpt_reg_read
+        data:
+          action_type: read
+          volume_entity_id:
+            - "{{ _rpt_household }}"
+          key: codex_registry
+      - variables:
+          _rpt_registry: >-
+            {%- set raw = _rpt_reg_read if _rpt_reg_read is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          _rpt_codex_pieces: >-
+            {%- set ns = namespace(pieces=[]) -%}
+            {%- for key, entry in _rpt_registry.items() if entry is mapping -%}
+              {%- set fk = entry.get('feature_key', '') -%}
+              {%- set modes = entry.get('modes', []) -%}
+              {%- if fk != '' and (fk ~ '_report') in modes -%}
+                {%- set ns.pieces = ns.pieces + [fk] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.pieces }}
+          _rpt_all_pieces: "{{ (['rollup'] + _rpt_codex_pieces) | unique | list }}"
+      - variables:
+          _rpt_pieces: >-
+            {%- if _rpt_include_raw != '' -%}
+              {{ _rpt_include_raw | regex_findall('[^,\\s]+') }}
+            {%- elif _rpt_exclude_raw != '' -%}
+              {%- set exc = _rpt_exclude_raw | regex_findall('[^,\\s]+') -%}
+              {{ _rpt_all_pieces | reject('in', exc) | list }}
+            {%- else -%}
+              {{ _rpt_all_pieces }}
+            {%- endif -%}
+      # Native rollup piece
+      - if: "{{ 'rollup' in _rpt_pieces }}"
+        then:
+        - action: script.zen_dojotools_finance
+          continue_on_error: true
+          response_variable: _rpt_rollup_raw
+          data:
+            mode: run
+            case: finance_rollup
+      # Codex: cogs — add new codex report branches here (feature_key_report in codex modes list)
+      - if: "{{ 'cogs' in _rpt_pieces }}"
+        then:
+        - action: script.zen_codex_finance_cogs
+          continue_on_error: true
+          response_variable: _rpt_cogs_raw
+          data:
+            mode: cogs_report
+            start_date: '{{ start_date | default("") }}'
+            end_date: '{{ end_date | default("") }}'
+      - variables:
+          final_response:
+            status: ok
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            mode: report
+            pieces: '{{ _rpt_pieces }}'
+            generated_at: '{{ now().isoformat() }}'
+            rollup: "{{ _rpt_rollup_raw | default(none) }}"
+            cogs: "{{ _rpt_cogs_raw | default(none) }}"
+      - stop: report
+        response_variable: final_response
+
+    # ── Codex Router (catch-all for registered codex modes) ───────────────────
+    # Fires only when no known finance case matched (all known cases stop:).
+    # Reads codex_registry, routes to registered codex via inline static choose.
+    # Adding a new codex = add one branch here + one entry to _bc2_known above.
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm != "" }}'
+        sequence:
+        - variables:
+            _cr_household: >-
+              {{ label_entities('Zen Household Cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _cr_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _cr_household }}"
+            key: codex_registry
+        - variables:
+            _cr_registry: >-
+              {%- set raw = _cr_reg_read if _cr_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+            _cr_target: >-
+              {%- set ns = namespace(found=none) -%}
+              {%- for key, entry in _cr_registry.items() if entry is mapping -%}
+                {%- if case_norm in (entry.get('modes') or []) -%}
+                  {%- set ns.found = entry.get('script') -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.found }}
+        # Static inline choose — one branch per registered codex.
+        # NOT templated action names (silently swallows failures — wrong for required codex responses).
+        # NOT event-bus (adds timeout risk — wrong for synchronous LLM-facing calls).
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _cr_target == 'zen_codex_finance_depreciation' }}"
+            sequence:
+            - action: script.zen_codex_finance_depreciation
+              response_variable: _cr_raw
+              data:
+                mode: '{{ case_norm }}'
+                asset_id: '{{ asset_id | default("") }}'
+                asset_data: '{{ asset_data | default("") }}'
+                period: '{{ period | default("") }}'
+                posting_mode: '{{ posting_mode | default("report_only") }}'
+                confirm: '{{ confirm | default(false) }}'
+                dry_run: '{{ dry_run | default(false) }}'
+                idempotency_key: '{{ idempotency_key | default("") }}'
+                firefly_transaction_id: '{{ firefly_transaction_id | default("") }}'
+                caller: '{{ caller | default("zen_dojotools_finance") }}'
+                audit_note: '{{ audit_note | default("") }}'
+                include_evidence: '{{ include_evidence | default(false) }}'
+                project_id: '{{ project_id | default("") }}'
+                room_anchor: '{{ room_anchor | default("") }}'
+                total_home_sqft_override: '{{ total_home_sqft_override | default("") }}'
+            - variables:
+                final_response: '{{ _cr_raw }}'
+            - stop: codex dispatch
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: "{{ _cr_target == 'zen_codex_finance_cogs' }}"
+            sequence:
+            - action: script.zen_codex_finance_cogs
+              response_variable: _cr_raw
+              data:
+                mode: '{{ case_norm }}'
+                default_source_account: '{{ default_source_account | default(source_account, true) | default("") }}'
+                default_category: '{{ default_category | default(category, true) | default("") }}'
+                enabled: '{{ enabled | default(true) }}'
+                product_id: '{{ product_id | default("") }}'
+                product_name: '{{ product_name | default("") }}'
+                amount: '{{ amount | default("") }}'
+                unit_price: '{{ unit_price | default("") }}'
+                stock_entry_id: '{{ stock_entry_id | default("") }}'
+                confirm: '{{ confirm | default(false) }}'
+                caller_token: '{{ caller_token | default("") }}'
+                start_date: '{{ start_date | default("") }}'
+                end_date: '{{ end_date | default("") }}'
+            - variables:
+                final_response: '{{ _cr_raw }}'
+            - stop: codex dispatch
+              response_variable: final_response
+          # Add new codex branches here when registered (also add to _bc2_known above)
+          default:
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: '{{ _cr_target is not none }}'
+              sequence:
+              - variables:
+                  final_response:
+                    status: error
+                    tool: '{{ tool_name }}'
+                    version: '{{ tool_version }}'
+                    code: codex_not_in_router
+                    target: '{{ _cr_target }}'
+                    case: '{{ case_norm }}'
+                    message: >-
+                      Codex '{{ _cr_target }}' is in codex_registry but not in the
+                      dispatch block. Add a branch to the catch-all choose block in
+                      zen_dojotools_finance (firefly_iii.yaml).
+              - stop: codex not in router
+                response_variable: final_response
+
     # ── default: unknown case ────────────────────────────────────────────────
     - variables:
         final_response:
@@ -3572,6 +4893,9 @@ script:
           version: '{{ tool_version }}'
           case: '{{ case_norm }}'
           result: null
-          error: 'Unknown case "{{ case_norm }}". Call mode=help for available cases.'
+          error: >-
+            Unknown case "{{ case_norm }}". Call mode=help for available cases.
+            Call mode=run case=index for live capability map including codex modes.
+            Run mode=run case=bootstrap_codices to register installed codices.
     - stop: return
       response_variable: final_response

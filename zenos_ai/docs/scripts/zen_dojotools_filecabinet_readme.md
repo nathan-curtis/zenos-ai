@@ -250,7 +250,21 @@ fc_args: >
   }
 ```
 
-Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `action_type` is not in the whitelist, the read returns `tool_call_blocked`.
+Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`.
+
+### Whitelist Entry Formats
+
+The whitelist supports three entry formats, parsed via a `tool[:mode]` split:
+
+| Format | Meaning |
+|---|---|
+| `tool` | Plain tool name — all modes reachable via a live drawer. **Deprecated, backcompat only.** |
+| `tool:*` | All modes reachable — explicit wildcard, preferred over the bare-name form above. |
+| `tool:mode` | Restricted to exactly one mode — **required for any tool with write-capable modes.** |
+
+Adding a bare `*` or a `tool:` entry with an empty mode suffix is rejected by Admintools on add.
+
+Mode-scoping exists so a live drawer can expose a self-describing or read-only mode (e.g. `kfc_manifest`) without opening any write path on that tool. `zen_dojotools_finance`, for example, is scoped `zen_dojotools_finance:kfc_manifest` only — no live drawer can reach a finance write mode. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools) for the self-registration flow that writes these entries.
 
 ---
 

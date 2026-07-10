@@ -101,7 +101,7 @@ script:
         selector:
           text:
     sequence:
-    - if: "{{ (operator | default('') | lower) == 'tool_manifest' }}"
+    - if: "{{ (operator | default('') | lower) == 'tool_manifest' or (mode | default('') | lower) == 'tool_manifest' }}"
       then:
       - variables:
           result: >-
@@ -119,6 +119,9 @@ script:
                 modes=['add', 'subtract', 'multiply', 'divide', 'exponent', 'sqrt', 'cbrt', 'sin', 'cos', 'tan', 'degrees_to_radians', 'radians_to_degrees', 'log', 'ln', 'percent_of', 'increase_by_percent', 'decrease_by_percent', 'round', 'floor', 'ceil', 'modulus', 'fahrenheit_to_celsius', 'celsius_to_fahrenheit', 'guidgen', 'tool_manifest'],
                 icon='mdi:calculator',
                 color='blue-grey',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
 
                 caller_token=caller_token | default('')
             ) | from_json }}
@@ -164,7 +167,7 @@ script:
         out: "{{\n  {\n    \"number_1\": n1,\n    \"number_2\": n2,\n    \"operator\":
           op,\n    \"result\": result\n  } | tojson\n}}\n"
     - variables:
-        out: "{{ (out | from_json) | combine({'caller_token': caller_token}) | tojson }}"
+        out: "{{ (out | from_json({})) | combine({'caller_token': caller_token}) | tojson }}"
     - stop: Calculator done
       response_variable: out
 
@@ -238,6 +241,9 @@ script:
                 modes=['Dice', 'Random Integer', 'Random Float', 'Coin Flip', 'tool_manifest'],
                 icon='mdi:dice-multiple',
                 color='deep-purple',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
 
                 caller_token=caller_token | default('')
             ) | from_json }}
@@ -283,31 +289,40 @@ script:
   zen_dojotools_help:
     alias: Zen DojoTools Help
     description: >-
-      Zen DojoTools Help (2.0.0). Returns a live ZenOS-AI system overview:
-      architecture, design principles, Pantheon roster, module list, escalation
-      contacts, and a live inventory of zen-labelled scripts on this install.
+      ZenOS-AI global help front door (3.0.0). mode=about: system overview +
+      live script inventory. mode=help tool=<script>: proxy to any tool's
+      canonical help (status=help schema). mode=directory: auto-discover all
+      tools that expose mode=help — tools fall in line with the canonical
+      schema and automagically appear. mode=tool_manifest: self-description.
     mode: single
     icon: mdi:robot
     fields:
-      action:
-        name: Action
-        description: "'about' — returns system overview and live script inventory."
-        selector:
-          select:
-            options:
-              - about
-              - tool_manifest
-        default: about
       mode:
-        description: "about (default) or tool_manifest. action= is backcompat alias."
+        description: "about (default), help (route to a tool's help), directory (list help-capable tools), tool_manifest."
         required: false
         default: about
         selector:
           select:
             options:
               - about
+              - help
+              - directory
               - tool_manifest
-
+      tool:
+        description: "For mode=help: script name to proxy (e.g. zen_dojotools_finance)."
+        required: false
+        selector:
+          text:
+      action:
+        name: Action
+        description: "Backcompat alias for mode= (about, tool_manifest)."
+        required: false
+        selector:
+          select:
+            options:
+              - about
+              - tool_manifest
+        default: about
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
@@ -324,15 +339,18 @@ script:
                 tool='zen_dojotools_help',
                 display_name='Help',
                 tier='dojotools',
-                version='2.1.0',
+                version='3.0.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
                 consumes=[],
-                returns=['system_overview','script_inventory'],
-                modes=['about','tool_manifest'],
+                returns=['system_overview','script_inventory','help_directory'],
+                modes={'about': 'about', 'help': 'help', 'directory': 'directory', 'manifest': 'tool_manifest'},
                 icon='mdi:help-circle',
                 color='blue',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
 
                 caller_token=caller_token | default('')
             ) | from_json }}
@@ -343,10 +361,90 @@ script:
     # --------------------------------------------------------------
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
+    - variables:
+        _mode_norm: "{{ mode | default(action | default('about')) | string | trim | lower }}"
+        _tool_norm: "{{ tool | default('') | string | trim }}"
+
+    # ── mode=help: proxy to the named tool's mode=help ─────────────────────
+    - if: "{{ _mode_norm == 'help' and _tool_norm != '' }}"
+      then:
+      - action: "script.{{ _tool_norm }}"
+        continue_on_error: true
+        response_variable: _help_raw
+        data:
+          mode: help
+      - variables:
+          _help_result: >-
+            {{ _help_raw if _help_raw is mapping else
+               {'status': 'error', 'error': 'tool did not respond or is unavailable', 'tool': _tool_norm} }}
+      - stop: help proxied
+        response_variable: _help_result
+
+    - if: "{{ _mode_norm == 'help' and _tool_norm == '' }}"
+      then:
+      - variables:
+          _help_result:
+            status: error
+            error: "mode=help requires tool= parameter. Use mode=directory to discover available tools."
+            example: "{'mode':'help','tool':'zen_dojotools_finance'}"
+      - stop: help needs tool
+        response_variable: _help_result
+
+    # ── mode=directory: scan all zen_* scripts, return those with help ──────
+    - if: "{{ _mode_norm == 'directory' }}"
+      then:
+      - variables:
+          _dir_scripts: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for e in states.script -%}
+              {%- set eid = e.entity_id -%}
+              {%- if (eid.startswith('script.zen_dojotools_') or eid.startswith('script.zen_stack_')
+                     or eid.startswith('script.zen_sutra_') or eid.startswith('script.zen_codex_'))
+                  and e.state in ('off', 'on') -%}
+                {%- set ns.out = ns.out + [eid] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out | list }}
+          _dir_entries: []
+      - repeat:
+          for_each: "{{ _dir_scripts }}"
+          sequence:
+          - variables:
+              _dir_script: "{{ repeat.item | string | trim }}"
+          - action: "{{ _dir_script }}"
+            continue_on_error: true
+            response_variable: _dir_tm_raw
+            data:
+              mode: tool_manifest
+          - variables:
+              _dir_tm: "{{ _dir_tm_raw if _dir_tm_raw is mapping else {} }}"
+              _dir_modes: "{{ _dir_tm.get('modes', []) if _dir_tm is mapping else [] }}"
+          - if: "{{ 'help' in _dir_modes }}"
+            then:
+            - variables:
+                _dir_entries: >-
+                  {{
+                    _dir_entries + [{
+                      'script': _dir_script | replace('script.', ''),
+                      'display_name': _dir_tm.get('display_name', _dir_script | replace('script.', '')),
+                      'description': state_attr(_dir_script, 'description') | default('', true),
+                      'domain': _dir_tm.get('domain', ''),
+                      'version': _dir_tm.get('version', '')
+                    }]
+                  }}
+      - variables:
+          _dir_result:
+            status: ok
+            mode: directory
+            count: "{{ _dir_entries | length }}"
+            tools: "{{ _dir_entries }}"
+            note: "Call mode=help tool=<script> to get any listed tool's full help."
+      - stop: directory complete
+        response_variable: _dir_result
 
     - variables:
-        tool_version: "5.1.0"
-        os_version: "5.1.0"
+        tool_version: "5.2.0"
+        os_version: "5.2.0"
         action: about
         about_text: |-
           ZenOS-AI — modular, local-first AI home automation framework on Home
@@ -471,6 +569,9 @@ script:
                 modes=['tool_manifest'],
                 icon='mdi:timer-sand',
                 color='blue-grey',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
 
                 caller_token=caller_token | default('')
             ) | from_json }}
@@ -718,6 +819,9 @@ script:
                     returns=['select_state'],
                     icon='mdi:form-select',
                     color='blue-grey',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
                 ) | from_json }}
@@ -957,6 +1061,9 @@ script:
                     returns=['number_value'],
                     icon='mdi:numeric',
                     color='blue-grey',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
                 ) | from_json }}
@@ -1179,6 +1286,9 @@ script:
                     returns=['text_value'],
                     icon='mdi:form-textbox',
                     color='blue-grey',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
                 ) | from_json }}
@@ -1451,6 +1561,9 @@ script:
                     returns=['climate_state'],
                     icon='mdi:thermostat',
                     color='orange',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
                 ) | from_json }}
@@ -2065,6 +2178,9 @@ script:
                     returns=['water_heater_state'],
                     icon='mdi:water-boiler',
                     color='red',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
                 ) | from_json }}
@@ -2407,6 +2523,9 @@ script:
                     returns=['datetime_value'],
                     icon='mdi:clock-outline',
                     color='blue',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
                 ) | from_json }}
@@ -2645,6 +2764,9 @@ script:
                     returns=['zone_data'],
                     icon='mdi:map-marker-radius',
                     color='green',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
 
                     caller_token=caller_token | default('')
                 ) | from_json }}
