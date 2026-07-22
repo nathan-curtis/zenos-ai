@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Stable: 2026.7.1** | Base: 2026.7.0 'Neo' | Previous: 2026.6.0 'Clue'
+**Stable: 2026.7.2** | Base: 2026.7.0 'Neo' | Previous: 2026.6.0 'Clue'
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -35,6 +35,10 @@ And a few things that are.
 - **Labels** — `mode` is now the primary selector across all dojotools, matching the project-wide move away from `action_type`.
 
 → [Patch Notes — 2026.7.1](zenos_ai/docs/releases/neo.md#20267-1-patch)
+
+**What's in 2026.7.2:** Two custom template files missed in the 7.1 audit — `zenos_cabinets.jinja` gains `cabinet_drawer_value_mounted` (follows FC write-mount pointers to expansion cabinets), and `zenos_manifest.jinja` gains `preferred_state`/`stripe`/`prerequisites`/`impact`/`fallback` params.
+
+→ [Patch Notes — 2026.7.2](zenos_ai/docs/releases/neo.md#20267-2-patch)
 
 ---
 

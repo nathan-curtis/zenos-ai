@@ -13,6 +13,12 @@ modular, HA-native, runtime-safe, and designed for long-term architectural conti
 
 ---
 
+📌 Recent Updates
+
+**2026.7.2** — `zenos_cabinets.jinja` (v1.1.0) gained `cabinet_drawer_value_mounted`, a drop-in replacement for `cabinet_drawer_value` that follows FC write-mount pointers (`expand_drawer` migrations) one hop deep. `zenos_manifest.jinja` gained `preferred_state`/`stripe`/`prerequisites`/`impact`/`fallback` params for richer manifest declarations. Both were pulled from the live reference install — missed in the original 2026.7.1 audit pass.
+
+---
+
 📁 Contents
 
 

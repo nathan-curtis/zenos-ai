@@ -366,3 +366,16 @@ Several FG-class guard gaps were found and fixed during this pull (not present i
 | `zen_codex_finance_depreciation.yaml` | Unguarded date-slice on a null `placed_in_service_date`; bare `float()` casts in business-use split math; `_setup_canonical_names` was missing the 8 new tax/allocation userfields Grocy now writes |
 
 All fixes verified live by Nyx against the actual instance (config check, reload, and targeted test cases against real data) before being called done.
+
+---
+
+# 2026.7.2 Patch
+
+**Base:** 2026.7.1
+
+## Summary
+
+Two files missed in the 2026.7.1 audit pull, caught after release and pulled straight from the live reference install (H:\).
+
+- **`custom_templates/zenos_ai/zenos_cabinets.jinja`** (v1.1.0) — new `cabinet_drawer_value_mounted` macro, a drop-in replacement for `cabinet_drawer_value` that transparently follows FC write-mount pointers (`expand_drawer` migrations) one hop deep. Use it anywhere a drawer may have been migrated to an expansion cabinet.
+- **`custom_templates/zenos_ai/zenos_manifest.jinja`** — new `preferred_state`/`stripe`/`prerequisites`/`impact`/`fallback` params, assembled into a `preferred_state` block on the manifest output alongside `required_labels`/`optional_labels` when present.
