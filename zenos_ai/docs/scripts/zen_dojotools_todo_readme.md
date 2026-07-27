@@ -1,4 +1,4 @@
-# Zen DojoTools ToDo — v2.5.0
+# Zen DojoTools ToDo — v2.5.1
 
 **File:** `packages/zenos_ai/dojotools/dojotools_todo.yaml`
 **Script:** `zen_dojotools_todo`
@@ -18,7 +18,7 @@ Wraps HA todo services with `continue_on_error` isolation so auth failures (401s
 | `delete` | Delete item(s) by exact name. Uses `continue_on_error` — verify the list if auth is stale. |
 | `help` | Return full field docs and examples. |
 
-**Default:** `action_type: read`
+**Default:** `mode: read`
 
 ---
 
@@ -26,10 +26,10 @@ Wraps HA todo services with `continue_on_error` isolation so auth failures (401s
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `action_type` | select | `read`, `create`, `update`, `delete`, `help`. Alias: `action`. |
+| `mode` | select | `read`, `create`, `update`, `delete`, `help`. Deprecated aliases: `action_type`, `action`. |
 | `list_name` | text | Friendly name or `todo.*` entity ID. Omit or `*` = wildcard (all lists). Alias: `list_id`. |
 | `items` | list | Strings or `{item, status, due_date, description, rename}` objects. Bulk complete: multiple strings + `status=completed`. |
-| `status` | text | `needs_action` (default) or `completed`. Complete: `action_type=update items=['Name'] status=completed list_name='X'`. Bulk update: applies to all `items`. |
+| `status` | text | `needs_action` (default) or `completed`. Complete: `mode=update items=['Name'] status=completed list_name='X'`. Bulk update: applies to all `items`. |
 | `due_date` | text | ISO `YYYY-MM-DD`. Create or single-item update only. |
 | `description` | text | Notes text. Create or single-item update only. |
 | `rename` | text | New title. Single-item update only. |
@@ -69,25 +69,25 @@ When `list_name` resolves to an entity in the `ms365` integration, `create` rout
 
 ```yaml
 # Read all lists
-action_type: read
+mode: read
 
 # Read one list
-action_type: read
+mode: read
 list_name: Household Chores
 
 # Read across label-tagged lists
-action_type: read
+mode: read
 label_targets: [zen_chores]
 
 # Create an item with due date
-action_type: create
+mode: create
 list_name: Household Chores
 items:
   - Take out trash
 due_date: "2026-05-25"
 
 # Bulk complete multiple items
-action_type: update
+mode: update
 list_name: Household Chores
 items:
   - Task A
@@ -95,7 +95,7 @@ items:
 status: completed
 
 # Single-item rename + update
-action_type: update
+mode: update
 list_name: Household Chores
 items:
   - item: "Old task name"
@@ -103,7 +103,7 @@ items:
     due_date: "2026-06-01"
 
 # Delete
-action_type: delete
+mode: delete
 list_name: Household Chores
 items:
   - Old task
@@ -125,6 +125,7 @@ items:
 
 | Version | Change |
 |---------|--------|
+| v2.5.1 | `mode` is now the primary selector, matching the project-wide standard. `action_type`/`action` remain as deprecated, fully-supported aliases. |
 | v2.5.0 | Discoverability: rich routing hints in script description + aliases so the LLM can route without calling `help`. Telegraphic field docs (bulk complete, complete-task shorthand). |
 | v2.4.0 | Multi-entity read (`inspect_export`): `entity_ids[]` input, `include_task_ids` flag, `+task_ids` output opt-in. Used by Inspect domain context to feed `domain_context.todo`. |
 | v2.3.0 | MS365 read: switched from `todo.get_items` to `all_todos` entity attribute. Fixes `due` returning `reminderDateTime` instead of `dueDateTime` on MS365 lists. |
