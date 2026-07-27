@@ -86,7 +86,7 @@ Supported and planned anchor types:
 
 Rules:
 
-* `person` means a resolved `person.*` entity. A label named `nathan` is still only a label.
+* `person` means a resolved `person.*` entity. A label named `alex` is still only a label.
 * `area_id` means an HA area primitive. A label named `office` is not an area.
 * `zone` means an HA zone primitive, such as `home` for `zone.home`.
 * `label` is valid, but it is never silently promoted into another primitive type.
