@@ -1,4 +1,4 @@
-# Zen DojoTools AdminTools — v5.3.0
+# Zen DojoTools AdminTools — v5.3.1
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -277,9 +277,8 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 |---|---|---|---|
 | `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
 | `cortex_version` | select | `latest` | `latest` or `43` = Rule Zero (default). `42` = The Answer. `40` = Room First. `38` = Kata First. Only used when `mode=load`. |
-| `ship_zen_system` | boolean | `true` | Write the `zen_system` KFC to the Dojo after loading. |
-| `ship_alert_manager` | boolean | `false` | Write the `alert_manager` KFC to the Dojo. |
-| `ship_taskmaster` | boolean | `false` | Write the `taskmaster` KFC to the Dojo. |
+| `ship_zen_system` | boolean | `true` | When ON (default), chains `zen_admintools_kungfu_loader` in factory mode — deploys `zen_system`, `alert_manager`, and `trapper_keeper`. `taskmaster` self-registers via KF5 (see `zen_dojotools_taskmaster mode=kfc_manifest`) and is no longer shipped from here. Turn OFF to load the prompt only, skipping all KFC deployment. |
+| `sim_mode_allowed` | boolean | `false` | Stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level policy switch (see `zen_dojotools_identity resolve_caller_identity`) — `false` (default) fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live. Leave off unless you deliberately want simulated identity resolution accepted platform-wide. |
 | `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
 | `action_type` | select | `list` | `mode=whitelist` only. `list` \| `add` \| `remove` \| `reset`. |
 | `item` | text | — | `mode=whitelist add/remove` only. Event kind string (act) or script name (seed). |
@@ -387,6 +386,7 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 
 | Version | Change |
 |---------|--------|
+| v5.3.1 | prompt_loader: new `sim_mode_allowed` field (default `false`) — stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level SP1 policy switch (see `dojotools_identity.yaml` `resolve_caller_identity`). Fail-closed default, explicit on every install. `taskmaster` no longer inline-shipped by `ship_zen_system` — it self-registers via KF5. |
 | v5.3.0 | cabinetadmin: `expand_drawer` (atomic drawer migration with rollback), `repair_volumeinfo` self-heals missing-header case. prompt_loader: `fc`-type whitelist add rejects bare `*`/empty-suffix `tool:` entries; field renamed `allowed_action_types` → `allowed_tools` (KF5 mode-scoped whitelist). |
 | v5.2.0 | Cortex v43 "Rule Zero" added as latest. DojoTools supersede all HA built-ins — domain routing table in directives. v42 'The Answer' retained as prior slot. |
 | v5.1.0 | Cortex v42 "The Answer" (v10.0.0) added as latest. Trimmed to 3 version slots: v42/v40/v38. `mode=whitelist` added to prompt_loader — absorbs `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` (both deleted). Dispatcher compat shim routes legacy `summarizer_act` calls to `prompt_loader mode=whitelist type=act`. |

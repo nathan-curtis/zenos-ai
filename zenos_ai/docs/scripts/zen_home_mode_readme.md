@@ -69,6 +69,12 @@ Six `input_datetime` helpers control when mode transitions fire. All are time-on
 
 Change any anchor in Settings → Helpers → the automation fires on the new time immediately with no restart needed.
 
+### Meal-Time Helpers (Not Schedule Anchors)
+
+Two additional `input_datetime` helpers — `input_datetime.zen_lunch_time` (default 12:00) and `input_datetime.zen_snack_time` (default 15:00) — exist alongside the six schedule anchors but are **deliberately not part of the `scheduler_anchors` 6-anchor set**: they don't drive any `input_select.zen_home_mode` transition, and `scheduler_anchors`' ascending-order guard is scoped to the 6 home-mode anchors only. Override them directly via Settings → Helpers or Developer Tools → States.
+
+Breakfast and dinner don't have their own helpers — they're derived at read time from the existing schedule anchors: breakfast = `zen_morning_start`, dinner = `zen_evening_start` + 1 hour. `zen_dojotools_kitchen` `prep_brief` and `zen_dojotools_taskmaster` `almanac` both compute these the same way from the same anchors, so there's no separate drift-prone copy of meal defaults.
+
 > **Timer seeding (4.5.6):** The `input_datetime` helpers ship with **no `initial:` value** — HA's `initial:` resets user-configured times on every restart, which was incorrect behavior. On first boot, Flynn seeds each timer individually to the defaults shown above (only if the helper is still bare — `''`, `unknown`, or `unavailable`). After that, your changes are permanent across restarts.
 
 ---

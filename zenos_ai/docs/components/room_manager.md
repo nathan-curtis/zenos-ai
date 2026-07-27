@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.3.0
+**Version:** 5.6.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -99,6 +99,7 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | `area_delete` | Delete HA area and remove from room_topology. `area=` required. `confirm_action=true` required. |
 | `utility` | Manage utility_index in household cabinet. `utility_action=list\|get\|set\|delete`. `utility_type=electric\|gas\|water\|...` required for get/set/delete. |
 | `pathfind` | BFS shortest path between two areas or persons. Fields: `start` (area_id or person entity), `destination` (area_id or person entity), `max_hops` (default 20). Returns path as ordered list of area_ids, hop count, and portal sequence. Returns `no_path` if destination is unreachable within `max_hops`. |
+| `room_occupant_prefs` | Guest-or-household-member prefs for a room, plus an independent `vendor_activity` caution flag. `area=` required. See below. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
 | `help` | Full reference: purpose, when_to_call, seed_steps, domain_routing, schema, context_slices, concepts, modes. |
 
@@ -267,6 +268,35 @@ All three fields can be passed in a single call. The write is a non-destructive 
 | `default_room` | Default area_id written to `household_profile.default_room`. Used as the implied starting area for pathfinding and other tools when no explicit `area=` is given. Set with `mode=set default_room=<area_id>`. |
 
 GPS coordinates are **not** stored — read live from `zone.home` at query time.
+
+---
+
+## mode=room_occupant_prefs — Who's Relevant Here Right Now
+
+"Who's the relevant person for this room right now, guest or household member, and what are their prefs." Used by domain tools (e.g. Kitchen's mealplan_suggest) so a family dinner gets the same allergen flagging a guest stay does.
+
+```
+mode=room_occupant_prefs  area=kitchen
+```
+
+**Priority chain:**
+
+1. **Guest stay** — checks `zen_dojotools_rolodex mode=active_stay_prefs` for event-shaped guest presence (Twenty CRM `guestPrefs`). If active, this wins.
+2. **Household member fallback** — if no active guest, resolves this room's static `occupants[]` assignment against `zen_dojotools_profile_editor`. No name→cabinet index exists for profile_editor's fixed target slots (`user`, `family`, `expansion_1`–`expansion_5`), so occupant name resolution is a bounded scan (max 7 reads per occupant) matching `first_name`/`preferred_name`. Allergens are unioned across all matched occupants (a missed one is a safety issue); `media_prefs` comes from the first occupant matched — a stated simplification, not a hidden guess.
+3. **None** — no active guest and no occupant match.
+
+**`vendor_activity`** is independent of the above chain — a vendor being present doesn't change whose meal/music prefs apply, it's an orthogonal caution signal. Computed via `zen_dojotools_rolodex mode=active_appointment` for a vendor/contact mid-appointment in this room right now, and attached to every branch's response (`guest_stay` / `household_member` / `none`). Use it to avoid firing a scene while a vendor's mid-repair.
+
+### Response Shape
+
+| Field | Notes |
+|-------|-------|
+| `active` | bool — true if a guest or matched household member was found |
+| `source` | `guest_stay` \| `household_member` \| `none` |
+| `guest_name` | Guest name (guest_stay) or joined occupant names (household_member) |
+| `area_id` | Echoed area |
+| `guest_prefs` | `{allergens[], media}` — from Twenty (guest_stay) or profile_editor (household_member) |
+| `vendor_activity` | `{active, vendor_name, appointment_summary}` — present on every branch |
 
 ---
 

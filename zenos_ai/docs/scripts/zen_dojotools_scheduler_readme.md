@@ -78,6 +78,8 @@ event_data:
     component: security_manager   # optional — omit to run all subscribers
 ```
 
+> **Fixed 2026-07-25.** Prior to this fix, `component:` scoping was silently ignored — `trigger.event` is a raw HA `Event` object, not a `Mapping`, and the extraction code guarded on `ev is mapping` (always false), so `component` always evaluated to empty and every `summary_force` dispatched the full subscriber fleet regardless of what was passed. The scoping now correctly reads `trigger.event.data` and targets only the named component.
+
 **`ninja_force`** — Runs Ninja dispatch only. Remaps the trigger scope to `ha_start` so all components that subscribe to `ha_start` fire. Delay is skipped. SuperSummary does not run.
 
 ```yaml

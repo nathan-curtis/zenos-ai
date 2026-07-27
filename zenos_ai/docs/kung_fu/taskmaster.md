@@ -1,169 +1,95 @@
 # Taskmaster — KFC Guide
 
-> **KF4 1.5.0** | ZenOS-AI 2026.4.1
+> **dojotools 0.3.0** | ZenOS-AI 2026.8.0 'Chef'
 
-Taskmaster is ZenOS-AI's task and calendar management component. It monitors your todo lists and calendar, surfaces what needs attention, and gives you a brief when it matters — morning, evening, or when something's actually urgent.
-
-It ships disabled. Enable it when you're ready to wire in your task lists.
+Taskmaster is ZenOS-AI's cross-backend task orchestration layer: household chores, tickets, calendar, and medications, urgency-scored and surfaced through one briefing call. As of 2026.8.0 it's a full dojotools script (`zen_dojotools_taskmaster`) with real modes, self-registering via KF5 — not a label-driven Ninja Summarizer component like earlier KF4 versions. If you're looking for the old conductor-pattern / label-graph docs, that architecture no longer exists; this page describes the current tool.
 
 ---
 
-## Enabling taskmaster
+## Progressive Enhancement
 
-`taskmaster` ships with `meta.enabled: false`. To enable:
+Taskmaster does **not** merge Radar, Inventory, CRM, and To Do into one data model — each backend keeps its native shape. It picks the best available backend at creation time and fans out reads across whichever backends are configured:
 
-- Ask your AI: *"Enable taskmaster"*
-- Or set `meta.enabled: true` in the `taskmaster` Dojo drawer via `zen_dojotools_scribe`
+| Tier | Backend | When it's used |
+|------|---------|-----------------|
+| Base | O365 To Do (`zen_dojotools_todo`) | Always available — every household gets this with zero config. |
+| + Radar | Zammad service desk (`zen_dojotools_servicedesk`) | When configured, task creation upgrades to a real tracked ticket with lifecycle/triage. |
+| + Inventory | Grocy (`zen_dojotools_inventory`) | When configured, chore-shaped recurring tasks upgrade to Grocy chores/tasks tied to product/location/stock. |
+| + CRM | Rolodex/Twenty (`zen_dojotools_rolodex`) | Explicit contact/company context always wins the routing decision, regardless of shape. |
 
-Once enabled, taskmaster runs on its scheduled triggers. To wire instant dispatch on sleep/wake transitions, see [Wiring Your Own Triggers](#wiring-your-own-triggers) below.
+Routing priority at creation time: explicit contact/company → chore-shaped → Radar-shaped → Grocy task → base O365 To Do.
 
----
-
-## The Conductor Pattern
-
-Taskmaster uses a **conductor** model to organize tasks across time.
-
-The conductor is a structured todo list (`todo.friday_s_personal_task_list` by default) that acts as a schedule. Each item in the conductor references a time block and a domain list. When a trigger fires, taskmaster:
-
-1. Reads the conductor to find the active block for the current period
-2. Pulls the referenced domain lists
-3. Cross-references with calendar events
-4. Surfaces what's due, overdue, or coming up
-
-You don't need to manage the conductor manually — it's maintained by the AI and updated as tasks are completed or rescheduled.
+Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inventory`), so `task_evidence` surfaces anywhere Lens Bus queries already run.
 
 ---
 
-## Data Sources
+## Modes
 
-Taskmaster reads from entities tagged with the **`taskmaster`** label. Entities are grouped by secondary labels:
-
-| Label | What it contains |
-|-------|-----------------|
-| `daily` | Recurring daily tasks (chores, health) |
-| `weekly` | Weekly cadence tasks |
-| `tasks` | Async backlog (tickets, automation todos) |
-| `calendar` | Calendar entities for event cross-reference |
-
-Tag entities with both `taskmaster` and their domain label. The Ninja Summarizer resolves everything automatically via label expansion.
-
----
-
-## Overdue Semantics and PRN Items
-
-- **Overdue**: a task with a `due:` date of yesterday or earlier, still `notStarted`.
-- **PRN items** ("as needed"): tasks with no due date that appear in the backlog. Taskmaster surfaces count + top items but doesn't foreground them over conductor-driven tasks.
-- **Urgency escalation**: a calendar event starting within 30 minutes with the relevant person not moving will push urgency to 5 (dispatch threshold).
+| Mode | Description |
+|------|-------------|
+| `briefing` | The scheduled seed — urgency-scored household briefing. Fires on `quarter_hour` + occupancy-change triggers via KF5 self-registration, 60-minute emission cooldown, 180s delay so it doesn't crowd every other component firing on the raw `quarter_hour` tick. Conductor items (Friday's own schedule-driven task list) surface first, then everything else from `task_list`, scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Also returns a `context` block of real (not LLM-guessed) situational signals — see [Context Block](#context-block) below. |
+| `almanac` | On-demand "what does today look like" — meal plan (`zen_dojotools_kitchen mode=run case=mealplan_today`), appointments (`zen_dojotools_rolodex mode=appointments_list`), plus a meal/appointment collision flag. Informational only, never blocking. |
+| `stale_review` | Filters `briefing`'s own scoring to urgency ≥ 2, sorted highest-first. Suppresses Radar tickets triaged `radar_rank_backlog` regardless of raw priority — those are intentionally deprioritized, not stale in the "forgotten" sense. |
+| `facilities_brief` | Building-super/housekeeping-lead view. Reads live kata cabinet entries for physical-plant components directly (`energy_manager`, `water_manager`, `hot_tub_manager`, `garage_freezer_thermal_model`, `dishwasher_manager`, `laundry_manager`) — no re-query — surfaces only urgency ≥ 2. Plus open Radar tickets tagged to a physical area and the house-wide chore backlog. |
+| `task_create` | Create a task. Routes to the best available backend per the priority chain above. |
+| `task_list` | List tasks across whichever backends are configured. The data `briefing` and `stale_review` build on. |
+| `task_complete` | Mark a task complete on whichever backend it lives on. |
+| `tier_status` | Reports which backends (Radar/Inventory/CRM) are actually configured right now, via each backend's own `tool_manifest`. |
+| `setup` | Self-provisioning audit + fix — checks whether `zen_kfc_provider` label is applied (bootstrap_kfc discovery) and whether Taskmaster is on the summarizer seed whitelist (live briefing seed vs. index-fallback path). Both checked live, both fixed automatically unless `dry_run=true`. Same shape as `zen_dojotools_autovac mode=setup`. |
+| `help` | Standard mode/field listing. |
+| `register` / `unregister` | Lens Bus provider registration lifecycle. |
+| `tool_manifest` | Standard manifest response. |
+| `kfc_manifest` | KF5 self-registration payload — the `component_instructions` prompt text that ships with the KFC (see [KF5 Pattern](../scripts/zen_kf5_pattern_readme.md)). |
 
 ---
 
-## When It Runs
+## Context Block
 
-Taskmaster subscribes to:
+`briefing`'s response includes a `context` block of real, ground-truth situational signals — never LLM-guessed:
 
-- `home_occupancy_change` — arrival or departure shifts task context
-- `quarter_hour` — regular cadence check
-- `force_summary` — targeted dispatch on demand
-- `default_user_bed_changes` / `secondary_user_bed_changes` — wake and sleep transitions (if wired)
+| Field | Source |
+|-------|--------|
+| `home_mode` / `is_away` | `input_select.zen_home_mode` |
+| `is_weekday` | Calendar |
+| `quiet_hours_active` / `work_hours_active` | `binary_sensor.zen_quiet_hours` / `binary_sensor.zen_work_hours` |
+| `guest_present` / `guest_note` | Manual flags + Rolodex `stays_list` for today |
+| `upcoming_appointments` | Rolodex `appointments_list` |
+| `prep_schedule` | `zen_dojotools_kitchen mode=run case=prep_brief` for today — scheduled `[PREP:N]`-tagged dishes sorted by `start_by`, plus `unscheduled_count`. Wired in 2026.8.0 so Kitchen's prep timing is proactive on Taskmaster's existing trigger, not pull-only. |
+| `weather.outdoor_ok` | Label `zen_weather` → `weather.*` entity; `false` when condition is rain/snow/storm. |
 
-The morning and evening cycles are the most useful:
-
-**Morning (after wake trigger):**
-1. Read the conductor — what's scheduled today?
-2. Pull tasks from referenced domain lists
-3. Any calendar events today?
-4. Any tasks overdue from yesterday?
-→ Brief morning summary with time-ordered schedule.
-
-**Evening (bed sensors → sleep):**
-1. What conductor blocks ran today?
-2. What wasn't completed?
-3. What's on tomorrow's conductor?
-→ Brief evening wrap.
+Consumer guidance (baked into the KFC's own `component_instructions`): use `context.prep_schedule.scheduled` entries whose `start_by` is within the next hour (or already past) as a real "start cooking now" signal, not background noise. `unscheduled_count` is informational only. `weather.outdoor_ok == false` means note outdoor chores as weather-blocked, not urgent.
 
 ---
 
-## Urgency Scoring
+## Deterministic Scoring
 
-| Condition | Urgency |
-|-----------|---------|
-| Calendar event starting within 30 min, person not moving | 5 (dispatch) |
-| Active conductor block with past-due required tasks | 4 (informational) |
-| Task with `due:` yesterday or earlier, still notStarted | 3 (informational) |
-| Morning brief pending | 2 |
-| Nothing pressing | 1 |
-
-Urgency 3–4 updates the kata but does **not** trigger a notification. Urgency ≥ 5 dispatches via `zen_dojotools_notification_router`.
-
-Tasks are a reminder system. An overdue task is a reminder, not a crisis. The AI won't escalate language to match urgency numbers — see the tone directives in the system prompt.
+Scoring is rule-based, not LLM-guessed. Can be disabled via household cabinet key `taskmaster_scoring_enabled` (default `true`) — when off, items return unscored.
 
 ### MED HARD CAPS
 
-> **HARD CAP — no override path.** Medication-related tasks are **CLINICAL** items. Clinical urgency is capped at **3** (informational). Not 4. Not 5. Not higher. The medication escalation path in prior versions has been removed.
->
-> Medications are part of a managed care routine, not emergencies taskmaster can assess. A missed dose is not the same as a calendar event starting in 30 minutes. Urgency 3 is the ceiling; the kata communicates the task without creating false emergency framing.
->
-> This cap applies to any task tagged with `medication`, `med`, `clinical`, or `pharmacy`, or where the conductor maps to a `clinical` domain list. If you are integrating a med management system, do not route it to urgency > 3 via taskmaster — use an independent alert component with appropriate clinical context if escalation is genuinely needed.
+> **HARD CAP — no override path.** Medications are not life-safety events. A missed dose is a reminder, not an emergency. **Medications never rank above urgency 3, for any reason.** This is enforced structurally in the tool, restated in the KFC's own prompt as defense-in-depth, and restated here as the source of truth. Medication classification (SUPPLEMENT/STANDARD/CLINICAL/BIOLOGIC) can be overridden per-title via household cabinet key `medication_classifications`.
 
----
+### Chore Scoring
 
-## Wiring Your Own Triggers
+Active anomaly with no due date (e.g. equipment alerts) → urgency 3. Overdue 1–3 days → 2. Overdue 4–7 days → 3. Due today → 1–2 (inform, don't alarm). Due in future → 0–1, don't surface unless asked. Stale (>30 days) → ambient only, max urgency 1, surface count only.
 
-Taskmaster's most useful wake/sleep behavior requires hardware — a bed sensor or occupancy sensor. Create a dedicated trigger file in your installer's custom packages directory:
+### PRN / Optional Tasks
 
-```yaml
-# packages/your_family/kfc_trigger_taskmaster.yaml
-# ⚠️ PERSONAL FILE — DO NOT COMMIT TO REPO
-
-automation:
-  - id: 'YOUR_UNIQUE_ID'
-    alias: KFC Trigger — Taskmaster
-    description: >-
-      Fires taskmaster on wake and sleep transitions.
-    triggers:
-      - trigger: state
-        entity_id:
-          - binary_sensor.your_bed_sensor       # REPLACE — occupant 1
-        to: 'off'                               # got out of bed
-        not_from: [unknown, unavailable]
-        for:
-          seconds: 30
-        id: default_user_bed_changes
-
-      - trigger: state
-        entity_id:
-          - binary_sensor.your_bed_sensor       # REPLACE — occupant 1
-        to: 'on'                               # in bed
-        not_from: [unknown, unavailable]
-        for:
-          seconds: 60
-        id: default_user_bed_changes
-
-    actions:
-      - event: zen_event
-        event_data:
-          event:
-            kind: summary_force
-            component: taskmaster
-
-    mode: queued
-    max: 3
-```
-
-If you don't have a bed sensor, taskmaster still runs on `home_occupancy_change` and `quarter_hour`. You lose the morning/evening cycle timing but keep the core behavior.
+Tasks flagged "if needed"/"as needed"/PRN/optional never count toward `action_required` or urgency escalation — urgency contribution is 0, regardless of how overdue they are.
 
 ---
 
 ## Adding Task Lists
 
-Any todo entity tagged with `taskmaster` + a domain label (`daily`, `weekly`, `tasks`) is automatically included. To add a new list:
-
-1. In HA's entity registry, tag the todo entity with `taskmaster` and the appropriate domain label
-2. On the next summarizer run, it's included
-
-No drawer edit. No code. The label graph handles it.
+Any todo entity tagged with `taskmaster` + a domain label (`daily`, `weekly`, `tasks`) is picked up by the underlying backend readers — no drawer edit, no code change required. Tag the entity in HA's entity registry and it's included on the next `task_list`/`briefing` call.
 
 ---
 
-*ZenOS-AI KF4 1.5.0 — 2026-04-14*
-*Source: Nyx (live system observation), Cayt (dev)*
+## Related
+
+- [Kitchen / Mealie](../plugins/mealie.md) — `prep_brief` feeds Taskmaster's `context.prep_schedule`.
+- [KF5 Self-Registration Pattern](../scripts/zen_kf5_pattern_readme.md) — how Taskmaster registers itself without a manual Scribe authoring step.
+
+---
+
+*ZenOS-AI dojotools 0.3.0 — 2026.8.0 'Chef'*

@@ -1,4 +1,4 @@
-# Zen DojoTools Identity — 5.1.0
+# Zen DojoTools Identity — 5.4.0
 
 *Identity resolution, presence, and household/family group management for ZenOS-AI*
 
@@ -82,6 +82,7 @@ flowchart TD
 | `membership` | Tree view for containers; reverse lookup for members | No |
 | `is_member` | Depth-2 boolean check — is entity A a member of container B? | No |
 | `provision_member` | Full orchestration — provision expansion slot, wire into family, rebuild manifest | Yes |
+| `resolve_caller_identity` | Platform-wide SP1 identity/cert-check chokepoint — delegates to `zen_root_authentik`, enforces the OS sim_mode policy, optionally runs a cert check on the caller's behalf | No |
 
 `resolve` is the default mode — existing callers are unaffected.
 
@@ -103,6 +104,8 @@ flowchart TD
 | `family_entity` | entity (sensor) | Family cabinet target (family ops, set_principal override) |
 | `ai_entity` | entity (sensor) | Entity B for link_partners / unlink_partners |
 | `household_entity` | entity (sensor) | Explicit household cabinet — overrides default resolver |
+| `required_cert` | text | `resolve_caller_identity` only. Cert name to check on the caller's behalf (e.g. `infra_container_control`). When set, the mode runs the `cert_list` lookup itself against the resolved identity and returns `authorized: true/false` — the caller never touches `persona_editor` directly |
+| `required_cert_level` | number | `resolve_caller_identity` only. Minimum cert level needed when `required_cert` is set. Default `1` |
 
 **Resolution priority** (resolve/prompt modes):
 ```
@@ -467,6 +470,53 @@ zen_dojotools_identity:
 **Before v5.0:** Adding a person with no HA account required finding a stacks slot manually, calling the provisioner, writing profile data via the profile editor (which was silently failing its own write gate), calling `family_add_member`, and rebuilding the manifest. After a restart, the person would be an orphan in the manifest.
 
 **OOBE:** `flynn_oobe.yaml` step `3_people` now routes external family members (no HA person entity) through `provision_member` automatically.
+
+---
+
+### `resolve_caller_identity` — SP1 Identity/Cert Chokepoint (v5.4.0)
+
+The platform-wide call-site for identity resolution under SP1. Delegates to `zen_root_authentik` (currently a stub — no real Authentik/OIDC yet) and enforces the OS-level sim_mode policy in one place, so individual tools don't each implement their own gate.
+
+```yaml
+zen_dojotools_identity:
+  mode: resolve_caller_identity
+  # required_cert: infra_container_control   # optional
+  # required_cert_level: 2                   # optional, default 1
+```
+
+**Sim_mode policy gate:** Reads `integrations_config.identity.sim_mode_allowed` from the default household cabinet (stamped by `zen_admintools_prompt_loader` on every factory run — default `false`, fail-closed).
+
+| `zen_root_authentik` result | `sim_mode_allowed` | Outcome |
+|---|---|---|
+| `sim_mode: true` (simulated) | `false` (default) | **Blocked** — `resolved_identity` withheld |
+| `sim_mode: true` (simulated) | `true` | Allowed |
+| `sim_mode: false` (real) | — (irrelevant) | Always allowed |
+
+**Optional cert check:** If `required_cert` is set (and the identity resolution was not blocked), this mode calls `zen_dojotools_persona_editor mode=cert_list` against the resolved identity itself and folds the result into the response as `authorized`. Consumers must call this mode for cert checks instead of calling `persona_editor` directly — checking your own cert against your own resolved identity defeats the point of a single chokepoint.
+
+**Response shape:**
+
+```json
+{
+  "mode": "resolve_caller_identity",
+  "policy_status": "allowed",
+  "sim_mode": true,
+  "sim_mode_allowed": false,
+  "override_attempted": false,
+  "token_shape": "none",
+  "resolved_identity": { "...": "withheld when policy_status is blocked" },
+  "block_reason": "",
+  "cert_checked": false,
+  "cert_name": "",
+  "cert_level": 0,
+  "cert_required_level": 1,
+  "authorized": true,
+  "caller_token_received": "",
+  "timestamp": "..."
+}
+```
+
+`block_reason` is populated only when `policy_status: blocked` (`"sim_mode result rejected: OS policy integrations_config.identity.sim_mode_allowed is false"`). `authorized` is `true` only when the identity was not blocked **and** any requested cert check passed — consumers should gate on `authorized`, not `policy_status` alone, when a cert was requested.
 
 ---
 

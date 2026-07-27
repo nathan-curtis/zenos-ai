@@ -222,9 +222,12 @@ Signs a three-layer AI persona essence by calculating MD5 hashes over the canoni
 ```yaml
 mode: sign
 target_type: ai_user
+# signed_by: person.resident_primary   # optional — see below
 ```
 
 `sign` is deliberately limited to `target_type: ai_user`. It fires a profile editor audit event with `kind: essence_signed` or `kind: essence_resigned`.
+
+**`signed_by`** (optional, `mode: sign` only) — a real `person.*` entity attributing who authorized this signature (e.g. `person.resident_primary`). Validated against the live person entity registry; the sign is rejected with an error if it's set but doesn't resolve to a real, currently-known `person.*` entity. If omitted, the jacket's existing `signed_by`/`signed_at` are carried through unchanged rather than being explicitly re-attributed.
 
 ### `restore`
 

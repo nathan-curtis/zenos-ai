@@ -286,7 +286,7 @@ kind: summary_force
 summary: Forcing immediate summary of hot_tub_manager
 ```
 
-Fires a `zen_event` on the EventBus and writes a structured entry to the system log.
+Fires a `zen_event` on the EventBus and writes a structured entry to the system log via `system_log.write`. `severity: warn` is mapped to `level: warning` for the log write (core's `system_log.write` only accepts `warning`, not `warn`) — all other severities pass through unchanged.
 
 **Common `kind` values:**
 

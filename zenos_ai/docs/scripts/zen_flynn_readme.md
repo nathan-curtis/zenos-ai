@@ -369,6 +369,14 @@ Defined in `flynn.yaml`. Auto-creates on HA reload. Toggle this on to force Flyn
 
 Default state: `off`. Safe to leave off indefinitely.
 
+### input_boolean.zenos_sim_mode_override
+
+Defined in `flynn.yaml`. **Default state: `on`.** Controls the OS-level SP1 identity policy switch — `integrations_config.identity.sim_mode_allowed` (read by `zen_dojotools_identity` `resolve_caller_identity`, the platform-wide identity/cert chokepoint).
+
+The automation **"Flynn: SP1 sim_mode Override — stamp every boot"** (`flynn_sim_mode_override_stamp`) writes `sim_mode_allowed` in the household cabinet to match this toggle on every HA startup and immediately on any manual flip of the toggle. This is an idempotent, reversible override: while real Authentik/OIDC (SP1) isn't live yet, leaving the toggle `on` keeps simulated identity resolution allowed platform-wide so tools that gate on `resolve_caller_identity`'s `policy_status` aren't silently blocked.
+
+Flip the toggle `off` (or remove/disable the automation) to fall back to the fail-closed default (`sim_mode_allowed: false`) once real identity resolution is live.
+
 ### prompt_system_flynn()
 
 Hardcoded system prompt — no Jinja cabinet reads. Works on a bare install, works when cabinets are corrupt, works when the identity resolver fails. Flynn will always answer.
@@ -404,6 +412,7 @@ All four Flynn persistent notification messages are written in Flynn's voice and
 | `script.zen_dojotools_filecabinet` | All cabinet reads and writes |
 | `binary_sensor.flynn_system_ready` | Early exit gate |
 | `input_boolean.zen_flynn_override` | Forces Flynn mode regardless of persona |
+| `input_boolean.zenos_sim_mode_override` | Drives the SP1 sim_mode boot-stamp automation — controls `integrations_config.identity.sim_mode_allowed` |
 | `zen_os_1.jinja` → `render_prompt()` | Calls `prompt_system_flynn()` when Flynn conditions met |
 | `flynn_onboarding.jinja` → `active_notification()` | Surfaces active Flynn notifications in prompt |
 | `input_text.zenos_conversation_agent` | Bootstrap validation |
