@@ -18,7 +18,7 @@ The GC is the custodian of cabinet hygiene. It runs daily at midnight (triggered
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `action_type` | select | `gc` | `gc`, `recycle`, `hide`, `unhide` |
+| `mode` | select | `gc` | `gc`, `recycle`, `hide`, `unhide`. Deprecated alias: `action_type`. |
 | `key` | text | — | Drawer key (required for recycle, hide, unhide) |
 | `dry_run` | boolean | `false` | Report what would change without making changes (gc only) |
 | `max_age_hours` | number | `24` | Legacy eviction threshold in hours (1–168) |
@@ -69,13 +69,13 @@ The following are always skipped regardless of expiry state:
 Full cabinet scan. Processes all drawers in all AI Data Storage cabinets (resolved dynamically — no hardcoded list).
 
 ```yaml
-action_type: gc
+mode: gc
 ```
 
 Run with `dry_run: true` first to see what would be evicted before committing:
 
 ```yaml
-action_type: gc
+mode: gc
 dry_run: true
 ```
 
@@ -101,7 +101,7 @@ After a real run with kata-cabinet evictions, GC emits a `summary_force` event s
 Hides a specific drawer and sets its expiry to now + 24 hours. The drawer will be hard-deleted by the next GC run after expiry.
 
 ```yaml
-action_type: recycle
+mode: recycle
 key: hot_tub_kata_2026_03_10
 ```
 
@@ -114,7 +114,7 @@ Use recycle when you want to retire a drawer gracefully — it stays accessible 
 Moves a drawer to hidden state without changing its expiry.
 
 ```yaml
-action_type: hide
+mode: hide
 key: some_drawer
 ```
 
@@ -127,7 +127,7 @@ Useful for archiving a drawer you might want to retrieve later. Unlike recycle, 
 Restores a hidden drawer to active visibility.
 
 ```yaml
-action_type: unhide
+mode: unhide
 key: some_drawer
 ```
 
@@ -140,7 +140,7 @@ Pass the base name (without the leading dot). The GC finds `.some_drawer`, copie
 The GC runs automatically at `daily_midnight` via the Scheduler. No manual trigger needed for routine operation.
 
 The daily run uses default settings:
-- `action_type: gc`
+- `mode: gc`
 - `post_supersummary: true`
 - `max_age_hours: 24`
 

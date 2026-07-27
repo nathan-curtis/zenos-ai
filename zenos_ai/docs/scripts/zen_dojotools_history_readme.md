@@ -18,7 +18,7 @@ The script will not create, update, or delete history. That's intentional and pe
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `action_type` | select | `help` | `read` or `help` |
+| `mode` | select | `help` | `read` or `help`. Deprecated alias: `action_type`. |
 | `statistic_ids` | entity (multi) | — | Sensors to query — must have `state_class` and `unit_of_measurement` |
 | `start_time` | datetime | — | Query window start (ISO 8601 UTC) |
 | `end_time` | datetime | — | Query window end (ISO 8601 UTC) |
@@ -38,7 +38,7 @@ Queries the Recorder database. Returns the statistics object directly from `reco
 **Required:** `statistic_ids` and `types` must both be non-empty.
 
 ```yaml
-action_type: read
+mode: read
 statistic_ids:
   - sensor.energy_meter_main
 period: day
