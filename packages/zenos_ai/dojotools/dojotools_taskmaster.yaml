@@ -1,0 +1,1508 @@
+###############################################################################
+# ZenOS-AI DojoTools: Taskmaster
+# Version: 0.3.0 — briefing's context block now also carries prep_schedule
+# (Kitchen's prep_brief for today — scheduled [PREP:N] dishes + start_by,
+# unscheduled_count), so it's surfaced on briefing's existing scheduled
+# firing (quarter_hour + occupancy triggers), not just on-demand via almanac.
+# delay_seconds bumped 30->180 so briefing doesn't crowd the raw quarter-hour
+# tick alongside every other component's firing.
+#
+# v0.2.0 — added mode=almanac (Radar #10270): weather + meal plan +
+# appointments in one daily context surface.
+#
+# MCP-facing:
+#   zen_dojotools_taskmaster  ← expose this to MCP
+#
+# PURPOSE:
+#   Progressive-enhancement task orchestration layer. Every household gets
+#   basic task tracking on O365 To Do alone (zen_dojotools_todo). When Radar
+#   (Zammad service desk, zen_dojotools_servicedesk) is configured, task
+#   creation auto-upgrades to a real tracked ticket with lifecycle/triage.
+#   When Inventory (Grocy, zen_dojotools_inventory) is configured, chore-
+#   shaped recurring tasks auto-upgrade to Grocy chores/tasks tied to
+#   product/location/stock.
+#
+#   Taskmaster does NOT merge the three systems' data models — each keeps
+#   its native shape. It only picks the best available backend at create
+#   time, and fans out reads across whichever backends are configured.
+#
+#   Self-registers with the Lens Bus (lens_registry drawer in the household
+#   FileCabinet) the same way zen_dojotools_inventory already does, so
+#   task_evidence surfaces anywhere Lens Bus queries already run.
+###############################################################################
+
+script:
+  zen_dojotools_taskmaster:
+    mode: parallel
+    max: 10
+    sequence:
+    - if: "{{ (mode | default('') | lower) == 'tool_manifest' }}"
+      then:
+      - variables:
+          result: >-
+            {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+            {{ MF.tool_manifest(
+                tool='zen_dojotools_taskmaster',
+                display_name='Taskmaster',
+                tier='dojotools',
+                version='0.2.0',
+                health={'configured': true, 'status': 'ok', 'notes': []},
+                required_labels=['dojotools', 'zen_kfc_provider'],
+                optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
+                consumes=['area_id', 'label', 'person', 'company'],
+                returns=['task_evidence'],
+                icon='mdi:checkbox-marked-circle-outline',
+                color='purple',
+                stripe=3,
+                impact='soft',
+                mcp_exposed=true,
+
+                caller_token=caller_token | default('')
+            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'taskmaster', 'lens_provider': true, 'lens_anchors': ['area_id', 'label', 'person', 'company'], 'lens_returns': ['task_evidence']}) }}
+      - stop: tool_manifest
+        response_variable: result
+
+    # ── KF5 self-registration: kfc_manifest ────────────────────────────────────
+    - if: "{{ (mode | default('') | lower) == 'kfc_manifest' }}"
+      then:
+      - variables:
+          _kfc_defs:
+            - kata_key: taskmaster
+              friendly_name: Taskmaster
+              label: taskmaster
+              component_summary: >-
+                Household tasks, chores, tickets, and medications — urgency-scored
+                briefing across Radar, Inventory, CRM, and To Do.
+              component_instructions: >-
+                You are reading the household task briefing for this household.
+
+                SEED OUTPUT (zen_dojotools_taskmaster, mode=briefing — when whitelisted):
+                  conductor_items first — Friday's own schedule-driven task list
+                  (label: schedule). These are the active time-window blocks driving
+                  what matters right now. Read and act on these before anything else.
+                  items — everything else, already urgency-scored (0-3 normal scale,
+                  postman-eligible only at 4+) with category and action_required set.
+                  top_line — overdue/due-today/stale counts. suggested_act_event —
+                  'zen_dojotools_postman' when warranted, else null. Trust these
+                  fields; do not re-derive urgency yourself.
+
+                HARD RULE — MEDICATIONS ARE NOT LIFE SAFETY EVENTS:
+                  A missed dose is a reminder, not an emergency. NEVER describe a
+                  medication as CRITICAL or above urgency 3, regardless of what any
+                  other signal suggests. The tool enforces this structurally — this
+                  is restated here as defense-in-depth, not the primary control.
+
+                INDEX-ONLY PATH (label:taskmaster entity surface — automatic fallback):
+                  If the seed is unavailable, read todo entities carrying the
+                  taskmaster label directly and note that scoring was not applied —
+                  do not attempt to replicate the urgency rules from memory.
+
+                REPORTING:
+                  Lead with conductor_items if present. Then top_line counts. Then
+                  the highest-urgency items, capped to a handful — do not dump the
+                  full list. Note when taskmaster_scoring_enabled is off (items
+                  arrive unscored) and present them as a plain list instead.
+
+                READING THE ROOM (context block):
+                  Use context.home_mode as the real period signal — do not invent
+                  your own "morning/evening/night" label, this is ground truth
+                  (Ninja stamps it from input_select.zen_home_mode; never override it).
+                  context.quiet_hours_active or context.home_mode in ('Night','Night-Late')
+                  means soften tone and hold non-urgent items rather than pushing them.
+                  context.guest_present: mention briefly if relevant to a task (e.g. a
+                  chore visible to guests), otherwise don't dwell on it.
+                  context.prep_schedule.scheduled: if any entry's start_by is within the
+                  next hour or already past, lead with it — this is a real "start cooking
+                  now" signal, not background noise. context.prep_schedule.unscheduled_count
+                  > 0 is informational only (a dish with no [PREP:N] tag set), never urgent.
+                  context.weather.outdoor_ok == false: don't suggest outdoor chores/tasks
+                  right now — note them as weather-blocked, informational only.
+                  context.is_away / context.quiet_hours_active / context.work_hours_active
+                  are informational only — never use them to inflate urgency, same rule
+                  as the MASTER SWITCH RULE elsewhere in this system (a state being off/on
+                  is not itself a deviation requiring escalation).
+              tool: zen_dojotools_taskmaster
+              seed:
+                tool: zen_dojotools_taskmaster
+                params:
+                  mode: briefing
+              trigger_subscriptions: "home_occupancy_change,default_user_bed_changes,secondary_user_bed_changes,force_summary,quarter_hour"
+              drift_threshold: 5
+              emission_cooldown_minutes: 60
+              delay_seconds: 180
+              meta:
+                enabled: true
+                requires:
+                  cert: ''
+                  level: 0
+      - variables:
+          _component: "{{ component | default('') | lower | trim }}"
+      - variables:
+          result: >-
+            {%- if _component == '' -%}
+              {{ {'mode': 'kfc_manifest', 'result': 'ok', 'status': 'ok', 'caller_token': caller_token | default(''), 'kfc': _kfc_defs} }}
+            {%- else -%}
+              {%- set match = _kfc_defs | selectattr('kata_key', 'equalto', _component) | list | first | default(none) -%}
+              {%- if match is not none -%}
+                {{ {'mode': 'kfc_manifest', 'result': 'ok', 'status': 'ok', 'caller_token': caller_token | default(''), 'kfc': match} }}
+              {%- else -%}
+                {{ {'mode': 'kfc_manifest', 'result': 'not_found', 'status': 'not_found', 'caller_token': caller_token | default(''),
+                    'error': 'component not found: ' ~ _component,
+                    'available': _kfc_defs | map(attribute='kata_key') | list} }}
+              {%- endif -%}
+            {%- endif -%}
+      - stop: taskmaster kfc manifest
+        response_variable: result
+
+    # ── Lens bus: register ────────────────────────────────────────────────────
+    - if: "{{ (mode | default('') | lower) == 'register' }}"
+      then:
+      - variables:
+          _tm_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+      - action: script.zen_dojotools_filecabinet
+        response_variable: _tm_reg_raw
+        continue_on_error: true
+        data:
+          action_type: get
+          volume_entity_id: "{{ _tm_hh }}"
+          key: lens_registry
+      - variables:
+          _tm_registry: >-
+            {%- set raw = _tm_reg_raw if _tm_reg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          _tm_provider:
+            consumes: [area_id, label, person, company]
+            returns: [task_evidence]
+            script: script.zen_dojotools_taskmaster
+            anchor_mode: by_anchor
+            department: taskmaster
+      - variables:
+          _tm_merged: "{{ _tm_registry | combine({'taskmaster': _tm_provider}) }}"
+      - action: script.zen_dojotools_filecabinet
+        response_variable: _tm_reg_write
+        continue_on_error: true
+        data:
+          action_type: update
+          volume_entity_id: "{{ _tm_hh }}"
+          key: lens_registry
+          value: "{{ _tm_merged | tojson }}"
+      - variables:
+          result:
+            status: "{{ 'success' if _tm_reg_write is mapping and _tm_reg_write.get('status', '') == 'success' else 'error' }}"
+            mode: register
+            provider: taskmaster
+            registry_entry: "{{ _tm_provider }}"
+      - stop: taskmaster register complete
+        response_variable: result
+
+    # ── Lens bus: unregister ──────────────────────────────────────────────────
+    - if: "{{ (mode | default('') | lower) == 'unregister' }}"
+      then:
+      - variables:
+          _tm_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+      - action: script.zen_dojotools_filecabinet
+        response_variable: _tm_unreg_raw
+        continue_on_error: true
+        data:
+          action_type: get
+          volume_entity_id: "{{ _tm_hh }}"
+          key: lens_registry
+      - variables:
+          _tm_ureg: >-
+            {%- set raw = _tm_unreg_raw if _tm_unreg_raw is mapping else {} -%}
+            {%- set val = raw.get('value', {}) -%}
+            {%- set parsed = val | from_json if val is string else val -%}
+            {{ parsed if parsed is mapping else {} }}
+          _tm_removed: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for k, v in (_tm_ureg if _tm_ureg is mapping else {}).items() -%}
+              {%- if k != 'taskmaster' -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.d }}
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        data:
+          action_type: update
+          volume_entity_id: "{{ _tm_hh }}"
+          key: lens_registry
+          value: "{{ _tm_removed | tojson }}"
+      - variables:
+          result:
+            status: success
+            mode: unregister
+            provider: taskmaster
+      - stop: taskmaster unregister complete
+        response_variable: result
+
+    # --------------------------------------------------------------
+    # Always normalize inputs
+    # --------------------------------------------------------------
+    - variables:
+        caller_token: "{{- caller_token | default('') -}}"
+        mode_norm: "{{ (mode | default('help')) | lower | trim }}"
+        _item: "{{ item | default('') | trim }}"
+        _note: "{{ note | default('') | trim }}"
+        _area: "{{ area | default('') | trim }}"
+        _contact_id: "{{ contact_id | default('') | trim }}"
+        _company_id: "{{ company_id | default('') | trim }}"
+        _priority: "{{ priority | default(2) | int(2) }}"
+        _chore: "{{ chore | default(false) | bool(false) }}"
+        _period_days: "{{ period_days | default(7) | int(7) }}"
+        _task_id: "{{ task_id | default('') | trim }}"
+        _backend: "{{ backend | default('') | lower | trim }}"
+        _list_name_raw: "{{ list_name | default('') | trim }}"
+        _list_name: "{{ list_name | default('Automation ToDo List') | trim }}"
+        _limit: "{{ limit | default(25) | int(25) }}"
+
+    - variables:
+        cases_help:
+          help:
+            intent: Return all available cases and their input fields.
+          tool_manifest:
+            intent: Lens Bus provider manifest — self-description for Lens Bus + capability discovery.
+          kfc_manifest:
+            intent: KF5 self-registration — Dojo KFC component definition(s), consumed by zen_dojotools_manifest mode=bootstrap_kfc.
+            optional: [component (kata_key to fetch a single component; omit for all)]
+          briefing:
+            intent: Urgency-scored household briefing — conductor items (Friday's schedule-driven list) surfaced first, then everything else from task_list scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Deterministic scoring can be disabled via household cabinet key taskmaster_scoring_enabled (default true) — when off, items are returned unscored. Medication-classification overrides read from household cabinet key medication_classifications (title -> SUPPLEMENT/STANDARD/CLINICAL/BIOLOGIC). Also returns a context block — real (not LLM-guessed) situational signals, namely home_mode/is_away (input_select.zen_home_mode), is_weekday, quiet_hours_active/work_hours_active (binary_sensor.zen_quiet_hours/zen_work_hours), guest_present/guest_note (manual flags + Rolodex stays_list for today), upcoming_appointments (Rolodex appointments_list), prep_schedule (zen_dojotools_kitchen prep_brief for today — scheduled [PREP:N]-tagged dishes sorted by start_by, plus unscheduled_count), and weather.outdoor_ok (label zen_weather -> weather.* entity, false when condition is rain/snow/storm). This is the seed called live by the self-registered taskmaster KFC on every trigger firing.
+            needs: []
+          tier_status:
+            intent: Report which upgrade tiers are currently active (crm, radar, inventory) by checking each subsystem's tool_manifest health.configured flag.
+          task_create:
+            intent: Create a task, auto-selecting the backend by shape first, then by which tiers are configured. Shape priority — contact/company-linked (Rolodex/Twenty) > chore-shaped (Grocy chore) > general tracking (Radar ticket) > location-tied (Grocy task) > base (To Do).
+            needs: [item]
+            optional: [note, contact_id (Twenty contact UUID — if set and CRM is configured, always wins: creates a task_link on that contact regardless of other tiers), company_id (Twenty company UUID — same as contact_id, for a company instead of a person), area (HA area_id — tagged on the created backend object when possible), priority (1 low/2 normal/3 high — Radar only), chore (true if this is a recurring chore-shaped task — routes to Grocy chore instead of Grocy task when Inventory is the active tier and no contact/company was given), period_days (recurrence in days when chore=true, default 7), list_name (To Do list name when falling back to base tier, default 'Automation ToDo List')]
+          task_list:
+            intent: Cross-system read. Call with no arguments at all for the landing overview — all open Radar tickets, all house-wide due chores from Inventory, all active CRM-linked tasks, and the base To Do list, merged with per-source counts. Pass area/contact_id/company_id to scope instead — area narrows to Radar tickets tagged that area + Grocy chores in that room specifically (via chores_by_area), contact_id/company_id narrows to that person/company's linked CRM tasks.
+            optional: [area (HA area_id — scopes to Radar tickets tagged that area + Grocy chores in that room), contact_id (scope to a Twenty contact's linked tasks), company_id (scope to a Twenty company's linked tasks), list_name (To Do list to include, default 'Automation ToDo List'), limit]
+          task_complete:
+            intent: Mark a task done on whichever backend owns it.
+            needs: [task_id, backend (radar/inventory/todo/crm)]
+            optional: [item (required for backend=todo or backend=crm, since To Do items are addressed by name not id — crm tasks are To Do items under the hood), list_name (required for backend=crm — the crm_tasks-labeled list)]
+          setup:
+            intent: Self-provisioning audit + fix — checks whether zen_kfc_provider label is applied (bootstrap_kfc discovery) and whether zen_dojotools_taskmaster is on the summarizer seed whitelist (live briefing seed vs index-fallback). Both checked live, both fixed automatically unless dry_run=true. Same shape as zen_dojotools_autovac mode=setup.
+            optional: [dry_run (report only, no writes, default false)]
+          almanac:
+            intent: "Single daily context surface: today's weather (outdoor_ok), meal plan (zen_dojotools_kitchen mealplan_today), and upcoming appointments (Rolodex), plus a flag for any appointment landing inside a household-typical meal window — breakfast/dinner windows derive from scheduler_anchors (morning start / evening start +1h, ±1h and +1h window respectively), lunch derives from the standalone zen_lunch_time helper (+1h window, falls back to noon if unset) — informational only, never blocking. Answers 'what does today look like'."
+            needs: []
+          stale_review:
+            intent: "What's been sitting too long — briefing's own scoring, filtered to urgency >= 2 and sorted highest-first, with the due-today/normal noise stripped out. Radar tickets triaged rank=backlog (radar_rank_backlog tag via zen_dojotools_servicedesk triage_set) are suppressed regardless of priority_id, since triage rank is a more deliberate signal than raw priority. No new scoring logic otherwise, just a lens on data briefing already computes."
+            needs: []
+          facilities_brief:
+            intent: "Building-super / housekeeping-lead view — the report they'd hand the GM. Reads live kata entries directly for physical-plant components (energy_manager, water_manager, hot_tub_manager, garage_freezer_thermal_model, dishwasher_manager, laundry_manager), surfacing only urgency>=2 (a clean building produces an empty mechanical list). Plus open Radar ticket count and the house-wide housekeeping chore backlog (chores_due). overall_status is red/yellow/green; gm_summary is one deterministic sentence, not LLM-generated."
+            needs: []
+
+    - choose:
+
+      # ── help ──────────────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'help' }}"
+        sequence:
+        - variables:
+            _hl_label_ok: "{{ 'script.zen_dojotools_taskmaster' in label_entities('zen_kfc_provider') }}"
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _hl_wl_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            volume_entity_id: sensor.zenos_system_cabinet
+            path: zen_summarizer_seed_whitelist
+        - variables:
+            _hl_wl_tools: >-
+              {%- set _v = _hl_wl_raw.get('value', {}) if _hl_wl_raw is mapping and _hl_wl_raw.get('status') == 'success' else {} -%}
+              {{ _v.get('allowed_tools', []) if _v is mapping else [] }}
+            _hl_wl_ok: "{{ 'zen_dojotools_taskmaster' in _hl_wl_tools }}"
+            _hl_setup_done: "{{ _hl_label_ok and _hl_wl_ok }}"
+        - variables:
+            final_response:
+              status: info
+              tool: Zen DojoTools Taskmaster
+              version: "0.2.0"
+              setup_status: "{{ 'complete' if _hl_setup_done else 'incomplete — run mode=setup' }}"
+              notice: >-
+                {{
+                  none if _hl_setup_done else
+                  'Hey — run mode=setup first. zen_kfc_provider label: ' ~ ('ok' if _hl_label_ok else 'MISSING') ~
+                  ', seed whitelist: ' ~ ('ok' if _hl_wl_ok else 'MISSING') ~
+                  '. Until then, briefing runs fine on-demand but the live KFC seed and bootstrap discovery are not wired up.'
+                }}
+              cases: "{{ cases_help }}"
+              caller_token: "{{ caller_token }}"
+        - stop: help
+          response_variable: final_response
+
+      # ── setup ─────────────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'setup' }}"
+        sequence:
+        - variables:
+            _su_dry_run: "{{ dry_run | default(false) | bool(false) }}"
+            _su_label_ok: "{{ 'script.zen_dojotools_taskmaster' in label_entities('zen_kfc_provider') }}"
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _su_wl_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            volume_entity_id: sensor.zenos_system_cabinet
+            path: zen_summarizer_seed_whitelist
+        - variables:
+            _su_wl_tools: >-
+              {%- set _v = _su_wl_raw.get('value', {}) if _su_wl_raw is mapping and _su_wl_raw.get('status') == 'success' else {} -%}
+              {{ _v.get('allowed_tools', []) if _v is mapping else [] }}
+            _su_wl_ok: "{{ 'zen_dojotools_taskmaster' in _su_wl_tools }}"
+        - if: "{{ not _su_label_ok and not _su_dry_run }}"
+          then:
+          - action: script.zen_dojotools_labels
+            response_variable: _su_label_result
+            continue_on_error: true
+            data:
+              mode: tag
+              label_list: ["zen_kfc_provider"]
+              target_entities: ["script.zen_dojotools_taskmaster"]
+              confirm: true
+        - if: "{{ not _su_wl_ok and not _su_dry_run }}"
+          then:
+          - action: script.zen_admintools_prompt_loader
+            response_variable: _su_wl_result
+            continue_on_error: true
+            data:
+              mode: whitelist
+              whitelist_type: seed
+              action_type: add
+              item: zen_dojotools_taskmaster
+        - variables:
+            final_response:
+              status: success
+              mode: setup
+              dry_run: "{{ _su_dry_run }}"
+              zen_kfc_provider_label:
+                was_present: "{{ _su_label_ok }}"
+                fixed_this_run: "{{ not _su_label_ok and not _su_dry_run }}"
+              seed_whitelist:
+                was_present: "{{ _su_wl_ok }}"
+                fixed_this_run: "{{ not _su_wl_ok and not _su_dry_run }}"
+              would_do: >-
+                {{
+                  (['tag zen_kfc_provider label'] if (not _su_label_ok and _su_dry_run) else []) +
+                  (['add to seed whitelist'] if (not _su_wl_ok and _su_dry_run) else [])
+                }}
+              tip: >-
+                {{
+                  'Both provisioned — bootstrap_kfc will discover this tool and briefing seed calls run live.'
+                  if (_su_label_ok or not _su_dry_run) and (_su_wl_ok or not _su_dry_run)
+                  else 'Run mode=setup again (without dry_run) to apply fixes.'
+                }}
+              caller_token: "{{ caller_token }}"
+        - stop: setup
+          response_variable: final_response
+
+      # ── tier_status ───────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'tier_status' }}"
+        sequence:
+        - action: script.zen_dojotools_servicedesk
+          response_variable: _tm_radar_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - action: script.zen_dojotools_inventory
+          response_variable: _tm_inv_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - action: script.zen_dojotools_rolodex
+          response_variable: _tm_crm_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - variables:
+            _tm_radar_ok: "{{ _tm_radar_mf is mapping and _tm_radar_mf.get('health', {}).get('configured', false) }}"
+            _tm_inv_ok: "{{ _tm_inv_mf is mapping and _tm_inv_mf.get('health', {}).get('configured', false) }}"
+            _tm_crm_ok: "{{ _tm_crm_mf is mapping and _tm_crm_mf.get('health', {}).get('configured', false) }}"
+            final_response:
+              status: success
+              radar: "{{ _tm_radar_ok }}"
+              inventory: "{{ _tm_inv_ok }}"
+              crm: "{{ _tm_crm_ok }}"
+              caller_token: "{{ caller_token }}"
+        - stop: tier_status
+          response_variable: final_response
+
+      # ── task_create ───────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'task_create' }}"
+        sequence:
+        - if: "{{ _item == '' }}"
+          then:
+          - variables:
+              final_response:
+                status: error
+                mode: task_create
+                message: "item is required"
+                caller_token: "{{ caller_token }}"
+          - stop: task_create missing item
+            response_variable: final_response
+        - action: script.zen_dojotools_servicedesk
+          response_variable: _tm_radar_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - action: script.zen_dojotools_inventory
+          response_variable: _tm_inv_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - action: script.zen_dojotools_rolodex
+          response_variable: _tm_crm_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - variables:
+            _tm_radar_ok: "{{ _tm_radar_mf is mapping and _tm_radar_mf.get('health', {}).get('configured', false) }}"
+            _tm_inv_ok: "{{ _tm_inv_mf is mapping and _tm_inv_mf.get('health', {}).get('configured', false) }}"
+            _tm_crm_ok: "{{ _tm_crm_mf is mapping and _tm_crm_mf.get('health', {}).get('configured', false) }}"
+        - choose:
+          # Shape wins over tier, most specific signal first: an explicit
+          # contact/company UUID means the caller has already decided this
+          # task is about a person or vendor — that beats every other tier,
+          # including a chore-shaped task, because it's the most deliberate
+          # anchor a caller can provide.
+          - conditions:
+            - condition: template
+              value_template: "{{ _tm_crm_ok and (_contact_id != '' or _company_id != '') }}"
+            sequence:
+            - variables:
+                _tm_crm_item_id: "{{ _contact_id if _contact_id != '' else _company_id }}"
+            - action: script.zen_dojotools_rolodex
+              response_variable: _tm_crm_task
+              continue_on_error: true
+              data:
+                mode: task_link
+                summary: "{{ _item }}"
+                item_id: "{{ _tm_crm_item_id }}"
+            - variables:
+                _tm_crm_ok_write: "{{ _tm_crm_task is mapping and _tm_crm_task.get('status', '') == 'success' }}"
+                final_response:
+                  status: "{{ 'success' if _tm_crm_ok_write else 'error' }}"
+                  mode: task_create
+                  backend: crm
+                  linked_to: "{{ 'contact' if _contact_id != '' else 'company' }}"
+                  item_id: "{{ _tm_crm_item_id }}"
+                  item: "{{ _item }}"
+                  caller_token: "{{ caller_token }}"
+            - stop: task_create via crm
+              response_variable: final_response
+          # Chore-shaped task (recurring, tied to product/location/stock)
+          # belongs in Inventory regardless of whether Radar is also
+          # configured — Radar has no chore/stock concept at all, so it is
+          # never the right fit for this shape.
+          - conditions:
+            - condition: template
+              value_template: "{{ _tm_inv_ok and _chore }}"
+            sequence:
+            - action: script.zen_dojotools_inventory
+              response_variable: _tm_chore
+              continue_on_error: true
+              data:
+                mode: chores_add
+                item: "{{ _item }}"
+                note: "{{ _note }}"
+                period_days: "{{ _period_days }}"
+            - variables:
+                _tm_chore_id: "{{ _tm_chore.get('chore_id', '') if _tm_chore is mapping else '' }}"
+            - if: "{{ _area != '' and _tm_chore_id != '' }}"
+              then:
+              - action: script.zen_dojotools_inventory
+                continue_on_error: true
+                data:
+                  mode: chores_tag
+                  chore_id: "{{ _tm_chore_id }}"
+                  homeassistant_area_id: "{{ _area }}"
+            - variables:
+                final_response:
+                  status: "{{ 'success' if _tm_chore_id != '' else 'error' }}"
+                  mode: task_create
+                  backend: inventory
+                  inventory_kind: chore
+                  chore_id: "{{ _tm_chore_id }}"
+                  item: "{{ _item }}"
+                  area: "{{ _area }}"
+                  caller_token: "{{ caller_token }}"
+            - stop: task_create via inventory chore
+              response_variable: final_response
+          # General (non-chore-shaped) tracking: Radar wins when configured —
+          # this is exactly the "true task tracking" upgrade (lifecycle/triage).
+          - conditions:
+            - condition: template
+              value_template: "{{ _tm_radar_ok }}"
+            sequence:
+            - variables:
+                _tm_ticket_payload: >-
+                  {{ {'title': _item, 'body': _note if _note != '' else _item, 'priority': _priority, 'reporter': 'house'} | tojson }}
+            - action: script.zen_dojotools_servicedesk
+              response_variable: _tm_ticket
+              continue_on_error: true
+              data:
+                mode: ticket_create
+                input_json: "{{ _tm_ticket_payload }}"
+            - variables:
+                _tm_ticket_number: "{{ (_tm_ticket.get('ticket_number') or '') if _tm_ticket is mapping else '' }}"
+            - if: "{{ _area != '' and _tm_ticket_number != '' }}"
+              then:
+              - action: script.zen_dojotools_servicedesk
+                continue_on_error: true
+                data:
+                  mode: ticket_tag
+                  input_json: "{{ {'ticket_id': _tm_ticket_number, 'tag': _area} | tojson }}"
+            - variables:
+                final_response:
+                  status: "{{ 'success' if _tm_ticket_number != '' else 'error' }}"
+                  mode: task_create
+                  backend: radar
+                  ticket_number: "{{ _tm_ticket_number }}"
+                  item: "{{ _item }}"
+                  area: "{{ _area }}"
+                  caller_token: "{{ caller_token }}"
+            - stop: task_create via radar
+              response_variable: final_response
+          # Non-chore-shaped, Radar not configured, Inventory is: a plain
+          # location-tied Grocy task (no stock consumption, just a todo
+          # scoped to a product/area).
+          - conditions:
+            - condition: template
+              value_template: "{{ _tm_inv_ok }}"
+            sequence:
+            - action: script.zen_dojotools_inventory
+              response_variable: _tm_task
+              continue_on_error: true
+              data:
+                mode: tasks_add
+                item: "{{ _item }}"
+                note: "{{ _note }}"
+            - variables:
+                _tm_task_id: "{{ _tm_task.get('task_id', '') if _tm_task is mapping else '' }}"
+            - if: "{{ _area != '' and _tm_task_id != '' }}"
+              then:
+              - action: script.zen_dojotools_inventory
+                continue_on_error: true
+                data:
+                  mode: tasks_tag
+                  task_id: "{{ _tm_task_id }}"
+                  homeassistant_area_id: "{{ _area }}"
+            - variables:
+                final_response:
+                  status: "{{ 'success' if _tm_task_id != '' else 'error' }}"
+                  mode: task_create
+                  backend: inventory
+                  inventory_kind: task
+                  task_id: "{{ _tm_task_id }}"
+                  item: "{{ _item }}"
+                  area: "{{ _area }}"
+                  caller_token: "{{ caller_token }}"
+            - stop: task_create via inventory task
+              response_variable: final_response
+          # Tier 0: base — neither Radar nor Inventory configured
+          default:
+          - action: script.zen_dojotools_todo
+            response_variable: _tm_todo
+            continue_on_error: true
+            data:
+              action_type: create
+              list_name: "{{ _list_name }}"
+              items: ["{{ _item }}"]
+              description: "{{ _note }}"
+          - variables:
+              final_response:
+                status: "{{ 'success' if _tm_todo is mapping and _tm_todo.get('status', '') == 'success' else 'error' }}"
+                mode: task_create
+                backend: todo
+                list_name: "{{ _list_name }}"
+                item: "{{ _item }}"
+                caller_token: "{{ caller_token }}"
+          - stop: task_create via todo
+            response_variable: final_response
+
+      # ── task_list ─────────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'task_list' }}"
+        sequence:
+        - action: script.zen_dojotools_servicedesk
+          response_variable: _tm_radar_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - action: script.zen_dojotools_inventory
+          response_variable: _tm_inv_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - action: script.zen_dojotools_rolodex
+          response_variable: _tm_crm_mf
+          continue_on_error: true
+          data:
+            mode: tool_manifest
+        - variables:
+            _tm_radar_ok: "{{ _tm_radar_mf is mapping and _tm_radar_mf.get('health', {}).get('configured', false) }}"
+            _tm_inv_ok: "{{ _tm_inv_mf is mapping and _tm_inv_mf.get('health', {}).get('configured', false) }}"
+            _tm_crm_ok: "{{ _tm_crm_mf is mapping and _tm_crm_mf.get('health', {}).get('configured', false) }}"
+        - variables:
+            _tm_overview: "{{ _area == '' and _contact_id == '' and _company_id == '' }}"
+        # ── targeted-by-area reads ──────────────────────────────────────────
+        - if: "{{ _tm_radar_ok and _area != '' }}"
+          then:
+          - action: script.zen_dojotools_servicedesk
+            response_variable: _tm_radar_tickets
+            continue_on_error: true
+            data:
+              mode: tickets_by_anchor
+              input_json: "{{ {'anchor_ids': [_area], 'anchor_type': 'area_id', 'limit': _limit} | tojson }}"
+        - if: "{{ _tm_inv_ok and _area != '' }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            response_variable: _tm_inv_chores
+            continue_on_error: true
+            data:
+              mode: chores_by_area
+              homeassistant_area_id: "{{ _area }}"
+        # ── targeted-by-contact/company reads ───────────────────────────────
+        - if: "{{ _tm_crm_ok and (_contact_id != '' or _company_id != '') }}"
+          then:
+          - action: script.zen_dojotools_rolodex
+            response_variable: _tm_crm_tasks
+            continue_on_error: true
+            data:
+              mode: tasks_list
+              item_id: "{{ _contact_id if _contact_id != '' else _company_id }}"
+              limit: "{{ _limit }}"
+        # ── landing overview: no area/contact/company given at all ──────────
+        # This is the "open the trapper keeper" path — it must return
+        # something useful with zero required arguments. Radar (all open
+        # tickets), Inventory (chores_due — house-wide, no area filter), and
+        # CRM (all active linked tasks) each have a real house-wide call.
+        - if: "{{ _tm_overview and _tm_radar_ok }}"
+          then:
+          - action: script.zen_dojotools_servicedesk
+            response_variable: _tm_radar_tickets
+            continue_on_error: true
+            data:
+              mode: ticket_list
+              input_json: "{{ {'state_filter': 'open', 'limit': _limit} | tojson }}"
+        - if: "{{ _tm_overview and _tm_inv_ok }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            response_variable: _tm_inv_chores_due
+            continue_on_error: true
+            data:
+              mode: chores_due
+        - if: "{{ _tm_overview and _tm_crm_ok }}"
+          then:
+          - action: script.zen_dojotools_rolodex
+            response_variable: _tm_crm_tasks
+            continue_on_error: true
+            data:
+              mode: tasks_list
+              limit: "{{ _limit }}"
+        # Base To Do tier: no working single-call "read all label-tagged
+        # lists" path exists on zen_dojotools_todo (passing a real list_name
+        # bypasses label_targets entirely, and label_targets alone still
+        # hits the wildcard directory-listing branch) — so resolve the
+        # 'taskmaster' label's todo entities directly and read each one,
+        # merging here. Same pattern as Grocy's room_brief combining
+        # multiple sub-calls into one response. Explicit list_name still
+        # overrides (single-list read) when the caller passed one.
+        - variables:
+            _tm_todo_accum: []
+        - if: "{{ _tm_overview }}"
+          then:
+          - variables:
+              _tm_todo_list_ids: "{{ [_list_name_raw] if _list_name_raw != '' else (label_entities('taskmaster') | select('match', '^todo\\.') | list) }}"
+          - repeat:
+              for_each: "{{ _tm_todo_list_ids }}"
+              sequence:
+              - action: script.zen_dojotools_todo
+                response_variable: _tm_todo_one
+                continue_on_error: true
+                data:
+                  action_type: read
+                  list_name: "{{ repeat.item }}"
+              - variables:
+                  _tm_todo_accum: >-
+                    {%- set _its = _tm_todo_one.get('items', []) if _tm_todo_one is mapping else [] -%}
+                    {{ _tm_todo_accum + (_its if _its is iterable and _its is not string else []) }}
+        - variables:
+            _tm_radar_state_map:
+              1: new
+              2: open
+              3: pending
+              4: closed
+            _tm_radar_evidence: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- set tk = _tm_radar_tickets.get('tickets', []) if _tm_radar_tickets is defined and _tm_radar_tickets is mapping else [] -%}
+              {%- for t in (tk if tk is iterable and tk is not string else []) -%}
+                {%- set ns.items = ns.items + [{'source': 'radar', 'id': t.get('number', t.get('id', '')), 'title': t.get('title', ''), 'status': _tm_radar_state_map.get(t.get('state_id', 0), 'unknown'), 'priority_id': t.get('priority_id', none), 'area': _area if _area != '' else none}] -%}
+              {%- endfor -%}
+              {{ ns.items }}
+            _tm_inv_evidence: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- set ch = _tm_inv_chores.get('chores', []) if _tm_inv_chores is defined and _tm_inv_chores is mapping else [] -%}
+              {%- for c in (ch if ch is iterable and ch is not string else []) -%}
+                {%- set ns.items = ns.items + [{'source': 'inventory', 'id': c.get('chore_id', ''), 'title': c.get('name', ''), 'status': 'due' if c.get('is_due', false) else 'chore', 'next_execution': c.get('next_execution', none), 'area': _area}] -%}
+              {%- endfor -%}
+              {%- set cd = _tm_inv_chores_due.get('chores', []) if _tm_inv_chores_due is defined and _tm_inv_chores_due is mapping else [] -%}
+              {%- for c in (cd if cd is iterable and cd is not string else []) -%}
+                {%- set ns.items = ns.items + [{'source': 'inventory', 'id': c.get('chore_id', ''), 'title': c.get('name', ''), 'status': 'due', 'next_execution': c.get('next_execution', none), 'area': c.get('area', 'unassigned')}] -%}
+              {%- endfor -%}
+              {{ ns.items }}
+            _tm_crm_evidence: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- set cr = _tm_crm_tasks.get('result', {}).get('tasks', []) if _tm_crm_tasks is defined and _tm_crm_tasks is mapping else [] -%}
+              {%- for t in (cr if cr is iterable and cr is not string else []) -%}
+                {%- set ns.items = ns.items + [{'source': 'crm', 'id': t.get('uid', ''), 'title': t.get('summary', ''), 'status': t.get('status', ''), 'due': t.get('due', none), 'linked_to': _contact_id if _contact_id != '' else (_company_id if _company_id != '' else none)}] -%}
+              {%- endfor -%}
+              {{ ns.items }}
+            _tm_crm_ids: "{{ _tm_crm_evidence | map(attribute='id') | list }}"
+            _tm_todo_evidence: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for it in (_tm_todo_accum if _tm_todo_accum is iterable and _tm_todo_accum is not string else []) -%}
+                {%- if it.get('uid', '') not in _tm_crm_ids -%}
+                  {%- set ns.items = ns.items + [{'source': 'todo', 'id': it.get('uid', ''), 'title': it.get('summary', ''), 'status': it.get('status', ''), 'due': it.get('due', none), 'area': none}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.items }}
+            _tm_all_tasks: "{{ _tm_radar_evidence + _tm_inv_evidence + _tm_crm_evidence + _tm_todo_evidence }}"
+        - variables:
+            final_response:
+              status: success
+              mode: task_list
+              overview: "{{ _tm_overview }}"
+              area: "{{ _area if _area != '' else none }}"
+              linked_to: "{{ (_contact_id if _contact_id != '' else _company_id) if (_contact_id != '' or _company_id != '') else none }}"
+              tiers_used:
+                radar: "{{ _tm_radar_ok }}"
+                inventory: "{{ _tm_inv_ok }}"
+                crm: "{{ _tm_crm_ok }}"
+              counts:
+                total: "{{ _tm_all_tasks | length }}"
+                radar: "{{ _tm_radar_evidence | length }}"
+                inventory: "{{ _tm_inv_evidence | length }}"
+                crm: "{{ _tm_crm_evidence | length }}"
+                todo: "{{ _tm_todo_evidence | length }}"
+              tasks: "{{ _tm_all_tasks }}"
+              caller_token: "{{ caller_token }}"
+        - stop: task_list
+          response_variable: final_response
+
+      # ── task_complete ─────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'task_complete' }}"
+        sequence:
+        - if: "{{ _backend not in ['radar', 'inventory', 'todo', 'crm'] }}"
+          then:
+          - variables:
+              final_response:
+                status: error
+                mode: task_complete
+                message: "backend must be one of radar/inventory/todo/crm — pass the backend value returned by task_create. Note: crm tasks are To Do items under the hood (Twenty's crm_tasks label) — pass item (task title) and list_name (the crm_tasks-labeled list), same as backend=todo."
+                caller_token: "{{ caller_token }}"
+          - stop: task_complete missing backend
+            response_variable: final_response
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ _backend == 'radar' }}"
+            sequence:
+            - action: script.zen_dojotools_servicedesk
+              response_variable: _tm_complete
+              continue_on_error: true
+              data:
+                mode: ticket_close
+                input_json: "{{ {'ticket_id': _task_id} | tojson }}"
+            - variables:
+                final_response:
+                  status: "{{ 'success' if _tm_complete is mapping and _tm_complete.get('status','') == 'success' else 'error' }}"
+                  mode: task_complete
+                  backend: radar
+                  task_id: "{{ _task_id }}"
+                  caller_token: "{{ caller_token }}"
+            - stop: task_complete via radar
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: "{{ _backend == 'inventory' }}"
+            sequence:
+            - action: script.zen_dojotools_inventory
+              response_variable: _tm_complete
+              continue_on_error: true
+              data:
+                mode: chores_execute
+                chore_id: "{{ _task_id }}"
+            - variables:
+                final_response:
+                  status: "{{ 'success' if _tm_complete is mapping and _tm_complete.get('status','') == 'success' else 'error' }}"
+                  mode: task_complete
+                  backend: inventory
+                  task_id: "{{ _task_id }}"
+                  caller_token: "{{ caller_token }}"
+            - stop: task_complete via inventory
+              response_variable: final_response
+          default:
+          - action: script.zen_dojotools_todo
+            response_variable: _tm_complete
+            continue_on_error: true
+            data:
+              action_type: update
+              list_name: "{{ _list_name }}"
+              items: ["{{ _item }}"]
+              status: completed
+          - variables:
+              final_response:
+                status: "{{ 'success' if _tm_complete is mapping and _tm_complete.get('status','') == 'success' else 'error' }}"
+                mode: task_complete
+                backend: todo
+                item: "{{ _item }}"
+                caller_token: "{{ caller_token }}"
+          - stop: task_complete via todo
+            response_variable: final_response
+
+      # ── briefing ──────────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'briefing' }}"
+        sequence:
+        - variables:
+            _br_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _br_scoring_flag_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            volume_entity_id: "{{ _br_hh }}"
+            key: taskmaster_scoring_enabled
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _br_med_class_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            volume_entity_id: "{{ _br_hh }}"
+            key: medication_classifications
+        - variables:
+            _br_scoring_on: >-
+              {%- set _v = _br_scoring_flag_raw.get('value', none) if _br_scoring_flag_raw is mapping and _br_scoring_flag_raw.get('status') == 'success' else none -%}
+              {{ true if _v is none else (_v | bool(true)) }}
+            _br_med_overrides: >-
+              {%- set _v = _br_med_class_raw.get('value', {}) if _br_med_class_raw is mapping and _br_med_class_raw.get('status') == 'success' else {} -%}
+              {%- set _v = (_v | from_json) if _v is string and _v | trim != '' else _v -%}
+              {{ _v if _v is mapping else {} }}
+        # ── conductor: Friday's own schedule-driven list, surfaced first ────
+        - variables:
+            _br_conductor_ids: "{{ label_entities('schedule') | select('match', '^todo\\.') | list }}"
+            _br_conductor_accum: []
+        - repeat:
+            for_each: "{{ _br_conductor_ids }}"
+            sequence:
+            - action: script.zen_dojotools_todo
+              response_variable: _br_cond_one
+              continue_on_error: true
+              data:
+                action_type: read
+                list_name: "{{ repeat.item }}"
+            - variables:
+                _br_conductor_accum: >-
+                  {%- set _its = _br_cond_one.get('items', []) if _br_cond_one is mapping else [] -%}
+                  {{ _br_conductor_accum + (_its if _its is iterable and _its is not string else []) }}
+        - variables:
+            _br_conductor_ids_set: "{{ _br_conductor_accum | map(attribute='uid') | list }}"
+            conductor_items: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for it in _br_conductor_accum -%}
+                {%- set ns.items = ns.items + [{'title': it.get('summary', ''), 'status': it.get('status', ''), 'due': it.get('due', none)}] -%}
+              {%- endfor -%}
+              {{ ns.items }}
+        # ── merged cross-tier view (reuse task_list rather than duplicate it)
+        - action: script.zen_dojotools_taskmaster
+          response_variable: _br_raw
+          continue_on_error: true
+          data:
+            mode: task_list
+        - variables:
+            _br_all_items: "{{ _br_raw.get('tasks', []) if _br_raw is mapping else [] }}"
+            _br_items_nc: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for it in _br_all_items -%}
+                {%- if it.get('id', '') not in _br_conductor_ids_set -%}
+                  {%- set ns.items = ns.items + [it] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.items }}
+        # ── scoring (skippable via taskmaster_scoring_enabled=false) ────────
+        - variables:
+            _br_prn_kw: ['if needed', 'as needed', 'prn', 'optional', ' - if']
+            _br_supplement_kw: ['vitamin', 'supplement', 'fish oil', 'omega']
+            _br_standard_kw: ['wellbutrin', 'prozac', 'zoloft', 'omeprazole', 'statin', 'atorvastatin', 'lipitor', 'naprosyn', 'nsaid', 'methocarbamol', 'ambien', 'lunesta', 'sleep aid', 'muscle relaxant']
+            _br_clinical_kw: ['lisinopril', 'blood pressure', 'rybelsus', 'ozempic', 'glp-1', 'diabetes', 'metformin', 'insulin', 'cardiac', 'warfarin', 'eliquis', 'anticoagulant', 'immunosuppressant', 'seizure', 'levothyroxine', 'thyroid']
+            _br_biologic_kw: ['injection', 'infusion', 'biologic']
+        - variables:
+            _br_scored: >-
+              {%- set ns = namespace(items=[], overdue=0, due_today=0, stale=0, escalate=false) -%}
+              {%- set _today = now().date() -%}
+              {%- for it in _br_items_nc -%}
+                {%- set _title_lc = (it.get('title','') | lower) ~ ' ' ~ (it.get('note','') | default('', true) | lower) -%}
+                {%- set _src = it.get('source', '') -%}
+                {%- set _due_dt = ((it.get('due') | as_datetime).date()) if it.get('due') else none -%}
+                {%- set _days_over = ((_today - _due_dt).days) if _due_dt is not none else -9999 -%}
+                {%- if not _br_scoring_on -%}
+                  {%- set ns.items = ns.items + [it | combine({'urgency': none, 'category': none, 'action_required': false})] -%}
+                {%- elif _src == 'radar' -%}
+                  {%- set _u = it.get('priority_id', 2) | int(2) -%}
+                  {%- set ns.items = ns.items + [it | combine({'urgency': _u, 'category': 'ticket', 'action_required': false})] -%}
+                {%- elif _src == 'inventory' -%}
+                  {%- set _is_due = it.get('status','') == 'due' -%}
+                  {%- set _u = 2 if _is_due else 0 -%}
+                  {%- set ns.items = ns.items + [it | combine({'urgency': _u, 'category': 'chore', 'action_required': false})] -%}
+                  {%- if _is_due -%}{%- set ns.due_today = ns.due_today + 1 -%}{%- endif -%}
+                {%- else -%}
+                  {%- set _is_prn = (_br_prn_kw | select('in', _title_lc) | list | length) > 0 -%}
+                  {%- set _override = _br_med_overrides.get(it.get('title',''), none) -%}
+                  {%- set _med_cat = _override if _override is not none else (
+                        'CLINICAL' if (_br_clinical_kw | select('in', _title_lc) | list | length) > 0 else
+                        'BIOLOGIC' if (_br_biologic_kw | select('in', _title_lc) | list | length) > 0 else
+                        'STANDARD' if (_br_standard_kw | select('in', _title_lc) | list | length) > 0 else
+                        'SUPPLEMENT' if (_br_supplement_kw | select('in', _title_lc) | list | length) > 0 else none) -%}
+                  {%- if _is_prn -%}
+                    {%- set ns.items = ns.items + [it | combine({'urgency': 0, 'category': 'prn', 'action_required': false})] -%}
+                  {%- elif _med_cat is not none -%}
+                    {%- set _cap = {'SUPPLEMENT': 1, 'STANDARD': 2, 'CLINICAL': 3, 'BIOLOGIC': 3}[_med_cat] -%}
+                    {%- set _u = 0 if _due_dt is none else ([1 if _days_over >= 0 else 0, _cap] | min) -%}
+                    {%- set ns.items = ns.items + [it | combine({'urgency': _u, 'category': _med_cat, 'action_required': false})] -%}
+                    {%- if _days_over >= 0 -%}{%- set ns.due_today = ns.due_today + 1 -%}{%- endif -%}
+                  {%- else -%}
+                    {%- set _u = (0 if _due_dt is none else
+                          (1 if _days_over > 30 else
+                           3 if _days_over >= 4 else
+                           2 if _days_over >= 1 else
+                           2 if _days_over == 0 else 0)) -%}
+                    {%- set ns.items = ns.items + [it | combine({'urgency': _u, 'category': 'task', 'action_required': false})] -%}
+                    {%- if _days_over is number and _days_over > 30 -%}{%- set ns.stale = ns.stale + 1 -%}
+                    {%- elif _days_over is number and _days_over >= 1 -%}{%- set ns.overdue = ns.overdue + 1 -%}
+                    {%- elif _days_over == 0 -%}{%- set ns.due_today = ns.due_today + 1 -%}{%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ {'items': ns.items, 'overdue_count': ns.overdue, 'due_today_count': ns.due_today, 'stale_count': ns.stale} }}
+        # ── situational context: read the room ──────────────────────────────
+        # Deterministic reads, not LLM guesses. Everything here is read-only
+        # and fails open (sane default) rather than breaking the briefing.
+        - variables:
+            _br_home_mode: "{{ states('input_select.zen_home_mode') }}"
+            _br_is_away: "{{ states('input_select.zen_home_mode') == 'Away' }}"
+            _br_is_weekday: "{{ now().weekday() < 5 }}"
+            _br_quiet_hours: "{{ is_state('binary_sensor.zen_quiet_hours', 'on') }}"
+            _br_work_hours: "{{ is_state('binary_sensor.zen_work_hours', 'on') }}"
+            _br_guest_flag: >-
+              {{ is_state('input_boolean.zen_guest_mode', 'on') or is_state('input_boolean.zen_entertaining', 'on') }}
+            _br_today: "{{ now().strftime('%Y-%m-%d') }}"
+            _br_tomorrow: "{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}"
+        - action: script.zen_dojotools_rolodex
+          response_variable: _br_stays_raw
+          continue_on_error: true
+          data:
+            mode: stays_list
+            start_date: "{{ _br_today }}"
+            end_date: "{{ _br_tomorrow }}"
+        - action: script.zen_dojotools_rolodex
+          response_variable: _br_appts_raw
+          continue_on_error: true
+          data:
+            mode: appointments_list
+        # ── prep timing: surfaces today's [PREP:N] tags (set via Kitchen's
+        #     prep_schedule_set) so "what should I be doing right now" shows
+        #     up on every scheduled briefing firing, not just on-demand. ────
+        - action: script.zen_dojotools_kitchen
+          response_variable: _br_prep_raw
+          continue_on_error: true
+          data:
+            mode: run
+            case: prep_brief
+            date: "{{ _br_today }}"
+        - variables:
+            _br_prep_scheduled: >-
+              {{ _br_prep_raw.get('scheduled', []) if _br_prep_raw is mapping and _br_prep_raw.get('status') == 'success' else [] }}
+            _br_prep_unscheduled_count: >-
+              {{ (_br_prep_raw.get('unscheduled', []) | length) if _br_prep_raw is mapping and _br_prep_raw.get('status') == 'success' else 0 }}
+        - variables:
+            _br_stays: >-
+              {%- set _r = _br_stays_raw.get('result', _br_stays_raw) if _br_stays_raw is mapping else {} -%}
+              {%- set _r = _r if _r is mapping else {} -%}
+              {{ _r.get('stays', []) if _r.get('stays', []) is iterable and _r.get('stays', []) is not string else [] }}
+            _br_appts_all: >-
+              {%- set _r = _br_appts_raw.get('result', _br_appts_raw) if _br_appts_raw is mapping else {} -%}
+              {%- set _r = _r if _r is mapping else {} -%}
+              {{ _r.get('appointments', []) if _r.get('appointments', []) is iterable and _r.get('appointments', []) is not string else [] }}
+        - variables:
+            _br_guest_present: "{{ _br_guest_flag or (_br_stays | length) > 0 }}"
+            _br_guest_note: >-
+              {{ ('Guest stay on record for today' if (_br_stays | length) > 0 else 'Guest mode/entertaining flag on') if (_br_guest_flag or (_br_stays | length) > 0) else none }}
+            _br_upcoming_appts: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for a in (_br_appts_all[:3] if _br_appts_all is iterable else []) -%}
+                {%- set ns.items = ns.items + [{'title': a.get('title', a.get('summary', '')), 'start': a.get('start', a.get('start_date', none))}] -%}
+              {%- endfor -%}
+              {{ ns.items }}
+        # ── weather: same resolution pattern as room_manager's home_overview ─
+        - variables:
+            _br_weather_entity: >-
+              {%- set _we = label_entities('zen_weather') | select('match', 'weather\\.') | list | first | default('') -%}
+              {{ _we if _we != '' else (states.weather | map(attribute='entity_id') | list | first | default('')) }}
+            _br_weather_condition: "{{ states(_br_weather_entity) if _br_weather_entity != '' else '' }}"
+        - variables:
+            _br_weather_available: "{{ _br_weather_entity != '' and _br_weather_condition not in ['unavailable', 'unknown', ''] }}"
+            _br_outdoor_ok: >-
+              {{ _br_weather_condition not in ['rainy', 'pouring', 'lightning', 'lightning-rainy', 'snowy', 'snowy-rainy', 'hail'] if _br_weather_available else true }}
+            _br_context:
+              home_mode: "{{ _br_home_mode }}"
+              is_away: "{{ _br_is_away }}"
+              is_weekday: "{{ _br_is_weekday }}"
+              quiet_hours_active: "{{ _br_quiet_hours }}"
+              work_hours_active: "{{ _br_work_hours }}"
+              guest_present: "{{ _br_guest_present }}"
+              guest_note: "{{ _br_guest_note }}"
+              upcoming_appointments: "{{ _br_upcoming_appts }}"
+              prep_schedule:
+                scheduled: "{{ _br_prep_scheduled }}"
+                unscheduled_count: "{{ _br_prep_unscheduled_count }}"
+              weather:
+                available: "{{ _br_weather_available }}"
+                condition: "{{ _br_weather_condition if _br_weather_available else none }}"
+                temperature: "{{ state_attr(_br_weather_entity, 'temperature') if _br_weather_available else none }}"
+                outdoor_ok: "{{ _br_outdoor_ok }}"
+        - variables:
+            final_response:
+              status: success
+              mode: briefing
+              scoring_enabled: "{{ _br_scoring_on }}"
+              generated_at: "{{ utcnow().isoformat() }}"
+              context: "{{ _br_context }}"
+              conductor_items: "{{ conductor_items }}"
+              items: "{{ _br_scored['items'] }}"
+              top_line:
+                overdue_count: "{{ _br_scored['overdue_count'] }}"
+                due_today_count: "{{ _br_scored['due_today_count'] }}"
+                stale_count: "{{ _br_scored['stale_count'] }}"
+              suggested_act_event: >-
+                {{ 'zen_dojotools_postman' if (_br_scored['items'] | selectattr('action_required') | list | length) > 0 else none }}
+              caller_token: "{{ caller_token }}"
+        - stop: briefing
+          response_variable: final_response
+
+      # ── almanac ───────────────────────────────────────────────────────────
+      # Friday's own feature request (Radar #10270): a single daily context
+      # surface — weather, meal plan, and appointments in one stack — so the
+      # assistant can answer "what does today look like" without three calls.
+      # Reuses the same weather-resolution pattern already proven in briefing.
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'almanac' }}"
+        sequence:
+        - variables:
+            _al_today: "{{ now().strftime('%Y-%m-%d') }}"
+        - action: script.zen_dojotools_kitchen
+          response_variable: _al_meals_raw
+          continue_on_error: true
+          data:
+            mode: run
+            case: mealplan_today
+        - action: script.zen_dojotools_rolodex
+          response_variable: _al_appts_raw
+          continue_on_error: true
+          data:
+            mode: appointments_list
+        - variables:
+            _al_meals: >-
+              {%- set _m = _al_meals_raw.get('meals', {}) if _al_meals_raw is mapping else {} -%}
+              {{ _m if _m is mapping else {} }}
+            _al_appts_all: >-
+              {%- set _r = _al_appts_raw.get('result', _al_appts_raw) if _al_appts_raw is mapping else {} -%}
+              {%- set _r = _r if _r is mapping else {} -%}
+              {{ _r.get('appointments', []) if _r.get('appointments', []) is iterable and _r.get('appointments', []) is not string else [] }}
+        - variables:
+            _al_appointments: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for a in (_al_appts_all if _al_appts_all is iterable else []) -%}
+                {%- set ns.items = ns.items + [{'title': a.get('title', a.get('summary', '')), 'start': a.get('start', a.get('start_date', none))}] -%}
+              {%- endfor -%}
+              {{ ns.items }}
+        # ── weather: same resolution pattern as briefing/room_manager ───────
+        - variables:
+            _al_weather_entity: >-
+              {%- set _we = label_entities('zen_weather') | select('match', 'weather\\.') | list | first | default('') -%}
+              {{ _we if _we != '' else (states.weather | map(attribute='entity_id') | list | first | default('')) }}
+            _al_weather_condition: "{{ states(_al_weather_entity) if _al_weather_entity != '' else '' }}"
+        - variables:
+            _al_weather_available: "{{ _al_weather_entity != '' and _al_weather_condition not in ['unavailable', 'unknown', ''] }}"
+            _al_outdoor_ok: >-
+              {{ _al_weather_condition not in ['rainy', 'pouring', 'lightning', 'lightning-rainy', 'snowy', 'snowy-rainy', 'hail'] if _al_weather_available else true }}
+            _al_weather:
+              available: "{{ _al_weather_available }}"
+              condition: "{{ _al_weather_condition if _al_weather_available else none }}"
+              temperature: "{{ state_attr(_al_weather_entity, 'temperature') if _al_weather_available else none }}"
+              outdoor_ok: "{{ _al_outdoor_ok }}"
+        # ── meal/appointment collision check ─────────────────────────────────
+        # No explicit meal times exist in Mealie's mealplan data — these are
+        # household-typical windows, not a real schedule. Flag only, never
+        # block: an appointment landing inside a planned meal's window is
+        # useful context for Monk, not an error condition.
+        # breakfast/dinner derive from the same scheduler_anchors Kitchen's
+        # prep_brief uses (morning start / evening start +1h) — same source,
+        # no separate drift-prone copy. Override via zen_dojotools_systemtools
+        # mode=scheduler_anchors anchor=morning/evening value=HH:MM. lunch
+        # reads the same standalone zen_lunch_time helper prep_brief uses
+        # (deliberately not one of the 6 home-mode anchors — override directly
+        # via Developer Tools > States).
+        - variables:
+            _al_morning_anchor: "{{ states('input_datetime.zen_morning_start') }}"
+            _al_evening_anchor: "{{ states('input_datetime.zen_evening_start') }}"
+            _al_lunch_anchor: "{{ states('input_datetime.zen_lunch_time') }}"
+        - variables:
+            _al_breakfast_default: >-
+              {{ (_al_morning_anchor[:5]) if _al_morning_anchor not in ['unknown','unavailable',''] else '08:00' }}
+            _al_dinner_default: >-
+              {%- if _al_evening_anchor not in ['unknown','unavailable',''] -%}
+                {{ ((_al_today ~ ' ' ~ _al_evening_anchor) | as_datetime + timedelta(hours=1)).strftime('%H:%M') }}
+              {%- else -%}18:00{%- endif -%}
+            _al_lunch_default: >-
+              {{ (_al_lunch_anchor[:5]) if _al_lunch_anchor not in ['unknown','unavailable',''] else '12:00' }}
+        - variables:
+            _al_meal_windows:
+              breakfast: >-
+                {{ [((_al_today ~ ' ' ~ _al_breakfast_default ~ ':00') | as_datetime - timedelta(hours=1)).strftime('%H:%M'),
+                    ((_al_today ~ ' ' ~ _al_breakfast_default ~ ':00') | as_datetime + timedelta(hours=1)).strftime('%H:%M')] }}
+              lunch: >-
+                {{ [_al_lunch_default,
+                    ((_al_today ~ ' ' ~ _al_lunch_default ~ ':00') | as_datetime + timedelta(hours=1)).strftime('%H:%M')] }}
+              dinner: >-
+                {{ [_al_dinner_default,
+                    ((_al_today ~ ' ' ~ _al_dinner_default ~ ':00') | as_datetime + timedelta(hours=1)).strftime('%H:%M')] }}
+        - variables:
+            _al_conflicts: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for entry_type, _win in _al_meal_windows.items() -%}
+                {%- if _al_meals.get(entry_type, []) | length > 0 -%}
+                  {%- set _start_h = _win[0] -%}
+                  {%- set _end_h = _win[1] -%}
+                  {%- for a in _al_appointments -%}
+                    {%- set _a_start = a.get('start', none) -%}
+                    {%- if _a_start -%}
+                      {%- set _a_time = (_a_start | as_datetime).strftime('%H:%M') if (_a_start | as_datetime(none)) is not none else none -%}
+                      {%- if _a_time is not none and _a_time >= _start_h and _a_time <= _end_h -%}
+                        {%- set ns.items = ns.items + [{'meal': entry_type, 'appointment': a.get('title', ''), 'appointment_start': _a_start, 'meal_window': _win}] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.items }}
+        - variables:
+            final_response:
+              status: success
+              mode: almanac
+              date: "{{ _al_today }}"
+              weather: "{{ _al_weather }}"
+              meals: "{{ _al_meals }}"
+              appointments: "{{ _al_appointments }}"
+              meal_appointment_conflicts: "{{ _al_conflicts }}"
+              caller_token: "{{ caller_token }}"
+        - stop: almanac
+          response_variable: final_response
+
+      # ── stale_review ──────────────────────────────────────────────────────
+      # "What's been sitting too long" — filters briefing's own scoring down
+      # to just overdue/stale items, without the noise of due-today/normal
+      # ones. No new scoring logic — reuses briefing verbatim and filters.
+      # Radar tickets triaged rank=backlog (radar_rank_backlog tag) are
+      # suppressed here regardless of priority_id — triage rank is a more
+      # deliberate "not urgent right now" signal than raw priority, and this
+      # keeps the view honest even for a backlog ticket someone later bumps
+      # back to priority 2 without re-triaging.
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'stale_review' }}"
+        sequence:
+        - action: script.zen_dojotools_taskmaster
+          response_variable: _sr_raw
+          continue_on_error: true
+          data:
+            mode: briefing
+        - action: script.zen_dojotools_servicedesk
+          response_variable: _sr_backlog_raw
+          continue_on_error: true
+          data:
+            mode: ticket_search
+            input_json: "{{ {'tags': ['radar_rank_backlog'], 'per_page': 100} | tojson }}"
+        - variables:
+            _sr_backlog_numbers: >-
+              {%- set _tk = _sr_backlog_raw.get('tickets', []) if _sr_backlog_raw is mapping else [] -%}
+              {{ (_tk if _tk is iterable and _tk is not string else []) | map(attribute='number') | list }}
+        - variables:
+            _sr_items: "{{ _sr_raw.get('items', []) if _sr_raw is mapping else [] }}"
+            _sr_stale: >-
+              {%- set ns = namespace(items=[]) -%}
+              {%- for it in _sr_items -%}
+                {%- set _is_backlog_radar = it.get('source', '') == 'radar' and (it.get('id', '') | string) in _sr_backlog_numbers -%}
+                {%- if it.get('urgency', 0) is number and it.get('urgency', 0) >= 2 and not _is_backlog_radar -%}
+                  {%- set ns.items = ns.items + [it] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.items | sort(attribute='urgency', reverse=true) }}
+        - variables:
+            final_response:
+              status: success
+              mode: stale_review
+              count: "{{ _sr_stale | length }}"
+              suppressed_backlog_count: "{{ _sr_backlog_numbers | length }}"
+              top_line: "{{ _sr_raw.get('top_line', {}) if _sr_raw is mapping else {} }}"
+              items: "{{ _sr_stale }}"
+              caller_token: "{{ caller_token }}"
+        - stop: stale_review
+          response_variable: final_response
+
+      # ── facilities_brief ──────────────────────────────────────────────────
+      # "Building super" view — ships Radar #10271. Reads urgency-scored kata
+      # entries directly for the physical-plant KFC components (already fresh
+      # from the normal summarizer cycle — no live re-query of each subsystem)
+      # plus open Radar tickets tagged to a physical area, plus the
+      # housekeeping/turnover chore backlog. Surfaces only what's above
+      # nominal — a clean building shouldn't produce a long report. This is
+      # the report the super and housekeeping lead would actually hand the GM.
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'facilities_brief' }}"
+        sequence:
+        - variables:
+            _fb_components: [energy_manager, water_manager, hot_tub_manager, garage_freezer_thermal_model, dishwasher_manager, laundry_manager]
+            _fb_mechanical_accum: []
+        - repeat:
+            for_each: "{{ _fb_components }}"
+            sequence:
+            - action: script.zen_dojotools_filecabinet
+              response_variable: _fb_kata_raw
+              continue_on_error: true
+              data:
+                action_type: get
+                volume_entity_id: sensor.zenos_kata_cabinet
+                key: "{{ repeat.item }}"
+            - variables:
+                _fb_mechanical_accum: >-
+                  {%- set _ok = _fb_kata_raw is mapping and _fb_kata_raw.get('status') == 'success' -%}
+                  {%- set _v = _fb_kata_raw.get('value', {}) if _ok else {} -%}
+                  {%- set _v = _v if _v is mapping else {} -%}
+                  {%- set _urgency = _v.get('urgency', 0) | int(0) -%}
+                  {%- if _ok and _urgency >= 2 -%}
+                    {{ _fb_mechanical_accum + [{'component': repeat.item, 'urgency': _urgency, 'attention': _v.get('attention',''), 'suggested_action': _v.get('suggested_act_desc', none), 'updated_at': _fb_kata_raw.get('updated_at','')}] }}
+                  {%- else -%}
+                    {{ _fb_mechanical_accum }}
+                  {%- endif -%}
+        - variables:
+            _fb_mechanical: "{{ _fb_mechanical_accum | sort(attribute='urgency', reverse=true) }}"
+
+        # ── open tickets tagged to a physical area ──────────────────────────
+        # tickets_by_anchor (not ticket_list) — scoped to real HA areas via
+        # anchor_ids, so this only counts tickets actually tagged to a room/
+        # location, not the whole general Radar backlog.
+        - action: script.zen_dojotools_servicedesk
+          response_variable: _fb_radar_raw
+          continue_on_error: true
+          data:
+            mode: tickets_by_anchor
+            input_json: "{{ {'anchor_ids': areas() | list, 'anchor_type': 'area_id', 'limit': 50} | tojson }}"
+        - variables:
+            _fb_open_tickets: "{{ _fb_radar_raw.get('tickets', []) if _fb_radar_raw is mapping else [] }}"
+
+        # ── housekeeping backlog: chores due house-wide ─────────────────────
+        - action: script.zen_dojotools_inventory
+          response_variable: _fb_chores_raw
+          continue_on_error: true
+          data:
+            mode: chores_due
+        - variables:
+            _fb_housekeeping_due: >-
+              {%- set _ch = _fb_chores_raw.get('chores', []) if _fb_chores_raw is mapping else [] -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for c in (_ch if _ch is iterable and _ch is not string else []) -%}
+                {%- set ns.out = ns.out + [{'title': c.get('name',''), 'area': c.get('area','unassigned'), 'chore_id': c.get('chore_id','')}] -%}
+              {%- endfor -%}
+              {{ ns.out }}
+
+        - variables:
+            _fb_max_urgency: "{{ (_fb_mechanical | map(attribute='urgency') | list + [0]) | max }}"
+            _fb_overall_status: >-
+              {{ 'red' if _fb_max_urgency >= 4 else ('yellow' if (_fb_max_urgency >= 2 or _fb_housekeeping_due | length > 3) else 'green') }}
+            _fb_gm_summary: >-
+              {%- if _fb_mechanical | length == 0 and _fb_housekeeping_due | length == 0 -%}
+                All mechanical systems nominal. No housekeeping backlog.
+              {%- else -%}
+                {{ _fb_mechanical | length }} mechanical system(s) flagged{{ ' (' ~ (_fb_mechanical | map(attribute='component') | join(', ')) ~ ')' if _fb_mechanical | length > 0 else '' }}. {{ _fb_housekeeping_due | length }} housekeeping chore(s) due. {{ _fb_open_tickets | length }} open facilities ticket(s).
+              {%- endif -%}
+
+        - variables:
+            final_response:
+              status: success
+              mode: facilities_brief
+              generated_at: "{{ utcnow().isoformat() }}"
+              overall_status: "{{ _fb_overall_status }}"
+              gm_summary: "{{ _fb_gm_summary | trim }}"
+              mechanical: "{{ _fb_mechanical }}"
+              open_tickets_count: "{{ _fb_open_tickets | length }}"
+              housekeeping_due: "{{ _fb_housekeeping_due }}"
+              housekeeping_due_count: "{{ _fb_housekeeping_due | length }}"
+              caller_token: "{{ caller_token }}"
+        - stop: facilities_brief
+          response_variable: final_response
+
+      # ── unknown mode ──────────────────────────────────────────────────────
+      default:
+      - variables:
+          final_response:
+            status: error
+            message: "Unknown mode '{{ mode_norm }}'. Run mode=help for the case reference."
+            caller_token: "{{ caller_token }}"
+      - stop: unknown mode
+        response_variable: final_response
+
+    alias: Zen DojoTools Taskmaster
+    description: >-
+      Zen DojoTools Taskmaster (0.3.0) — progressive-enhancement task orchestration.
+      briefing is the scheduled seed (fires on quarter_hour + occupancy triggers, 60min
+      cooldown) — urgency-scored items plus a real (not LLM-guessed) situational
+      context block: home_mode, guest_present, upcoming_appointments, prep_schedule
+      (Kitchen's today's [PREP:N]-tagged dishes + start_by, proactive not pull-only),
+      and weather.outdoor_ok. almanac/stale_review/facilities_brief are on-demand lenses
+      over the same data (today's weather+meals+appointments; urgency>=2 only; the
+      building-super physical-plant view). task_create picks the backend by shape first,
+      then by which tiers are configured: an explicit contact_id/company_id always
+      wins (Rolodex/Twenty task_link) since it's the most deliberate anchor a caller
+      can give; otherwise a chore-shaped task goes to a Grocy chore when Inventory is
+      configured; otherwise Radar (Zammad) wins for general tracking when configured;
+      otherwise a plain Grocy task when only Inventory is configured; otherwise base
+      To Do. task_list fans out reads across whichever backends are configured (by
+      area and/or contact/company) and returns one merged list. Does not merge the
+      underlying data models — each backend keeps its native shape and lifecycle.
+      Self-registers with the Lens Bus. Use mode=help for full case reference.
+    fields:
+      mode:
+        description: "help | setup | tool_manifest | kfc_manifest | briefing | almanac | stale_review | facilities_brief | tier_status | task_create | task_list | task_complete | register | unregister"
+        required: true
+        selector:
+          select:
+            options:
+              - help
+              - setup
+              - tool_manifest
+              - kfc_manifest
+              - briefing
+              - almanac
+              - stale_review
+              - facilities_brief
+              - tier_status
+              - task_create
+              - task_list
+              - task_complete
+              - register
+              - unregister
+        default: help
+      dry_run:
+        description: "For setup only — report what would be fixed without writing anything. Default false."
+        required: false
+        selector:
+          boolean:
+      component:
+        description: "For kfc_manifest only — kata_key to look up a single component. Omit to return all components this tool provides (currently just 'taskmaster')."
+        required: false
+        selector:
+          text:
+      item:
+        description: Task title/name. Required for task_create; required for task_complete when backend=todo (To Do items are addressed by name).
+        required: false
+        selector:
+          text:
+      note:
+        description: Optional task body/description.
+        required: false
+        selector:
+          text:
+            multiline: true
+      area:
+        description: HA area_id to tag the task with, where the active backend supports it (Radar tag, Grocy homeassistant_area_id). Also used to scope task_list reads. Can be combined with contact_id/company_id — a task can be both about a place and about a person/vendor.
+        required: false
+        selector:
+          text:
+      contact_id:
+        description: Twenty (Rolodex) contact UUID. If set and CRM is configured, this always wins the backend decision — creates a task_link on that contact regardless of chore/Radar/Inventory. Also scopes task_list to that contact's linked tasks.
+        required: false
+        selector:
+          text:
+      company_id:
+        description: Twenty (Rolodex) company UUID. Same behavior as contact_id, for a company/vendor instead of a person. If both are set, contact_id takes priority.
+        required: false
+        selector:
+          text:
+      priority:
+        description: "Radar-only. 1 low / 2 normal (default) / 3 high."
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 3
+      chore:
+        description: Set true when the task is recurring/chore-shaped — routes to a Grocy chore instead of a Grocy task when Inventory is the active tier and no contact_id/company_id was given. Radar has no chore concept, so this always wins over Radar too — the only thing that outranks it is an explicit contact_id/company_id.
+        required: false
+        selector:
+          boolean:
+      period_days:
+        description: Recurrence in days, used only when chore=true. Default 7.
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 365
+      task_id:
+        description: Backend-native ID for task_complete (Radar ticket number or Grocy chore/task ID). Not used for backend=todo or backend=crm — those complete by item name instead.
+        required: false
+        selector:
+          text:
+      backend:
+        description: "For task_complete: which backend owns this task — radar / inventory / todo / crm. Use the backend value returned by task_create."
+        required: false
+        selector:
+          select:
+            options:
+              - radar
+              - inventory
+              - todo
+              - crm
+      list_name:
+        description: To Do list name, used when the base tier is active (task_create/task_list/task_complete). Default 'Automation ToDo List'.
+        required: false
+        selector:
+          text:
+      limit:
+        description: Max results for task_list. Default 25.
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 100
+      caller_token:
+        name: Caller Token
+        description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
+        required: false
+        selector:
+          text:
+    icon: mdi:checkbox-marked-circle-outline
