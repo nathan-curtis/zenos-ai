@@ -110,8 +110,10 @@ script:
       post_supersummary:
         name: Post Supersummary (deprecated)
         description: >-
-          Deprecated — GC now always emits a summary_force event after eviction.
-          Scheduler + drain router handle re-dispatch. Field ignored.
+          Deprecated — GC now emits a summary_force event scoped to each kata
+          key actually deleted from the kata cabinet this pass (no blanket
+          full-fleet resummarize). Scheduler + drain router handle re-dispatch
+          for evictions on other cabinets. Field ignored.
         required: false
         default: true
         selector:
@@ -312,6 +314,10 @@ script:
             {%- endif -%}
 
       # ── 4. GC scan + execute: iterate all cabinets in series ──────────────
+      - alias: Init evicted-kata-key accumulator (scoped resummarize target list)
+        variables:
+          _kata_evict_ns: "{{ namespace(keys=[]) }}"
+
       - alias: GC scan and process all cabinets in series
         if:
           - condition: template
@@ -442,6 +448,22 @@ script:
                             event_data:
                               key: "{{ repeat.item }}"
                               volume_entity: "{{ current_cab }}"
+                - alias: Track kata drawers actually deleted this pass (scoped resummarize)
+                  if:
+                    - condition: template
+                      value_template: >-
+                        {{ not dry_run and gc_eligible and current_cab == kata_entity
+                           and (to_delete | length > 0 or stale_drawers | length > 0) }}
+                  then:
+                    - variables:
+                        _kata_evict_ns: >-
+                          {%- set _new = (to_delete | default([])) + (stale_drawers | default([])) -%}
+                          {%- for k in _new -%}
+                            {%- if k not in _kata_evict_ns.keys -%}
+                              {%- set _kata_evict_ns.keys = _kata_evict_ns.keys + [k] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ _kata_evict_ns }}
                 - alias: Self-heal — stamp gc_eligible default if absent from header
                   if:
                     - condition: template
@@ -668,9 +690,12 @@ script:
                       force_action: true
 
       # ── 5. Post-prune scheduler nudge ────────────────────────────────────────
-      # GC doesn't decide what to re-summarize — it just announces what it collected.
-      # Drain router sees evicted drawers as maximally stale (age_min: 9999) and
-      # bubbles them to the top of the priority queue on the next scheduler run.
+      # GC doesn't decide what to re-summarize for non-kata cabinets — it just
+      # announces what it collected. Drain router sees evicted drawers there as
+      # maximally stale (age_min: 9999) and bubbles them up on the next scheduler
+      # run. For the kata cabinet specifically, GC fires an immediate targeted
+      # summary_force per key it actually deleted (see _kata_evict_ns below) —
+      # never a blanket full-fleet resummarize.
       - alias: Broadcast kata_gc_complete + nudge scheduler
         if:
           - condition: template
@@ -687,11 +712,19 @@ script:
                 metadata:
                   cabinets_scanned: "{{ gc_cabinet_entities | default([]) }}"
                   caller_token: '{{ caller_token }}'
-          - event: zen_event
-            event_data:
-              event:
-                kind: summary_force
-                component: ''
+          - if:
+              - condition: template
+                value_template: "{{ _kata_evict_ns.keys | length > 0 }}"
+            then:
+              - repeat:
+                  for_each: "{{ _kata_evict_ns.keys }}"
+                  sequence:
+                    - event: zen_event
+                      event_data:
+                        event:
+                          kind: summary_force
+                          component: "{{ repeat.item }}"
+                          reason: gc_eviction
 
       # ── 6. Report ──────────────────────────────────────────────────────────
       - alias: Build GC report
