@@ -283,7 +283,7 @@ The dispatcher calls providers using this shape:
 ```json
 {
   "anchor_type": "label",
-  "anchor_ids": ["medical", "nathan"],
+  "anchor_ids": ["medical", "alex"],
   "page_size": 50,
   "include_suggestions": false,
   "consumer": "inspect",
