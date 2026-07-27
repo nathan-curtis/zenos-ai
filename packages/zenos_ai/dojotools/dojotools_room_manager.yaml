@@ -1,13 +1,30 @@
 ###############################################################################
-# zen_dojotools_room_manager v5.4.1 (codename: RoomReg)
+# zen_dojotools_room_manager v5.6.0 (codename: RoomReg)
 # Physical room definition registry — spatial topology, adjacency, portals
 #
-# v5.4.1 (Zen pull, 2026-07-04): kfc_manifest mode added (room_manager
-#   component, KF5 self-registration, no seed). New tax/real-estate room
-#   fields (tax_bucket, dimension/area-override fields, home_office_claimed,
-#   parent_area_id) with validation guards. Cabinet-write template dedup via
-#   CABS.cabinet_drawer_value_mounted. adjacent[] build now filters
-#   non-strings via | select('string') in two places.
+# v5.6.0 (2026-07-22): room_occupant_prefs gains vendor_activity — an
+#   independent field (not a fourth priority tier; a vendor being present
+#   doesn't change whose meal/music prefs apply) checking
+#   zen_dojotools_rolodex mode=active_appointment for a vendor/contact
+#   mid-appointment in this room right now. Attached to every branch's
+#   response (guest_stay/household_member/none) — a caution signal for
+#   automations (e.g. don't fire a scene while a vendor's mid-repair).
+#
+# v5.5.0 (2026-07-22): New mode room_occupant_prefs — "who's the relevant
+#   person for this room right now, guest or household member, and what are
+#   their prefs." Checks zen_dojotools_rolodex mode=active_stay_prefs first
+#   (event-shaped guest presence, Twenty guestPrefs); falls back to this
+#   room's static room_topology.occupants[] assignment resolved against
+#   zen_dojotools_profile_editor (household-member prefs already live there —
+#   preferences.allergens, media_prefs — not duplicated into Twenty). No
+#   name->cabinet index exists for profile_editor's fixed target_type slots
+#   (user/family/expansion_1-5), so occupant name resolution is a bounded scan
+#   (max 7 reads per occupant) matching first_name/preferred_name. Allergens
+#   union across all matched occupants (a missed one is a safety issue);
+#   media_prefs from the first occupant matched — stated simplification, not
+#   a hidden guess. Kitchen's mealplan_suggest now calls this instead of
+#   active_stay_prefs directly, so a family dinner gets the same allergen
+#   flagging a guest stay does.
 #
 # ── TODO: VAC_SYNC v2 — RE-ENGINEER, DO NOT REMOVE ───────────────────────────
 # vac_sync was removed in v1.5.0 because the v1 implementation was fragile:
@@ -89,10 +106,10 @@ script:
       mode=help for full reference.
     fields:
       mode:
-        description: "get/set/list: room data. zone_set/zone_remove/zones: sub-room zones. landmark_set/landmark_remove/landmarks: named anchors. link/unlink/boundary_*: adjacency. home_overview/emergency: whole-home. area_create/update/delete: manage HA areas. setup/help."
+        description: "get/set/list: room data. zone_set/zone_remove/zones: sub-room zones. landmark_set/landmark_remove/landmarks: named anchors. link/unlink/boundary_*: adjacency. home_overview/emergency: whole-home. area_create/update/delete: manage HA areas. room_occupant_prefs: guest-or-household-member prefs for a room. setup/help."
         selector:
           select:
-            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, setup, pathfind, tool_manifest, kfc_manifest, help]
+            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, room_occupant_prefs, setup, pathfind, tool_manifest, kfc_manifest, help]
       area:
         description: "Area to operate on. Required for get, set, link, unlink, area_update, area_delete."
         selector:
@@ -433,7 +450,7 @@ script:
                 tool='zen_dojotools_room_manager',
                 display_name='Room Manager',
                 tier='dojotools',
-                version='5.4.1',
+                version='5.6.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['zen_household_cabinet', 'zen_kfc_provider'],
                 optional_labels=['room_layout', 'hps'],
@@ -453,6 +470,7 @@ script:
                   'area_delete': 'Delete area + topology entry',
                   'setup': 'Deploy RM KFC to dojo',
                   'pathfind': 'Shortest path between two areas or persons',
+                  'room_occupant_prefs': 'Guest stay (Twenty) or household occupant (profile_editor) prefs for a room, whichever is active, plus an independent vendor_activity caution flag',
                   'tool_manifest': 'Return tool identity',
                   'kfc_manifest': 'Return KFC component definitions'
                 },
@@ -557,7 +575,7 @@ script:
             result:
               status: ok
               tool: zen_dojotools_room_manager
-              version: "5.4.1"
+              version: "5.6.0"
               mode: kfc_manifest
               kfc: "{{ _kfc_out }}"
               count: "{{ _kfc_out | length }}"
@@ -1241,6 +1259,157 @@ script:
                 context: "{{ _context_block }}"
                 caller_token: "{{ _caller_token }}"
           - stop: get
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 2b. ROOM_OCCUPANT_PREFS — "who's the relevant person for this room right
+      #     now, guest or household member, and what are their prefs." Guest
+      #     stays (Twenty CRM, event-shaped presence) take priority; falls back
+      #     to this room's static occupants[] assignment resolved against
+      #     zen_dojotools_profile_editor (household-member prefs already live
+      #     there — preferences/media_prefs — not duplicated into Twenty).
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'room_occupant_prefs' }}"
+        then:
+          - if: "{{ _area_id == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: room_occupant_prefs, message: "area= required.", caller_token: "{{ _caller_token }}"}
+              - stop: room_occupant_prefs error
+                response_variable: _result
+
+          # vendor_activity is independent of the guest/household priority chain below — a
+          # vendor being present doesn't change whose meal/music prefs apply, it's an
+          # orthogonal "use caution, work in progress" signal for automations. Computed once,
+          # attached to every branch's response.
+          - action: script.zen_dojotools_rolodex
+            response_variable: _rop_aap
+            continue_on_error: true
+            data:
+              mode: active_appointment
+              area_id: '{{ _area_id }}'
+          - variables:
+              _rop_vendor_activity:
+                active: >-
+                  {{ _rop_aap is defined and _rop_aap is mapping
+                     and _rop_aap.get('status') == 'success'
+                     and _rop_aap.get('result', {}).get('active') == true }}
+                vendor_name: "{{ _rop_aap.get('result', {}).get('vendor_name', '') if _rop_aap is mapping else '' }}"
+                appointment_summary: "{{ _rop_aap.get('result', {}).get('appointment_summary', '') if _rop_aap is mapping else '' }}"
+
+          - action: script.zen_dojotools_rolodex
+            response_variable: _rop_asp
+            continue_on_error: true
+            data:
+              mode: active_stay_prefs
+              area_id: '{{ _area_id }}'
+
+          - if: >-
+              {{ _rop_asp is defined and _rop_asp is mapping
+                 and _rop_asp.get('status') == 'success'
+                 and _rop_asp.get('result', {}).get('active') == true }}
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    mode: room_occupant_prefs
+                    result:
+                      active: true
+                      source: guest_stay
+                      guest_name: "{{ _rop_asp.get('result', {}).get('guest_name', '') }}"
+                      area_id: "{{ _area_id }}"
+                      guest_prefs: "{{ _rop_asp.get('result', {}).get('guest_prefs', {}) }}"
+                      vendor_activity: "{{ _rop_vendor_activity }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_occupant_prefs (guest_stay)
+                response_variable: _result
+
+          # no active guest — fall back to this room's static occupants[] assignment
+          - variables:
+              _rop_spatial: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{%- set topo = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'room_topology') | from_json -%}
+                {{ topo.get(_area_id, none) }}
+              _rop_occupants: >-
+                {%- set _sp = _rop_spatial if _rop_spatial is mapping else {} -%}
+                {{ _sp.get('occupants', []) if _sp.get('occupants', []) is sequence else [] }}
+
+          - if: "{{ _rop_occupants | length == 0 }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    mode: room_occupant_prefs
+                    result:
+                      active: false
+                      source: none
+                      area_id: "{{ _area_id }}"
+                      vendor_activity: "{{ _rop_vendor_activity }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_occupant_prefs (none)
+                response_variable: _result
+
+          # scan the fixed profile_editor target slots for a first/preferred-name match per
+          # occupant — no name->cabinet index exists (confirmed), so this is a bounded
+          # (max 7 per occupant) resolve. Allergens union across all matched occupants
+          # (missing one is a safety issue); media_prefs from the first occupant matched —
+          # a stated simplification, not a hidden guess.
+          - variables:
+              _rop_targets: [user, family, expansion_1, expansion_2, expansion_3, expansion_4, expansion_5]
+              _rop_matched_names: []
+              _rop_all_allergens: []
+              _rop_media: {}
+          - repeat:
+              for_each: "{{ _rop_occupants }}"
+              sequence:
+                - variables:
+                    _ropo_name: "{{ repeat.item | string | lower | trim }}"
+                    _ropo_found: false
+                - repeat:
+                    for_each: "{{ _rop_targets }}"
+                    sequence:
+                      - if: "{{ not _ropo_found }}"
+                        then:
+                          - action: script.zen_dojotools_profile_editor
+                            response_variable: _ropi_read
+                            continue_on_error: true
+                            data:
+                              mode: read
+                              target_type: '{{ repeat.item }}'
+                          - variables:
+                              _ropi_profile: "{{ _ropi_read.get('profile', {}) if _ropi_read is mapping else {} }}"
+                              _ropi_names: >-
+                                {%- set _p = _ropi_read.get('profile', {}) if _ropi_read is mapping else {} -%}
+                                {{ [_p.get('first_name','') | lower | trim, _p.get('preferred_name','') | lower | trim] }}
+                          - if: "{{ _ropo_name in _ropi_names and _ropo_name != '' }}"
+                            then:
+                              - variables:
+                                  _ropo_found: true
+                                  _rop_matched_names: "{{ _rop_matched_names + [repeat.item] }}"
+                                  _rop_all_allergens: >-
+                                    {{ (_rop_all_allergens
+                                        + (_ropi_profile.get('preferences', {}).get('allergens', [])
+                                           if _ropi_profile.get('preferences', {}).get('allergens', []) is sequence else []))
+                                       | unique | list }}
+                                  _rop_media: "{{ _rop_media if _rop_media | length > 0 else _ropi_profile.get('media_prefs', {}) }}"
+
+          - variables:
+              _rop_match_found: "{{ _rop_matched_names | length > 0 }}"
+
+          - variables:
+              _result:
+                status: ok
+                mode: room_occupant_prefs
+                result:
+                  active: "{{ _rop_match_found }}"
+                  source: "{{ 'household_member' if _rop_match_found else 'none' }}"
+                  guest_name: "{{ _rop_occupants | join(', ') if _rop_match_found else none }}"
+                  area_id: "{{ _area_id }}"
+                  guest_prefs:
+                    allergens: "{{ _rop_all_allergens }}"
+                    media: "{{ _rop_media }}"
+                  vendor_activity: "{{ _rop_vendor_activity }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: room_occupant_prefs (household_member or none)
             response_variable: _result
 
       # ═══════════════════════════════════════════════════════════════════════
