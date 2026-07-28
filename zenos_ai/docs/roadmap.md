@@ -10,7 +10,15 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.7.0 'Neo' — Shipped (2026-06-27)**
+**2026.8.0 'Chef' — Shipped**
+
+Taskmaster becomes a real cross-backend expediter. Kitchen gains a full fulfillment/costing layer plus an executive-chef batch (cost rollups, waste logging, event menus, prep briefing). A platform-wide identity gate (SP1's `resolve_caller_identity`) backs its first real gated capability, Portainer container control.
+
+See: [Release Notes — Chef](releases/chef.md)
+
+---
+
+**2026.7.0 'Neo' (incl. 2026.7.1 patch) — Shipped (2026-06-27)**
 
 The cabinet is a graph. Tools talk to each other by design. Friday navigates a mind, not a file system.
 
