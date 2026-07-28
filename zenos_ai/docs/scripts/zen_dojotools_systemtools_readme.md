@@ -395,6 +395,7 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.2.1 | `zen_health_report` now surfaces `sensor.zen_label_health` directly (`health_sensors.labels`/`reasons.labels`) instead of only inheriting it second-hand through `agent_health`. New `label_cabinet_consistency` block (`consistent`, `label_health_state`, `label_health_missing`, `cabinet_health_state`) — `zen_label_health` and `zen_cabinet_health` derive missing-required-label state from the same source and should always agree; a disagreement is flagged as a `SENSOR CONFLICT` (stale template render, not two real problems) with `ha_reload_templates` as the suggested first move. |
 | v5.1.1 | `render_dojo`, `render_system`, `prompt_health` — prompt inspection tools. `pipeline` — pipeline status view. `tool` field resolves `(mode \| default...) or (tool \| default...)` alias for backward compat. Safer `int()` defaults throughout (`\| int(600)`, `\| int(300)`). |
 | v5.1.0 | `ha_reload_all` / `ha_reload_scripts` deferred via `zen_event` kinds (`deferred_reload_all`, `deferred_script_reload`). `zen_health_report` reads 7 resolvers + 5 health sensors incl. `zen_agent_health`. HALMark FG-35/36/37 surfaced in help response. |
 | v4.8.0 | `pnotif_list`, `pnotif_raise`, `pnotif_edit`, `pnotif_dismiss` — persistent notification CRUD. `repairs_list`, `repair_fix` — HA repairs surface. `notice_dashboard` — aggregate triage view with pre-built `action_queue[]`. |
