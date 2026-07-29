@@ -143,6 +143,7 @@ A successful configure call connects to Zammad, writes the URL to `integrations_
 | Symptom | Check |
 |---------|-------|
 | `configure` returns connection error | Verify the URL and `zammad_token` secret. Use HTTPS. |
+| Any call returns `status: not_configured` | No `integrations_config.fulfillment.url` set and no `base_url` override — the internal dispatcher short-circuits before attempting a host-less network call. Run `configure` with a real url. |
 | `tickets_by_anchor` returns empty results | Confirm tickets are tagged with the correct HA slug. Use `ticket_tag` to add slugs. |
 | `view_get` returns 401/403 | Check token expiry and group/ticket/search permissions in Zammad. |
 | Agent queue is stale | Fire a `zen_event` with `kind: agent_queue_refresh` to force sync. |
