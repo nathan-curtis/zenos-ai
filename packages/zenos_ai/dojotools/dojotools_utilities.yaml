@@ -597,7 +597,11 @@ script:
       response_variable: _wait_response
     fields:
       mode:
-        description: "Pass tool_manifest to get self-description."
+        description: >-
+          This tool has only one real operation (wait N seconds via the
+          duration field) — there is no read/set distinction to select here.
+          Pass mode: "tool_manifest" only if you want this tool's own
+          self-description/schema dump instead of actually waiting.
         required: false
         selector:
           select:
@@ -783,11 +787,20 @@ script:
           text:
 
       mode:
-        description: "Pass tool_manifest to get self-description."
+        description: >-
+          Optional explicit operation selector — "read" to force a read-only
+          reply (same as get=true), "set" to apply option (fails clearly with
+          a missing_option error if option isn't also given, rather than
+          silently falling back to a read), or "tool_manifest" for this tool's
+          own self-description/schema dump instead of touching the entity.
+          You can also just omit mode entirely and use option/get directly —
+          both styles work identically.
         required: false
         selector:
           select:
             options:
+              - read
+              - set
               - tool_manifest
 
       caller_token:
@@ -838,12 +851,21 @@ script:
           _slug: "{{ raw | replace(':', '') | slugify }}"
           _input_ent: "input_select.{{ _slug }}"
           _select_ent: "select.{{ _slug }}"
+          # states() returns 'unknown' BOTH for a real entity with no value
+          # set yet AND for a genuinely nonexistent entity_id — no way to
+          # tell those apart from states() alone. Check real existence
+          # against the state-machine collection instead; 'unknown' is a
+          # legitimate, expected state for an unset-but-real entity (exactly
+          # the case this tool is often called to fix), so it must not be
+          # treated as "doesn't exist" once existence is confirmed this way.
+          _input_ent_exists: "{{ _input_ent in (states.input_select | map(attribute='entity_id') | list) }}"
+          _select_ent_exists: "{{ _select_ent in (states.select | map(attribute='entity_id') | list) }}"
           _entity_id: >-
             {%- if '.' in raw -%}
               {{ raw }}
-            {%- elif states(_input_ent) not in ['unknown', 'unavailable'] -%}
+            {%- elif _input_ent_exists -%}
               {{ _input_ent }}
-            {%- elif states(_select_ent) not in ['unknown', 'unavailable'] -%}
+            {%- elif _select_ent_exists -%}
               {{ _select_ent }}
             {%- else -%}
               INVALID
@@ -872,10 +894,27 @@ script:
           _state: "{{ states(_entity_id) }}"
           _options: "{{ state_attr(_entity_id, 'options') | default([]) }}"
 
+      # ── mode: set with no option is a real caller mistake — say so, don't silently read ──
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'set' and opt_raw is none }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_select_control
+                caller_token: "{{ _token }}"
+                error: missing_option
+                message: "mode: \"set\" requires the option field — omit mode entirely (or use mode: \"read\") if you only meant to read."
+                entity_id: "{{ _entity_id }}"
+                options: "{{ _options }}"
+          - stop: missing_option
+            response_variable: result
+
       # ── Read-only path ────────────────────────────────────────────────────
       - if:
           - condition: template
-            value_template: "{{ get_raw is not none or opt_raw is none }}"
+            value_template: "{{ _tm_mode == 'read' or get_raw is not none or opt_raw is none }}"
         then:
           - variables:
               result:
@@ -929,17 +968,29 @@ script:
                   option: "{{ opt_raw }}"
 
       # ── Response ──────────────────────────────────────────────────────────
+      # Re-read the entity instead of echoing opt_raw back — a template-backed
+      # select whose state derives from something other than its own stored
+      # option (e.g. a trigger-based template with an incomplete trigger list)
+      # can silently fail to reflect the write even though the service call
+      # itself reported no error. Echoing the request as if it were confirmed
+      # fact hid exactly that failure mode.
+      - variables:
+          _post_state: "{{ states(_entity_id) }}"
       - variables:
           result:
-            ok: true
+            ok: "{{ _post_state == opt_raw }}"
             tool: zen_dojotools_select_control
             caller_token: "{{ _token }}"
             mode: set
             entity_id: "{{ _entity_id }}"
             domain: "{{ _domain }}"
             previous: "{{ _state }}"
-            state: "{{ opt_raw }}"
+            requested: "{{ opt_raw }}"
+            state: "{{ _post_state }}"
             options: "{{ _options }}"
+            warning: >-
+              {{ none if _post_state == opt_raw else
+                 "select_option reported no error but the entity's state does not reflect the requested option — likely a template-backed entity whose state source wasn't updated (e.g. missing trigger on its real backing entity)." }}
       - stop: set
         response_variable: result
 
@@ -1025,11 +1076,21 @@ script:
               - int
 
       mode:
-        description: "Pass tool_manifest to get self-description."
+        description: >-
+          Optional explicit operation selector — "read" to return the current
+          value/min/max without changing anything (same as omitting value with
+          operation=set), "set" to require operation=set with a real value
+          (fails clearly with missing_value if value isn't also given, rather
+          than a confusing out_of_range error), or "tool_manifest" for this
+          tool's own self-description/schema dump instead of touching the
+          entity. You can also just omit mode and use value/operation/amount
+          directly — both styles work identically.
         required: false
         selector:
           select:
             options:
+              - read
+              - set
               - tool_manifest
 
       caller_token:
@@ -1118,6 +1179,41 @@ script:
             {%- set a = state_attr(_entity_id, 'max') -%}
             {%- set b = state_attr(_entity_id, 'native_max_value') -%}
             {{ (a | float) if a is not none else ((b | float) if b is not none else none) }}
+
+      # ── mode: set with no value is a real caller mistake — say so, don't compute garbage ──
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'set' and op == 'set' and value_raw is none }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_number
+                caller_token: "{{ _token }}"
+                error: missing_value
+                message: "mode: \"set\" requires the value field (or a non-set operation) — omit mode entirely (or use mode: \"read\") if you only meant to read."
+                entity_id: "{{ _entity_id }}"
+                current: "{{ _current }}"
+          - stop: missing_value
+            response_variable: result
+
+      # ── Read-only path ────────────────────────────────────────────────────
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'read' or (op == 'set' and value_raw is none) }}"
+        then:
+          - variables:
+              result:
+                ok: true
+                tool: zen_dojotools_number
+                caller_token: "{{ _token }}"
+                mode: read
+                entity_id: "{{ _entity_id }}"
+                state: "{{ _current }}"
+                min: "{{ _min }}"
+                max: "{{ _max }}"
+          - stop: read
+            response_variable: result
 
       # ── Compute ───────────────────────────────────────────────────────────
       - variables:
@@ -1250,11 +1346,21 @@ script:
           text:
 
       mode:
-        description: "Pass tool_manifest to get self-description."
+        description: >-
+          Optional explicit operation selector — "read" to return the current
+          value without changing anything (same as omitting value with
+          operation=set), "set" to require a real value (fails clearly with
+          missing_value if value isn't also given, rather than silently
+          writing an empty string), or "tool_manifest" for this tool's own
+          self-description/schema dump instead of touching the entity. You
+          can also just omit mode and use value/operation directly — both
+          styles work identically.
         required: false
         selector:
           select:
             options:
+              - read
+              - set
               - tool_manifest
 
       caller_token:
@@ -1309,18 +1415,28 @@ script:
             {%- else -%}{{ none }}{%- endif -%}
 
       # ── Entity resolution ─────────────────────────────────────────────────
+      # Comparing states(entity) to 'unavailable' to test existence conflates
+      # "integration reports this entity broken" with "this entity's actual
+      # stored value legitimately IS the text 'unavailable'" — HA's state
+      # machine stores both as the identical string, so a real, working
+      # input_text whose current value happens to be 'unavailable' got
+      # permanently locked out of further writes by this tool. Check real
+      # existence against the state-machine collection instead — same fix
+      # class as zen_dojotools_select_control's earlier resolver bug.
       - variables:
           _slug: "{{ raw | replace(':', '') | slugify }}"
           _input_ent: "input_text.{{ _slug }}"
           _text_ent: "text.{{ _slug }}"
+          _text_ent_exists: "{{ _text_ent in (states.text | map(attribute='entity_id') | list) }}"
+          _input_ent_exists: "{{ _input_ent in (states.input_text | map(attribute='entity_id') | list) }}"
           _entity_id: >-
             {%- if '.' in raw -%}
-              {%- if raw.startswith('input_text.') and states(raw) != 'unavailable' -%}{{ raw }}
-              {%- elif raw.startswith('text.') and states(raw) != 'unavailable' -%}{{ raw }}
+              {%- if raw.startswith('input_text.') and (raw in (states.input_text | map(attribute='entity_id') | list)) -%}{{ raw }}
+              {%- elif raw.startswith('text.') and (raw in (states.text | map(attribute='entity_id') | list)) -%}{{ raw }}
               {%- else -%}INVALID{%- endif -%}
             {%- else -%}
-              {%- if states(_text_ent) not in ['unknown', 'unavailable'] -%}{{ _text_ent }}
-              {%- elif states(_input_ent) != 'unavailable' -%}{{ _input_ent }}
+              {%- if _text_ent_exists -%}{{ _text_ent }}
+              {%- elif _input_ent_exists -%}{{ _input_ent }}
               {%- else -%}INVALID{%- endif -%}
             {%- endif -%}
           _domain: >-
@@ -1343,6 +1459,43 @@ script:
                   - input_text
                 input: "{{ raw }}"
           - stop: error
+            response_variable: result
+
+      # ── mode: set with no value is a real caller mistake — say so, don't write empty ──
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'set' and op_mode == 'set' and (value is not defined or value is none) }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_text
+                caller_token: "{{ _token }}"
+                error: missing_value
+                message: "mode: \"set\" requires the value field (or a non-set operation) — omit mode entirely (or use mode: \"read\") if you only meant to read."
+                entity_id: "{{ _entity_id }}"
+          - stop: missing_value
+            response_variable: result
+
+      # ── Read-only path ────────────────────────────────────────────────────
+      # Docstring's own "Read: { name }" example was a lie — op_mode defaults
+      # to 'set' and there was no branch to catch a bare call with no value,
+      # so a plain read-style call silently wrote '' over the entity. A bare
+      # call (no value, default/'set' operation) must read, never write.
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'read' or (op_mode == 'set' and (value is not defined or value is none)) }}"
+        then:
+          - variables:
+              result:
+                ok: true
+                tool: zen_dojotools_text
+                caller_token: "{{ _token }}"
+                mode: read
+                entity_id: "{{ _entity_id }}"
+                domain: "{{ _domain }}"
+                value: "{{ states(_entity_id) }}"
+          - stop: read
             response_variable: result
 
       # ── Compute final value ───────────────────────────────────────────────
@@ -1525,11 +1678,21 @@ script:
           text:
 
       mode:
-        description: "Pass tool_manifest to get self-description."
+        description: >-
+          Optional explicit operation selector — "read" to force a read-only
+          reply regardless of any setter fields you also passed (same as
+          get=true), "set" to require at least one real setter field
+          (temperature/hvac_mode/fan_mode/etc — fails clearly with
+          missing_setter if none are given, rather than silently reading), or
+          "tool_manifest" for this tool's own self-description/schema dump
+          instead of touching the entity. You can also just omit mode and use
+          the setter fields / get directly — both styles work identically.
         required: false
         selector:
           select:
             options:
+              - read
+              - set
               - tool_manifest
 
       caller_token:
@@ -1661,11 +1824,31 @@ script:
           can_off: "{{ 'off' in hvac_modes }}"
           can_on: "{{ hvac_modes | reject('equalto', 'off') | list | length > 0 }}"
 
+      # ── mode: set with no setter fields is a real caller mistake ──────────
+      - if:
+          - condition: template
+            value_template: >-
+              {{ _tm_mode == 'set'
+                 and temperature_raw is none and low_raw is none and high_raw is none
+                 and hvac_raw is none and fan_raw is none and swing_raw is none
+                 and preset_raw is none and humidity_raw is none
+                 and aux_raw is none and power_raw is none }}
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_climate
+                caller_token: "{{ _token }}"
+                error: missing_setter
+                message: "mode: \"set\" requires at least one setter field (temperature/hvac_mode/fan_mode/swing_mode/preset/humidity/aux_heat/power) — omit mode entirely (or use mode: \"read\") if you only meant to read."
+          - stop: missing_setter
+            response_variable: result
+
       # ── GET mode ──────────────────────────────────────────────────────────
       - if:
           - condition: template
             value_template: >-
-              {{ get_raw is not none
+              {{ _tm_mode == 'read' or get_raw is not none
                  or (temperature_raw is none and low_raw is none and high_raw is none
                      and hvac_raw is none and fan_raw is none and swing_raw is none
                      and preset_raw is none and humidity_raw is none
@@ -2499,11 +2682,21 @@ script:
           text:
 
       mode:
-        description: "Pass tool_manifest to get self-description."
+        description: >-
+          Optional explicit operation selector — "read" to return the current
+          value without changing anything (same as omitting value with
+          get=true), "set" to require the value field (fails clearly with
+          missing_value if value isn't also given, rather than crashing on an
+          empty datetime parse), or "tool_manifest" for this tool's own
+          self-description/schema dump instead of touching the entity. You can
+          also just omit mode and use value/get directly — both styles work
+          identically.
         required: false
         selector:
           select:
             options:
+              - read
+              - set
               - tool_manifest
 
       caller_token:
@@ -2574,10 +2767,26 @@ script:
           - stop: error
             response_variable: result
 
+      # ── mode: set with no value is a real caller mistake ──────────────────
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'set' and val_raw is none }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_datetime
+                caller_token: "{{ _token }}"
+                error: missing_value
+                message: "mode: \"set\" requires the value field — omit mode entirely (or use mode: \"read\") if you only meant to read."
+                entity_id: "{{ _entity_id }}"
+          - stop: missing_value
+            response_variable: result
+
       # ── Read path ─────────────────────────────────────────────────────────
       - if:
           - condition: template
-            value_template: "{{ get_raw is not none or val_raw is none }}"
+            value_template: "{{ _tm_mode == 'read' or get_raw is not none or val_raw is none }}"
         then:
           - variables:
               result:
