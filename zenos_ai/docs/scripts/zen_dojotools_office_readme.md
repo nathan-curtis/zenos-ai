@@ -45,6 +45,18 @@ Update and delete are not supported by the MS365 Teams integration.
 | `input_text.zen_teams_chat_id` | Your Teams chat thread ID. Run `read` — `partner_chat_id` in the response is the value to set here |
 | `input_text.zen_teams_display_name` | Your display name as seen in Teams (e.g. `Home Assistant`) |
 
+**Entity resolution:** the chat and status sensors created by the `ms365_teams` integration are found via HA's `teams` label (`label_entities('teams')`, matched against `sensor.*_chat`/`sensor.*_status` name patterns), not a hardcoded entity name — the real sensor name is prefixed by the connected account's display name, which varies per install. **You must label your real `sensor.*_chat`/`sensor.*_status` entities with `teams`** before this tool works:
+
+```yaml
+zen_dojotools_labels:
+  mode: tag
+  target_entities: [sensor.homeassistant_chat, sensor.homeassistant_status]
+  label_list: [teams]
+  confirm: true
+```
+
+If nothing carries the label yet, `read`/`send`/`set` return a self-diagnosing `not_configured` error: it scans for the real candidate entity regardless of label and either reports the integration isn't installed, or hands back a ready-to-fire fix call naming the exact entity found and missing the label.
+
 ---
 
 ## zen_dojotools_mail — v5.0.0
