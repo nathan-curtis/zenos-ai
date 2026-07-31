@@ -1,4 +1,4 @@
-# Zen DojoTools Manifest — v6.3.1 (ZenOS-AI 2026.9.0)
+# Zen DojoTools Manifest — v6.3.1 (ZenOS-AI 2026.8.0)
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 
