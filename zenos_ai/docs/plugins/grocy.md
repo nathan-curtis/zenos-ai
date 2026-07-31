@@ -147,7 +147,7 @@ This is what lets Room Manager ask "what inventory belongs to this room?" withou
 * `stock_area_summary`: compact count and anchor view for a room or area.
 * `stock_area_volatile`: volatile items (overdue, due soon, expiring) scoped to a HA area.
 * `stock_area_inventory`: denormalized detailed view with product names and amounts.
-* `chores_by_area`: maintenance chores discovered through stocked products or direct `homeassistant_area` tags.
+* `chores_by_area`: maintenance chores discovered through stocked products or direct `homeassistant_area` tags. A chore's own explicit `homeassistant_area` tag always wins over the product/location fallback — a chore tagged to a different area is never included just because its product happens to be bulk-stocked in this area's location.
 
 ---
 

@@ -198,7 +198,7 @@ zen_dojotools_library:
 
 | Mode | What It Does |
 |------|-------------|
-| `browse` | List all items of the given `item_type`. Optional `query` for title/author/platform filter. |
+| `browse` | List all items of the given `item_type`. Optional `query` for title/author/platform filter. Optional `limit`/`offset` (or `per_page`) in `input_json` page the result — response reports `total_count` separately from the (possibly page-limited) `count`/`items`. Omitting `limit` returns every matching item, as before. |
 | `find` | Search by title, author/artist, ISBN, platform, or tag. Returns `{items[], count}`. |
 | `search` | Full-text search across all item fields including notes. Accepts `q` or `query`. |
 | `add` | Add an item. Requires `isbn` or `title`. ISBN triggers Grocy dedup guard — returns existing record if found. |

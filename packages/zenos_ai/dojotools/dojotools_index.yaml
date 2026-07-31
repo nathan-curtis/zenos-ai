@@ -2011,7 +2011,7 @@ script:
                 tool='zen_dojotools_index',
                 display_name='Index — ZenOS Hypergraph Reasoner',
                 tier='dojotools',
-                version='4.9.0',
+                version='4.9.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -2163,8 +2163,21 @@ script:
           alias: Build compact index mode
         sequence:
         - variables:
+            # Capped to the top _ci_max_labels by entity count. This drawer is a
+            # RESERVED (_-prefixed) key living in the household cabinet, which
+            # has a hard 131072-char budget shared with 55+ other drawers —
+            # storing the full label registry (822 labels, ~57KB) silently
+            # failed FileCabinet's post-write verification (write_verified:
+            # false) while still reporting status: success, so the drawer
+            # stayed frozen at its last-good (2026-04-08, 120-label) snapshot
+            # for months with every later rebuild attempt a silent no-op.
+            # Capping keeps this a genuine "compact" index, matches the size
+            # that was actually working before, and is naturally consistent
+            # with its own ranking/score purpose — low-count labels are the
+            # ones least useful to have pre-cached anyway.
+            _ci_max_labels: 100
             compact_index_value: >-
-              {%- set all_labels = labels() | sort -%}
+              {%- set all_labels = labels() -%}
               {%- set _skip_pfx = ['zen_', 'autovac_', 'em_', 'haptic_', 'last_', 'coming_home_role_', 'preset_', 'foo_'] -%}
               {%- set ns = namespace(out=[]) -%}
               {%- for lbl in all_labels -%}
@@ -2174,18 +2187,22 @@ script:
                 {%- endfor -%}
                 {%- if not _skip.v -%}
                   {%- set cnt = label_entities(lbl) | list | length -%}
-                  {%- set ns.out = ns.out + [{
-                    'slug':  lbl,
-                    'name':  lbl | replace('_', ' ') | title,
-                    'count': cnt,
-                    'score': cnt
-                  }] -%}
+                  {%- if cnt > 0 -%}
+                    {%- set ns.out = ns.out + [{
+                      'slug':  lbl,
+                      'name':  lbl | replace('_', ' ') | title,
+                      'count': cnt
+                    }] -%}
+                  {%- endif -%}
                 {%- endif -%}
               {%- endfor -%}
-              {{- {'generated': now().isoformat(), 'labels': ns.out} | tojson -}}
+              {%- set _top = ns.out | sort(attribute='count', reverse=true) | list -%}
+              {%- set _top = _top[:_ci_max_labels] -%}
+              {{- {'generated': now().isoformat(), 'labels': _top | sort(attribute='slug')} | tojson -}}
         - action: script.zen_dojotools_filecabinet
           data:
             action_type: write
+            force_action: true
             volume_entity_id:
               - "{{- zen_household_cab -}}"
             key: _compact_index
@@ -2193,9 +2210,25 @@ script:
             set_timestamp: true
           response_variable: _ci_write
         - variables:
+            # _compact_index is a reserved (_-prefixed) drawer key — FileCabinet
+            # rejects writes to it without force_action: true (added above).
+            # Before that fix, this write silently failed every time (status:
+            # error, never checked here) and this step still reported blanket
+            # success — the cache was frozen at whatever last wrote successfully
+            # (2026-04-08, under an older labels-list schema) while every
+            # scheduled/dispatcher-triggered "rebuild" since then was a no-op.
+            # Also check write_verified explicitly, not just status: FileCabinet
+            # can report status: success with write_verified: false when the
+            # payload doesn't actually persist (confirmed happening here before
+            # the label cap above — an oversized value silently failed
+            # write-back verification while status still said success).
+            _ci_write_ok: >-
+              {{- _ci_write is mapping
+                  and _ci_write.get('status', '') in ['ok', 'success']
+                  and _ci_write.get('write_verified', true) != false -}}
             final_response:
-              status: ok
-              message: Compact label index built.
+              status: "{{- 'ok' if _ci_write_ok else 'error' -}}"
+              message: "{{- 'Compact label index built.' if _ci_write_ok else 'Compact label index computed but write failed or was not verified: ' ~ (_ci_write.get('message', 'write_verified was false') if _ci_write is mapping else 'unknown error') -}}"
               generated: "{{- now().isoformat() -}}"
               labels: >-
                 {%- set _v = compact_index_value -%}
@@ -2213,6 +2246,20 @@ script:
         data:
           mode: build_compact_index
         response_variable: _compact_refresh_result
+      # _ci_val (used by the operator='*' wildcard branch below) was read from
+      # cabinet state BEFORE this rebuild fired — on a cold cache (drawer never
+      # written yet) that snapshot is empty, so the wildcard branch would run
+      # against stale/empty label data even though the rebuild above just wrote
+      # fresh data. Re-read after rebuild so the wildcard sees it in the same call.
+      - variables:
+          _ci_vars: "{{- state_attr(zen_household_cab, 'variables') or {} -}}"
+          _ci_entry: >
+            {%- set e = _ci_vars.get('_compact_index') if _ci_vars is mapping else none -%}
+            {{- e if e is mapping else {} -}}
+          _ci_val: >-
+            {%- set v = _ci_entry.get('value') if _ci_entry is mapping else none -%}
+            {%- set v = v | from_json({}) if v is string else v -%}
+            {{- v if v is mapping else {} -}}
     - variables:
         operator: "{{- operator | default('AND') -}}"
         _raw_filter: "{{- filter_json | default('{}') -}}"
