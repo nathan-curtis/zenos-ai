@@ -84,7 +84,7 @@ The bridge between "what's in a recipe" and "what's actually in the pantry." All
 
 | Mode | Description |
 |------|-------------|
-| `mealplan_today` | Today's meal plan grouped by entry type (breakfast/lunch/dinner/snack). Answers "what's for dinner tonight?" |
+| `mealplan_today` | Meal plan grouped by entry type (breakfast/lunch/dinner/snack) for the given `date` (optional, ISO `YYYY-MM-DD`; defaults to today when omitted). Answers "what's for dinner tonight?" |
 | `mealplan_week` | This week's plan (Mon–Sun) grouped by date then entry type. Answers "what are we eating this week?" |
 | `mealplan_list` | List meal plan entries. Optional date range via `start_date` / `end_date`. |
 | `mealplan_get_item` | Get a specific meal plan entry by `item_id`. |
@@ -158,7 +158,7 @@ The 5.22.0 gap-closure batch — proactive kitchen operations, not just recipe/s
 
 | Mode | Description |
 |------|-------------|
-| `kitchen_brief` | Weekly food-cost rollup: `recipe_cost` totals across the week's meal plan vs. Firefly's "Groceries" category spend. Dedupes to **one fetch per unique recipe and one Grocy lookup per unique ingredient across the whole week** (not per-meal-occurrence) — an earlier per-meal version re-queried the same ingredient every time it recurred and blew past a single call's timeout. `overall_status` is red/yellow/green (≥40%/≥30%/else); `gm_summary` is one deterministic sentence, not LLM-generated. `grocery_spend_total` can legitimately read `$0` if Firefly has no Groceries-category transactions in the window — that's a real data gap, not a bug. |
+| `kitchen_brief` | Weekly food-cost rollup: `recipe_cost` totals across the week's meal plan vs. Firefly's "Groceries" category spend. Dedupes to **one fetch per unique recipe and one Grocy lookup per unique ingredient across the whole week** (not per-meal-occurrence) — an earlier per-meal version re-queried the same ingredient every time it recurred and blew past a single call's timeout. `overall_status` is red/yellow/green (≥40%/≥30%/else); `gm_summary` is one deterministic sentence, not LLM-generated. `grocery_spend_total` can legitimately read `$0` if Firefly has no Groceries-category transactions in the window — that's a real data gap, not a bug. `unresolved_recipe_count` counts any recipe with `cost==none` OR its own row's `unresolved_count>0` — a recipe that resolves fine but has every ingredient unpriced still counts as unresolved, matching what the per-recipe rows actually show. |
 | `waste_log` | Logs a discard via Grocy's own `stock_consume` with `spoiled=true` — a real native Grocy field. Requires `item` or `grocy_product_id`, plus `quantity` or `fraction_remaining`. **Deliberately writes nothing else** — no cabinet drawer, no custom ledger (cabinet space is finite). `waste_reason`/`recipe_id` are accepted and echoed back for your own context but are never persisted; Grocy's `stock_log` has no field for either. |
 | `waste_summary` | Reads Grocy's own `stock_log` back (`spoiled=1`, optionally scoped by `grocy_product_id`) — the read side of `waste_log`. Read-only, no separate storage. |
 | `event_menu_create` | Scales a whole multi-dish menu to a guest count in one call. `payload` is a **comma-separated list** of recipe names/ids, not a JSON array (this install's `from_json` filter rejects top-level JSON arrays). Flags allergens per dish using the same `room_occupant_prefs` lookup `mealplan_suggest` uses. |
