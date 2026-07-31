@@ -19,7 +19,7 @@ Navigation is compass-bearing-native. Portals are the same bearing-tagged entrie
 |------|-------------|
 | `start` | Seed or resume session. Drops player at `front_hall`. `game_mode=free_roam\|treasure_hunt\|timed_treasure_hunt` sets the win condition style. `harassment_freq` and `difficulty` optional flavor fields. |
 | `look` | Narrate current room from live RM state (+topo, +light, +climate). |
-| `go direction=X` | Move through a portal. Auto-narrates arrival. |
+| `go direction=X` | Move through a portal. Auto-narrates arrival. A portal with a linked entity_id (cover/lock) blocks traversal if that entity is closed/locked — same state `open`/`close` mode drives. Returns `blocked: true` with a narrator-aware "sealed passage" message and a hint to try `mode=open` first, rather than letting movement through with no physical entity actuated. Portals with no linked entity_id (the majority — purely narrative doors) are unaffected. |
 | `face direction=X` | Turn to face a compass direction without moving. Updates `facing_bearing`. |
 | `turn direction=X` | Alias for `face`. |
 | `again` / `g` | Repeat the last movement command (`_last_cmd` tracking). |
@@ -65,7 +65,7 @@ Game state lives in the AI user cabinet at `zenzork_state`. Fields:
 | Field | Description |
 |-------|-------------|
 | `session_id` | `zz-YYYYMMDDHHMMSS` |
-| `player` | Resolved from `primary_user` in system cabinet, or field override |
+| `player` | Priority order: explicit `player=` field override, then the resumed session's own persisted `player` value, then `primary_user` from the system cabinet, then literal `Crawler` as last resort. An explicit `player=` on a resume call also updates the persisted value, not just this response. |
 | `current_room` | area_id of current position |
 | `facing_bearing` | True bearing player is facing |
 | `visited` | List of explored area_ids |
