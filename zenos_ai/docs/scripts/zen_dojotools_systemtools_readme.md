@@ -162,9 +162,9 @@ Dismiss a persistent notification by ID. Requires `notif_id`.
 
 #### `repairs_list`
 
-List all active HA repairs (issues). Returns `{count, issues[]}` where each entry has `entity_id`, `issue_id`, `domain`, `severity`, `is_fixable`, `ignored`, `title`.
+List all active HA repairs (issues). Reads via the Jinja `issues()` global — the only way to reach HA's Issue Registry from a template; there is no REST endpoint for it (confirmed 404 on `/api/repairs/issues`, WebSocket-only). Returns `{count, issues[]}` where each entry has only `issue_id`, `domain`, `created`, `dismissed_version`, `is_persistent` — `issues()`'s real shape does **not** expose `severity`/`is_fixable`/`title`, so the response no longer fabricates them.
 
-Fixable issues can be resolved via `repair_fix`. ZenOS-generated issues have `domain: zenos`.
+Fixable issues: use `ectoplasm action_type=repair_remove` or `repair_ignore_all` with the `domain`+`issue_id` from this list. Spook-created issues have `domain: spook` (not `zenos`).
 
 ---
 
@@ -395,6 +395,7 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.2.2 | `zen_health_report` checks for the Spook HACS integration directly (via a narrow `zen_sutra_ha_api` service-existence check for `homeassistant.create_label`, not the full services dump — the full registry is large enough to hit the internal REST-fetch truncation limit and a truncated cut mid-JSON silently misparses) and surfaces `dependencies.spook_installed` plus a top-priority diagnosis line when missing. `homeassistant.create_label`/`rename_label`/`remove_label` are Spook-provided, not core HA — without it, Flynn Gate 0 (auto-create missing labels) fails with an opaque "unknown action" error with zero indication it's a missing prerequisite. New `known_issues` field cross-references every open HA repair against a curated dependency map (ToDo/Calendar/Mail/Teams/Music Assistant/Print Shop/Postman/Inventory/Flynn Stepgate Sentinel), categorizing each as `missing_dependency`/`label_gap`/`informational`/`unclassified` with an install hint — pure visibility, no auto-install, degrades gracefully. New `component_freshness` field surfaces per-KFC-component last-run staleness (`ok`/`stale`/`very_stale`) in the same call, without a separate `mode=pipeline` round trip. Also: the underlying `zen_sutra_ha_api` REST-fetch cases (8 occurrences) were rendering the full untruncated response body through Jinja before their own truncation step ever ran — dead-code truncation for any endpoint whose body exceeds the render limit, which the full `services` listing reliably does on a system with ~84 `zen_*` scripts. |
 | v5.2.1 | `zen_health_report` now surfaces `sensor.zen_label_health` directly (`health_sensors.labels`/`reasons.labels`) instead of only inheriting it second-hand through `agent_health`. New `label_cabinet_consistency` block (`consistent`, `label_health_state`, `label_health_missing`, `cabinet_health_state`) — `zen_label_health` and `zen_cabinet_health` derive missing-required-label state from the same source and should always agree; a disagreement is flagged as a `SENSOR CONFLICT` (stale template render, not two real problems) with `ha_reload_templates` as the suggested first move. |
 | v5.1.1 | `render_dojo`, `render_system`, `prompt_health` — prompt inspection tools. `pipeline` — pipeline status view. `tool` field resolves `(mode \| default...) or (tool \| default...)` alias for backward compat. Safer `int()` defaults throughout (`\| int(600)`, `\| int(300)`). |
 | v5.1.0 | `ha_reload_all` / `ha_reload_scripts` deferred via `zen_event` kinds (`deferred_reload_all`, `deferred_script_reload`). `zen_health_report` reads 7 resolvers + 5 health sensors incl. `zen_agent_health`. HALMark FG-35/36/37 surfaced in help response. |
