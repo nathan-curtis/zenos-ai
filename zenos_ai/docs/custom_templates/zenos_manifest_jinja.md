@@ -1,6 +1,6 @@
 # zenos_manifest.jinja — Shared Manifest Macro Library
 
-**Version:** 1.0.0 (ZenOS-AI 2026.7.0 'Neo')
+**Version:** 1.0.0 (ZenOS-AI 2026.8.0 'Chef')
 **File:** `custom_templates/zenos_ai/zenos_manifest.jinja`
 **Status:** New in 2026.7.0. Required for all Level 1+ manifest-compliant tools.
 
@@ -165,7 +165,7 @@ The macro returns a single-line JSON string. After `| from_json`, the structure 
   "optional_labels": ["zammad", "tickets", "fulfillment"],
   "icon": "mdi:ticket-outline",
   "color": "indigo",
-  "os_version": "2026.7.0",
+  "os_version": "2026.8.0",
   "os_tag": "Neo",
   "cortex": "claude-sonnet-4-5",
   "cortex_codename": "Nyx",

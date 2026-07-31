@@ -1,6 +1,6 @@
 # ZenOS-AI: Install Guide
 
-> **Version:** 2026.7.0 'Neo' | **Last Updated:** June 2026
+> **Version:** 2026.8.0 'Chef' | **Last Updated:** Jul 2026
 
 ---
 
