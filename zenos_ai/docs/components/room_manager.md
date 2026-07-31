@@ -100,6 +100,8 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | `utility` | Manage utility_index in household cabinet. `utility_action=list\|get\|set\|delete`. `utility_type=electric\|gas\|water\|...` required for get/set/delete. |
 | `pathfind` | BFS shortest path between two areas or persons. Fields: `start` (area_id or person entity), `destination` (area_id or person entity), `max_hops` (default 20). Returns path as ordered list of area_ids, hop count, and portal sequence. Returns `no_path` if destination is unreachable within `max_hops`. |
 | `room_occupant_prefs` | Guest-or-household-member prefs for a room, plus an independent `vendor_activity` caution flag. `area=` required. See below. |
+| `room_status_set` | Write housekeeping status for a room: `clean`/`dirty`/`in_service`/`occupied`. `area=` and `room_status=` required. Decoupled from any guest-stay lifecycle — HA-local operational state only. See below. |
+| `room_status_get` | Read housekeeping status. `area=` optional — omit for all rooms, pass for one. Areas never set return `status: unknown`, not a default of `clean`. See below. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
 | `help` | Full reference: purpose, when_to_call, seed_steps, domain_routing, schema, context_slices, concepts, modes. |
 
@@ -297,6 +299,31 @@ mode=room_occupant_prefs  area=kitchen
 | `area_id` | Echoed area |
 | `guest_prefs` | `{allergens[], media}` — from Twenty (guest_stay) or profile_editor (household_member) |
 | `vendor_activity` | `{active, vendor_name, appointment_summary}` — present on every branch |
+
+---
+
+## mode=room_status_set / room_status_get — Housekeeping Status
+
+Room-level housekeeping state — `clean`/`dirty`/`in_service`/`occupied`. **Deliberately decoupled from any guest-stay/reservation lifecycle** — this is HA-local operational state, not a Twenty object, and not part of the Steel Magnolia PMS reservation model. Storage mirrors `room_topology`'s own shape: a dict keyed by `area_id` on the household cabinet, merge-only writes (matches this file's existing non-destructive-merge convention).
+
+```
+mode=room_status_set  area=guest_suite_1  room_status=dirty  room_status_source=turnover
+mode=room_status_get  area=guest_suite_1
+mode=room_status_get                        # all rooms
+```
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|--------------|
+| `area` | Yes (both modes*) | HA area. Must resolve to a real area. *`room_status_get` may omit `area` to return every room's status. |
+| `room_status` | `room_status_set` only | `clean` \| `dirty` \| `in_service` \| `occupied`. |
+| `room_status_source` | Optional | What triggered the change: `turnover` \| `manual` \| `autovac`. Default `manual`. |
+| `room_status_note` | Optional | Free-text note (e.g. which chore triggered a `dirty` mark). |
+
+### Response Shape
+
+An area that has never had status set reads back as `{status: 'unknown', updated_at: none, source: none, note: ''}` — **explicit absence beats a silent default**, so an unset room never reports falsely as `clean`. `home_overview`'s response also surfaces this per-room under `housekeeping_status`.
 
 ---
 

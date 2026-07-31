@@ -109,7 +109,7 @@ script:
         description: "get/set/list: room data. zone_set/zone_remove/zones: sub-room zones. landmark_set/landmark_remove/landmarks: named anchors. link/unlink/boundary_*: adjacency. home_overview/emergency: whole-home. area_create/update/delete: manage HA areas. room_occupant_prefs: guest-or-household-member prefs for a room. setup/help."
         selector:
           select:
-            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, room_occupant_prefs, setup, pathfind, tool_manifest, kfc_manifest, help]
+            options: [get, set, list, zone_set, zone_remove, zones, landmark_set, landmark_remove, landmarks, link, unlink, boundary_link, boundary_unlink, home_overview, emergency, utility, area_create, area_update, area_delete, room_occupant_prefs, room_status_set, room_status_get, setup, pathfind, tool_manifest, kfc_manifest, help]
       area:
         description: "Area to operate on. Required for get, set, link, unlink, area_update, area_delete."
         selector:
@@ -142,6 +142,19 @@ script:
         description: "Clear all existing portals before writing. Default false."
         selector:
           boolean:
+      room_status:
+        description: "For room_status_set — housekeeping state: clean|dirty|in_service|occupied."
+        selector:
+          select:
+            options: [clean, dirty, in_service, occupied]
+      room_status_source:
+        description: "For room_status_set — what triggered this status change: turnover|manual|autovac. Default manual."
+        selector:
+          text:
+      room_status_note:
+        description: "For room_status_set — optional free-text note (e.g. which chore triggered a 'dirty' mark)."
+        selector:
+          text:
       clear_windows:
         description: "Clear all existing windows before writing. Default false."
         selector:
@@ -492,7 +505,12 @@ script:
             - kata_key: room_manager
               friendly_name: Room Manager
               label: room_manager
-              component_summary: ""
+              component_summary: >-
+                Spatial topology and live room context for the household —
+                per-room domain state (lights, climate, covers, media),
+                floor-grouped whole-house overview, adjacency/pathfinding
+                between rooms, and emergency egress routing. Consult for any
+                spatial, room-status, or life-safety question.
               component_instructions: >-
                 SCOPE: Spatial topology and live room context for the household.
                   Room data: zen_dojotools_room_manager (household cabinet, key: room_topology).
@@ -1256,6 +1274,11 @@ script:
                       Controls: mode=queue/dequeue/skip/unskip/ready/unready/mark_cleaned room={{ _area_id }}. mode=clean rooms={{ _area_id }}.
                     {%- else -%}{{ none }}{%- endif -%}
                 vacuum: "{{ _get_autovac }}"
+                housekeeping_status: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set _rs = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'room_status') | from_json -%}
+                  {%- set _rs = _rs if _rs is mapping else {} -%}
+                  {{ _rs.get(_area_id, {'status': 'unknown', 'updated_at': none, 'source': none, 'note': ''}) }}
                 context: "{{ _context_block }}"
                 caller_token: "{{ _caller_token }}"
           - stop: get
@@ -1410,6 +1433,85 @@ script:
                   vendor_activity: "{{ _rop_vendor_activity }}"
                 caller_token: "{{ _caller_token }}"
           - stop: room_occupant_prefs (household_member or none)
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 2.5. ROOM HOUSEKEEPING STATUS — decoupled from stay lifecycle. Mirrors
+      # room_topology's own storage shape exactly: a dict keyed by area_id on
+      # the household cabinet, merge-only writes (matches this file's existing
+      # non-destructive-merge convention). NOT a Twenty object — this is
+      # HA-local operational state, independent of any guest stay/reservation.
+      # An area never reported here reads back as "unknown", not "clean" —
+      # explicit absence of data beats a silent assumption for a real PMS.
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'room_status_set' }}"
+        then:
+          - if: "{{ _area_id == '' or _area_id not in (areas() | list) }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: room_status_set, message: "area= required and must be a real HA area.", caller_token: "{{ _caller_token }}"}
+              - stop: room_status_set error — bad area
+                response_variable: _result
+          - if: "{{ room_status is not defined or room_status | default('', true) == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, mode: room_status_set, message: "room_status= required (clean|dirty|in_service|occupied).", caller_token: "{{ _caller_token }}"}
+              - stop: room_status_set error — missing status
+                response_variable: _result
+          - variables:
+              _rss_entry:
+                status: "{{ room_status }}"
+                updated_at: "{{ now().isoformat() }}"
+                source: "{{ room_status_source | default('manual', true) | string | trim }}"
+                note: "{{ room_status_note | default('', true) | string | trim }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: >-
+                {%- set _cv=state_attr(_hh_cabinet,'variables')|default({},true) -%}
+                {{ 'update' if _cv.get('room_status',none) is not none else 'create' }}
+              key: room_status
+              volume_entity_id: "{{ _hh_cabinet }}"
+              value: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _rs = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'room_status') | from_json -%}
+                {%- set _rs = _rs if _rs is mapping else {} -%}
+                {{ (_rs | combine({_area_id: _rss_entry})) | tojson }}
+            response_variable: _fc_rss_result
+          - variables:
+              _result:
+                status: ok
+                mode: room_status_set
+                area_id: "{{ _area_id }}"
+                written: "{{ _rss_entry }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: room_status_set done
+            response_variable: _result
+
+      - if: "{{ _mode == 'room_status_get' }}"
+        then:
+          - variables:
+              _rsg_all: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _rs = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'room_status') | from_json -%}
+                {{ _rs if _rs is mapping else {} }}
+          - if: "{{ _area_id != '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    mode: room_status_get
+                    area_id: "{{ _area_id }}"
+                    result: "{{ _rsg_all.get(_area_id, {'status': 'unknown', 'updated_at': none, 'source': none, 'note': ''}) }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_status_get single area
+                response_variable: _result
+          - variables:
+              _result:
+                status: ok
+                mode: room_status_get
+                result: "{{ _rsg_all }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: room_status_get all
             response_variable: _result
 
       # ═══════════════════════════════════════════════════════════════════════
