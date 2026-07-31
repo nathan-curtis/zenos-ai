@@ -64,6 +64,8 @@ Import once at the top of the script's variables step. Do not import inside loop
     stack=None,
     mcp_exposed=None,
     self_repair=None,
+    audit=None,
+    inference=None,
     caller_token=''
 ) }}
 ```
@@ -120,11 +122,24 @@ These fields are merged into the output at the top level alongside the base iden
 | `icon` | string | MDI icon string (e.g., `mdi:ticket-outline`). Must be a string or omitted. |
 | `color` | string | Color name for dashboard/autotag styling (e.g., `indigo`). Must be a string or omitted. |
 
+### Optional parameters — audit and inference (2026.9.0)
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `audit` | mapping | Opt-in, describes an audit entry only — the macro cannot emit actions. The calling script must persist it itself (e.g. via `script.zen_dojotools_event_emitter`), same pattern as `essence_signed` events in `dojotools_profile.yaml`. Only merged in when a mapping is passed. |
+| `inference` | mapping | Declaration only, e.g. `{'calls_inference': true}`. Set on any tool that itself invokes a model/LLM call. No usage/cost estimation logic yet — designed to grow additively (`estimated_tokens`/`estimated_cost` keys) without breaking tools that only declare `calls_inference`. Only merged in when a mapping is passed. |
+
 ### Optional parameters — runtime
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `caller_token` | string | `''` | Passed through from the calling script's `caller_token` variable. Used for tracing. |
+
+---
+
+## Missing-Label Detection (always computed, 2026.9.0)
+
+Unlike every other field above, `missing_required_labels` and `missing_optional_labels` are **not parameters** — they're always computed and returned automatically, checking each tool's own `required_labels`/`optional_labels` (as passed to this same call) against the live label registry (`labels()`). Read-only, no caller action needed. This is the field `zen_dojotools_manifest mode=label_audit` and `mode=repair` aggregate across every tool to build a system-wide label-gap scan (with optional auto-create remediation under `mode=repair` — see that tool's own docs).
 
 ---
 
@@ -163,6 +178,8 @@ The macro returns a single-line JSON string. After `| from_json`, the structure 
   },
   "required_labels": ["service_desk"],
   "optional_labels": ["zammad", "tickets", "fulfillment"],
+  "missing_required_labels": [],
+  "missing_optional_labels": [],
   "icon": "mdi:ticket-outline",
   "color": "indigo",
   "os_version": "2026.8.0",
