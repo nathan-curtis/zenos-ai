@@ -43,6 +43,8 @@ homeassistant:
 
 This tells HA to load all YAML files under `packages/` as configuration packages.
 
+> **It must be `!include_dir_named`, not `!include_dir_merge_named`.** If you already have a `packages:` line from an earlier HA setup, it's easy to already be on `!include_dir_merge_named` — that's the more common directive in general HA package tutorials, but it is not compatible with how ZenOS-AI's own package files are structured (each file is a complete, self-contained package, not a fragment meant to be merged with others under shared top-level keys). Using `merge_named` here doesn't fail loudly with one clear error — it cascades: duplicate-key warnings, missing-integration errors for entities that do exist, and invalid package definitions across `templates`, `automation`, and `rest`, all at once. The one symptom that actually points back to this: **no `zen_*` scripts show up in the assist/conversation pipeline after restart**, with no single error explaining why. If you hit that wall, check this line first before anything else.
+
 If you already have a `homeassistant:` block, add the `packages:` line under it — don't create a second `homeassistant:` key. Example:
 
 ```yaml
