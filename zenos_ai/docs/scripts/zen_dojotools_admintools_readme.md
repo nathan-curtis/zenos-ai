@@ -129,6 +129,8 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 
 Every write-completing mode (`init`, `hammer`, `flip_schema_version`, `reset_all`, `repair_mount`, `repair_dismount`, and the shared `restore`/`repair_volumeinfo`/legacy `reset` fallthrough) fires `zen_resolver_refresh` on completion — `sensor.zen_cabinet_health` is trigger-based (see [sensors/readme.md](../sensors/readme.md#sensorzen_cabinet_health)) and only recomputes on that event, `zen_health_tick`, or `ha_start`. Read-only modes (`help`, `inspect`, `mount_status`) don't fire it.
 
+`init`, `hammer`, `flip_schema_version`, and the `restore`/`repair_volumeinfo`/legacy-`reset` fallthrough each fire it **twice** — immediately, then again 5 seconds later. The immediate fire alone could race the label registry (sensor recomputes before the write it's reacting to has actually landed in `label_entities()`); the delayed second fire is what actually closes that gap. Still pure event timing, never a `states(entity_id)` read — see the sensor doc for why that boundary matters.
+
 ### Init classifier
 
 `init` mode classifies the target before acting:
