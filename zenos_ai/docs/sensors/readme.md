@@ -254,9 +254,13 @@ Use `current_gate` and `next_step` when troubleshooting a stuck boot — they te
 
 ## binary_sensor.flynn_system_ready
 
-**State:** `on` when labels ok AND cabinets in [`ok`, `warn`] AND monastery in [`ok`, `warn`, `disabled`] (or monastery `unavailable` during warmup)
+**State:** `on` when labels ok AND cabinets `ok` **or** (`warn` with `missing_cabinets: none`) AND monastery in [`ok`, `warn`, `disabled`] (or monastery `unavailable` during warmup)
 
-Cabinet `warn` and monastery `warn` are both acceptable — schema and cabinets are valid, legacy schema upgrade may be pending or summarizer may not have run yet. Monastery `disabled` (summarizers off via the `zen_summarizers_enabled` kill-switch) is also acceptable — summarizer/pipeline health is orthogonal to whether the agent, identity, and household are actually ready; a system with summarizers intentionally off is still a fully ready system. This is the bootstrap eligibility gate, not a health gate.
+Monastery `disabled` (summarizers off via the `zen_summarizers_enabled` kill-switch) is acceptable — summarizer/pipeline health is orthogonal to whether the agent, identity, and household are actually ready; a system with summarizers intentionally off is still a fully ready system.
+
+**Cabinet `warn` is NOT universally acceptable — it's an overloaded state.** `zen_cabinet_health_state()` collapses four distinct conditions into one `warn` value: `unassigned_req` (a required slot has no entity tagged at all — genuinely not bootstrapped) alongside three actually-fine cases (`unhealthy_opt`, `legacy_req`, `legacy_schema`). Trusting `warn` on its own let this sensor report `on` during genuine mid-bootstrap — all 7 resolvers unavailable, `agents: error`, no persona. `missing_cabinets` (already computed by `zen_cabinet_health`, `'none'` when clear) disambiguates: `cab_ok` requires either cabinet `ok`, or `warn` *with* `missing_cabinets == 'none'` — ruling out `unassigned_req` specifically while still accepting the three genuinely-fine `warn` causes.
+
+This is the bootstrap eligibility gate, not a health gate.
 
 ---
 
