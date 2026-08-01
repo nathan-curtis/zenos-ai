@@ -94,7 +94,7 @@ Gate 2 behavior depends on the severity of the cabinet health state. Three cases
 
 **Case A — `error` or `critical` (hard stop, virgin-vs-broken checked)**
 
-`zen_cabinet_health`'s rolled-up state uses a priority order (`missing_req > invalid_req > unhealthy_req`), so a `critical` reading alone doesn't tell you whether every affected slot is safe (not yet bootstrapped — missing label, or state `init`/blank) or whether a *different* slot is genuinely broken (concrete state on an existing label) behind that higher-priority reading. Flynn checks every required slot individually before deciding to hard-stop: if **every** problematic slot is either genuinely virgin or its label doesn't exist in HA yet, Flynn does not hard-stop — those are handled by the normal bootstrap gates (Gate 0, Gate 2.1) instead. The hard stop fires only when at least one required slot has a concrete state (`online_mounted`, `online_unmounted`, `Variables`, anything non-virgin) **and** an existing label — that combination can't be explained by "not bootstrapped yet." When it fires, Flynn sends a persistent notification ("Cabinet Check Needed") and stops. Operator action required.
+`zen_cabinet_health`'s rolled-up state uses a priority order (`missing_req > invalid_req > unhealthy_req`), so a `critical` reading alone doesn't tell you whether every affected slot is safe (not yet bootstrapped — missing label, or state `init`/blank/`absent`) or whether a *different* slot is genuinely broken (concrete state on an existing label) behind that higher-priority reading. Flynn checks every required slot individually before deciding to hard-stop: if **every** problematic slot is either genuinely virgin (`init`, blank, `unknown`, or `absent` — `absent` means no entity is tagged with that slot's label at all, the safest possible state) or its label doesn't exist in HA yet, Flynn does not hard-stop — those are handled by the normal bootstrap gates (Gate 0, Gate 2.1) instead. The hard stop fires only when at least one required slot has a concrete state (`online_mounted`, `online_unmounted`, `Variables`, anything non-virgin) **and** an existing label — that combination can't be explained by "not bootstrapped yet." When it fires, Flynn sends a persistent notification ("Cabinet Check Needed") and stops. Operator action required.
 
 **What to do:** Open a conversation and say "initialize my cabinets", or run `script.zen_admintools_cabinetadmin` with `mode: initialize` directly. Check `sensor.zen_cabinet_health` → `missing_cabinets` to see which slots are affected.
 
@@ -163,9 +163,11 @@ Regardless of monastery health state, Flynn checks whether:
 
 If either is missing, Flynn calls `zen_admintools_reset_template` to press both templates. This is infrastructure — it runs on every boot if needed and is fully idempotent.
 
-#### 3c — Content Bootstrap (critical only)
+#### 3c — Content Bootstrap (critical or disabled)
 
-If `zen_monastery_health == critical`, Flynn calls `script.flynn_bootstrap_content` with your configured helper values:
+If `zen_monastery_health` is `critical` **or** `disabled`, Flynn calls `script.flynn_bootstrap_content` with your configured helper values:
+
+`disabled` (summarizers off via the `zen_summarizers_enabled` kill-switch) is included alongside `critical` — the monastery sensor's own priority check resolves to `disabled` before it ever evaluates content freshness, so `monastery_health` can never reach `critical` while summarizers are off. Summarizer/pipeline health has nothing to do with whether a household/family/user/ai_user identity exists yet; without `disabled` here, a fresh deploy with summarizers left at their shipped-off default silently never provisions an identity at all. `flynn_bootstrap_content`'s writes are all self-guarded (see steps below), so calling it on an already-provisioned system is a safe no-op.
 
 - `input_text.zenos_conversation_agent`
 - `input_text.zenos_household_name`
@@ -270,7 +272,7 @@ Options resolve dynamically at render time. The persona select only shows person
 | `zen_cabinet_health: warn` (warmup/ha_start) | Gate 2 (log only) | Logged, system continues — no notification |
 | Init-state cabs detected (post-warmup) | Gate 2.1 (silent, auto) | Auto-initialize virgin cabinets via `flynn_initialize_cabinets` |
 | History cabinet `online_unmounted` (post-warmup) | Gate 2.1 (silent, auto) | Mount + wire GUID into parent's `history` mount point; notifies human only if residue blocks auto-init |
-| `zen_monastery_health: critical` | Gate 3 | Full content bootstrap |
+| `zen_monastery_health: critical` or `disabled` | Gate 3 | Full content bootstrap |
 | `zen_monastery_health: warn` | Gate 3 (partial) | Schema seed only |
 | All green + monastery/agent confirmed + OOBE complete | Gate 4 | System ready notification |
 
