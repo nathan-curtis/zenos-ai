@@ -79,7 +79,7 @@ sensor.zen_label_health          ← updates every 1 minute
 
 **What it checks:** Each required cabinet slot has exactly one healthy cabinet entity assigned to it.
 
-**Update frequency:** Continuous (state-based)
+**Update frequency:** Trigger-based — `homeassistant: start`, `zen_health_tick`, `zen_resolver_refresh` (matching `zen_monastery_health`'s trigger set). Deliberately no `time_pattern`/clock trigger: a periodic tick could catch a cabinet mid-write (e.g. between `cabinetadmin_factory`'s sequential drawer writes) and misclassify it as broken rather than "not finished yet." This means anything that changes cabinet state must fire `zen_resolver_refresh` (or one of the other triggers) to be seen — `zen_admintools_cabinetadmin`'s write paths (`init`, `hammer`, `flip_schema_version`, and the shared `restore`/`repair_volumeinfo`/legacy `reset` fallthrough) all fire it on completion; `reset_all`/`repair_mount`/`repair_dismount` already did.
 
 | State | Condition |
 |---|---|
@@ -100,6 +100,7 @@ sensor.zen_label_health          ← updates every 1 minute
 | `invalid_multiples` | Required slots with more than one entity assigned |
 | `slot_entities` | `{slot: [entity_ids]}` map for all slots |
 | `slot_to_default_entity` | Default sensor entity ID per slot |
+| `cabinet_states` | `{slot: state}` map — `state` is the tagged entity's own state, or the literal string `'absent'` if no entity carries that slot's label at all. Used by Flynn Gate 2's virgin-vs-broken per-slot check — `absent` counts as safe (nothing exists yet), same as `init`/blank/`unknown` |
 | `resolver_suggestions` | Per-slot plain-language action strings |
 
 **Flynn gate:** `error`/`critical` → Gate 2 hard stop (initialize missing cabinets, operator action required). `warn` → Gate 2 non-blocking: schema upgrade notification fired outside warmup window; during warmup or `ha_start`, logged and skipped.
@@ -251,9 +252,9 @@ Use `current_gate` and `next_step` when troubleshooting a stuck boot — they te
 
 ## binary_sensor.flynn_system_ready
 
-**State:** `on` when labels ok AND cabinets in [`ok`, `warn`] AND monastery in [`ok`, `warn`]
+**State:** `on` when labels ok AND cabinets in [`ok`, `warn`] AND monastery in [`ok`, `warn`, `disabled`] (or monastery `unavailable` during warmup)
 
-Cabinet `warn` and monastery `warn` are both acceptable — schema and cabinets are valid, legacy schema upgrade may be pending or summarizer may not have run yet. This is the bootstrap eligibility gate, not a health gate.
+Cabinet `warn` and monastery `warn` are both acceptable — schema and cabinets are valid, legacy schema upgrade may be pending or summarizer may not have run yet. Monastery `disabled` (summarizers off via the `zen_summarizers_enabled` kill-switch) is also acceptable — summarizer/pipeline health is orthogonal to whether the agent, identity, and household are actually ready; a system with summarizers intentionally off is still a fully ready system. This is the bootstrap eligibility gate, not a health gate.
 
 ---
 

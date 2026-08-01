@@ -176,6 +176,8 @@ If `zen_monastery_health` is `critical` **or** `disabled`, Flynn calls `script.f
 
 > `warn` state = degraded but functional. Schema seed runs (3b), content bootstrap does not. System continues.
 
+**After bootstrap:** Flynn only stops the automation run when `monastery_health == 'critical'` — `critical` is transient (resolves once content genuinely gets created), so stopping to re-evaluate fresh next cycle is correct. `disabled` is permanent as long as summarizers stay off, so a `disabled` run calls `flynn_bootstrap_content` (cheap, idempotent, all writes self-guarded) and then **falls through to Gate 3.5** in the same run, instead of stopping. Getting this wrong meant every sentinel cycle called bootstrap then immediately stopped, so Gate 3.5 (OOBE) could never run at all while summarizers were off.
+
 **Bootstrap does the following:**
 
 1. **Validates conversation agent** — if missing or unavailable, stops with notification. Nothing else proceeds without an agent.
@@ -385,7 +387,9 @@ Hardcoded system prompt — no Jinja cabinet reads. Works on a bare install, wor
 
 ### active_notification()
 
-`active_notification()` macro in `flynn_onboarding.jinja` scans `persistent_notification.flynn_*` for active notifications and returns the highest-priority one with context label. Flynn's prompt reads this and acknowledges the active notification in its opening — giving coherent UX during first-boot and error states.
+`active_notification()` macro in `flynn_onboarding.jinja` reads a `flynn_active_notification` drawer on the default household cabinet and returns its `{id, context, title}` if set, else `none`. Flynn's prompt reads this and acknowledges the active notification in its opening — giving coherent UX during first-boot and error states.
+
+**Not a `persistent_notification.*` state read.** On this HA version, `persistent_notification` entities don't reflect into the template-readable state machine at all (confirmed empirically — count stayed 0 immediately after a real notification was raised via `persistent_notification.create`), so a direct `states('persistent_notification.' ~ id) == 'notifying'` check silently never fires. The drawer is written/cleared alongside every real `persistent_notification.create`/`dismiss` call site (8 total: Gate 0 create, Gate 1 dismiss, Gate 3.5's 3 branches, Gate 4 create, `flynn_bootstrap_content`'s create + dismiss) — the real HA panel notification and the drawer Flynn's prompt actually reads are two separate writes kept in sync, not one read reused for both.
 
 All four Flynn persistent notification messages are written in Flynn's voice and include an invitation to open the conversation agent.
 

@@ -127,6 +127,8 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `flip_schema_version` | No | Toggle `cab_schema_version` in syscab (0=legacy, 1+=mount-aware). Controls Flynn operating mode |
 | `repair_volumeinfo` | No | Targeted repair for a cabinet whose `VolumeInfo` is a JSON string instead of a mapping — parses and rewrites as a proper dict. Also self-heals the missing-header case (cabinet in `init` state with no VolumeInfo at all): stamps a fresh header via `cabinetadmin_factory`, no `hammer`/rearm needed. Skips silently if VolumeInfo is already a valid mapping |
 
+Every write-completing mode (`init`, `hammer`, `flip_schema_version`, `reset_all`, `repair_mount`, `repair_dismount`, and the shared `restore`/`repair_volumeinfo`/legacy `reset` fallthrough) fires `zen_resolver_refresh` on completion — `sensor.zen_cabinet_health` is trigger-based (see [sensors/readme.md](../sensors/readme.md#sensorzen_cabinet_health)) and only recomputes on that event, `zen_health_tick`, or `ha_start`. Read-only modes (`help`, `inspect`, `mount_status`) don't fire it.
+
 ### Init classifier
 
 `init` mode classifies the target before acting:
