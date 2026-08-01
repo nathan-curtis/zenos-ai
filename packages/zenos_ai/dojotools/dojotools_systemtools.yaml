@@ -1,17 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.2.2
-#
-# 5.2.2 — zen_health_report now checks for the Spook HACS integration
-#   directly (via zen_sutra_ha_api's whitelisted GET /api/services, checking
-#   for homeassistant.create_label) and surfaces dependencies.spook_installed
-#   plus a top-priority diagnosis line when missing. Root-caused on a fresh
-#   T:\ clean-room build: homeassistant.create_label/rename_label/remove_label
-#   are Spook-provided, not core HA — without Spook, Flynn Gate 0 (auto-create
-#   missing labels) fails with an opaque "unknown action" automation error
-#   that gave zero indication it was a missing prerequisite rather than a
-#   bug. Prerequisite was already documented in getting_started/install.md;
-#   the gap was that nothing in the running system pointed back to it.
+# Version: 5.2.1
 #
 # 5.2.1 — zen_health_report now surfaces sensor.zen_label_health directly
 #   (state + reason, as health_sensors.labels/reasons.labels) instead of only
@@ -248,8 +237,10 @@ script:
         name: Service existence check (services action only)
         description: >-
           Optional 'domain.service' (e.g. homeassistant.create_label). When set on
-          the 'services' action, checks the full services registry server-side and
-          returns only a boolean.
+          the 'services' action, checks the FULL (untruncated) services registry
+          server-side and returns only a boolean — avoids the 220000-char
+          truncation on the general services dump silently corrupting the check
+          for services that sort late in a large registry.
         required: false
         selector:
           text:
@@ -338,7 +329,21 @@ script:
             path: config/core/check_config
           response_variable: r
         - variables:
-            check_response: "{{ r.content if r.content is mapping else {} }}"
+            # r.content is only a mapping when HA's response Content-Type is
+            # detected as JSON; on some HA versions/proxies that detection
+            # misses and content comes back as a raw string, which silently
+            # collapsed to {} here — always reading as invalid/nogo regardless
+            # of real config validity. Parse the string case instead of
+            # discarding it, and surface an explicit error if truly unparseable
+            # rather than a bare 'unknown error'.
+            check_response: >-
+              {%- set _raw = r.content -%}
+              {%- if _raw is mapping -%}
+                {{ _raw }}
+              {%- else -%}
+                {%- set _parsed = (_raw | string | from_json(none)) -%}
+                {{ _parsed if _parsed is mapping else {'result': 'invalid', 'errors': 'unparseable_check_config_response: ' ~ (_raw | string | truncate(300))} }}
+              {%- endif -%}
         - variables:
             check_valid: "{{ check_response.get('result', 'invalid') == 'valid' }}"
         - variables:
@@ -1908,29 +1913,63 @@ script:
                 {%- set ns.q = ns.q + [{'priority': 'warning', 'item': 'home mode anchors out of order: ' ~ c.pair, 'tool': 'systemtools', 'call': {'tool': 'scheduler_anchors', 'note': 'set anchor=' ~ c.pair.split('/')[0] ~ ' or ' ~ c.pair.split('/')[1] ~ ' to a corrected time via mode=scheduler_anchors — do not edit input_datetime helpers directly in HA UI'}}] -%}
               {%- endfor -%}
               {{ ns.q }}
+        # Default (verbose=false): counts + a short preview per section, and
+        # anchor conflicts collapse into ONE summary instead of one entry per
+        # pair. Previously every section AND the action_queue restated the
+        # same items in full, roughly doubling response size on any system
+        # with more than a couple of non-green items — a real contributor to
+        # tool results too large for a smaller model to reliably consume.
+        - variables:
+            _verbose: "{{ verbose | default(false) | bool }}"
+            _anchor_summary: >-
+              {%- if _anchor_conflicts | length == 0 -%}
+                {{ none }}
+              {%- else -%}
+                {{ {
+                  'count': _anchor_conflicts | length,
+                  'pairs': _anchor_conflicts | map(attribute='pair') | list,
+                  'note': 'anchor(s) out of order — fix each via mode=scheduler_anchors; do not edit input_datetime helpers directly in HA UI'
+                } }}
+              {%- endif -%}
         - variables:
             response:
               tool: "{{ tool }}"
               result: ok
               generated: "{{ now().isoformat() }}"
+              verbose: "{{ _verbose }}"
               alerts:
                 count: "{{ _alert_list | count }}"
-                active: "{{ _alert_list }}"
+                active: "{{ _alert_list if _verbose else _alert_list[:3] }}"
               persistent_notifications:
                 count: "{{ _pnotifs | count }}"
-                items: "{{ _pnotifs }}"
+                items: "{{ _pnotifs if _verbose else _pnotifs[:3] }}"
                 read_caveat: "{{ 'states.persistent_notification may be incomplete on HA 2025.x+ — verify panel if count seems wrong' if _pnotifs | count == 0 else '' }}"
               repairs:
                 count: "{{ _rep_issues | count }}"
-                issues: "{{ _rep_issues }}"
+                issues: "{{ _rep_issues if _verbose else _rep_issues[:3] }}"
               pending_updates:
                 count: "{{ _pending_updates | count }}"
-                items: "{{ _pending_updates }}"
+                items: "{{ _pending_updates if _verbose else _pending_updates[:3] }}"
               home_mode_anchor_health:
                 ok: "{{ _anchor_conflicts | length == 0 }}"
-                conflicts: "{{ _anchor_conflicts }}"
+                conflicts: "{{ _anchor_conflicts if _verbose else _anchor_summary }}"
               recent_dispatches: "{{ _recent_dispatches }}"
-              action_queue: "{{ _action_queue }}"
+              action_queue: >-
+                {%- if _verbose -%}
+                  {{ _action_queue }}
+                {%- else -%}
+                  {%- set ns2 = namespace(q=[]) -%}
+                  {%- for item in _action_queue -%}
+                    {%- set _call = item.get('call', {}) if item is mapping else {} -%}
+                    {%- if _call.get('tool', '') != 'scheduler_anchors' -%}
+                      {%- set ns2.q = ns2.q + [item] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if _anchor_summary is not none -%}
+                    {%- set ns2.q = ns2.q + [{'priority': 'warning', 'item': (_anchor_summary.count | string) ~ ' home mode anchor pair(s) out of order', 'tool': 'systemtools', 'call': {'tool': 'scheduler_anchors', 'note': _anchor_summary.note}}] -%}
+                  {%- endif -%}
+                  {{ ns2.q }}
+                {%- endif -%}
       - conditions:
         - alias: home_status
           condition: template
@@ -2399,6 +2438,16 @@ script:
           boolean:
         name: confirm_action
         description: User has confirmed action (for protected and confirmation required)
+      verbose:
+        selector:
+          boolean:
+        name: Verbose
+        description: >-
+          notice_dashboard only. Default false: each section (alerts,
+          notifications, repairs, updates) returns a count plus a short
+          preview (first 3), and anchor conflicts collapse into one summary
+          instead of one entry per pair. Pass true for the full, untruncated
+          dump of everything (large — most callers don't need this).
       entity_id:
         selector:
           text:

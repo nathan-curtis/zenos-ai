@@ -116,9 +116,21 @@ template:
         icon: mdi:account
         state: "{{ states('input_text.zenos_primary_user') }}"
         options: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {#- Already-assigned HoH names, gathered across every household
+              cabinet's AI_Cabinet_VolumeInfo.acls.owner — don't offer a
+              person who's already someone's head of household. -#}
+          {%- set assigned = namespace(names=[]) -%}
+          {%- for hh in label_entities('zen_household_cabinet') -%}
+            {%- set vi = CABS.cabinet_drawer_value(hh, 'AI_Cabinet_VolumeInfo') | from_json() -%}
+            {%- set owners = (vi.get('acls', {}).get('owner', []) if vi is mapping else []) -%}
+            {%- for o in owners -%}
+              {%- set assigned.names = assigned.names + [(o.get('entity_id', '') if o is mapping else '')] -%}
+            {%- endfor -%}
+          {%- endfor -%}
           {%- set people = namespace(list=[]) -%}
           {%- for p in states.person -%}
-            {%- if state_attr(p.entity_id, 'user_id') is not none -%}
+            {%- if state_attr(p.entity_id, 'user_id') is not none and p.entity_id not in assigned.names -%}
               {%- set people.list = people.list + [p.name] -%}
             {%- endif -%}
           {%- endfor -%}
@@ -386,13 +398,46 @@ automation:
       - delay: "00:00:10"
       - if: "{{ trigger.id == 'ha_start' }}"
         then:
+          - variables:
+              _warmup_monastery_on: "{{ states('sensor.zen_monastery_health') in ['ok', 'warn'] }}"
+              _warmup_pipeline_on: "{{ is_state('input_boolean.zen_summarizers_enabled', 'on') }}"
+              # Same warmup_minutes config zen_warmup_timer uses (zen_scheduler_config,
+              # default 5) — real ETA, not a guess. Elapsed comes from the same boot
+              # sensor is_warmup() reads, so this stays consistent with the actual gate.
+              _warmup_minutes: >-
+                {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+                {%- set _cfg_raw = (state_attr(_hh, 'variables') or {}).get('zen_scheduler_config', {}) -%}
+                {%- set _v = _cfg_raw.get('value', _cfg_raw) if _cfg_raw is mapping else {} -%}
+                {%- set _v = (_v | from_json) if _v is string else _v -%}
+                {{ (_v.get('warmup_minutes', 5) | int(5)) if _v is mapping else 5 }}
+              _warmup_last_boot: "{{ states('sensor.system_monitor_last_boot') }}"
+              _warmup_elapsed_s: >-
+                {{ (now() - as_datetime(_warmup_last_boot)).total_seconds()
+                   if _warmup_last_boot not in ['unknown', 'unavailable', ''] else 0 }}
+              _warmup_remaining_s: "{{ [(_warmup_minutes * 60) - (_warmup_elapsed_s | int), 0] | max }}"
+              _warmup_conv_agent_missing: >-
+                {{ states('input_text.zenos_conversation_agent') in ['', 'unknown', 'unavailable'] }}
+              _warmup_persona_missing: >-
+                {{ states('input_text.zenos_persona_name') in ['', 'unknown', 'unavailable'] }}
           - action: persistent_notification.create
             data:
               title: "ZenOS-AI: Warming up"
               message: >
-                Flynn here. HA just restarted — I'm bringing the monastery online.
-                Summarizer pipeline is running. This notification dismisses
-                automatically when I'm fully ready. Nothing is broken.
+                Flynn here. HA just restarted — checking gates now.
+                {{ "I'm bringing the monastery online." if _warmup_monastery_on
+                   else "Monastery's intentionally off — skipping that." }}
+                {{ "Summarizer pipeline is running." if _warmup_pipeline_on
+                   else "Summarizer pipeline is intentionally disabled — not starting it." }}
+                ETA to fully ready: ~{{ (_warmup_remaining_s // 60) | int }} min
+                {{ (_warmup_remaining_s % 60) | int }} sec.
+                {% if _warmup_conv_agent_missing or _warmup_persona_missing %}
+                Heads up, once I'm ready I'll still need you for:
+                {{ "no conversation agent pointed yet" if _warmup_conv_agent_missing else "" }}
+                {{ "; " if (_warmup_conv_agent_missing and _warmup_persona_missing) else "" }}
+                {{ "no persona name set yet" if _warmup_persona_missing else "" }}.
+                {% endif %}
+                This notification dismisses automatically when I'm fully ready.
+                Nothing is broken.
               notification_id: flynn_warmup
       - variables:
           label_health: "{{ states('sensor.zen_label_health') }}"
@@ -461,7 +506,48 @@ automation:
       #####################################################################
       - variables:
           _cab_warn: "{{ cabinet_health == 'warn' }}"
-          _cab_hard: "{{ cabinet_health in ['error', 'critical'] }}"
+          # ── Rock-solid virgin-vs-broken distinction ─────────────────────
+          # cabinet_health's rolled-up state uses a priority order
+          # (missing_req > invalid_req > unhealthy_req), so a 'critical'
+          # reading can mask a DIFFERENT slot that's genuinely broken
+          # (invalid_req/unhealthy_req) behind a higher-priority missing-
+          # label reading. Checking only the rolled-up state isn't safe —
+          # verify every required slot individually. A slot is safe to
+          # auto-proceed on ONLY if it's genuinely virgin (state 'init' or
+          # blank) OR its required label doesn't exist in HA's registry at
+          # all (missing_req can never coexist with real established data —
+          # a label that doesn't exist cannot be attached to a real
+          # cabinet). Any slot with a concrete state (online_mounted,
+          # online_unmounted, Variables, anything non-virgin) AND an
+          # existing label is the genuinely dangerous case — keep the hard
+          # stop unconditionally for that.
+          _cab_states: >-
+            {{ state_attr('sensor.zen_cabinet_health', 'cabinet_states') | default({}, true) }}
+          _label_missing_ids: >-
+            {%- set _m = state_attr('sensor.zen_label_health', 'missing_label_ids') | default([]) -%}
+            {{ _m if _m is sequence and _m is not string else (_m | from_json if _m is string else []) }}
+          _required_slot_labels:
+            system: zen_system_cabinet
+            dojo: zen_dojo_cabinet
+            kata: zen_kata_cabinet
+            default_household: zen_default_household_cabinet
+            default_family: zen_default_family_cabinet
+            default_user: zen_default_user_cabinet
+            default_ai_user: zen_default_ai_user_cabinet
+      - variables:
+          _all_slots_explained_safe: >-
+            {%- set ns = namespace(all_safe=true) -%}
+            {%- for slot, label_id in _required_slot_labels.items() -%}
+              {%- set st = _cab_states.get(slot, '') -%}
+              {%- set is_virgin_state = st in ['init', '', 'unknown'] -%}
+              {%- set is_label_missing = label_id in _label_missing_ids -%}
+              {%- if not (is_virgin_state or is_label_missing) -%}
+                {%- set ns.all_safe = false -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.all_safe }}
+          _cab_hard: >-
+            {{ (cabinet_health in ['error', 'critical']) and not _all_slots_explained_safe }}
           _in_warmup: >-
             {%- import 'zenos_ai/zenos_health.jinja' as HEALTH -%}
             {{ HEALTH.is_warmup() | trim | bool }}
@@ -712,9 +798,10 @@ automation:
                 data:
                   title: "ZenOS-AI: Ready — let's name your agent"
                   message: >
-                    Hey! I'm Flynn. Your system is up and running but I still need to know who's moving in.
-                    Open a conversation with me and let's get your agent set up — I'll walk you through
-                    naming your AI, wiring up your household, and setting delegation.
+                    Hey, I'm Flynn. Grid's up, clean, holding steady — but nobody's moved in yet.
+                    Open a conversation with me when you're ready and we'll get it sorted:
+                    name your AI, wire up the household, set who's got the keys. I'll be here
+                    till it's done, then I'll get out of the way.
                   notification_id: flynn_oobe_pending
         # Case 3: cabinet has a real name or _oobe_complete → dismiss
         default:
