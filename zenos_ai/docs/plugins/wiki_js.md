@@ -163,6 +163,7 @@ zen_dojotools_filecabinet:
 | Symptom | Check |
 |---------|-------|
 | All wiki calls return `error` | Run `action: health` and inspect `availability`. Confirm URL and token. |
+| Any call (other than `help`/`configure`) returns `status: not_configured` | Wiki.js was never configured on this install — no `base_url` given and `integrations_config.wikijs.url` is empty. Run `action_type: configure base_url=<your Wiki.js URL>` first. This is a fast fail, not an error — no request was sent to Wiki.js. |
 | Update blocked with `surgical_check: failed` | The merge diff ratio exceeded 50%. Use `mode: replace` if the full overwrite is intentional. |
 | Room page not surfacing in Lens Bus | Confirm the page is tagged with the HA area slug and `isPublished=true`. Use `relabel` and `set_published`. |
 | Tag on `list` returns no results | Wiki.js tag filter is exact-match. Confirm the tag string matches exactly. |

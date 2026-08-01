@@ -14,7 +14,7 @@ Taskmaster does **not** merge Radar, Inventory, CRM, and To Do into one data mod
 |------|---------|-----------------|
 | Base | O365 To Do (`zen_dojotools_todo`) | Always available — every household gets this with zero config. |
 | + Radar | Zammad service desk (`zen_dojotools_servicedesk`) | When configured, task creation upgrades to a real tracked ticket with lifecycle/triage. |
-| + Inventory | Grocy (`zen_dojotools_inventory`) | When configured, chore-shaped recurring tasks upgrade to Grocy chores/tasks tied to product/location/stock. |
+| + Inventory | Grocy (`zen_dojotools_inventory`) | When configured, chore-shaped recurring tasks upgrade to Grocy chores/tasks tied to product/location/stock. A chore is a persistent recurring *definition*, not a fresh record per occurrence — Taskmaster looks the chore up by name first: if it already exists, it executes it (logs the occurrence, advances `next_due`); it only creates a new chore when genuinely new. |
 | + CRM | Rolodex/Twenty (`zen_dojotools_rolodex`) | Explicit contact/company context always wins the routing decision, regardless of shape. |
 
 Routing priority at creation time: explicit contact/company → chore-shaped → Radar-shaped → Grocy task → base O365 To Do.
