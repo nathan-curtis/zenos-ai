@@ -81,10 +81,15 @@ confirm: true
   "status": "ok",
   "action": "create",
   "created_labels": ["water", "irrigation", "pool"],
+  "create_succeeded": ["water", "irrigation", "pool"],
+  "create_dupe_skipped": [],
+  "create_errors": [],
   "already_existed": [],
   "message": "Create Action Complete."
 }
 ```
+
+`homeassistant.create_label` doesn't support `response_variable` at all — HA rejects the whole call if you ask for one — so per-item success/failure can't be read from a service response. Instead, the live label registry is read before and after the batch and diffed: `create_succeeded` (newly created), `create_dupe_skipped` (already existed in HA's registry, even if this tool's own slug-based pre-check didn't flag it — HA's internal label-ID normalization can collide two names this tool's slug convention treats as distinct, e.g. `servicedesk` vs an existing `service_desk`), and `create_errors` (attempted but not found in either registry snapshot). Each item continues independently (`continue_on_error: true`) so one bad name in a batch doesn't abort the rest.
 
 ---
 

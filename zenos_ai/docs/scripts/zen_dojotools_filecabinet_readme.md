@@ -82,6 +82,7 @@ HA Labels **are** the tag system. There is no separate tags field in the storage
 ### Health-Aware Write Pipeline
 Before any write, FileCabinet checks:
 
+- cabinet in `init` state (no GUID/identity yet — cannot hold user data)
 - volume health status
 - GUID mismatch
 - read-only flag (cabinet-level or per-drawer `meta.ro`)
@@ -91,6 +92,8 @@ Before any write, FileCabinet checks:
 If any red flags exist → write blocked unless `force_action: true`.
 
 `sensor.zenos_system_cabinet` is permanently hard read-only; no flag overrides this.
+
+The `init`-state guard is unconditional — `force_action: true` does not bypass it. `mount_cabinet`/`dismount_cabinet` already refused a target cabinet in `init` state; this extends the same refusal to the actual data write path (`create`/`update`/`upsert`/`delete`/`move`/`copy`/`relabel`/`weave_save`), which is what real callers use.
 
 ### Protect-Write Mode
 All moves verify the destination write before deleting the source. This prevents data loss if the destination write times out.

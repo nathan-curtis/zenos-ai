@@ -30,8 +30,6 @@ Provisions, deprovisions, or replaces a cabinet-backed identity (`ai_user` / `us
 | `profile_payload` | No | JSON string of additional key/value pairs to press into the profile drawer. Merged with `person_entity` data if both are given. |
 | `caller_token` | No | Opaque pass-through for caller correlation. |
 
-> Known cosmetic issue: `cab_type`'s selector options list currently has `tool_manifest` listed twice (copy-paste duplicate) — harmless (just renders the same dropdown option twice), not yet cleaned up.
-
 ---
 
 ## Provision Flow

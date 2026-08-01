@@ -167,7 +167,7 @@ sensor.zenos_default_ai_user_history_cabinet
 - **reset** — nuke a cabinet's contents cleanly (e.g., clear scratchpad, reset history)
 - **hammer** — full wipe with audit trail; last resort before re-init
 - **init** — fresh cabinet initialization; sets VolumeInfo metadata
-- **reset_all** — full nuclear cabinet reset + reseed. Calls `reset_template` and fires Flynn via `zen_cabinet_health` state change. If you want to customize the sequence (skip a cabinet, change order), run the steps individually — that is exactly what `reset_all` orchestrates under the hood.
+- **reset_all** — full nuclear cabinet reset + fires Flynn via `zen_cabinet_health` state change. Does **not** call `reset_template` directly — cabinets are still genuinely virgin at this point, and writing template content into them would make cabinetadmin's own classifier see them as `potentially_bad` instead of `virgin`. Flynn's own gate-3 calls `reset_template` idempotently once cabinets are re-stamped and resolvers are settled. If you want to customize the sequence (skip a cabinet, change order), run the steps individually — that is exactly what `reset_all` orchestrates under the hood.
 
 ---
 

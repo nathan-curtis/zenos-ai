@@ -104,6 +104,7 @@ flowchart TD
 | `family_entity` | entity (sensor) | Family cabinet target (family ops, set_principal override) |
 | `ai_entity` | entity (sensor) | Entity B for link_partners / unlink_partners |
 | `household_entity` | entity (sensor) | Explicit household cabinet — overrides default resolver |
+| `confirm_action` | boolean | `set_principal` only. Required when the target HoH/prime slot is already occupied by a **different** entity than `member_entity`. Not required to fill an empty slot or re-set the same entity already occupying it. Default `false` |
 | `required_cert` | text | `resolve_caller_identity` only. Cert name to check on the caller's behalf (e.g. `infra_container_control`). When set, the mode runs the `cert_list` lookup itself against the resolved identity and returns `authorized: true/false` — the caller never touches `persona_editor` directly |
 | `required_cert_level` | number | `resolve_caller_identity` only. Minimum cert level needed when `required_cert` is set. Default `1` |
 
@@ -244,6 +245,8 @@ zen_dojotools_identity:
 
 **Occupied slot:** If the HoH or prime slot is already filled, add is blocked with `slot_occupied` error. Use `set_principal` to transfer the slot.
 
+**Already a member, slot still free:** If `member_entity` is already in the household's `members` list but the HoH/prime slot was never filled (e.g. an earlier call added membership but failed before filling the slot, or the slot was cleared some other way), the call falls through and fills the slot instead of dead-ending on `already_member` — only a direct `set_principal` call could previously unblock this case.
+
 **Response includes** `slot_filled: hoh | prime | ''`.
 
 **Event fired:** `zen_event kind: household_member_joined`
@@ -280,11 +283,16 @@ zen_dojotools_identity:
   member_type: user      # user → fills/replaces acls.owner (HoH)
                          # ai_user → fills/replaces acls.partner prime slot
   # family_entity: sensor.<family_cabinet>  # optional — targets family instead of default household
+  # confirm_action: true  # required only when replacing a DIFFERENT existing occupant
 ```
 
 **Default target:** `zen_default_household_cabinet`. Pass `family_entity` to target a specific family cabinet instead.
 
+**Takeover gate:** Filling an empty slot, or re-setting the same entity already occupying it, needs no confirmation. Replacing a slot already occupied by a **different** entity requires `confirm_action: true` — prevents a confused or compromised caller silently taking over an established household. Without it, the call errors with `code: confirm_required`.
+
 **Replacement:** Previous occupant of the slot is replaced. For prime AI slot, non-prime partner entries are preserved.
+
+**Members sync:** `set_principal` also adds `member_entity` to the target cabinet's `members` list if not already present (deduped) — keeping `members` and `acls` in sync the same way `household_add_member` does, so a caller using `set_principal` directly doesn't leave a principal pointer that a membership-based staleness check would wrongly flag as orphaned.
 
 **Event fired:** `zen_event kind: principal_changed`
 

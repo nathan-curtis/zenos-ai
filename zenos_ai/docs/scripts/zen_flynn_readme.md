@@ -92,9 +92,9 @@ Once complete, Flynn stops and waits for `zen_label_health` to update.
 
 Gate 2 behavior depends on the severity of the cabinet health state. Three cases:
 
-**Case A — `error` or `critical` (hard stop)**
+**Case A — `error` or `critical` (hard stop, virgin-vs-broken checked)**
 
-One or more required cabinet entities are uninitialized or unavailable. Flynn fires a persistent notification ("Cabinet Check Needed") and stops. Operator action required.
+`zen_cabinet_health`'s rolled-up state uses a priority order (`missing_req > invalid_req > unhealthy_req`), so a `critical` reading alone doesn't tell you whether every affected slot is safe (not yet bootstrapped — missing label, or state `init`/blank) or whether a *different* slot is genuinely broken (concrete state on an existing label) behind that higher-priority reading. Flynn checks every required slot individually before deciding to hard-stop: if **every** problematic slot is either genuinely virgin or its label doesn't exist in HA yet, Flynn does not hard-stop — those are handled by the normal bootstrap gates (Gate 0, Gate 2.1) instead. The hard stop fires only when at least one required slot has a concrete state (`online_mounted`, `online_unmounted`, `Variables`, anything non-virgin) **and** an existing label — that combination can't be explained by "not bootstrapped yet." When it fires, Flynn sends a persistent notification ("Cabinet Check Needed") and stops. Operator action required.
 
 **What to do:** Open a conversation and say "initialize my cabinets", or run `script.zen_admintools_cabinetadmin` with `mode: initialize` directly. Check `sensor.zen_cabinet_health` → `missing_cabinets` to see which slots are affected.
 
@@ -206,7 +206,7 @@ Three cases:
 | Situation | What Flynn Does |
 |---|---|
 | Input helper has a name + cabinet has placeholder | Writes persona name to essence. Dismisses notification. |
-| Input helper is empty + cabinet has placeholder | Creates "Welcome — Let's name your AI" notification. Directs to conversation or Agent Builder. |
+| Input helper is empty + cabinet has placeholder | Creates "ZenOS-AI: Ready — let's name your agent" notification. Directs to conversation or Agent Builder. |
 | Cabinet already has a real name OR `_oobe_complete` flag | Dismisses any pending OOBE notification. Nothing to do. |
 
 The fastest path through OOBE: set `input_text.zenos_persona_name` in Settings → Helpers, then restart or let Flynn re-run. Flynn will write the name and clear the gate.
@@ -253,7 +253,7 @@ Four `template: select` entities provide UI-level dropdowns for the critical inp
 | `select.zenos_conversation_agent` | `input_text.zenos_conversation_agent` | All `conversation.*` domain entities |
 | `select.zenos_ai_task` | `input_text.zenos_ai_task_entity` | All `ai_task.*` domain entities |
 
-Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded.
+Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded. `select.zenos_primary_user` additionally excludes any person already assigned as head-of-household elsewhere — gathered across every household cabinet's `AI_Cabinet_VolumeInfo.acls.owner` — so the dropdown never offers a person who'd need a `set_principal` takeover to become someone's HoH twice.
 
 **Fastest setup path:** Use these selects from Settings → Helpers instead of typing entity IDs manually.
 
