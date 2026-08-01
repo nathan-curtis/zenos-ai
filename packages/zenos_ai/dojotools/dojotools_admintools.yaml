@@ -473,47 +473,6 @@ script:
                 key: fc_mount_callout_whitelist
                 value: "{{- fc_callout_whitelist_seed -}}"
                 set_timestamp: true
-    # ── Response contract — previously this script ended silently with no
-    # way to confirm it ran or what it did. Now logs a greppable summary
-    # (ZenOS Admin: reset_template ...) and returns a real result, so a
-    # direct call — or a search via zen_dojotools_ha_log_viewer
-    # pattern="ZenOS Admin" — can confirm what actually happened.
-    - variables:
-        _rtt_zen_template_pressed: "{{- _rtt_kata_version != '1.2.0' -}}"
-        _rtt_kata_template_pressed: "{{- _rtt_kata_tmpl_version != '1.0.0' -}}"
-        _rtt_sys_act_wl_status: >-
-          {%- if _rtt_system == '' -%}system_unavailable
-          {%- elif not _rtt_sys_whitelist_exists -%}seeded
-          {%- else -%}already_present{%- endif -%}
-        _rtt_sys_fc_wl_status: >-
-          {%- if _rtt_system == '' -%}system_unavailable
-          {%- elif not _rtt_sys_fcwl_exists -%}seeded
-          {%- else -%}already_present{%- endif -%}
-    - action: system_log.write
-      data:
-        level: info
-        message: >-
-          ZenOS Admin: reset_template complete — zen_template_pressed={{ _rtt_zen_template_pressed }},
-          kata_template_pressed={{ _rtt_kata_template_pressed }},
-          sys_act_whitelist={{ _rtt_sys_act_wl_status }},
-          sys_fc_whitelist={{ _rtt_sys_fc_wl_status }},
-          kata={{ _rtt_kata }}, system={{ _rtt_system }}
-    - variables:
-        result:
-          status: success
-          tool: zen_admintools_reset_template
-          zen_template_pressed: "{{ _rtt_zen_template_pressed }}"
-          kata_template_pressed: "{{ _rtt_kata_template_pressed }}"
-          sys_act_whitelist: "{{ _rtt_sys_act_wl_status }}"
-          sys_fc_whitelist: "{{ _rtt_sys_fc_wl_status }}"
-          note: >-
-            pressed=false means the schema was already current — idempotent,
-            not a failure. sys_*_whitelist is one of seeded / already_present /
-            system_unavailable (resolver empty) — distinct states, not
-            collapsed into a single ambiguous boolean.
-          caller_token: "{{ caller_token | default('') }}"
-    - stop: reset_template complete
-      response_variable: result
     alias: Zen AdminTools Reset Template
     description: >-
       Zen AdminTools Reset Templates (1.3.0). Presses zen_template and
@@ -1178,6 +1137,25 @@ script:
                       action_taken: stamped
                       reason: initialized
                       stamp_result: "{{- _stamp_result -}}"
+                # BUG FIX (2026-08-01): this success path fired zero event on
+                # completion — sensor.zen_cabinet_health had no way to know a
+                # cabinet had just been stamped, and (separately) had no
+                # trigger: block of its own either, so it sat on a stale
+                # snapshot indefinitely after Gate 2.1 initialized cabinets
+                # during a virgin-deploy test. Reusing the same event
+                # reset_all already fires, rather than inventing a new one.
+                - event: zen_resolver_refresh
+                # ROBOT DONUT FIX (2026-08-01): the immediate fire above can
+                # race the label registry — cabinet_health recomputes before
+                # label_entities() reflects the tag this same init call just
+                # applied, storing a wrong 'absent' reading with a timestamp
+                # that looks fresh. This delayed second fire is NOT a state
+                # trigger and does NOT read states(entity_id) at any point —
+                # it's driven purely by "our own write finished a few seconds
+                # ago," giving the registry time to settle before the retry.
+                - delay:
+                    seconds: 5
+                - event: zen_resolver_refresh
               - conditions: "{{- cabinet_state_class == 'good' -}}"
                 sequence:
                 - variables:
@@ -1304,6 +1282,15 @@ script:
                 'caller_token': caller_token | default('')
               }
             -}}
+      # BUG FIX (2026-08-01): fired nothing on completion — sensor.zen_cabinet_health
+      # had no way to know a cabinet's content just changed. Same fix as init.
+      - event: zen_resolver_refresh
+      # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as init's —
+      # not a state trigger, doesn't read states(entity_id), purely "our own
+      # write finished a few seconds ago."
+      - delay:
+          seconds: 5
+      - event: zen_resolver_refresh
       - stop: hammer complete
         response_variable: _hammer_result
     # ── init — return result after classification and stamp ───────────────────
@@ -1322,13 +1309,20 @@ script:
           _all_cabs: >-
             {{- label_entities('Zen Cabinet' | slugify) | list -}}
       - variables:
+          # @TODO - Inconsistent behaviour - why is mount_status_result being returned as a drawer without going one level deeper into the drawer->value ?
+          # @TODO - pretty sure we're never going to see 'mounted' as a key in 'meta' as 'meta' has only one key, and that is 'value'
           mount_status_result: >-
             {%- set ns = namespace(m={}) -%}
             {%- for eid in _all_cabs -%}
+              {#-
+              {%- set _v = state_attr(eid, 'variables') | default({}, true) -%}
+              {%- set _v = _v if _v is mapping else {} -%}
+              {%- set _mt = _v.get('meta', {}) -%}
+              {%- set _mt = _mt if _mt is mapping else (_mt | from_json if _mt is string else {}) -%}
+              -#}
               {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-              {%- set _mt = CABS.cabinet_drawer_value(eid, 'meta', {}) | from_json() -%}
-              {%- set _mt = _mt if _mt is mapping else {} -%}
-              {%- set ns.m = ns.m | combine({eid: {'state': states(eid), 'mounted': (_mt.get('mounted', true) != false)}}) -%}
+              {%- set _mt = CABS.cabinet_drawer(cab, 'meta', {}) | from_json() -%}
+              {%- set ns.m = ns.m | combine({eid: {'state': states(eid), 'mounted': _mt.get('mounted', false)}}) -%}
             {%- endfor -%}
             {{ ns.m | combine({'caller_token': caller_token}) }}
       - stop: mount_status complete
@@ -1361,6 +1355,15 @@ script:
             previous_value: "{{- _current_v -}}"
             new_value: "{{- _new_v -}}"
             caller_token: "{{- caller_token -}}"
+      # BUG FIX (2026-08-01): fired nothing on completion — same gap as
+      # init/hammer. schema-version flips are exactly the kind of state
+      # change zen_cabinet_health's mount-aware logic needs to see fresh.
+      - event: zen_resolver_refresh
+      # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as
+      # init/hammer's — not a state trigger, doesn't read states(entity_id).
+      - delay:
+          seconds: 5
+      - event: zen_resolver_refresh
       - stop: flip_schema_version complete
         response_variable: result
     # ── reset_all — nuclear cabinet wipe + reseed + Flynn bootstrap ──────────
@@ -1691,6 +1694,17 @@ script:
       - stop: expand_drawer complete
         response_variable: result
 
+    # BUG FIX (2026-08-01): generic fallthrough for restore/repair_volumeinfo/
+    # reset (legacy) — none of these had a completion event of their own,
+    # same gap as init/hammer/flip_schema_version above. Safe here: only
+    # write-type ops reach this catch-all — inspect/mount_status/tool_manifest
+    # etc. already stop earlier via their own specific response.
+    - event: zen_resolver_refresh
+    # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as the other
+    # 3 sites — not a state trigger, doesn't read states(entity_id).
+    - delay:
+        seconds: 5
+    - event: zen_resolver_refresh
     - variables:
         result:
           status: success
