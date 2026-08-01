@@ -263,28 +263,37 @@ script:
             value_template: '{{ _mode_norm == "tool_manifest" }}'
         sequence:
         - variables:
-            final_response:
-              status: ok
-              tool: '{{ tool_name }}'
-              version: '{{ tool_version }}'
-              tier: stacks
-              domain: finance
-              provider_key: firefly_iii
-              register_mode: register
-              consumes: [label, person, transaction]
-              returns: [transaction_evidence]
-              failure_policy: soft
-              content_policy: redacted_by_default
-              risk_class: read_redacted
-              security_act:
-                model: rwxda
-                required: r
-                allowed: [r]
-                denied: [w, x, d, a]
-              lens_provider: true
-              preferred_state:
-                stripe: 2
-                impact: soft
+            final_response: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {{- MF.tool_manifest(
+                  tool=tool_name,
+                  display_name='Firefly III Stack — Finance Lens',
+                  tier='stacks',
+                  version=tool_version,
+                  health={'configured': true, 'status': 'ok', 'notes': []},
+                  required_labels=['firefly'],
+                  optional_labels=['finance', 'banking'],
+                  consumes=['label', 'person', 'transaction'],
+                  returns=['transaction_evidence'],
+                  failure_policy='soft',
+                  content_policy='redacted_by_default',
+                  risk_class='read_redacted',
+                  security_act={'model': 'rwxda', 'required': 'r', 'allowed': ['r'], 'denied': ['w', 'x', 'd', 'a'], 'note': 'Lens provider returns redacted read evidence only; mutations require zen_dojotools_finance directly.'},
+                  modes={'lookup': 'stacks_by_anchor', 'manifest': 'tool_manifest', 'inspect': 'inspect'},
+                  limitations=['Transaction content is redacted by default.', 'Mutations require zen_dojotools_finance directly.'],
+                  evidence_shape={'transactions': {'id': 'Firefly transaction id.', 'amount': 'Transaction amount.', 'category': 'Category name.'}},
+                  icon='mdi:bank',
+                  color='green',
+                  stripe=2,
+                  impact='soft',
+                  mcp_exposed=false,
+                  lens_provider=true,
+                  caller_token=caller_token | default('')
+              ) | from_json | combine({
+                  'register_mode': 'register',
+                  'provider_key': 'firefly_iii',
+                  'domain': 'finance'
+              }) -}}
         - stop: return
           response_variable: final_response
 
@@ -693,6 +702,7 @@ script:
             - account_update
             - transactions_list
             - transactions_search
+            - folio_report
             - transaction_get
             - transaction_add
             - transaction_update
@@ -793,6 +803,17 @@ script:
           text:
       tags:
         description: Comma-separated tags
+        selector:
+          text:
+      reservation_id:
+        description: >-
+          For folio_report — reservation UUID (from zen_dojotools_rolodex). Rolls up all
+          transactions tagged 'reservation:<uuid>'. Pass stay_id instead for a solo-room
+          stay with no reservation.
+        selector:
+          text:
+      stay_id:
+        description: For folio_report — stay UUID, rolls up transactions tagged 'stay:<uuid>'. Ignored if reservation_id is given.
         selector:
           text:
       date:
@@ -1740,6 +1761,93 @@ script:
                 query: '{{ item_norm }}'
                 transactions: '{{ _ts_data }}'
                 count: '{{ _ts_data | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: folio_report ───────────────────────────────────────────────────
+    # Per-stay/reservation cost rollup — pure tag-match against Firefly
+    # transactions, following the exact colon-namespaced-tag pattern already
+    # established for asset/COGS attribution. No new Firefly fields, no
+    # general ledger — genuinely new territory (nothing in finance reads
+    # rolodex data), kept minimal and idiomatic. Nothing here writes the tag
+    # automatically — a household member (or a future automation) has to tag
+    # a transaction with reservation:<uuid>/stay:<uuid> at entry time, so the
+    # response always includes tag_hint: the exact string to use, as cheap
+    # insurance against a silently-missed tag producing an empty report that
+    # looks like "no cost" instead of "nobody tagged anything yet."
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "folio_report" }}'
+        sequence:
+        - variables:
+            _fr_reservation_id: "{{ reservation_id | default('') | string | trim }}"
+            _fr_stay_id: "{{ stay_id | default('') | string | trim }}"
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _fr_reservation_id == "" and _fr_stay_id == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: folio_report
+                  error: "reservation_id or stay_id required."
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _fr_tag: "{{ ('reservation:' ~ _fr_reservation_id) if _fr_reservation_id != '' else ('stay:' ~ _fr_stay_id) }}"
+            _fr_query: >-
+              {{ ('tag_is:"' ~ _fr_tag ~ '"') | urlencode }}
+        - action: script.zen_root_firefly
+          response_variable: _fr_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'search/transactions?query={{ _fr_query }}&start={{ start_norm }}&end={{ end_norm }}'
+            pageNumber: '{{ page_norm }}'
+            perPage: '{{ per_norm }}'
+        - variables:
+            _fr_raw: >-
+              {%- if _fr_resp is mapping and 'result' in _fr_resp and _fr_resp['result'] is mapping -%}
+                {{ _fr_resp['result']['content'] | default({}) }}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - variables:
+            _fr_data: >-
+              {%- set d = _fr_raw.get('data', []) if _fr_raw is mapping else [] -%}
+              {%- set _ns = namespace(out=[]) -%}
+              {%- for obj in d -%}
+                {%- set attrs = obj.get('attributes', {}) -%}
+                {%- set txns = attrs.get('transactions', []) -%}
+                {%- set first = txns[0] if txns | length > 0 else {} -%}
+                {%- set _ns.out = _ns.out + [{'id': obj.get('id', ''), 'date': first.get('date', ''), 'description': first.get('description', ''), 'amount': first.get('amount', 0) | float(0), 'category': first.get('category_name', '') | default('uncategorized', true)}] -%}
+              {%- endfor -%}
+              {{ _ns.out }}
+        - variables:
+            _fr_total: "{{ _fr_data | sum(attribute='amount') }}"
+            _fr_by_category: >-
+              {%- set ns = namespace(cats={}) -%}
+              {%- for t in _fr_data -%}
+                {%- set _c = t.get('category', 'uncategorized') -%}
+                {%- set _prev = ns.cats.get(_c, 0) -%}
+                {%- set ns.cats = ns.cats | combine({_c: _prev + (t.get('amount', 0) | float(0))}) -%}
+              {%- endfor -%}
+              {{ ns.cats }}
+        - variables:
+            final_response:
+              status: '{{ _fr_resp["status"] | default("error") if _fr_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: folio_report
+              result:
+                reservation_id: "{{ _fr_reservation_id if _fr_reservation_id != '' else none }}"
+                stay_id: "{{ _fr_stay_id if _fr_stay_id != '' else none }}"
+                transactions: '{{ _fr_data }}'
+                total: '{{ _fr_total }}'
+                by_category: '{{ _fr_by_category }}'
+                count: '{{ _fr_data | length }}'
+                tag_hint: "{{ _fr_tag }}"
         - stop: return
           response_variable: final_response
 
