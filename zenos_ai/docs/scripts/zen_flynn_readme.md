@@ -49,8 +49,11 @@ Flynn skips all gates and exits immediately if **all** of the following are true
 - OOBE is not pending
 - Both `kfc_template` (Dojo) and `zen_template` (Kata) are already seeded
 - No cabinets are in `init` state (checked directly via `slot_to_default_entity` — not the health rollup)
+- Gate 3 has genuinely completed bootstrap at least once (`flynn_bootstrap_state.completed` — see Gate 3 below)
 
 The init-state check is evaluated separately from `zen_cabinet_health`. Optional cabinet slots can appear healthy in the rollup even when their underlying entity is still in `init`. Flynn reads `slot_to_default_entity` directly to catch this case.
+
+**The bootstrap-completed check matters here specifically, not just in Gate 3.** This early exit is health-rollup-only — it has no awareness of Gate 3's own re-entry condition on its own. On an already-healthy system (`monastery: ok`, the normal case for anything long-running), this exit fired on every single sentinel tick with no way for Gate 3 to ever be reached — meaning a system that had genuinely never completed bootstrap once could sit "ready" forever without ever actually finishing onboarding. The bootstrap-completed value is computed once here and reused (not recomputed) in Gate 3.
 
 If the system is already clean and stable, Flynn steps aside.
 
@@ -165,7 +168,9 @@ If either is missing, Flynn calls `zen_admintools_reset_template` to press both 
 
 #### 3c — Content Bootstrap (critical or disabled)
 
-If `zen_monastery_health` is `critical` **or** `disabled`, Flynn calls `script.flynn_bootstrap_content` with your configured helper values:
+If `zen_monastery_health` is `critical` **or** `disabled`, **or `flynn_bootstrap_state.completed` isn't set**, Flynn calls `script.flynn_bootstrap_content` with your configured helper values:
+
+**Why a third, independent condition:** `monastery_health` alone can't catch every never-bootstrapped system — one that reached `warn` before `flynn_bootstrap_content` ever ran once (e.g. summarizers flipped on mid-onboarding) falls permanently outside the `['critical', 'disabled']` check, with no path back in. `flynn_bootstrap_state` is a durable household-cabinet drawer (`{completed, completed_at, gate_version}`, same idiom as `flynn_active_notification`) stamped only after a fresh read-back confirms both the household name and the AI essence identity name are real — never optimistically, so a silently-failed sub-write doesn't get marked done. This is an **OR** against the existing `monastery_health` check, not a replacement — both re-entry paths stay live.
 
 `disabled` (summarizers off via the `zen_summarizers_enabled` kill-switch) is included alongside `critical` — the monastery sensor's own priority check resolves to `disabled` before it ever evaluates content freshness, so `monastery_health` can never reach `critical` while summarizers are off. Summarizer/pipeline health has nothing to do with whether a household/family/user/ai_user identity exists yet; without `disabled` here, a fresh deploy with summarizers left at their shipped-off default silently never provisions an identity at all. `flynn_bootstrap_content`'s writes are all self-guarded (see steps below), so calling it on an already-provisioned system is a safe no-op.
 
@@ -183,13 +188,14 @@ If `zen_monastery_health` is `critical` **or** `disabled`, Flynn calls `script.f
 1. **Validates conversation agent** — if missing or unavailable, stops with notification. Nothing else proceeds without an agent.
 2. **Auto-resolves reasoning task** — reads `input_text.zenos_reasoning_task`. If unset and exactly one conversation entity exists, auto-writes it. Multiple found with none configured → stops with notification.
 3. **Auto-resolves AI task entity** — reads `input_text.zenos_ai_task_entity`. Same auto-resolve logic. Zero found = non-fatal (summarizer degrades gracefully).
-4. **Seeds household name** — non-destructive write to `_household_name` drawer.
+4. **Seeds household name** — write to `_household_name` drawer with `force_action: true`. This is a reserved (underscore-prefixed) FileCabinet key — those require `force_action: true` unconditionally; `force_action: false` doesn't mean "only write if empty," it means the write is rejected outright, every time. (This drawer had never once persisted on any install until this was corrected — `input_text.zenos_household_name` is the single source of truth, so writing it here on every gate cycle is idempotent sync, not an overwrite risk.)
 5. **Seeds AI persona essence** — writes default legacy-schema essence with `identity.name = 'your AI'` as placeholder (non-destructive — skips if drawer already exists). Three-layer cabinets already have a real name stamped at mint; this step is a no-op for them.
 6. **Seeds schema templates** — calls `reset_template` if either template drawer is missing.
 7. **Loads prompt substrate** — calls `zen_admintools_zenos_prompt_loader` (Cortex, Directives, Purpose).
 8. **Wires default family graph** *(4.5.6)* — calls `household_add_family` for the default family cabinet, then `family_add_member` for the default user and AI user. All three calls are guarded (skips if cabinet unavailable) and idempotent (no-op if already wired). Closes a gap where cold builds left the default family as an orphan in the identity graph.
 9. **Seeds home mode timers** *(4.5.6)* — each `input_datetime` schedule anchor and quiet/work bounds helper is individually checked and seeded to its default time if still bare (`''`, `unknown`, or `unavailable`). Each timer has its own guard — partially-configured installs are safe.
 10. **Flags completion** — calls `flynn_unified_engine` with `action_type: flag_complete`.
+11. **Stamps `flynn_bootstrap_state`** — only after a fresh read-back confirms `_household_name` and the AI essence identity name are both real (not `''`/`unknown`/`unavailable`/the `'your AI'` placeholder). A backfill on any install that predates this drawer: every system re-enters Gate 3 once on the next Stepgate tick, runs through idempotently (no-op on an already-good install), and gets tagged retroactively.
 
 **Event fired:** `flynn_stepgate_event` (gate: 3, action: bootstrap_complete)
 
