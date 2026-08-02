@@ -481,9 +481,10 @@ script:
             - variables:
                 _hs_domain: "{{ (has_service | trim).split('.')[0] }}"
                 _hs_service: "{{ (has_service | trim).split('.')[1:] | join('.') }}"
+                _hs_http_ok: "{{ (r.status | default(0) | int) in range(200, 300) }}"
             - variables:
                 _hs_found: >-
-                  {%- if r.content is none -%}false
+                  {%- if not _hs_http_ok or r.content is none -%}false
                   {%- else -%}
                     {%- set _svc_list = (r.content | from_json([])) if r.content is string else r.content -%}
                     {%- set ns = namespace(found=false) -%}
@@ -493,11 +494,21 @@ script:
                     {{ ns.found }}
                   {%- endif -%}
             - variables:
+                # BUG FIX (2026-08-01): previously trusted r.content alone —
+                # a 401/other non-2xx response (e.g. bad/missing ha_bearer
+                # secret) returns a JSON error body like {"message": "..."},
+                # which parsed fine as "no matching service" and reported
+                # found=false / status=success, indistinguishable from the
+                # service genuinely not existing. api_ok now surfaces the
+                # real HTTP outcome so callers can tell "checked, not there"
+                # apart from "couldn't check at all."
                 final:
-                  status: success
+                  status: "{{ 'success' if _hs_http_ok else 'error' }}"
                   message: "Service existence check for {{ has_service }}."
                   has_service: "{{ has_service }}"
                   found: "{{ _hs_found }}"
+                  api_ok: "{{ _hs_http_ok }}"
+                  api_status: "{{ r.status | default(none) }}"
                   caller_token: "{{ caller_token }}"
             - stop: services_has_service_done
               response_variable: final
@@ -1310,12 +1321,45 @@ script:
               {%- endfor -%}
               {{ ns.l | join(', ') if ns.l else '' }}
         - variables:
+            # BUG FIX (2026-08-01): ai_task_set only ever checked "is the
+            # helper non-empty" — a malformed value (missing domain prefix,
+            # e.g. "gemma4_e4b_gemma4_e4b" instead of "ai_task.gemma4_e4b_gemma4_e4b")
+            # passed this check fine and sailed through Gate 3 silently, only
+            # surfacing as a crash much later when something actually called
+            # the entity (e.g. ninja_summarizer force-run: "invalid entity ID
+            # ... Got None"). _ai_task_valid checks the helper's value is an
+            # entity_id that genuinely exists in states.ai_task — not just
+            # non-empty. _ai_task_hint tries to find the real entity the
+            # customer probably meant (matching the object_id half after the
+            # dot, since the missing-prefix case is the common one) before
+            # falling back to listing every real ai_task entity.
+            _ai_task_raw: "{{ states('input_text.zenos_ai_task_entity') | trim }}"
+            _ai_task_all: "{{ states.ai_task | map(attribute='entity_id') | list }}"
+            _ai_task_valid: "{{ _ai_task_raw in _ai_task_all }}"
+            _ai_task_hint: >-
+              {%- if _ai_task_raw not in ['', 'unknown', 'unavailable'] and not _ai_task_valid -%}
+                {%- set _obj = _ai_task_raw.split('.')[-1] -%}
+                {%- set _match = _ai_task_all | select('match', '.*\\.' ~ _obj ~ '$') | list -%}
+                {%- if _match | count > 0 -%}
+                  Did you mean {{ _match[0] }}? (helper is missing its "ai_task." domain prefix)
+                {%- elif _ai_task_all | count > 0 -%}
+                  Not a real entity. Available ai_task entities: {{ _ai_task_all | join(', ') }}
+                {%- else -%}
+                  Not a real entity, and no ai_task entities exist on this system at all.
+                {%- endif -%}
+              {%- else -%}
+                {{ '' }}
+              {%- endif -%}
+        - variables:
             _diagnosis: >-
               {%- set _ns = namespace(issues=[]) -%}
+              {%- if _ai_task_raw not in ['', 'unknown', 'unavailable'] and not _ai_task_valid -%}
+                {%- set _ns.issues = _ns.issues + ['CRITICAL: input_text.zenos_ai_task_entity is set to "' ~ _ai_task_raw ~ '", which is not a real entity — ' ~ _ai_task_hint] -%}
+              {%- endif -%}
               {%- if _spook_installed == 'False' -%}
                 {%- set _ns.issues = _ns.issues + ['CRITICAL: Spook integration not installed — homeassistant.create_label unavailable, Flynn Gate 0 cannot auto-create missing labels and will fail silently with an "unknown action" automation error. Install via HACS: https://spook.boo/installation/'] -%}
               {%- elif _spook_installed == 'unknown' -%}
-                {%- set _ns.issues = _ns.issues + ['warn: could not determine Spook install status (zen_sutra_ha_api services check failed) — if label-related bootstrap gates are stuck, verify Spook manually'] -%}
+                {%- set _ns.issues = _ns.issues + ['warn: could not determine Spook install status — the internal HA API check (rest_command.ha_api_get) returned HTTP ' ~ (_hr_services_raw.get('api_status', 'no response') | string) ~ ', not Spook itself. Check the ha_bearer secret (missing/expired long-lived token causes this) before assuming Spook is absent.'] -%}
               {%- endif -%}
               {%- if _dojo in ['unknown','unavailable','none',''] -%}
                 {%- set _ns.issues = _ns.issues + ['CRITICAL: dojo resolver unavailable — label zen_dojo_cabinet has no sensor entities'] -%}
@@ -1462,8 +1506,12 @@ script:
               dependencies:
                 spook_installed: "{{ _spook_installed }}"
                 spook_note: "Provides homeassistant.create_label/rename_label/remove_label — required by Flynn Gate 0. Not core HA. https://spook.boo/installation/"
-              ai_task_entity: "{{ states('input_text.zenos_ai_task_entity') | trim }}"
-              ai_task_set: "{{ states('input_text.zenos_ai_task_entity') | trim not in ['','unknown','unavailable'] }}"
+                internal_api_ok: "{{ _hr_services_raw.get('api_ok', none) if _hr_services_raw is mapping else none }}"
+                internal_api_status: "{{ _hr_services_raw.get('api_status', none) if _hr_services_raw is mapping else none }}"
+              ai_task_entity: "{{ _ai_task_raw }}"
+              ai_task_set: "{{ _ai_task_raw not in ['','unknown','unavailable'] }}"
+              ai_task_entity_valid: "{{ _ai_task_valid if _ai_task_raw not in ['','unknown','unavailable'] else none }}"
+              ai_task_entity_hint: "{{ _ai_task_hint }}"
               timestamps:
                 zen_summary: "{{ _ts | default('none') }}"
                 zen_summary_age_min: "{{ _ts_age_min }}"

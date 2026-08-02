@@ -380,9 +380,27 @@ automation:
                 'sensor.zenos_default_ai_user_history_cabinet'
             ] -%}
             {{ _hist | select('has_value') | map('states') | select('eq', 'online_unmounted') | list | count > 0 }}
-      # Early exit: skip when all gates truly green AND oobe done AND no init cabs.
-      # Optional slots stay ok in cabinet_health even with init-state cabs — we
-      # check cabinet_states directly so Flynn can't be fooled by health rollup.
+          # BUG FIX (2026-08-01): this early-exit stops the whole sentinel
+          # before Gate 3 is ever reached, on the strength of health-sensor
+          # rollups alone — it never knew Gate 3 also has a re-entry condition
+          # keyed on flynn_bootstrap_state. On an already-healthy system
+          # (monastery: ok — the normal case for anything long-running, H
+          # included) this fired on every single tick, meaning the
+          # flynn_bootstrap_state backfill could never reach a healthy system
+          # at all, only ones already failing the health check for some other
+          # reason (like T's monastery: disabled, which happened to fall
+          # through by accident). Computed here, ahead of the early-exit,
+          # rather than down in Gate 3 where it's also still used.
+          _early_bootstrap_completed: >-
+            {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+            {%- set _bs = (state_attr(_hh, 'variables') or {}).get('flynn_bootstrap_state', {}) if _hh != '' else {} -%}
+            {%- set _bs = _bs.get('value', _bs) if _bs is mapping else {} -%}
+            {%- set _bs = (_bs | from_json) if _bs is string else _bs -%}
+            {{ (_bs.get('completed', false) | bool) if _bs is mapping else false }}
+      # Early exit: skip when all gates truly green AND oobe done AND no init cabs
+      # AND bootstrap has genuinely completed at least once. Optional slots stay
+      # ok in cabinet_health even with init-state cabs — we check cabinet_states
+      # directly so Flynn can't be fooled by health rollup.
       - if: >
           {{ was_green
              and is_state('sensor.zen_label_health', 'ok')
@@ -391,6 +409,7 @@ automation:
              and not _oobe_pending
              and not _early_init_cabs
              and not _early_unmounted_history
+             and _early_bootstrap_completed
              and 'kfc_template' in (state_attr(states('sensor.zen_dojo_cabinet_resolved'), 'variables') or {})
              and 'zen_template'  in (state_attr(states('sensor.zen_kata_cabinet_resolved'), 'variables') or {}) }}
         then:
@@ -747,6 +766,18 @@ automation:
             {{ [_resolver_dojo, _resolver_kata, _resolver_system]
                | select('in', ['unknown', 'unavailable', 'none', ''])
                | list | count == 0 }}
+          # BUG FIX (2026-08-01): monastery_health alone can't catch every
+          # never-bootstrapped system — a system that reached 'warn' before
+          # flynn_bootstrap_content ever ran once (e.g. summarizers flipped on
+          # mid-onboarding) permanently falls outside monastery_health's
+          # ['critical','disabled'] re-entry check below, with no other path
+          # back in. flynn_bootstrap_state is a durable, explicitly-verified
+          # flag (stamped at the tail of flynn_bootstrap_content only after
+          # read-back confirms real household_name + AI essence identity,
+          # never optimistically) — independent of monastery_health's live,
+          # volatile value. Reuses _early_bootstrap_completed computed above
+          # the early-exit check — same value, no need to recompute.
+          _bootstrap_completed: "{{ _early_bootstrap_completed }}"
       - choose:
           - conditions: "{{ monastery_health == 'unknown' or not _resolvers_ready }}"
             sequence:
@@ -786,7 +817,7 @@ automation:
       # a normal, self-resolving operational state (content exists, summary
       # is stale) on an already-bootstrapped system, not "content missing."
       - choose:
-          - conditions: "{{ monastery_health in ['critical', 'disabled'] }}"
+          - conditions: "{{ monastery_health in ['critical', 'disabled'] or not _bootstrap_completed }}"
             sequence:
               - alias: "Flynn: Bootstrap content"
                 action: script.flynn_bootstrap_content
@@ -1414,14 +1445,24 @@ script:
               notification_id: flynn_ai_task_missing
 
       # Stamp config values into cabinets via FileCabinet
-      # force_action: false — only write if drawer is empty; never overwrite existing AI config
+      # BUG FIX (2026-08-01): _household_name is an underscore-prefixed
+      # (reserved) key — FileCabinet requires force_action: true for those
+      # regardless of intent; force_action: false doesn't mean "only write if
+      # empty" here, it means "rejected outright, every time, on every
+      # install" (confirmed not_found on both T and H — this write has never
+      # once succeeded). The "never overwrite existing" protection this
+      # comment describes never existed; only guard against clobbering a real
+      # name is the read-then-conditionally-write pattern used elsewhere in
+      # this file (e.g. persona_name below) — but household_name has no
+      # equivalent placeholder value to detect, so it's written unconditionally
+      # whenever the input helper is non-empty, same as always intended.
       - choose:
           - conditions: "{{ household_name | default('') != '' }}"
             sequence:
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: create
-                  force_action: false
+                  force_action: true
                   set_timestamp: true
                   show_hidden_volumes: false
                   volume_entity_id:
@@ -1687,6 +1728,39 @@ script:
           gate: 3
           action: bootstrap_complete
           timestamp: "{{ now().isoformat() }}"
+
+      # Stamp flynn_bootstrap_state — durable, monastery_health-independent
+      # record that this gate has genuinely completed at least once. Verified
+      # via fresh read-back of the actual writes this run performed, never
+      # stamped optimistically just because the sequence reached the end
+      # without erroring (a silently-failed sub-write shouldn't get marked done).
+      - variables:
+          _bs_hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          _bs_ai_cab: "{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}"
+          _bs_household_name: "{{ (state_attr(_bs_hh_cab, 'variables') or {}).get('_household_name', {}).get('value', '') | trim }}"
+          _bs_ai_essence: >-
+            {%- set _e = (state_attr(_bs_ai_cab, 'variables') or {}).get('zenai_essence', {}) -%}
+            {%- set _e = _e.get('value', _e) if _e is mapping else {} -%}
+            {{ (_e | from_json) if _e is string else _e }}
+          _bs_ai_name: "{{ (_bs_ai_essence.get('identity', {}).get('name', '') if _bs_ai_essence is mapping else '') | trim }}"
+          _bs_verified: >-
+            {{ _bs_household_name not in ['', 'unknown', 'unavailable']
+               and _bs_ai_name not in ['', 'unknown', 'unavailable', 'your AI'] }}
+      - if: "{{ _bs_verified }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: create
+              force_action: true
+              set_timestamp: true
+              show_hidden_volumes: false
+              volume_entity_id:
+                - "{{ _bs_hh_cab }}"
+              key: flynn_bootstrap_state
+              value:
+                completed: true
+                completed_at: "{{ now().isoformat() }}"
+                gate_version: "flynn.yaml Gate 3 (2026-08-01 flynn_bootstrap_state fix)"
 
 
 ###############################################################################
