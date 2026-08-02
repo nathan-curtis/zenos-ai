@@ -83,9 +83,12 @@
 ## **20. Tool Invocation and Security**
 * **[20_tool_invocation_and_security.md](./20_tool_invocation_and_security.md)**
 
+## **21. Developer Taxonomy and Component Standards**
+* **[21_Developer_Taxonomy_and_Component_Standards.md](./21_Developer_Taxonomy_and_Component_Standards.md)** — Canonical component classes (DojoTool, AdminTool, Root, Sutra, Stack, Codex, KFC, Boot Orchestrator), Stripes, exposure rules, packaging conventions, and the design decision guide for core developers, plugin authors, and reviewers.
+
 ---
 
-## **Appendices (Future Work: Sections 21–30)**
+## **Appendices (Future Work: Sections 22–30)**
 
 Reserved for:
 
