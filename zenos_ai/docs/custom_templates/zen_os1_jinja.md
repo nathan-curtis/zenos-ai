@@ -2,7 +2,7 @@ ZenOS-AI Template Engine: zen_os_1.jinja
 
 Technical Specification & Prompt Loader Requirements
 
-Version: 2026.7.0
+Version: 2026.8.0
 Status: Stable & Required for All Front-Line Agents
 
 > **2026.7.0:** Version scheme changed from semantic (e.g. `4.5.5`) to date-based (`YYYY.M.patch`) aligned with Home Assistant release conventions. `{%- import 'zenos_ai/flynn_onboarding.jinja' as flynn %}` added at the top of the template. `~COMMANDS~` / `command_interpreter.jinja` interface fully retired — replaced by `zen_dojotools_library` + KFC. Library Commands Window removed from the prompt.
@@ -370,8 +370,9 @@ Returns a dict with:
 | `id_manifest_present` | `zen_identity_manifest` drawer exists in household cabinet |
 
 All signals true → `sensor.zen_prompt_health` state `ok`.
-Any signal false → `warn` or `error` depending on severity.
 `id_manifest_present` false → `warn` (expected on fresh install until first manifest build).
+
+**Severity ladder (corrected 2026-08-02):** `error` is reserved for a genuinely missing essence (no `zenai_essence` drawer at all — the agent has no persona to load). A `legacy`-schema essence — flat-shape, unsigned, no `three_layer` migration — is `warn`, not `error`: it's the universal current default and loads/functions with zero issue; `three_layer` + signing is an optional, unmigrated feature, not a requirement. `warn` also covers an unsigned or incomplete `three_layer` essence (`sig_ok`/`manifest_ok`/`id_manifest_ok` false). Do not treat every non-`three_layer` essence as an error — that conflates "hasn't opted into an optional upgrade" with "genuinely broken."
 
 
 ---

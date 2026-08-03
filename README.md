@@ -10,31 +10,36 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Stable: 2026.7.2** | Base: 2026.7.0 'Neo' | Previous: 2026.6.0 'Clue'
+**Stable: 2026.8.0 'Chef'** | Previous: 2026.7.1 (patch on 2026.7.0 'Neo')
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-**What's in 2026.7.1:** A patch on top of Neo — tools can now self-register their own KFC contract (KF5), Firefly III gains a codex tier for depreciation and COGS, Grocy gets a real fix plus new coaching features, and there's a new Lens Bus provider for battery health.
+**What's in 2026.8.0 'Chef':** *Yes, chef.* Taskmaster becomes a real cross-backend expediter instead of a label pattern. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch — weekly cost rollups, waste logging, event menu scaling, prep-time briefing. A platform-wide identity gate (SP1) backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager now share one guest/occupant-prefs lookup that Kitchen's allergen flagging reads from.
 
-**KF5 — Self-Registering Tools**
-- **`bootstrap_kfc`** — tools declare their own KFC dojo-drawer contract via `mode=kfc_manifest`; `zen_dojotools_manifest` discovers and mounts them automatically, no Scribe authoring step needed. Adopted by Room Manager, AlertManager, Camera, Security Manager, and SystemTools.
-- **FileCabinet mode-scoped whitelist** — `tool:mode` callout entries let a live drawer reach exactly one mode on a tool (e.g. a read-only self-description), never a write path.
+**The Expediter**
+- **Taskmaster** (`zen_dojotools_taskmaster`, new file) — progressive-enhancement task routing: O365 To Do base tier, auto-upgrades to Radar tickets or Grocy chores when configured, CRM-aware when a contact/company is explicit. `briefing` context block now carries Kitchen's `prep_schedule` proactively. Medications hard-capped at urgency 3, no override path.
 
-**Finance & Inventory**
-- **Firefly III codex tier** — `zen_codex_finance_depreciation` (asset depreciation: SL/DDB schedules, business-use splits, disposal) and `zen_codex_finance_cogs` (auto-posts COGS to Firefly from Grocy stock consumption).
-- **Grocy v5.3.1** — fixed `stock_entry_update` silently sending empty payloads on entry-id-only calls. New: Perishable Storage Coaching, COGS Coaching, battery-stock tracking, tax/depreciable-asset userfields.
+**Know Before You Promise (Kitchen)**
+- **Fulfillment & costing** — `recipe_fulfillment`/`recipe_consume` check and deplete real stock with real unit conversions. `recipe_cost`/`kitchen_brief` cost recipes and whole weeks against real price history, honestly bounded when data's missing.
+- **Executive chef batch** — `waste_log`/`waste_summary` (Grocy-native, no shadow ledger), `event_menu_create` (guest-count scaling + allergen flags), `prep_schedule_set`/`prep_brief`, `leftovers_to_stock`.
 
-**New Lens Bus Provider**
-- **Battery Notes** (`zen_stack_battery`) — first ZenOS stack provider backed by a HACS integration (`ha-battery-notes`) rather than a self-hosted service. Battery health by area, cross-referenced with Grocy stock.
+**Identity Gate**
+- **`resolve_caller_identity`** — the platform chokepoint every gated action now asks instead of improvising its own default-agent fallback. Fails closed by policy; a continuity switch (`zenos_sim_mode_override`, on by default) keeps current behavior until you deliberately opt in to the new gate.
+- **Portainer container control** — first tool wired through the gate. Read is open; restart/start needs a cert; stop/remove needs a cert plus a live admin ack.
 
-**Other**
-- **Postman `direct_dispatch`** — authority-stack bypass mode, the migration path for the retired `notification_router` script.
-- **ZenZork v1.7.0** — `llm_narration` toggle for live LLM-generated room narration, template fallback.
-- **Labels** — `mode` is now the primary selector across all dojotools, matching the project-wide move away from `action_type`.
+**Shared Context**
+- **Room Manager `room_occupant_prefs`** — guest-stay-aware, falls back to household occupants. Now the shared lookup behind both Kitchen's allergen flagging and Twenty CRM's guest prefs.
+- **Twenty CRM v1.10.0** — structured stay/appointment/service-request lifecycle replacing calendar-only stays.
 
-→ [Patch Notes — 2026.7.1](zenos_ai/docs/releases/neo.md#20267-1-patch)
+→ [Release Notes — Chef](zenos_ai/docs/releases/chef.md)
+
+---
+
+**2026.7.1** — patch on Neo: KF5 self-registering tools, Firefly III codex tier (depreciation + COGS), Grocy fixes and coaching features, Battery Notes Lens Bus provider.
+
+Release notes: [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md)
 
 **What's in 2026.7.2:** Two custom template files missed in the 7.1 audit — `zenos_cabinets.jinja` gains `cabinet_drawer_value_mounted` (follows FC write-mount pointers to expansion cabinets), and `zenos_manifest.jinja` gains `preferred_state`/`stripe`/`prerequisites`/`impact`/`fallback` params.
 

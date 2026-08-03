@@ -229,14 +229,15 @@ GET+SET for `select` and `input_select` entities.
 | `name` | Entity ID or shorthand name |
 | `option` | Option to set. Omit to read. |
 | `get` | Any truthy value forces read-only mode. |
+| `mode` | `read` forces a read-only reply regardless of other fields. `set` requires `option` — returns `missing_option` if omitted instead of silently falling back to a read. `tool_manifest` for self-description. Omitting `mode` and using `option`/`get` directly still works identically. |
 
-Validates `option` against `state_attr(entity_id, 'options')` before applying. Returns `error: invalid_option` with `supported` list if the option is not in the entity's option list.
+Validates `option` against `state_attr(entity_id, 'options')` before applying. Returns `error: invalid_option` with `supported` list if the option is not in the entity's option list. Entity existence is checked against domain membership, not state — a real entity that happens to be `unknown`/`unavailable` is not treated as nonexistent. Write responses re-read the entity after the call and report `ok: false` + a `warning` if the post-write state doesn't match what was requested, rather than echoing back the requested value as if it landed.
 
 ---
 
 ### zen_dojotools_number
 
-GET+SET+arithmetic for `number` and `input_number` entities. Enforces entity `min`/`max`.
+GET+SET+arithmetic for `number` and `input_number` entities. Enforces entity `min`/`max`. Has a real read path — calling with just `name` reads the entity instead of falling through to `set` with no value.
 
 | Field | Description |
 |---|---|
@@ -245,6 +246,7 @@ GET+SET+arithmetic for `number` and `input_number` entities. Enforces entity `mi
 | `operation` | `set` (default), `add`, `sub`, `mul`, `div`, `inc`, `dec` |
 | `amount` | Operand for add/sub/mul/div |
 | `cast` | `float` (default) or `int` |
+| `mode` | `read` forces a read-only reply. `set` requires `value` (or `operation`+`amount`) — returns `missing_value` if omitted. `tool_manifest` for self-description. Omitting `mode` still works identically. |
 
 Returns `error: out_of_range` with `min`/`max`/`requested` if the computed value would exceed the entity's bounds.
 
@@ -252,7 +254,7 @@ Returns `error: out_of_range` with `min`/`max`/`requested` if the computed value
 
 ### zen_dojotools_text
 
-GET+SET+string operations for `text` and `input_text` entities. Enforces 255-character HA platform limit (overflow truncated).
+GET+SET+string operations for `text` and `input_text` entities. Enforces 255-character HA platform limit (overflow truncated). Has a real read-only path — a bare read-style call no longer silently writes `''` over the entity.
 
 | Field | Description |
 |---|---|
@@ -261,6 +263,9 @@ GET+SET+string operations for `text` and `input_text` entities. Enforces 255-cha
 | `operation` | `set` (default), `clear`, `append`, `prepend`, `replace` |
 | `search_text` | Substring to find (used with `operation: replace`) |
 | `replace_text` | Replacement string (used with `operation: replace`) |
+| `mode` | `read` forces a read-only reply. `set` requires `value` (or the relevant `operation` fields) — returns `missing_value` if omitted. `tool_manifest` for self-description. Omitting `mode` still works identically. |
+
+Entity existence is checked against domain membership, not state — an entity whose real value happens to be the literal string `'unavailable'` is not treated as nonexistent/locked out of writes.
 
 ---
 
@@ -284,6 +289,7 @@ GET response includes a `topology_context` block: open doors/windows, area tempe
 | `aux_heat` | ~~Auxiliary heat~~ — `not_implemented`. `climate.set_aux_heat` was removed from HA with no replacement (surfaced by Spook v6 sweep). |
 | `power` | Power control — `on`/`off` (via hvac_mode) |
 | `get` | Any truthy value forces read-only |
+| `mode` | `read` forces a read-only reply. `set` requires at least one real setter field (`temperature`, `hvac_mode`, etc.) — returns `missing_setter` if none given. `tool_manifest` for self-description. Omitting `mode` still works identically. |
 
 ---
 
@@ -315,6 +321,7 @@ GET+SET for `input_datetime` entities. Resolves shorthand or full entity IDs. Ac
 | `name` | Entity ID or shorthand name |
 | `value` | Datetime string (ISO 8601 recommended). Omit to read. |
 | `get` | Any truthy value forces read-only |
+| `mode` | `read` forces a read-only reply. `set` requires `value` — returns `missing_value` if omitted. `tool_manifest` for self-description. Omitting `mode` still works identically. |
 
 GET response includes `has_date` and `has_time` flags.
 

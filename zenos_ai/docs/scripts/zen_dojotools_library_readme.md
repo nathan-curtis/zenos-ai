@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v6.10.0 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Library — v6.12.0 (ZenOS-AI 2026.7.0 'Neo')
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -55,7 +55,7 @@ Generic verbs are forwarded to the provider, which maps them to its own internal
 
 | `stack=` | Provider Script | Security | Description |
 |---|---|---|---|
-| `paperless` | `zen_stack_paperless` | read-redacted | Paperless-NGX document archive. Content redacted by default. |
+| `paperless` | `zen_stack_paperless` | read-redacted + write | Paperless-NGX document archive. Content redacted by default. Also supports correspondent management (`stacks_correspondents_list`, `stacks_correspondent_get`, `stacks_correspondent_create`, `stacks_correspondent_update`), bulk document edits (`split`, `reprocess`, `set_correspondent`, `set_document_type`, `set_storage_path`, `add_tag`, `remove_tag`, `delete`), and `stacks_flag_for_review` to flag a document and notify. |
 | `wiki` | `zen_dojotools_filecabinet` (stack=wiki) | read-redacted | Wiki.js pages via `zen_sutra_wikijs`. Requires Wiki.js integration installed and registered. |
 | `radar` | `zen_stack_radar` | r-only | Zammad service desk tickets. See section below. |
 | `media` | `zen_dojotools_media_manager` | read-only | Music Assistant media — tracks, albums, playlists, artists. Returns evidence leaves with `playback_hint`. |
@@ -198,10 +198,12 @@ zen_dojotools_library:
 
 | Mode | What It Does |
 |------|-------------|
-| `browse` | List all items of the given `item_type`. Optional `query` for title/author/platform filter. |
+| `browse` | List all items of the given `item_type`. Optional `query` for title/author/platform filter. Optional `limit`/`offset` (or `per_page`) in `input_json` page the result — response reports `total_count` separately from the (possibly page-limited) `count`/`items`. Omitting `limit` returns every matching item, as before. |
 | `find` | Search by title, author/artist, ISBN, platform, or tag. Returns `{items[], count}`. |
 | `search` | Full-text search across all item fields including notes. Accepts `q` or `query`. |
 | `add` | Add an item. Requires `isbn` or `title`. ISBN triggers Grocy dedup guard — returns existing record if found. |
+| `update` | Retroactively update an existing catalog item (v6.12.0). Requires `item_id`. Safe partial update: reads current userentity values, `combine()`s the caller's partial `input_json` onto them, then writes the merged dict — never a blind overwrite. Same field set as `add` (including `mealie_cookbook_slug`), so an already-shelved item can be edited without recreating it. `title` renames the underlying Grocy product directly (it lives on the product's `name` field, not as a userentity value, so it can't be merged like the other fields) — previously there was no `update` mode at all, so title changes after add were not possible. |
+| `move` | Reshelve a catalog item to a named location. Resolves the location by a real targeted `locations_find` query (not a paginated `locations_list`), so it isn't capped by Grocy's ~250-per-page listing and can find locations created after the first page. |
 | `loan` | Check out an item to a person. Requires `item` and `person` (HA person entity or name). Writes loan record to Grocy userfields. Uses `inventory_root` from borrower profile as destination location. |
 | `return` | Return a loaned item. Requires `item`. Clears loan fields, restores item to home location. |
 
@@ -251,6 +253,7 @@ The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this
 
 | Version | Change |
 |---------|--------|
+| v6.12.0 | `section=catalog mode=update` (safe partial update via `combine()`, never a blind overwrite; `title` renames the Grocy product directly). Paperless correspondent management (`stacks_correspondents_list/get/create/update`), bulk document edit `split`/`reprocess` methods, and `stacks_flag_for_review`. `catalog move`/`update`'s location lookups use a targeted `locations_find` query instead of paginated `locations_list`, which was silently missing locations past Grocy's ~250-item page cap. |
 | v5.9.0 | `books_loan`, `books_return`, `books_configure` modes. KFC schema v1.4.0 loan fields: `on_loan_to`, `loan_date`, `loan_due`, `loan_notes`. Loan uses `inventory_root` from borrower's profile as destination location. |
 | v5.8.0 | `move` mode (relocate a book by title/ISBN to a new Grocy location). `stock_transfer_location` (bulk move). |
 | v5.7.0 | `add` mode with ISBN dedup guard (checks existing Grocy products before creating). |

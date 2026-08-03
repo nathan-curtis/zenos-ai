@@ -59,6 +59,11 @@ input_boolean:
     name: "ZenOS: Flynn Override"
     icon: mdi:wrench-outline
 
+  zenos_sim_mode_override:
+    name: "ZenOS: SP1 sim_mode Override (allow simulated identity)"
+    icon: mdi:incognito-circle
+    initial: true
+
 
 ###############################################################################
 # COMPANION SELECTS
@@ -68,25 +73,36 @@ input_boolean:
 # Options are dynamically resolved from HA state at render time.
 ###############################################################################
 
+# Trigger-based: HA's dependency scanner can't see through the CABS macro
+# import below (cab is a variable, not a literal states() call), so a plain
+# passive template here would never reactively recompute when the cabinet's
+# essence actually changes — it silently goes stale forever, reload or not.
+# Explicit triggers make recompute deterministic instead of relying on HA's
+# (unreliable, in this case) automatic dependency detection.
 template:
-  - select:
+  - trigger:
+      - trigger: state
+        entity_id: sensor.zenos_default_ai_user_cabinet
+      - trigger: state
+        entity_id: input_text.zenos_persona_name
+      - trigger: event
+        event_type: zen_event
+        event_data:
+          event:
+            kind: cabinet_mounted
+      - trigger: homeassistant
+        event: start
+    select:
       - name: "ZenOS: Persona"
         unique_id: zen_select_persona
         icon: mdi:account-star
         state: "{{ states('input_text.zenos_persona_name') }}"
-        # @todo - no need to coerce sensor.zen_default_ai_user_cabinet_resolved to a list and then check the length at the end - there is onle one cab(s)!
         options: >-
           {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-          {%- set cabs = [states('sensor.zen_default_ai_user_cabinet_resolved')] -%}
-          {%- set names = namespace(list=[]) -%}
-          {%- for cab in cabs -%}
-            {%- set essence = CABS.cabinet_drawer_value(cab, 'zenai_essence') | from_json() -%}
-            {%- set name = essence.get('identity', {}).get('name', '') | trim -%}
-            {%- if name not in ['', 'your AI', 'unknown'] -%}
-              {%- set names.list = names.list + [name] -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {{ names.list if names.list | length > 0 else ['unknown'] }}
+          {%- set cab = states('sensor.zen_default_ai_user_cabinet_resolved') -%}
+          {%- set essence = CABS.cabinet_drawer_value(cab, 'zenai_essence') | from_json() -%}
+          {%- set name = essence.get('jacket', {}).get('name', '') | trim -%}
+          {{ [name] if name not in ['', 'your AI', 'unknown'] else ['unknown'] }}
         select_option:
           action: input_text.set_value
           target:
@@ -94,14 +110,27 @@ template:
           data:
             value: "{{ option }}"
 
+  - select:
       - name: "ZenOS: Primary User"
         unique_id: zen_select_primary_user
         icon: mdi:account
         state: "{{ states('input_text.zenos_primary_user') }}"
         options: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {#- Already-assigned HoH names, gathered across every household
+              cabinet's AI_Cabinet_VolumeInfo.acls.owner — don't offer a
+              person who's already someone's head of household. -#}
+          {%- set assigned = namespace(names=[]) -%}
+          {%- for hh in label_entities('zen_household_cabinet') -%}
+            {%- set vi = CABS.cabinet_drawer_value(hh, 'AI_Cabinet_VolumeInfo') | from_json() -%}
+            {%- set owners = (vi.get('acls', {}).get('owner', []) if vi is mapping else []) -%}
+            {%- for o in owners -%}
+              {%- set assigned.names = assigned.names + [(o.get('entity_id', '') if o is mapping else '')] -%}
+            {%- endfor -%}
+          {%- endfor -%}
           {%- set people = namespace(list=[]) -%}
           {%- for p in states.person -%}
-            {%- if state_attr(p.entity_id, 'user_id') is not none -%}
+            {%- if state_attr(p.entity_id, 'user_id') is not none and p.entity_id not in assigned.names -%}
               {%- set people.list = people.list + [p.name] -%}
             {%- endif -%}
           {%- endfor -%}
@@ -190,6 +219,57 @@ automation:
             source: zen_warmup_timer
             warmup_minutes: "{{ _warmup_minutes }}"
             timestamp: "{{ now().isoformat() }}"
+
+  - alias: "Flynn: SP1 sim_mode Override — stamp every boot"
+    id: flynn_sim_mode_override_stamp
+    mode: single
+    triggers:
+      - trigger: homeassistant
+        event: start
+      # Immediate reaction to a manual flip — don't wait for the next restart.
+      - trigger: state
+        entity_id: input_boolean.zenos_sim_mode_override
+    conditions: []
+    actions:
+      # Idempotent, reversible override: writes integrations_config.identity.
+      # sim_mode_allowed to match input_boolean.zenos_sim_mode_override on every
+      # boot, so the OS-level SP1 gate (dojotools_identity.yaml
+      # resolve_caller_identity) never silently blocks simulated identity while
+      # real Authentik/OIDC isn't live yet. Flip the input_boolean off (or
+      # delete this automation) to let the fail-closed default (false) take
+      # over again — see project_sp1_acl_candidates / feedback_caller_id_not_authenticated.
+      - variables:
+          _smo_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          _smo_desired: "{{ is_state('input_boolean.zenos_sim_mode_override', 'on') }}"
+      - action: script.zen_dojotools_filecabinet
+        response_variable: _smo_ic_raw
+        continue_on_error: true
+        data:
+          action_type: get
+          volume_entity_id: "{{ _smo_hh }}"
+          path: integrations_config
+      - variables:
+          _smo_ic: >-
+            {%- set r = _smo_ic_raw.get('value', {}) if _smo_ic_raw is mapping and _smo_ic_raw.get('status') == 'success' else {} -%}
+            {{ r if r is mapping else {} }}
+          _smo_current: "{{ _smo_ic.get('identity', {}).get('sim_mode_allowed', none) if _smo_ic is mapping else none }}"
+      - if: "{{ _smo_current != _smo_desired }}"
+        then:
+          - variables:
+              _smo_updated_ic: >-
+                {{ _smo_ic | combine({'identity': _smo_ic.get('identity', {}) | combine({'sim_mode_allowed': _smo_desired}) }) }}
+          - action: script.zen_dojotools_filecabinet
+            continue_on_error: true
+            data:
+              action_type: update
+              force_action: true
+              volume_entity_id: "{{ _smo_hh }}"
+              key: integrations_config
+              value: "{{ _smo_updated_ic }}"
+          - action: system_log.write
+            data:
+              level: info
+              message: "Flynn: stamped integrations_config.identity.sim_mode_allowed={{ _smo_desired }} (input_boolean.zenos_sim_mode_override={{ _smo_desired }})"
 
   - alias: "Flynn: Stepgate Sentinel"
     id: flynn_stepgate_sentinel
@@ -300,9 +380,27 @@ automation:
                 'sensor.zenos_default_ai_user_history_cabinet'
             ] -%}
             {{ _hist | select('has_value') | map('states') | select('eq', 'online_unmounted') | list | count > 0 }}
-      # Early exit: skip when all gates truly green AND oobe done AND no init cabs.
-      # Optional slots stay ok in cabinet_health even with init-state cabs — we
-      # check cabinet_states directly so Flynn can't be fooled by health rollup.
+          # BUG FIX (2026-08-01): this early-exit stops the whole sentinel
+          # before Gate 3 is ever reached, on the strength of health-sensor
+          # rollups alone — it never knew Gate 3 also has a re-entry condition
+          # keyed on flynn_bootstrap_state. On an already-healthy system
+          # (monastery: ok — the normal case for anything long-running, H
+          # included) this fired on every single tick, meaning the
+          # flynn_bootstrap_state backfill could never reach a healthy system
+          # at all, only ones already failing the health check for some other
+          # reason (like T's monastery: disabled, which happened to fall
+          # through by accident). Computed here, ahead of the early-exit,
+          # rather than down in Gate 3 where it's also still used.
+          _early_bootstrap_completed: >-
+            {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+            {%- set _bs = (state_attr(_hh, 'variables') or {}).get('flynn_bootstrap_state', {}) if _hh != '' else {} -%}
+            {%- set _bs = _bs.get('value', _bs) if _bs is mapping else {} -%}
+            {%- set _bs = (_bs | from_json) if _bs is string else _bs -%}
+            {{ (_bs.get('completed', false) | bool) if _bs is mapping else false }}
+      # Early exit: skip when all gates truly green AND oobe done AND no init cabs
+      # AND bootstrap has genuinely completed at least once. Optional slots stay
+      # ok in cabinet_health even with init-state cabs — we check cabinet_states
+      # directly so Flynn can't be fooled by health rollup.
       - if: >
           {{ was_green
              and is_state('sensor.zen_label_health', 'ok')
@@ -311,6 +409,7 @@ automation:
              and not _oobe_pending
              and not _early_init_cabs
              and not _early_unmounted_history
+             and _early_bootstrap_completed
              and 'kfc_template' in (state_attr(states('sensor.zen_dojo_cabinet_resolved'), 'variables') or {})
              and 'zen_template'  in (state_attr(states('sensor.zen_kata_cabinet_resolved'), 'variables') or {}) }}
         then:
@@ -318,13 +417,46 @@ automation:
       - delay: "00:00:10"
       - if: "{{ trigger.id == 'ha_start' }}"
         then:
+          - variables:
+              _warmup_monastery_on: "{{ states('sensor.zen_monastery_health') in ['ok', 'warn'] }}"
+              _warmup_pipeline_on: "{{ is_state('input_boolean.zen_summarizers_enabled', 'on') }}"
+              # Same warmup_minutes config zen_warmup_timer uses (zen_scheduler_config,
+              # default 5) — real ETA, not a guess. Elapsed comes from the same boot
+              # sensor is_warmup() reads, so this stays consistent with the actual gate.
+              _warmup_minutes: >-
+                {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+                {%- set _cfg_raw = (state_attr(_hh, 'variables') or {}).get('zen_scheduler_config', {}) -%}
+                {%- set _v = _cfg_raw.get('value', _cfg_raw) if _cfg_raw is mapping else {} -%}
+                {%- set _v = (_v | from_json) if _v is string else _v -%}
+                {{ (_v.get('warmup_minutes', 5) | int(5)) if _v is mapping else 5 }}
+              _warmup_last_boot: "{{ states('sensor.system_monitor_last_boot') }}"
+              _warmup_elapsed_s: >-
+                {{ (now() - as_datetime(_warmup_last_boot)).total_seconds()
+                   if _warmup_last_boot not in ['unknown', 'unavailable', ''] else 0 }}
+              _warmup_remaining_s: "{{ [(_warmup_minutes * 60) - (_warmup_elapsed_s | int), 0] | max }}"
+              _warmup_conv_agent_missing: >-
+                {{ states('input_text.zenos_conversation_agent') in ['', 'unknown', 'unavailable'] }}
+              _warmup_persona_missing: >-
+                {{ states('input_text.zenos_persona_name') in ['', 'unknown', 'unavailable'] }}
           - action: persistent_notification.create
             data:
               title: "ZenOS-AI: Warming up"
               message: >
-                Flynn here. HA just restarted — I'm bringing the monastery online.
-                Summarizer pipeline is running. This notification dismisses
-                automatically when I'm fully ready. Nothing is broken.
+                Flynn here. HA just restarted — checking gates now.
+                {{ "I'm bringing the monastery online." if _warmup_monastery_on
+                   else "Monastery's intentionally off — skipping that." }}
+                {{ "Summarizer pipeline is running." if _warmup_pipeline_on
+                   else "Summarizer pipeline is intentionally disabled — not starting it." }}
+                ETA to fully ready: ~{{ (_warmup_remaining_s // 60) | int }} min
+                {{ (_warmup_remaining_s % 60) | int }} sec.
+                {% if _warmup_conv_agent_missing or _warmup_persona_missing %}
+                Heads up, once I'm ready I'll still need you for:
+                {{ "no conversation agent pointed yet" if _warmup_conv_agent_missing else "" }}
+                {{ "; " if (_warmup_conv_agent_missing and _warmup_persona_missing) else "" }}
+                {{ "no persona name set yet" if _warmup_persona_missing else "" }}.
+                {% endif %}
+                This notification dismisses automatically when I'm fully ready.
+                Nothing is broken.
               notification_id: flynn_warmup
       - variables:
           label_health: "{{ states('sensor.zen_label_health') }}"
@@ -360,6 +492,18 @@ automation:
                     I need you to restart Home Assistant before I can finish wiring things up.
                     After the restart, open a conversation with me and we'll pick up right where we left off.
                   notification_id: flynn_labels_created
+              # See flynn_onboarding.jinja's active_notification() for why this
+              # mirrors into a cabinet drawer instead of relying on the
+              # notification's own (unreadable-via-Jinja) state.
+              - event: set_variable_legacy
+                event_data:
+                  volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  key: flynn_active_notification
+                  value:
+                    id: flynn_labels_created
+                    context: restart_required
+                    title: "ZenOS-AI: Almost there — restart needed"
+                  set_timestamp: true
               - stop: "Gate 0: Labels created, restart needed"
 
       #####################################################################
@@ -377,6 +521,12 @@ automation:
       - action: persistent_notification.dismiss
         data:
           notification_id: flynn_labels_created
+      - event: set_variable_legacy
+        event_data:
+          volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          key: flynn_active_notification
+          value: {}
+          set_timestamp: true
 
       #####################################################################
       # GATE 2: Cabinets not ok
@@ -393,7 +543,57 @@ automation:
       #####################################################################
       - variables:
           _cab_warn: "{{ cabinet_health == 'warn' }}"
-          _cab_hard: "{{ cabinet_health in ['error', 'critical'] }}"
+          # ── Rock-solid virgin-vs-broken distinction ─────────────────────
+          # cabinet_health's rolled-up state uses a priority order
+          # (missing_req > invalid_req > unhealthy_req), so a 'critical'
+          # reading can mask a DIFFERENT slot that's genuinely broken
+          # (invalid_req/unhealthy_req) behind a higher-priority missing-
+          # label reading. Checking only the rolled-up state isn't safe —
+          # verify every required slot individually. A slot is safe to
+          # auto-proceed on ONLY if it's genuinely virgin (state 'init' or
+          # blank) OR its required label doesn't exist in HA's registry at
+          # all (missing_req can never coexist with real established data —
+          # a label that doesn't exist cannot be attached to a real
+          # cabinet). Any slot with a concrete state (online_mounted,
+          # online_unmounted, Variables, anything non-virgin) AND an
+          # existing label is the genuinely dangerous case — keep the hard
+          # stop unconditionally for that.
+          _cab_states: >-
+            {{ state_attr('sensor.zen_cabinet_health', 'cabinet_states') | default({}, true) }}
+          _label_missing_ids: >-
+            {%- set _m = state_attr('sensor.zen_label_health', 'missing_label_ids') | default([]) -%}
+            {{ _m if _m is sequence and _m is not string else (_m | from_json if _m is string else []) }}
+          _required_slot_labels:
+            system: zen_system_cabinet
+            dojo: zen_dojo_cabinet
+            kata: zen_kata_cabinet
+            default_household: zen_default_household_cabinet
+            default_family: zen_default_family_cabinet
+            default_user: zen_default_user_cabinet
+            default_ai_user: zen_default_ai_user_cabinet
+      - variables:
+          _all_slots_explained_safe: >-
+            {%- set ns = namespace(all_safe=true) -%}
+            {%- for slot, label_id in _required_slot_labels.items() -%}
+              {%- set st = _cab_states.get(slot, '') -%}
+              {#- 'absent' (zen_cabinet_health's cabinet_states attribute) means
+                  no entity is tagged with this slot's label at all — the safest
+                  possible state, not covered by 'init'/''/'unknown'. Omitting it
+                  here false-triggers Gate 2's hard stop on a fresh system: a
+                  slot still 'absent' during label-assignment settling gets
+                  classified unsafe, so the operator sees "Cabinet Check Needed"
+                  and is told to manually initialize a cabinet that isn't broken
+                  — nothing to fix, just a normal transient window misread as
+                  damage. -#}
+              {%- set is_virgin_state = st in ['init', '', 'unknown', 'absent'] -%}
+              {%- set is_label_missing = label_id in _label_missing_ids -%}
+              {%- if not (is_virgin_state or is_label_missing) -%}
+                {%- set ns.all_safe = false -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.all_safe }}
+          _cab_hard: >-
+            {{ (cabinet_health in ['error', 'critical']) and not _all_slots_explained_safe }}
           _in_warmup: >-
             {%- import 'zenos_ai/zenos_health.jinja' as HEALTH -%}
             {{ HEALTH.is_warmup() | trim | bool }}
@@ -566,6 +766,18 @@ automation:
             {{ [_resolver_dojo, _resolver_kata, _resolver_system]
                | select('in', ['unknown', 'unavailable', 'none', ''])
                | list | count == 0 }}
+          # BUG FIX (2026-08-01): monastery_health alone can't catch every
+          # never-bootstrapped system — a system that reached 'warn' before
+          # flynn_bootstrap_content ever ran once (e.g. summarizers flipped on
+          # mid-onboarding) permanently falls outside monastery_health's
+          # ['critical','disabled'] re-entry check below, with no other path
+          # back in. flynn_bootstrap_state is a durable, explicitly-verified
+          # flag (stamped at the tail of flynn_bootstrap_content only after
+          # read-back confirms real household_name + AI essence identity,
+          # never optimistically) — independent of monastery_health's live,
+          # volatile value. Reuses _early_bootstrap_completed computed above
+          # the early-exit check — same value, no need to recompute.
+          _bootstrap_completed: "{{ _early_bootstrap_completed }}"
       - choose:
           - conditions: "{{ monastery_health == 'unknown' or not _resolvers_ready }}"
             sequence:
@@ -588,8 +800,24 @@ automation:
             action: script.zen_admintools_reset_template
             data: {}
 
+      # 'disabled' (summarizers off via zen_summarizers_enabled kill-switch) must
+      # also reach bootstrap_content — summarizer/pipeline health is orthogonal
+      # to whether a household/family/user/ai_user identity exists yet, and
+      # 'disabled' can never transition to 'critical' on its own (the sensor's
+      # priority check short-circuits to 'disabled' before it ever evaluates
+      # content freshness). Without this, a fresh deploy with summarizers off
+      # by default — the shipped default — never creates a household/AI
+      # identity at all, no error, no notification, just silence. Safe to
+      # include: every actual write inside flynn_bootstrap_content is already
+      # self-guarded (force_action: false on household_name — only writes an
+      # empty drawer; the one force_action: true write only overwrites the
+      # literal 'your AI'/''/'unknown' placeholder, never a real name) — this
+      # script was always safe to call liberally, it just never got the
+      # chance to run when summarizers are off. 'warn' stays excluded: that's
+      # a normal, self-resolving operational state (content exists, summary
+      # is stale) on an already-bootstrapped system, not "content missing."
       - choose:
-          - conditions: "{{ monastery_health == 'critical' }}"
+          - conditions: "{{ monastery_health in ['critical', 'disabled'] or not _bootstrap_completed }}"
             sequence:
               - alias: "Flynn: Bootstrap content"
                 action: script.flynn_bootstrap_content
@@ -598,7 +826,20 @@ automation:
                   household_name: "{{ states('input_text.zenos_household_name') }}"
                   primary_user: "{{ states('input_text.zenos_primary_user') }}"
                   persona_name: "{{ states('input_text.zenos_persona_name') }}"
-              - stop: "Gate 3: Bootstrap in progress"
+              # BUG FIX (2026-08-01): only stop for 'critical' — that's a
+              # transient state that resolves once content genuinely gets
+              # created, so re-evaluating fresh next cycle makes sense.
+              # 'disabled' is PERMANENT as long as summarizers stay off; an
+              # unconditional stop here meant every single sentinel cycle
+              # called bootstrap_content (safe, idempotent) then immediately
+              # stopped — Gate 3.5's OOBE notification logic could never be
+              # reached at all while summarizers were off. bootstrap_content's
+              # own unconditional agent_required dismiss was the only thing
+              # touching flynn_active_notification every cycle, silently
+              # masking the real OOBE state underneath it.
+              - if: "{{ monastery_health == 'critical' }}"
+                then:
+                  - stop: "Gate 3: Bootstrap in progress"
 
       #####################################################################
       # GATE 3.5: OOBE — system ready but persona not yet configured
@@ -634,6 +875,12 @@ automation:
               - action: persistent_notification.dismiss
                 data:
                   notification_id: flynn_oobe_pending
+              - event: set_variable_legacy
+                event_data:
+                  volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  key: flynn_active_notification
+                  value: {}
+                  set_timestamp: true
           # Case 2: placeholder in cabinet and input_text empty → genuine OOBE, notify
           - conditions: >-
               {{ not _g35_complete
@@ -644,15 +891,31 @@ automation:
                 data:
                   title: "ZenOS-AI: Ready — let's name your agent"
                   message: >
-                    Hey! I'm Flynn. Your system is up and running but I still need to know who's moving in.
-                    Open a conversation with me and let's get your agent set up — I'll walk you through
-                    naming your AI, wiring up your household, and setting delegation.
+                    Hey, I'm Flynn. Grid's up, clean, holding steady — but nobody's moved in yet.
+                    Open a conversation with me when you're ready and we'll get it sorted:
+                    name your AI, wire up the household, set who's got the keys. I'll be here
+                    till it's done, then I'll get out of the way.
                   notification_id: flynn_oobe_pending
+              - event: set_variable_legacy
+                event_data:
+                  volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  key: flynn_active_notification
+                  value:
+                    id: flynn_oobe_pending
+                    context: oobe
+                    title: "ZenOS-AI: Ready — let's name your agent"
+                  set_timestamp: true
         # Case 3: cabinet has a real name or _oobe_complete → dismiss
         default:
           - action: persistent_notification.dismiss
             data:
               notification_id: flynn_oobe_pending
+          - event: set_variable_legacy
+            event_data:
+              volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+              key: flynn_active_notification
+              value: {}
+              set_timestamp: true
 
       #####################################################################
       # GATE 4: All green — notify on transition only, verify sensors first.
@@ -690,6 +953,18 @@ automation:
                     summary pipeline will be live shortly. Open a conversation any time.
                     {% endif %}
                   notification_id: flynn_system_ready
+              - event: set_variable_legacy
+                event_data:
+                  volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  key: flynn_active_notification
+                  value:
+                    id: flynn_system_ready
+                    context: all_green
+                    title: >-
+                      {{ 'ZenOS-AI: All green — your agent is ready'
+                         if _g4_truly_green else
+                         'ZenOS-AI: Agent is ready (settling)' }}
+                  set_timestamp: true
 
 
 ###############################################################################
@@ -1056,12 +1331,27 @@ script:
                     Fill in the other three ZenOS helpers too (Household Name, Primary User, Persona Name), then restart HA.
                     After that, open a conversation with me and we'll pick up from here.
                   notification_id: flynn_agent_required
+              - event: set_variable_legacy
+                event_data:
+                  volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  key: flynn_active_notification
+                  value:
+                    id: flynn_agent_required
+                    context: agent_required
+                    title: "ZenOS-AI: One thing needed before I can continue"
+                  set_timestamp: true
               - stop: "Gate 3: Conversation agent invalid or missing"
 
       # Agent valid — dismiss any prior warning
       - action: persistent_notification.dismiss
         data:
           notification_id: flynn_agent_required
+      - event: set_variable_legacy
+        event_data:
+          volume_entity: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          key: flynn_active_notification
+          value: {}
+          set_timestamp: true
 
       # Resolve reasoning task entity — auto-select if unset
       # Uses validated agent as fallback; requires explicit config if multiple agents found
@@ -1155,14 +1445,24 @@ script:
               notification_id: flynn_ai_task_missing
 
       # Stamp config values into cabinets via FileCabinet
-      # force_action: false — only write if drawer is empty; never overwrite existing AI config
+      # BUG FIX (2026-08-01): _household_name is an underscore-prefixed
+      # (reserved) key — FileCabinet requires force_action: true for those
+      # regardless of intent; force_action: false doesn't mean "only write if
+      # empty" here, it means "rejected outright, every time, on every
+      # install" (confirmed not_found on both T and H — this write has never
+      # once succeeded). The "never overwrite existing" protection this
+      # comment describes never existed; only guard against clobbering a real
+      # name is the read-then-conditionally-write pattern used elsewhere in
+      # this file (e.g. persona_name below) — but household_name has no
+      # equivalent placeholder value to detect, so it's written unconditionally
+      # whenever the input helper is non-empty, same as always intended.
       - choose:
           - conditions: "{{ household_name | default('') != '' }}"
             sequence:
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: create
-                  force_action: false
+                  force_action: true
                   set_timestamp: true
                   show_hidden_volumes: false
                   volume_entity_id:
@@ -1428,6 +1728,39 @@ script:
           gate: 3
           action: bootstrap_complete
           timestamp: "{{ now().isoformat() }}"
+
+      # Stamp flynn_bootstrap_state — durable, monastery_health-independent
+      # record that this gate has genuinely completed at least once. Verified
+      # via fresh read-back of the actual writes this run performed, never
+      # stamped optimistically just because the sequence reached the end
+      # without erroring (a silently-failed sub-write shouldn't get marked done).
+      - variables:
+          _bs_hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          _bs_ai_cab: "{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}"
+          _bs_household_name: "{{ (state_attr(_bs_hh_cab, 'variables') or {}).get('_household_name', {}).get('value', '') | trim }}"
+          _bs_ai_essence: >-
+            {%- set _e = (state_attr(_bs_ai_cab, 'variables') or {}).get('zenai_essence', {}) -%}
+            {%- set _e = _e.get('value', _e) if _e is mapping else {} -%}
+            {{ (_e | from_json) if _e is string else _e }}
+          _bs_ai_name: "{{ (_bs_ai_essence.get('identity', {}).get('name', '') if _bs_ai_essence is mapping else '') | trim }}"
+          _bs_verified: >-
+            {{ _bs_household_name not in ['', 'unknown', 'unavailable']
+               and _bs_ai_name not in ['', 'unknown', 'unavailable', 'your AI'] }}
+      - if: "{{ _bs_verified }}"
+        then:
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: create
+              force_action: true
+              set_timestamp: true
+              show_hidden_volumes: false
+              volume_entity_id:
+                - "{{ _bs_hh_cab }}"
+              key: flynn_bootstrap_state
+              value:
+                completed: true
+                completed_at: "{{ now().isoformat() }}"
+                gate_version: "flynn.yaml Gate 3 (2026-08-01 flynn_bootstrap_state fix)"
 
 
 ###############################################################################

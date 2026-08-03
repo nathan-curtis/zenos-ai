@@ -1,13 +1,30 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Manifest
-# Version: 6.2.0
+# Version: 6.3.1
 #
 # Scripts:
-#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.2.0)
+#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.3.1)
 #   system_tools_stamp_default_family_cabinet — Cabinet stamping utility
 #   dojotools_zen_inspect — Entity inspection tool
 #
 # REBUILT: 2026-06-11 (was 5.1.0 — cabinet scanner only)
+#
+# v6.3.1 changes (2026-07-30):
+#   - mode=label_audit: include_optional=true now also sweeps
+#     missing_optional_labels (new field on tool_manifest(), alongside
+#     missing_required_labels) and, with auto_create=true confirm=true,
+#     creates missing optional labels too — same confirm gate, one pass.
+#
+# v6.3.0 changes (Steel Magnolias Phase 7b, 2026-07-29):
+#   - mode=label_audit: fans out tool_manifest across all zen_* tools, aggregates
+#     each tool's missing_required_labels (now computed read-only inside the
+#     shared tool_manifest() macro itself, against labels()). Detection only
+#     unless auto_create=true confirm=true, which loops zen_dojotools_labels
+#     mode=create for the distinct missing labels found — never bypasses that
+#     tool's own confirm gate. admintools tier excluded from scan targets (same
+#     as mode=audit) — confirmed via bisection that sequentially scanning the
+#     full zen_admintools_* group triggers a pre-existing 'limit' is undefined
+#     error, reproducible only across the full group, root cause out of scope.
 #
 # v6.2.0 changes (Zen pull, 2026-07-04 — header bump, content already live on H):
 #   - mode=bootstrap_kfc: scans zen_kfc_provider-labeled scripts, calls kfc_manifest,
@@ -82,6 +99,11 @@ script:
       mode=bootstrap_kfc: discover tools with kfc_manifest, upsert live drawer
       mounts into dojo cabinet — summarizer resolves them at runtime.
       mode=health_refresh: run full per-tool compliance scan, write to _health_report cabinet cache.
+      mode=label_audit: fan out tool_manifest across all tools, aggregate each
+      tool's missing_required_labels (vs live label registry). Detection only
+      unless auto_create=true confirm=true, which creates the distinct missing
+      labels via zen_dojotools_labels mode=create. Pass include_optional=true
+      to also sweep/create missing_optional_labels, not just required.
     icon: mdi:home-map-marker
     fields:
       show_hidden:
@@ -104,7 +126,7 @@ script:
       mode:
         description: >-
           Broker operation. Default: cabinets (existing behavior preserved).
-          cabinets|identity|labels|tools|automations|structure|audit|health|autotag|publish|all|tool_manifest
+          cabinets|identity|labels|tools|automations|structure|audit|label_audit|health|autotag|publish|all|tool_manifest
         required: false
         default: cabinets
         selector:
@@ -117,6 +139,8 @@ script:
               - automations
               - structure
               - audit
+              - label_audit
+              - repair
               - audit_help
               - health
               - autotag
@@ -148,6 +172,60 @@ script:
         required: false
         selector:
           boolean:
+      auto_create:
+        description: 'label_audit mode: create discovered missing labels via zen_dojotools_labels. Requires confirm=true.'
+        required: false
+        default: false
+        selector:
+          boolean:
+      confirm:
+        description: 'label_audit mode: required alongside auto_create=true to actually create labels (mirrors zen_dojotools_labels'' own confirm gate). repair mode: required by itself to actually create labels (repair implies auto_create+include_optional) — without it, repair only reports what it would fix.'
+        required: false
+        default: false
+        selector:
+          boolean:
+      include_optional:
+        description: 'label_audit mode: also sweep missing_optional_labels (not just required). With auto_create=true confirm=true, creates missing optional labels too. repair mode: same toggle, default true (pass false for required-labels-only repair).'
+        required: false
+        default: false
+        selector:
+          boolean:
+      force:
+        name: Force (repair mode — shotgun)
+        description: >-
+          repair mode only. By default, KFC-bound labels that already exist
+          are SKIPPED for description/icon/color sync — HA has no native
+          update_label service, so "update" is delete+recreate+re-tag, and
+          that's not worth the risk when nothing changed. force=true rewrites
+          every existing KFC label this run, regardless. Requires force_ack
+          set to the exact phrase 'yes I meant to do that' or the request is
+          silently downgraded to the safe default.
+        required: false
+        default: false
+        selector:
+          boolean:
+      force_labels:
+        name: Force Labels (repair mode — scalpel)
+        description: >-
+          repair mode only. JSON array of specific label names to force-
+          rewrite even though they already exist (e.g. ["autovac"]) — every
+          other existing KFC label is still skipped. Same force_ack
+          requirement as force=true.
+        required: false
+        selector:
+          text:
+      force_ack:
+        name: Force Acknowledgment
+        description: >-
+          repair mode only. Required verbatim alongside force=true or a
+          non-empty force_labels: 'yes I meant to do that'. Acknowledges that
+          rewriting an existing KFC label deletes and recreates it — entities
+          that carried the label are auto-restored from a pre-capture, but
+          AREAS and DEVICES are NOT — that association is gone permanently
+          unless you retag it yourself afterward.
+        required: false
+        selector:
+          text:
       mcp_tool_list:
         description: 'JSON array of entity_ids the agent can see in MCP. Required for mcp_sync mode.'
         required: false
@@ -188,7 +266,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.2.0',
+                version='6.3.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -551,7 +629,8 @@ script:
             _bs_stack_scripts: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for e in states.script -%}
-                {%- if e.state in ('off', 'on')
+                {%- if e.entity_id != this.entity_id
+                    and e.state in ('off', 'on')
                     and (e.entity_id.startswith('script.zen_stack_')
                       or e.entity_id.startswith('script.zen_sutra_')
                       or e.entity_id.startswith('script.zen_dojotools_')) -%}
@@ -662,10 +741,17 @@ script:
         - variables:
             _bs_codex_result: "{{ _bs_codex_results | first | default({'status': 'skipped', 'reason': 'no zen_codex_host scripts found'}) }}"
         # ── Health refresh (background — populates _health_report cache) ──────
-        - action: "{{ this.entity_id }}"
+        # Was calling "{{ this.entity_id }}" directly — a blocking self-call
+        # while still inside this same execution, which HA's recursion guard
+        # correctly refuses ("Disallowed recursion detected"). script.turn_on
+        # spawns an independent run instead of nesting inside this call stack.
+        - action: script.turn_on
           continue_on_error: true
+          target:
+            entity_id: "{{ this.entity_id }}"
           data:
-            mode: health_refresh
+            variables:
+              mode: health_refresh
         - variables:
             result:
               status: "{{ 'success' if _bs_errors | length == 0 else 'partial' }}"
@@ -949,7 +1035,8 @@ script:
               {%- set val = raw.get('value', {}) -%}
               {%- set parsed = val | from_json if val is string else val -%}
               {%- set reg = parsed if parsed is mapping else {} -%}
-              {{ reg.get('providers', reg) if reg is mapping else {} }}
+              {%- set nested = reg.get('providers', {}) -%}
+              {{ (reg | combine(nested if nested is mapping else {})) if reg is mapping else {} }}
             _a_callable: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for e in states.script -%}
@@ -1078,6 +1165,416 @@ script:
                   note: "run mode=audit_help for live help compliance scan"
               caller_token: "{{ caller_token }}"
         - stop: audit complete
+          response_variable: result
+
+      # ── mode: label_audit ────────────────────────────────────────────────────
+      # admintools tier excluded from scan targets, same as mode=audit above —
+      # confirmed via bisection (2026-07-29) that sequentially scanning the full
+      # zen_admintools_* group triggers a pre-existing 'limit' is undefined error
+      # (reproducible only across the full group, not any single admintools tool
+      # in isolation — root cause not in Phase 7 scope, mirrors audit's existing
+      # exclusion rather than chasing it here).
+      # Fans out mode=tool_manifest across every known zen_* tool, collects each
+      # tool's missing_required_labels (computed read-only inside tool_manifest()
+      # itself, per-tool, against the live label registry), and aggregates a
+      # system-wide report. Detection only unless auto_create=true confirm=true,
+      # in which case distinct missing labels are created via zen_dojotools_labels
+      # mode=create — same confirm-gate that tool already enforces, never bypassed.
+      # include_optional=true additionally sweeps missing_optional_labels (also
+      # always computed read-only inside tool_manifest()) and, with auto_create,
+      # creates those too — same confirm gate, no separate override needed.
+      - conditions: "{{ mode_norm == 'label_audit' }}"
+        sequence:
+        - variables:
+            _la_self: "{{ this.entity_id }}"
+            _la_no_mode: "{{ label_entities('zen_no_mode') | list }}"
+            _la_name_filter: "{{ name | default('') | lower }}"
+            _la_include_optional: "{{ include_optional | default(false) | bool(false) }}"
+            _la_scan_targets: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in states.script -%}
+                {%- set eid = e.entity_id -%}
+                {%- if (eid.startswith('script.zen_dojotools_')
+                    or eid.startswith('script.zen_stack_') or eid.startswith('script.zen_sutra_'))
+                    and e.state in ('off', 'on')
+                    and eid != _la_self
+                    and eid not in _la_no_mode
+                    and (_la_name_filter == '' or _la_name_filter in eid) -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _la_results: []
+            _la_opt_results: []
+            _la_errors: []
+        - repeat:
+            for_each: "{{ _la_scan_targets }}"
+            sequence:
+            - variables:
+                _la_tool_name: "{{ repeat.item | replace('script.', '') }}"
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _la_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _la_tm: "{{ _la_tm_raw if _la_tm_raw is mapping else {} }}"
+            - choose:
+              - conditions: "{{ _la_tm.get('status', '') not in ['ok', 'success'] }}"
+                sequence:
+                - variables:
+                    _la_errors: >-
+                      {{ _la_errors + [{'tool': _la_tool_name, 'error': 'tool_manifest call failed or non-compliant'}] }}
+              - conditions: "{{ (_la_tm.get('missing_required_labels', []) | length) > 0 }}"
+                sequence:
+                - variables:
+                    _la_results: >-
+                      {{ _la_results + [{'tool': _la_tool_name, 'missing': _la_tm.get('missing_required_labels', [])}] }}
+            - if: "{{ _la_include_optional and (_la_tm.get('missing_optional_labels', []) | length) > 0 }}"
+              then:
+              - variables:
+                  _la_opt_results: >-
+                    {{ _la_opt_results + [{'tool': _la_tool_name, 'missing': _la_tm.get('missing_optional_labels', [])}] }}
+        - variables:
+            _la_all_missing: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for entry in _la_results -%}
+                {%- for lbl in entry.get('missing', []) -%}
+                  {%- if lbl not in ns.out -%}{%- set ns.out = ns.out + [lbl] -%}{%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _la_all_missing_optional: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for entry in _la_opt_results -%}
+                {%- for lbl in entry.get('missing', []) -%}
+                  {%- if lbl not in ns.out -%}{%- set ns.out = ns.out + [lbl] -%}{%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _la_auto_create: "{{ auto_create | default(false) | bool(false) }}"
+            _la_confirm: "{{ confirm | default(false) | bool(false) }}"
+        - variables:
+            _la_create_pool: >-
+              {%- set ns = namespace(out=_la_all_missing) -%}
+              {%- if _la_include_optional -%}
+                {%- for lbl in _la_all_missing_optional -%}
+                  {%- if lbl not in ns.out -%}{%- set ns.out = ns.out + [lbl] -%}{%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {{ ns.out | list }}
+        - choose:
+          - conditions: "{{ _la_auto_create and _la_confirm and _la_create_pool | length > 0 }}"
+            sequence:
+            - action: script.zen_dojotools_labels
+              continue_on_error: true
+              response_variable: _la_create_raw
+              data:
+                mode: create
+                label_list: "{{ _la_create_pool }}"
+                confirm: true
+            - variables:
+                _la_created: "{{ _la_create_raw.get('created_labels', []) if _la_create_raw is mapping else [] }}"
+                result:
+                  status: "{{ 'remediated' if _la_created | length > 0 else 'issues_found' }}"
+                  mode: label_audit
+                  generated_at: "{{ now().isoformat() }}"
+                  scanned: "{{ _la_scan_targets | length }}"
+                  include_optional: "{{ _la_include_optional }}"
+                  tools_with_gaps: "{{ _la_results }}"
+                  tools_with_optional_gaps: "{{ _la_opt_results }}"
+                  all_missing_labels: "{{ _la_all_missing }}"
+                  all_missing_optional_labels: "{{ _la_all_missing_optional }}"
+                  auto_create: true
+                  created_labels: "{{ _la_created }}"
+                  errors: "{{ _la_errors }}"
+                  caller_token: "{{ caller_token }}"
+          default:
+          - variables:
+              result:
+                status: "{{ 'clean' if (_la_results | length == 0 and (not _la_include_optional or _la_opt_results | length == 0)) else 'issues_found' }}"
+                mode: label_audit
+                generated_at: "{{ now().isoformat() }}"
+                scanned: "{{ _la_scan_targets | length }}"
+                include_optional: "{{ _la_include_optional }}"
+                tools_with_gaps: "{{ _la_results }}"
+                tools_with_optional_gaps: "{{ _la_opt_results }}"
+                all_missing_labels: "{{ _la_all_missing }}"
+                all_missing_optional_labels: "{{ _la_all_missing_optional }}"
+                auto_create: false
+                note: "{{ 'Pass auto_create=true confirm=true to create these labels via zen_dojotools_labels.' if _la_create_pool | length > 0 else '' }}"
+                errors: "{{ _la_errors }}"
+                caller_token: "{{ caller_token }}"
+        - stop: label_audit complete
+          response_variable: result
+
+      # ── mode: repair ─────────────────────────────────────────────────────────
+      # General-purpose remediation entry point — deliberately named 'repair'
+      # rather than 'repair_labels' because labels are the only fixable
+      # known_issues category TODAY, not the only one planned. As more
+      # zen_health_report known_issues categories become genuinely automatable
+      # (e.g. dismissing a stale HACS restart_required ghost via ectoplasm, or
+      # gating an ha_restart), they get dispatched from this same mode by
+      # category — callers and Spook's install_hint text keep pointing at
+      # `mode=repair` without ever needing to change.
+      # Today: confirm-gated wrapper around label_audit's scan+create logic.
+      # include_optional (default true) is a real toggle, not forced — pass
+      # include_optional=false for required-labels-only repair. This is the
+      # entry point Spook's "unknown_label" ghost repairs point callers at (see
+      # zen_health_report's known_issues category=label_gap) — Spook self-heals
+      # those specific repair entries on its own next scan once the underlying
+      # label exists, so this mode does not (and cannot, without Spook's own
+      # actions) touch the Issue Registry directly. Other known_issues
+      # categories (missing_dependency, informational) are NOT fixable by this
+      # tool yet — they require installing an integration or a manual restart.
+      - conditions: "{{ mode_norm == 'repair' }}"
+        sequence:
+        - variables:
+            _rp_self: "{{ this.entity_id }}"
+            _rp_no_mode: "{{ label_entities('zen_no_mode') | list }}"
+            _rp_confirm: "{{ confirm | default(false) | bool(false) }}"
+            _rp_include_optional: "{{ include_optional | default(true) | bool(true) }}"
+            _rp_force_raw: "{{ force | default(false) | bool(false) }}"
+            _rp_force_labels_raw: >-
+              {%- set _fl = force_labels | default([]) -%}
+              {{ (_fl | from_json) if _fl is string and _fl | trim not in ['', '[]'] else (_fl if _fl is iterable and _fl is not string else []) }}
+            # force/force_labels rewrite an EXISTING KFC label via delete+
+            # recreate. Entities that carried the label are auto-retagged from
+            # a pre-capture — but AREAS and DEVICES are NOT (label_entities()
+            # only sees entities) — that association is gone permanently
+            # unless the caller retags it themselves. force_ack must be the
+            # exact literal phrase below or the force request is silently
+            # downgraded to the safe skip-existing default, surfaced in the
+            # response so the caller knows why nothing got rewritten.
+            _rp_force_ack_ok: "{{ (force_ack | default('', true) | trim) == 'yes I meant to do that' }}"
+        - variables:
+            _rp_force_requested: "{{ _rp_force_raw or _rp_force_labels_raw | length > 0 }}"
+            _rp_force: "{{ _rp_force_raw and _rp_force_ack_ok }}"
+            _rp_force_labels: "{{ _rp_force_labels_raw if _rp_force_ack_ok else [] }}"
+            _rp_force_blocked: "{{ (_rp_force_raw or _rp_force_labels_raw | length > 0) and not _rp_force_ack_ok }}"
+            _rp_scan_targets: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in states.script -%}
+                {%- set eid = e.entity_id -%}
+                {%- if (eid.startswith('script.zen_dojotools_')
+                    or eid.startswith('script.zen_stack_') or eid.startswith('script.zen_sutra_'))
+                    and e.state in ('off', 'on')
+                    and eid != _rp_self
+                    and eid not in _rp_no_mode -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _rp_results: []
+            _rp_opt_results: []
+            _rp_errors: []
+            _rp_kfc_label_map: []
+        - repeat:
+            for_each: "{{ _rp_scan_targets }}"
+            sequence:
+            - variables:
+                _rp_tool_name: "{{ repeat.item | replace('script.', '') }}"
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _rp_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _rp_tm: "{{ _rp_tm_raw if _rp_tm_raw is mapping else {} }}"
+            - choose:
+              - conditions: "{{ _rp_tm.get('status', '') not in ['ok', 'success'] }}"
+                sequence:
+                - variables:
+                    _rp_errors: >-
+                      {{ _rp_errors + [{'tool': _rp_tool_name, 'error': 'tool_manifest call failed or non-compliant'}] }}
+              - conditions: "{{ (_rp_tm.get('missing_required_labels', []) | length) > 0 }}"
+                sequence:
+                - variables:
+                    _rp_results: >-
+                      {{ _rp_results + [{'tool': _rp_tool_name, 'missing': _rp_tm.get('missing_required_labels', [])}] }}
+            - if: "{{ _rp_include_optional and (_rp_tm.get('missing_optional_labels', []) | length) > 0 }}"
+              then:
+              - variables:
+                  _rp_opt_results: >-
+                    {{ _rp_opt_results + [{'tool': _rp_tool_name, 'missing': _rp_tm.get('missing_optional_labels', [])}] }}
+            # KFC-label description sync: a label is "load-bearing" for a KFC
+            # component when that component's own kfc_manifest entry declares
+            # label=<name>. component_summary is the authoritative description
+            # for that label — if it drifts from what's on the label, the label
+            # is stale, not the KFC definition. Per household direction: KFC
+            # labels get their description clobbered unconditionally on every
+            # repair run (no "only on creation" caution) — a stale hand-edited
+            # description on a machine-owned label IS the bug.
+            - if: "{{ 'kfc_manifest' in (_rp_tm.get('modes', []) or []) }}"
+              then:
+              - action: "{{ repeat.item }}"
+                continue_on_error: true
+                response_variable: _rp_kfc_raw
+                data:
+                  mode: kfc_manifest
+              - variables:
+                  _rp_kfc_list: "{{ _rp_kfc_raw.get('kfc', []) if _rp_kfc_raw is mapping else [] }}"
+              - variables:
+                  # icon/color: prefer a per-component override if the tool's
+                  # kfc_manifest entry ever declares its own icon/color; else
+                  # fall back to the tool-level icon/color already declared in
+                  # tool_manifest() — zero new authoring needed for that path,
+                  # every tool already sets these.
+                  _rp_kfc_label_map: >-
+                    {%- set ns = namespace(l=_rp_kfc_label_map) -%}
+                    {%- set _tool_icon = (_rp_tm.get('icon', '') | trim) -%}
+                    {%- set _tool_color = (_rp_tm.get('color', '') | trim) -%}
+                    {%- for _kd in _rp_kfc_list if _kd is mapping and (_kd.get('label') | trim if _kd.get('label') else '') != '' and (_kd.get('component_summary') | trim if _kd.get('component_summary') else '') != '' -%}
+                      {%- set _icon = (_kd.get('icon') | trim) if (_kd.get('icon') and _kd.get('icon') | trim != '') else _tool_icon -%}
+                      {%- set _color = (_kd.get('color') | trim) if (_kd.get('color') and _kd.get('color') | trim != '') else _tool_color -%}
+                      {%- set ns.l = ns.l + [{'label': _kd.get('label') | trim, 'component_summary': _kd.get('component_summary') | trim, 'tool': _rp_tool_name, 'icon': _icon, 'color': _color}] -%}
+                    {%- endfor -%}
+                    {{ ns.l }}
+        - variables:
+            _rp_create_pool: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for entry in _rp_results + _rp_opt_results -%}
+                {%- for lbl in entry.get('missing', []) -%}
+                  {%- if lbl not in ns.out -%}{%- set ns.out = ns.out + [lbl] -%}{%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _rp_kfc_label_map_deduped: >-
+              {%- set ns = namespace(seen=[], out=[]) -%}
+              {%- for e in _rp_kfc_label_map -%}
+                {%- if e.label not in ns.seen -%}
+                  {%- set ns.seen = ns.seen + [e.label] -%}
+                  {%- set ns.out = ns.out + [e] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        # Split the create pool: KFC-bound labels that need creating get their
+        # description baked into the SAME create call (one call per label,
+        # since a batch create's new_description would apply one string to
+        # every label in the batch). Never create-then-patch for these — a
+        # blank KFC label between those two calls (e.g. if the second call
+        # never ran) is itself a broken state, not an acceptable transient one.
+        - variables:
+            _rp_kfc_labels_set: "{{ _rp_kfc_label_map_deduped | map(attribute='label') | list }}"
+            _rp_kfc_create_pool: "{{ _rp_kfc_label_map_deduped | selectattr('label', 'in', _rp_create_pool) | list }}"
+            _rp_plain_create_pool: "{{ _rp_create_pool | reject('in', _rp_kfc_labels_set) | list }}"
+        - choose:
+          - conditions: "{{ _rp_confirm and _rp_plain_create_pool | length > 0 }}"
+            sequence:
+            - action: script.zen_dojotools_labels
+              continue_on_error: true
+              response_variable: _rp_create_raw
+              data:
+                mode: create
+                label_list: "{{ _rp_plain_create_pool }}"
+                confirm: true
+            - variables:
+                _rp_created: "{{ _rp_create_raw.get('created_labels', []) if _rp_create_raw is mapping else [] }}"
+          default:
+          - variables:
+              _rp_created: []
+        - variables:
+            _rp_kfc_created: []
+        - if: "{{ _rp_confirm and _rp_kfc_create_pool | length > 0 }}"
+          then:
+          - repeat:
+              for_each: "{{ _rp_kfc_create_pool }}"
+              sequence:
+              - action: script.zen_dojotools_labels
+                continue_on_error: true
+                response_variable: _rp_kfc_create_resp
+                data: >-
+                  {{ {'mode': 'create', 'label_list': [repeat.item.label], 'new_description': repeat.item.component_summary, 'confirm': true}
+                     | combine({'new_icon': repeat.item.icon} if repeat.item.icon != '' else {})
+                     | combine({'new_color': repeat.item.color} if repeat.item.color != '' else {}) }}
+              - if: "{{ repeat.item.label in (_rp_kfc_create_resp.get('created_labels', []) if _rp_kfc_create_resp is mapping else []) }}"
+                then:
+                - variables:
+                    _rp_kfc_created: "{{ _rp_kfc_created + [{'label': repeat.item.label, 'tool': repeat.item.tool}] }}"
+        # zen_dojotools_labels' mode=update has no native HA update_label
+        # service to call — HA only exposes create_label/rename_label/
+        # remove_label — so "update" is implemented as delete_label +
+        # create_label + re-tag every entity that carried the label. It does
+        # restore ENTITY associations from a pre-capture, but NOT area/device
+        # associations (label_entities() only sees entities), and there's a
+        # real (if brief) window where the label doesn't exist at all. That's
+        # too much risk to pay on every single repair run (boot + midnight +
+        # manual) for a label that already exists — so by default we skip the
+        # update call entirely for any KFC label that already exists, no
+        # content diff needed. Two ways to override the skip: force=true
+        # (shotgun — rewrite every existing KFC label this run) or
+        # force_labels=[...] (scalpel — rewrite only the named label(s),
+        # everything else still skipped).
+        - variables:
+            _rp_kfc_synced: []
+            _rp_kfc_existing_only: "{{ _rp_kfc_label_map_deduped | rejectattr('label', 'in', _rp_create_pool) | list }}"
+        - variables:
+            _rp_kfc_needs_update: "{{ _rp_kfc_existing_only | selectattr('label', 'in', _rp_force_labels) | list if not _rp_force else _rp_kfc_existing_only }}"
+            _rp_kfc_unchanged: "{{ _rp_kfc_existing_only | rejectattr('label', 'in', _rp_force_labels) | list if not _rp_force else [] }}"
+        - if: "{{ _rp_confirm and _rp_kfc_needs_update | length > 0 }}"
+          then:
+          - repeat:
+              for_each: "{{ _rp_kfc_needs_update }}"
+              sequence:
+              - action: script.zen_dojotools_labels
+                continue_on_error: true
+                response_variable: _rp_desc_resp
+                data: >-
+                  {{ {'mode': 'update', 'label_list': [repeat.item.label], 'new_description': repeat.item.component_summary, 'confirm': true}
+                     | combine({'new_icon': repeat.item.icon} if repeat.item.icon != '' else {})
+                     | combine({'new_color': repeat.item.color} if repeat.item.color != '' else {}) }}
+              - variables:
+                  _rp_kfc_synced: "{{ _rp_kfc_synced + [{'label': repeat.item.label, 'tool': repeat.item.tool}] }}"
+        - choose:
+          - conditions: "{{ _rp_confirm and (_rp_plain_create_pool | length > 0 or _rp_kfc_create_pool | length > 0 or _rp_kfc_existing_only | length > 0) }}"
+            sequence:
+            - variables:
+                result:
+                  status: "{{ 'repaired' if (_rp_created | length > 0 or _rp_kfc_created | length > 0 or _rp_kfc_synced | length > 0) else 'issues_found' }}"
+                  success: true
+                  mode: repair
+                  generated_at: "{{ now().isoformat() }}"
+                  scanned: "{{ _rp_scan_targets | length }}"
+                  include_optional: "{{ _rp_include_optional }}"
+                  force: "{{ _rp_force }}"
+                  force_labels: "{{ _rp_force_labels }}"
+                  force_blocked: "{{ _rp_force_blocked }}"
+                  tools_with_gaps: "{{ _rp_results }}"
+                  tools_with_optional_gaps: "{{ _rp_opt_results }}"
+                  created_labels: "{{ _rp_created + (_rp_kfc_created | map(attribute='label') | list) }}"
+                  kfc_labels_created_with_description: "{{ _rp_kfc_created }}"
+                  kfc_label_descriptions_synced: "{{ _rp_kfc_synced }}"
+                  kfc_labels_skipped_existing: "{{ _rp_kfc_unchanged }}"
+                  warning: >-
+                    {%- if _rp_force_blocked -%}
+                      force/force_labels requested but force_ack did not match 'yes I meant to do that' verbatim — request downgraded to safe skip-existing behavior, nothing was rewritten.
+                    {%- elif _rp_kfc_synced | length > 0 -%}
+                      ACTION REQUIRED — {{ _rp_kfc_synced | map(attribute='label') | join(', ') }} {{ 'was' if _rp_kfc_synced | length == 1 else 'were' }} deleted and recreated. Entities were auto-restored from a pre-capture, but AREAS and DEVICES were NOT — if any area or device carried this label, that association is gone and you need to reapply it by hand.
+                    {%- else -%}
+                    {%- endif -%}
+                  note: "Spook's corresponding 'unknown_label' repair issues (if any) will self-clear on Spook's next scan now that the label(s) exist — this tool does not touch the Issue Registry directly. Existing KFC labels are skipped by default (delete+recreate risk not worth paying when nothing changed) — pass force=true (all) or force_labels=[...] (scalpel) plus force_ack='yes I meant to do that' to rewrite them anyway. Non-label known_issues (missing_dependency, informational) are not fixable by this tool — see zen_health_report's known_issues for install_hint/degrades detail."
+                  errors: "{{ _rp_errors }}"
+                  caller_token: "{{ caller_token }}"
+          default:
+          - variables:
+              result:
+                status: "{{ 'clean' if (_rp_create_pool | length == 0 and _rp_kfc_needs_update | length == 0) else 'issues_found' }}"
+                mode: repair
+                generated_at: "{{ now().isoformat() }}"
+                scanned: "{{ _rp_scan_targets | length }}"
+                include_optional: "{{ _rp_include_optional }}"
+                force: "{{ _rp_force }}"
+                force_labels: "{{ _rp_force_labels }}"
+                force_blocked: "{{ _rp_force_blocked }}"
+                tools_with_gaps: "{{ _rp_results }}"
+                tools_with_optional_gaps: "{{ _rp_opt_results }}"
+                would_create: "{{ _rp_create_pool }}"
+                would_sync_kfc_label_descriptions: "{{ _rp_kfc_needs_update }}"
+                would_skip_existing_kfc_labels: "{{ _rp_kfc_unchanged }}"
+                note: "{{ 'Pass confirm=true to create/sync labels now.' if (_rp_create_pool | length > 0 or _rp_kfc_needs_update | length > 0) else '' }}{{ ' Existing KFC labels shown in would_skip_existing_kfc_labels will not be touched unless force=true or force_labels includes them, plus force_ack=\"yes I meant to do that\".' if _rp_kfc_unchanged | length > 0 else '' }}{{ ' force/force_labels requested but force_ack did not match verbatim — ignored this call.' if _rp_force_blocked else '' }}"
+                errors: "{{ _rp_errors }}"
+                caller_token: "{{ caller_token }}"
+        - stop: repair complete
           response_variable: result
 
       # ── mode: audit_help ─────────────────────────────────────────────────────
@@ -1284,7 +1781,8 @@ script:
               {%- set val = raw.get('value', {}) -%}
               {%- set parsed = val | from_json if val is string else val -%}
               {%- set reg = parsed if parsed is mapping else {} -%}
-              {{ reg.get('providers', reg) if reg is mapping else {} }}
+              {%- set nested = reg.get('providers', {}) -%}
+              {{ (reg | combine(nested if nested is mapping else {})) if reg is mapping else {} }}
             _hr_codex_registry: >-
               {%- set raw = _hr_cr_raw if _hr_cr_raw is mapping else {} -%}
               {%- set val = raw.get('value', {}) -%}
@@ -2623,6 +3121,32 @@ script:
       response_variable: inspect_result
 
 automation:
+  - id: zen_manifest_repair_labels
+    alias: "ZenOS: Critical Label Repair"
+    description: >-
+      Runs zen_dojotools_manifest mode=repair confirm=true on HA startup and
+      daily at midnight — same cadence as bootstrap_stacks/bootstrap_kfc below,
+      staged to fire first since those two depend on tools already carrying
+      their declared labels. Sweeps every zen_* tool's required_labels (and
+      optional_labels, include_optional defaults true) against the live label
+      registry and creates whatever is missing via zen_dojotools_labels.
+      Idempotent — a clean system is a fast no-op (single tool_manifest scan
+      per tool, no writes). confirm=true is safe here specifically because
+      label creation is scoped, additive-only, and non-destructive (unlike
+      reload_all/restart, which still require live operator approval) — see
+      mode=repair's own docs for what it will and will not touch.
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time
+        at: "00:00:15"
+    actions:
+      - action: script.zen_dojotools_manifest
+        data:
+          mode: repair
+          confirm: true
+          caller_token: zen_manifest_repair_labels
+
   - id: zen_manifest_bootstrap_stacks
     alias: "ZenOS: Bootstrap Lens Registry"
     description: >-

@@ -179,6 +179,7 @@ If any resolver shows `unavailable`, Flynn's Gate 3a will stall. Resolvers evalu
 | `zen_monastery_health` | Flynn Gate | What's Needed |
 |---|---|---|
 | `critical` | Gate 3 (full bootstrap) | Schema missing or summary/cabinets dead |
+| `disabled` | Gate 3 (full bootstrap) | Summarizers off (`zen_summarizers_enabled` kill-switch) — bootstrap still runs so household/family/user/ai_user identity gets created; summarizer/pipeline health is orthogonal to identity provisioning |
 | `warn` | Gate 3 (schema seed only) | Schema seed runs, content bootstrap skipped |
 | `ok` | Pass | — |
 

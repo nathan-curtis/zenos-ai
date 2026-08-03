@@ -54,7 +54,7 @@ For identity membership, use [DojoTools Identity](zen_dojotools_identity_readme.
 |---|---|---|---|---|
 | `mode` | select | `help` | `help`, `read`, `write`, `sign`, `restore`, `cert_grant`, `cert_revoke`, `cert_list` | Operation to perform |
 | `target_type` | select | `ai_user` | `ai_user`, `household`, `user`, `family`, `expansion_1`-`expansion_5` | Which cabinet type to target |
-| `target` | entity (sensor) | — | Any cabinet sensor | Specific cabinet; omit to use the default for `target_type` |
+| `target` | entity (sensor) | — | Any cabinet sensor | Specific cabinet; **omit the field entirely** to use the default for `target_type` — do not pass the words `null`/`none`/`unknown` as a value, that is not the same as omitting it and is rejected. A `target` that doesn't resolve to a real entity also errors explicitly rather than silently writing nowhere. |
 | `force` | boolean | `false` | — | Overwrite existing field values when `true` |
 
 Use `target_type: ai_user` or `target_type: user` plus an explicit `target: sensor.zenos_expansion_n_cabinet` for provisioned expansion cabinets. The `expansion_1`-`expansion_5` selector values are slot labels, not standalone profile schemas.
@@ -222,9 +222,12 @@ Signs a three-layer AI persona essence by calculating MD5 hashes over the canoni
 ```yaml
 mode: sign
 target_type: ai_user
+# signed_by: person.resident_primary   # optional — see below
 ```
 
 `sign` is deliberately limited to `target_type: ai_user`. It fires a profile editor audit event with `kind: essence_signed` or `kind: essence_resigned`.
+
+**`signed_by`** (optional, `mode: sign` only) — a real `person.*` entity attributing who authorized this signature (e.g. `person.resident_primary`). Validated against the live person entity registry; the sign is rejected with an error if it's set but doesn't resolve to a real, currently-known `person.*` entity. If omitted, the jacket's existing `signed_by`/`signed_at` are carried through unchanged rather than being explicitly re-attributed.
 
 ### `restore`
 

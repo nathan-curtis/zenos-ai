@@ -1,6 +1,6 @@
 # ZenOS-AI Paperless-NGX Plugin
 
-**Version:** 0.7.4  
+**Version:** 0.7.5  
 **Package:** `packages/zenos_ai/plugins/paperless_ngx/paperless_ngx.yaml`  
 **Lens Bus stack provider:** `zen_stack_paperless` (provider_key: `paperless_ngx`, internal — not MCP-exposed)  
 **Internal REST broker:** `zen_sutra_paperless` (not MCP-exposed)  

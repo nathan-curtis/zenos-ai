@@ -126,15 +126,37 @@ script:
                 %}\n  Some or all labels already existed and were skipped. Confirmation
                 required.\n{% endif %}"
               caller_token: '{{ caller_token }}'
+        - variables:
+            # homeassistant.create_label doesn't support response_variable at
+            # all (confirmed: HA rejects the whole call if you ask for one),
+            # so per-item success/failure can't be read from a response — we
+            # detect it by comparing the live label registry before and after
+            # each attempt instead. This also sidesteps a real gap: HA's
+            # create_label service can reject a name as "already in use" even
+            # when our own pre-check above (comparing against the labels()
+            # slug index) didn't flag it as existing — HA's internal label-ID
+            # normalization can collide two names our slug convention treats
+            # as distinct (e.g. 'servicedesk' vs the existing 'service_desk').
+            # Previously that raised uncaught, aborting the whole repeat/batch
+            # partway through with no record of what happened to items still
+            # queued. continue_on_error keeps the batch going regardless; the
+            # before/after check then tells us honestly whether each one
+            # landed, without needing to parse error text at all.
+            create_succeeded: []
+            create_dupe_skipped: []
+            create_errors: []
         - repeat:
             for_each: '{{ target_labels }}'
             sequence:
+            - variables:
+                _create_pre_existing: '{{ repeat.item | slugify(separator=''_'') in (labels() | list) }}'
             - if:
               - condition: template
                 value_template: '{{ new_icon | default('''', true) != '''' }}'
               then:
               - action: homeassistant.create_label
                 metadata: {}
+                continue_on_error: true
                 data:
                   name: '{{ repeat.item }}'
                   description: '{{ new_description | default('''', true) }}'
@@ -143,20 +165,35 @@ script:
               else:
               - action: homeassistant.create_label
                 metadata: {}
+                continue_on_error: true
                 data:
                   name: '{{ repeat.item }}'
                   description: '{{ new_description | default('''', true) }}'
                   color: '{{ new_color | default(''primary'', true) }}'
+            - variables:
+                _create_now_exists: '{{ repeat.item | slugify(separator=''_'') in (labels() | list) }}'
+            - choose:
+              - conditions: '{{ _create_now_exists and not _create_pre_existing }}'
+                sequence:
+                - variables:
+                    create_succeeded: '{{ create_succeeded + [repeat.item] }}'
+              - conditions: '{{ _create_now_exists and _create_pre_existing }}'
+                sequence:
+                - variables:
+                    create_dupe_skipped: '{{ create_dupe_skipped + [repeat.item] }}'
+              default:
+              - variables:
+                  create_errors: '{{ create_errors + [{''label'': repeat.item, ''error'': ''create_label call did not result in the label existing — check HA logs for the exact rejection reason''}] }}'
         - variables:
-            created_count: '{{ target_labels | count }}'
+            created_count: '{{ create_succeeded | count }}'
             response:
-              status: '{{ ''ok'' if created_count > 0 else ''partial'' }}'
+              status: '{{ ''ok'' if created_count > 0 else (''partial'' if create_dupe_skipped | count > 0 else ''error'' if create_errors | count > 0 else ''partial'') }}'
               action: create
               confirm: '{{ confirm }}'
-              created_labels: '{{ target_labels }}'
-              already_existed: '{{ already_exists }}'
-              message: "{% if created_count > 0 %}\n  Create Action Complete.\n{% else
-                %}\n  Create requires confirmation, no labels created.\n{% endif %}"
+              created_labels: '{{ create_succeeded }}'
+              already_existed: '{{ already_exists + create_dupe_skipped }}'
+              creation_errors: '{{ create_errors }}'
+              message: "{% if created_count > 0 %}\n  Create Action Complete.\n{% elif create_dupe_skipped | count > 0 and create_errors | count == 0 %}\n  All requested labels already existed (including some HA didn't report as pre-existing) — nothing new created.\n{% else %}\n  Create requires confirmation, no labels created.\n{% endif %}"
               caller_token: '{{ caller_token }}'
         - if:
           - condition: template

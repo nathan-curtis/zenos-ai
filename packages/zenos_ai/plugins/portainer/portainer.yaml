@@ -1,0 +1,144 @@
+###############################################################################
+# ZenOS-AI — Portainer Plugin
+#
+# Internal REST broker for the Portainer container-control feature.
+#
+#   zen_root_portainer   <- internal REST broker (NOT MCP-exposed)
+#   zen_dojotools_portainer         <- MCP-facing action tool (rwxda-gated, reads ACL, never writes it)
+#   zen_admintools_portainer_acl    <- MCP-facing ACL admin tool (only writer of the ACL drawer)
+#
+# Portainer REST base: {integrations_config.portainer.url}/api
+# Auth: X-API-Key header (Portainer's native API-key scheme — not Bearer/Token like
+# the other plugins in this repo, because Portainer's own auth model is different).
+#
+# Bootstrap:
+#   1. secrets.yaml:
+#        portainer_token: "YOUR_PORTAINER_API_KEY"
+#   2. Run: zen_dojotools_portainer mode=configure config_json='{"url":"https://your-portainer-host:9443"}'
+#      (admin-only write; see zen_admintools_portainer_acl for ACL setup)
+#
+# This is a public tool. No real names/emails/PII anywhere in this file — roles only
+# ("household admin" / "HoH" / "default agent").
+###############################################################################
+
+rest_command:
+  portainer_rest_get:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}{{ endpoint }}
+    method: GET
+    headers:
+      X-API-Key: !secret portainer_token
+      Accept: application/json
+    verify_ssl: false
+    timeout: 20
+
+  portainer_rest_post:
+    url: >
+      {{ base_url | default('', true) | string | trim | regex_replace('/$','') }}{{ endpoint }}
+    method: POST
+    headers:
+      X-API-Key: !secret portainer_token
+      Accept: application/json
+    verify_ssl: false
+    timeout: 20
+
+script:
+  zen_root_portainer:
+    alias: Zen Root — Portainer REST Broker (Internal)
+    description: >
+      Internal REST broker for Portainer. Not MCP-exposed. Normalizes get/post,
+      resolves the household cabinet's configured Portainer URL, and never returns
+      raw container inspect data (env vars can carry secrets) — only the shaped
+      fields callers need (id, name, state, image, endpoint_id).
+    mode: parallel
+    max: 10
+    fields:
+      action_type:
+        name: Action Type
+        description: get | post
+        selector:
+          select:
+            options:
+              - get
+              - post
+        default: get
+      endpoint:
+        name: Endpoint Path
+        description: Portainer API path, e.g. /api/endpoints or /api/endpoints/1/docker/containers/json?all=true
+        selector:
+          text:
+      caller_token:
+        name: Caller Token
+        selector:
+          text:
+    sequence:
+      - variables:
+          _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+      - action: script.zen_dojotools_filecabinet
+        response_variable: _cfg_raw
+        continue_on_error: true
+        data:
+          action_type: get
+          volume_entity_id: "{{ _hh }}"
+          path: integrations_config
+      - variables:
+          _cfg: >-
+            {%- set _ic = _cfg_raw.get('value', {}) if _cfg_raw is mapping and _cfg_raw.get('status') == 'success' else {} -%}
+            {{ (_ic.get('portainer', {}) if _ic is mapping else {}) }}
+          _base_url: "{{ (_cfg.get('url', '') | string | trim | regex_replace('/$', '')) if _cfg is mapping else '' }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: '{{ _base_url == "" }}'
+            sequence:
+              - variables:
+                  response:
+                    status: error
+                    class: not_configured
+                    human: Portainer is not configured yet.
+                    operator_hint: Set integrations_config.portainer.url in the household cabinet first.
+              - stop: portainer not configured
+                response_variable: response
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: '{{ action_type | default("get") == "post" }}'
+            sequence:
+              - action: rest_command.portainer_rest_post
+                response_variable: _raw
+                continue_on_error: true
+                data:
+                  base_url: "{{ _base_url }}"
+                  endpoint: "{{ endpoint }}"
+        default:
+          - action: rest_command.portainer_rest_get
+            response_variable: _raw
+            continue_on_error: true
+            data:
+              base_url: "{{ _base_url }}"
+              endpoint: "{{ endpoint }}"
+      - variables:
+          _http: "{{ _raw['status'] | int(0) if _raw is defined and _raw is mapping else 0 }}"
+          _content: >-
+            {%- if _raw is defined and _raw is mapping -%}
+              {%- set c = _raw['content'] | default(none) -%}
+              {%- set cs = c | trim if c is string else '' -%}
+              {%- if c is string and cs != '' and cs[:1] in ['{', '['] -%}
+                {{ c | from_json }}
+              {%- elif c is mapping or (c is sequence and c is not string) -%}
+                {{ c }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            {%- else -%}{{ {} }}{%- endif -%}
+      - variables:
+          response:
+            status: "{{ 'success' if _http in [200, 201, 204] else 'error' }}"
+            tool: zen_root_portainer
+            http_status: "{{ _http }}"
+            result:
+              content: "{{ _content }}"
+            trace:
+              endpoint: "{{ endpoint }}"
+              method: "{{ 'POST' if action_type | default('get') == 'post' else 'GET' }}"
+              caller_token: "{{ caller_token | default('') }}"
+      - stop: portainer broker done
+        response_variable: response

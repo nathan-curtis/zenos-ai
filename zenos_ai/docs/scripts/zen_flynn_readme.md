@@ -49,8 +49,11 @@ Flynn skips all gates and exits immediately if **all** of the following are true
 - OOBE is not pending
 - Both `kfc_template` (Dojo) and `zen_template` (Kata) are already seeded
 - No cabinets are in `init` state (checked directly via `slot_to_default_entity` — not the health rollup)
+- Gate 3 has genuinely completed bootstrap at least once (`flynn_bootstrap_state.completed` — see Gate 3 below)
 
 The init-state check is evaluated separately from `zen_cabinet_health`. Optional cabinet slots can appear healthy in the rollup even when their underlying entity is still in `init`. Flynn reads `slot_to_default_entity` directly to catch this case.
+
+**The bootstrap-completed check matters here specifically, not just in Gate 3.** This early exit is health-rollup-only — it has no awareness of Gate 3's own re-entry condition on its own. On an already-healthy system (`monastery: ok`, the normal case for anything long-running), this exit fired on every single sentinel tick with no way for Gate 3 to ever be reached — meaning a system that had genuinely never completed bootstrap once could sit "ready" forever without ever actually finishing onboarding. The bootstrap-completed value is computed once here and reused (not recomputed) in Gate 3.
 
 If the system is already clean and stable, Flynn steps aside.
 
@@ -92,9 +95,9 @@ Once complete, Flynn stops and waits for `zen_label_health` to update.
 
 Gate 2 behavior depends on the severity of the cabinet health state. Three cases:
 
-**Case A — `error` or `critical` (hard stop)**
+**Case A — `error` or `critical` (hard stop, virgin-vs-broken checked)**
 
-One or more required cabinet entities are uninitialized or unavailable. Flynn fires a persistent notification ("Cabinet Check Needed") and stops. Operator action required.
+`zen_cabinet_health`'s rolled-up state uses a priority order (`missing_req > invalid_req > unhealthy_req`), so a `critical` reading alone doesn't tell you whether every affected slot is safe (not yet bootstrapped — missing label, or state `init`/blank/`absent`) or whether a *different* slot is genuinely broken (concrete state on an existing label) behind that higher-priority reading. Flynn checks every required slot individually before deciding to hard-stop: if **every** problematic slot is either genuinely virgin (`init`, blank, `unknown`, or `absent` — `absent` means no entity is tagged with that slot's label at all, the safest possible state) or its label doesn't exist in HA yet, Flynn does not hard-stop — those are handled by the normal bootstrap gates (Gate 0, Gate 2.1) instead. The hard stop fires only when at least one required slot has a concrete state (`online_mounted`, `online_unmounted`, `Variables`, anything non-virgin) **and** an existing label — that combination can't be explained by "not bootstrapped yet." When it fires, Flynn sends a persistent notification ("Cabinet Check Needed") and stops. Operator action required.
 
 **What to do:** Open a conversation and say "initialize my cabinets", or run `script.zen_admintools_cabinetadmin` with `mode: initialize` directly. Check `sensor.zen_cabinet_health` → `missing_cabinets` to see which slots are affected.
 
@@ -163,9 +166,13 @@ Regardless of monastery health state, Flynn checks whether:
 
 If either is missing, Flynn calls `zen_admintools_reset_template` to press both templates. This is infrastructure — it runs on every boot if needed and is fully idempotent.
 
-#### 3c — Content Bootstrap (critical only)
+#### 3c — Content Bootstrap (critical or disabled)
 
-If `zen_monastery_health == critical`, Flynn calls `script.flynn_bootstrap_content` with your configured helper values:
+If `zen_monastery_health` is `critical` **or** `disabled`, **or `flynn_bootstrap_state.completed` isn't set**, Flynn calls `script.flynn_bootstrap_content` with your configured helper values:
+
+**Why a third, independent condition:** `monastery_health` alone can't catch every never-bootstrapped system — one that reached `warn` before `flynn_bootstrap_content` ever ran once (e.g. summarizers flipped on mid-onboarding) falls permanently outside the `['critical', 'disabled']` check, with no path back in. `flynn_bootstrap_state` is a durable household-cabinet drawer (`{completed, completed_at, gate_version}`, same idiom as `flynn_active_notification`) stamped only after a fresh read-back confirms both the household name and the AI essence identity name are real — never optimistically, so a silently-failed sub-write doesn't get marked done. This is an **OR** against the existing `monastery_health` check, not a replacement — both re-entry paths stay live.
+
+`disabled` (summarizers off via the `zen_summarizers_enabled` kill-switch) is included alongside `critical` — the monastery sensor's own priority check resolves to `disabled` before it ever evaluates content freshness, so `monastery_health` can never reach `critical` while summarizers are off. Summarizer/pipeline health has nothing to do with whether a household/family/user/ai_user identity exists yet; without `disabled` here, a fresh deploy with summarizers left at their shipped-off default silently never provisions an identity at all. `flynn_bootstrap_content`'s writes are all self-guarded (see steps below), so calling it on an already-provisioned system is a safe no-op.
 
 - `input_text.zenos_conversation_agent`
 - `input_text.zenos_household_name`
@@ -174,18 +181,21 @@ If `zen_monastery_health == critical`, Flynn calls `script.flynn_bootstrap_conte
 
 > `warn` state = degraded but functional. Schema seed runs (3b), content bootstrap does not. System continues.
 
+**After bootstrap:** Flynn only stops the automation run when `monastery_health == 'critical'` — `critical` is transient (resolves once content genuinely gets created), so stopping to re-evaluate fresh next cycle is correct. `disabled` is permanent as long as summarizers stay off, so a `disabled` run calls `flynn_bootstrap_content` (cheap, idempotent, all writes self-guarded) and then **falls through to Gate 3.5** in the same run, instead of stopping. Getting this wrong meant every sentinel cycle called bootstrap then immediately stopped, so Gate 3.5 (OOBE) could never run at all while summarizers were off.
+
 **Bootstrap does the following:**
 
 1. **Validates conversation agent** — if missing or unavailable, stops with notification. Nothing else proceeds without an agent.
 2. **Auto-resolves reasoning task** — reads `input_text.zenos_reasoning_task`. If unset and exactly one conversation entity exists, auto-writes it. Multiple found with none configured → stops with notification.
 3. **Auto-resolves AI task entity** — reads `input_text.zenos_ai_task_entity`. Same auto-resolve logic. Zero found = non-fatal (summarizer degrades gracefully).
-4. **Seeds household name** — non-destructive write to `_household_name` drawer.
+4. **Seeds household name** — write to `_household_name` drawer with `force_action: true`. This is a reserved (underscore-prefixed) FileCabinet key — those require `force_action: true` unconditionally; `force_action: false` doesn't mean "only write if empty," it means the write is rejected outright, every time. (This drawer had never once persisted on any install until this was corrected — `input_text.zenos_household_name` is the single source of truth, so writing it here on every gate cycle is idempotent sync, not an overwrite risk.)
 5. **Seeds AI persona essence** — writes default legacy-schema essence with `identity.name = 'your AI'` as placeholder (non-destructive — skips if drawer already exists). Three-layer cabinets already have a real name stamped at mint; this step is a no-op for them.
 6. **Seeds schema templates** — calls `reset_template` if either template drawer is missing.
 7. **Loads prompt substrate** — calls `zen_admintools_zenos_prompt_loader` (Cortex, Directives, Purpose).
 8. **Wires default family graph** *(4.5.6)* — calls `household_add_family` for the default family cabinet, then `family_add_member` for the default user and AI user. All three calls are guarded (skips if cabinet unavailable) and idempotent (no-op if already wired). Closes a gap where cold builds left the default family as an orphan in the identity graph.
 9. **Seeds home mode timers** *(4.5.6)* — each `input_datetime` schedule anchor and quiet/work bounds helper is individually checked and seeded to its default time if still bare (`''`, `unknown`, or `unavailable`). Each timer has its own guard — partially-configured installs are safe.
 10. **Flags completion** — calls `flynn_unified_engine` with `action_type: flag_complete`.
+11. **Stamps `flynn_bootstrap_state`** — only after a fresh read-back confirms `_household_name` and the AI essence identity name are both real (not `''`/`unknown`/`unavailable`/the `'your AI'` placeholder). A backfill on any install that predates this drawer: every system re-enters Gate 3 once on the next Stepgate tick, runs through idempotently (no-op on an already-good install), and gets tagged retroactively.
 
 **Event fired:** `flynn_stepgate_event` (gate: 3, action: bootstrap_complete)
 
@@ -206,7 +216,7 @@ Three cases:
 | Situation | What Flynn Does |
 |---|---|
 | Input helper has a name + cabinet has placeholder | Writes persona name to essence. Dismisses notification. |
-| Input helper is empty + cabinet has placeholder | Creates "Welcome — Let's name your AI" notification. Directs to conversation or Agent Builder. |
+| Input helper is empty + cabinet has placeholder | Creates "ZenOS-AI: Ready — let's name your agent" notification. Directs to conversation or Agent Builder. |
 | Cabinet already has a real name OR `_oobe_complete` flag | Dismisses any pending OOBE notification. Nothing to do. |
 
 The fastest path through OOBE: set `input_text.zenos_persona_name` in Settings → Helpers, then restart or let Flynn re-run. Flynn will write the name and clear the gate.
@@ -253,7 +263,7 @@ Four `template: select` entities provide UI-level dropdowns for the critical inp
 | `select.zenos_conversation_agent` | `input_text.zenos_conversation_agent` | All `conversation.*` domain entities |
 | `select.zenos_ai_task` | `input_text.zenos_ai_task_entity` | All `ai_task.*` domain entities |
 
-Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded.
+Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded. `select.zenos_primary_user` additionally excludes any person already assigned as head-of-household elsewhere — gathered across every household cabinet's `AI_Cabinet_VolumeInfo.acls.owner` — so the dropdown never offers a person who'd need a `set_principal` takeover to become someone's HoH twice.
 
 **Fastest setup path:** Use these selects from Settings → Helpers instead of typing entity IDs manually.
 
@@ -270,7 +280,7 @@ Options resolve dynamically at render time. The persona select only shows person
 | `zen_cabinet_health: warn` (warmup/ha_start) | Gate 2 (log only) | Logged, system continues — no notification |
 | Init-state cabs detected (post-warmup) | Gate 2.1 (silent, auto) | Auto-initialize virgin cabinets via `flynn_initialize_cabinets` |
 | History cabinet `online_unmounted` (post-warmup) | Gate 2.1 (silent, auto) | Mount + wire GUID into parent's `history` mount point; notifies human only if residue blocks auto-init |
-| `zen_monastery_health: critical` | Gate 3 | Full content bootstrap |
+| `zen_monastery_health: critical` or `disabled` | Gate 3 | Full content bootstrap |
 | `zen_monastery_health: warn` | Gate 3 (partial) | Schema seed only |
 | All green + monastery/agent confirmed + OOBE complete | Gate 4 | System ready notification |
 
@@ -369,13 +379,23 @@ Defined in `flynn.yaml`. Auto-creates on HA reload. Toggle this on to force Flyn
 
 Default state: `off`. Safe to leave off indefinitely.
 
+### input_boolean.zenos_sim_mode_override
+
+Defined in `flynn.yaml`. **Default state: `on`.** Controls the OS-level SP1 identity policy switch — `integrations_config.identity.sim_mode_allowed` (read by `zen_dojotools_identity` `resolve_caller_identity`, the platform-wide identity/cert chokepoint).
+
+The automation **"Flynn: SP1 sim_mode Override — stamp every boot"** (`flynn_sim_mode_override_stamp`) writes `sim_mode_allowed` in the household cabinet to match this toggle on every HA startup and immediately on any manual flip of the toggle. This is an idempotent, reversible override: while real Authentik/OIDC (SP1) isn't live yet, leaving the toggle `on` keeps simulated identity resolution allowed platform-wide so tools that gate on `resolve_caller_identity`'s `policy_status` aren't silently blocked.
+
+Flip the toggle `off` (or remove/disable the automation) to fall back to the fail-closed default (`sim_mode_allowed: false`) once real identity resolution is live.
+
 ### prompt_system_flynn()
 
 Hardcoded system prompt — no Jinja cabinet reads. Works on a bare install, works when cabinets are corrupt, works when the identity resolver fails. Flynn will always answer.
 
 ### active_notification()
 
-`active_notification()` macro in `flynn_onboarding.jinja` scans `persistent_notification.flynn_*` for active notifications and returns the highest-priority one with context label. Flynn's prompt reads this and acknowledges the active notification in its opening — giving coherent UX during first-boot and error states.
+`active_notification()` macro in `flynn_onboarding.jinja` reads a `flynn_active_notification` drawer on the default household cabinet and returns its `{id, context, title}` if set, else `none`. Flynn's prompt reads this and acknowledges the active notification in its opening — giving coherent UX during first-boot and error states.
+
+**Not a `persistent_notification.*` state read.** On this HA version, `persistent_notification` entities don't reflect into the template-readable state machine at all (confirmed empirically — count stayed 0 immediately after a real notification was raised via `persistent_notification.create`), so a direct `states('persistent_notification.' ~ id) == 'notifying'` check silently never fires. The drawer is written/cleared alongside every real `persistent_notification.create`/`dismiss` call site (8 total: Gate 0 create, Gate 1 dismiss, Gate 3.5's 3 branches, Gate 4 create, `flynn_bootstrap_content`'s create + dismiss) — the real HA panel notification and the drawer Flynn's prompt actually reads are two separate writes kept in sync, not one read reused for both.
 
 All four Flynn persistent notification messages are written in Flynn's voice and include an invitation to open the conversation agent.
 
@@ -404,6 +424,7 @@ All four Flynn persistent notification messages are written in Flynn's voice and
 | `script.zen_dojotools_filecabinet` | All cabinet reads and writes |
 | `binary_sensor.flynn_system_ready` | Early exit gate |
 | `input_boolean.zen_flynn_override` | Forces Flynn mode regardless of persona |
+| `input_boolean.zenos_sim_mode_override` | Drives the SP1 sim_mode boot-stamp automation — controls `integrations_config.identity.sim_mode_allowed` |
 | `zen_os_1.jinja` → `render_prompt()` | Calls `prompt_system_flynn()` when Flynn conditions met |
 | `flynn_onboarding.jinja` → `active_notification()` | Surfaces active Flynn notifications in prompt |
 | `input_text.zenos_conversation_agent` | Bootstrap validation |

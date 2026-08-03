@@ -1,6 +1,10 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Core Package
-# Version: 5.1.0
+# Version: 5.1.1
+#
+# 5.1.1 — mode is now the primary selector for zen_dojotools_filecabinet_gc,
+#   matching the project-wide standard. action_type remains as a deprecated,
+#   fully-supported alias.
 #
 # Scripts:
 #   zen_dojotools_filecabinet_gc — Cabinet GC: hide/delete/recycle/unhide lifecycle (v4.5.x)
@@ -68,8 +72,8 @@ script:
     mode: single
     icon: mdi:delete-clock
     fields:
-      action_type:
-        name: Action
+      mode:
+        name: Mode
         description: >-
           gc (default) — auto-scan and process all drawers by expiry metadata.
           recycle — hide a specific drawer and set expiry to now+24h.
@@ -84,6 +88,12 @@ script:
               - recycle
               - hide
               - unhide
+      action_type:
+        name: Action (Deprecated)
+        description: "Deprecated alias for mode. Use mode instead."
+        required: false
+        selector:
+          text:
       key:
         name: Drawer Key
         description: Required for recycle/hide/unhide actions. The visible drawer name (without leading dot).
@@ -110,8 +120,10 @@ script:
       post_supersummary:
         name: Post Supersummary (deprecated)
         description: >-
-          Deprecated — GC now always emits a summary_force event after eviction.
-          Scheduler + drain router handle re-dispatch. Field ignored.
+          Deprecated — GC now emits a summary_force event scoped to each kata
+          key actually deleted from the kata cabinet this pass (no blanket
+          full-fleet resummarize). Scheduler + drain router handle re-dispatch
+          for evictions on other cabinets. Field ignored.
         required: false
         default: true
         selector:
@@ -149,7 +161,7 @@ script:
                 tool='zen_dojotools_filecabinet_gc',
                 display_name='FileCabinet GC',
                 tier='dojotools',
-                version='4.5.0',
+                version='4.5.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['cabinet', 'gc'],
@@ -164,7 +176,7 @@ script:
       # ── 1. Resolve inputs ──────────────────────────────────────────────────
       - alias: Resolve inputs
         variables:
-          gc_action: "{{ action_type | default('gc') }}"
+          gc_action: "{{ mode | default(action_type | default('gc'), true) }}"
           dry_run: "{{ dry_run | default(false) | bool }}"
           post_supersummary: "{{ post_supersummary | default(true) | bool }}"
           max_age_hours: "{{ max_age_hours | default(24) | int }}"
@@ -312,6 +324,10 @@ script:
             {%- endif -%}
 
       # ── 4. GC scan + execute: iterate all cabinets in series ──────────────
+      - alias: Init evicted-kata-key accumulator (scoped resummarize target list)
+        variables:
+          _kata_evict_ns: "{{ namespace(keys=[]) }}"
+
       - alias: GC scan and process all cabinets in series
         if:
           - condition: template
@@ -442,6 +458,22 @@ script:
                             event_data:
                               key: "{{ repeat.item }}"
                               volume_entity: "{{ current_cab }}"
+                - alias: Track kata drawers actually deleted this pass (scoped resummarize)
+                  if:
+                    - condition: template
+                      value_template: >-
+                        {{ not dry_run and gc_eligible and current_cab == kata_entity
+                           and (to_delete | length > 0 or stale_drawers | length > 0) }}
+                  then:
+                    - variables:
+                        _kata_evict_ns: >-
+                          {%- set _new = (to_delete | default([])) + (stale_drawers | default([])) -%}
+                          {%- for k in _new -%}
+                            {%- if k not in _kata_evict_ns.keys -%}
+                              {%- set _kata_evict_ns.keys = _kata_evict_ns.keys + [k] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ _kata_evict_ns }}
                 - alias: Self-heal — stamp gc_eligible default if absent from header
                   if:
                     - condition: template
@@ -668,9 +700,12 @@ script:
                       force_action: true
 
       # ── 5. Post-prune scheduler nudge ────────────────────────────────────────
-      # GC doesn't decide what to re-summarize — it just announces what it collected.
-      # Drain router sees evicted drawers as maximally stale (age_min: 9999) and
-      # bubbles them to the top of the priority queue on the next scheduler run.
+      # GC doesn't decide what to re-summarize for non-kata cabinets — it just
+      # announces what it collected. Drain router sees evicted drawers there as
+      # maximally stale (age_min: 9999) and bubbles them up on the next scheduler
+      # run. For the kata cabinet specifically, GC fires an immediate targeted
+      # summary_force per key it actually deleted (see _kata_evict_ns below) —
+      # never a blanket full-fleet resummarize.
       - alias: Broadcast kata_gc_complete + nudge scheduler
         if:
           - condition: template
@@ -687,11 +722,19 @@ script:
                 metadata:
                   cabinets_scanned: "{{ gc_cabinet_entities | default([]) }}"
                   caller_token: '{{ caller_token }}'
-          - event: zen_event
-            event_data:
-              event:
-                kind: summary_force
-                component: ''
+          - if:
+              - condition: template
+                value_template: "{{ _kata_evict_ns.keys | length > 0 }}"
+            then:
+              - repeat:
+                  for_each: "{{ _kata_evict_ns.keys }}"
+                  sequence:
+                    - event: zen_event
+                      event_data:
+                        event:
+                          kind: summary_force
+                          component: "{{ repeat.item }}"
+                          reason: gc_eviction
 
       # ── 6. Report ──────────────────────────────────────────────────────────
       - alias: Build GC report

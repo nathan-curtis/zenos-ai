@@ -234,17 +234,6 @@ script:
           - stop: zenzork tool manifest
             response_variable: result
 
-      # ─── 0e. Resolve player name ──────────────────────────────────────────
-      - variables:
-          _player: >-
-            {%- if _player_input != '' -%}{{ _player_input }}
-            {%- else -%}
-              {%- set _sv = state_attr(_sys_cabinet, 'variables') | default({}, true) -%}
-              {%- set _pu_raw = (_sv.get('primary_user') or {}) if _sv is mapping else {} -%}
-              {%- set _pu = (_pu_raw.get('value', '') if _pu_raw is mapping else '') | string | trim -%}
-              {{ _pu if _pu else 'Crawler' }}
-            {%- endif -%}
-
       # ─── 0e. Guard: ai_cabinet required ───────────────────────────────────
       - if: "{{ _ai_cabinet == '' }}"
         then:
@@ -282,6 +271,28 @@ script:
           _quest_won:    "{{ _gs.get('quest_won', false) | bool }}"
           _examined:      "{{ _gs.get('examined', []) | list }}"
           _last_cmd:      "{{ (_gs if _gs is mapping else {}).get('last_cmd', {}) }}"
+
+      # ─── 0f1. Resolve player name ──────────────────────────────────────────
+      # Bug reported by Veronica (ticket #280): this used to run BEFORE the
+      # game-state read above, so it could never see the player name a
+      # session actually started with — every action after "start" (which
+      # does persist 'player' into game state, and every subsequent write
+      # correctly preserves it via `_gs | combine(...)`) fell straight
+      # through to the household's primary_user (or the literal 'Crawler'
+      # default) instead of resuming the session's own player identity.
+      - variables:
+          _player: >-
+            {%- if _player_input != '' -%}{{ _player_input }}
+            {%- else -%}
+              {%- set _gs_player = (_gs.get('player', '') | string | trim) if _gs is mapping else '' -%}
+              {%- if _gs_player != '' -%}{{ _gs_player }}
+              {%- else -%}
+                {%- set _sv = state_attr(_sys_cabinet, 'variables') | default({}, true) -%}
+                {%- set _pu_raw = (_sv.get('primary_user') or {}) if _sv is mapping else {} -%}
+                {%- set _pu = (_pu_raw.get('value', '') if _pu_raw is mapping else '') | string | trim -%}
+                {{ _pu if _pu else 'Crawler' }}
+              {%- endif -%}
+            {%- endif -%}
 
       # ─── 0f2. Read character sheet (achievements live here, not in gs) ──────
       - action: script.zen_dojotools_filecabinet
@@ -1118,7 +1129,14 @@ script:
                       'ended_at': none
                     }
                   }}
-                {%- else -%}{{ _gs }}{%- endif -%}
+                {%- else -%}
+                  {#- resume: an explicit player= on this call should still take
+                     effect, not be silently discarded in favor of whatever
+                     player the session was last resumed/started under (part of
+                     ticket #280 — this is what let a stale/corrupted player
+                     value get stuck across many resumed sessions). -#}
+                  {{ (_gs | combine({'player': _player_input})) if _player_input != '' else _gs }}
+                {%- endif -%}
           # ── treasure seeding (new session only) ──────────────────────────
           - if: "{{ (_is_new_session | bool or _treasure_room == '' or _treasure_found) and _game_mode_input in ['treasure_hunt', 'timed_treasure_hunt'] }}"
             then:
@@ -1407,7 +1425,7 @@ script:
               _go_result: >-
                 {%- set _tb = _target_bearing | int(-1) -%}
                 {%- set _dd = _dir_lc -%}
-                {%- set ns = namespace(to='', b=-1, cnt=0) -%}
+                {%- set ns = namespace(to='', b=-1, cnt=0, eid='') -%}
                 {# bearing match: count all, pick first #}
                 {%- if _tb >= 0 -%}
                   {%- for p in _portals if p is mapping -%}
@@ -1419,6 +1437,7 @@ script:
                         {%- if ns.to == '' -%}
                           {%- set ns.to = p.get('to', '') | string -%}
                           {%- set ns.b = _pb -%}
+                          {%- set ns.eid = p.get('entity_id', '') | string -%}
                         {%- endif -%}
                       {%- endif -%}
                     {%- endif -%}
@@ -1432,14 +1451,29 @@ script:
                     {%- if _to == _dd or _an == _dd or _to in _dd or _dd in _to -%}
                       {%- set ns.to = p.get('to', '') | string -%}
                       {%- set ns.b = p.get('bearing', -1) | int(-1) -%}
+                      {%- set ns.eid = p.get('entity_id', '') | string -%}
                     {%- endif -%}
                   {%- endfor -%}
                 {%- endif -%}
-                {{ {'to': ns.to, 'bearing': ns.b, 'count': ns.cnt} }}
+                {{ {'to': ns.to, 'bearing': ns.b, 'count': ns.cnt, 'entity_id': ns.eid} }}
           - variables:
-              _go_to:      "{{ (_go_result if _go_result is mapping else {}).get('to', '') }}"
-              _go_bearing: "{{ (_go_result if _go_result is mapping else {}).get('bearing', -1) | int(-1) }}"
-              _go_count:   "{{ (_go_result if _go_result is mapping else {}).get('count', 0) | int }}"
+              _go_to:        "{{ (_go_result if _go_result is mapping else {}).get('to', '') }}"
+              _go_bearing:   "{{ (_go_result if _go_result is mapping else {}).get('bearing', -1) | int(-1) }}"
+              _go_count:     "{{ (_go_result if _go_result is mapping else {}).get('count', 0) | int }}"
+              _go_entity_id: "{{ (_go_result if _go_result is mapping else {}).get('entity_id', '') | string | trim }}"
+          # Bug reported by Veronica (ticket #280): a portal with a linked
+          # entity_id (cover/lock) was never checked before allowing
+          # traversal — closed/locked doors let you through anyway, with
+          # "no physical entity was actuated". OPEN/CLOSE mode already
+          # drives these same entities; GO now respects their actual state.
+          - variables:
+              _go_blocked: >-
+                {%- if _go_entity_id != '' -%}
+                  {%- set _dom = _go_entity_id.split('.')[0] if '.' in _go_entity_id else '' -%}
+                  {%- if _dom == 'cover' -%}{{ not is_state(_go_entity_id, 'open') }}
+                  {%- elif _dom == 'lock' -%}{{ is_state(_go_entity_id, 'locked') }}
+                  {%- else -%}{{ false }}{%- endif -%}
+                {%- else -%}{{ false }}{%- endif -%}
           # ── route ────────────────────────────────────────────────────────
           - choose:
               # ── disambiguation: multiple portals in same compass bucket ───────
@@ -1515,6 +1549,30 @@ script:
                           {{ ns.dirs }}
                         caller_token: "{{ _caller_token }}"
                   - stop: zenzork go no match
+                    response_variable: result
+              # ── portal found but its linked entity is closed/locked ────────
+              - conditions: "{{ _go_blocked }}"
+                sequence:
+                  - variables:
+                      result:
+                        status: ok
+                        mode: go
+                        direction_input: "{{ _direction }}"
+                        current_room: "{{ _current_room }}"
+                        blocked: true
+                        entity_id: "{{ _go_entity_id }}"
+                        message: >-
+                          {%- set _an = area_name(_go_to) | default(_go_to | replace('_',' ') | title, true) -%}
+                          {%- if _narrator == 'dungeon' -%}
+                          *access denied* The passage to {{ _an }} is sealed. The mechanism reports {{ 'locked' if _go_entity_id.split('.')[0] == 'lock' else 'closed' }}. The dungeon respects a closed door, even when it is inconvenient.
+                          {%- elif _narrator == 'zork' -%}
+                          The way to {{ _an }} is {{ 'locked' if _go_entity_id.split('.')[0] == 'lock' else 'closed' }}. It does not yield.
+                          {%- else -%}
+                          The passage to {{ _an }} is {{ 'locked' if _go_entity_id.split('.')[0] == 'lock' else 'closed' }}.
+                          {%- endif -%}
+                        hint: "mode=open target=<destination> to try opening it first."
+                        caller_token: "{{ _caller_token }}"
+                  - stop: zenzork go blocked
                     response_variable: result
             # ── route: portal found → move + narrate ─────────────────────────
             default:

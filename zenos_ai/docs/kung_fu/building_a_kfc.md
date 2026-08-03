@@ -60,7 +60,7 @@ triggers:
 # kfc_trigger_taskmaster.yaml
 triggers:
   - trigger: state
-    entity_id: binary_sensor.withings_nathan_in_bed
+    entity_id: binary_sensor.withings_alex_in_bed
     not_from: [unknown, unavailable]   # no to: filter — both directions matter here
 ```
 

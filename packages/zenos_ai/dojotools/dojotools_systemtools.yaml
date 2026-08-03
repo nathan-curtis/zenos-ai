@@ -1,6 +1,36 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.2.0
+# Version: 5.2.3
+#
+# 5.2.3 — check_response (config check_config path) parses a raw-string HA
+#   response instead of silently collapsing to {} when Content-Type detection
+#   misses JSON — that always read as invalid/nogo regardless of real config
+#   validity. notice_dashboard gains a `verbose` field (default false): counts
+#   + a short preview (first 3) per section, anchor conflicts collapse into
+#   one summary — every section AND action_queue restating full detail was
+#   roughly doubling response size on any system with more than a couple
+#   non-green items. `verbose: true` restores the full untruncated dump.
+#
+# 5.2.2 — zen_health_report now checks for the Spook HACS integration
+#   directly (via zen_sutra_ha_api's whitelisted GET /api/services, checking
+#   for homeassistant.create_label) and surfaces dependencies.spook_installed
+#   plus a top-priority diagnosis line when missing. Root-caused on a fresh
+#   T:\ clean-room build: homeassistant.create_label/rename_label/remove_label
+#   are Spook-provided, not core HA — without Spook, Flynn Gate 0 (auto-create
+#   missing labels) fails with an opaque "unknown action" automation error
+#   that gave zero indication it was a missing prerequisite rather than a
+#   bug. Prerequisite was already documented in getting_started/install.md;
+#   the gap was that nothing in the running system pointed back to it.
+#
+# 5.2.1 — zen_health_report now surfaces sensor.zen_label_health directly
+#   (state + reason, as health_sensors.labels/reasons.labels) instead of only
+#   borrowing its text second-hand through agent_health. Added
+#   label_cabinet_consistency: label_health and cabinet_health both derive
+#   missing-required-label state from the same source (labels() + the same
+#   hardcoded label-name lists) and should always agree; when label_health
+#   reports critical (real missing labels) but cabinet_health doesn't, that's
+#   a stale-template-render disagreement, not two separate problems — flagged
+#   distinctly in the diagnosis instead of requiring manual cross-referencing.
 #
 # Consolidated from: dojotools_ha_api.yaml + dojotools_system.yaml
 # Contains: zen_log_* shell_commands, ha_api rest_commands,
@@ -223,6 +253,17 @@ script:
         description: Path for the 'get' action. Must be in allowed_paths list.
         selector:
           text:
+      has_service:
+        name: Service existence check (services action only)
+        description: >-
+          Optional 'domain.service' (e.g. homeassistant.create_label). When set on
+          the 'services' action, checks the FULL (untruncated) services registry
+          server-side and returns only a boolean — avoids the 220000-char
+          truncation on the general services dump silently corrupting the check
+          for services that sort late in a large registry.
+        required: false
+        selector:
+          text:
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
@@ -308,7 +349,21 @@ script:
             path: config/core/check_config
           response_variable: r
         - variables:
-            check_response: "{{ r.content if r.content is mapping else {} }}"
+            # r.content is only a mapping when HA's response Content-Type is
+            # detected as JSON; on some HA versions/proxies that detection
+            # misses and content comes back as a raw string, which silently
+            # collapsed to {} here — always reading as invalid/nogo regardless
+            # of real config validity. Parse the string case instead of
+            # discarding it, and surface an explicit error if truly unparseable
+            # rather than a bare 'unknown error'.
+            check_response: >-
+              {%- set _raw = r.content -%}
+              {%- if _raw is mapping -%}
+                {{ _raw }}
+              {%- else -%}
+                {%- set _parsed = (_raw | string | from_json(none)) -%}
+                {{ _parsed if _parsed is mapping else {'result': 'invalid', 'errors': 'unparseable_check_config_response: ' ~ (_raw | string | truncate(300))} }}
+              {%- endif -%}
         - variables:
             check_valid: "{{ check_response.get('result', 'invalid') == 'valid' }}"
         - variables:
@@ -332,16 +387,21 @@ script:
           action: rest_command.ha_api_get
           response_variable: r
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: Core Home Assistant log retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: error_log_done
@@ -356,16 +416,21 @@ script:
           action: rest_command.ha_api_get
           response_variable: r
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: Supervisor logs retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: supervisor_logs_done
@@ -380,16 +445,21 @@ script:
           action: rest_command.ha_api_get
           response_variable: r
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: Event schema retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: events_done
@@ -403,17 +473,61 @@ script:
             path: services
           action: rest_command.ha_api_get
           response_variable: r
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: "{{ (has_service | default('', true) | trim) != '' }}"
+            sequence:
+            - variables:
+                _hs_domain: "{{ (has_service | trim).split('.')[0] }}"
+                _hs_service: "{{ (has_service | trim).split('.')[1:] | join('.') }}"
+                _hs_http_ok: "{{ (r.status | default(0) | int) in range(200, 300) }}"
+            - variables:
+                _hs_found: >-
+                  {%- if not _hs_http_ok or r.content is none -%}false
+                  {%- else -%}
+                    {%- set _svc_list = (r.content | from_json([])) if r.content is string else r.content -%}
+                    {%- set ns = namespace(found=false) -%}
+                    {%- for _d in _svc_list if _d is mapping and _d.get('domain') == _hs_domain -%}
+                      {%- if _hs_service in (_d.get('services', {}) or {}) -%}{%- set ns.found = true -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.found }}
+                  {%- endif -%}
+            - variables:
+                # BUG FIX (2026-08-01): previously trusted r.content alone —
+                # a 401/other non-2xx response (e.g. bad/missing ha_bearer
+                # secret) returns a JSON error body like {"message": "..."},
+                # which parsed fine as "no matching service" and reported
+                # found=false / status=success, indistinguishable from the
+                # service genuinely not existing. api_ok now surfaces the
+                # real HTTP outcome so callers can tell "checked, not there"
+                # apart from "couldn't check at all."
+                final:
+                  status: "{{ 'success' if _hs_http_ok else 'error' }}"
+                  message: "Service existence check for {{ has_service }}."
+                  has_service: "{{ has_service }}"
+                  found: "{{ _hs_found }}"
+                  api_ok: "{{ _hs_http_ok }}"
+                  api_status: "{{ r.status | default(none) }}"
+                  caller_token: "{{ caller_token }}"
+            - stop: services_has_service_done
+              response_variable: final
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: Service registry retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: services_done
@@ -428,16 +542,21 @@ script:
           action: rest_command.ha_api_get
           response_variable: r
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: System config retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: config_done
@@ -452,16 +571,21 @@ script:
           action: rest_command.ha_api_get
           response_variable: r
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: System health retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: health_done
@@ -476,16 +600,21 @@ script:
           action: rest_command.ha_api_get
           response_variable: r
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: Supervisor info retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: supervisor_done
@@ -514,16 +643,21 @@ script:
           action: rest_command.ha_api_get
           response_variable: r
         - variables:
-            raw: "{% if r.content is none %}\n  \"\"\n{% else %}\n  {{ r.content | string\
-              \ }}\n{% endif %}\n"
-            safe: "{% set txt = raw | string %} {% set limit = 220000 %} {% if txt |\
-              \ length > limit %}\n  {{ txt[:limit] ~ '... [truncated]' }}\n{% else\
-              \ %}\n  {{ txt }}\n{% endif %}\n"
+            _raw_len: '{{ 0 if r.content is none else (r.content | string | length) }}'
+        - variables:
+            safe: >-
+              {% if r.content is none %}
+                ""
+              {% elif _raw_len > 220000 %}
+                {{ (r.content | string)[:220000] }}... [truncated]
+              {% else %}
+                {{ r.content | string }}
+              {% endif %}
         - variables:
             final:
               status: success
               message: GET /api/{{ requested_path }} retrieved.
-              truncated: '{{ (raw | length) > 220000 }}'
+              truncated: '{{ _raw_len > 220000 }}'
               result: '{{ safe }}'
               caller_token: '{{ caller_token }}'
         - stop: get_done
@@ -984,10 +1118,174 @@ script:
             _ai_user: "{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}"
             _family: "{{ states('sensor.zen_default_family_cabinet_resolved') }}"
             _user: "{{ states('sensor.zen_default_user_cabinet_resolved') }}"
+        # ── Capsule/essence schema check (2026-08-02) ───────────────────────────
+        # Surfaces prompt_health_check()'s corrected severity ladder here too —
+        # previously zen_health_report had zero visibility into essence schema
+        # at all, so a customer had to separately call mode=prompt_health and
+        # was confused by what used to be a miscalibrated 'error' for the
+        # universal 'legacy' schema every real install actually runs on
+        # (H's own Friday persona included). 'error' now means genuinely
+        # missing/corrupt essence; 'legacy' is 'warn' (functional, just hasn't
+        # opted into the newer three_layer + signing schema — optional, not
+        # required, and Flynn does not gate loading on it either way).
+        - variables:
+            _capsule_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {{ zen.prompt_health_check() }}
+            _capsule: "{{ _capsule_raw | trim | from_json if (_capsule_raw | trim).startswith('{') else {} }}"
+            _capsule_state:  "{{ _capsule.get('state', 'error') }}"
+            _capsule_schema: "{{ _capsule.get('schema', 'missing') }}"
+            _capsule_sig:    "{{ _capsule.get('signature_status', 'unsigned') }}"
+        # ── Spook prerequisite check ──────────────────────────────────────────
+        # homeassistant.create_label / rename_label / remove_label are NOT core
+        # HA services — they're only registered by the Spook HACS integration
+        # (spook.boo). Flynn's Gate 0 (auto-create missing labels) and manual
+        # label repair both hard-depend on this. Without Spook, Gate 0 fails
+        # with an opaque "unknown action" automation error that gives zero
+        # indication it's a missing prerequisite — this check makes that
+        # explicit and actionable instead of requiring a log dive.
+        # Uses zen_sutra_ha_api's has_service narrow check (not the general
+        # services dump) — the full services registry on this system is large
+        # enough to get truncated at 220000 chars, and a truncated cut mid-JSON
+        # silently fails to parse and reports a false negative for any service
+        # whose domain entry lands past the cut. has_service filters server-side
+        # against the full untruncated response and returns only a boolean.
+        - action: script.zen_sutra_ha_api
+          continue_on_error: true
+          data:
+            mode: services
+            has_service: homeassistant.create_label
+          response_variable: _hr_services_raw
+        - variables:
+            _spook_installed: >-
+              {%- if _hr_services_raw is mapping and _hr_services_raw.get('status', '') == 'success' -%}
+                {{ _hr_services_raw.get('found', false) }}
+              {%- else -%}unknown
+              {%- endif -%}
+        # ── Known-issue cross-reference ─────────────────────────────────────────
+        # Every open HA repair issue (via issues(), the only way to reach the
+        # Issue Registry from a template — there is no REST endpoint for it,
+        # confirmed 404 on /api/repairs/issues) is matched against a curated map
+        # of known causes: most of these are Spook "ghost" warnings caused by an
+        # optional integration not being installed, not something wrong with the
+        # tool itself. We do NOT kill the affected feature when the dependency is
+        # missing — we degrade gracefully — but the user should see plainly what
+        # requires what, so they can choose to install it or accept the gap.
+        - variables:
+            _dependency_map:
+            - match: zen_dojotools_todo
+              dependency: Microsoft 365 integration (ms365_todo platform)
+              install_hint: Install/configure the Microsoft 365 HACS integration and enable its todo platform.
+              degrades: ['ToDo: Microsoft 365 task list sync (create/delete)']
+            - match: zen_dojotools_calendar
+              dependency: Microsoft 365 integration (ms365_calendar platform)
+              install_hint: Install/configure the Microsoft 365 HACS integration and enable its calendar platform.
+              degrades: ['Calendar: Microsoft 365 event create/modify/remove']
+            - match: zen_dojotools_mail
+              dependency: Microsoft 365 integration (ms365_mail platform)
+              install_hint: Install/configure the Microsoft 365 HACS integration and enable its mail platform.
+              degrades: ['Mail: Microsoft 365 inbox notify']
+            - match: zen_dojotools_teams
+              dependency: Microsoft 365 integration (ms365_teams platform)
+              install_hint: Install/configure the Microsoft 365 HACS integration and enable its Teams platform.
+              degrades: ['Teams: chat message send, status update']
+            - match: zen_sutra_music_assistant
+              dependency: Music Assistant integration (mass_queue actions)
+              install_hint: Install/configure the Music Assistant integration.
+              degrades: ['Music Assistant: queue management (get/move/remove/play queue items, favorites, group volume)']
+            - match: zen_dojotools_print_shop
+              dependency: IPP Printing integration + SimpleImageRaster (HACS)
+              install_hint: Install the IPP Printing integration and the SimpleImageRaster HACS integration.
+              degrades: ['Print Shop: label/photo printing']
+            - match: zen_dojotools_postman
+              dependency: notify.* targets (mobile_app/notify group configuration, not an integration)
+              install_hint: Confirm the named notify targets/groups (admin_devices, default_user, family_devices, family_devices_verbose, secondary_user) are configured in notify.yaml or via the UI.
+              degrades: ['Postman: push notification dispatch to configured targets']
+            - match: zen_dojotools_inventory
+              dependency: Battery Notes integration (HACS)
+              install_hint: Install the Battery Notes HACS integration.
+              degrades: ['Inventory: mark battery as replaced']
+            - match: flynn_stepgate_sentinel
+              dependency: System Monitor integration (core, provides sensor.system_monitor_last_boot)
+              install_hint: Add the core System Monitor integration and enable the last boot sensor.
+              degrades: ['Flynn Stepgate Sentinel: boot-time detection']
+            - match: zen_dojotools_autovac
+              dependency: Xiaomi Miio integration
+              install_hint: Install/configure the Xiaomi Miio integration for the vacuum entity.
+              degrades: ['Autovac: segment-clean command']
+        - variables:
+            _known_issues: >-
+              {%- set ns = namespace(l=[]) -%}
+              {%- for k, v in issues().items() -%}
+                {%- set _domain = v.get('domain', k[0] if k is sequence and k | length > 0 else '') -%}
+                {%- set _iid = v.get('issue_id', k[1] if k is sequence and k | length > 1 else '') -%}
+                {%- set _cat = namespace(val='unclassified', dep='', hint='', deg=[]) -%}
+                {%- if 'unknown_label' in _iid -%}
+                  {%- set _cat.val = 'label_gap' -%}
+                  {%- set _cat.hint = 'Missing HA label reference — use zen_dojotools_manifest mode=repair confirm=true to create it (Spook self-clears this ghost once the label exists).' -%}
+                {%- elif _domain == 'hacs' and 'restart_required' in _iid -%}
+                  {%- set _cat.val = 'informational' -%}
+                  {%- set _cat.hint = 'HACS package updated — restart required to apply, not a functional gap.' -%}
+                {%- else -%}
+                  {%- for m in _dependency_map if m.match in _iid -%}
+                    {%- set _cat.val = 'missing_dependency' -%}
+                    {%- set _cat.dep = m.dependency -%}
+                    {%- set _cat.hint = m.install_hint -%}
+                    {%- set _cat.deg = m.degrades -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- set ns.l = ns.l + [{
+                  'issue_id': _iid, 'domain': _domain, 'category': _cat.val,
+                  'dependency': _cat.dep, 'install_hint': _cat.hint, 'degrades': _cat.deg
+                }] -%}
+              {%- endfor -%}
+              {{ ns.l }}
         - variables:
             _kata_vars: >-
               {{ state_attr(_kata, 'variables') or {}
                  if _kata not in ['unknown','unavailable','none',''] else {} }}
+            _dojo_vars: >-
+              {{ state_attr(_dojo, 'variables') or {}
+                 if _dojo not in ['unknown','unavailable','none',''] else {} }}
+        # Per-KFC-component last-run freshness — same computation as mode=pipeline's
+        # components[], kept here (not factored into a shared macro, matching this
+        # file's existing convention of self-contained case bodies) so a single
+        # zen_health_report call surfaces per-component staleness for user-issue
+        # triage without a second mode=pipeline call.
+        - variables:
+            _direct_kfc_components:
+            - camera
+            - trapper_keeper
+            - laundry
+            - dishwasher
+            - autovac
+            _dual_path_components:
+            - laundry
+            - camera_security
+        - variables:
+            _component_freshness: >-
+              {%- set _ns = namespace(l=[]) -%}
+              {%- set _protected = ['AI_Cabinet_VolumeInfo', 'kfc_template', 'zen_library_manifest', 'zen_identity_manifest', '_context'] -%}
+              {%- if _dojo_vars is mapping -%}
+                {%- for slug, drawer in _dojo_vars.items() -%}
+                  {%- if not slug.startswith('_') and slug not in _protected -%}
+                    {%- set _sub_d = drawer.get('value', drawer) if drawer is mapping else (drawer | from_json if drawer is string else {}) -%}
+                    {%- set _sub_d = _sub_d if _sub_d is mapping else {} -%}
+                    {%- if _sub_d.get('trigger_subscriptions', []) | length > 0 -%}
+                      {%- set _source = 'direct_kfc' if slug in _direct_kfc_components else ('dual_path' if slug in _dual_path_components else 'scheduler') -%}
+                      {%- set _last_raw = _kata_vars.get('zen_ninja_last_run_' ~ slug, {}) -%}
+                      {%- set _last_v = _last_raw.get('value', _last_raw) if _last_raw is mapping else (_last_raw | from_json if _last_raw is string else {}) -%}
+                      {%- set _last_d = _last_v if _last_v is mapping else (_last_v | from_json if _last_v is string else {}) -%}
+                      {%- set _last_d = _last_d if _last_d is mapping else {} -%}
+                      {%- set _ran_at = _last_d.get('run_started_at', '') -%}
+                      {%- set _age = ((now() - as_datetime(_ran_at)).total_seconds() / 60) | round(1) if _ran_at and _ran_at != '' else none -%}
+                      {%- set _fresh = 'ok' if _age is not none and _age | float < 20 else ('stale' if _age is not none and _age | float < 60 else 'very_stale') -%}
+                      {%- set _ns.l = _ns.l + [{'slug': slug, 'source': _source, 'last_ran_at': _ran_at, 'age_min': _age, 'freshness': _fresh}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {{ _ns.l }}
         - variables:
             _ts: "{{ _kata_vars.get('zen_summary', {}).get('timestamp', '') }}"
             _sched_ts: "{{ _kata_vars.get('zen_scheduler', {}).get('timestamp', '') }}"
@@ -1006,6 +1304,13 @@ script:
                  | select('in', ['unknown','unavailable','none',''])
                  | list | count == 0 }}
             _active_raw: "{{ state_attr('sensor.zen_monastery_health', 'active_components') | default('[]') }}"
+            _label_health_st: "{{ states('sensor.zen_label_health') }}"
+            _label_missing: >-
+              {%- set _m = state_attr('sensor.zen_label_health', 'missing_label_ids') | default([]) -%}
+              {{ _m if _m is sequence and _m is not string else (_m | from_json if _m is string else []) }}
+            _cabinet_health_st: "{{ states('sensor.zen_cabinet_health') }}"
+            _label_cab_conflict: >-
+              {{ _label_health_st == 'critical' and _cabinet_health_st != 'critical' and _label_missing | count > 0 }}
         - variables:
             _ts_age_min: >-
               {%- if _ts and _ts != '' -%}
@@ -1034,8 +1339,51 @@ script:
               {%- endfor -%}
               {{ ns.l | join(', ') if ns.l else '' }}
         - variables:
+            # BUG FIX (2026-08-01): ai_task_set only ever checked "is the
+            # helper non-empty" — a malformed value (missing domain prefix,
+            # e.g. "gemma4_e4b_gemma4_e4b" instead of "ai_task.gemma4_e4b_gemma4_e4b")
+            # passed this check fine and sailed through Gate 3 silently, only
+            # surfacing as a crash much later when something actually called
+            # the entity (e.g. ninja_summarizer force-run: "invalid entity ID
+            # ... Got None"). _ai_task_valid checks the helper's value is an
+            # entity_id that genuinely exists in states.ai_task — not just
+            # non-empty. _ai_task_hint tries to find the real entity the
+            # customer probably meant (matching the object_id half after the
+            # dot, since the missing-prefix case is the common one) before
+            # falling back to listing every real ai_task entity.
+            _ai_task_raw: "{{ states('input_text.zenos_ai_task_entity') | trim }}"
+            _ai_task_all: "{{ states.ai_task | map(attribute='entity_id') | list }}"
+            _ai_task_valid: "{{ _ai_task_raw in _ai_task_all }}"
+            _ai_task_hint: >-
+              {%- if _ai_task_raw not in ['', 'unknown', 'unavailable'] and not _ai_task_valid -%}
+                {%- set _obj = _ai_task_raw.split('.')[-1] -%}
+                {%- set _match = _ai_task_all | select('match', '.*\\.' ~ _obj ~ '$') | list -%}
+                {%- if _match | count > 0 -%}
+                  Did you mean {{ _match[0] }}? (helper is missing its "ai_task." domain prefix)
+                {%- elif _ai_task_all | count > 0 -%}
+                  Not a real entity. Available ai_task entities: {{ _ai_task_all | join(', ') }}
+                {%- else -%}
+                  Not a real entity, and no ai_task entities exist on this system at all.
+                {%- endif -%}
+              {%- else -%}
+                {{ '' }}
+              {%- endif -%}
+        - variables:
             _diagnosis: >-
               {%- set _ns = namespace(issues=[]) -%}
+              {%- if _ai_task_raw not in ['', 'unknown', 'unavailable'] and not _ai_task_valid -%}
+                {%- set _ns.issues = _ns.issues + ['CRITICAL: input_text.zenos_ai_task_entity is set to "' ~ _ai_task_raw ~ '", which is not a real entity — ' ~ _ai_task_hint] -%}
+              {%- endif -%}
+              {%- if _capsule_state == 'error' -%}
+                {%- set _ns.issues = _ns.issues + ['CRITICAL: agent persona capsule missing or unreadable — no zenai_essence to load.'] -%}
+              {%- elif _capsule_schema == 'legacy' -%}
+                {%- set _ns.issues = _ns.issues + ['warn: essence on legacy schema (functional, unsigned) — three_layer + signing is optional, not required.'] -%}
+              {%- endif -%}
+              {%- if _spook_installed == 'False' -%}
+                {%- set _ns.issues = _ns.issues + ['CRITICAL: Spook integration not installed — homeassistant.create_label unavailable, Flynn Gate 0 cannot auto-create missing labels and will fail silently with an "unknown action" automation error. Install via HACS: https://spook.boo/installation/'] -%}
+              {%- elif _spook_installed == 'unknown' -%}
+                {%- set _ns.issues = _ns.issues + ['warn: could not determine Spook install status — the internal HA API check (rest_command.ha_api_get) returned HTTP ' ~ (_hr_services_raw.get('api_status', 'no response') | string) ~ ', not Spook itself. Check the ha_bearer secret (missing/expired long-lived token causes this) before assuming Spook is absent.'] -%}
+              {%- endif -%}
               {%- if _dojo in ['unknown','unavailable','none',''] -%}
                 {%- set _ns.issues = _ns.issues + ['CRITICAL: dojo resolver unavailable — label zen_dojo_cabinet has no sensor entities'] -%}
               {%- endif -%}
@@ -1128,6 +1476,9 @@ script:
               {%- if _init_cabinets != '' -%}
                 {%- set _ns.issues = _ns.issues + ['Virgin cabinets in init state: ' ~ _init_cabinets ~ ' — Flynn Gate 2.1 will auto-init post-warmup. If stuck >5 min, run cabinetadmin mode: init manually.'] -%}
               {%- endif -%}
+              {%- if _label_cab_conflict -%}
+                {%- set _ns.issues = _ns.issues + ['SENSOR CONFLICT: zen_label_health reports missing label(s) (' ~ (_label_missing | join(', ')) ~ ') but zen_cabinet_health does not agree (state=' ~ _cabinet_health_st ~ '). Both derive from the same live label registry — a disagreement means one sensor has not re-rendered since a recent label change, not a real second problem. Try ha_reload_templates first; treat zen_label_health as authoritative (it computes missing labels directly) if they still disagree after that.'] -%}
+              {%- endif -%}
               {%- if _legacy_cabinets != '' -%}
                 {%- set _ns.issues = _ns.issues + ['Cabinet schema upgrade available: ' ~ _legacy_cabinets ~ ' — say "upgrade my cabinets"'] -%}
               {%- endif -%}
@@ -1149,27 +1500,73 @@ script:
                 family: "{{ _family }}"
                 user: "{{ _user }}"
                 all_ok: "{{ _resolver_all_ok }}"
-              health_sensors:
-                monastery: "{{ states('sensor.zen_monastery_health') }}"
-                ninja_summarizer: "{{ states('sensor.zen_summarizer_health') }}"
-                supersummary: "{{ states('sensor.zen_supersummary_health') }}"
-                cabinet: "{{ states('sensor.zen_cabinet_health') }}"
-                legacy_schema_cabinets: "{{ _legacy_cabinets }}"
-                init_cabinets: "{{ _init_cabinets }}"
-                agents: "{{ states('sensor.zen_agent_health') }}"
-              reasons:
-                monastery: "{{ state_attr('sensor.zen_monastery_health', 'reason') | default('') }}"
-                ninja_summarizer: "{{ state_attr('sensor.zen_summarizer_health', 'reason') | default('') }}"
-                supersummary: "{{ state_attr('sensor.zen_supersummary_health', 'reason') | default('') }}"
-                cabinet: "{{ state_attr('sensor.zen_cabinet_health', 'reason') | default('') }}"
-                agents: "{{ state_attr('sensor.zen_agent_health', 'reason') | default('') }}"
+              # BUG FIX (2026-08-02): flat health_sensors/reasons dicts gave zero
+              # indication of the real dependency cascade — ninja_summarizer and
+              # supersummary both actually feed monastery_health's own rollup
+              # (see zenos_summarizer_system_health.yaml), and flynn_system_ready
+              # itself is derived from labels + cabinet + monastery together
+              # (zenos_system_health.yaml). Restructured into a tree mirroring
+              # that real cascade instead of a same-level flat list, so a reader
+              # can see AT A GLANCE that e.g. a monastery problem is what's
+              # actually driving an agents warning, rather than treating five
+              # sibling entries as independent unrelated signals.
+              flynn_ready:
+                state: "{{ 'ok' if is_state('binary_sensor.flynn_system_ready', 'on') else 'issues_found' }}"
+                dependencies:
+                  labels:
+                    state: "{{ _label_health_st }}"
+                    reason: "{{ state_attr('sensor.zen_label_health', 'reason') | default('') }}"
+                  cabinet:
+                    state: "{{ states('sensor.zen_cabinet_health') }}"
+                    reason: "{{ state_attr('sensor.zen_cabinet_health', 'reason') | default('') }}"
+                    legacy_schema_cabinets: "{{ _legacy_cabinets }}"
+                    init_cabinets: "{{ _init_cabinets }}"
+                  monastery:
+                    state: "{{ states('sensor.zen_monastery_health') }}"
+                    reason: "{{ state_attr('sensor.zen_monastery_health', 'reason') | default('') }}"
+                    dependencies:
+                      ninja_summarizer:
+                        state: "{{ states('sensor.zen_summarizer_health') }}"
+                        reason: "{{ state_attr('sensor.zen_summarizer_health', 'reason') | default('') }}"
+                      supersummary:
+                        state: "{{ states('sensor.zen_supersummary_health') }}"
+                        reason: "{{ state_attr('sensor.zen_supersummary_health', 'reason') | default('') }}"
+                  agents:
+                    state: "{{ states('sensor.zen_agent_health') }}"
+                    reason: "{{ state_attr('sensor.zen_agent_health', 'reason') | default('') }}"
+                  capsule:
+                    state: "{{ _capsule_state }}"
+                    schema: "{{ _capsule_schema }}"
+                    signature_status: "{{ _capsule_sig }}"
+                    reason: >-
+                      {%- if _capsule_state == 'error' -%}
+                        Essence missing or unreadable — agent has no persona capsule to load.
+                      {%- elif _capsule_schema == 'legacy' -%}
+                        Legacy essence schema (functional, unsigned) — Flynn loads this fine; three_layer + signing is an optional, unmigrated upgrade, not required.
+                      {%- elif _capsule_sig != 'signed' -%}
+                        Three-layer essence present but not signed — optional, run zen_dojotools_persona_editor mode=sign to certify.
+                      {%- else -%}
+                        All checks passed.
+                      {%- endif -%}
+              label_cabinet_consistency:
+                consistent: "{{ not _label_cab_conflict }}"
+                label_health_state: "{{ _label_health_st }}"
+                label_health_missing: "{{ _label_missing }}"
+                cabinet_health_state: "{{ _cabinet_health_st }}"
               kill_switches:
                 pipeline_master: "{{ is_state('input_boolean.zen_summarizers_enabled', 'on') }}"
                 ninja_enabled: "{{ is_state('input_boolean.zen_ninja_summarizer_enabled', 'on') }}"
                 supersummary_enabled: "{{ is_state('input_boolean.zen_supersummarizer_enabled', 'on') }}"
               schema_ok: "{{ _schema_ok }}"
-              ai_task_entity: "{{ states('input_text.zenos_ai_task_entity') | trim }}"
-              ai_task_set: "{{ states('input_text.zenos_ai_task_entity') | trim not in ['','unknown','unavailable'] }}"
+              dependencies:
+                spook_installed: "{{ _spook_installed }}"
+                spook_note: "Provides homeassistant.create_label/rename_label/remove_label — required by Flynn Gate 0. Not core HA. https://spook.boo/installation/"
+                internal_api_ok: "{{ _hr_services_raw.get('api_ok', none) if _hr_services_raw is mapping else none }}"
+                internal_api_status: "{{ _hr_services_raw.get('api_status', none) if _hr_services_raw is mapping else none }}"
+              ai_task_entity: "{{ _ai_task_raw }}"
+              ai_task_set: "{{ _ai_task_raw not in ['','unknown','unavailable'] }}"
+              ai_task_entity_valid: "{{ _ai_task_valid if _ai_task_raw not in ['','unknown','unavailable'] else none }}"
+              ai_task_entity_hint: "{{ _ai_task_hint }}"
               timestamps:
                 zen_summary: "{{ _ts | default('none') }}"
                 zen_summary_age_min: "{{ _ts_age_min }}"
@@ -1177,6 +1574,8 @@ script:
                 zen_scheduler_age_min: "{{ _sched_age_min }}"
               monk_status: "{{ _monk_status }}"
               active_components: "{{ _active_raw }}"
+              component_freshness: "{{ _component_freshness }}"
+              known_issues: "{{ _known_issues }}"
               diagnosis: "{{ _diagnosis }}"
       - conditions:
         - alias: Cabinet Schema Upgrade
@@ -1477,14 +1876,16 @@ script:
         - variables:
             _issues: >-
               {%- set ns = namespace(l=[]) -%}
-              {%- for eid in integration_entities('repairs') | list -%}
-                {%- set _d   = state_attr(eid, 'domain')      | default('', true) -%}
-                {%- set _iid = state_attr(eid, 'issue_id')    | default('', true) -%}
-                {%- set _ttl = state_attr(eid, 'title')       | default(state_attr(eid, 'translation_key') | default('', true), true) -%}
-                {%- set _sev = state_attr(eid, 'severity')    | default('warning', true) -%}
-                {%- set _fix = state_attr(eid, 'is_fixable')  | default(false, true) -%}
-                {%- set _ign = state_attr(eid, 'ignored')     | default(false, true) -%}
-                {%- set ns.l = ns.l + [{'entity_id': eid, 'issue_id': _iid, 'domain': _d, 'severity': _sev, 'is_fixable': _fix, 'ignored': _ign, 'title': _ttl}] -%}
+              {%- for k, v in issues().items() -%}
+                {%- set _domain = v.get('domain', k[0] if k is sequence and k | length > 0 else '') -%}
+                {%- set _iid = v.get('issue_id', k[1] if k is sequence and k | length > 1 else '') -%}
+                {%- set ns.l = ns.l + [{
+                  'issue_id': _iid,
+                  'domain': _domain,
+                  'created': v.get('created', ''),
+                  'dismissed_version': v.get('dismissed_version', none),
+                  'is_persistent': v.get('is_persistent', false)
+                }] -%}
               {%- endfor -%}
               {{ ns.l }}
         - variables:
@@ -1493,7 +1894,7 @@ script:
               result: ok
               count: "{{ _issues | count }}"
               issues: "{{ _issues }}"
-              hint: "Fixable issues: use ectoplasm action_type=repair_remove or repair_ignore_all. Spook-created issues have domain=zenos."
+              hint: "Fields available from HA's issues() template global are limited to domain/issue_id/created/dismissed_version/is_persistent — no severity/is_fixable/title data is exposed here. Spook-created issues have domain=spook. Use ectoplasm action_type=repair_remove/repair_ignore_all with domain+issue_id from this list to act on one."
       - conditions:
         - alias: repair_fix
           condition: template
@@ -1635,29 +2036,63 @@ script:
                 {%- set ns.q = ns.q + [{'priority': 'warning', 'item': 'home mode anchors out of order: ' ~ c.pair, 'tool': 'systemtools', 'call': {'tool': 'scheduler_anchors', 'note': 'set anchor=' ~ c.pair.split('/')[0] ~ ' or ' ~ c.pair.split('/')[1] ~ ' to a corrected time via mode=scheduler_anchors — do not edit input_datetime helpers directly in HA UI'}}] -%}
               {%- endfor -%}
               {{ ns.q }}
+        # Default (verbose=false): counts + a short preview per section, and
+        # anchor conflicts collapse into ONE summary instead of one entry per
+        # pair. Previously every section AND the action_queue restated the
+        # same items in full, roughly doubling response size on any system
+        # with more than a couple of non-green items — a real contributor to
+        # tool results too large for a smaller model to reliably consume.
+        - variables:
+            _verbose: "{{ verbose | default(false) | bool }}"
+            _anchor_summary: >-
+              {%- if _anchor_conflicts | length == 0 -%}
+                {{ none }}
+              {%- else -%}
+                {{ {
+                  'count': _anchor_conflicts | length,
+                  'pairs': _anchor_conflicts | map(attribute='pair') | list,
+                  'note': 'anchor(s) out of order — fix each via mode=scheduler_anchors; do not edit input_datetime helpers directly in HA UI'
+                } }}
+              {%- endif -%}
         - variables:
             response:
               tool: "{{ tool }}"
               result: ok
               generated: "{{ now().isoformat() }}"
+              verbose: "{{ _verbose }}"
               alerts:
                 count: "{{ _alert_list | count }}"
-                active: "{{ _alert_list }}"
+                active: "{{ _alert_list if _verbose else _alert_list[:3] }}"
               persistent_notifications:
                 count: "{{ _pnotifs | count }}"
-                items: "{{ _pnotifs }}"
+                items: "{{ _pnotifs if _verbose else _pnotifs[:3] }}"
                 read_caveat: "{{ 'states.persistent_notification may be incomplete on HA 2025.x+ — verify panel if count seems wrong' if _pnotifs | count == 0 else '' }}"
               repairs:
                 count: "{{ _rep_issues | count }}"
-                issues: "{{ _rep_issues }}"
+                issues: "{{ _rep_issues if _verbose else _rep_issues[:3] }}"
               pending_updates:
                 count: "{{ _pending_updates | count }}"
-                items: "{{ _pending_updates }}"
+                items: "{{ _pending_updates if _verbose else _pending_updates[:3] }}"
               home_mode_anchor_health:
                 ok: "{{ _anchor_conflicts | length == 0 }}"
-                conflicts: "{{ _anchor_conflicts }}"
+                conflicts: "{{ _anchor_conflicts if _verbose else _anchor_summary }}"
               recent_dispatches: "{{ _recent_dispatches }}"
-              action_queue: "{{ _action_queue }}"
+              action_queue: >-
+                {%- if _verbose -%}
+                  {{ _action_queue }}
+                {%- else -%}
+                  {%- set ns2 = namespace(q=[]) -%}
+                  {%- for item in _action_queue -%}
+                    {%- set _call = item.get('call', {}) if item is mapping else {} -%}
+                    {%- if _call.get('tool', '') != 'scheduler_anchors' -%}
+                      {%- set ns2.q = ns2.q + [item] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if _anchor_summary is not none -%}
+                    {%- set ns2.q = ns2.q + [{'priority': 'warning', 'item': (_anchor_summary.count | string) ~ ' home mode anchor pair(s) out of order', 'tool': 'systemtools', 'call': {'tool': 'scheduler_anchors', 'note': _anchor_summary.note}}] -%}
+                  {%- endif -%}
+                  {{ ns2.q }}
+                {%- endif -%}
       - conditions:
         - alias: home_status
           condition: template
@@ -2117,6 +2552,7 @@ script:
             - scheduler_anchors
             - guest_mode
             - entertaining
+      tool:
         selector:
           text:
         description: "Alias for mode — accepted for backward compatibility"
@@ -2125,6 +2561,16 @@ script:
           boolean:
         name: confirm_action
         description: User has confirmed action (for protected and confirmation required)
+      verbose:
+        selector:
+          boolean:
+        name: Verbose
+        description: >-
+          notice_dashboard only. Default false: each section (alerts,
+          notifications, repairs, updates) returns a count plus a short
+          preview (first 3), and anchor conflicts collapse into one summary
+          instead of one entry per pair. Pass true for the full, untruncated
+          dump of everything (large — most callers don't need this).
       entity_id:
         selector:
           text:
@@ -2630,7 +3076,7 @@ script:
           | summary="{{ evt.summary }}" | meta={{ evt.metadata | tojson }}
 
           '
-        level: '{{ severity }}'
+        level: "{{ 'warning' if severity == 'warn' else severity }}"
       action: system_log.write
     - variables:
         final:

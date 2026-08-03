@@ -1,6 +1,12 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.3.0
+# Version: 5.3.1
+#
+# v5.3.1 (2026-07-18):
+#   - prompt_loader: new sim_mode_allowed field (default false) — stamped into
+#     integrations_config.identity.sim_mode_allowed on every factory run. OS-level
+#     SP1 policy switch (see dojotools_identity.yaml resolve_caller_identity /
+#     project_sp1_acl_candidates). Fail-closed default, explicit on every install.
 #
 # v5.3.0 (Zen pull, 2026-07-04):
 #   - cabinetadmin: new mode=expand_drawer — atomic single-drawer migration to
@@ -1131,6 +1137,25 @@ script:
                       action_taken: stamped
                       reason: initialized
                       stamp_result: "{{- _stamp_result -}}"
+                # BUG FIX (2026-08-01): this success path fired zero event on
+                # completion — sensor.zen_cabinet_health had no way to know a
+                # cabinet had just been stamped, and (separately) had no
+                # trigger: block of its own either, so it sat on a stale
+                # snapshot indefinitely after Gate 2.1 initialized cabinets
+                # during a virgin-deploy test. Reusing the same event
+                # reset_all already fires, rather than inventing a new one.
+                - event: zen_resolver_refresh
+                # ROBOT DONUT FIX (2026-08-01): the immediate fire above can
+                # race the label registry — cabinet_health recomputes before
+                # label_entities() reflects the tag this same init call just
+                # applied, storing a wrong 'absent' reading with a timestamp
+                # that looks fresh. This delayed second fire is NOT a state
+                # trigger and does NOT read states(entity_id) at any point —
+                # it's driven purely by "our own write finished a few seconds
+                # ago," giving the registry time to settle before the retry.
+                - delay:
+                    seconds: 5
+                - event: zen_resolver_refresh
               - conditions: "{{- cabinet_state_class == 'good' -}}"
                 sequence:
                 - variables:
@@ -1257,6 +1282,15 @@ script:
                 'caller_token': caller_token | default('')
               }
             -}}
+      # BUG FIX (2026-08-01): fired nothing on completion — sensor.zen_cabinet_health
+      # had no way to know a cabinet's content just changed. Same fix as init.
+      - event: zen_resolver_refresh
+      # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as init's —
+      # not a state trigger, doesn't read states(entity_id), purely "our own
+      # write finished a few seconds ago."
+      - delay:
+          seconds: 5
+      - event: zen_resolver_refresh
       - stop: hammer complete
         response_variable: _hammer_result
     # ── init — return result after classification and stamp ───────────────────
@@ -1321,6 +1355,15 @@ script:
             previous_value: "{{- _current_v -}}"
             new_value: "{{- _new_v -}}"
             caller_token: "{{- caller_token -}}"
+      # BUG FIX (2026-08-01): fired nothing on completion — same gap as
+      # init/hammer. schema-version flips are exactly the kind of state
+      # change zen_cabinet_health's mount-aware logic needs to see fresh.
+      - event: zen_resolver_refresh
+      # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as
+      # init/hammer's — not a state trigger, doesn't read states(entity_id).
+      - delay:
+          seconds: 5
+      - event: zen_resolver_refresh
       - stop: flip_schema_version complete
         response_variable: result
     # ── reset_all — nuclear cabinet wipe + reseed + Flynn bootstrap ──────────
@@ -1350,19 +1393,29 @@ script:
             event_data:
               volume_entity: "{{- repeat.item -}}"
               key: '*'
-      # Step 2 — reseed kfc_template + zen_template
-      - action: script.zen_admintools_reset_template
-        data: {}
-      # Step 3 — kick resolvers; Flynn sentinel fires from zen_cabinet_health change
+      # Step 2 — kick resolvers; Flynn sentinel fires from zen_cabinet_health change.
+      # reset_template is deliberately NOT called here anymore — it used to run
+      # immediately after the wipe, which wrote real drawer content (zen_template,
+      # kata_template, etc.) into cabinets that were still in genuinely virgin
+      # 'init' state. That residue made cabinetadmin's own virgin-vs-broken
+      # classifier (non_system_drawers count) see them as 'potentially_bad'
+      # rather than 'virgin', blocking Gate 2.1's simple auto-init path and
+      # forcing the manual rearm/repair flow for no real reason. Flynn's own
+      # Gate 3 already calls reset_template itself, idempotently, at the
+      # correct point — after cabinets are re-stamped and resolvers are
+      # confirmed settled. Letting Flynn do it in the right order means a
+      # reset_all-wiped system goes through the exact same bootstrap path as a
+      # genuinely fresh install, instead of a subtly different one.
       - event: zen_resolver_refresh
       - variables:
           result:
             status: success
             message: >-
               reset_all complete. {{ canon_ring0_cabinets | length }} ring-0
-              cabinet(s) wiped. Schemas reseeded via reset_template.
-              zen_resolver_refresh fired. Flynn will bootstrap on next sentinel
-              cycle. User cabinets were not touched.
+              cabinet(s) wiped. zen_resolver_refresh fired. Flynn will
+              re-stamp cabinets and reseed schemas (via its own Gate 2.1 and
+              Gate 3) on its next sentinel cycle, once resolvers settle.
+              User cabinets were not touched.
             wiped_count: "{{- canon_ring0_cabinets | length -}}"
             caller_token: "{{- caller_token -}}"
       - stop: reset_all complete
@@ -1641,6 +1694,17 @@ script:
       - stop: expand_drawer complete
         response_variable: result
 
+    # BUG FIX (2026-08-01): generic fallthrough for restore/repair_volumeinfo/
+    # reset (legacy) — none of these had a completion event of their own,
+    # same gap as init/hammer/flip_schema_version above. Safe here: only
+    # write-type ops reach this catch-all — inspect/mount_status/tool_manifest
+    # etc. already stop earlier via their own specific response.
+    - event: zen_resolver_refresh
+    # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as the other
+    # 3 sites — not a state trigger, doesn't read states(entity_id).
+    - delay:
+        seconds: 5
+    - event: zen_resolver_refresh
     - variables:
         result:
           status: success
@@ -2110,9 +2174,23 @@ script:
         name: "Ship Factory KFCs (via KungFu Loader)"
         description: >-
           When ON (default), chains zen_admintools_kungfu_loader in factory mode —
-          deploys zen_system, alert_manager, taskmaster, and trapper_keeper.
+          deploys zen_system and trapper_keeper. (taskmaster, alert_manager,
+          camera_manager, and security_manager all self-register via KF5 instead —
+          see each tool's own mode=kfc_manifest — and no longer ship from here.)
           Turn OFF to load the prompt only, skipping all KFC deployment.
         default: true
+        selector:
+          boolean:
+      sim_mode_allowed:
+        name: "SP1 sim_mode Allowed (Factory Stamp)"
+        description: >-
+          Stamped into integrations_config.identity.sim_mode_allowed on every
+          factory run. OS-level policy switch (see zen_dojotools_identity
+          resolve_caller_identity) — false (default) fails closed on any
+          simulated/shunted identity result until real Authentik/OIDC (SP1) is
+          live. Leave off unless you deliberately want simulated identity
+          resolution accepted platform-wide.
+        default: false
         selector:
           boolean:
       caller_token:
@@ -2897,7 +2975,8 @@ script:
                     formalize, publish. All Dojo drawer operations go here.', domains: [kfc,
                     dojo]}
                 - {name: script.zen_dojotools_todo, note: 'If no specific task given,
-                    check taskmaster hyperindex for task list.', domains: [todo]}
+                    call zen_dojotools_taskmaster mode=briefing (or task_list) for the
+                    cross-tier task view.', domains: [todo]}
                 - {name: script.zen_dojotools_calendar, domains: [calendar]}
                 - {name: script.zen_dojotools_kitchen, note: 'What we eat — recipes, meal plans, ingredient shopping. mealplan_today / mealplan_week for voice queries.', domains: [kitchen, meals, recipes, meal_plans, shopping_list, menu, food]}
                 - {name: script.zen_dojotools_inventory, note: 'What we have — stock, locations, purchasing, chores, asset tracking.', domains: [inventory, stock, shopping, grocery, purchase, erp, storage]}
@@ -3175,7 +3254,8 @@ script:
                     formalize, publish. All Dojo drawer operations go here.', domains: [kfc,
                     dojo]}
                 - {name: script.zen_dojotools_todo, note: 'If no specific task given,
-                    check taskmaster hyperindex for task list.', domains: [todo]}
+                    call zen_dojotools_taskmaster mode=briefing (or task_list) for the
+                    cross-tier task view.', domains: [todo]}
                 - {name: script.zen_dojotools_calendar, domains: [calendar]}
                 - {name: script.zen_dojotools_kitchen, note: 'What we eat — recipes, meal plans, ingredient shopping. mealplan_today / mealplan_week for voice queries.', domains: [kitchen, meals, recipes, meal_plans, shopping_list, menu, food]}
                 - {name: script.zen_dojotools_inventory, note: 'What we have — stock, locations, purchasing, chores, asset tracking.', domains: [inventory, stock, shopping, grocery, purchase, erp, storage]}
@@ -3467,12 +3547,40 @@ script:
 
     - if: "{{- ship_zen_system | default(true) | bool -}}"
       then:
-        - alias: 'Chain KungFu Loader — factory deploy (zen_system, alert_manager, taskmaster, trapper_keeper)'
+        - alias: 'Chain KungFu Loader — factory deploy (zen_system, trapper_keeper)'
           action: script.zen_admintools_kungfu_loader
           data:
             mode: factory
             caller_token: zen_admintools_prompt_loader
           response_variable: _kungfu_loader_result
+
+    # ── SP1 sim_mode factory stamp ──────────────────────────────────────────────
+    # OS-level policy switch, not per-tool. Always writes an explicit value on
+    # factory run so a fresh install never silently inherits an in-code default.
+    - alias: 'Stamp integrations_config.identity.sim_mode_allowed'
+      variables:
+        _pl_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+    - action: script.zen_dojotools_filecabinet
+      response_variable: _pl_ic_raw
+      continue_on_error: true
+      data:
+        action_type: get
+        volume_entity_id: "{{ _pl_hh }}"
+        path: integrations_config
+    - variables:
+        _pl_ic: >-
+          {%- set r = _pl_ic_raw.get('value', {}) if _pl_ic_raw is mapping and _pl_ic_raw.get('status') == 'success' else {} -%}
+          {{ r if r is mapping else {} }}
+        _pl_updated_ic: >-
+          {{ _pl_ic | combine({'identity': _pl_ic.get('identity', {}) | combine({'sim_mode_allowed': sim_mode_allowed | default(false) | bool}) }) }}
+    - action: script.zen_dojotools_filecabinet
+      continue_on_error: true
+      data:
+        action_type: update
+        force_action: true
+        volume_entity_id: "{{ _pl_hh }}"
+        key: integrations_config
+        value: "{{ _pl_updated_ic }}"
 
     # ── Legacy KFC ship blocks (REMOVED — now in zen_admintools_kungfu_loader) ──
     # Kept as dead reference only. The if-false gate ensures they never run.
@@ -3687,170 +3795,6 @@ script:
             publish_confirm: true
             caller_id: zen_admintools_prompt_loader
           response_variable: _alert_manager_kfc_result
-
-    - if: "{{- ship_taskmaster | default(false) | bool -}}"
-      then:
-        # ── taskmaster — demos conductor pattern + action emission ───────────
-        - alias: 'Ship default KFC: taskmaster (Scribe — new_thought)'
-          action: script.zen_dojotools_scribe
-          data:
-            mode: new_thought
-            key: taskmaster
-            friendly_name: Taskmaster
-            label: taskmaster
-            version_semantic: "5.2.0"
-            component_summary: >-
-              Monitors household task load and personal context — calendar events,
-              bed state transitions, occupancy changes, and to-do items — surfacing
-              scheduling conflicts, morning briefing cues, and overdue tasks.
-              Friday's Personal Task List is the primary schedule conductor.
-            component_instructions: >-
-              SCOPE: Task and calendar monitoring for household members.
-                Member identities from family cabinet.
-                Calendar and todo entities via label: taskmaster.
-
-              STATUS VOCABULARY (Microsoft To-Do integration):
-                notStarted = pending/incomplete (equivalent to needs_action)
-                completed   = done
-                inProgress  = in progress (rare)
-                Do NOT treat 'notStarted' as an unknown or error state.
-
-              DATA ACCESS:
-                Todo item content is in review_data.results[*].attributes.all_todos — a list
-                of todo items per entity, keyed by entity_id in results[]. Entity state is
-                only an incomplete item count — do NOT use it as content.
-                domain_context.todo.lists — system-wide list metadata (entity_id,
-                friendly_name, labels). NOT item content — do not read tasks from here.
-                Calendar events are in review_data.domain_context.calendar.
-                Attribute values use Python repr format: datetimes appear as
-                datetime.datetime(2026, 4, 1, 8, 0) — parse as strings, not ISO.
-
-              OVERDUE SEMANTICS:
-                overdue_todos is computed by HA at midnight — items due 'today' appear overdue
-                immediately, even if their scheduled time window (in subject line) is still future.
-                A task with due: today and a scheduled time that has NOT yet passed is UPCOMING,
-                not missed. Only treat as missed/escalate if:
-                  - due: yesterday or earlier (truly past-day), OR
-                  - due: today AND scheduled time in subject has already passed
-                Do not flag same-day future-window tasks as incomplete or overdue.
-
-              PRIMARY CONDUCTOR: todo.friday_s_personal_task_list (label: schedule)
-                This is NOT a data source — it is the meta-layer schedule driver.
-                Each item represents a scheduled activity block:
-                  - summary: time window name (e.g. "Morning Routine", "Evening Wrap")
-                  - description: RRULE + references to domain todo lists it governs
-                  - due: scheduled time for this block
-                READ THIS FIRST from:
-                  results[entity_id==todo.friday_s_personal_task_list].attributes.all_todos
-                Match active items to the current period. Active items tell you WHICH domain
-                lists are relevant right now. Inactive/future blocks should be noted but not
-                foregrounded.
-
-              DATA SOURCES (domain todo lists — read based on conductor signal):
-                label: daily   — household_chores, primary_user_health_tasks (recurring daily)
-                label: weekly  — grocy_chores, grocy_tasks (weekly cadence)
-                label: tasks   — ninja_tickets, automation_todo_list (async backlog)
-                Item content: results[entity_id==<entity_id>].attributes.all_todos
-                Pull from the domain lists that the active conductor item references.
-                If no conductor item is active for this period, surface upcoming blocks.
-
-              CALENDAR ENTITIES (label: calendar):
-                Events in review_data.domain_context.calendar.
-                Cross-reference with conductor blocks for scheduling conflicts.
-
-              TRIGGER CONTEXT:
-                - default_user_bed_changes / secondary_user_bed_changes: wake or sleep transition — shift morning/evening mode
-                - home_occupancy_change: arrival or departure — task context shifts
-                - quarter_hour: regular cadence check
-
-              MORNING (after wake trigger):
-                Synthesize into a brief time-ordered schedule. Surface:
-                  - Active conductor blocks from results[entity_id==todo.friday_s_personal_task_list].attributes.all_todos
-                  - Tasks from the domain lists those conductor blocks reference
-                  - Calendar events for today
-                  - Any tasks overdue from yesterday (truly past-day or scheduled time already passed)
-
-              EVENING (bed sensors -> sleep):
-                Synthesize into a brief wrap. Surface:
-                  - Conductor blocks that were active today and their completion state
-                  - Incomplete required tasks from today
-                  - Upcoming conductor blocks for tomorrow
-
-              URGENCY RULES:
-                - Calendar event starting within 30 min, person not moving -> urgency: 5
-                - Active conductor block with past-due required tasks (scheduled time already passed) -> urgency: 4
-                - Task with due: yesterday or earlier, still notStarted -> urgency: 3
-                - Morning brief pending -> urgency: 2
-                - Nothing pressing -> urgency: 1
-
-              ASYNC BACKLOG (label: tasks):
-                ninja_tickets, automation_todo_list — surface count + top items only.
-                Do not foreground over conductor-driven tasks.
-
-              AVAILABLE ACTIONS (suggested_act_event):
-                Valid values — use ONLY these, no others:
-                  zen_dojotools_postman — deliver a notification brief to household admin.
-                    Use when: action_required is true AND urgency >= 5 AND a time-sensitive
-                    brief or critical alert should be delivered immediately.
-                    Urgency 3-4 = informational only — update kata, do not notify.
-                  null — no action. Use when action_required is false OR urgency < 5.
-                DO NOT invent or use any other slug. If unsure, use null.
-
-              FIELD NOTES:
-                suggested_act_event: must be one of the AVAILABLE ACTIONS above or null.
-                period: semantic string from home_mode (morning/evening/night/etc) — NOT a timestamp.
-
-              MASTER SWITCH RULE:
-                Subsystem master switches (input_boolean or switch entities that enable/
-                disable an integration or feature) being in state 'off' is an intentional
-                user choice, NOT a deviation requiring action.
-                - Max urgency contribution from any master switch in 'off' state: 1
-                - Never set action_required based solely on a master switch being off
-                - Never notify based on a master switch being off
-                - Treat as informational context only regardless of any alert_when_* label
-                Safety-class entities always override this rule.
-
-              CALENDAR FILTERING (suppress calendar noise):
-                Surface ONLY calendar events that meet at least one of:
-                  - Starts within the next 24 hours AND requires action, departure, or prep
-                  - All-day event that is a real obligation (appointment, deadline, event to attend)
-                Suppress entirely:
-                  - Holiday, observance, and birthday calendar entries (never urgent)
-                  - All-day events that are purely informational (no action required)
-                  - Events starting more than 24 hours away — note count only: "X events later this week"
-                  - Any calendar entity that has zero actionable events after filtering
-                Never list calendar entity names or item counts when nothing actionable is pending.
-
-              OUTPUT FORMAT (compact operational briefing):
-                Structure: 1 status line + bullets, target ≤ 6 bullets total.
-                  1. Status line: [period] — [urgency summary in one sentence]
-                  2. Action items: incomplete items needing attention, ordered by urgency (bullets)
-                  3. Calendar: actionable events within 24h only (omit section if none)
-                  4. Backlog: single line only — "N backlog items" — do not expand unless urgency >= 4
-                Omit entirely: completed tasks, informational-only calendar entries, master switch
-                  states, any list with zero incomplete items, events more than 24h away.
-                If action items exceed 5, summarize lowest-urgency ones as "N more items".
-            trigger_subscriptions: "home_occupancy_change,default_user_bed_changes,secondary_user_bed_changes,force_summary,quarter_hour"
-            domain_inspect_domains: "todo,calendar"
-            domain_inspect_limit: 25
-            drift_threshold: 5
-            emission_cooldown_minutes: 60
-            delay_seconds: 30
-            caller_id: zen_admintools_prompt_loader
-        - alias: 'Ship default KFC: taskmaster (Scribe — formalize_scroll)'
-          action: script.zen_dojotools_scribe
-          data:
-            mode: formalize_scroll
-            key: taskmaster
-            caller_id: zen_admintools_prompt_loader
-        - alias: 'Ship default KFC: taskmaster (Scribe — publish_kfc)'
-          action: script.zen_dojotools_scribe
-          data:
-            mode: publish_kfc
-            key: taskmaster
-            publish_confirm: true
-            caller_id: zen_admintools_prompt_loader
-          response_variable: _taskmaster_kfc_result
 
     # ── Idempotent: ensure syscab VolumeInfo carries cabinet_ro: true ─────────
     # Prompt loader writes directly to syscab via set_variable_zenos_system_cabinet.

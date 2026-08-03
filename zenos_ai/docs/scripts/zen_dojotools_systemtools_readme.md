@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — 2026.6.0 'Clue'
+# Zen DojoTools SystemTools — v5.2.3
 
 *HA lifecycle management, log reading, event emission, and home mode — MCP-exposed*
 
@@ -162,9 +162,9 @@ Dismiss a persistent notification by ID. Requires `notif_id`.
 
 #### `repairs_list`
 
-List all active HA repairs (issues). Returns `{count, issues[]}` where each entry has `entity_id`, `issue_id`, `domain`, `severity`, `is_fixable`, `ignored`, `title`.
+List all active HA repairs (issues). Reads via the Jinja `issues()` global — the only way to reach HA's Issue Registry from a template; there is no REST endpoint for it (confirmed 404 on `/api/repairs/issues`, WebSocket-only). Returns `{count, issues[]}` where each entry has only `issue_id`, `domain`, `created`, `dismissed_version`, `is_persistent` — `issues()`'s real shape does **not** expose `severity`/`is_fixable`/`title`, so the response no longer fabricates them.
 
-Fixable issues can be resolved via `repair_fix`. ZenOS-generated issues have `domain: zenos`.
+Fixable issues: use `ectoplasm action_type=repair_remove` or `repair_ignore_all` with the `domain`+`issue_id` from this list. Spook-created issues have `domain: spook` (not `zenos`).
 
 ---
 
@@ -177,6 +177,8 @@ Fix a single HA repair issue. Delegates to `script.zen_dojotools_ectoplasm` with
 #### `notice_dashboard`
 
 Aggregate system health view. Pulls ZenOS active alerts + persistent notifications + HA repairs in one call. Returns `action_queue[]` — a pre-built list of `{priority, item, tool, call}` entries ready to fire, ordered by urgency. Use this first for triage rather than calling `alertmanager`, `pnotif_list`, and `repairs_list` separately.
+
+**`verbose`** (boolean, default `false`): every section previously restated full detail alongside `action_queue`, roughly doubling response size on any system with more than a couple non-green items. Default now returns counts + a short preview (first 3 items) per section, and `home_mode_anchor_health.conflicts` collapses into one summary entry instead of one per pair. Set `verbose: true` to restore the full untruncated dump.
 
 ---
 
@@ -286,7 +288,7 @@ kind: summary_force
 summary: Forcing immediate summary of hot_tub_manager
 ```
 
-Fires a `zen_event` on the EventBus and writes a structured entry to the system log.
+Fires a `zen_event` on the EventBus and writes a structured entry to the system log via `system_log.write`. `severity: warn` is mapped to `level: warning` for the log write (core's `system_log.write` only accepts `warning`, not `warn`) — all other severities pass through unchanged.
 
 **Common `kind` values:**
 
@@ -395,6 +397,11 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.2.3 (2026-08-02 patch) | `zen_health_report`'s flat `health_sensors`/`reasons` dict pair replaced with a nested `flynn_ready.dependencies` cascade mirroring the real dependency chain (`labels`, `cabinet`, `monastery` → `ninja_summarizer`/`supersummary`, `agents`, `capsule`) instead of reading as unrelated same-level siblings — `ninja_summarizer`/`supersummary` genuinely feed `monastery_health`'s own rollup, and `flynn_system_ready` itself derives from labels + cabinet + monastery together. No other top-level key (`resolvers`, `kill_switches`, `schema_ok`, the Spook/API `dependencies` block, `known_issues`, `diagnosis`, etc.) changed. Also added capsule visibility (`flynn_ready.dependencies.capsule`: `state`/`schema`/`signature_status`/`reason`) — previously `zen_health_report` had zero signal for essence schema at all, forcing a separate `mode=prompt_health` call. Companion fix in `zen_os_1.jinja`'s `prompt_health_check()`: `error` used to fire for any non-`three_layer` essence, conflating a genuinely missing essence with the universal, fully-functional `legacy` schema every real install (including production) actually runs on. `error` is now reserved for a missing essence; `legacy` reads as `warn`. |
+| v5.2.3 (2026-08-01 patch) | The `has_service` check behind `spook_installed` never verified HTTP status — a 401 (bad/missing `ha_bearer` secret) returns a JSON error body that parses fine as "service not found," making `spook_installed: false` indistinguishable from Spook genuinely being absent even though it's installed and running. Now checks the response status is 2xx first; surfaces `api_ok`/`api_status` on the raw check and `internal_api_ok`/`internal_api_status` on `zen_health_report` — diagnostic-only, Gate 0's real label-creation path never reads `spook_installed`. Also added `ai_task_entity_valid`/`ai_task_entity_hint`: the old check only verified the helper was non-empty, not that it was a real `ai_task.*` entity — a malformed value (missing domain prefix) sailed through silently until something downstream crashed calling it. The hint matches by object_id to suggest the likely-intended real entity. |
+| v5.2.3 | `check_config`'s response parser handles a raw-string HA response (Content-Type detection miss) instead of silently collapsing to `{}` and always reading as invalid regardless of real config validity. `notice_dashboard` gains `verbose` (default `false`) — see above. |
+| v5.2.2 | `zen_health_report` checks for the Spook HACS integration directly (via a narrow `zen_sutra_ha_api` service-existence check for `homeassistant.create_label`, not the full services dump — the full registry is large enough to hit the internal REST-fetch truncation limit and a truncated cut mid-JSON silently misparses) and surfaces `dependencies.spook_installed` plus a top-priority diagnosis line when missing. `homeassistant.create_label`/`rename_label`/`remove_label` are Spook-provided, not core HA — without it, Flynn Gate 0 (auto-create missing labels) fails with an opaque "unknown action" error with zero indication it's a missing prerequisite. New `known_issues` field cross-references every open HA repair against a curated dependency map (ToDo/Calendar/Mail/Teams/Music Assistant/Print Shop/Postman/Inventory/Flynn Stepgate Sentinel), categorizing each as `missing_dependency`/`label_gap`/`informational`/`unclassified` with an install hint — pure visibility, no auto-install, degrades gracefully. New `component_freshness` field surfaces per-KFC-component last-run staleness (`ok`/`stale`/`very_stale`) in the same call, without a separate `mode=pipeline` round trip. Also: the underlying `zen_sutra_ha_api` REST-fetch cases (8 occurrences) were rendering the full untruncated response body through Jinja before their own truncation step ever ran — dead-code truncation for any endpoint whose body exceeds the render limit, which the full `services` listing reliably does on a system with ~84 `zen_*` scripts. |
+| v5.2.1 | `zen_health_report` now surfaces `sensor.zen_label_health` directly (`health_sensors.labels`/`reasons.labels`) instead of only inheriting it second-hand through `agent_health`. New `label_cabinet_consistency` block (`consistent`, `label_health_state`, `label_health_missing`, `cabinet_health_state`) — `zen_label_health` and `zen_cabinet_health` derive missing-required-label state from the same source and should always agree; a disagreement is flagged as a `SENSOR CONFLICT` (stale template render, not two real problems) with `ha_reload_templates` as the suggested first move. |
 | v5.1.1 | `render_dojo`, `render_system`, `prompt_health` — prompt inspection tools. `pipeline` — pipeline status view. `tool` field resolves `(mode \| default...) or (tool \| default...)` alias for backward compat. Safer `int()` defaults throughout (`\| int(600)`, `\| int(300)`). |
 | v5.1.0 | `ha_reload_all` / `ha_reload_scripts` deferred via `zen_event` kinds (`deferred_reload_all`, `deferred_script_reload`). `zen_health_report` reads 7 resolvers + 5 health sensors incl. `zen_agent_health`. HALMark FG-35/36/37 surfaced in help response. |
 | v4.8.0 | `pnotif_list`, `pnotif_raise`, `pnotif_edit`, `pnotif_dismiss` — persistent notification CRUD. `repairs_list`, `repair_fix` — HA repairs surface. `notice_dashboard` — aggregate triage view with pre-built `action_queue[]`. |

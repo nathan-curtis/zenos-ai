@@ -1,0 +1,1262 @@
+###############################################################################
+# ZenOS-AI DojoTools: Infrastructure Console
+# Version: 1.3.0
+#
+# Unified IT ops console — MOM/Splunk style top-line view.
+# All discovery is label-driven and integration-aware. No hardcoded IDs.
+#
+# Logical bindings:
+#   label:proxmox   — ProxmoxVE VM binary sensors (any endpoint)
+#   label:portainer — full portainer scope (endpoint + WUD + labeled VMs)
+#   integration:portainer — only the Portainer HA integration sensors
+#   label:kuma      — Uptime Kuma monitor sensors
+#   label:updates + label:container + label:docker — WUD update sensors
+#   label:supervisor / integration:hassio — HA core/supervisor/OS/addon entities
+#
+# Endpoint name is derived at runtime from the first binary_sensor in
+# integration_entities('portainer') — works for any endpoint name.
+# Memory unit from Portainer integration is MiB — convert /1024 to get GiB.
+#
+# Phase 2 (future): zen_root_portainer sutra for per-container drill-down
+# (restart, logs, exec). Current surface is read-only via HA sensors.
+#
+# CHANGELOG:
+#   1.3.0 (2026-06-26) — Added mode=log (tail + restart/reload/error search peek).
+#   1.2.0 (2026-06-26) — Added mode=ha (HA supervisor/addon/disk health).
+#     HA platform updates folded into mode=updates (ha_updates key).
+#     _ha_entities discovery via label:supervisor / integration:hassio.
+#   1.1.0 (2026-06-26) — Label-driven rewrite. integration_entities() for
+#     Portainer isolation. Fixed memory unit (MiB→GiB). Added image_count,
+#     kernel version. VM role labels via label_entities() intersection.
+#     mode=discover added. Graceful degradation on all unavailable sensors.
+#   1.0.0 (2026-06-25) — Initial release.
+#
+###############################################################################
+
+script:
+
+  zen_dojotools_infra:
+    alias: "ZenOS IT Console"
+    description: >-
+      IT ops console — nodes, containers, service monitors, cert expiry, pending updates.
+      mode=status for MOM-style top-line summary across all systems.
+      mode=nodes for Proxmox VM inventory with role labels.
+      mode=containers for Docker/Portainer host detail and image inventory.
+      mode=monitors for Uptime Kuma service health + response times.
+      mode=updates for pending container image updates (WUD + HA platform).
+      mode=certs for SSL certificate expiry table.
+      mode=ha for HA supervisor health — versions, addon status, disk, resource %, pending updates.
+      mode=log for a quick log peek — last 30 lines + restart/reload/error events.
+        Hint: use zen_dojotools_ha_log_viewer directly for deep search, paging, or pattern work.
+      mode=discover to see raw label→entity bindings (debug/setup).
+      Container-control codex (active only if configured — see mode=help
+      container_control_codex): mode=containers_list / container_get to read
+      containers with a controllable flag per the admin-managed allow-list.
+      mode=container_restart / container_start / container_stop / container_remove
+      to actually act on one — gated by the default agent's own certification,
+      and mode=container_stop/container_remove additionally require a live
+      household-admin acknowledgment. caller_id is an audit label only, never a
+      trust input.
+      mode=help for full mode reference.
+    fields:
+      mode:
+        description: "Operation mode"
+        selector:
+          select:
+            options:
+              - status
+              - nodes
+              - containers
+              - monitors
+              - updates
+              - certs
+              - ha
+              - log
+              - discover
+              - help
+              - tool_manifest
+              - containers_list
+              - container_get
+              - container_restart
+              - container_start
+              - container_stop
+              - container_remove
+      filter:
+        description: "Filter by name substring (monitors/updates/nodes modes)"
+        selector:
+          text:
+      container:
+        description: >-
+          Container-control codex only. Container name/substring to resolve.
+          Required for container_get and all container_* write modes. Codex is
+          inert (returns not_configured) unless integrations_config.portainer
+          is set — see zen_admintools_portainer_acl (never MCP-exposed; run via
+          HA Developer Tools).
+        selector:
+          text:
+      endpoint_id:
+        description: "Container-control codex only. Optional Portainer endpoint ID — omit to search all endpoints."
+        selector:
+          text:
+      caller_id:
+        description: >-
+          Container-control codex only, optional. Free-text audit label — NOT an
+          authenticated identity claim (no mechanism yet binds an MCP session to a
+          persona cabinet). Every call is gated against the default agent's own
+          infra_container_control certification, regardless of what's passed here.
+        selector:
+          text:
+      portainer_url:
+        description: >-
+          Container-control codex only, one-time bootstrap. If the codex is
+          unconfigured and this is provided, it self-provisions the connection
+          URL (via zen_admintools_portainer_acl, called internally — still
+          never MCP-exposed) and continues with the requested action in the
+          same call. Only sets the URL — the controllable-containers allow-list
+          stays empty until an admin explicitly grants it. Idempotent: once
+          set, omit this on future calls.
+        selector:
+          text:
+      caller_token:
+        description: "Caller token for tracing"
+        selector:
+          text:
+    variables:
+      _mode:   "{{ mode | default('status') }}"
+      _filter: "{{ filter | default('') | lower }}"
+      _caller_token: "{{ caller_token | default('') }}"
+      _container: "{{ container | default('') | string | trim }}"
+      _endpoint_id: "{{ endpoint_id | default('') | string | trim }}"
+      _caller_id: "{{ caller_id | default('') | string | trim }}"
+      _portainer_url_bootstrap: "{{ portainer_url | default('') | string | trim }}"
+    mode: parallel
+    max: 5
+    icon: mdi:server-network
+    sequence:
+
+      # -- help ------------------------------------------------------------------
+      - if: "{{ _mode == 'help' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'help',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'modes': {
+                    'status':     'MOM-style top-line summary across all systems',
+                    'nodes':      'Proxmox VM inventory — state, role labels, uptime',
+                    'containers': 'Portainer endpoint health + host info + image/container counts',
+                    'monitors':   'Uptime Kuma service health, response times, cert expiry',
+                    'updates':    'Pending container image updates (WUD sensors)',
+                    'certs':      'Full SSL certificate expiry table',
+                    'discover':   'Dump raw label→entity bindings — use to verify setup',
+                    'help':       'This listing',
+                    'containers_list': 'Container-control codex (r) — list every container across all endpoints, each annotated with controllable (true/false per the admin-managed allow-list). Inert unless Portainer is configured.',
+                    'container_get': 'Container-control codex (r) — resolve/inspect one container, annotated with controllable (true/false). Inert unless Portainer is configured.',
+                    'container_restart': 'Container-control codex (x) — requires ACL grant + certification for the calling caller_id.',
+                    'container_start':   'Container-control codex (x) — same gating as container_restart.',
+                    'container_stop':    'Container-control codex (d) — requires ACL + cert + a live household-admin acknowledgment.',
+                    'container_remove':  'Container-control codex (d) — same gating as container_stop.'
+                  },
+                  'fields': {
+                    'filter': 'Optional name substring filter (monitors/updates/nodes modes)',
+                    'container': 'Container-control codex only — name/substring to resolve',
+                    'endpoint_id': 'Container-control codex only — optional Portainer endpoint scoping',
+                    'caller_id': 'Container-control codex only — optional audit label. NOT a trust input — see container_control_codex.identity_model.'
+                  },
+                  'container_control_codex': {
+                    'status': 'active only if integrations_config.portainer is configured — otherwise every container_* mode returns not_configured',
+                    'identity_model': 'No mechanism yet binds an MCP session to a persona cabinet, so caller_id cannot be authenticated. Every x/d action is checked against the default agent cabinet'"'"'s own infra_container_control certification — acting as the default agent, or denied. caller_id is audit-only.',
+                    'acl_admin': 'zen_admintools_portainer_acl manages the connection url, controllable-containers allow-list, and global min_cert_level. It is never MCP-exposed — run it via HA Developer Tools > Actions.',
+                    'fail_policy': 'closed — any ambiguity, missing config, insufficient cert, or failed household-admin ack denies the action'
+                  },
+                  'label_bindings': {
+                    'proxmox':              'VM binary sensors (one per VM, device_class: running)',
+                    'portainer':            'Full docker scope — endpoint sensors + WUD + labeled VMs',
+                    'integration:portainer':'Portainer HA integration sensors only (endpoint health, counts, host)',
+                    'kuma':                 'Uptime Kuma status/response/cert sensors',
+                    'updates+container+docker': 'WUD update sensors'
+                  }
+                } }}
+          - stop: "infra help"
+            response_variable: response
+
+      # -- tool_manifest ----------------------------------------------------------
+      - if: "{{ _mode == 'tool_manifest' }}"
+        then:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{- MF.tool_manifest(
+                  tool='zen_dojotools_infra',
+                  display_name='IT Console',
+                  tier='dojotools',
+                  version='1.4.2',
+                  health={'configured': true, 'status': 'ok', 'notes': []},
+                  required_labels=['dojotools'],
+                  optional_labels=['infra', 'proxmox', 'portainer', 'kuma'],
+                  mcp_exposed=true,
+                  stripe=3,
+                  impact='mixed',
+                  risk_class='read_soft_plus_gated_container_control',
+                  caller_token=_caller_token
+                ) | from_json -}}
+          - stop: zen_dojotools_infra tool_manifest
+            response_variable: result
+
+      # ── container-control codex ─────────────────────────────────────────────────
+      # Bolts on to this console only when integrations_config.portainer is set —
+      # same "inert unless configured" idiom used by lens providers elsewhere in
+      # this codebase. zen_admintools_portainer_acl (never MCP-exposed) is the
+      # only writer of config/allow-list/ACL; this codex only ever reads them.
+      # Fail-closed throughout: any ambiguity or lookup failure denies the action.
+      - if: "{{ _mode in ['containers_list', 'container_get', 'container_restart', 'container_start', 'container_stop', 'container_remove'] }}"
+        then:
+          - variables:
+              _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _pc_cfg_raw
+            continue_on_error: true
+            data:
+              action_type: get
+              volume_entity_id: "{{ _hh }}"
+              path: integrations_config
+          - variables:
+              _pc_ic: >-
+                {%- set r = _pc_cfg_raw.get('value', {}) if _pc_cfg_raw is mapping and _pc_cfg_raw.get('status') == 'success' else {} -%}
+                {{ r if r is mapping else {} }}
+              _pc_cfg: "{{ _pc_ic.get('portainer', {}) if _pc_ic is mapping else {} }}"
+              _pc_url: "{{ (_pc_cfg.get('url', '') | string | trim) if _pc_cfg is mapping else '' }}"
+          # One-time idempotent self-provisioning: only fires when unconfigured AND a
+          # bootstrap URL was supplied. Sets the URL only — controllable_containers
+          # stays empty (no auto-granted access), an admin still has to run config_set
+          # separately (controllable_containers=[...]) for anything to actually become
+          # controllable. This is an internal script-to-script call, not MCP exposure
+          # of the admin tool.
+          - if: "{{ _pc_url == '' and _portainer_url_bootstrap != '' }}"
+            then:
+              - action: script.zen_admintools_portainer_acl
+                response_variable: _pc_bootstrap_raw
+                continue_on_error: true
+                data:
+                  mode: config_set
+                  url: "{{ _portainer_url_bootstrap }}"
+                  controllable_containers: "[]"
+                  confirm: true
+              - action: script.zen_dojotools_event_emitter
+                continue_on_error: true
+                data:
+                  component: portainer
+                  severity: info
+                  kind: config_bootstrap
+                  summary: "Container-control codex self-provisioned url on first use (allow-list left empty)."
+                  metadata:
+                    caller_id: "{{ _caller_id }}"
+                    mode: "{{ _mode }}"
+                    write_status: "{{ _pc_bootstrap_raw.get('status', 'error') if _pc_bootstrap_raw is mapping else 'error' }}"
+                    caller_token: "{{ _caller_token }}"
+              - action: script.zen_dojotools_filecabinet
+                response_variable: _pc_cfg_raw2
+                continue_on_error: true
+                data:
+                  action_type: get
+                  volume_entity_id: "{{ _hh }}"
+                  path: integrations_config
+              - variables:
+                  _pc_ic: >-
+                    {%- set r = _pc_cfg_raw2.get('value', {}) if _pc_cfg_raw2 is mapping and _pc_cfg_raw2.get('status') == 'success' else {} -%}
+                    {{ r if r is mapping else {} }}
+                  _pc_cfg: "{{ _pc_ic.get('portainer', {}) if _pc_ic is mapping else {} }}"
+                  _pc_url: "{{ (_pc_cfg.get('url', '') | string | trim) if _pc_cfg is mapping else '' }}"
+
+          - if: "{{ _pc_url == '' }}"
+            then:
+              - variables:
+                  response:
+                    status: not_configured
+                    tool: zen_dojotools_infra
+                    mode: "{{ _mode }}"
+                    message: "Container-control codex is not configured. Ask an admin to run zen_admintools_portainer_acl (Developer Tools > Actions only — never MCP-exposed), or pass portainer_url to self-provision on first use."
+                    setup_hint: 'Direct: config_set url="https://portainer.<your-domain>:9443/" controllable_containers=''["wud"]'' confirm=true — or, behind a reverse-proxy CNAME (no port needed): url="https://<your-configured-hostname>/". Or pass portainer_url on this call to self-provision automatically.'
+                    caller_token: "{{ _caller_token }}"
+              - stop: "portainer codex not configured"
+                response_variable: response
+
+          # No mechanism exists (yet) to bind an MCP session to a specific persona
+          # cabinet — any caller_id string here is self-reported, unauthenticated,
+          # and MUST NOT be trusted as an identity claim. Per-caller_id ACL is a
+          # false security boundary and was removed. Every call through this codex
+          # is evaluated as "acting as the default agent, or not at all" — the only
+          # cert store that actually exists and is bound to this HA instance.
+          # caller_id is kept as an optional audit label only, never a trust input.
+          - variables:
+              _pc_allow_list: >-
+                {%- set al = _pc_cfg.get('controllable_containers', []) if _pc_cfg is mapping else [] -%}
+                {{ al if al is sequence and al is not string else [] }}
+              _pc_min_cert_x: "{{ (_pc_cfg.get('min_cert_level', {}).get('x', 2) | int(2)) if _pc_cfg is mapping and _pc_cfg.get('min_cert_level', {}) is mapping else 2 }}"
+              _pc_min_cert_d: "{{ (_pc_cfg.get('min_cert_level', {}).get('d', 3) | int(3)) if _pc_cfg is mapping and _pc_cfg.get('min_cert_level', {}) is mapping else 3 }}"
+
+          # Resolve endpoint(s) then union their live container lists.
+          - if: "{{ _endpoint_id != '' }}"
+            then:
+              - variables:
+                  _pc_target_endpoints: ["{{ _endpoint_id }}"]
+            else:
+              - action: script.zen_root_portainer
+                response_variable: _pc_ep_raw
+                continue_on_error: true
+                data:
+                  action_type: get
+                  endpoint: /api/endpoints
+              - variables:
+                  _pc_ep_content: "{{ _pc_ep_raw.get('result', {}).get('content', []) if _pc_ep_raw is mapping else [] }}"
+                  _pc_target_endpoints: >-
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for e in (_pc_ep_content if _pc_ep_content is sequence and _pc_ep_content is not string else []) if e is mapping -%}
+                      {%- set ns.out = ns.out + [e.get('Id') | string] -%}
+                    {%- endfor -%}
+                    {{ ns.out }}
+          - variables:
+              _pc_all_containers: []
+          - repeat:
+              for_each: "{{ _pc_target_endpoints }}"
+              sequence:
+                - action: script.zen_root_portainer
+                  response_variable: _pc_ct_raw
+                  continue_on_error: true
+                  data:
+                    action_type: get
+                    endpoint: "/api/endpoints/{{ repeat.item }}/docker/containers/json?all=true"
+                - variables:
+                    _pc_ct_content: "{{ _pc_ct_raw.get('result', {}).get('content', []) if _pc_ct_raw is mapping else [] }}"
+                    _pc_all_containers: >-
+                      {%- set ns = namespace(out=_pc_all_containers) -%}
+                      {%- for c in (_pc_ct_content if _pc_ct_content is sequence and _pc_ct_content is not string else []) if c is mapping -%}
+                        {%- set nm = (c.get('Names', ['']) | first | default('', true)) | string | regex_replace('^/', '') -%}
+                        {%- set _ctrl = namespace(ok=false) -%}
+                        {%- for pat in _pc_allow_list -%}
+                          {%- if (pat | string | lower) in (nm | lower) -%}{%- set _ctrl.ok = true -%}{%- endif -%}
+                        {%- endfor -%}
+                        {%- set ns.out = ns.out + [{'id': c.get('Id', ''), 'name': nm, 'state': c.get('State', ''), 'image': c.get('Image', ''), 'endpoint_id': repeat.item | string, 'controllable': _ctrl.ok}] -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+
+          - if: "{{ _mode == 'containers_list' }}"
+            then:
+              - variables:
+                  response:
+                    status: success
+                    tool: zen_dojotools_infra
+                    mode: containers_list
+                    result:
+                      containers: "{{ _pc_all_containers }}"
+                      count: "{{ _pc_all_containers | length }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: "portainer codex containers_list"
+                response_variable: response
+
+          - variables:
+              _pc_matches: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for c in _pc_all_containers if c is mapping -%}
+                  {%- if _container != '' and (_container | lower) in (c.get('name', '') | lower) -%}
+                    {%- set ns.out = ns.out + [c] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+              _pc_match_count: >-
+                {%- set ns = namespace(n=0) -%}
+                {%- for c in _pc_all_containers if c is mapping -%}
+                  {%- if _container != '' and (_container | lower) in (c.get('name', '') | lower) -%}
+                    {%- set ns.n = ns.n + 1 -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.n }}
+
+          - if: "{{ _mode == 'container_get' }}"
+            then:
+              - variables:
+                  response:
+                    status: "{{ 'success' if _pc_match_count > 0 else 'not_found' }}"
+                    tool: zen_dojotools_infra
+                    mode: container_get
+                    result:
+                      matches: "{{ _pc_matches }}"
+                      count: "{{ _pc_match_count }}"
+                      note: "{{ 'Ambiguous — multiple containers matched.' if _pc_match_count > 1 else '' }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: "portainer codex container_get"
+                response_variable: response
+
+          # From here on: x/d actions only. Gate 1 — exact single-container resolution.
+          - if: "{{ _pc_match_count != 1 }}"
+            then:
+              - action: script.zen_dojotools_event_emitter
+                continue_on_error: true
+                data:
+                  component: portainer
+                  severity: warn
+                  kind: container_action_denied
+                  summary: "Denied: container '{{ _container }}' resolved to {{ _pc_match_count }} matches (need exactly 1)."
+                  metadata:
+                    caller_id: "{{ _caller_id }}"
+                    mode: "{{ _mode }}"
+                    reason: ambiguous_or_not_found_container
+                    match_count: "{{ _pc_match_count }}"
+                    caller_token: "{{ _caller_token }}"
+              - variables:
+                  response:
+                    status: denied
+                    tool: zen_dojotools_infra
+                    mode: "{{ _mode }}"
+                    reason: ambiguous_or_not_found_container
+                    message: "'{{ _container }}' matched {{ _pc_match_count }} containers — need exactly 1 for this action. Fail-closed: no best-guess execution."
+                    matches: "{{ _pc_matches }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: "portainer codex ambiguous container"
+                response_variable: response
+          - variables:
+              _pc_target: "{{ _pc_matches[0] }}"
+
+          # Gate 2 — admin-managed allow-list.
+          - variables:
+              _pc_on_allow_list: >-
+                {%- set ns = namespace(ok=false) -%}
+                {%- for pat in _pc_allow_list -%}
+                  {%- if (pat | string | lower) in (_pc_target.get('name', '') | lower) -%}{%- set ns.ok = true -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.ok }}
+          - if: "{{ not _pc_on_allow_list }}"
+            then:
+              - action: script.zen_dojotools_event_emitter
+                continue_on_error: true
+                data:
+                  component: portainer
+                  severity: warn
+                  kind: container_action_denied
+                  summary: "Denied: '{{ _pc_target.get('name', '') }}' is not on the controllable-containers allow-list."
+                  metadata:
+                    caller_id: "{{ _caller_id }}"
+                    mode: "{{ _mode }}"
+                    reason: not_in_allow_list
+                    container: "{{ _pc_target.get('name', '') }}"
+                    caller_token: "{{ _caller_token }}"
+              - variables:
+                  response:
+                    status: denied
+                    tool: zen_dojotools_infra
+                    mode: "{{ _mode }}"
+                    reason: not_in_allow_list
+                    message: "'{{ _pc_target.get('name', '') }}' is not on the admin-managed allow-list."
+                    caller_token: "{{ _caller_token }}"
+              - stop: "portainer codex not on allow list"
+                response_variable: response
+
+          # Gate 3 — identity resolves AND authorizes in one call. This tool never
+          # touches persona_editor directly — resolve_caller_identity runs the cert
+          # check on our behalf against whatever identity it resolves to (SHUNTED,
+          # SP1 not active — always the default agent as of this build, so behavior
+          # is unchanged from before this rewire). caller_id is audit-only from here
+          # down. See feedback_caller_id_not_authenticated.
+          - variables:
+              _pc_required_class: "{{ 'd' if _mode in ['container_stop', 'container_remove'] else 'x' }}"
+              _pc_required_cert: "{{ _pc_min_cert_d if _pc_required_class == 'd' else _pc_min_cert_x }}"
+          - action: script.zen_dojotools_identity
+            response_variable: _pc_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: infra_container_control
+              required_cert_level: "{{ _pc_required_cert }}"
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _pc_policy_status: "{{ _pc_id_raw.get('policy_status', 'blocked') if _pc_id_raw is mapping else 'blocked' }}"
+              _pc_sim_mode: "{{ _pc_id_raw.get('sim_mode', true) if _pc_id_raw is mapping else true }}"
+              _pc_cert_level: "{{ _pc_id_raw.get('cert_level', 0) if _pc_id_raw is mapping else 0 }}"
+              _pc_authorized: "{{ _pc_id_raw.get('authorized', false) if _pc_id_raw is mapping else false }}"
+          - if: "{{ _pc_policy_status != 'allowed' }}"
+            then:
+              - action: script.zen_dojotools_event_emitter
+                continue_on_error: true
+                data:
+                  component: portainer
+                  severity: warn
+                  kind: container_action_denied
+                  summary: "Denied: resolve_caller_identity policy_status='{{ _pc_policy_status }}' (audit label: '{{ _caller_id }}')."
+                  metadata:
+                    caller_id_audit_label: "{{ _caller_id }}"
+                    mode: "{{ _mode }}"
+                    reason: identity_policy_blocked
+                    policy_status: "{{ _pc_policy_status }}"
+                    sim_mode: "{{ _pc_sim_mode }}"
+                    caller_token: "{{ _caller_token }}"
+              - variables:
+                  response:
+                    status: denied
+                    reason: identity_policy_blocked
+                    policy_status: "{{ _pc_policy_status }}"
+                    detail: "resolve_caller_identity did not return an allowed identity — action denied."
+              - stop: "container-control codex: identity policy blocked"
+                response_variable: response
+          - if: "{{ not _pc_authorized }}"
+            then:
+              - action: script.zen_dojotools_event_emitter
+                continue_on_error: true
+                data:
+                  component: portainer
+                  severity: warn
+                  kind: container_action_denied
+                  summary: "Denied: default agent's infra_container_control cert level {{ _pc_cert_level }} below required {{ _pc_required_cert }} (audit label: '{{ _caller_id }}')."
+                  metadata:
+                    caller_id_audit_label: "{{ _caller_id }}"
+                    mode: "{{ _mode }}"
+                    reason: cert_insufficient
+                    cert_level: "{{ _pc_cert_level }}"
+                    required_cert_level: "{{ _pc_required_cert }}"
+                    sim_mode: "{{ _pc_sim_mode }}"
+                    caller_token: "{{ _caller_token }}"
+              - variables:
+                  response:
+                    status: denied
+                    tool: zen_dojotools_infra
+                    mode: "{{ _mode }}"
+                    reason: cert_insufficient
+                    message: "infra_container_control cert level {{ _pc_cert_level }} is below the required minimum ({{ _pc_required_cert }})."
+                    caller_token: "{{ _caller_token }}"
+              - stop: "portainer codex cert insufficient"
+                response_variable: response
+
+          # Gate 5 (d-class only) — live household-admin acknowledgment round-trip.
+          - if: "{{ _pc_required_class == 'd' }}"
+            then:
+              - variables:
+                  _pc_ack_key: "portainer_ack_{{ _pc_target.get('id', '') }}_{{ now().timestamp() | int }}"
+              - action: script.zen_dojotools_alertmanager
+                response_variable: _pc_fire_raw
+                continue_on_error: true
+                data:
+                  mode: fire
+                  alert_key: "{{ _pc_ack_key }}"
+                  severity: warn
+                  message: "Agent '{{ _caller_id }}' requests {{ 'stop' if _mode == 'container_stop' else 'removal' }} of container '{{ _pc_target.get('name', '') }}'. Approve?"
+                  notify_target: mobile
+                  response_type: yes_no
+              - if: "{{ _pc_fire_raw is not mapping or _pc_fire_raw.get('status') != 'success' }}"
+                then:
+                  - variables:
+                      response:
+                        status: denied
+                        tool: zen_dojotools_infra
+                        mode: "{{ _mode }}"
+                        reason: hoh_ack_dispatch_failed
+                        message: "Could not dispatch the household-admin approval request. Fail-closed: action refused."
+                        caller_token: "{{ _caller_token }}"
+                  - stop: "portainer codex ack dispatch failed"
+                    response_variable: response
+              - variables:
+                  _pc_ack_result: pending
+                  _pc_ack_tries: 0
+              - repeat:
+                  while:
+                    - condition: template
+                      value_template: "{{ _pc_ack_result == 'pending' and _pc_ack_tries < 10 }}"
+                  sequence:
+                    - delay:
+                        seconds: 15
+                    - action: script.zen_dojotools_alertmanager
+                      response_variable: _pc_ack_raw
+                      continue_on_error: true
+                      data:
+                        mode: get_response
+                        alert_key: "{{ _pc_ack_key }}"
+                    - variables:
+                        _pc_ack_result: >-
+                          {%- if _pc_ack_raw is mapping and _pc_ack_raw.get('status') == 'success' and _pc_ack_raw.get('ack_action', '') in ['yes', 'no'] -%}
+                            {{ _pc_ack_raw.get('ack_action') }}
+                          {%- else -%}pending{%- endif -%}
+                        _pc_ack_tries: "{{ _pc_ack_tries + 1 }}"
+              - if: "{{ _pc_ack_result != 'yes' }}"
+                then:
+                  - variables:
+                      _pc_ack_deny_reason: "{{ 'hoh_ack_timeout' if _pc_ack_result == 'pending' else 'hoh_ack_declined' }}"
+                  - action: script.zen_dojotools_event_emitter
+                    continue_on_error: true
+                    data:
+                      component: portainer
+                      severity: warn
+                      kind: container_action_denied
+                      summary: "Denied: household-admin ack for '{{ _pc_target.get('name', '') }}' {{ 'timed out' if _pc_ack_result == 'pending' else 'was declined' }}."
+                      metadata:
+                        caller_id: "{{ _caller_id }}"
+                        mode: "{{ _mode }}"
+                        reason: "{{ _pc_ack_deny_reason }}"
+                        sim_mode: "{{ _pc_sim_mode }}"
+                        caller_token: "{{ _caller_token }}"
+                  - variables:
+                      response:
+                        status: denied
+                        tool: zen_dojotools_infra
+                        mode: "{{ _mode }}"
+                        reason: "{{ _pc_ack_deny_reason }}"
+                        message: "Household-admin acknowledgment {{ 'timed out' if _pc_ack_result == 'pending' else 'was declined' }}. Fail-closed: action refused."
+                        caller_token: "{{ _caller_token }}"
+                  - stop: "portainer codex hoh ack not granted"
+                    response_variable: response
+
+          # All gates passed — execute.
+          - variables:
+              _pc_docker_action: >-
+                {%- if _mode == 'container_restart' -%}restart
+                {%- elif _mode == 'container_start' -%}start
+                {%- elif _mode == 'container_stop' -%}stop
+                {%- elif _mode == 'container_remove' -%}remove
+                {%- endif -%}
+          - action: script.zen_root_portainer
+            response_variable: _pc_exec_raw
+            continue_on_error: true
+            data:
+              action_type: post
+              endpoint: "/api/endpoints/{{ _pc_target.get('endpoint_id', '') }}/docker/containers/{{ _pc_target.get('id', '') }}/{{ _pc_docker_action }}"
+          - variables:
+              _pc_exec_ok: "{{ _pc_exec_raw is mapping and _pc_exec_raw.get('status') == 'success' }}"
+          - action: script.zen_dojotools_event_emitter
+            continue_on_error: true
+            data:
+              component: portainer
+              severity: "{{ 'info' if _pc_exec_ok else 'error' }}"
+              kind: "{{ 'container_action_executed' if _pc_exec_ok else 'container_action_failed' }}"
+              summary: "{{ _pc_docker_action }} on '{{ _pc_target.get('name', '') }}': {{ 'ok' if _pc_exec_ok else 'failed' }}"
+              metadata:
+                caller_id: "{{ _caller_id }}"
+                mode: "{{ _mode }}"
+                container: "{{ _pc_target.get('name', '') }}"
+                endpoint_id: "{{ _pc_target.get('endpoint_id', '') }}"
+                http_status: "{{ _pc_exec_raw.get('http_status', 0) if _pc_exec_raw is mapping else 0 }}"
+                sim_mode: "{{ _pc_sim_mode }}"
+                caller_token: "{{ _caller_token }}"
+          - variables:
+              response:
+                status: "{{ 'success' if _pc_exec_ok else 'error' }}"
+                tool: zen_dojotools_infra
+                mode: "{{ _mode }}"
+                container: "{{ _pc_target.get('name', '') }}"
+                action: "{{ _pc_docker_action }}"
+                http_status: "{{ _pc_exec_raw.get('http_status', 0) if _pc_exec_raw is mapping else 0 }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: "portainer codex action done"
+            response_variable: response
+
+      # ── shared data collection ─────────────────────────────────────────────────
+
+      # Proxmox VMs — label:proxmox first, integration:proxmox fallback
+      - variables:
+          _proxmox_entities: >-
+            {%- set by_lbl = label_entities('proxmox') | select('match', 'binary_sensor\\.') | list -%}
+            {%- set by_int = integration_entities('proxmox') | select('match', 'binary_sensor\\.') | list if by_lbl | count == 0 else [] -%}
+            {{ (by_lbl + by_int) | unique | list }}
+          # Role label sets — used to classify each VM
+          _role_inference: "{{ label_entities('inference') | list }}"
+          _role_stt:       "{{ label_entities('stt') | list }}"
+          _role_tts:       "{{ label_entities('tts') | list }}"
+          _role_ha:        "{{ label_entities('home_assistant') | list }}"
+      - variables:
+          _nodes: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in _proxmox_entities -%}
+              {%- set st = states(e) -%}
+              {%- set fn = state_attr(e, 'friendly_name') | default(e) -%}
+              {%- set name = fn | regex_replace(' [Ss]tatus$', '') | regex_replace(' +', ' ') | trim -%}
+              {%- if _filter == '' or _filter in name | lower -%}
+                {%- set roles = [] -%}
+                {%- if e in _role_inference -%}{%- set roles = roles + ['inference'] -%}{%- endif -%}
+                {%- if e in _role_stt -%}{%- set roles = roles + ['stt'] -%}{%- endif -%}
+                {%- if e in _role_tts -%}{%- set roles = roles + ['tts'] -%}{%- endif -%}
+                {%- if e in _role_ha -%}{%- set roles = roles + ['home_assistant'] -%}{%- endif -%}
+                {%- set ns.items = ns.items + [{
+                  'entity': e,
+                  'name': name,
+                  'state': st,
+                  'up': st == 'on',
+                  'roles': roles
+                }] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.items }}
+          _nodes_up:   "{{ _nodes | selectattr('up') | list | count }}"
+          _nodes_down: "{{ _nodes | rejectattr('up') | list | count }}"
+
+      # Printers — IPP integration sensors
+      # HA IPP creates multiple sensors per printer: main status + individual _ink + _uptime
+      # Only the main status sensor has a printer-state string (idle/printing/stopped/processing)
+      - variables:
+          _ipp_all: >-
+            {%- set by_int = integration_entities('ipp') | select('match', '^sensor\\.') | list -%}
+            {%- set by_lbl = label_entities('printer') | select('match', '^sensor\\.') | list -%}
+            {{ (by_lbl + by_int) | unique | list }}
+      - variables:
+          # Status sensors: state is a known IPP printer state word (not a number, not a datetime)
+          _ipp_status_sensors: >-
+            {%- set _st_vals = ['idle', 'printing', 'processing', 'stopped', 'unavailable', 'unknown'] -%}
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in _ipp_all -%}
+              {%- if states(e) in _st_vals -%}
+                {%- set ns.items = ns.items + [e] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.items }}
+          # Ink sensors: entity_id ends with _ink
+          _ipp_ink_sensors: >-
+            {{ _ipp_all | select('match', '.*_ink$') | list }}
+      - variables:
+          _printers: >-
+            {%- set _st_vals = ['idle', 'printing', 'processing'] -%}
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in _ipp_status_sensors -%}
+              {%- set st = states(e) -%}
+              {%- set fn = state_attr(e, 'friendly_name') | default(e) -%}
+              {%- set name = fn | regex_replace(' +', ' ') | trim -%}
+              {%- set reasons = state_attr(e, 'printer-state-reasons') | default([], true) -%}
+              {%- set ns_ink = namespace(inks=[]) -%}
+              {%- for ink_e in _ipp_ink_sensors -%}
+                {%- if ink_e.startswith(e ~ '_') -%}
+                  {%- set ink_fn = state_attr(ink_e, 'friendly_name') | default(ink_e) -%}
+                  {%- set ink_name = ink_fn | regex_replace(name ~ ' ', '') | trim -%}
+                  {%- set lvl = states(ink_e) | int(-1) -%}
+                  {%- set ns_ink.inks = ns_ink.inks + [{'name': ink_name, 'level': lvl, 'low': lvl >= 0 and lvl < 15}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set low_inks = ns_ink.inks | selectattr('low') | map(attribute='name') | list -%}
+              {%- set ok = st in _st_vals and low_inks | count == 0 -%}
+              {%- set ns.items = ns.items + [{
+                'entity': e,
+                'name': name,
+                'state': st,
+                'ok': ok,
+                'reasons': reasons,
+                'ink': ns_ink.inks,
+                'low_ink': low_inks
+              }] -%}
+            {%- endfor -%}
+            {{ ns.items }}
+      - variables:
+          _printers_problem: >-
+            {{ _printers | rejectattr('ok') | list | count }}
+
+      # Portainer — multi-endpoint; label:portainer first, integration:portainer fallback
+      # Endpoint health sensors: binary_sensor.{singleword}_status (no underscores in name part)
+      - variables:
+          _portainer_lbl: "{{ label_entities('portainer') | list }}"
+          _portainer_integration: >-
+            {%- set by_int = integration_entities('portainer') | list -%}
+            {%- set by_lbl = _portainer_lbl if _portainer_lbl | count > 0 else [] -%}
+            {{ (by_lbl + by_int) | unique | list }}
+          _portainer_ep_sensors: >-
+            {{ _portainer_integration | select('match', '^binary_sensor\\.[a-z][a-z0-9]*_status$') | list }}
+          _portainer_health_e: "{{ _portainer_ep_sensors | first | default('') }}"
+          _portainer_ok: "{{ _portainer_ep_sensors | map('states') | select('equalto', 'on') | list | count > 0 }}"
+          # _ep = primary endpoint name; kept for Kuma portainer special-case + backward compat
+          _ep: >-
+            {{ _portainer_health_e | replace('binary_sensor.', '') | regex_replace('_status$', '') if _portainer_health_e else '' }}
+      - variables:
+          # Per-endpoint stats — one entry per Portainer endpoint
+          _endpoints: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for ep_e in _portainer_ep_sensors -%}
+              {%- set ep = ep_e | replace('binary_sensor.', '') | regex_replace('_status$', '') -%}
+              {%- set ep_ok = states(ep_e) == 'on' -%}
+              {%- set running = states('sensor.' ~ ep ~ '_containers_running') | int(0) -%}
+              {%- set stopped = states('sensor.' ~ ep ~ '_containers_stopped') | int(0) -%}
+              {%- set total   = states('sensor.' ~ ep ~ '_container_count') | int(0) -%}
+              {%- set images  = states('sensor.' ~ ep ~ '_image_count') | int(0) -%}
+              {%- set raw_mem = states('sensor.' ~ ep ~ '_total_memory') | float(-1) -%}
+              {%- set mem_gb  = (raw_mem / 1024) | round(1) if raw_mem >= 0 else none -%}
+              {%- set cpu     = states('sensor.' ~ ep ~ '_total_cpu') | int(0) -%}
+              {%- set ns.items = ns.items + [{
+                'endpoint': ep,
+                'healthy': ep_ok,
+                'containers_running': running,
+                'containers_stopped': stopped,
+                'container_total': total,
+                'image_count': images,
+                'host_mem_gb': mem_gb,
+                'host_cpu': cpu
+              }] -%}
+            {%- endfor -%}
+            {{ ns.items }}
+          # Aggregates across all endpoints for status summary
+          _containers_running: "{{ _endpoints | map(attribute='containers_running') | sum }}"
+          _containers_stopped: "{{ _endpoints | map(attribute='containers_stopped') | sum }}"
+          _container_total:    "{{ _endpoints | map(attribute='container_total') | sum }}"
+          _image_count:        "{{ _endpoints | map(attribute='image_count') | sum }}"
+
+      # Kuma monitors — label:kuma, group by service
+      # Proxmox VM map: label_entities('proxmox') → {vm_name: entity_id}
+      # vm_name = last _-segment of bare entity name (VM's own name within the node)
+      - variables:
+          _kuma_entities: >-
+            {%- set by_lbl = label_entities('kuma') | list -%}
+            {%- set by_int = integration_entities('uptime_kuma') | list if by_lbl | count == 0 else [] -%}
+            {{ (by_lbl + by_int) | unique | list }}
+          _kuma_status_entities: "{{ _kuma_entities | select('search', '_status$') | select('match', 'sensor\\.') | list }}"
+          _proxmox_vm_map: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for e in _proxmox_entities -%}
+              {%- set bare = e | replace('binary_sensor.', '') | regex_replace('_status$', '') -%}
+              {%- set parts = bare | regex_findall('[^_]+') -%}
+              {%- if parts | length >= 2 -%}
+                {%- set ns.d = ns.d | combine({parts | last: e}) -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.d | tojson }}
+      - variables:
+          _monitors: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- set _pmap = _proxmox_vm_map if _proxmox_vm_map is mapping else (_proxmox_vm_map | from_json(none) if _proxmox_vm_map | trim != '' else {}) -%}
+            {%- for e in _kuma_status_entities -%}
+              {%- set svc_base = e | replace('sensor.', '') | regex_replace('_status$', '') -%}
+              {%- set fn = state_attr(e, 'friendly_name') | default(svc_base) -%}
+              {%- set display = fn | regex_replace(' [Ss]tatus$', '') | trim -%}
+              {%- if _filter == '' or _filter in display | lower -%}
+                {%- set status_val = states(e) | lower -%}
+                {%- set rt_e   = 'sensor.' ~ svc_base ~ '_response_time' -%}
+                {%- set cert_e = 'sensor.' ~ svc_base ~ '_certificate_expiry' -%}
+                {%- set rt       = states(rt_e) if has_value(rt_e) else none -%}
+                {%- set cert_days = states(cert_e) | float(none) if has_value(cert_e) else none -%}
+                {%- set up = status_val in ['up', 'on', '1'] or status_val | int(-1) > 0 -%}
+                {%- set svc = svc_base | regex_findall('[^_]+') | first -%}
+                {%- set vm_e = _pmap.get(svc, none) -%}
+                {%- set ns.items = ns.items + [{
+                  'name': display,
+                  'status': status_val,
+                  'up': up,
+                  'response_time_ms': rt,
+                  'cert_days': cert_days,
+                  'cert_warn': cert_days is not none and cert_days | float(999) < 30,
+                  'vm_entity': vm_e,
+                  'vm_state': states(vm_e) if vm_e else none
+                }] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.items | sort(attribute='up', reverse=false) }}
+          _monitors_up:   "{{ _monitors | selectattr('up') | list | count }}"
+          _monitors_down: "{{ _monitors | rejectattr('up') | list | count }}"
+
+      # WUD update sensors — label:updates/container/docker first, integration:watchyourself fallback
+      - variables:
+          _wud_entities: >-
+            {%- set u = label_entities('updates') | list -%}
+            {%- set c = label_entities('container') | list -%}
+            {%- set d = label_entities('docker') | list -%}
+            {%- set by_lbl = (u + c + d) | unique | select('match', 'sensor\\.') | list -%}
+            {%- set by_int = integration_entities('watchyourself') | select('match', 'sensor\\.') | list if by_lbl | count == 0 else [] -%}
+            {{ (by_lbl + by_int) | unique | list }}
+      - variables:
+          _updates: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in _wud_entities -%}
+              {%- set fn = state_attr(e, 'friendly_name') | default(e) -%}
+              {%- set name = fn | regex_replace(' [Uu]pdate [Aa]vailable$', '') | trim -%}
+              {%- set st = states(e) -%}
+              {%- set inst   = state_attr(e, 'installed_version') | default(none) -%}
+              {%- set latest = state_attr(e, 'latest_version') | default(none) -%}
+              {%- set has_update = inst is not none and latest is not none and inst != latest -%}
+              {%- set is_up = st not in ['unavailable', 'unknown', 'off', 'none', ''] -%}
+              {%- if (has_update or is_up) and (_filter == '' or _filter in name | lower) -%}
+                {%- set ns.items = ns.items + [{
+                  'name': name,
+                  'installed': inst,
+                  'latest': latest,
+                  'state': st
+                }] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.items | sort(attribute='name') }}
+          # All tracked containers regardless of update status (for inventory)
+          _all_containers: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in _wud_entities -%}
+              {%- set fn = state_attr(e, 'friendly_name') | default(e) -%}
+              {%- set name = fn | regex_replace(' [Uu]pdate [Aa]vailable$', '') | trim -%}
+              {%- set st = states(e) -%}
+              {%- if _filter == '' or _filter in name | lower -%}
+                {%- set ns.items = ns.items + [{'name': name, 'wud_state': st}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.items | sort(attribute='name') }}
+          _updates_count: "{{ _updates | count }}"
+
+      # HA Supervisor — label:supervisor first, integration:hassio fallback
+      - variables:
+          _ha_entities: >-
+            {%- set by_lbl = label_entities('supervisor') | list -%}
+            {%- set by_int = integration_entities('hassio') | list if by_lbl | count == 0 else [] -%}
+            {{ (by_lbl + by_int) | unique | list }}
+      - variables:
+          _ha_update_entities: "{{ _ha_entities | select('match', '^update\\.') | list }}"
+          _ha_addon_running:   "{{ _ha_entities | select('match', '^binary_sensor\\.') | select('search', '_running$') | list }}"
+          _ha_disk_total: >-
+            {%- set e = _ha_entities | select('search', '_host_disk_total$') | list | first | default('') -%}
+            {{ states(e) | float(none) if e else none }}
+          _ha_disk_used: >-
+            {%- set e = _ha_entities | select('search', '_host_disk_used$') | list | first | default('') -%}
+            {{ states(e) | float(none) if e else none }}
+          _ha_disk_free: >-
+            {%- set e = _ha_entities | select('search', '_host_disk_free$') | list | first | default('') -%}
+            {{ states(e) | float(none) if e else none }}
+      - variables:
+          _ha_platform_updates: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in _ha_update_entities -%}
+              {%- set title = state_attr(e, 'title') | default(e | replace('update.', '') | replace('_', ' ') | title) -%}
+              {%- set inst   = state_attr(e, 'installed_version') | default(none) -%}
+              {%- set latest = state_attr(e, 'latest_version') | default(none) -%}
+              {%- set avail  = states(e) == 'on' -%}
+              {%- set ns.items = ns.items + [{
+                'name': title,
+                'entity': e,
+                'installed': inst,
+                'latest': latest,
+                'update_available': avail
+              }] -%}
+            {%- endfor -%}
+            {{ ns.items | sort(attribute='name') }}
+          _ha_updates_pending: "{{ _ha_platform_updates | selectattr('update_available') | list | count }}"
+          _ha_addons: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in _ha_addon_running -%}
+              {%- set bare = e | replace('binary_sensor.', '') | regex_replace('_running$', '') -%}
+              {%- set fn = state_attr(e, 'friendly_name') | default(bare | replace('_', ' ') | title) -%}
+              {%- set name = fn | regex_replace(' [Rr]unning$', '') | trim -%}
+              {%- set running = states(e) == 'on' -%}
+              {%- set upd_e = 'update.' ~ bare ~ '_update' -%}
+              {%- set has_update = has_value(upd_e) and states(upd_e) == 'on' -%}
+              {%- set ns.items = ns.items + [{'name': name, 'running': running, 'update_available': has_update}] -%}
+            {%- endfor -%}
+            {{ ns.items | sort(attribute='name') }}
+          _ha_addons_down: "{{ _ha_addons | rejectattr('running') | list | count }}"
+
+      # Cert warn list (for status summary)
+      - variables:
+          _cert_warns: "{{ _monitors | selectattr('cert_warn') | list }}"
+
+      # ── mode=log ──────────────────────────────────────────────────────────────
+      # Quick peek: tail last 30 + search for restart/reload/error events.
+      # For deep work (pattern search, paging, full log) use zen_dojotools_ha_log_viewer directly.
+      - if: "{{ _mode == 'log' }}"
+        then:
+          - action: script.zen_dojotools_ha_log_viewer
+            continue_on_error: true
+            response_variable: _log_tail_raw
+            data:
+              mode: tail
+              lines: 30
+          - action: script.zen_dojotools_ha_log_viewer
+            continue_on_error: true
+            response_variable: _log_events_raw
+            data:
+              mode: search
+              pattern: "Starting Home Assistant|Stopping Home Assistant|reloading|Reloading|ERROR|WARNING"
+              lines: 100
+          - variables:
+              _log_tail:   "{{ _log_tail_raw   if _log_tail_raw   is mapping else {} }}"
+              _log_events: "{{ _log_events_raw if _log_events_raw is mapping else {} }}"
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'log',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'hint': 'For deep search, paging, or pattern work use zen_dojotools_ha_log_viewer (mode=tail/search/page/full).',
+                  'tail': {
+                    'lines_returned': _log_tail.get('line_count', 0),
+                    'truncated': _log_tail.get('truncated', false),
+                    'journal_mode': _log_tail.get('journal_mode', false),
+                    'result': _log_tail.get('result', _log_tail.get('message', ''))
+                  },
+                  'events': {
+                    'pattern': 'Starting|Stopping|reloading|ERROR|WARNING',
+                    'lines_returned': _log_events.get('line_count', 0),
+                    'result': _log_events.get('result', _log_events.get('message', ''))
+                  }
+                } }}
+          - stop: "infra log"
+            response_variable: response
+
+      # ── mode=discover ─────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'discover' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'discover',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'portainer_endpoint': {
+                    'health_entity': _portainer_health_e,
+                    'endpoint_prefix': _ep,
+                    'healthy': _portainer_ok,
+                    'integration_entities': _portainer_integration
+                  },
+                  'proxmox_nodes': _proxmox_entities,
+                  'kuma_status_entities': _kuma_status_entities,
+                  'wud_entities': _wud_entities,
+                  'wud_tracked_containers': _all_containers,
+                  'ha_entities': _ha_entities,
+                  'ha_update_entities': _ha_update_entities,
+                  'ha_addon_running': _ha_addon_running
+                } }}
+          - stop: "infra discover"
+            response_variable: response
+
+      # ── mode=nodes ────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'nodes' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'nodes',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'summary': (_nodes_up | string) ~ '/' ~ (_nodes | count | string) ~ ' VMs up',
+                  'nodes': _nodes,
+                  'total': _nodes | count
+                } }}
+          - stop: "infra nodes"
+            response_variable: response
+
+      # ── mode=containers ───────────────────────────────────────────────────────
+      - if: "{{ _mode == 'containers' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'containers',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'portainer_healthy': _portainer_ok,
+                  'endpoint_count': _endpoints | count,
+                  'totals': {
+                    'running': _containers_running,
+                    'stopped': _containers_stopped,
+                    'total': _container_total,
+                    'images': _image_count
+                  },
+                  'endpoints': _endpoints,
+                  'tracked_containers': _all_containers,
+                  'pending_updates': _updates,
+                  'pending_update_count': _updates_count
+                } }}
+          - stop: "infra containers"
+            response_variable: response
+
+      # ── mode=monitors ─────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'monitors' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'monitors',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'summary': (_monitors_up | string) ~ '/' ~ (_monitors | count | string) ~ ' services up',
+                  'monitors': _monitors,
+                  'cert_warnings': _cert_warns
+                } }}
+          - stop: "infra monitors"
+            response_variable: response
+
+      # ── mode=updates ──────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'updates' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'updates',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'summary': (_updates_count | string) ~ ' container update(s) + ' ~ (_ha_updates_pending | string) ~ ' HA update(s) pending',
+                  'container_updates': {
+                    'pending_count': _updates_count,
+                    'updates': _updates,
+                    'tracked_total': _all_containers | count,
+                    'all_tracked': _all_containers
+                  },
+                  'ha_updates': {
+                    'pending_count': _ha_updates_pending,
+                    'updates': _ha_platform_updates | selectattr('update_available') | list,
+                    'all_tracked': _ha_platform_updates
+                  }
+                } }}
+          - stop: "infra updates"
+            response_variable: response
+
+      # ── mode=certs ────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'certs' }}"
+        then:
+          - variables:
+              _cert_entities: "{{ _kuma_entities | select('search', '_certificate_expiry$') | select('match', 'sensor\\.') | list }}"
+          - variables:
+              _certs: >-
+                {%- set ns = namespace(items=[]) -%}
+                {%- for e in _cert_entities -%}
+                  {%- set svc_base = e | replace('sensor.', '') | regex_replace('_certificate_expiry$', '') -%}
+                  {%- set fn = state_attr(e, 'friendly_name') | default(svc_base) -%}
+                  {%- set name = fn | regex_replace(' [Cc]ertificate [Ee]xpiry$', '') | trim -%}
+                  {%- set days = states(e) | float(none) -%}
+                  {%- if days is not none -%}
+                    {%- set ns.items = ns.items + [{'name': name, 'days': days, 'warn': days < 30}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.items | sort(attribute='days') }}
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'certs',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'certs': _certs,
+                  'warn_count': (_certs | selectattr('warn') | list | count)
+                } }}
+          - stop: "infra certs"
+            response_variable: response
+
+      # ── mode=ha ───────────────────────────────────────────────────────────────
+      - if: "{{ _mode == 'ha' }}"
+        then:
+          - variables:
+              _ha_core_cpu: >-
+                {%- set e = _ha_entities | select('search', '_core_cpu_percent$') | list | first | default('') -%}
+                {{ states(e) | float(none) if e else none }}
+              _ha_core_mem: >-
+                {%- set e = _ha_entities | select('search', '_core_memory_percent$') | list | first | default('') -%}
+                {{ states(e) | float(none) if e else none }}
+              _ha_sup_cpu: >-
+                {%- set e = _ha_entities | select('search', '_supervisor_cpu_percent$') | list | first | default('') -%}
+                {{ states(e) | float(none) if e else none }}
+              _ha_sup_mem: >-
+                {%- set e = _ha_entities | select('search', '_supervisor_memory_percent$') | list | first | default('') -%}
+                {{ states(e) | float(none) if e else none }}
+              _ha_os_ver: >-
+                {%- set e = _ha_entities | select('search', '_operating_system_version$') | reject('search', 'newest') | list | first | default('') -%}
+                {{ states(e) | default(none, true) if e else none }}
+              _ha_os_latest: >-
+                {%- set e = _ha_entities | select('search', '_operating_system_newest_version$') | list | first | default('') -%}
+                {{ states(e) | default(none, true) if e else none }}
+          - variables:
+              response: >-
+                {{ {
+                  'mode': 'ha',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'platform': {
+                    'os_version': _ha_os_ver,
+                    'os_latest': _ha_os_latest,
+                    'os_update': (_ha_platform_updates | selectattr('entity', 'search', '_operating_system_') | selectattr('update_available') | list | count) > 0,
+                    'core_update': (_ha_platform_updates | selectattr('entity', 'search', '_core_') | selectattr('update_available') | list | count) > 0,
+                    'supervisor_update': (_ha_platform_updates | selectattr('entity', 'search', '_supervisor_') | selectattr('update_available') | list | count) > 0
+                  },
+                  'host': {
+                    'disk_total_gb': _ha_disk_total,
+                    'disk_used_gb': _ha_disk_used,
+                    'disk_free_gb': _ha_disk_free
+                  },
+                  'resources': {
+                    'core_cpu_pct': _ha_core_cpu,
+                    'core_mem_pct': _ha_core_mem,
+                    'supervisor_cpu_pct': _ha_sup_cpu,
+                    'supervisor_mem_pct': _ha_sup_mem
+                  },
+                  'addons': {
+                    'total': _ha_addons | count,
+                    'running': _ha_addons | selectattr('running') | list | count,
+                    'stopped_list': _ha_addons | rejectattr('running') | list | map(attribute='name') | list,
+                    'updates_available': _ha_updates_pending,
+                    'update_list': _ha_platform_updates | selectattr('update_available') | list,
+                    'all_addons': _ha_addons
+                  }
+                } }}
+          - stop: "infra ha"
+            response_variable: response
+
+      # ── mode=status (default) ─────────────────────────────────────────────────
+      - variables:
+          _status_note: >-
+            {%- set parts = [] -%}
+            {%- if _nodes_down > 0 -%}
+              {%- set down = _nodes | rejectattr('up') | map(attribute='name') | list | join(', ') -%}
+              {%- set parts = parts + [(_nodes_down | string) ~ ' VM(s) DOWN: ' ~ down] -%}
+            {%- endif -%}
+            {%- if not _portainer_ok -%}
+              {%- set ns3 = namespace(dead=[]) -%}
+              {%- for ep in _endpoints -%}
+                {%- if not ep.healthy -%}{%- set ns3.dead = ns3.dead + [ep.endpoint] -%}{%- endif -%}
+              {%- endfor -%}
+              {%- set parts = parts + ['Portainer UNREACHABLE: ' ~ (ns3.dead | join(', '))] -%}
+            {%- endif -%}
+            {%- if _containers_stopped > 0 -%}
+              {%- set ns4 = namespace(ep_stopped=[]) -%}
+              {%- for ep in _endpoints -%}
+                {%- if ep.containers_stopped > 0 -%}
+                  {%- set ns4.ep_stopped = ns4.ep_stopped + [ep.endpoint ~ ':' ~ ep.containers_stopped ~ ' stopped'] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- if ns4.ep_stopped | count > 0 -%}
+                {%- set parts = parts + ['containers stopped — ' ~ (ns4.ep_stopped | join(', '))] -%}
+              {%- endif -%}
+            {%- endif -%}
+            {%- if _monitors_down > 0 -%}
+              {%- set down = _monitors | rejectattr('up') | map(attribute='name') | list | join(', ') -%}
+              {%- set parts = parts + [(_monitors_down | string) ~ ' monitor(s) DOWN: ' ~ down] -%}
+            {%- endif -%}
+            {%- if _cert_warns | count > 0 -%}
+              {%- set warn = _cert_warns | map(attribute='name') | list | join(', ') -%}
+              {%- set parts = parts + ['cert expiry <30d: ' ~ warn] -%}
+            {%- endif -%}
+            {%- if _ha_updates_pending > 0 -%}
+              {%- set upd_names = _ha_platform_updates | selectattr('update_available') | map(attribute='name') | list | join(', ') -%}
+              {%- set parts = parts + [(_ha_updates_pending | string) ~ ' HA update(s): ' ~ upd_names] -%}
+            {%- endif -%}
+            {%- if _ha_addons_down > 0 -%}
+              {%- set stopped = _ha_addons | rejectattr('running') | map(attribute='name') | list | join(', ') -%}
+              {%- set parts = parts + [(_ha_addons_down | string) ~ ' addon(s) stopped: ' ~ stopped] -%}
+            {%- endif -%}
+            {%- if _printers_problem | int(0) > 0 -%}
+              {%- set bad = _printers | rejectattr('ok') | map(attribute='name') | list | join(', ') -%}
+              {%- set parts = parts + ['printer issue: ' ~ bad] -%}
+            {%- endif -%}
+            {{ parts | join(' | ') if parts | count > 0 else 'All systems nominal' }}
+          response: >-
+            {{ {
+              'mode': 'status',
+              'result': 'ok',
+              'caller_token': _caller_token,
+              'note': _status_note,
+              'summary': {
+                'nodes':      (_nodes_up | string) ~ '/' ~ (_nodes | count | string) ~ ' VMs up',
+                'containers': (_containers_running | string) ~ '/' ~ (_container_total | string) ~ ' containers running',
+                'images':     (_image_count | string) ~ ' images',
+                'monitors':   (_monitors_up | string) ~ '/' ~ (_monitors | count | string) ~ ' services up',
+                'container_updates': (_updates_count | string) ~ ' container update(s) pending',
+                'ha_updates':        (_ha_updates_pending | string) ~ ' HA update(s) pending',
+                'certs':             (_cert_warns | count | string) ~ ' cert(s) expiring <30d',
+              'printers':          (_printers | count | string) ~ ' printer(s), ' ~ (_printers_problem | string) ~ ' issue(s)'
+              },
+              'nodes': _nodes,
+              'portainer': {
+                'healthy': _portainer_ok,
+                'endpoints': _endpoints,
+                'totals': {
+                  'running': _containers_running,
+                  'stopped': _containers_stopped,
+                  'total': _container_total,
+                  'images': _image_count
+                }
+              },
+              'monitors': _monitors,
+              'cert_warnings': _cert_warns,
+              'pending_updates': _updates,
+              'printers': _printers
+            } }}
+      - stop: "infra status"
+        response_variable: response

@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 5.3.1  
+**Version:** 5.6.0  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
 **Internal REST dispatcher:** `zen_sutra_grocy`  
@@ -92,7 +92,10 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `stock_entries_for_item` | Raw stock entries for a product |
 | `stock_buy_product` | Create or resolve a product, then add stock |
 | `stock_add_purchase` | Add purchased stock for an existing product |
-| `stock_consume` | Remove stock after use or replacement |
+| `stock_consume` | Remove stock after use or replacement. Optional `spoiled: true` marks the consumption as waste/spoilage in Grocy's native stock log instead of a normal consume (default `false`). |
+| `waste_history` | Read-only: Grocy's own `spoiled=true` consume bookings (native waste log), optionally scoped to one `product_id`. `GET /objects/stock_log?query[]=spoiled=1` |
+| `bulk_stock_add` | Add stock (purchase) for a BOM list of products, resolving names with exact+fuzzy fallback. Each `bom` entry may carry its own `price` (real per-item price, e.g. from a receipt) overriding the call-level `price` for that item only. Requires `confirm_action: true` unless `dry_run: true`. `dry_run` (default `false`) skips the writes and returns a `preview` status per item. |
+| `bulk_stock_reconcile_recent` | Reverse a duplicate/erroneous `bulk_stock_add` booking. For each product in `bom`, sums stock entries created at/after `since_timestamp` and subtracts that from the product's current total via `stock_inventory_adjust` — deliberately not `stock_undo_booking` or `stock_consume` (see code comments for why). `dry_run` defaults `true`; requires `confirm_action: true` to actually write. |
 | `shopping_add_product` | Add a specific product to the shopping list. Returns `{product_id, product_name, amount, list_id, action}` |
 | `shopping_remove_product` | Remove a product from the shopping list. Returns `{product_id, product_name, amount, list_id, action}` |
 | `stock_area_summary` | Area-level container and stock count rollup |
@@ -144,7 +147,7 @@ This is what lets Room Manager ask "what inventory belongs to this room?" withou
 * `stock_area_summary`: compact count and anchor view for a room or area.
 * `stock_area_volatile`: volatile items (overdue, due soon, expiring) scoped to a HA area.
 * `stock_area_inventory`: denormalized detailed view with product names and amounts.
-* `chores_by_area`: maintenance chores discovered through stocked products or direct `homeassistant_area` tags.
+* `chores_by_area`: maintenance chores discovered through stocked products or direct `homeassistant_area` tags. A chore's own explicit `homeassistant_area` tag always wins over the product/location fallback — a chore tagged to a different area is never included just because its product happens to be bulk-stocked in this area's location.
 
 ---
 
