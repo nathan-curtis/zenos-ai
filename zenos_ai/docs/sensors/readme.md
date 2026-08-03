@@ -275,8 +275,8 @@ This is the bootstrap eligibility gate, not a health gate.
 | State | Condition |
 |---|---|
 | `ok` | All health signals true |
-| `warn` | One or more signals false but non-critical (e.g. manifest or id_manifest missing) |
-| `error` | Legacy schema, missing essence, or cabinet unavailable |
+| `warn` | Legacy schema (functional, unsigned — the universal current default, not a fault); OR one or more other signals false but non-critical (e.g. manifest or id_manifest missing) |
+| `error` | Missing essence (no `zenai_essence` drawer at all) or cabinet unavailable |
 
 **Key attributes:**
 

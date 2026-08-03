@@ -370,8 +370,9 @@ Returns a dict with:
 | `id_manifest_present` | `zen_identity_manifest` drawer exists in household cabinet |
 
 All signals true → `sensor.zen_prompt_health` state `ok`.
-Any signal false → `warn` or `error` depending on severity.
 `id_manifest_present` false → `warn` (expected on fresh install until first manifest build).
+
+**Severity ladder (corrected 2026-08-02):** `error` is reserved for a genuinely missing essence (no `zenai_essence` drawer at all — the agent has no persona to load). A `legacy`-schema essence — flat-shape, unsigned, no `three_layer` migration — is `warn`, not `error`: it's the universal current default and loads/functions with zero issue; `three_layer` + signing is an optional, unmigrated feature, not a requirement. `warn` also covers an unsigned or incomplete `three_layer` essence (`sig_ok`/`manifest_ok`/`id_manifest_ok` false). Do not treat every non-`three_layer` essence as an error — that conflates "hasn't opted into an optional upgrade" with "genuinely broken."
 
 
 ---
