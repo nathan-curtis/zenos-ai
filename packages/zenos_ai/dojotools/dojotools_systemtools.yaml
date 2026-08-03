@@ -1118,6 +1118,24 @@ script:
             _ai_user: "{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}"
             _family: "{{ states('sensor.zen_default_family_cabinet_resolved') }}"
             _user: "{{ states('sensor.zen_default_user_cabinet_resolved') }}"
+        # ── Capsule/essence schema check (2026-08-02) ───────────────────────────
+        # Surfaces prompt_health_check()'s corrected severity ladder here too —
+        # previously zen_health_report had zero visibility into essence schema
+        # at all, so a customer had to separately call mode=prompt_health and
+        # was confused by what used to be a miscalibrated 'error' for the
+        # universal 'legacy' schema every real install actually runs on
+        # (H's own Friday persona included). 'error' now means genuinely
+        # missing/corrupt essence; 'legacy' is 'warn' (functional, just hasn't
+        # opted into the newer three_layer + signing schema — optional, not
+        # required, and Flynn does not gate loading on it either way).
+        - variables:
+            _capsule_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {{ zen.prompt_health_check() }}
+            _capsule: "{{ _capsule_raw | trim | from_json if (_capsule_raw | trim).startswith('{') else {} }}"
+            _capsule_state:  "{{ _capsule.get('state', 'error') }}"
+            _capsule_schema: "{{ _capsule.get('schema', 'missing') }}"
+            _capsule_sig:    "{{ _capsule.get('signature_status', 'unsigned') }}"
         # ── Spook prerequisite check ──────────────────────────────────────────
         # homeassistant.create_label / rename_label / remove_label are NOT core
         # HA services — they're only registered by the Spook HACS integration
@@ -1356,6 +1374,11 @@ script:
               {%- if _ai_task_raw not in ['', 'unknown', 'unavailable'] and not _ai_task_valid -%}
                 {%- set _ns.issues = _ns.issues + ['CRITICAL: input_text.zenos_ai_task_entity is set to "' ~ _ai_task_raw ~ '", which is not a real entity — ' ~ _ai_task_hint] -%}
               {%- endif -%}
+              {%- if _capsule_state == 'error' -%}
+                {%- set _ns.issues = _ns.issues + ['CRITICAL: agent persona capsule missing or unreadable — no zenai_essence to load.'] -%}
+              {%- elif _capsule_schema == 'legacy' -%}
+                {%- set _ns.issues = _ns.issues + ['warn: essence on legacy schema (functional, unsigned) — three_layer + signing is optional, not required.'] -%}
+              {%- endif -%}
               {%- if _spook_installed == 'False' -%}
                 {%- set _ns.issues = _ns.issues + ['CRITICAL: Spook integration not installed — homeassistant.create_label unavailable, Flynn Gate 0 cannot auto-create missing labels and will fail silently with an "unknown action" automation error. Install via HACS: https://spook.boo/installation/'] -%}
               {%- elif _spook_installed == 'unknown' -%}
@@ -1477,22 +1500,54 @@ script:
                 family: "{{ _family }}"
                 user: "{{ _user }}"
                 all_ok: "{{ _resolver_all_ok }}"
-              health_sensors:
-                monastery: "{{ states('sensor.zen_monastery_health') }}"
-                ninja_summarizer: "{{ states('sensor.zen_summarizer_health') }}"
-                supersummary: "{{ states('sensor.zen_supersummary_health') }}"
-                cabinet: "{{ states('sensor.zen_cabinet_health') }}"
-                legacy_schema_cabinets: "{{ _legacy_cabinets }}"
-                init_cabinets: "{{ _init_cabinets }}"
-                agents: "{{ states('sensor.zen_agent_health') }}"
-                labels: "{{ _label_health_st }}"
-              reasons:
-                monastery: "{{ state_attr('sensor.zen_monastery_health', 'reason') | default('') }}"
-                ninja_summarizer: "{{ state_attr('sensor.zen_summarizer_health', 'reason') | default('') }}"
-                supersummary: "{{ state_attr('sensor.zen_supersummary_health', 'reason') | default('') }}"
-                cabinet: "{{ state_attr('sensor.zen_cabinet_health', 'reason') | default('') }}"
-                agents: "{{ state_attr('sensor.zen_agent_health', 'reason') | default('') }}"
-                labels: "{{ state_attr('sensor.zen_label_health', 'reason') | default('') }}"
+              # BUG FIX (2026-08-02): flat health_sensors/reasons dicts gave zero
+              # indication of the real dependency cascade — ninja_summarizer and
+              # supersummary both actually feed monastery_health's own rollup
+              # (see zenos_summarizer_system_health.yaml), and flynn_system_ready
+              # itself is derived from labels + cabinet + monastery together
+              # (zenos_system_health.yaml). Restructured into a tree mirroring
+              # that real cascade instead of a same-level flat list, so a reader
+              # can see AT A GLANCE that e.g. a monastery problem is what's
+              # actually driving an agents warning, rather than treating five
+              # sibling entries as independent unrelated signals.
+              flynn_ready:
+                state: "{{ 'ok' if is_state('binary_sensor.flynn_system_ready', 'on') else 'issues_found' }}"
+                dependencies:
+                  labels:
+                    state: "{{ _label_health_st }}"
+                    reason: "{{ state_attr('sensor.zen_label_health', 'reason') | default('') }}"
+                  cabinet:
+                    state: "{{ states('sensor.zen_cabinet_health') }}"
+                    reason: "{{ state_attr('sensor.zen_cabinet_health', 'reason') | default('') }}"
+                    legacy_schema_cabinets: "{{ _legacy_cabinets }}"
+                    init_cabinets: "{{ _init_cabinets }}"
+                  monastery:
+                    state: "{{ states('sensor.zen_monastery_health') }}"
+                    reason: "{{ state_attr('sensor.zen_monastery_health', 'reason') | default('') }}"
+                    dependencies:
+                      ninja_summarizer:
+                        state: "{{ states('sensor.zen_summarizer_health') }}"
+                        reason: "{{ state_attr('sensor.zen_summarizer_health', 'reason') | default('') }}"
+                      supersummary:
+                        state: "{{ states('sensor.zen_supersummary_health') }}"
+                        reason: "{{ state_attr('sensor.zen_supersummary_health', 'reason') | default('') }}"
+                  agents:
+                    state: "{{ states('sensor.zen_agent_health') }}"
+                    reason: "{{ state_attr('sensor.zen_agent_health', 'reason') | default('') }}"
+                  capsule:
+                    state: "{{ _capsule_state }}"
+                    schema: "{{ _capsule_schema }}"
+                    signature_status: "{{ _capsule_sig }}"
+                    reason: >-
+                      {%- if _capsule_state == 'error' -%}
+                        Essence missing or unreadable — agent has no persona capsule to load.
+                      {%- elif _capsule_schema == 'legacy' -%}
+                        Legacy essence schema (functional, unsigned) — Flynn loads this fine; three_layer + signing is an optional, unmigrated upgrade, not required.
+                      {%- elif _capsule_sig != 'signed' -%}
+                        Three-layer essence present but not signed — optional, run zen_dojotools_persona_editor mode=sign to certify.
+                      {%- else -%}
+                        All checks passed.
+                      {%- endif -%}
               label_cabinet_consistency:
                 consistent: "{{ not _label_cab_conflict }}"
                 label_health_state: "{{ _label_health_st }}"
