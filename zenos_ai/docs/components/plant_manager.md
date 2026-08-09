@@ -3,6 +3,12 @@
 **Version:** 5.5.0
 **Script:** `zen_dojotools_plant`
 
+> **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
+> Codex series: [SPAN Panel](../plugins/span_panel_codex.md) (this
+> household's actual installed panel) and
+> [Emporia Vue](../plugins/emporia_vue_codex.md) (clamp-style add-on).
+> Both are pure label-wiring guides — no new tool code required.
+
 ---
 
 ## Overview

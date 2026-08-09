@@ -1,6 +1,23 @@
 ###############################################################################
-# zen_dojotools_lights v5.1.0 (codename: ZenLux)
+# zen_dojotools_lights v5.2.0 (codename: ZenLux)
 # Room-aware lighting intent resolver with memory + label-driven topology
+#
+# 5.2.0 (2026-08-06, Nathan: "I want zenlux to respect rm and use its
+#   scenes") — two additions:
+#   1. room_control + hold guard on all write-taking modes (scene_set/
+#      brightness_set/color_temp_set/rgb_set/bleed_set/prefs_apply): reads
+#      the SAME room_control select AND hold-labeled entities room_state.
+#      yaml's cascade uses; blocks the action while Paused/Automation/
+#      Cleaning is active OR a hold entity (e.g. a door) is open,
+#      force=true bypasses for an explicit human override.
+#   2. mode=reflex_sync — fires whatever zen_reflex_dispatch.yaml Stage 2
+#      would resolve for the room's CURRENT v3 state right now, by calling
+#      zen_dojotools_room_manager mode=reflex_wire and reading its
+#      wired_matrix (not a re-derivation of the resolution logic — that
+#      already exists in two places and has drifted before). NOT guarded by
+#      the room_control check — firing the override's OWN scene (scene_
+#      paused/scene_automation/scene_cleaning) while that override is active
+#      is compliant by definition, not a violation of it.
 #
 # ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
 #
@@ -54,7 +71,11 @@ script:
       next_step always tells you what to explore next. scene_list search=room
       surfaces all scenes including untagged, with entities_affected. Remember
       it: prefs_set/prefs_apply give a room lighting memory (movie, work,
-      sleep). mode=help for the full map.
+      sleep). Respects RM: write modes are blocked while the room's
+      room_control is Paused/Automation/Cleaning (force=true overrides).
+      mode=reflex_sync fires whatever RM's own REFLEX cascade currently
+      resolves for the room instead of an ad-hoc intent. mode=help for the
+      full map.
     icon: mdi:lightbulb-group
     mode: queued
     max: 3
@@ -64,10 +85,15 @@ script:
         name: Mode
         description: >-
           Act now — brightness_set/scene_set/rgb_set/color_temp_set work
-          immediately, no setup needed. discover room=X maps a room; next_step
-          guides exploration. scene_list search=X finds scenes by name.
-          prefs_set/apply = lighting memory. setup+label_suggest assign
-          zen_lm_* roles. resolve_debug traces entity selection.
+          immediately, no setup needed (blocked while room_control is
+          Paused/Automation/Cleaning — force=true to override). discover
+          room=X maps a room; next_step guides exploration. scene_list
+          search=X finds scenes by name. prefs_set/apply = lighting memory.
+          setup+label_suggest assign zen_lm_* roles. resolve_debug traces
+          entity selection. reflex_sync fires whatever RM's REFLEX cascade
+          currently resolves for the room's live v3 state (via
+          zen_dojotools_room_manager mode=reflex_wire) — not guarded, since
+          it's already following RM's own resolution including any override.
         selector:
           select:
             options:
@@ -88,6 +114,8 @@ script:
               - scene_list
               - auto_label
               - prefs_sweep
+              - reflex_sync
+              - tool_manifest
               - help
 
       entity_id:
@@ -127,7 +155,6 @@ script:
               - work
               - away
               - party
-              - tool_manifest
 
       brightness:
         name: Brightness
@@ -214,6 +241,18 @@ script:
         selector:
           text:
 
+      force:
+        name: Force
+        description: >-
+          Bypass the room_control guard (Paused/Automation/Cleaning override
+          active for this room). Only the write-taking modes (scene_set,
+          brightness_set, color_temp_set, rgb_set, bleed_set, prefs_apply)
+          are guarded — pass true for an explicit human override. Default
+          false.
+        default: false
+        selector:
+          boolean:
+
     sequence:
 
       - variables:
@@ -296,6 +335,59 @@ script:
             {%- else -%}
               {{ label_entities(_room_slug) | select('match', 'light\\.') | list }}
             {%- endif -%}
+
+      # ── 0c. RM room_control + hold guard (2026-08-06, Nathan: "I want
+      #     zenlux to respect rm and use its scenes", then "yes, guard hold
+      #     too") — mirrors room_state.yaml's own resolution for BOTH
+      #     signals: ONE input_select tagged 'room_control' + this room's
+      #     label (Paused = automation safety all-stop, human-only clear;
+      #     Automation = another automation currently owns this room;
+      #     Cleaning = zen_cleaning_dispatch has it while a vacuum is
+      #     inside), AND any entity tagged 'hold' + this room's label
+      #     reading on/open (fridge-door mode — door open means don't touch
+      #     this room's lights out from under whatever hold is protecting).
+      #     Blocks the WRITE-taking modes only; force=true bypasses for an
+      #     explicit human override. reflex_sync is NOT in this list — it
+      #     fires whatever RM's own cascade currently resolves for this
+      #     room's state, which already accounts for BOTH signals (a locked
+      #     room resolves to that state and fires its own scene if wired,
+      #     not a violation of the lock — it IS the lock's own scene).
+      - variables:
+          _force: "{{ force | default(false, true) | bool(false) }}"
+          _zl_rc_ent: >-
+            {{ (label_entities('room_control') | intersect(label_entities(_room_slug)) | list | first) | default('', true) }}
+          _zl_rc_val: "{{ states(_zl_rc_ent) if _zl_rc_ent != '' else '' }}"
+          _zl_rc_locked: "{{ _zl_rc_val in ['Paused', 'Automation', 'Cleaning'] }}"
+          _zl_hold_ents: "{{ label_entities('hold') | intersect(label_entities(_room_slug)) | list }}"
+          _zl_hold_active: "{{ (_zl_hold_ents | map('states') | select('in', ['on', 'open']) | list | count) > 0 }}"
+          _zl_room_locked: "{{ _zl_rc_locked or _zl_hold_active }}"
+          _zl_write_modes: [scene_set, brightness_set, color_temp_set, rgb_set, bleed_set, prefs_apply]
+      - if: "{{ _mode in _zl_write_modes and _zl_room_locked and not _force }}"
+        then:
+          - variables:
+              _zl_lock_reason: >-
+                {%- if _zl_rc_locked -%}room_control:{{ _zl_rc_val }}
+                {%- elif _zl_hold_active -%}hold_active
+                {%- endif -%}
+              result:
+                ok: false
+                tool: zen_dojotools_lights
+                mode: "{{ _mode }}"
+                error: room_locked
+                room: "{{ _room_slug }}"
+                room_control: "{{ _zl_rc_val }}"
+                hold_active: "{{ _zl_hold_active }}"
+                lock_reason: "{{ _zl_lock_reason }}"
+                message: >-
+                  {{ _room_slug }} is locked ({{ _zl_lock_reason }}) — ZenLux write
+                  actions are blocked while room_control is Paused/Automation/Cleaning
+                  or a hold-labeled entity (e.g. a door) is open (same convention
+                  room_state.yaml's cascade uses). Pass force=true for an explicit
+                  human override, or use mode=reflex_sync to fire whatever RM's own
+                  cascade currently resolves for this room (which already accounts
+                  for the lock).
+          - stop: room locked — write blocked
+            response_variable: result
 
       # ── 0c. Stored room default role (guarded) ────────────────────────────
       - variables:
@@ -1051,6 +1143,99 @@ script:
                     {{ w }}
                 caller_token: "{{ _caller_token }}"
           - stop: resolve_debug complete
+            response_variable: _result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 5b. REFLEX_SYNC (2026-08-06, Nathan: "I want zenlux to respect rm and
+      #     use its scenes") — fires whatever zen_reflex_dispatch.yaml Stage 2
+      #     would resolve for this room's CURRENT v3 state right now. Calls
+      #     zen_dojotools_room_manager mode=reflex_wire to read the resolution
+      #     rather than re-deriving the state×mode→scene logic a fourth time
+      #     (it already exists in Stage 2 and in reflex_wire itself — a third
+      #     copy in ZenLux would just be one more place for the three known
+      #     resolution bugs to silently re-drift out of sync). NOT guarded by
+      #     the room_control check above — a Paused/Automation/Cleaning room
+      #     resolves to that state and this fires scene_paused/_automation/
+      #     _cleaning if wired, which IS the override's own scene, not a
+      #     violation of it.
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'reflex_sync' }}"
+        then:
+          - if: "{{ _room_area_id == '' }}"
+            then:
+              - variables:
+                  _result:
+                    ok: false
+                    tool: zen_dojotools_lights
+                    mode: reflex_sync
+                    error: missing_room
+                    message: "room= required and must resolve to a real HA area."
+              - stop: reflex_sync error — missing room
+                response_variable: _result
+          - action: script.zen_dojotools_room_manager
+            response_variable: _zl_rw_raw
+            continue_on_error: true
+            data:
+              mode: reflex_wire
+              area: "{{ _room_area_id }}"
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _zl_rw: "{{ _zl_rw_raw if _zl_rw_raw is mapping else {} }}"
+              _zl_room_state_ent: "sensor.{{ _room_area_id }}_room_state"
+              _zl_current_state: "{{ states('sensor.' ~ _room_area_id ~ '_room_state') }}"
+              _zl_mode_slug: "{{ states('sensor.zen_home_mode') | lower | replace(' ', '_') | replace('-', '_') }}"
+          - if: "{{ _zl_rw.get('status', '') != 'ok' or _zl_current_state in ['unknown', 'unavailable', ''] }}"
+            then:
+              - variables:
+                  _result:
+                    ok: false
+                    tool: zen_dojotools_lights
+                    mode: reflex_sync
+                    error: room_state_unavailable
+                    room: "{{ _room_area_id }}"
+                    room_state_entity: "{{ _zl_room_state_ent }}"
+                    current_state: "{{ _zl_current_state }}"
+                    message: "Could not read reflex_wire data or this room has no v3 room_state sensor deployed (sensor.{{ _room_area_id }}_room_state)."
+              - stop: reflex_sync error — room_state unavailable
+                response_variable: _result
+          - variables:
+              _zl_matrix_row: "{{ _zl_rw.get('wired_matrix', {}).get(_zl_current_state, {}) }}"
+              _zl_scene_to_fire: >-
+                {%- set _r = _zl_rw.get('wired_matrix', {}).get(_zl_current_state, {}) -%}
+                {{ (_r.get(_zl_mode_slug) if _r.get(_zl_mode_slug) is not none else _r.get('_fallback_any_mode')) if _r is mapping else none }}
+          - if: "{{ _zl_scene_to_fire is none }}"
+            then:
+              - variables:
+                  _result:
+                    ok: false
+                    tool: zen_dojotools_lights
+                    mode: reflex_sync
+                    error: no_scene_wired
+                    room: "{{ _room_area_id }}"
+                    state: "{{ _zl_current_state }}"
+                    home_mode: "{{ _zl_mode_slug }}"
+                    message: "No scene_{{ _zl_current_state }} wired for this room/mode. Use zen_dojotools_room_manager mode=reflex_wire area={{ _room_area_id }} to see gaps."
+              - stop: reflex_sync error — no scene wired
+                response_variable: _result
+          - if: "{{ not _dry_run }}"
+            then:
+              - action: scene.turn_on
+                target:
+                  entity_id: "{{ _zl_scene_to_fire }}"
+                data:
+                  transition: "{{ _transition }}"
+          - variables:
+              _result:
+                ok: true
+                tool: zen_dojotools_lights
+                mode: reflex_sync
+                room: "{{ _room_area_id }}"
+                state: "{{ _zl_current_state }}"
+                home_mode: "{{ _zl_mode_slug }}"
+                scene_fired: "{{ _zl_scene_to_fire }}"
+                dry_run: "{{ _dry_run }}"
+                caller_token: "{{ _caller_token }}"
+          - stop: reflex_sync done
             response_variable: _result
 
       # ═══════════════════════════════════════════════════════════════════════
