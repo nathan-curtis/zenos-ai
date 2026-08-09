@@ -3,9 +3,8 @@
 Chapter 11 (RoomState and Perception) describes, in the abstract, a real-time
 semantic map of the house — a structured object per room that tells Friday
 what the raw HA graph *means*, without doing any cognition of its own. This
-chapter documents the concrete implementation of that idea, built 2026-08-05
-through 2026-08-07: **Room Manager v3**, and the reactive layer riding on top
-of it, **REFLEX**.
+chapter documents the concrete implementation of that idea: **Room Manager
+v3**, and the reactive layer riding on top of it, **REFLEX**.
 
 Where Chapter 11 draws the boundary ("RoomState must never do cognition, Room
 Manager must never alter RoomState"), this chapter is the part that actually
@@ -20,21 +19,17 @@ how does it connect to the house physically"*; Room Manager v3 answers
 
 ## **22.1 Design Philosophy**
 
-Every prior generation of this system (legacy, v2) required per-room wiring:
-new automation, new blueprint call, new hardcoded entity list, for every room,
-every time a feature was added. Room Manager v3 was built against one
-standing directive from the household operator, restated at every step of its construction:
-
-> "The room blueprint should support all possible configurations. The only
-> thing that should be different is add timer and label. You have room
-> blueprint, add timer, just works."
-
+Prior generations of this system (legacy, v2) required per-room wiring: new
+automation, new blueprint call, new hardcoded entity list, for every room,
+every time a feature was added. Room Manager v3's governing principle is that
+the room blueprint supports every possible configuration on its own — a room
+gains a feature by adding a timer and a label, never by adding code.
 Concretely, that means:
 
 * **Label-intersection, not naming convention, for anything that requires human judgment** (which entity is *this* room's motion sensor, occupied timer, control override). A room opts into a feature by tagging one entity with one label — the label carries both the *class* (`motion`, `room_timer`, `vent_fan`...) and the *room* (the area's own label, matching its `area_id` 1:1 by convention).
 * **Naming convention, not labels, for anything fully deterministic at deploy time** — timer/duration helpers whose entity_id is already fixed the moment you name the helper in a room's package file (`timer.<room>_tv_sleep_timer`, `input_number.<room>_fan_delay_minutes`). Adding a label for something that's already 100% predictable from the room slug is pure taxonomy bloat.
 * **Untagged = safe no-op, everywhere.** No feature in this system ever assumes a helper exists. Every tier, every opt-in construct, checks for its own helper and simply doesn't activate if absent. A room with zero helpers still gets a working `vacant`/`occupied` cascade from motion alone.
-* **One automation. One script.** As of 2026-08-07 rev 4, the entire dispatch layer — signal routing, cleaning sync, REFLEX scene resolution, nightlight, control-burnout safety net, TV sleep timer, vent fan automation, and the room-state self-labeling bootstrap — lives in exactly one automation entity (`automation.zenos_room_manager_dispatch`) and one script entity (`script.zen_reflex_controller`, mode-dispatched). This was a deliberate late-stage consolidation (see §22.6) driven by the same instinct: taxonomy and entity-count sprawl is a cost, not a feature.
+* **One automation. One script.** The entire dispatch layer — signal routing, cleaning sync, REFLEX scene resolution, nightlight, control-burnout safety net, TV sleep timer, vent fan automation, and the room-state self-labeling bootstrap — lives in exactly one automation entity (`automation.zenos_room_manager_dispatch`) and one script entity (`script.zen_reflex_controller`, mode-dispatched). See §22.6 for the mechanics of this consolidation.
 
 ---
 
@@ -71,11 +66,11 @@ cleanly or lands in `hold`.
 
 ### The shared room timer
 
-Legacy and early v3 each tier (occupied/engaged/asleep) had its **own**
-decay timer. 2026-08-06 redesign collapsed this to **one** shared
-`room_timer` + a paired `room_timer_class` select recording which tier
-currently owns the clock — a room is never simultaneously "decaying
-occupied" and "decaying asleep," so one timer covers all three.
+Legacy and early v3 each tier (occupied/engaged/asleep) had its own decay
+timer. The current design collapses this to **one** shared `room_timer` +
+a paired `room_timer_class` select recording which tier currently owns the
+clock — a room is never simultaneously "decaying occupied" and "decaying
+asleep," so one timer covers all three.
 Ownership/takeover rules for who may (re)start the shared clock live in the
 Signal Dispatcher (§22.3), not in the cascade sensor itself — the sensor
 only *reads* whichever class currently holds it.
@@ -112,12 +107,10 @@ now" has a real, inspectable answer instead of a black box.
 
 REFLEX is the two-stage, event-decoupled reactive system that turns a room's
 resolved state into actual effects — scenes, nightlights, cleaning
-coordination.
-
-> "At every resolver sensor change fire a zen room state event, then capture
-> said event, and if we have a matching scene with the proper label
-> intersect, fire it." — the design directive behind why this is event-bus decoupled rather
-> than one giant reactive automation.
+coordination. Every resolver sensor change fires a structured event; a
+separate listener captures that event and, if a matching scene exists,
+fires it. The two stages are decoupled by design rather than combined into
+one reactive automation.
 
 **Stage 1 (Emitter)** lives *inside* `room_state.yaml` itself, not as a
 separate automation — every room deployed via the shared blueprint gets
@@ -203,62 +196,43 @@ helper entity present, checked by existence at fire time:
 
 ---
 
-## **22.6 Consolidation: One Automation, One Script**
+## **22.6 Dispatch Layer: One Automation, One Script**
 
-Built 2026-08-05 through 2026-08-06 as three separate dispatcher files
-(Signal, Cleaning, REFLEX) plus four opt-in per-room blueprints, the system
-originally required per-room `use_blueprint:` calls for anything beyond the
-core cascade. The build review of the finished build was blunt:
-
-> "Why can they not be one blueprint. The room blueprints should support all
-> possible configurations... Consolidate my blueprints and consolidate the
-> automations." Then, on seeing the resulting 11 separate automation
-> entities: "I don't want 86000 automations for rm. I want ONE." Then, on
-> the 4 remaining scripts: "Consolidate these to one reflex controller
-> script."
-
-The result, `packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml`
-rev 4:
+The dispatch layer — signal routing, cleaning sync, REFLEX scene resolution,
+nightlight, the control-burnout safety net, the TV sleep timer, vent fan
+automation, and the room-state self-labeling bootstrap — is consolidated
+into exactly one automation entity and one script entity, rather than one
+automation per feature or a per-room `use_blueprint:` call for anything
+beyond the core cascade.
 
 * **One automation** (`automation.zenos_room_manager_dispatch`, `mode:
-  parallel, max: 30`) carries every trigger the old 11 automations used,
-  each tagged with a `trigger.id`, and branches internally via a top-level
-  `choose:` keyed on that id. `mode: parallel` is required specifically
-  because Vent Fan's multi-minute delay would otherwise queue/block every
-  other trigger type behind it in a single-instance automation — every
-  other branch is either a stateless resync (idempotent; a duplicate
-  concurrent pass converges to the same answer) or keyed to the one
-  entity_id in that specific event's payload, so parallel execution is safe.
+  parallel, max: 30`) carries every trigger the dispatch layer needs, each
+  tagged with a `trigger.id`, and branches internally via a top-level
+  `choose:` keyed on that id. `mode: parallel` is required because Vent
+  Fan's multi-minute delay would otherwise queue/block every other trigger
+  type behind it in a single-instance automation — every other branch is
+  either a stateless resync (idempotent; a duplicate concurrent pass
+  converges to the same answer) or keyed to the one entity_id in that
+  specific event's payload, so parallel execution is safe.
 * **One script** (`script.zen_reflex_controller`), mode-dispatched exactly
   like the dojotools scripts (`mode=signal_dispatch` /
   `room_timer_reconcile` / `cleaning_control_resync` /
-  `control_burnout_resync` / `self_label_resync`), replacing what had
-  briefly been 4 separate helper scripts.
-* **Room-state self-labeling folded in** (`mode=self_label_resync`) — the
-  bootstrap step that tags a room's state sensor with `zen_room_state` +
-  its room label, and tags each of that room's helper entities
-  (`room_control`, `room_timer`, `room_timer_class`, `checking_timer`,
-  `asleep_minutes`, `vent_fan`) with their class label, used to be its own
-  per-room-parameterized blueprint (`room_state_self_label.yaml`). Folded
-  into the same script, driven by `areas()` instead of per-room inputs —
+  `control_burnout_resync` / `self_label_resync`).
+* **Room-state self-labeling** (`mode=self_label_resync`) is the bootstrap
+  step that tags a room's state sensor with `zen_room_state` + its room
+  label, and tags each of that room's helper entities (`room_control`,
+  `room_timer`, `room_timer_class`, `asleep_minutes`, `vent_fan`) with
+  their class label. It is driven by `areas()` rather than per-room inputs:
   the sensor's entity_id is discovered by existence-checking the two
-  conventions actually observed across every deployed room
-  (`sensor.<room>_state` or `sensor.<room>_room_state`), and the known-tag
-  set turned out to be a fixed, closed list of six (label, naming
-  convention) pairs used identically everywhere.
+  conventions observed across deployed rooms (`sensor.<room>_state` or
+  `sensor.<room>_room_state`), and the tag set is a fixed, closed list of
+  (label, naming convention) pairs applied identically everywhere.
 
-**A caught bug, worth recording as a pattern:** the first version of
-`self_label_resync` tried to build a "does this entity exist" lookup by
-materializing the *entire house's* entity list into one Jinja variable
-(`states | map('entity_id') | list`) — this blew Home Assistant's
-262,144-character template output limit and took the whole consolidated
-automation down with it on the very next resync trigger. Caught live within
-minutes via `zen_dojotools_ha_log_viewer`, fixed by checking existence
-per-candidate with `states[entity_id] is not none` instead of ever
-building the full list. The general lesson: HA's Jinja sandbox has a hard
-output-size ceiling, and "gather everything once, filter in Python-ish
-Jinja" is not a safe pattern at whole-house scale — check the one thing you
-need, not the universe you're checking it against.
+**Design constraint:** existence checks in this script test one candidate
+entity_id at a time (`states[entity_id] is not none`). HA's Jinja sandbox
+has a hard output-size ceiling (262,144 characters); materializing the full
+house's entity list into a single Jinja variable to test membership against
+it is unsafe at whole-house scale and must never be done here.
 
 ---
 

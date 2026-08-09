@@ -148,11 +148,13 @@ more important one.
 ╠═══════════════╬════════════════════════════════════════════════╣
 ║ 😴 ASLEEP     ║ Someone's asleep in here.                       ║
 ╠═══════════════╬════════════════════════════════════════════════╣
-║ ⏳ HOLD       ║ The room isn't confident enough to say Occupied ║
-║               ║ or Vacant yet: something's ambiguous, or a      ║
-║               ║ policy (entertaining/guest mode) says to be     ║
-║               ║ conservative right now. Resolves itself once    ║
-║               ║ there's a real answer.                          ║
+║ ⏳ HOLD       ║ Either presence is unconfirmed (motion with no  ║
+║               ║ door to corroborate it), or a policy is         ║
+║               ║ deliberately keeping the room conservative      ║
+║               ║ (entertaining/guest mode active) regardless of  ║
+║               ║ what the sensors already know. Clears on new    ║
+║               ║ information or the policy switch turning off —  ║
+║               ║ never on a timer.                                ║
 ╠═══════════════╬════════════════════════════════════════════════╣
 ║ 🟢 OCCUPIED   ║ Somebody's in here. Presence detected, no       ║
 ║               ║ specific activity known.                        ║
