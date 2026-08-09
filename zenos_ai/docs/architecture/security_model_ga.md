@@ -71,10 +71,13 @@ These are not configuration — they are hard constants in the resolution engine
 
 ### caller_token Plumbing
 
-All 15 AI-accessible DojoTools scripts accept and echo a `caller_token` field. The field
-is a noop at GA — it passes through and is reflected in the response. The plumbing path
-from MCP tool call through to response is complete. SP1 enforcement requires no changes
-to script internals.
+`caller_token` accept-and-echo plumbing has grown with the tool surface since GA —
+39 scripts under `packages/zenos_ai/dojotools/` carry it as of 2026-08 (verified via
+`grep -rl caller_token`), up from the 15 present at the original 4.5.0 'Meridian' GA
+snapshot (see `20_tool_invocation_and_security.md` §GA Implementation Note for that
+historical figure). The field remains a noop — it passes through and is reflected in
+the response. The plumbing path from MCP tool call through to response is complete.
+SP1 enforcement requires no changes to script internals.
 
 ### Profile Snapshot and Restore
 

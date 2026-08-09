@@ -180,6 +180,10 @@ This ensures that:
 > The policy plane, HyperIndex claims engine, and caller_token enforcement are all plumbed at GA.
 > SP1 wires the external provider and flips the switch. One setting enables full enforcement.
 > See also: [`security_model_ga.md`](security_model_ga.md).
+>
+> *(Historical figure — the 15 count reflects the original 4.5.0 'Meridian' GA snapshot.
+> The tool surface has grown since; see `security_model_ga.md`'s caller_token Plumbing
+> section for the current count.)*
 
 ---
 

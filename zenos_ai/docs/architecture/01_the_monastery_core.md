@@ -2,6 +2,9 @@
 
 *Component Architecture of Friday's Cognitive Engine*
 
+*(Updated 2026-08-04: `zen_summary` drawer key casing corrected — was documented
+as `ZEN_SUMMARY`; the actual cabinet key is lowercase throughout the codebase.)*
+
 ---
 
 ## **1.1 Introduction**
@@ -98,19 +101,19 @@ Each component Kata is compact enough to be included in Friday's active prompt c
 
 **SuperSummary** — `zen_dojotools_supersummary`
 
-The SuperSummary is a higher-order producer. It does not reason about individual components; it consolidates all active component Katas into a single whole-home cognitive snapshot called `ZEN_SUMMARY`.
+The SuperSummary is a higher-order producer. It does not reason about individual components; it consolidates all active component Katas into a single whole-home cognitive snapshot called `zen_summary`.
 
 The SuperSummary:
 
 1. Detects which Kung Fu master switches are active using the `Kung Fu System Switch` label.
 2. Reads each active component's current Kata from the Kata cabinet.
-3. Optionally injects system-wide context: Friday's purpose, directives, cortex, and the previous `ZEN_SUMMARY`.
+3. Optionally injects system-wide context: Friday's purpose, directives, cortex, and the previous `zen_summary`.
 4. Constructs a consolidating prompt instructing normalization and cross-component synthesis.
 5. Invokes a Worker Monk with the consolidated payload.
-6. Writes the result as the `ZEN_SUMMARY` drawer in the Kata cabinet.
+6. Writes the result as the `zen_summary` drawer in the Kata cabinet.
 7. Emits a completion event listing active components and write status.
 
-The `ZEN_SUMMARY` is Friday's primary high-level world model. It is the cognitive artifact she loads most frequently when constructing context for a conversation or decision.
+The `zen_summary` is Friday's primary high-level world model. It is the cognitive artifact she loads most frequently when constructing context for a conversation or decision.
 
 ### **1.3.5 Kronk — The Curator**
 
@@ -145,14 +148,14 @@ Event or Schedule
       ↓
   SuperSummary (on schedule or threshold)
       ↓
-    ZEN_SUMMARY written to Kata Cabinet
+    zen_summary written to Kata Cabinet
       ↓
-  Friday loads ZEN_SUMMARY at prompt compile time
+  Friday loads zen_summary at prompt compile time
 ```
 
 Every step in this pipeline is observable via the Home Assistant event bus. Every Kata is inspectable in the Kata cabinet. The entire cognitive history of the system is recoverable from cabinet state.
 
-The pipeline runs continuously. The Scheduler drives it on a 15-minute cycle for all active components, with additional triggers from meaningful state changes — occupancy shifts, alarm transitions, door events, energy anomalies. Each trigger produces fresh Katas, which accumulate into an updated `ZEN_SUMMARY` on the next consolidation pass.
+The pipeline runs continuously. The Scheduler drives it on a 15-minute cycle for all active components, with additional triggers from meaningful state changes — occupancy shifts, alarm transitions, door events, energy anomalies. Each trigger produces fresh Katas, which accumulate into an updated `zen_summary` on the next consolidation pass.
 
 Nothing in this pipeline is opaque. Nothing is irreproducible.
 
@@ -163,7 +166,7 @@ Nothing in this pipeline is opaque. Nothing is irreproducible.
 The Kata cabinet is the Monastery's primary storage surface. It is a standard ZenOS FileCabinet volume used exclusively for:
 
 * one drawer per active Kung Fu component, keyed by component slug
-* the `ZEN_SUMMARY` drawer — the whole-home consolidation artifact
+* the `zen_summary` drawer — the whole-home consolidation artifact
 * the `kata_template` drawer — the shared schema used by all Kata Producers
 * the `zen_scheduler` drawer — the Abbot's operational record
 

@@ -2,6 +2,18 @@
 
 *(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
 
+*(Content accuracy pass 2026-08-04: chapters 01, 04, 05, 06, 07, 08, 10, 14, 15,
+20, and security_model_ga corrected against current code. Fixed: stale
+entity/script names, fabricated dotted event types, a wrong validation
+signature constant, and several design-target claims (identity_hash
+enforcement, Abbot-level ACL enforcement, ch06/ch14's task-economy/scoring
+model) reframed as not-yet-implemented rather than current behavior. Redirector
+(ch10) documented as shipped — the Cabinet package, `zen_dojotools_filecabinet`.
+Abbot (ch06/ch10/ch14) documented as shipped — the Scheduler + Dispatcher
+working jointly, not a single component. "Monk Summaries" Tier 2 (ch07)
+corrected to `trapper_keeper`, its real and leaner realization; "Monk" clarified
+as the inference-execution step used inside every tier, not a separate layer.)*
+
 <img 
   src="https://github.com/user-attachments/assets/4b337f77-5c3e-4704-9d29-0749b5b7a187"
   width="512"
@@ -86,9 +98,12 @@
 ## **21. Developer Taxonomy and Component Standards**
 * **[21_Developer_Taxonomy_and_Component_Standards.md](./21_Developer_Taxonomy_and_Component_Standards.md)** — Canonical component classes (DojoTool, AdminTool, Root, Sutra, Stack, Codex, KFC, Boot Orchestrator), Stripes, exposure rules, packaging conventions, and the design decision guide for core developers, plugin authors, and reviewers.
 
+## **22. Room Manager v3 & REFLEX: The Living Room-State Engine**
+* **[22_Room_Manager_v3_REFLEX.md](./22_Room_Manager_v3_REFLEX.md)** — The concrete implementation of Chapter 11's RoomState theory: the per-room cascade (`room_state.yaml`), the REFLEX event bus (Signal Dispatcher → scene resolution → nightlight), opt-in constructs (Control Burnout, TV Sleep Timer, Vent Fan Auto), and the one-automation/one-script consolidation. Distinct from `zen_dojotools_room_manager` (RoomReg, spatial topology) — see [components/room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md) for the practical/agent reference and [getting_started/room_manager_operators_manual.md](../getting_started/room_manager_operators_manual.md) for the plain-language operator's manual.
+
 ---
 
-## **Appendices (Future Work: Sections 22–30)**
+## **Appendices (Future Work: Sections 23–30)**
 
 Reserved for:
 
