@@ -244,10 +244,16 @@ will make the room think a robot is in there when it isn't.
 Occupied/Vacant. A bedroom wants the full stack: Asleep, nightlight, TV
 sleep timer. Match the features to how the room is actually used.
 
-**Ensuite rooms cascade up on purpose.** If your bathroom keeps making
-your bedroom read Occupied even when you're clearly asleep, that's
-correct, working-as-designed behavior. Your own direct Asleep state in
-the bedroom always wins regardless.
+**Ensuite rooms cascade up on purpose.** Linking a bathroom to its
+bedroom as a child room sets up a parent/child relationship: whatever
+the child reports gets hardwired in as true for that same slot in the
+parent. Net effect — your bathroom can hold the bedroom's lights on
+so it doesn't go dark while you're brushing your teeth. But if you get
+up in the middle of the night and the bathroom motion trips Occupied,
+your partner can stay asleep in their favorite sleep scene, because
+Asleep sits higher on the ladder than Occupied — the bedroom's own
+direct Asleep state always wins regardless of what the child room is
+reporting.
 
 ### Worked examples: setting up common room types
 
