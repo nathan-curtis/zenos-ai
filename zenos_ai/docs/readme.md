@@ -105,6 +105,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `components/room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
 * `components/room_manager_v3_reflex.md` — Room Manager v3 & REFLEX: per-room state cascade, wasp-hold, entertaining/guest hold, asleep window, REFLEX event bus
 * `plugins/emporia_vue_codex.md` — Plant Codex: Emporia Vue circuit-level energy monitoring
+* `plugins/eg4_web_monitor_codex.md` — Plant Codex: EG4 Web Monitor solar/battery monitoring
 * `plugins/span_panel_codex.md` — Plant Codex: SPAN Panel circuit-level energy monitoring
 * `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate, label_suggest (SPAN/Emporia circuit labeling)
 * `components/media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
