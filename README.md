@@ -11,10 +11,17 @@ Let's automate everything that isn't nailed down.
 And a few things that are.
 
 **Stable: 2026.8.0 'Chef'** | Previous: 2026.7.1 (patch on 2026.7.0 'Neo')
+**Beta: 2026.9.0 'Steel Magnolia'** — ETA Saturday, 2026-09-05. See [release notes](zenos_ai/docs/releases/steel_magnolia.md).
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
+
+**What's in 2026.9.0 'Steel Magnolia' (beta):** *The duck looks calm.* Room Manager v3 — a full rewrite of per-room state, replacing the old `checking_timer` wasp-hold hack with a real wasp-in-a-box model, plus opt-in `entertaining_hold`/`guest_hold` and a nighttime-gated asleep window. ZQ-1 query validation surfaces bad `filter_json` keys instead of silently returning nothing. Recorder history stats stop lying about energy sensors (state-class-aware bucket types, `period_total_24h`). Architecture docs checked chapter-by-chapter against actual code.
+
+→ [Release Notes — Steel Magnolia](zenos_ai/docs/releases/steel_magnolia.md)
+
+---
 
 **What's in 2026.8.0 'Chef':** *Yes, chef.* Taskmaster becomes a real cross-backend expediter instead of a label pattern. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch — weekly cost rollups, waste logging, event menu scaling, prep-time briefing. A platform-wide identity gate (SP1) backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager now share one guest/occupant-prefs lookup that Kitchen's allergen flagging reads from.
 
