@@ -459,7 +459,8 @@ to your AI the way it's described here, and it does the wiring.
    These three are hardcoded checks today, not an open template
    slot — there's no way to wire your own arbitrary condition onto
    the Hold tier yet (the generic `hold` label is a different
-   mechanism — see below, it floors at Occupied, not Hold). Ask
+   mechanism — see below, it prevents the room from dropping out of
+   Occupied, it doesn't put the room in Hold). Ask
    "why is the [room] hold right now" and `last_trigger` tells you
    which of the three is actually driving it — same word on the
    dashboard, three different reasons underneath, the game never
