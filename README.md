@@ -23,51 +23,15 @@ And a few things that are.
 
 ---
 
-**What's in 2026.8.0 'Chef':** *Yes, chef.* Taskmaster becomes a real cross-backend expediter instead of a label pattern. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch — weekly cost rollups, waste logging, event menu scaling, prep-time briefing. A platform-wide identity gate (SP1) backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager now share one guest/occupant-prefs lookup that Kitchen's allergen flagging reads from.
+**2026.8.0 'Chef'** — *Yes, chef.* Taskmaster becomes a real cross-backend expediter. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch. SP1 identity gate backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager share one guest/occupant-prefs lookup.
 
-**The Expediter**
-- **Taskmaster** (`zen_dojotools_taskmaster`, new file) — progressive-enhancement task routing: O365 To Do base tier, auto-upgrades to Radar tickets or Grocy chores when configured, CRM-aware when a contact/company is explicit. `briefing` context block now carries Kitchen's `prep_schedule` proactively. Medications hard-capped at urgency 3, no override path.
-
-**Know Before You Promise (Kitchen)**
-- **Fulfillment & costing** — `recipe_fulfillment`/`recipe_consume` check and deplete real stock with real unit conversions. `recipe_cost`/`kitchen_brief` cost recipes and whole weeks against real price history, honestly bounded when data's missing.
-- **Executive chef batch** — `waste_log`/`waste_summary` (Grocy-native, no shadow ledger), `event_menu_create` (guest-count scaling + allergen flags), `prep_schedule_set`/`prep_brief`, `leftovers_to_stock`.
-
-**Identity Gate**
-- **`resolve_caller_identity`** — the platform chokepoint every gated action now asks instead of improvising its own default-agent fallback. Fails closed by policy; a continuity switch (`zenos_sim_mode_override`, on by default) keeps current behavior until you deliberately opt in to the new gate.
-- **Portainer container control** — first tool wired through the gate. Read is open; restart/start needs a cert; stop/remove needs a cert plus a live admin ack.
-
-**Shared Context**
-- **Room Manager `room_occupant_prefs`** — guest-stay-aware, falls back to household occupants. Now the shared lookup behind both Kitchen's allergen flagging and Twenty CRM's guest prefs.
-- **Twenty CRM v1.10.0** — structured stay/appointment/service-request lifecycle replacing calendar-only stays.
-
-→ [Release Notes — Chef](zenos_ai/docs/releases/chef.md)
+Release notes: [Chef](zenos_ai/docs/releases/chef.md)
 
 ---
 
-**2026.7.1** — patch on Neo: KF5 self-registering tools, Firefly III codex tier (depreciation + COGS), Grocy fixes and coaching features, Battery Notes Lens Bus provider.
+**2026.7.0 'Neo'** (+ 7.1 patch) — *I know Kung Fu.* CabCeption (FileCabinet v6.2.0 nested drawer trees), Tapestry drawer composer, Tool Manifest self-description, Lens Bus `stack=` routing, five new plugins (Zammad, Wiki.js, Paperless-NGX, Twenty CRM, Firefly III), ZenZork. 7.1 patch adds KF5 self-registering tools, Firefly III depreciation/COGS codex tier, Grocy fixes, Battery Notes Lens Bus provider.
 
 Release notes: [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md)
-
----
-
-**What's in Neo:** *I know Kung Fu.* Neo turns a collection of well-made tools into a system that knows itself, talks to itself, and reasons from live structured memory.
-
-**Graph Memory**
-- **CabCeption — FileCabinet v6.2.0** — nested drawer trees via `/` path separator. VirtualDrawer (softlink to another path), LiveDrawer (fires a tool call on read, warm/cold cache, never empty). Every drawer is a graph node with meta, labels, and children at every level.
-- **Tapestry** — `weave`/`weave_preview`/`weave_save`: compose any combination of cabinet drawers from any cabinets into a single live nested dict. Store the definition once as a labeled drawer. Friday navigates to a name; the name becomes the context.
-
-**Self-Knowing Tools**
-- **Tool Manifest** — `zenos_manifest.jinja` + `MF.tool_manifest()`. Every tool self-describes. Manifest broker v6.0.0 aggregates by namespace discovery. The system knows what it is.
-- **Cortex 43 — Rule Zero** — DojoTools supersede all HA built-ins. Not preference. Authority. GetLiveContext overridden. Domain routing table in directives.
-- **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter.
-
-**Connected Knowledge**
-- **Lens Bus `stack=` routing** — Library v6.10.0 routes generic verbs to registered providers: `radar` (Zammad), `paperless`, `wiki`, `media`. Unified works catalog (`section=catalog item_type=book|game|…`) + compounding capability tiers.
-- **Media Manager v6.0.0 (NyxMau5)** — `now_playing` feeds room context with full playback fidelity. `stacks_by_anchor` returns evidence with `playback_hint`. Set prefs once in Profile Editor; every future Lens call auto-applies them.
-- **New plugins** — Zammad (service desk), Wiki.js, Paperless-NGX, Twenty CRM, Firefly III. Five new `!secret` keys.
-- **ZenZork v1.6.0** — text adventure on live Room Manager topology. DUNGEONMIND narrator. Quest system, item commands, character sheet in AI user cabinet.
-
-→ [Release Notes — Neo](zenos_ai/docs/releases/neo.md)
 
 ---
 
