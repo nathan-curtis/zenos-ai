@@ -190,6 +190,13 @@ None of it requires a code editor or a YAML file — every feature above
 turns on the same way: labels and helpers, done through the normal HA
 UI. Here's how.
 
+**Why you're doing this at all:** we can't see your house until you
+tell us where things are. This is that telling — once, per room. There's
+no ongoing homework: describe a room here and it's described for good.
+Every feature this system ships from now on reads the same labels you
+already set, so a new feature down the road costs you a label, not
+another setup pass.
+
 1. **Tag a sensor as a signal.** Settings → Areas, Labels & Zones → Labels. Create a label matching the signal type you need (`motion`, `occupied`, `engaged`, `asleep`, `bed_occupancy`, `hold`, `wasp_door`, etc.) if it doesn't already exist. Then open the sensor itself (Settings → Devices & Services → Entities, find it, click in), and add TWO labels to it: the signal type AND the room's own label (which should already match the room's Area name). Both labels, same entity, every time.
 2. **Create a helper** (timer, latch, etc.). Settings → Devices & Services → Helpers → "+ Create Helper". Pick the type (Timer, Number, Toggle/Boolean, Select). Give it whatever name you like. Once created, go tag it the same way as Step 1: the class label (`room_timer`, `emergency_latch`, `asleep_minutes`, etc.) plus the room's own label.
 3. **Deploy the room's state sensor** (once per room). Settings → Automations & Scenes → Blueprints tab → find "ZenOS Room Manager v3: Room State" → the ⋮ menu → Create. Fill in: Room (pick the Area), Friendly Name (e.g. "Office State"), Unique ID (e.g. "office_state"), and Trigger Entities: EVERY entity you tagged in Steps 1 and 2 for this room, listed explicitly. Miss one and it just won't react when that entity changes; nothing breaks, it's simply blind to that one signal.
