@@ -107,20 +107,14 @@ Every room is always in exactly one of nine states. Higher on this list
 always beats lower. If two things are true at once, the room reports the
 more important one.
 
-> **Known issue:** Asleep should outrank Engaged (a room with media left
-> playing while someone's actually asleep should report Asleep, not
-> Engaged) — the graphic above shows the intended order. Today's live
-> system still has this backwards; fix is tracked and pending. The
-> table below reflects current, as-shipped behavior until that lands.
-
 | State | What it means |
 |---|---|
 | 🚨 **Emergency** | Smoke, CO, water leak, or an alarm. Wins, always, even over Paused. Safety is never silenced. |
 | ⏸ **Paused** | A human hit the brakes. Only a human can release it. The room ignores automation while this is set. |
 | 🤖 **Automation** | Your AI (or another automation) has taken the wheel for this room on purpose, temporarily. |
 | 🧹 **Cleaning** | The robot vacuum is in here right now. |
-| ⚡ **Engaged** | Someone is ACTIVELY using this room. Media is playing, a desk is in active use. Stronger than just "someone's here." |
-| 😴 **Asleep** | Someone's asleep in here. |
+| 😴 **Asleep** | Someone's asleep in here. Beats Engaged: a device staying active nearby never overrides a real Asleep signal in the same room. |
+| ⚡ **Engaged** | Someone is ACTIVELY using this room. Media is playing, a desk is in active use. Stronger than just "someone's here," but not stronger than the room's own Asleep. |
 | ⏳ **Hold** | One of exactly three lines is currently high: the wasp flag (motion with no door-open to confirm entry), Entertaining mode (room opted in), or Guest mode (room opted in). Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
 | 🟢 **Occupied** | Somebody's in here. Presence detected, no specific activity known. |
 | ⚪ **Vacant** | Nobody's in here. The default. Nothing wrong with it. Most rooms are Vacant most of the day. |

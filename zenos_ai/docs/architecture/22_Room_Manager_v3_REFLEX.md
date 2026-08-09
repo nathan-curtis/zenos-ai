@@ -44,7 +44,7 @@ the structured "what does this mean" decode of the room's raw signals.
 ### Cascade order (highest wins)
 
 ```
-emergency > manual override (room_control_manager) > engaged > asleep >
+emergency > manual override (room_control_manager) > asleep > engaged >
 child-engaged > hold (wasp / entertaining / guest) > occupied (or hold) > vacant
 ```
 
@@ -58,8 +58,8 @@ cleanly or lands in `hold`.
 | `emergency` | Something in this room needs immediate attention (smoke/CO/moisture/siren). Wins even while paused — life-safety visibility is never silenced. | `emergency_latch` (input_boolean, human/agent ack-only clear) |
 | manual override → `paused`/`automation`/`cleaning`/`vacant`/`occupied`/`engaged`/`asleep`/`hold` | A human/agent has explicitly picked one of these via `room_control_manager` (the select). Outranks everything below it except emergency; releases back to `Auto`, or is superseded by a fresh `wasp_door` open (see §22.9). | `room_control_manager` select |
 | `cleaning` | A vacuum is actively working this room. | manual override, set by the Cleaning Dispatcher |
-| `engaged` | Active, direct use — someone is *doing something* here right now (media playing, a monitored desk dock in use). Outranks mere presence. | live signal, or the shared room_timer decaying in class `engaged` |
-| `asleep` | Someone's asleep here. Own direct signal always beats a child room cascading up — using the ensuite mid-sleep must never wake the parent. Auto-fire is night→wake window-gated by default — see §22.9. | live signal (window-gated), room_timer decaying in class `asleep` (8h default), or manual override via `room_control_manager` (never window-gated) |
+| `asleep` | Someone's asleep here. Beats direct Engaged in the same room — a device staying active nearby must never override a real Asleep signal. Own direct signal always beats a child room cascading up — using the ensuite mid-sleep must never wake the parent. Auto-fire is night→wake window-gated by default — see §22.9. | live signal (window-gated), room_timer decaying in class `asleep` (8h default), or manual override via `room_control_manager` (never window-gated) |
+| `engaged` | Active, direct use — someone is *doing something* here right now (media playing, a monitored desk dock in use). Outranks mere presence, but not a direct Asleep signal in the same room. | live signal, or the shared room_timer decaying in class `engaged` |
 | `hold` | Unresolved presence or a deliberate conservative-hold policy — three independent sources, same visible state, distinguishable via `last_trigger`. See §22.9. | wasp_flag (self-latched), entertaining_hold, guest_hold |
 | `occupied` | Presence detected, no specific activity signal, or a child room is non-vacant, or a `hold`-labeled entity is active ("fridge door mode" — floors at Occupied, no clock, instant fall-through on close). | live signal, room_timer decaying in class `occupied`, child cascade, or hold |
 | `vacant` | Nothing is true. Default. | — |
@@ -265,7 +265,7 @@ For an agent orienting itself to a room-aware task, the short version:
 
 * Every deployed room has exactly one state sensor (`sensor.<room>_state`
   or `sensor.<room>_room_state`) whose `state` attribute is one of
-  `emergency / paused / automation / cleaning / engaged / asleep / hold
+  `emergency / paused / automation / cleaning / asleep / engaged / hold
   / occupied / vacant`. (`checking` does not exist in this system.)
   This is the authoritative answer to "what is this
   room doing right now" — don't infer it from raw motion/media entities

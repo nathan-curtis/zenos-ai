@@ -42,7 +42,7 @@ Taskmaster got the glow-up in Chef — a new file, a new expediter identity, top
 
 **Cascade order, current:**
 ```
-emergency > manual override (room_control_manager) > engaged > asleep >
+emergency > manual override (room_control_manager) > asleep > engaged >
 child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door hold) > vacant
 ```
 

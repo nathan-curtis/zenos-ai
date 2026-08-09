@@ -252,7 +252,7 @@ states.sensor.<room>_state
 ### Cascade order (highest wins)
 
 ```
-emergency > manual override (room_control_manager) > engaged > asleep >
+emergency > manual override (room_control_manager) > asleep > engaged >
 child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door hold) > vacant
 ```
 
