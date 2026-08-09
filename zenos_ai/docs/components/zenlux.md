@@ -1,6 +1,6 @@
 # ZenOS-AI ZenLux — Lighting Manager
 
-**Version:** 5.1.0
+**Version:** 5.2.0
 **Script:** `zen_dojotools_lights`
 **Codename:** ZenLux
 
@@ -106,6 +106,7 @@ Confirm all role slots resolve and advisory is clear.
 | `rgb_set` | Set RGB color as `r,g,b` (0–255 each, e.g. `255,100,0`). RM advisory. |
 | `scene_set` | Activate HA scene entity OR apply intent preset. Intent presets: `movie` / `sleep` / `morning` / `work` / `away` / `party` with pre-defined brightness + color_temp. Supports `transition`. |
 | `bleed_set` | Primary room scene + propagate to adjacent rooms via Room Manager topology. See Bleed below. |
+| `reflex_sync` | Fires whatever Room Manager v3's REFLEX Stage 2 currently resolves for this room's live state, by calling `zen_dojotools_room_manager mode=reflex_wire` and reading `wired_matrix` — not a separate re-derivation of resolution logic. Not gated by the room-lock check below: a locked room's own resolved state already accounts for the lock (it fires that state's own wired scene, which isn't a violation of the lock, it *is* the lock's scene). |
 
 ### Preferences
 
@@ -153,6 +154,7 @@ Requires Room Manager topology to be populated (portals with `light_tx` values).
 | Integration | Behavior |
 |-------------|---------|
 | **Hold Gate** | `brightness_set`, `color_temp_set`, `rgb_set`, `scene_set`, `prefs_apply`: hard-blocked (`status: blocked, reason: rm_hold`) when RM state is `hold` or `pause`. |
+| **Room Lock Guard (RM v3, 5.2.0)** | `scene_set`/`brightness_set`/`color_temp_set`/`rgb_set`/`bleed_set`/`prefs_apply` also check `room_control_manager` directly — blocked (`error: room_locked`) while it reads `Paused`/`Automation`/`Cleaning`, or while any `hold`-labeled entity for the room is active (a door propping the room open, "fridge door mode"). Pass `force=true` for an explicit human override, or use `reflex_sync` instead, which already accounts for the lock. Separate mechanism from the older Hold Gate row above — same convention `room_state.yaml`'s own cascade uses. |
 | **Active Advisory** | When RM state is not Vacant: all hardware writes include advisory "Room Manager active — occupancy automation may override this command." |
 | **Burnout Timer** | `discover` exposes RM occupancy timer (`timeremain`, `seconds`) from the room's sensor. |
 | **Bleed Topology** | `bleed_set` reads `room_topology` from household cabinet — portals + boundary_links with `light_tx`, `sound_tx`, `normally`, `to`, `type`. |

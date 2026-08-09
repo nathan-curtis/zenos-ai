@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.5.0
+**Version:** 5.6.0
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
@@ -46,6 +46,7 @@ All sections return `available: false` when entities are missing or unavailable.
 | `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`) |
 | `managed` | All Grocy-provisioned machines — chores due, stock summary, products grouped by `ha_labels` root. Any machine bootstrapped via `provision_bom` appears automatically. `managed_labels` scopes to specific machines (CSV). |
 | `validate` | Slot resolution report — entity_id, pinned, raw_state, ok |
+| `label_suggest` | Scans a named integration's entities (`integration=span_panel` or `integration=emporia_vue`) and suggests `zen_plant_*`/`main_panel`/`sub_panel`/`consumed_energy` labels by device_class + name pattern. Preview-by-default; pass `confirm_action=true` to apply. Scoped to one integration at a time — Plant's domain is house-wide, so a blind device_class scan across every smart plug/appliance would flood with noise. Fills the gap between Room Manager's `label_discover` (area-scoped) and Media Manager's `label_suggest` (room-scoped). See [Plant Codex — Emporia Vue](../plugins/emporia_vue_codex.md) / [Plant Codex — SPAN Panel](../plugins/span_panel_codex.md). |
 | `ignore` | Tag entity with `zen_plant_ignore` (creates label if missing). Param: `target_entity`. |
 | `unignore` | Remove `zen_plant_ignore` from entity. Param: `target_entity`. |
 | `help` | Full discovery reference (returned inline, no docs needed) |

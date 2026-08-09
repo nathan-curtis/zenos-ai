@@ -169,7 +169,7 @@ zen_dojotools_security_manager:
 
 | Component | Role |
 |---|---|
-| `security_manager` | Rollup — seeds from `zen_dojotools_room_manager mode=home_overview`, synthesizes panel + perimeter + camera cache into one picture |
+| `security_manager` | Rollup — seeds from `zen_dojotools_room_manager mode=home_overview`, synthesizes panel + perimeter + camera cache into one picture. The rollup's own summarizer instructions now point at `signal.active_rooms[].v3_occupancy` (Room Manager v3's live per-room state, null if that room has no v3 sensor deployed) as a sharper occupancy signal than the coarse lights/motion heuristic already driving `active_rooms[]` membership — prefer it when present. |
 | `security_perimeter` | Sub-component — door/lock/garage state transitions, security-context filtered (panel armed or Night mode) |
 | `security_panel` | Sub-component — DSC alarm state machine: `panel_state`, `arming_mode`, `zones`, `system_health` |
 | `security_cameras` | Sub-component — which cameras triggered, `detected_subjects`, `activity_type` |

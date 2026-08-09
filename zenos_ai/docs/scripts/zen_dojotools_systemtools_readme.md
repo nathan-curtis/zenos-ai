@@ -316,6 +316,17 @@ All API calls go to `127.0.0.1:8123` (localhost only). Auth token is read from `
 
 ---
 
+## Supervisor API Probe Infrastructure
+
+Internal, not conversation-agent-exposed. Backs `zen_log_enable` and any future mode that needs Supervisor-level access (container log level, add-on control) rather than Core's own REST API.
+
+- **`zen_ha_cli_probe`** (`shell_command`) — read-only check of whether the Supervisor `ha` CLI binary is reachable from Core's container. Confirmed **not reachable, on every install checked so far** — this is why Supervisor access goes through the REST API instead of shelling out to the CLI.
+- **`zen_supervisor_token`** (`shell_command`) — reads `SUPERVISOR_TOKEN` per-call from the container environment. Never stored; passed straight into the following request.
+- **`zen_supervisor_get`** / **`zen_supervisor_post`** (`rest_command`) — authenticated Supervisor REST API calls using the token above.
+- **`mode=zen_supervisor_probe`** — read-only diagnostic. Confirms the Supervisor REST API auth path is actually working via `GET core/info`. Use this to tell "Supervisor access is broken" apart from "the real command I'm trying to run is broken" before assuming the latter.
+
+---
+
 ## Home Mode
 
 Home mode is the system's contextual heartbeat. Friday reads `sensor.zen_home_mode` to understand what phase of the day it is, and the Scheduler uses home mode changes as a trigger for summarization.
@@ -387,6 +398,8 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 | `secrets.yaml` → `ha_bearer` | HA API auth token |
 | `rest_command.ha_api_get` / `ha_api_post` | HA REST API calls |
 | `shell_command.zen_log_*` | Log file access |
+| `shell_command.zen_ha_cli_probe` / `zen_supervisor_token` | Supervisor CLI reachability check + per-call token read |
+| `rest_command.zen_supervisor_get` / `zen_supervisor_post` | Authenticated Supervisor REST API calls |
 | `zone.home` | Presence detection for Away mode |
 | `input_datetime.zen_*` | Schedule anchors and time windows |
 | `update.*` entities | Update install/skip targets |
