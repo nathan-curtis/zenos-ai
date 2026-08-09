@@ -23,7 +23,7 @@ how does it connect to the house physically"*; Room Manager v3 answers
 Every prior generation of this system (legacy, v2) required per-room wiring:
 new automation, new blueprint call, new hardcoded entity list, for every room,
 every time a feature was added. Room Manager v3 was built against one
-standing directive from Nathan, restated at every step of its construction:
+standing directive from the household operator, restated at every step of its construction:
 
 > "The room blueprint should support all possible configurations. The only
 > thing that should be different is add timer and label. You have room
@@ -116,7 +116,7 @@ coordination.
 
 > "At every resolver sensor change fire a zen room state event, then capture
 > said event, and if we have a matching scene with the proper label
-> intersect, fire it." — Nathan, on why this is event-bus decoupled rather
+> intersect, fire it." — the design directive behind why this is event-bus decoupled rather
 > than one giant reactive automation.
 
 **Stage 1 (Emitter)** lives *inside* `room_state.yaml` itself, not as a
@@ -208,7 +208,7 @@ helper entity present, checked by existence at fire time:
 Built 2026-08-05 through 2026-08-06 as three separate dispatcher files
 (Signal, Cleaning, REFLEX) plus four opt-in per-room blueprints, the system
 originally required per-room `use_blueprint:` calls for anything beyond the
-core cascade. Nathan's review of the finished build was blunt:
+core cascade. The build review of the finished build was blunt:
 
 > "Why can they not be one blueprint. The room blueprints should support all
 > possible configurations... Consolidate my blueprints and consolidate the
