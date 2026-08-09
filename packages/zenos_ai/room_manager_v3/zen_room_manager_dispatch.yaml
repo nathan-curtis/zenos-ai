@@ -1,0 +1,1111 @@
+###############################################################################
+# ZenOS Room Manager v3 — Consolidated Dispatcher (2026-08-07, rev 4)
+#
+# REV 4: folded room_state_self_label.yaml in too (Nathan: "Room state self
+# label - fold that in.. doesn't need to be separated"). That blueprint was
+# per-room parameterized (room, sensor_friendly_name, known_tags) via its own
+# use_blueprint call in all 19 room files. Replaced with mode=self_label_resync
+# on zen_reflex_controller, driven by areas() instead — the room state
+# sensor's entity_id follows one of exactly two conventions actually observed
+# across every deployed room (sensor.<room>_state or sensor.<room>_room_state,
+# depending on whether that room's friendly_name happened to include the word
+# "Room" — a pre-existing inconsistency, not introduced here), and the
+# known_tags set turned out to be a closed list (label, naming-
+# convention) pairs used identically everywhere (room_control/
+# room_control_manager/room_timer/room_timer_class/asleep_minutes/
+# vent_fan). Existence-check
+# per candidate, same safe-no-op pattern as TV Sleep Timer / Vent Fan already
+# use. blueprints/automation/zenos/room_state_self_label.yaml deleted; its
+# use_blueprint call removed from all 19 room package files.
+#
+# CONSOLIDATION (Nathan: "Consolidate my blueprints and consolidate the
+# automations... the room blueprints should support all possible
+# configurations."). Rev 1 merged 3 dispatcher files + 3 opt-in blueprints
+# down to 1 FILE but still 11 separate automation entities (Nathan: "What
+# are all of these not in ONE. I don't want 86000 automations for rm. I
+# want ONE"). Rev 2 merges all 11 into ONE automation entity,
+# 'automation.zenos_room_manager_dispatch', branching on trigger.id via a
+# top-level choose:. The three "recompute everything from scratch" resync
+# passes (room timer reconciliation, cleaning control sync, control burnout
+# sync) are factored into helper scripts so they aren't tripled across the
+# multiple events that each can fire from (global resync events + their own
+# dedicated state-watching template trigger) — same DRY reasoning as
+# zen_signal_dispatch already being a script instead of inlined 4x.
+#
+# mode: parallel (max: 30) — required because Vent Fan Auto On/Off holds a
+# multi-minute delay: per room-transition; a single-instance automation
+# would queue/block every OTHER trigger type behind that delay. All other
+# branches are either stateless resyncs (idempotent — a duplicate concurrent
+# pass converges to the same answer, at worst redundant no-op writes) or
+# keyed to the one entity_id in that specific event's payload, so parallel
+# execution across branches is safe. This is a real (small) behavior change
+# from rev 1's per-automation single-instance queuing, traded for one entity
+# instead of eleven — flagged here, not hidden.
+#
+# NO NEW LABELS (Nathan: "why new labels, reuse what we had — it's a refac,
+# shouldn't need new"): 'control_burnout' and 'vent_fan' are pre-existing
+# labels, reused as-is. Timer/duration helpers for TV Sleep and Vent Fan are
+# found by NAMING CONVENTION (timer.<room>_tv_sleep_timer,
+# input_number.<room>_fan_delay_minutes, etc.) — that convention already
+# existed hardcoded per-room in the original blueprints, just generalized
+# globally here. A room missing the helper is a safe no-op.
+#
+# Sections:
+#   0. Helper script     — ONE script, zen_reflex_controller (Nathan: "to
+#                           one reflex controller script"), mode-dispatched
+#                           like the dojotools scripts (mode=signal_dispatch
+#                           / room_timer_reconcile / cleaning_control_resync
+#                           / control_burnout_resync). Replaces what was 4
+#                           separate scripts (zen_signal_dispatch +
+#                           3 resync-pass scripts) rev 2 first split out.
+#   1. The ONE automation — automation.zenos_room_manager_dispatch, choose:
+#      branches by trigger.id:
+#        sig_start / sig_end        — purpose-trigger edges -> signal dispatch
+#        nightlight_motion          — REFLEX nightlight (motion edge, asleep)
+#        tv_sleep_media             — TV sleep timer (re)start on media edge
+#        resync                     — global resync (HA start / resolver
+#                                      refresh) -> all 3 resync-pass scripts
+#        autovac_resync             — vacuum-room sensors changed -> cleaning
+#                                      resync-pass script only
+#        control_resync             — room_control selects changed ->
+#                                      control burnout resync-pass script only
+#        timer_finished              — routes to whichever of 4 independent
+#                                      timer-expiry behaviors actually owns
+#                                      the finished entity_id (room timer /
+#                                      nightlight timer / control burnout
+#                                      timer / tv sleep timer — mutually
+#                                      exclusive by label/naming convention)
+#        reflex_event                — zen_event kind=room_state_changed ->
+#                                      REFLEX Stage 2 scene resolve, then
+#                                      Vent Fan Auto On/Off (both consume the
+#                                      same event independently)
+###############################################################################
+
+script:
+  # ═══════════════════════════════════════════════════════════════════════
+  # REFLEX CONTROLLER (2026-08-07, rev 3) — Nathan: "consolidate these...
+  # to one reflex controller script." Replaces the 4 rev-2 scripts
+  # (zen_signal_dispatch + 3 resync-pass scripts) with ONE mode-dispatched
+  # script, matching the same mode= pattern the dojotools scripts use.
+  # ═══════════════════════════════════════════════════════════════════════
+  zen_reflex_controller:
+    alias: "ZenOS — REFLEX Controller"
+    fields:
+      mode:
+        description: "signal_dispatch | room_timer_reconcile | cleaning_control_resync | control_burnout_resync | self_label_resync"
+        required: true
+      entity_id:
+        description: "mode=signal_dispatch only: the entity that just fired a purpose-trigger."
+        required: false
+      edge:
+        description: "mode=signal_dispatch only: 'start' (detected/locked/pressed/started_playing/turned_on) or 'end' (cleared/unlocked/paused_playing/stopped_playing)."
+        required: false
+    sequence:
+      - choose:
+          # ── SIGNAL DISPATCHER (2026-08-05) ──────────────────────────
+          # GLOBAL, room-agnostic. Room is detected DYNAMICALLY via
+          # area_name() against the firing entity's own labels (no
+          # hardcoded room allowlist — any room whose label matches its
+          # own area_id "just works," current or future). Every helper it
+          # writes to is discovered by LABEL, never assumed by naming
+          # convention. Untagged = safe no-op.
+          - conditions: "{{ mode == 'signal_dispatch' }}"
+            sequence:
+              - variables:
+                  _ent_labels: "{{ labels(entity_id) }}"
+              - variables:
+                  _room: >-
+                    {%- set ns = namespace(found='') -%}
+                    {%- for l in _ent_labels -%}
+                      {%- if ns.found == '' and area_name(l) is not none -%}
+                        {%- set ns.found = l -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.found }}
+              - if: "{{ _room != '' }}"
+                then:
+                  - variables:
+                      _room_ents: "{{ label_entities(_room) }}"
+                  - choose:
+                      - conditions: "{{ ('smoke' in _ent_labels or 'carbon_monoxide' in _ent_labels or 'moisture' in _ent_labels or 'siren' in _ent_labels) and edge == 'start' }}"
+                        sequence:
+                          - action: input_boolean.turn_on
+                            target:
+                              entity_id: "{{ (label_entities('emergency_latch') | intersect(_room_ents) | list | first) | default('input_boolean.does_not_exist', true) }}"
+                      - conditions: "{{ 'privacy_door' in _ent_labels or 'hold' in _ent_labels }}"
+                        sequence:
+                          - action: "input_boolean.turn_{{ 'on' if edge == 'start' else 'off' }}"
+                            target:
+                              entity_id: "{{ entity_id }}"
+                      # ASLEEP WINDOW GATE (2026-08-08, Nathan: "night through
+                      # start of wake all will autosleep... outside the
+                      # window no auto fire... folding laundry in the master
+                      # br on the bed. sensors see hamper as people"). Same
+                      # anchor clock times as room_state.yaml's
+                      # _asleep_window_hi — daytime bed_occupancy/asleep
+                      # blips (a laundry hamper on the bed, etc.) must not
+                      # arm an 8-hour asleep timer just because the visible
+                      # state gate is blocked; both paths need the guard.
+                      # PER-ROOM OPT-OUTS (2026-08-08 rev 2): autosleep_disable
+                      # kills this whole branch for the room; asleep_window_disable
+                      # skips the time check but still requires the other two
+                      # conditions. Same labels/defaults as room_state.yaml.
+                      - conditions: >-
+                          {{ ('asleep' in _ent_labels or 'bed_occupancy' in _ent_labels) and edge == 'start'
+                             and (label_entities('autosleep_disable') | intersect(_room_ents) | list | count) == 0
+                             and ((label_entities('asleep_window_disable') | intersect(_room_ents) | list | count) > 0
+                                  or now().strftime('%H:%M:%S') >= states('input_datetime.zen_night_start')
+                                  or now().strftime('%H:%M:%S') < states('input_datetime.zen_am_start')) }}
+                        sequence:
+                          - variables:
+                              _room_timer: "{{ (label_entities('room_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _current_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
+                              _nap_latch: "{{ (label_entities('nap_latch') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _nap_minutes: "{{ (label_entities('nap_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _asleep_minutes: "{{ (label_entities('asleep_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          - if: "{{ _room_timer != '' and _room_timer_class_ent != '' and _current_class != 'engaged' }}"
+                            then:
+                              - action: input_select.select_option
+                                target:
+                                  entity_id: "{{ _room_timer_class_ent }}"
+                                data:
+                                  option: asleep
+                              - action: timer.start
+                                target:
+                                  entity_id: "{{ _room_timer }}"
+                                data:
+                                  # DEFAULT 8 HOURS, NOT 30 MIN (2026-08-08,
+                                  # Nathan: "normal sleep clock is 8 HOURS").
+                                  # Also fixes a real format bug: the old
+                                  # '00:%02d:00' pattern hardcoded 00 hours
+                                  # and only ever filled the minutes slot —
+                                  # silently broken for any value >= 60
+                                  # minutes, which 480 (8h) very much is.
+                                  # Matches the correct _min // 60, _min % 60
+                                  # pattern already used for engaged duration
+                                  # above.
+                                  duration: >-
+                                    {%- set _min_ent = _nap_minutes if (_nap_latch != '' and is_state(_nap_latch, 'on') and _nap_minutes != '') else _asleep_minutes -%}
+                                    {%- set _min = (states(_min_ent) | int) if (_min_ent != '' and states(_min_ent) not in ['unknown','unavailable']) else 480 -%}
+                                    {{ '%02d:%02d:00' | format(_min // 60, _min % 60) }}
+                      - conditions: "{{ 'engaged' in _ent_labels and edge == 'end' }}"
+                        sequence:
+                          - variables:
+                              _room_timer: "{{ (label_entities('room_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _engaged_minutes: "{{ (label_entities('engaged_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _occupied_minutes: "{{ (label_entities('occupied_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          - if: "{{ _room_timer != '' and _room_timer_class_ent != '' }}"
+                            then:
+                              - action: input_select.select_option
+                                target:
+                                  entity_id: "{{ _room_timer_class_ent }}"
+                                data:
+                                  option: engaged
+                              - action: timer.start
+                                target:
+                                  entity_id: "{{ _room_timer }}"
+                                data:
+                                  duration: >-
+                                    {%- set _base = (states(_occupied_minutes) | int) if (_occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable']) else 10 -%}
+                                    {%- set _default_engaged = [_base * 2, 120] | min -%}
+                                    {%- set _min = (states(_engaged_minutes) | int) if (_engaged_minutes != '' and states(_engaged_minutes) not in ['unknown','unavailable']) else _default_engaged -%}
+                                    {{ '%02d:%02d:00' | format(_min // 60, _min % 60) }}
+                      - conditions: "{{ ('motion' in _ent_labels or 'occupied' in _ent_labels) and edge == 'start' }}"
+                        sequence:
+                          - variables:
+                              _room_timer: "{{ (label_entities('room_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _current_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
+                              _occupied_minutes: "{{ (label_entities('occupied_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          - if: "{{ _room_timer != '' and _room_timer_class_ent != '' and _current_class in ['', 'occupied'] }}"
+                            then:
+                              - action: input_select.select_option
+                                target:
+                                  entity_id: "{{ _room_timer_class_ent }}"
+                                data:
+                                  option: occupied
+                              - action: timer.start
+                                target:
+                                  entity_id: "{{ _room_timer }}"
+                                data:
+                                  duration: >-
+                                    {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
+                          # WASP CORROBORATION CHECK — RETIRED HERE (2026-08-08
+                          # rev 2, Nathan: "no need for a bool - just an attr
+                          # on the sensor"). No dispatch action needed at all
+                          # for the flag itself anymore — room_state.yaml's
+                          # own trigger-based template self-latches it via
+                          # this.attributes.get(...), reacting directly to
+                          # the same motion/wasp_door state changes already
+                          # in trigger_entities. Nothing to write here.
+                      - conditions: "{{ 'wasp_door' in _ent_labels and edge == 'start' }}"
+                        sequence:
+                          - variables:
+                              # checking_timer retired from the wasp path
+                              # (2026-08-08, Nathan: "why does wasp need
+                              # checking it's a do now. I thought I
+                              # eradicated the need for it") — checking_timer
+                              # entities stay declared (never delete without
+                              # asking) but nothing starts/cancels them
+                              # anymore — permanently dormant, harmless no-op.
+                              # wasp_flag ITSELF also needs no dispatch action
+                              # (2026-08-08 rev 2, "no need for a bool - just
+                              # an attr on the sensor") — room_state.yaml
+                              # self-latches it, clearing on a fresh
+                              # wasp_door open the same recompute this door's
+                              # own state trigger already causes.
+                              _room_timer: "{{ (label_entities('room_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _current_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
+                              _occupied_minutes: "{{ (label_entities('occupied_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          # A door opening is itself presence-adjacent
+                          # evidence (2026-08-08, Nathan: "boss opens garage
+                          # door... room goes occupied from vacant right?")
+                          # — floor to Occupied via the same room_timer
+                          # mechanism 'motion'/'occupied' use.
+                          - if: "{{ _room_timer != '' and _room_timer_class_ent != '' and _current_class in ['', 'occupied'] }}"
+                            then:
+                              - action: input_select.select_option
+                                target:
+                                  entity_id: "{{ _room_timer_class_ent }}"
+                                data:
+                                  option: occupied
+                              - action: timer.start
+                                target:
+                                  entity_id: "{{ _room_timer }}"
+                                data:
+                                  duration: >-
+                                    {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
+
+          # ── ROOM TIMER RECONCILIATION PASS — recomputes desired timer
+          # class from scratch across every room carrying a room_timer. ──
+          - conditions: "{{ mode == 'room_timer_reconcile' }}"
+            sequence:
+              - repeat:
+                  for_each: "{{ label_entities('room_timer') }}"
+                  sequence:
+                    - variables:
+                        _rt: "{{ repeat.item }}"
+                        _room: >-
+                          {%- set ns = namespace(found='') -%}
+                          {%- for l in labels(repeat.item) -%}
+                            {%- if ns.found == '' and area_name(l) is not none -%}
+                              {%- set ns.found = l -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ ns.found }}
+                    - if: "{{ _room != '' }}"
+                      then:
+                        - variables:
+                            _room_ents: "{{ label_entities(_room) }}"
+                            _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
+                            _current_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
+                            _timer_active: "{{ states(_rt) in ['active', 'paused'] }}"
+                            _engaged_source_ents: "{{ label_entities('engaged') | intersect(_room_ents) | list }}"
+                            _engaged_truthy: "{{ (_engaged_source_ents | map('states') | select('in', ['playing','paused','on','open']) | list | count) > 0 }}"
+                            _occ_source_ents: "{{ (label_entities('occupied') + label_entities('motion')) | unique | list | intersect(_room_ents) }}"
+                            _occ_truthy: "{{ (_occ_source_ents | map('states') | select('eq','on') | list | count) > 0 }}"
+                            _asleep_source_ents: "{{ (label_entities('asleep') + label_entities('bed_occupancy')) | unique | list | intersect(_room_ents) }}"
+                            # ASLEEP WINDOW GATE (2026-08-08) — same guard as
+                            # the edge-triggered handler above; this
+                            # periodic reconcile pass independently
+                            # re-derives asleep truthiness and would
+                            # otherwise bypass that gate entirely.
+                            # PER-ROOM OPT-OUTS (2026-08-08 rev 2): same
+                            # labels/defaults as room_state.yaml and the
+                            # edge-triggered handler above.
+                            _autosleep_disabled: "{{ (label_entities('autosleep_disable') | intersect(_room_ents) | list | count) > 0 }}"
+                            _asleep_window_disabled: "{{ (label_entities('asleep_window_disable') | intersect(_room_ents) | list | count) > 0 }}"
+                            _asleep_window_hi: >-
+                              {{ (now().strftime('%H:%M:%S') >= states('input_datetime.zen_night_start'))
+                                 or (now().strftime('%H:%M:%S') < states('input_datetime.zen_am_start')) }}
+                            _asleep_truthy: "{{ (not _autosleep_disabled) and (_asleep_window_hi or _asleep_window_disabled) and (_asleep_source_ents | map('states') | select('eq','on') | list | count) > 0 }}"
+                            _desired: >-
+                              {%- if _engaged_truthy -%}engaged
+                              {%- elif _asleep_truthy -%}asleep
+                              {%- elif _occ_truthy -%}occupied
+                              {%- else -%}{%- endif -%}
+                        - if: "{{ _room_timer_class_ent != '' and _desired != '' and not (_timer_active and _current_class == _desired) }}"
+                          then:
+                            - if: "{{ (_desired == 'engaged') or (_desired == 'asleep' and _current_class != 'engaged') or (_desired == 'occupied' and _current_class in ['', 'occupied']) }}"
+                              then:
+                                - variables:
+                                    _nap_latch: "{{ (label_entities('nap_latch') | intersect(_room_ents) | list | first) | default('', true) }}"
+                                    _nap_minutes: "{{ (label_entities('nap_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                                    _asleep_minutes: "{{ (label_entities('asleep_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                                    _engaged_minutes: "{{ (label_entities('engaged_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                                    _occupied_minutes: "{{ (label_entities('occupied_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                                    _duration: >-
+                                      {%- if _desired == 'engaged' -%}
+                                        {%- set _base = (states(_occupied_minutes) | int) if (_occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable']) else 10 -%}
+                                        {%- set _default_engaged = [_base * 2, 120] | min -%}
+                                        {%- set _min = (states(_engaged_minutes) | int) if (_engaged_minutes != '' and states(_engaged_minutes) not in ['unknown','unavailable']) else _default_engaged -%}
+                                        {{ '%02d:%02d:00' | format(_min // 60, _min % 60) }}
+                                      {%- elif _desired == 'asleep' -%}
+                                        {%- set _min_ent = _nap_minutes if (_nap_latch != '' and is_state(_nap_latch, 'on') and _nap_minutes != '') else _asleep_minutes -%}
+                                        {%- set _min = (states(_min_ent) | int) if (_min_ent != '' and states(_min_ent) not in ['unknown','unavailable']) else 480 -%}
+                                        {{ '%02d:%02d:00' | format(_min // 60, _min % 60) }}
+                                      {%- else -%}
+                                        {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
+                                      {%- endif -%}
+                                - action: input_select.select_option
+                                  target:
+                                    entity_id: "{{ _room_timer_class_ent }}"
+                                  data:
+                                    option: "{{ _desired }}"
+                                - action: timer.start
+                                  target:
+                                    entity_id: "{{ _rt }}"
+                                  data:
+                                    duration: "{{ _duration }}"
+
+          # ── CLEANING CONTROL RESYNC PASS ────────────────────────────
+          - conditions: "{{ mode == 'cleaning_control_resync' }}"
+            sequence:
+              - variables:
+                  _active_rooms: >-
+                    {{ label_entities('autovac_current_room') | map('states') | map('area_id') | reject('eq', none) | unique | list }}
+              - repeat:
+                  # ROOM-MANAGER-OWNED ONLY (2026-08-08 full disconnect) — was
+                  # 'room_control' (legacy input_select). This pass WRITES via
+                  # select.select_option, so it must never touch anything
+                  # Node-RED owns.
+                  for_each: "{{ label_entities('room_control_manager') }}"
+                  sequence:
+                    - variables:
+                        _room_should_be_cleaning: "{{ (labels(repeat.item) | intersect(_active_rooms) | list | count) > 0 }}"
+                        _current: "{{ states(repeat.item) }}"
+                    - if: "{{ _current == 'Auto' and _room_should_be_cleaning }}"
+                      then:
+                        - action: select.select_option
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                          data:
+                            option: "Cleaning"
+                    - if: "{{ _current == 'Cleaning' and not _room_should_be_cleaning }}"
+                      then:
+                        - action: select.select_option
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                          data:
+                            option: "Auto"
+
+          # ── CONTROL BURNOUT RESYNC PASS ─────────────────────────────
+          - conditions: "{{ mode == 'control_burnout_resync' }}"
+            sequence:
+              - repeat:
+                  # ROOM-MANAGER-OWNED ONLY (2026-08-08 full disconnect) — was
+                  # 'room_control' (legacy input_select). This pass starts/
+                  # cancels burnout timers based on state, never Node-RED's.
+                  for_each: "{{ label_entities('room_control_manager') }}"
+                  sequence:
+                    - variables:
+                        _cs: "{{ repeat.item }}"
+                        _room: >-
+                          {%- set ns = namespace(found='') -%}
+                          {%- for l in labels(_cs) -%}
+                            {%- if ns.found == '' and area_name(l) is not none -%}
+                              {%- set ns.found = l -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ ns.found }}
+                    - if: "{{ _room != '' }}"
+                      then:
+                        - variables:
+                            # Fixed 10-minute default, matching the
+                            # original blueprint's own default — no room
+                            # ever overrode burnout_minutes, so no
+                            # per-room knob is needed here.
+                            _burnout_timer: "{{ (label_entities('control_burnout') | intersect(label_entities(_room)) | list | first) | default('', true) }}"
+                        - if: "{{ _burnout_timer != '' }}"
+                          then:
+                            - if: "{{ states(_cs) == 'Automation' and states(_burnout_timer) not in ['active', 'paused'] }}"
+                              then:
+                                - action: timer.start
+                                  target:
+                                    entity_id: "{{ _burnout_timer }}"
+                                  data:
+                                    duration: "00:10:00"
+                            - if: "{{ states(_cs) != 'Automation' and states(_burnout_timer) in ['active', 'paused'] }}"
+                              then:
+                                - action: timer.cancel
+                                  target:
+                                    entity_id: "{{ _burnout_timer }}"
+
+          # ── SELF-LABEL RESYNC (2026-08-07, folded from
+          # room_state_self_label.yaml — Nathan: "Room state self label -
+          # fold that in.. doesn't need to be separated"). GLOBAL, driven
+          # by areas() instead of per-room use_blueprint inputs. The room
+          # state sensor's entity_id follows one of exactly two observed
+          # conventions across all 19 deployed rooms — sensor.<room>_state
+          # or sensor.<room>_room_state (which one depends on whether that
+          # room's friendly_name included the word "Room" — an existing
+          # inconsistency, not introduced here) — existence check picks
+          # whichever is real, same no-op-if-absent pattern as everywhere
+          # else. KNOWN_TAGS candidates are the closed set of (label,
+          # naming-convention) pairs actually used across every room file
+          # (room_control/room_control_manager/room_timer/room_timer_class/
+          # asleep_minutes/vent_fan) — a room missing one of these helpers
+          # just skips that tag, same safe no-op. SHUNT IF TAG EXISTS,
+          # same as the original blueprint — a true no-op skip, not just
+          # idempotent re-application.
+          # NOTE (2026-08-07 live-test fix): the first version of this
+          # branch built `_all_ents` by stringifying the ENTIRE house's
+          # entity list via `states | map('entity_id') | list` — blew
+          # Jinja's 262144-char template output limit and took the whole
+          # automation down with it (confirmed live via ha_log_viewer
+          # right after deploying, caught before anyone noticed). Fixed
+          # by checking existence per-candidate with `states[entity_id]
+          # is not none` instead of ever materializing the full list.
+          - conditions: "{{ mode == 'self_label_resync' }}"
+            sequence:
+              - repeat:
+                  for_each: "{{ areas() }}"
+                  sequence:
+                    - variables:
+                        _room: "{{ repeat.item }}"
+                        _target_ent: >-
+                          {%- if states['sensor.' ~ _room ~ '_state'] is not none -%}
+                            {{ 'sensor.' ~ _room ~ '_state' }}
+                          {%- elif states['sensor.' ~ _room ~ '_room_state'] is not none -%}
+                            {{ 'sensor.' ~ _room ~ '_room_state' }}
+                          {%- else -%}
+                          {%- endif -%}
+                    - if: "{{ _target_ent | trim != '' }}"
+                      then:
+                        - variables:
+                            _target_ent: "{{ _target_ent | trim }}"
+                        - if: "{{ 'zen_room_state' not in labels(_target_ent) or _room not in labels(_target_ent) }}"
+                          then:
+                            - action: homeassistant.add_label_to_entity
+                              data:
+                                label_id: ["zen_room_state", "{{ _room }}"]
+                                entity_id: "{{ _target_ent }}"
+                        - repeat:
+                            for_each:
+                              # FULL DISCONNECT (2026-08-08, post-incident): NO tag
+                              # rule for input_select.<room>_control at all —
+                              # that entity is 100% Node-RED's. There used to be a
+                              # 'room_control' rule here pointing at it (label
+                              # AND read AND, via the resync passes below, write);
+                              # deleted outright rather than left dormant, so
+                              # nothing in this script can ever re-acquire a
+                              # handle on it by label.
+                              # PARALLEL CONTROL, ROOM-MANAGER-OWNED (2026-08-08,
+                              # cabinet-backed 2026-08-08 rev 2 — Nathan: "why are
+                              # we not storing in our cab struct we dont need
+                              # another input text"). Labels the SELECT entity
+                              # itself directly — no backing-store indirection.
+                              # Persistence lives in the household cabinet's
+                              # room_control_manager drawer (one dict, keyed by
+                              # room), not a per-room input_text helper. Named by
+                              # OWNERSHIP not version, deliberately, so a future
+                              # revision (v4, v5...) never forces another mass
+                              # migration. This is now the ONLY control-override
+                              # label anywhere in this script — 'room_control'
+                              # (bare) no longer exists as a tag. Existence-
+                              # checked, same safe no-op pattern as every other
+                              # tag here.
+                              - label: room_control_manager
+                                ent: >-
+                                  {%- if states['select.' ~ _room ~ '_control_manager'] is not none -%}
+                                    {{ 'select.' ~ _room ~ '_control_manager' }}
+                                  {%- endif -%}
+                              - label: room_timer
+                                ent: "timer.{{ _room }}_room_timer"
+                              - label: room_timer_class
+                                ent: "input_select.{{ _room }}_room_timer_class"
+                              # checking_timer label rule REMOVED (2026-08-08,
+                              # Nathan: "delete those checking ents") — the
+                              # timer.<room>_checking_timer entities
+                              # themselves are gone, nothing left to tag.
+                              # wasp_flag label rule REMOVED (2026-08-08
+                              # rev 2, Nathan: "no need for a bool - just an
+                              # attr on the sensor") — no input_boolean
+                              # entity exists anymore; the flag lives purely
+                              # as a self-latched attribute inside
+                              # room_state.yaml's own template.
+                              - label: asleep_minutes
+                                ent: "input_number.{{ _room }}_asleep_minutes"
+                              - label: vent_fan
+                                ent: "switch.{{ _room }}_fan"
+                            sequence:
+                              - variables:
+                                  _class_label: "{{ repeat.item.label }}"
+                                  _ent: "{{ repeat.item.ent }}"
+                              - if: "{{ states[_ent] is not none and (_class_label not in labels(_ent) or _room not in labels(_ent)) }}"
+                                then:
+                                  - action: homeassistant.add_label_to_entity
+                                    data:
+                                      label_id: ["{{ _class_label }}", "{{ _room }}"]
+                                      entity_id: "{{ _ent }}"
+
+automation:
+  - alias: "ZenOS — Room Manager Dispatch"
+    id: zen_room_manager_dispatch
+    mode: parallel
+    max: 30
+    trigger:
+      # ── purpose-trigger edges -> signal dispatch ──────────────────────
+      - id: sig_start
+        trigger: motion.detected
+        target:
+          label_id: motion
+      - id: sig_start
+        trigger: occupancy.detected
+        target:
+          label_id:
+            - bed_occupancy
+            - occupied
+      - id: sig_start
+        trigger: lock.locked
+        target:
+          label_id: privacy_door
+      - id: sig_start
+        trigger: media_player.started_playing
+        target:
+          label_id: engaged
+      - id: sig_start
+        trigger: air_quality.smoke_detected
+        target:
+          label_id: smoke
+      - id: sig_start
+        trigger: air_quality.co_detected
+        target:
+          label_id: carbon_monoxide
+      - id: sig_start
+        trigger: moisture.detected
+        target:
+          label_id: moisture
+      - id: sig_start
+        trigger: siren.turned_on
+        target:
+          label_id: siren
+      - id: sig_start
+        trigger: door.opened
+        target:
+          label_id: wasp_door
+      - id: sig_start
+        trigger: door.closed
+        target:
+          label_id: wasp_door
+      - id: sig_start
+        trigger: button.pressed
+        target:
+          label_id:
+            - occupied
+            - asleep
+            - hold
+            - privacy_door
+      - id: sig_end
+        trigger: lock.unlocked
+        target:
+          label_id: privacy_door
+      - id: sig_end
+        trigger: media_player.stopped_playing
+        target:
+          label_id: engaged
+      - id: sig_end
+        trigger: media_player.paused_playing
+        target:
+          label_id: engaged
+      # ── REFLEX nightlight (same motion event as sig_start, own id) ────
+      - id: nightlight_motion
+        trigger: motion.detected
+        target:
+          label_id: motion
+      # ── TV sleep timer (same media events as sig_start/sig_end, own id) ─
+      - id: tv_sleep_media
+        trigger: media_player.started_playing
+        target:
+          label_id: engaged
+      - id: tv_sleep_media
+        trigger: media_player.paused_playing
+        target:
+          label_id: engaged
+      # ── global resync ──────────────────────────────────────────────────
+      - id: resync
+        trigger: homeassistant
+        event: start
+      - id: resync
+        trigger: event
+        event_type: zen_resolver_refresh
+      # ── dedicated resync-pass triggers ─────────────────────────────────
+      - id: autovac_resync
+        trigger: template
+        value_template: >-
+          {{ label_entities('autovac_current_room') | sort | map('states') | list }}
+      - id: control_resync
+        trigger: template
+        value_template: >-
+          {{ label_entities('room_control_manager') | sort | map('states') | list }}
+      # ── timer expiry (routes internally by which label/pattern owns it) ─
+      - id: timer_finished
+        trigger: event
+        event_type: timer.finished
+      # ── REFLEX scene resolve + vent fan (same event, both consume it) ──
+      - id: reflex_event
+        trigger: event
+        event_type: zen_event
+    action:
+      - variables:
+          _roomstate_enabled: >-
+            {%- set _sw = label_entities('zenos_roomstate_master_switch') -%}
+            {%- if _sw | count > 0 -%}
+              {{ (_sw | map('states') | select('eq','on') | list | count) > 0 }}
+            {%- else -%}
+              {%- set _hh = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('', true) -%}
+              {%- if _hh != '' -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _raw = CABS.cabinet_drawer_value_mounted(_hh, 'roomstate_config') -%}
+                {%- set _cfg = (_raw | from_json) if _raw not in [none, ''] else {} -%}
+                {{ (_cfg.enabled | default(false)) if _cfg is mapping else false }}
+              {%- else -%}
+                {{ false }}
+              {%- endif -%}
+            {%- endif -%}
+          _reflex_enabled: >-
+            {%- set _sw = label_entities('zenos_reflex_master_switch') -%}
+            {%- if _sw | count > 0 -%}
+              {{ (_sw | map('states') | select('eq','on') | list | count) > 0 }}
+            {%- else -%}
+              {%- set _hh = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('', true) -%}
+              {%- if _hh != '' -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _raw = CABS.cabinet_drawer_value_mounted(_hh, 'reflex_config') -%}
+                {%- set _cfg = (_raw | from_json) if _raw not in [none, ''] else {} -%}
+                {{ (_cfg.enabled | default(false)) if _cfg is mapping else false }}
+              {%- else -%}
+                {{ false }}
+              {%- endif -%}
+            {%- endif -%}
+          _reflex_dry_run: >-
+            {%- set _sw = label_entities('zenos_reflex_dry_run_switch') -%}
+            {%- if _sw | count > 0 -%}
+              {{ (_sw | map('states') | select('eq','on') | list | count) > 0 }}
+            {%- else -%}
+              {%- set _hh = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('', true) -%}
+              {%- if _hh != '' -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _raw = CABS.cabinet_drawer_value_mounted(_hh, 'reflex_config') -%}
+                {%- set _cfg = (_raw | from_json) if _raw not in [none, ''] else {} -%}
+                {{ (_cfg.dry_run | default(false)) if _cfg is mapping else false }}
+              {%- else -%}
+                {{ false }}
+              {%- endif -%}
+            {%- endif -%}
+      - choose:
+          # ── SIGNAL DISPATCHER edges ──────────────────────────────────
+          - conditions: "{{ trigger.id == 'sig_start' }}"
+            sequence:
+              - if: "{{ _roomstate_enabled }}"
+                then:
+                  - action: script.zen_reflex_controller
+                    data:
+                      mode: signal_dispatch
+                      entity_id: "{{ trigger.entity_id }}"
+                      edge: start
+          - conditions: "{{ trigger.id == 'sig_end' }}"
+            sequence:
+              - if: "{{ _roomstate_enabled }}"
+                then:
+                  - action: script.zen_reflex_controller
+                    data:
+                      mode: signal_dispatch
+                      entity_id: "{{ trigger.entity_id }}"
+                      edge: end
+
+          # ── REFLEX NIGHTLIGHT TRIGGER (motion, while asleep) ─────────
+          - conditions: "{{ trigger.id == 'nightlight_motion' }}"
+            sequence:
+              - if: "{{ _reflex_enabled }}"
+                then:
+                  - variables:
+                      _room: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for l in labels(trigger.entity_id) -%}
+                          {%- if ns.found == '' and area_name(l) is not none -%}
+                            {%- set ns.found = l -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                  - if: "{{ _room != '' }}"
+                    then:
+                      - variables:
+                          _room_ents: "{{ label_entities(_room) }}"
+                          _room_state_ent: "{{ (label_entities('zen_room_state') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          _nl_timer: "{{ (label_entities('nightlight_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+                      - if: "{{ _room_state_ent != '' and states(_room_state_ent) == 'asleep' and _nl_timer != '' }}"
+                        then:
+                          - variables:
+                              _nl_scene: "{{ (label_entities('scene_nightlight') | intersect(_room_ents) | select('match', 'scene\\.') | list | first) | default('', true) }}"
+                          - if: "{{ _nl_scene | trim != '' }}"
+                            then:
+                              - action: scene.turn_on
+                                target:
+                                  entity_id: "{{ _nl_scene | trim }}"
+                          - action: timer.start
+                            target:
+                              entity_id: "{{ _nl_timer }}"
+
+          # ── TV SLEEP TIMER — (re)start on media edge ─────────────────
+          - conditions: "{{ trigger.id == 'tv_sleep_media' }}"
+            sequence:
+              - variables:
+                  _room: >-
+                    {%- set ns = namespace(found='') -%}
+                    {%- for l in labels(trigger.entity_id) -%}
+                      {%- if ns.found == '' and area_name(l) is not none -%}
+                        {%- set ns.found = l -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.found }}
+              - if: "{{ _room != '' }}"
+                then:
+                  - variables:
+                      _room_ents: "{{ label_entities(_room) }}"
+                      _room_state_ent: "{{ (label_entities('zen_room_state') | intersect(_room_ents) | list | first) | default('', true) }}"
+                      _tv_sleep_timer: "timer.{{ _room }}_tv_sleep_timer"
+                      _tv_sleep_timer_exists: "{{ ('timer.' ~ _room ~ '_tv_sleep_timer') in (states.timer | map(attribute='entity_id') | list) }}"
+                      _tv_sleep_minutes_ent: "input_number.{{ _room }}_tv_sleep_minutes"
+                      _tv_sleep_minutes_exists: "{{ ('input_number.' ~ _room ~ '_tv_sleep_minutes') in (states.input_number | map(attribute='entity_id') | list) }}"
+                  - if: "{{ _room_state_ent != '' and states(_room_state_ent) == 'asleep' and _tv_sleep_timer_exists }}"
+                    then:
+                      - action: timer.start
+                        target:
+                          entity_id: "{{ _tv_sleep_timer }}"
+                        data:
+                          duration: >-
+                            {{ '00:%02d:00' | format(states(_tv_sleep_minutes_ent) | int) if _tv_sleep_minutes_exists and states(_tv_sleep_minutes_ent) not in ['unknown','unavailable'] else '00:20:00' }}
+
+          # ── GLOBAL RESYNC — all 4 resync passes (self-label FIRST — on
+          # cold HA start, the other 3 passes' label_entities() lookups
+          # depend on labels self-label just established this same pass) ──
+          - conditions: "{{ trigger.id == 'resync' }}"
+            sequence:
+              - action: script.zen_reflex_controller
+                data:
+                  mode: self_label_resync
+              - if: "{{ _roomstate_enabled }}"
+                then:
+                  - action: script.zen_reflex_controller
+                    data:
+                      mode: room_timer_reconcile
+              - action: script.zen_reflex_controller
+                data:
+                  mode: cleaning_control_resync
+              - action: script.zen_reflex_controller
+                data:
+                  mode: control_burnout_resync
+
+          - conditions: "{{ trigger.id == 'autovac_resync' }}"
+            sequence:
+              - action: script.zen_reflex_controller
+                data:
+                  mode: cleaning_control_resync
+
+          - conditions: "{{ trigger.id == 'control_resync' }}"
+            sequence:
+              - action: script.zen_reflex_controller
+                data:
+                  mode: control_burnout_resync
+
+          # ── TIMER FINISHED — routes to whichever owner matches ────────
+          - conditions: "{{ trigger.id == 'timer_finished' }}"
+            sequence:
+              # Room Timer Expiry -> Occupied Handoff (only from 'engaged')
+              - if: "{{ _roomstate_enabled and trigger.event.data.entity_id in label_entities('room_timer') }}"
+                then:
+                  - variables:
+                      _ent_labels: "{{ labels(trigger.event.data.entity_id) }}"
+                      _room: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for l in _ent_labels -%}
+                          {%- if ns.found == '' and area_name(l) is not none -%}
+                            {%- set ns.found = l -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                  - if: "{{ _room != '' }}"
+                    then:
+                      - variables:
+                          _room_ents: "{{ label_entities(_room) }}"
+                          _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          _expired_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
+                          _occupied_minutes: "{{ (label_entities('occupied_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                      - if: "{{ _expired_class == 'engaged' and _room_timer_class_ent != '' }}"
+                        then:
+                          - action: input_select.select_option
+                            target:
+                              entity_id: "{{ _room_timer_class_ent }}"
+                            data:
+                              option: occupied
+                          - action: timer.start
+                            target:
+                              entity_id: "{{ trigger.event.data.entity_id }}"
+                            data:
+                              duration: >-
+                                {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
+                      # WASP FLAG CLEAR — RETIRED (2026-08-08 rev 2, "no need
+                      # for a bool - just an attr on the sensor"). No dispatch
+                      # action needed — room_state.yaml's trigger_entities
+                      # already includes this room's own room_timer, so its
+                      # expiry re-fires the template and the self-latch
+                      # clears itself via _wasp_timer_finished_now.
+              # REFLEX Nightlight Timer Expiry -> re-fire asleep scene
+              - if: "{{ _reflex_enabled and trigger.event.data.entity_id in label_entities('nightlight_timer') }}"
+                then:
+                  - variables:
+                      _room: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for l in labels(trigger.event.data.entity_id) -%}
+                          {%- if ns.found == '' and area_name(l) is not none -%}
+                            {%- set ns.found = l -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                  - if: "{{ _room != '' }}"
+                    then:
+                      - variables:
+                          _room_ents: "{{ label_entities(_room) }}"
+                          _mode_slug: "{{ states('sensor.zen_home_mode') | lower | replace(' ', '_') | replace('-', '_') }}"
+                          _mode_ents: "{{ label_entities(states('sensor.zen_home_mode') | lower | replace(' ', '_') | replace('-', '_')) }}"
+                          _asleep_scene_ents: "{{ label_entities('scene_asleep') }}"
+                      - variables:
+                          _scene_with_mode: "{{ (_asleep_scene_ents | intersect(_room_ents) | intersect(_mode_ents) | select('match', 'scene\\.') | list | first) | default('', true) }}"
+                          _scene_no_mode: "{{ (_asleep_scene_ents | intersect(_room_ents) | select('match', 'scene\\.') | list | first) | default('', true) }}"
+                      - variables:
+                          _scene: "{{ _scene_with_mode if _scene_with_mode != '' else _scene_no_mode }}"
+                      - if: "{{ _scene | trim != '' }}"
+                        then:
+                          - action: scene.turn_on
+                            target:
+                              entity_id: "{{ _scene | trim }}"
+              # Control Burnout — 'Automation' override not released in time
+              - if: "{{ trigger.event.data.entity_id in label_entities('control_burnout') }}"
+                then:
+                  - variables:
+                      _room: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for l in labels(trigger.event.data.entity_id) -%}
+                          {%- if ns.found == '' and area_name(l) is not none -%}
+                            {%- set ns.found = l -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                  - if: "{{ _room != '' }}"
+                    then:
+                      - variables:
+                          # ROOM-MANAGER-OWNED ONLY (2026-08-08 full disconnect) —
+                          # was 'room_control' (legacy). This action WRITES via
+                          # select.select_option on burnout timeout.
+                          _control_select: "{{ (label_entities('room_control_manager') | intersect(label_entities(_room)) | list | first) | default('', true) }}"
+                      - if: "{{ _control_select != '' and is_state(_control_select, 'Automation') }}"
+                        then:
+                          - action: select.select_option
+                            target:
+                              entity_id: "{{ _control_select }}"
+                            data:
+                              option: "Auto"
+              # TV Sleep Timer expiry -> turn off TV, hand off to asleep timer
+              - if: "{{ trigger.event.data.entity_id | regex_match('^timer\\..+_tv_sleep_timer$') }}"
+                then:
+                  - variables:
+                      _room: "{{ trigger.event.data.entity_id | replace('timer.', '') | replace('_tv_sleep_timer', '') }}"
+                  - if: "{{ area_name(_room) is not none }}"
+                    then:
+                      - variables:
+                          _room_ents: "{{ label_entities(_room) }}"
+                      - action: homeassistant.turn_off
+                        target:
+                          entity_id: >-
+                            {{ (label_entities('universal_media_player') + label_entities('tv_sleep_target'))
+                               | unique | intersect(_room_ents) | list }}
+                      - variables:
+                          _asleep_timer: "{{ (label_entities('asleep_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          _asleep_minutes_ent: "{{ (label_entities('asleep_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                      - if: "{{ _asleep_timer != '' }}"
+                        then:
+                          - action: timer.start
+                            target:
+                              entity_id: "{{ _asleep_timer }}"
+                            data:
+                              # 8h default + fixed hour/minute format bug,
+                              # same fix as the room_timer asleep-class paths
+                              # above (2026-08-08).
+                              duration: >-
+                                {%- set _min = (states(_asleep_minutes_ent) | int) if (_asleep_minutes_ent != '' and states(_asleep_minutes_ent) not in ['unknown','unavailable']) else 480 -%}
+                                {{ '%02d:%02d:00' | format(_min // 60, _min % 60) }}
+
+          # ── REFLEX EVENT — scene resolve, then vent fan ────────────────
+          - conditions: "{{ trigger.id == 'reflex_event' and trigger.event.data.get('event', {}).get('kind') == 'room_state_changed' }}"
+            sequence:
+              - variables:
+                  _meta: "{{ trigger.event.data.get('event', {}).get('metadata', {}) }}"
+                  _room: "{{ _meta.get('room', '') }}"
+                  _state: "{{ _meta.get('state', '') }}"
+                  _mode_slug: "{{ _meta.get('home_mode', '') | lower | replace(' ', '_') | replace('-', '_') }}"
+              # -- REFLEX Stage 2: Scene Resolver --
+              - if: "{{ (_reflex_enabled or _reflex_dry_run) and _room != '' and _state != '' }}"
+                then:
+                  - variables:
+                      _room_ents: "{{ label_entities(_room) }}"
+                      _mode_ents: "{{ label_entities(_mode_slug) }}"
+                      _state_inherits_from: >-
+                        {%- set _inherit_map = {'engaged': 'occupied', 'cleaning': 'occupied', 'emergency': 'occupied', 'asleep': 'vacant'} -%}
+                        {{ _inherit_map.get(_state, _state) }}
+                  - variables:
+                      _hm_daypart_labels: [home_wake, home_morning, home, home_evening, night, night_late]
+                      _state_scene_ents: "{{ label_entities('scene_' ~ _state) }}"
+                      _scene_with_mode: "{{ (_state_scene_ents | intersect(_room_ents) | intersect(_mode_ents) | select('match', 'scene\\.') | list | first) | default('', true) }}"
+                  - variables:
+                      _scene_no_mode_all: "{{ _state_scene_ents | intersect(_room_ents) | select('match', 'scene\\.') | list }}"
+                      _scene_no_mode_unqualified: >-
+                        {%- set ns2 = namespace(list=[]) -%}
+                        {%- for e in (_state_scene_ents | intersect(_room_ents) | select('match', 'scene\\.') | list) -%}
+                          {%- if (labels(e) | select('in', _hm_daypart_labels) | list | count) == 0 -%}
+                            {%- set ns2.list = ns2.list + [e] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns2.list }}
+                  - variables:
+                      _scene_no_mode: "{{ (_scene_no_mode_unqualified | first) if (_scene_no_mode_unqualified | count) > 0 else ((_scene_no_mode_all | first) | default('', true)) }}"
+                      _inherited_scene_ents: "{{ label_entities('scene_' ~ _state_inherits_from) if _state_inherits_from != _state else [] }}"
+                  - variables:
+                      _inherited_with_mode: "{{ (_inherited_scene_ents | intersect(_room_ents) | intersect(_mode_ents) | select('match', 'scene\\.') | list | first) | default('', true) }}"
+                      _inherited_no_mode_all: "{{ _inherited_scene_ents | intersect(_room_ents) | select('match', 'scene\\.') | list }}"
+                      _inherited_no_mode_unqualified: >-
+                        {%- set ns3 = namespace(list=[]) -%}
+                        {%- for e in (_inherited_scene_ents | intersect(_room_ents) | select('match', 'scene\\.') | list) -%}
+                          {%- if (labels(e) | select('in', _hm_daypart_labels) | list | count) == 0 -%}
+                            {%- set ns3.list = ns3.list + [e] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns3.list }}
+                  - variables:
+                      _inherited_no_mode: "{{ (_inherited_no_mode_unqualified | first) if (_inherited_no_mode_unqualified | count) > 0 else ((_inherited_no_mode_all | first) | default('', true)) }}"
+                  - variables:
+                      _scene: >-
+                        {%- if _scene_with_mode != '' -%}{{ _scene_with_mode }}
+                        {%- elif _scene_no_mode != '' -%}{{ _scene_no_mode }}
+                        {%- elif _inherited_with_mode != '' -%}{{ _inherited_with_mode }}
+                        {%- elif _inherited_no_mode != '' -%}{{ _inherited_no_mode }}
+                        {%- else -%}{{ '' }}
+                        {%- endif -%}
+                  - if: "{{ _scene | trim != '' }}"
+                    then:
+                      - if: "{{ _reflex_enabled }}"
+                        then:
+                          - action: scene.turn_on
+                            target:
+                              entity_id: "{{ _scene | trim }}"
+                        else:
+                          - action: script.zen_dojotools_event_emitter
+                            data:
+                              mode: emit
+                              component: room_manager
+                              kind: reflex_dry_run
+                              severity: info
+                              summary: "[DRY RUN] {{ _room }} ({{ _state }}) would fire {{ _scene | trim }}"
+                              metadata:
+                                room: "{{ _room }}"
+                                state: "{{ _state }}"
+                                home_mode: "{{ _mode_slug }}"
+                                would_fire_scene: "{{ _scene | trim }}"
+              # -- Vent Fan Auto On/Off (no reflex-switch gate — independent) --
+              - if: "{{ _room != '' }}"
+                then:
+                  - variables:
+                      _room_ents: "{{ label_entities(_room) }}"
+                      _fan_ents: "{{ label_entities('vent_fan') | intersect(_room_ents) | list }}"
+                  - if: "{{ _fan_ents | count > 0 }}"
+                    then:
+                      - if: "{{ _state == 'occupied' }}"
+                        then:
+                          - variables:
+                              _delay_ent: "input_number.{{ _room }}_fan_delay_minutes"
+                              _delay_ent_exists: "{{ ('input_number.' ~ _room ~ '_fan_delay_minutes') in (states.input_number | map(attribute='entity_id') | list) }}"
+                              _room_state_ent: "{{ (label_entities('zen_room_state') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          - delay: >-
+                              {{ '00:%02d:00' | format(states(_delay_ent) | int) if _delay_ent_exists and states(_delay_ent) not in ['unknown','unavailable'] else '00:05:00' }}
+                          - if: "{{ _room_state_ent != '' and states(_room_state_ent) == 'occupied' }}"
+                            then:
+                              - action: homeassistant.turn_on
+                                target:
+                                  entity_id: "{{ _fan_ents }}"
+                        else:
+                          - variables:
+                              _runtime_ent: "input_number.{{ _room }}_fan_min_runtime_seconds"
+                              _runtime_ent_exists: "{{ ('input_number.' ~ _room ~ '_fan_min_runtime_seconds') in (states.input_number | map(attribute='entity_id') | list) }}"
+                              _room_state_ent: "{{ (label_entities('zen_room_state') | intersect(_room_ents) | list | first) | default('', true) }}"
+                          - delay: >-
+                              {{ '00:00:%02d' | format(states(_runtime_ent) | int) if _runtime_ent_exists and states(_runtime_ent) not in ['unknown','unavailable'] else '00:05:00' }}
+                          - if: "{{ _room_state_ent != '' and states(_room_state_ent) != 'occupied' }}"
+                            then:
+                              - action: homeassistant.turn_off
+                                target:
+                                  entity_id: "{{ _fan_ents }}"
+
+          # ── ROOM CONTROL REQUEST — human/agent state pick, single choke
+          # point (2026-08-08). The template select (human) fires kind:
+          # room_control_request with {room, requested, source} instead of
+          # writing its backing input_text directly — "the template select
+          # does nothing but fire the appr event... what happens is up to
+          # the actions and scr at that point." The RM agent tool should
+          # fire the SAME event rather than a parallel path, so validation
+          # (Hold's restricted exits) and the actual write live in exactly
+          # one place. Loop/race guard: only writes if the requested value
+          # actually differs from the current one (no redundant
+          # input_text.set_value calls feeding back into a re-trigger for
+          # no reason). Confirmed live end-to-end 2026-08-08 (T).
+          - conditions: "{{ trigger.id == 'reflex_event' and trigger.event.data.get('event', {}).get('kind') == 'room_control_request' }}"
+            sequence:
+              - variables:
+                  _rcr_meta: "{{ trigger.event.data.get('event', {}).get('metadata', {}) }}"
+                  _rcr_room: "{{ _rcr_meta.get('room', '') }}"
+                  _rcr_requested: "{{ _rcr_meta.get('requested', '') }}"
+              - if: "{{ _rcr_room != '' and _rcr_requested != '' }}"
+                then:
+                  - variables:
+                      _rcr_room_ents: "{{ label_entities(_rcr_room) }}"
+                      # ROOM-MANAGER-OWNED ONLY (2026-08-08 isolation fix): this
+                      # listener is the write path for the template select's fired
+                      # event — it must only ever touch the Room-Manager-owned
+                      # parallel entity, never label 'room_control' (legacy/
+                      # Node-RED's, read-only from here).
+                      _rcr_control_ent: "{{ (label_entities('room_control_manager') | intersect(_rcr_room_ents) | list | first) | default('', true) }}"
+                      _rcr_current: "{{ states(_rcr_control_ent) if _rcr_control_ent != '' else '' }}"
+                      # Restriction is keyed off the CURRENT control value itself
+                      # (what the human/agent is transitioning FROM), not the
+                      # live-computed room state — matches the select's own
+                      # options: logic exactly, so a request can never succeed
+                      # here that the UI wouldn't have offered in the first place.
+                      # 'Hold' included in its own restricted list (2026-08-08 fix,
+                      # matches the select's options: — HA requires current state
+                      # to be a member of its own options or reports "unknown").
+                      _rcr_allowed: >-
+                        {%- if _rcr_current == 'Hold' -%}
+                          {{ ['Hold', 'Auto', 'Vacant', 'Paused', 'Asleep'] }}
+                        {%- else -%}
+                          {{ ['Auto', 'Vacant', 'Occupied', 'Engaged', 'Asleep', 'Hold', 'Paused', 'Automation', 'Cleaning'] }}
+                        {%- endif -%}
+                  - if: "{{ _rcr_control_ent != '' and _rcr_requested in _rcr_allowed and _rcr_current != _rcr_requested }}"
+                    then:
+                      # CABINET-BACKED WRITE (2026-08-08 rev 2): single dict
+                      # drawer 'room_control_manager' in the household cabinet,
+                      # keyed by room — upsert deep-merges by default (per FC
+                      # convention), so this only ever touches this room's key.
+                      # No per-room input_text helper.
+                      - variables:
+                          _rcr_hh: "{{ (label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first) | default('', true) }}"
+                      - if: "{{ _rcr_hh != '' }}"
+                        then:
+                          - action: script.zen_sutra_filecabinet
+                            data:
+                              action: upsert
+                              volume_entity_id: "{{ _rcr_hh }}"
+                              path: room_control_manager
+                              title: room_control_manager
+                              value: "{{ {_rcr_room: _rcr_requested} }}"

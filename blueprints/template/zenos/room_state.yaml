@@ -1,0 +1,702 @@
+blueprint:
+  name: "ZenOS Room Manager v3: Room State"
+  description: >-
+    Resolves a room's state (emergency > manual override > engaged > asleep >
+    child-engaged > hold > occupied > vacant) purely from
+    label-intersection truthiness. NOTHING IS CREATED: every helper —
+    timers, latch booleans, duration input_numbers — is entirely
+    OPTIONAL and discovered by label, same as every signal class in this
+    system. Want Asleep decay? Create a timer (via HA's Helpers UI, or an
+    optional package YAML snippet — this blueprint never creates one)
+    and tag it 'asleep_timer' + this room's label. Don't want it? Don't
+    tag anything — that tier just never activates, a safe no-op. Same
+    pattern for 'occupied_timer', 'emergency_latch'
+    (input_boolean, ack-only — never auto-clears), 'nap_latch'
+    (input_boolean), 'asleep_minutes'/'nap_minutes'/'occupied_minutes'
+    (input_number, durations). No naming convention is assumed anywhere —
+    the room input is ONLY used for the label_entities() intersection.
+    OVERRIDE TIERS — ONE CONTROL ENTITY: tag ONE select with label
+    'room_control_manager' + this room's label, options including at
+    minimum 'Auto', 'Paused', 'Automation', 'Cleaning', 'Vacant',
+    'Occupied', 'Engaged', 'Asleep', 'Hold'. 'Auto' (or untagged
+    entirely) means no override — the live-signal cascade decides
+    normally. Setting it to any other value overrides the cascade
+    outright (only emergency ranks higher). This is the room's control
+    surface — settable directly by a human or an agent/automation at any
+    time. Legacy Node-RED's own 'room_control' label/entity is a
+    completely separate, disconnected system — this blueprint has zero
+    read access to it, by design.
+    Conventions for each override value:
+      - 'Automation': the setting agent/automation has control of this
+        room until it explicitly releases (sets back to 'Auto') or a
+        human takes it back manually.
+      - 'Paused': automation safety all-stop for this room. ASYMMETRIC —
+        any agent/automation may set this ON, but only a human may clear
+        it back to 'Auto'. This is a procedural convention agents are
+        expected to follow, not something the select itself enforces.
+      - 'Cleaning': set automatically by zen_cleaning_dispatch.yaml as a
+        vacuum enters/leaves this room (label-driven — no hardcoded
+        vacuum entity_ids).
+      - 'Asleep': never time-gated, regardless of the asleep window below
+        — a manual pick always holds until changed again.
+    HOLD has three independent sources, same visible state, distinguishable
+    via last_trigger: (1) wasp-flag — motion fired while every 'wasp_door'
+    for the room was closed, no door transition to corroborate presence;
+    self-latches via this.attributes.get(...), clears on a fresh wasp_door
+    open or a manual override, never on a timeout. (2)/(3)
+    'entertaining_hold' / 'guest_hold' — tag the shared
+    input_boolean.zen_entertaining / zen_guest_mode with the purpose label
+    plus this room's own label to opt in; both are pure label-driven
+    conditionals, nothing created.
+    ASLEEP WINDOW: a direct asleep/bed_occupancy signal only auto-fires
+    between the night and wake scheduler anchors by default (a laundry
+    hamper on a bed at noon shouldn't auto-sleep the room). Opt out per
+    room with label 'autosleep_disable' (kills auto-fire entirely) or
+    'asleep_window_disable' (keeps auto-fire, removes the time
+    restriction) — tag anything carrying the room's own label.
+    TRIGGER-BASED: this sensor reacts to an explicit trigger_entities
+    list (every signal/timer/latch/duration-helper entity this room
+    actually uses) plus a zen_resolver_refresh event and HA start —
+    deliberately not implicit whole-house state tracking, for
+    reliability. Tagging a NEW entity to this room requires adding it to
+    trigger_entities and reloading; it will not react automatically to a
+    bare retag.
+    This is the room's full debug sensor. Two different kinds of
+    attribute, don't conflate them. ENGAGED means active, direct use of
+    the room — someone is doing something in it right now (media
+    actually playing/paused, a monitored dock in active use, etc.) — as
+    distinct from OCCUPIED, which just means presence is detected
+    (motion, a presence sensor) with no specific activity signal. Engaged
+    outranks Occupied in the cascade for exactly that reason: active use
+    is a stronger signal than mere presence.
+      - CORE CASCADE TIERS (engaged/occupied/asleep _active):
+        ALWAYS true or false, never null. Asleep is resolvable
+        purely from direct signals + optional timers — "no timer tagged"
+        just means that tier's decay contribution is false, not unknown.
+      - OPTIONAL LATCHES/CLASSES (emergency/hold/window/garage/vent/
+        window_covering/nap/wasp_flag/entertaining_hold/guest_hold
+        _active): null when NOTHING in this room carries that label (or,
+        for wasp_flag, no 'wasp_door' at all) — genuinely not-applicable,
+        distinct from "tagged and off." Truthy check accepts BOTH 'on'
+        (binary_sensor) and 'open' (cover) — the same label pattern
+        works regardless of which domain backs the class. NOTE: emergency,
+        hold, wasp_flag, entertaining_hold, and guest_hold are the ones
+        of this group that actually feed the cascade (emergency wins
+        outright; hold floors at Occupied — "fridge door mode"; the
+        latter three all resolve to the top-level `hold` state) —
+        window/garage/vent/window_covering/nap stay
+        purely informational, exposed but never read by the cascade itself.
+      - SUB-ZONE PRESENCE (zone_presence label): a dict, not a bool —
+        {friendly_name: true/false} built from whatever's tagged, no
+        hardcoded zone names/count. null if nothing tagged. Purely
+        informational, never a cascade input — the room's main
+        'occupied' label already covers whole-room presence.
+      - LAST-TRIGGER EXPLAINABILITY (occupied/engaged/asleep
+        _last_trigger, plus top-level last_trigger for the overall
+        `state`): {entity_id, friendly_name, last_changed} for whichever
+        source entity most recently caused that tier true, or a
+        {reason, timer_entity, timer_last_changed} dict if it's only
+        true via timer decay with no live source currently truthy. null
+        if the tier is false.
+  domain: template
+  author: ZenOS / Nathan Curtis
+  input:
+    room:
+      name: Room
+      description: >-
+        Pick the real HA area for this room. This system's convention
+        (established and confirmed live across every deployed room) is
+        that the room's LABEL is named identically to its area_id — an
+        area selector both enforces that automatically and is far
+        friendlier to fill in than typing a label string by hand.
+      selector:
+        area:
+    friendly_name:
+      name: Friendly name
+      description: "Display name for the resulting sensor, e.g. 'Office Room State'."
+      selector:
+        text:
+    unique_id:
+      name: Unique ID
+      description: "e.g. office_room_state"
+      selector:
+        text:
+    trigger_entities:
+      name: Trigger entities
+      description: >-
+        EVERY entity this room's computation reads: every signal-class
+        entity tagged for this room (motion/occupied/engaged/asleep/
+        bed_occupancy/hold/window/garage_door/hvac_vent/vent_temperature/
+        window_covering/zone_presence), every timer (occupied_timer/
+        asleep_timer), every latch (emergency_latch/
+        nap_latch), the room_control_manager select if tagged, every
+        duration input_number (asleep_minutes/
+        nap_minutes/occupied_minutes), and — if child_rooms is set —
+        each child room's OWN sensor entity_id. Resolve this list via
+        mode=label_discover (or ZQ-1 label queries) at deploy time.
+        Missing an entity here means this sensor will NOT react when it
+        changes — it is not a silent no-op that "just works later," it's
+        a real gap. (A dynamic `trigger: template` alternative was tried
+        and abandoned same day — see description above — this static
+        list is the proven-reliable design.)
+      selector:
+        text:
+          multiple: true
+    child_rooms:
+      name: Child room sensor entity_ids (optional — cascade-up)
+      description: >-
+        entity_id (not label) of any ensuite/sub-room's OWN
+        room_state sensor whose activity should contribute to
+        THIS room's state (e.g. master_bedroom would list
+        sensor.master_bathroom_room_state here). CHILD LINK, DEFAULT ON
+        (2026-08-06, ported from legacy's "parent = Hold whenever child
+        Occupied-or-higher" design): a child resolved to Engaged
+        promotes the parent to Engaged; a child in ANY OTHER state
+        except Vacant/Checking/Paused holds the parent at (at least)
+        Occupied — indefinitely, for as long as the child stays active,
+        no timer needed. EXCEPT the parent's own DIRECT resolution
+        already being Asleep wins outright — using the ensuite
+        mid-sleep must never wake the parent room. Opt OUT per room by
+        tagging ONE input_boolean 'child_link_disable' + this room's
+        label (untagged = linked, the default). Leave child_rooms empty
+        for a room with no children. Takes the
+        concrete entity_id directly (2026-08-05 correction — the earlier
+        label-based + naming-convention-guess approach assumed
+        `sensor.<label>_stripe_state`, which never matched reality; real
+        entity_ids derive from friendly_name, e.g.
+        sensor.office_room_state, not sensor.office_stripe_state). Also
+        add each one to trigger_entities so cascade-up is reactive.
+      default: []
+      selector:
+        text:
+          multiple: true
+
+trigger:
+  - trigger: state
+    entity_id: !input trigger_entities
+  - trigger: event
+    event_type: zen_resolver_refresh
+  - trigger: homeassistant
+    event: start
+
+variables:
+  room: !input room
+  friendly_name: !input friendly_name
+  child_rooms: !input child_rooms
+  _room_ents: "{{ label_entities(room) }}"
+  # Every optional helper, resolved ONCE here and shared by state +
+  # every attribute below — '' means "not tagged for this room."
+  # ROOM TIMER (2026-08-06 REDESIGN, Nathan: "ONE — use for occupied,
+  # engaged, asleep... there is no reason those three timers ever run
+  # concurrent in a single room... a room supports room timer or not by
+  # adding a timer"). ONE shared decay clock covers all three tiers —
+  # they're mutually exclusive by cascade design (a room is never
+  # simultaneously "actively decaying occupied" AND "actively decaying
+  # asleep"), so one timer + a small companion select recording WHICH
+  # tier currently owns it replaces what used to be three separate timer
+  # helpers. A room opts into decay-backed occupied/engaged/asleep at
+  # all by tagging ONE timer 'room_timer' (+ its label-paired select
+  # 'room_timer_class', options exactly [occupied, engaged, asleep]) —
+  # untagged room = all three tiers are live-signal-only, no decay grace
+  # period, same safe-no-op pattern as everywhere else. Ownership/
+  # takeover rules (who may (re)start the shared clock) live in
+  # zen_signal_dispatch.yaml, not here — this blueprint only READS
+  # whichever class currently holds it.
+  _room_timer: "{{ (label_entities('room_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _room_timer_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
+  _room_timer_holding: "{{ _room_timer != '' and states(_room_timer) in ['active', 'paused'] }}"
+  _emergency_latch: "{{ (label_entities('emergency_latch') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _nap_latch: "{{ (label_entities('nap_latch') | intersect(_room_ents) | list | first) | default('', true) }}"
+  # MANDATORY OVERRIDE TIERS — ONE control entity (2026-08-05, corrected
+  # from an earlier 3-boolean draft, see blueprint description).
+  # FULL DISCONNECT (2026-08-08, post-incident): reads label
+  # 'room_control_manager' ONLY — the Room-Manager-owned control entity,
+  # never legacy Node-RED's input_select.<room>_control. Legacy carries no
+  # label from this system at all anymore; this blueprint has zero read
+  # access to it. Untagged (no room_control_manager entity for this room
+  # yet) = no override capability, tiers stay null — safe no-op, same
+  # pattern as everything else. This is why every H room currently has NO
+  # manual-override behavior: none have been migrated to the new entity.
+  _room_control: "{{ (label_entities('room_control_manager') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _asleep_minutes_ent: "{{ (label_entities('asleep_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _nap_minutes_ent: "{{ (label_entities('nap_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _hold_ents: "{{ label_entities('hold') | intersect(_room_ents) | list }}"
+  _window_ents: "{{ label_entities('window') | intersect(_room_ents) | list }}"
+  _garage_ents: "{{ label_entities('garage_door') | intersect(_room_ents) | list }}"
+  # DOMAIN-AGNOSTIC "openness" (2026-08-05): a window/garage/vent class
+  # might be backed by a binary_sensor contact ('on'/'off') OR a cover
+  # entity ('open'/'closed'/'opening'/'closing') — same label-
+  # intersection pattern either way, just a broader truthy-state check.
+  # Discovered live: office's smart vent is domain cover, not
+  # binary_sensor, and the original window/garage checks only accepted
+  # 'on' — would have silently never detected an open cover.
+  _vent_ents: "{{ label_entities('hvac_vent') | intersect(_room_ents) | list }}"
+  _vent_temp_ent: "{{ (label_entities('vent_temperature') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _window_covering_ents: "{{ label_entities('window_covering') | intersect(_room_ents) | list }}"
+  # EXTERIOR LOCK (2026-08-06, Nathan: living_room/garage should track
+  # their exterior door lock state). Purely informational, same tier as
+  # window/garage/vent — NOT a cascade input (locked/unlocked is a
+  # security-exposure signal, not an occupancy signal). Reports whether
+  # ANY tagged exterior lock is currently unlocked — the actionable/
+  # alertable condition — null if nothing tagged.
+  _ext_lock_ents: "{{ label_entities('ext_lock') | intersect(_room_ents) | list }}"
+  # SUB-ZONE PRESENCE (2026-08-05): a room's own presence sensor can
+  # report multiple named zones (e.g. an Aqara FP2's Desk/Bench zones).
+  # No naming-convention or per-zone label needed — every zone_presence-
+  # tagged entity's own friendly_name becomes the dict key generically,
+  # works for any room/any zone count. NOT a cascade input (the room's
+  # main 'occupied' signal already covers whole-room presence) — purely
+  # informational sub-zone detail, same tier as vent_temperature.
+  _zone_presence_ents: "{{ label_entities('zone_presence') | intersect(_room_ents) | list }}"
+  # SOURCE ENTITY LISTS (2026-08-05, "say I'm this way because this just
+  # happened, last triggered ent") — kept as named lists (not just
+  # folded into a boolean) specifically so the *_last_trigger attributes
+  # below can identify WHICH entity, among possibly several tagged with
+  # the same class, most recently caused the current truthy state.
+  _occ_source_ents: "{{ (label_entities('occupied') + label_entities('motion')) | unique | list | intersect(_room_ents) }}"
+  _engaged_source_ents: "{{ label_entities('engaged') | intersect(_room_ents) | list }}"
+  _asleep_source_ents: "{{ (label_entities('asleep') + label_entities('bed_occupancy')) | unique | list | intersect(_room_ents) }}"
+  # ENGAGED domain-agnostic truthy (2026-08-06, corrected same day —
+  # Nathan: "a signal does not hold the room in that state, it triggers
+  # start of the clock — the only way the clock stops is pause/hold/
+  # vacant/one of the hold states"). 'paused' deliberately EXCLUDED from
+  # this direct-live set — media_player.paused_playing is already an
+  # 'end' edge in zen_signal_dispatch.yaml's ENGAGED-CLASS ENDING branch,
+  # which arms the shared room_timer's grace decay the moment a signal
+  # pauses. Including 'paused' here too meant a paused desktop session
+  # (e.g. Spotify paused, screen blank, nobody there) held engaged=true
+  # INDEFINITELY via this direct check regardless of what the clock said
+  # — the clock's decay was being computed correctly and then silently
+  # overridden. 'playing'/'on'/'open' stay here because those states have
+  # no corresponding dispatcher 'start' edge of their own — they need the
+  # live read to reflect real-time engagement while actually active. Once
+  # paused, engaged_active depends ONLY on _engaged_timer_holding below.
+  # Shared-clock holding, gated by which class currently owns it — the
+  # timer being active means nothing on its own; it only sustains the
+  # ONE tier the paired select says it's for.
+  _engaged_timer_holding: "{{ _room_timer_holding and _room_timer_class == 'engaged' }}"
+  _occupied_timer_holding: "{{ _room_timer_holding and _room_timer_class == 'occupied' }}"
+  _asleep_timer_holding: "{{ _room_timer_holding and _room_timer_class == 'asleep' }}"
+  _engaged_hi: "{{ (_engaged_source_ents | map('states') | select('in', ['playing','on','open']) | list | count) > 0 or _engaged_timer_holding }}"
+  _direct_occ_hi: "{{ (_occ_source_ents | map('states') | select('eq','on') | list | count) > 0 }}"
+  # ASLEEP WINDOW (2026-08-08, Nathan: "night through start of wake all
+  # will autosleep if the sleep entities fire. Outside the window no auto
+  # fire... folding laundry in the master br on the bed. Sensors see
+  # hamper as people"). Blanket for every room, not an opt-in label —
+  # this gates the AUTOMATIC path only (a bed_occupancy/asleep sensor
+  # firing); the manual room_control_manager "Asleep" pick (Kim's "until
+  # I say so" button) is a completely separate mechanism
+  # (_manual_override_hi) and is NEVER time-gated. Uses the same anchor
+  # clock times as scheduler_anchors (night/wake), not sun elevation —
+  # sensor.period_of_day looked similar but is a different, sun-based
+  # legacy sensor with no relation to these anchors, deliberately not
+  # used here. String-compares zero-padded HH:MM:SS, safe lexicographic
+  # ordering. Once a legitimate overnight asleep timer IS running,
+  # crossing out of the window does NOT cut it short — only the initial
+  # trigger is gated (see _direct_asleep_hi below), _asleep_timer_holding
+  # is untouched so someone sleeping past the wake anchor doesn't get
+  # woken by this.
+  _asleep_win_now: "{{ now().strftime('%H:%M:%S') }}"
+  _asleep_win_night: "{{ states('input_datetime.zen_night_start') }}"
+  _asleep_win_wake: "{{ states('input_datetime.zen_am_start') }}"
+  _asleep_window_hi: "{{ (_asleep_win_now >= _asleep_win_night) or (_asleep_win_now < _asleep_win_wake) }}"
+  # PER-ROOM OPT-OUTS (2026-08-08, Nathan: "add autosleep default yes when
+  # adding a sleep timer. and ability to turn off sleep window lockout
+  # (default on)"). Two independent labels, tag anything carrying this
+  # room's own label (the bed sensor itself, or a dedicated marker) —
+  # same existence-check pattern as every other class. Both default to
+  # the just-built behavior (autosleep ON, window ON) when absent.
+  #   autosleep_disable    — kills automatic asleep-firing entirely for
+  #                           this room; manual room_control_manager
+  #                           "Asleep" (Kim's button) still works, that's
+  #                           a wholly separate mechanism.
+  #   asleep_window_disable — keeps autosleep active but removes the
+  #                           night-only restriction, fires any time of
+  #                           day (restores pre-window behavior for just
+  #                           this room).
+  _autosleep_disabled: "{{ (label_entities('autosleep_disable') | intersect(_room_ents) | list | count) > 0 }}"
+  _asleep_window_disabled: "{{ (label_entities('asleep_window_disable') | intersect(_room_ents) | list | count) > 0 }}"
+  _asleep_window_effective: "{{ _asleep_window_hi or _asleep_window_disabled }}"
+  _direct_asleep_hi: "{{ (not _autosleep_disabled) and _asleep_window_effective and (_asleep_source_ents | map('states') | select('eq','on') | list | count) > 0 }}"
+  _occ_hi: "{{ _direct_occ_hi or _occupied_timer_holding }}"
+  # HOLD — "fridge door mode" (2026-08-06, Nathan: "when this door is open
+  # hold room occupied no clock on close vacant"). Pure live gate, NOT
+  # timer-backed — deliberately never arms room_timer. While ANY
+  # hold-labeled entity reads on/open, floors the room at (at least)
+  # Occupied. The moment it closes, _hold_hi goes false on this same
+  # trigger and the cascade re-evaluates with nothing propping it up —
+  # instant fall-through to whatever's actually true (vacant, if no other
+  # tier is live), no grace/decay period. Does not fight engaged/asleep/
+  # etc — those tiers are checked first in the cascade below, so an open
+  # door never demotes a higher-priority state, only floors a lower one.
+  _hold_hi: "{{ (_hold_ents | map('states') | select('in',['on','open']) | list | count) > 0 }}"
+  _asleep_hi: "{{ _direct_asleep_hi or _asleep_timer_holding }}"
+  _emergency_hi: "{{ _emergency_latch != '' and is_state(_emergency_latch, 'on') }}"
+  _paused_hi: "{{ _room_control != '' and is_state(_room_control, 'Paused') }}"
+  _automation_hi: "{{ _room_control != '' and is_state(_room_control, 'Automation') }}"
+  _cleaning_hi: "{{ _room_control != '' and is_state(_room_control, 'Cleaning') }}"
+  # MANUAL OVERRIDE — UNIFIED (2026-08-08, restores legacy one-flip parity:
+  # "there is no reason those three timers ever run concurrent... ONE
+  # flip did everything"). room_control now accepts the full state list
+  # (Vacant/Occupied/Engaged/Asleep/Hold) as override values, not just
+  # Paused/Automation/Cleaning — whichever value it holds becomes `state`
+  # directly, collapsing what used to be three separate override checks
+  # into one generic rule. Paused/Automation/Cleaning still work exactly
+  # as before (they're just three of the many values this now accepts);
+  # _paused_hi/_automation_hi/_cleaning_hi above are UNCHANGED and still
+  # feed their own named attributes below — this is purely about how
+  # `state` itself is resolved. 'Hold' here is the human-selectable
+  # top-level state (its own value, distinct from the live-signal
+  # `hold`/_hold_hi door-sensor tier above, which floors at Occupied and
+  # is never itself selectable). Confirmed live end-to-end 2026-08-08 (T).
+  _manual_override_hi: "{{ _room_control != '' and states(_room_control) not in ['Auto', 'unknown', 'unavailable', ''] }}"
+  _manual_override_value: "{{ (states(_room_control) | lower) if _manual_override_hi else '' }}"
+  # WASP FLAG (2026-08-08, Nathan: "if motion fires and all wasp = closed
+  # there is no win. wasp=true. WASP HOLD"). Real wasp-in-a-box semantics:
+  # a wasp_door opening floors the room to Occupied (see dispatch's
+  # wasp_door-start handler). If motion later fires while EVERY wasp_door
+  # for this room is closed — no door transition to corroborate how/when
+  # someone got in — that's unresolved presence, not confirmed presence.
+  # SELF-LATCHING ATTRIBUTE (2026-08-08 rev 2, "no need for a bool - just
+  # an attr on the sensor") — no input_boolean helper at all.
+  # this.attributes.get(...) reads this SAME sensor's own last-rendered
+  # attribute value, a real persistent latch purely inside the trigger-
+  # based template. CLEAR CONDITIONS (2026-08-08 rev 3, Nathan: "no thats
+  # the beauty, clock is stop - it clears only on user/agent forced OR any
+  # wasp portal open... cant wasp if any are open will unwasp if any open
+  # wasp if ALL closed") — deliberately NOT time-based, no passive
+  # timeout. Only two things resolve it: (1) any wasp_door opening (fresh
+  # corroboration — placed AFTER manual override so it can reuse
+  # _manual_override_hi, which already exists), (2) a human/agent forcing
+  # the room via room_control_manager (any explicit non-Auto value).
+  # Existence-checked on wasp_door — a room with none tagged is a pure
+  # no-op, always false.
+  _wasp_door_ents: "{{ label_entities('wasp_door') | intersect(_room_ents) | list }}"
+  _wasp_motion_ents: "{{ label_entities('motion') | intersect(_room_ents) | list }}"
+  _wasp_prev: "{{ (this.attributes.get('wasp_flag_active', false) | bool) if this is defined else false }}"
+  _wasp_trigger_ent: "{{ trigger.entity_id if trigger is defined and trigger.entity_id is defined else '' }}"
+  _wasp_trigger_state: "{{ trigger.to_state.state if trigger is defined and trigger.to_state is defined and trigger.to_state is not none else '' }}"
+  _wasp_door_just_opened: "{{ _wasp_trigger_ent in _wasp_door_ents and _wasp_trigger_state in ['on','open'] }}"
+  _wasp_motion_just_fired: "{{ _wasp_trigger_ent in _wasp_motion_ents and _wasp_trigger_state == 'on' }}"
+  _wasp_any_door_open_now: "{{ (_wasp_door_ents | map('states') | select('in', ['on','open']) | list | count) > 0 }}"
+  # Inline ternary, NOT a {% if %}...{% endif %} block — the block form
+  # always renders to literal text ("true"/"false" as a STRING), and any
+  # non-empty string is truthy in Jinja, which would make this always-
+  # true downstream regardless of the actual logic. The inline {{ A if
+  # cond else B }} form preserves the native Python bool through HA's
+  # variables: renderer.
+  _wasp_flag_hi: >-
+    {{ false if (_wasp_door_ents | count == 0) else
+       (false if (_wasp_door_just_opened or _manual_override_hi) else
+       (true if (_wasp_motion_just_fired and not _wasp_any_door_open_now) else
+       _wasp_prev)) }}
+  # ENTERTAINING HOLD (2026-08-08, Nathan: "tag entertaining with the room
+  # tag and zen_hold tag... then entertaining would apply to any room
+  # that is tagged"). Legacy Node-RED has dedicated per-room "Entertaining"
+  # groups (flows.json) that hold occupancy more conservatively while
+  # input_boolean.entertaining is on — confirmed live 2026-08-08 when a
+  # reload's connectivity blip put 5 legacy rooms into Hold simultaneously
+  # (dining_room, front_hall, guest_bathroom, kitchen, living_room). This
+  # is the v3 equivalent, opted in per-room by LABEL, same pattern as
+  # every other class in this system — NOT a blanket global toggle.
+  # input_boolean.zen_entertaining carries label 'entertaining_hold' PLUS
+  # this room's own label for every room that should participate; a room
+  # whose label isn't also on that entity is a pure no-op, unaffected,
+  # same safe-no-op guarantee as wasp_door/hold/room_control.
+  _entertaining_hold_ent: "{{ (label_entities('entertaining_hold') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _entertaining_hold_hi: "{{ _entertaining_hold_ent != '' and is_state(_entertaining_hold_ent, 'on') }}"
+  # GUEST HOLD (2026-08-08, Nathan: "same thing with guest hold... active
+  # guest == hold effectively holding the room - aka auto grandma-proof
+  # the guest room"). Identical opt-in-by-label mechanism as
+  # entertaining_hold, independent tier — input_boolean.zen_guest_mode
+  # carries label 'guest_hold' PLUS this room's own label for every room
+  # that should hold while a guest is present. A room whose label isn't
+  # also on that entity is unaffected, same safe-no-op guarantee.
+  _guest_hold_ent: "{{ (label_entities('guest_hold') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _guest_hold_hi: "{{ _guest_hold_ent != '' and is_state(_guest_hold_ent, 'on') }}"
+  # CHILD LINK (2026-08-06, Nathan: "a parent is set to the child state
+  # unless optional disable... default ON... net effect: hold an
+  # engaged-eq signal indef until the child released, so pretty much
+  # any state except pause, vacant"). Ported from the legacy
+  # design (v2 literally set the parent to Hold whenever a child was
+  # Occupied-or-higher). DEFAULT ON, no helper required — opt OUT per
+  # room by tagging ONE input_boolean 'child_link_disable' + this
+  # room's label. No timer needed: this is naturally "indefinite until
+  # released" because it re-evaluates the CHILD's own live state on
+  # every trigger — the child staying non-vacant IS the persistence
+  # mechanism.
+  _child_link_disable_ent: "{{ (label_entities('child_link_disable') | intersect(_room_ents) | list | first) | default('', true) }}"
+  _child_link_disabled: "{{ _child_link_disable_ent != '' and is_state(_child_link_disable_ent, 'on') }}"
+  # CASCADE-UP: a child's Engaged specifically still promotes the parent
+  # to Engaged (unchanged, exact-match, 2026-08-05 original design).
+  # child_rooms is a list of ENTITY_IDS directly (2026-08-05 correction
+  # — see blueprint input description), not a naming-convention guess.
+  _child_engaged_hi: >-
+    {%- set ns = namespace(found=false) -%}
+    {%- if not _child_link_disabled -%}
+      {%- for c in child_rooms | default([], true) -%}
+        {%- if states(c) == 'engaged' -%}{%- set ns.found = true -%}{%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+    {{ ns.found }}
+  # BROADENED 2026-08-06 (child link): any child state OTHER than
+  # vacant/paused now holds the parent at (at least) Occupied
+  # — not just an exact 'occupied' match. Covers the gap where a child
+  # sitting in Asleep/Automation/Cleaning previously contributed
+  # NOTHING to the parent at all and let it fall straight to Vacant.
+  # Paused stays excluded (an explicit human/agent override on the
+  # CHILD shouldn't leak upward as parent activity).
+  _child_occ_hi: >-
+    {%- set ns = namespace(found=false) -%}
+    {%- if not _child_link_disabled -%}
+      {%- for c in child_rooms | default([], true) -%}
+        {%- if states(c) not in ['vacant', 'paused'] -%}{%- set ns.found = true -%}{%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+    {{ ns.found }}
+  # LAST-TRIGGER EXPLAINABILITY (2026-08-05, Nathan: "say I'm this way
+  # because this just happened, last triggered ent"). Among a tier's
+  # source entities, find whichever CURRENTLY truthy one changed most
+  # recently — that's the one that actually caused the tier to be true
+  # right now, not just any entity that happens to carry the label. If
+  # no live entity is truthy but the tier is still true via timer decay,
+  # explain THAT instead of returning nothing. None if the tier is
+  # false. `states[e]` (not `states(e)`) is the documented way to fetch
+  # a State object's timestamp/attribute fields by a dynamic entity_id
+  # string — states.domain.object only works for a literal, known name.
+  _occ_last_trigger: >-
+    {%- set ns = namespace(ent='', ts=none) -%}
+    {%- for e in _occ_source_ents -%}
+      {%- if states(e) in ['on','open'] -%}
+        {%- set _lc = states[e].last_changed -%}
+        {%- if ns.ts is none or _lc > ns.ts -%}{%- set ns.ent = e -%}{%- set ns.ts = _lc -%}{%- endif -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if ns.ent != '' -%}
+      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'last_changed': ns.ts.isoformat()} }}
+    {%- elif _occupied_timer_holding -%}
+      {{ {'reason': 'room_timer still decaying from an earlier signal (class: occupied) — no source entity is currently truthy', 'timer_entity': _room_timer, 'timer_last_changed': (states[_room_timer].last_changed.isoformat() if _room_timer != '' else none)} }}
+    {%- else -%}
+      {{ none }}
+    {%- endif -%}
+  _engaged_last_trigger: >-
+    {%- set ns = namespace(ent='', ts=none) -%}
+    {%- for e in _engaged_source_ents -%}
+      {%- if states(e) in ['playing','on','open'] -%}
+        {%- set _lc = states[e].last_changed -%}
+        {%- if ns.ts is none or _lc > ns.ts -%}{%- set ns.ent = e -%}{%- set ns.ts = _lc -%}{%- endif -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if ns.ent != '' -%}
+      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'last_changed': ns.ts.isoformat()} }}
+    {%- elif _engaged_timer_holding -%}
+      {{ {'reason': 'room_timer still decaying from an earlier signal (class: engaged) — no source entity is currently truthy', 'timer_entity': _room_timer, 'timer_last_changed': (states[_room_timer].last_changed.isoformat() if _room_timer != '' else none)} }}
+    {%- else -%}
+      {{ none }}
+    {%- endif -%}
+  _asleep_last_trigger: >-
+    {%- set ns = namespace(ent='', ts=none) -%}
+    {%- for e in _asleep_source_ents -%}
+      {%- if states(e) in ['on','open'] -%}
+        {%- set _lc = states[e].last_changed -%}
+        {%- if ns.ts is none or _lc > ns.ts -%}{%- set ns.ent = e -%}{%- set ns.ts = _lc -%}{%- endif -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if ns.ent != '' -%}
+      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'last_changed': ns.ts.isoformat()} }}
+    {%- elif _asleep_timer_holding -%}
+      {{ {'reason': 'room_timer still decaying from an earlier signal (class: asleep) — no source entity is currently truthy', 'timer_entity': _room_timer, 'timer_last_changed': (states[_room_timer].last_changed.isoformat() if _room_timer != '' else none)} }}
+    {%- else -%}
+      {{ none }}
+    {%- endif -%}
+  # RESOLVED STATE (2026-08-06, hoisted out of sensor.state — Nathan:
+  # "can we make that as part of the same blueprint we already setup").
+  # Single source of truth for the cascade result, referenced by BOTH the
+  # sensor's own state below AND the REFLEX emitter action further down —
+  # computed exactly once per trigger, never duplicated. CASCADE ORDER
+  # (2026-08-05, mandatory tiers added — Nathan confirmed via explicit
+  # question: emergency ALWAYS wins even when paused, "life-safety
+  # visibility is never silenced ... paused only suppresses routine
+  # automation reactions"): emergency > manual override (whatever
+  # room_control_manager says) > engaged > asleep > child-engaged > hold
+  # (wasp/entertaining/guest) > occupied (or hold) > vacant. UNIFIED
+  # 2026-08-08 (see _manual_override_hi above) —
+  # Paused/Automation/Cleaning/Vacant/Occupied/Engaged/Asleep/Hold are now
+  # ALL just values room_control can hold; whichever one it's set to wins
+  # outright at this single priority tier, restoring legacy's one-flip
+  # model ("ONE flip did everything") instead of three separately-coded
+  # override checks. Only emergency outranks a manual override (life-
+  # safety is never suppressible by a human/agent pick). Below the
+  # override tier, unchanged from original design: Engaged kept above
+  # Asleep. Two DIFFERENT priority rules beyond that, easy to conflate —
+  # kept deliberately separate. (1) Direct Engaged beats direct Asleep IN
+  # THE SAME ROOM. (2) This room's own direct Asleep beats ANY
+  # child-cascaded activity regardless (using the ensuite mid-sleep must
+  # never wake the parent). Child engaged only surfaces AFTER own asleep
+  # is checked and found false.
+  _resolved_state: >-
+    {%- if _emergency_hi -%}
+      emergency
+    {%- elif _manual_override_hi -%}
+      {{ _manual_override_value }}
+    {%- elif _engaged_hi -%}
+      engaged
+    {%- elif _asleep_hi -%}
+      asleep
+    {%- elif _child_engaged_hi -%}
+      engaged
+    {%- elif _wasp_flag_hi or _entertaining_hold_hi or _guest_hold_hi -%}
+      hold
+    {%- elif _occ_hi or _child_occ_hi or _hold_hi -%}
+      occupied
+    {%- else -%}
+      vacant
+    {%- endif -%}
+
+action:
+  # REFLEX EMITTER (2026-08-06, folded into this SAME blueprint per
+  # Nathan: "can we make that as part of the same blueprint we already
+  # setup - im planning to say ok basically you need to make a blueprint
+  # for each room and tag the shit out of stuff"). Fires
+  # 'zen_room_state_changed' on a REAL transition only. Zero per-room
+  # wiring: every room deployed via this blueprint gets REFLEX emission
+  # automatically, nothing extra to add to any room's package file, ever.
+  # Stage 2 (the scene resolver in zen_reflex_dispatch.yaml) is the only
+  # piece still gated by reflex_enable — this emitter is always live,
+  # same "room knows what it's doing regardless of whether anything acts
+  # on it" principle as before.
+  # NOTE (2026-08-06 fix): `this` is NOT available inside this shared
+  # action: block — it only exists inside the entity's own state:/
+  # attributes: templates below, evaluated per-entity AFTER this block
+  # already ran (confirmed live: sensor.state rendered fine, this block
+  # errored "'this' is undefined" on every single trigger, silently never
+  # firing). Fetching the PREVIOUS value the same way room_state_self_
+  # label.yaml already reliably matches this sensor — by declared
+  # friendly_name, not entity_id guessing (this blueprint's own docs:
+  # "HA derives entity_id from friendly_name at creation... has
+  # repeatedly produced unexpected slugs"). Runs BEFORE this trigger's
+  # new value is written, so states.sensor still holds the OLD value at
+  # this point.
+  - variables:
+      _prev_state: >-
+        {{ (states.sensor | selectattr('attributes.friendly_name', 'eq', friendly_name) | map(attribute='state') | list | first) | default('', true) }}
+  - if: "{{ _prev_state not in ['', 'unknown', 'unavailable'] and _prev_state != _resolved_state }}"
+    then:
+      # 2026-08-06 fix: raw event.fire isn't a registered service on this
+      # HA install ("Action event.fire not found") — this system fires
+      # structured events through its own dedicated emitter tool instead
+      # (matches the no-API-end-run convention used everywhere else).
+      # Stage 2 (zen_reflex_dispatch.yaml) listens for event_type:
+      # zen_event with kind=='room_state_changed', reading fields from
+      # trigger.event.data.event.metadata.*.
+      - action: script.zen_dojotools_event_emitter
+        data:
+          mode: emit
+          component: room_manager
+          kind: room_state_changed
+          severity: info
+          summary: "{{ room }} transitioned {{ _prev_state }} -> {{ _resolved_state }}"
+          metadata:
+            room: "{{ room }}"
+            state: "{{ _resolved_state }}"
+            previous_state: "{{ _prev_state }}"
+            home_mode: "{{ states('sensor.zen_home_mode') }}"
+
+sensor:
+  - name: !input friendly_name
+    unique_id: !input unique_id
+    state: "{{ _resolved_state }}"
+    attributes:
+      # CORE CASCADE TIERS — always true/false, never null (see blueprint
+      # description). NOT the same thing as the sensor's own `state` —
+      # e.g. asleep_active can be true even while state shows "emergency"
+      # (emergency outranks it in the cascade but doesn't erase it).
+      engaged_active: "{{ _engaged_hi or _child_engaged_hi }}"
+      occupied_active: "{{ _occ_hi or _child_occ_hi or _hold_hi }}"
+      asleep_active: "{{ _asleep_hi }}"
+      wasp_flag_active: "{{ _wasp_flag_hi if _wasp_door_ents | count > 0 else none }}"
+      entertaining_hold_active: "{{ _entertaining_hold_hi if _entertaining_hold_ent != '' else none }}"
+      guest_hold_active: "{{ _guest_hold_hi if _guest_hold_ent != '' else none }}"
+      # LAST-TRIGGER EXPLAINABILITY — {entity_id, friendly_name,
+      # last_changed} for whichever source entity most recently caused
+      # this SPECIFIC tier to be true, or a {reason, timer_entity,
+      # timer_last_changed} dict if it's true only via timer decay. null
+      # if the tier is false. Independent of the overall `state` winner —
+      # e.g. engaged_last_trigger can be populated even while `state`
+      # shows "emergency" (emergency outranks engaged in the cascade but
+      # doesn't erase what's still actually happening).
+      occupied_last_trigger: "{{ _occ_last_trigger }}"
+      engaged_last_trigger: "{{ _engaged_last_trigger }}"
+      asleep_last_trigger: "{{ _asleep_last_trigger }}"
+      # OPTIONAL LATCHES/CLASSES — null means "nothing in this room carries
+      # that label at all," distinct from false ("tagged, currently off").
+      emergency_active: "{{ is_state(_emergency_latch, 'on') if _emergency_latch != '' else none }}"
+      emergency_latch_entity: "{{ _emergency_latch if _emergency_latch != '' else none }}"
+      paused_active: "{{ _paused_hi if _room_control != '' else none }}"
+      automation_active: "{{ _automation_hi if _room_control != '' else none }}"
+      cleaning_active: "{{ _cleaning_hi if _room_control != '' else none }}"
+      room_control_entity: "{{ _room_control if _room_control != '' else none }}"
+      room_control_state: "{{ states(_room_control) if _room_control != '' else none }}"
+      hold_active: "{{ _hold_hi if _hold_ents | count > 0 else none }}"
+      window_open_active: "{{ (_window_ents | map('states') | select('in',['on','open']) | list | count) > 0 if _window_ents | count > 0 else none }}"
+      garage_open_active: "{{ (_garage_ents | map('states') | select('in',['on','open']) | list | count) > 0 if _garage_ents | count > 0 else none }}"
+      vent_open_active: "{{ (_vent_ents | map('states') | select('in',['on','open']) | list | count) > 0 if _vent_ents | count > 0 else none }}"
+      vent_temperature: "{{ states(_vent_temp_ent) if _vent_temp_ent != '' else none }}"
+      window_covering_open_active: "{{ (_window_covering_ents | map('states') | select('in',['on','open']) | list | count) > 0 if _window_covering_ents | count > 0 else none }}"
+      ext_unlocked_active: "{{ (_ext_lock_ents | map('states') | select('eq','unlocked') | list | count) > 0 if _ext_lock_ents | count > 0 else none }}"
+      zone_presence: >-
+        {%- if _zone_presence_ents | count > 0 -%}
+          {%- set ns = namespace(d={}) -%}
+          {%- for e in _zone_presence_ents -%}
+            {%- set ns.d = ns.d | combine({(state_attr(e, 'friendly_name') | default(e, true)): (states(e) in ['on','open'])}) -%}
+          {%- endfor -%}
+          {{ ns.d }}
+        {%- else -%}
+          {{ none }}
+        {%- endif -%}
+      nap_active: "{{ is_state(_nap_latch, 'on') if _nap_latch != '' else none }}"
+      nap_latch_entity: "{{ _nap_latch if _nap_latch != '' else none }}"
+      effective_asleep_timeout_minutes: >-
+        {%- if _nap_latch != '' and is_state(_nap_latch, 'on') and _nap_minutes_ent != '' -%}
+          {{ states(_nap_minutes_ent) }}
+        {%- elif _asleep_minutes_ent != '' -%}
+          {{ states(_asleep_minutes_ent) }}
+        {%- else -%}
+          {{ none }}
+        {%- endif -%}
+      room_timer_entity: "{{ _room_timer if _room_timer != '' else none }}"
+      room_timer_state: "{{ states(_room_timer) if _room_timer != '' else none }}"
+      room_timer_class: "{{ _room_timer_class if _room_timer_holding else none }}"
+      # CASCADE DEBUG — only meaningful when child_rooms is non-empty;
+      # null otherwise rather than a misleading false.
+      child_rooms: "{{ child_rooms if (child_rooms | default([], true) | count) > 0 else none }}"
+      child_engaged: "{{ _child_engaged_hi if (child_rooms | default([], true) | count) > 0 else none }}"
+      child_occupied: "{{ _child_occ_hi if (child_rooms | default([], true) | count) > 0 else none }}"
+      # TOP-LEVEL EXPLAINABILITY — "why is `state` what it is, right now."
+      # Mirrors the SAME cascade order as the state template above, so
+      # this always describes whichever tier actually won.
+      last_trigger: >-
+        {%- if _emergency_hi -%}
+          {{ {'entity_id': _emergency_latch, 'friendly_name': (state_attr(_emergency_latch, 'friendly_name') | default(_emergency_latch, true)), 'last_changed': states[_emergency_latch].last_changed.isoformat()} }}
+        {%- elif _manual_override_hi -%}
+          {{ {'entity_id': _room_control, 'friendly_name': (state_attr(_room_control, 'friendly_name') | default(_room_control, true)), 'last_changed': states[_room_control].last_changed.isoformat()} }}
+        {%- elif _engaged_hi -%}
+          {{ _engaged_last_trigger }}
+        {%- elif _asleep_hi -%}
+          {{ _asleep_last_trigger }}
+        {%- elif _child_engaged_hi -%}
+          {{ {'reason': 'cascaded up from a child room currently engaged', 'child_rooms': child_rooms} }}
+        {%- elif _wasp_flag_hi -%}
+          {{ {'reason': 'motion fired with no wasp_door open to corroborate — unresolved presence (self-latched attribute, no backing entity)', 'wasp_door_entities': _wasp_door_ents} }}
+        {%- elif _entertaining_hold_hi -%}
+          {{ {'entity_id': _entertaining_hold_ent, 'friendly_name': (state_attr(_entertaining_hold_ent, 'friendly_name') | default(_entertaining_hold_ent, true)), 'last_changed': states[_entertaining_hold_ent].last_changed.isoformat(), 'reason': 'entertaining mode active, room opted in — legacy-parity conservative hold'} }}
+        {%- elif _guest_hold_hi -%}
+          {{ {'entity_id': _guest_hold_ent, 'friendly_name': (state_attr(_guest_hold_ent, 'friendly_name') | default(_guest_hold_ent, true)), 'last_changed': states[_guest_hold_ent].last_changed.isoformat(), 'reason': 'guest present, room opted in — holds occupied/vacant decisions while a guest is in residence'} }}
+        {%- elif _occ_hi -%}
+          {{ _occ_last_trigger }}
+        {%- elif _child_occ_hi -%}
+          {{ {'reason': 'cascaded up from a child room currently occupied', 'child_rooms': child_rooms} }}
+        {%- else -%}
+          {{ none }}
+        {%- endif -%}
