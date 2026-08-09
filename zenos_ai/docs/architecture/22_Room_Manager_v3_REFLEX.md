@@ -58,7 +58,7 @@ cleanly or lands in `hold`.
 | `emergency` | Something in this room needs immediate attention (smoke/CO/moisture/siren). Wins even while paused — life-safety visibility is never silenced. | `emergency_latch` (input_boolean, human/agent ack-only clear) |
 | manual override → `paused`/`automation`/`cleaning`/`vacant`/`occupied`/`engaged`/`asleep`/`hold` | A human/agent has explicitly picked one of these via `room_control_manager` (the select). Outranks everything below it except emergency; releases back to `Auto`, or is superseded by a fresh `wasp_door` open (see §22.9). | `room_control_manager` select |
 | `cleaning` | A vacuum is actively working this room. | manual override, set by the Cleaning Dispatcher |
-| `asleep` | Someone's asleep here. Beats direct Engaged in the same room — a device staying active nearby must never override a real Asleep signal. Own direct signal always beats a child room cascading up — using the ensuite mid-sleep must never wake the parent. Auto-fire is night→wake window-gated by default — see §22.9. | live signal (window-gated), room_timer decaying in class `asleep` (8h default), or manual override via `room_control_manager` (never window-gated) |
+| `asleep` | Someone's asleep here. Beats direct Engaged in the same room — a device staying active nearby must never override a real Asleep signal. Own direct signal always beats a child room cascading up — using the ensuite mid-sleep must never wake the parent. Auto-fire is night→wake window-gated by default (or by `autosleep_schedule` if opted in) — see §22.9. | live signal (window-gated), room_timer decaying in class `asleep` (8h default), `asleep_hold` entity (zero clock, see §22.9), or manual override via `room_control_manager` (never window-gated) |
 | `engaged` | Active, direct use — someone is *doing something* here right now (media playing, a monitored desk dock in use). Outranks mere presence, but not a direct Asleep signal in the same room. | live signal, or the shared room_timer decaying in class `engaged` |
 | `hold` | Unresolved presence or a deliberate conservative-hold policy — three independent sources, same visible state, distinguishable via `last_trigger`. See §22.9. | wasp_flag (self-latched), entertaining_hold, guest_hold |
 | `occupied` | Presence detected, no specific activity signal, or a child room is non-vacant, or a `hold`-labeled entity is active ("fridge door mode" — floors at Occupied, no clock, instant fall-through on close). | live signal, room_timer decaying in class `occupied`, child cascade, or hold |
@@ -193,6 +193,8 @@ helper entity present, checked by existence at fire time:
 | **Guest Hold** | Tag `input_boolean.zen_guest_mode` with label `guest_hold` + the room's label | See §22.9. |
 | **Autosleep Disable** | Tag anything carrying the room's label with `autosleep_disable` | Kills automatic asleep-firing for that room; manual `room_control_manager` "Asleep" is unaffected. |
 | **Asleep Window Disable** | Tag anything carrying the room's label with `asleep_window_disable` | Removes the night→wake restriction on automatic asleep-firing for that room. See §22.9. |
+| **Autosleep Schedule** | Tag a truthy-resolving entity (toggle, calendar, `schedule.*`) with `autosleep_schedule` + the room's label | Authoritative override of the night→wake window for that room — replaces the clock check entirely rather than OR'ing with it. See §22.9. |
+| **Asleep Hold** | Tag a truthy-resolving entity with `asleep_hold` + the room's label | Forces the room to `asleep` directly while true — no trigger signal or window check needed. See §22.9. |
 
 ---
 
@@ -368,9 +370,34 @@ pass in `zen_room_manager_dispatch.yaml`.
   is never time-gated.
 * `asleep_window_disable` (label): keeps autosleep active but removes the
   night-only restriction, firing any time of day.
+* `autosleep_schedule` (label, tag a truthy-resolving entity — toggle,
+  calendar, or `schedule.*`; both domains natively expose state `on`/`off`
+  meaning "currently within an active period," so `is_state()` already
+  works generically with no domain-specific handling): when present for a
+  room, it is **authoritative** — it fully replaces the clock check for
+  that room rather than OR'ing with it. Built for non-standard sleep
+  schedules (night-shift work): a day-sleeper's window needs to be
+  *shifted*, not just widened, which an OR can't do. Outranked by
+  `asleep_window_disable` if a room somehow carries both — an explicit
+  "no restriction at all" beats an explicit schedule. Absent for a room,
+  falls back to the default clock unchanged.
 
 The asleep-class room_timer's default duration is 8 hours (not 30 minutes),
 matching genuine overnight sleep.
+
+### Asleep Hold — a third, independent path into Asleep
+
+Structurally identical to `entertaining_hold`/`guest_hold` above, but feeds
+the `asleep` tier directly instead of `hold`. Tag any truthy-resolving
+entity with label `asleep_hold` plus the room's own label. While true, the
+room reads `asleep` outright — no bed sensor, no trigger signal, and no
+window check are needed; the tagged entity is sufficient on its own, the
+same way `guest_hold` needs no occupancy evidence to hold a room. Zero
+clock, zero decay: it clears the instant the tagged entity goes false, or a
+manual `room_control_manager` override, which outranks it in the cascade
+regardless. Never arms the shared `room_timer`. A room whose label isn't
+also on the tagged entity is unaffected, same safe-no-op guarantee as every
+other opt-in class.
 
 ---
 

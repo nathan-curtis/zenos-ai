@@ -1,5 +1,14 @@
 ###############################################################################
-# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v5.6.0)
+# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v5.7.0)
+#
+# v5.7.0 (2026-08-09): solar/battery folded into mode=electric as a nested
+#   'solar' key (zen_plant_pv_power/battery_power/battery_soc/grid_power/
+#   off_grid labels) — present only when at least one resolves, zero size
+#   cost for households without a solar/battery panel. Site-level rollup
+#   only (sum power, average SOC across banks); multi-inverter per-device
+#   detail is future scope. label_suggest gained matching device_class +
+#   name-pattern branches. Read-only — charge-limit/EPS-mode/quick-charge
+#   style controls stay on the generic domain tools, out of Plant's scope.
 #
 # v5.6.0 (2026-08-07): new mode=label_suggest — scans a named integration's
 #   entities (span_panel, emporia_vue) and suggests zen_plant_*/main_panel/
@@ -33,8 +42,10 @@ script:
   zen_dojotools_plant:
     alias: "Zen DojoTools Plant"
     description: >
-      Physical plant + energy manager (v5.5.0). Electric: whole-home live watts, utility billing, grid carbon,
-      circuit breakdown. Water: usage + billing. Gas: live sensor or graceful N/A. Utility registry from RM cabinet.
+      Physical plant + energy manager (v5.7.0). Electric: whole-home live watts, utility billing, grid carbon,
+      circuit breakdown, and — if a solar/battery panel is tagged — a nested solar block (PV production, battery
+      power/SOC, grid import/export, grid-connected status; absent entirely for households with no panel tagged).
+      Water: usage + billing. Gas: live sensor or graceful N/A. Utility registry from RM cabinet.
       mode=overview: top-line all utilities. mode=electric: full electrical. mode=water/gas/mechanical/thermal/circuits: subsystem detail.
       mode=managed [managed_labels=csv]: universal managed-machine display — all machines provisioned via provision_bom, grouped by ha_labels root label. Returns products[], chores[], stock summary, schema_warnings[]{type,message,next_call}, and top-level advisory[] with exact fix commands. Resolves area via product location → Grocy location homeassistant_area userfield (not product userfield). Chores globally deduped alphabetically — each chore claimed by first machine. Plant is READ-ONLY: never sets labels or locations. Fix schema issues via zen_dojotools_inventory. Call mode=help for quickstart, howto, and managed_guidance.
       mode=validate: slot resolution report. mode=label_suggest integration=<slug>: scan a specific integration's entities (e.g. span_panel, emporia_vue) and suggest zen_plant_*/main_panel/sub_panel/consumed_energy labels by device_class + name-pattern, preview by default, confirm_action=true to apply. mode=ignore/unignore: suppress/restore entities from discovery.
@@ -166,6 +177,7 @@ script:
                   electric_billing: "zen_plant_billing_daily/weekly/monthly → label:utility_billing → label:utility_meter"
                   electric_tariff: "zen_plant_tariff (unit: USD/Wh) → label:utility_billing *tariff|rate|price"
                   electric_grid_carbon: "zen_plant_grid_carbon → label:energy_management *fossil*"
+                  electric_solar: "zen_plant_pv_power/battery_power/battery_soc/grid_power (sensor) + zen_plant_off_grid (binary_sensor) → nested 'solar' key in mode=electric, present only if at least one resolves. Multiple entities per label SUM for power slots, AVERAGE for battery_soc (multi-inverter/multi-bank site-level rollup, no per-device detail in v1). See label_suggest for auto-detection against a named integration (e.g. eg4_web_monitor)."
                   water: "zen_plant_water → label:water_usage → label:droplet (non-fee sensors)"
                   water_rate: "zen_plant_water_rate → label:water_usage *fee|rate|cost → none if unlabeled"
                   gas: "zen_plant_gas (therms) → graceful N/A if unset"
@@ -366,6 +378,19 @@ script:
           _zp_auto_shutoff: "{{ label_entities('zen_plant_auto_shutoff') | reject('in', _zp_ignored) | list }}"
           _zp_leak_sensor: "{{ label_entities('zen_plant_leak_sensor') | reject('in', _zp_ignored) | list }}"
           _zp_motor: "{{ label_entities('zen_plant_motor') | reject('in', _zp_ignored) | list }}"
+          # SOLAR/BATTERY (2026-08-09) — site-level rollup only, v1. Multiple
+          # inverters/battery banks are SUMMED for power slots, AVERAGED for
+          # SOC (a simple average, not capacity-weighted — fine for "how full
+          # is the bank overall," not a precision BMS readout). No dedicated
+          # mode: folds into mode=electric's response as a nested 'solar' key,
+          # present only when at least one of these labels resolves to a real
+          # entity — a household with no panel gets no size cost for this at
+          # all, same 'available' gate every other Plant block already uses.
+          _zp_pv_power: "{{ label_entities('zen_plant_pv_power') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _zp_battery_power: "{{ label_entities('zen_plant_battery_power') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _zp_battery_soc: "{{ label_entities('zen_plant_battery_soc') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _zp_grid_power: "{{ label_entities('zen_plant_grid_power') | select('match', 'sensor\\.') | reject('in', _zp_ignored) | list }}"
+          _zp_off_grid: "{{ label_entities('zen_plant_off_grid') | select('match', 'binary_sensor\\.') | reject('in', _zp_ignored) | list | first | default('') }}"
 
       # ── RESOLVE SPECIFIC ENTITY IDS (zen_plant_* → generic → integration) ─
       - variables:
@@ -487,6 +512,24 @@ script:
           _billing_weekly_wh: >-
             {%- set _s = states(_billing_weekly_eid) if _billing_weekly_eid != '' else 'unavailable' -%}
             {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
+          _solar_available: "{{ (_zp_pv_power | count) > 0 or (_zp_battery_power | count) > 0 or (_zp_battery_soc | count) > 0 or (_zp_grid_power | count) > 0 or _zp_off_grid != '' }}"
+          _pv_power_w: >-
+            {%- if (_zp_pv_power | count) > 0 -%}
+              {{ (_zp_pv_power | map('states') | map('float', 0) | list | sum) | round(0) }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _battery_power_w: >-
+            {%- if (_zp_battery_power | count) > 0 -%}
+              {{ (_zp_battery_power | map('states') | map('float', 0) | list | sum) | round(0) }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _battery_soc_pct: >-
+            {%- if (_zp_battery_soc | count) > 0 -%}
+              {{ ((_zp_battery_soc | map('states') | map('float', 0) | list | sum) / (_zp_battery_soc | count)) | round(1) }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _grid_power_w: >-
+            {%- if (_zp_grid_power | count) > 0 -%}
+              {{ (_zp_grid_power | map('states') | map('float', 0) | list | sum) | round(0) }}
+            {%- else -%}{{ none }}{%- endif -%}
+          _grid_connected: "{{ (not is_state(_zp_off_grid, 'on')) if _zp_off_grid != '' else none }}"
           _billing_tariff_usd_wh: >-
             {%- set _s = states(_billing_tariff_eid) if _billing_tariff_eid != '' else 'unavailable' -%}
             {{ _s | float(none) if _s not in ['unavailable','unknown',''] else none }}
@@ -699,6 +742,16 @@ script:
                     {%- set _sig.label = 'consumed_energy' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'feeds mode=circuits sort_by=energy — verify unit (Wh exact fit, kWh sorts fine but do not read the number as literal Wh)' -%}
                   {%- elif _dc == 'energy' and ('produced' in _eid_l or 'net' in _eid_l) -%}
                     {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'produced/net energy has no dedicated Plant slot today — only consumed_energy is tracked'}] -%}
+                  {%- elif _dc == 'power' and ('pv' in _eid_l or 'solar' in _eid_l) -%}
+                    {%- set _sig.label = 'zen_plant_pv_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'solar production — summed across all matching entities into mode=electric.solar.pv_power_w, no per-inverter breakdown in v1' -%}
+                  {%- elif _dc == 'power' and 'battery' in _eid_l -%}
+                    {%- set _sig.label = 'zen_plant_battery_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'battery charge/discharge power — summed across all matching entities (multi-bank systems) into mode=electric.solar.battery_power_w' -%}
+                  {%- elif _dc == 'power' and 'grid' in _eid_l -%}
+                    {%- set _sig.label = 'zen_plant_grid_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'grid import/export power (inverter/solar context) — distinct from zen_plant_site_power, feeds mode=electric.solar.grid_power_w' -%}
+                  {%- elif _dc == 'battery' -%}
+                    {%- set _sig.label = 'zen_plant_battery_soc' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'battery state of charge % — averaged across all matching entities (multi-bank systems) into mode=electric.solar.battery_soc_pct, not capacity-weighted' -%}
+                  {%- elif _domain == 'binary_sensor' and ('off_grid' in _eid_l or 'offgrid' in _eid_l) -%}
+                    {%- set _sig.label = 'zen_plant_off_grid' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'on = inverter running disconnected from grid — feeds mode=electric.solar.grid_connected (inverted)' -%}
                   {%- elif _dc == 'power' and ('site_power' in _eid_l or 'current_power' in _eid_l) -%}
                     {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'medium' -%}{%- set _sig.note = 'candidate for zen_plant_site_power override IF this is the true whole-home total — if more than one panel/integration reports a site-power-shaped sensor, pin only ONE (see two_panel_installs in mode=help electric_panel_setup), do not sum them' -%}
                   {%- elif _dc == 'power' -%}
@@ -774,6 +827,10 @@ script:
                     'hvac':           {'entity_id': _val_hvac_eid,        'pinned': false,                     'raw_state': states(_val_hvac_eid) if _val_hvac_eid != '' else none,                'ok': _val_hvac_eid != ''},
                     'water_heater':   {'entity_id': _wh_eid,              'pinned': false,                     'raw_state': states(_wh_eid) if _wh_eid != '' else none,                             'ok': _wh_eid != ''},
                     'sump_pump':      {'entity_id': _sump_eid,            'pinned': false,                     'raw_state': states(_sump_eid) if _sump_eid != '' else none,                          'ok': _sump_eid != ''},
+                    'pv_power':       {'entity_id': none, 'pinned': false, 'raw_state': _pv_power_w,      'ok': _pv_power_w is not none,      'entity_count': _zp_pv_power | count},
+                    'battery_power':  {'entity_id': none, 'pinned': false, 'raw_state': _battery_power_w, 'ok': _battery_power_w is not none, 'entity_count': _zp_battery_power | count},
+                    'battery_soc':    {'entity_id': none, 'pinned': false, 'raw_state': _battery_soc_pct, 'ok': _battery_soc_pct is not none, 'entity_count': _zp_battery_soc | count},
+                    'grid_power':     {'entity_id': none, 'pinned': false, 'raw_state': _grid_power_w,    'ok': _grid_power_w is not none,    'entity_count': _zp_grid_power | count},
                   }
                 }}
           - variables:
@@ -826,8 +883,22 @@ script:
 
       # ── SHARED BLOCKS ─────────────────────────────────────────────────────
       - variables:
+          _solar_block: >-
+            {%- if _solar_available -%}
+              {{
+                {
+                  'pv_power_w': _pv_power_w,
+                  'battery_power_w': _battery_power_w,
+                  'battery_soc_pct': _battery_soc_pct,
+                  'grid_power_w': _grid_power_w,
+                  'grid_connected': _grid_connected,
+                  'inverter_count': _zp_pv_power | count,
+                  'battery_bank_count': _zp_battery_soc | count
+                }
+              }}
+            {%- else -%}{{ none }}{%- endif -%}
           _elec_block: >-
-            {%- set _avail = _site_power_w is not none or _billing_daily_wh is not none -%}
+            {%- set _avail = _site_power_w is not none or _billing_daily_wh is not none or _solar_available -%}
             {{
               {
                 'available': _avail,
@@ -842,7 +913,8 @@ script:
                 'l1_voltage': _l1_v,
                 'l2_voltage': _l2_v,
                 'main_breaker_amps': _breaker_a,
-                'source': _site_power_eid
+                'source': _site_power_eid,
+                'solar': _solar_block
               } | tojson
             }}
           _water_block: >-

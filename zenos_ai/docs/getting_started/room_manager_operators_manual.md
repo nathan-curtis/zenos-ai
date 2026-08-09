@@ -190,6 +190,10 @@ closet doesn't need a vent fan.
 
 **🌃 Sleep Window** (on by default, per room) — "A room only falls asleep automatically at night." A bed sensor tripping at 2pm (someone folding laundry on the bed, say) won't put the room to sleep. Automatic sleep only fires between night and wake. Can be turned off per room if you want round-the-clock auto-sleep, or automatic sleep can be disabled entirely for a room (manual Asleep, Section 5, always still works either way).
 
+**🕐 Autosleep Schedule** — "No standard sleep pattern? No problem." Shift worker, firefighter, anyone whose "night" isn't actually at night — this room doesn't have to follow the house's clock at all. Point it at a calendar, an HA Schedule helper, or a toggle you flip yourself instead, and that becomes this room's own private night, completely replacing the house-wide clock check for it. Everybody else's rooms keep working off the normal night-to-wake window; this one just marches to its own schedule.
+
+**😴 Asleep Hold** — "Sleep now — no bed sensor required." Tag a toggle, calendar, or schedule, and while it reads on, the room simply IS Asleep, full stop — no clock, no waiting on a sensor to catch up, no window check. Flip it back off (or let the calendar event end) and the room lets go instantly, no lingering.
+
 **🍸 Entertaining Hold / Guest Hold** — "While entertaining mode or guest mode is on, opted-in rooms stay conservative instead of guessing." Prevents a busy house from flickering a room between Occupied and Vacant. Opt in per room; a room not opted in is unaffected.
 
 None of it requires a code editor or a YAML file — every feature above
@@ -210,10 +214,10 @@ another setup pass.
 
 That's it: no code editor, no YAML file, just labels, helpers, and one
 blueprint form per room. Everything past Step 3 (Control Burnout, TV
-Sleep Timer, Vent Fan, Nightlight, Sleep Window, Entertaining/Guest
-Hold) is pure Step 1/Step 2 labeling, no separate blueprint needed. The
-dispatcher that reacts to all of it is already running in the
-background and needs no per-room setup of its own.
+Sleep Timer, Vent Fan, Nightlight, Sleep Window, Autosleep Schedule,
+Asleep Hold, Entertaining/Guest Hold) is pure Step 1/Step 2 labeling, no
+separate blueprint needed. The dispatcher that reacts to all of it is
+already running in the background and needs no per-room setup of its own.
 
 If you have an AI assistant hooked up, you can also just describe what
 you want — "turn on control burnout for the office" — and let it do
@@ -266,6 +270,9 @@ the equivalent shortcut if you're handing it to an AI instead.
 
 **🛋 A guest room** — Same as a bedroom, plus Guest Hold turned on so the room stays conservative (favors Occupied/Hold over confidently saying Vacant) for as long as guest mode is active, keeps the room from resetting itself while someone's actually staying in it.
 > Say: *"set up the guest room like a bedroom, and turn on guest hold for it."*
+
+**🚒 A bedroom for someone with a non-standard schedule** (shift worker, firefighter, anyone whose "night" isn't at night) — Set up like a bedroom, then point Autosleep Schedule at whatever actually reflects when this person sleeps: a calendar, an HA Schedule helper, or just a toggle they flip themselves before bed. This room stops caring what time the rest of the house thinks it is. If they just want to crash right now, Asleep Hold (or the manual Asleep pick, Section 5) skips the whole trigger/window question entirely — flip it, and the room is Asleep.
+> Say: *"set up the guest room like a bedroom, but point autosleep at my work calendar instead of the house's night hours."*
 
 **🚪 A garage or any room with an entry door** — Motion for Occupied. Tag the actual door (not its lock) as the room's entry signal — this is what lets the room tell the difference between "someone's clearly walking through" and "motion fired but nobody actually came in." Skip TV Sleep Timer and Nightlight: a garage doesn't sleep.
 > Say: *"set up the garage: motion, and the entry door as the door signal, not the lock."*
@@ -343,6 +350,15 @@ the equivalent shortcut if you're handing it to an AI instead.
    every bedroom, no setup required. You can turn it off per room
    if you actually want round-the-clock nap detection (a den with
    an actual napper, say).
+
+ ► THE HOUSE'S NIGHT ISN'T EVERYONE'S NIGHT. Autosleep Schedule
+   doesn't nudge the house's clock for one room — it REPLACES it
+   entirely, for that room only. Point it at a calendar and this
+   room stops caring what time it actually is; it only cares what
+   the calendar says. Every other room keeps running on the normal
+   night-to-wake window like nothing happened. This is the fix for
+   "my partner works nights and the house keeps trying to put them
+   to bed at 11pm."
 
  ► "UNTIL I SAY SO" BEATS EVERYTHING BUT AN EMERGENCY. Manually
    picking a state on the control panel (Section 5) outranks every

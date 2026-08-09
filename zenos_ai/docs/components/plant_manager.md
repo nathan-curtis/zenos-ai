@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.6.0
+**Version:** 5.7.0
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
@@ -8,6 +8,11 @@
 > household's actual installed panel) and
 > [Emporia Vue](../plugins/emporia_vue_codex.md) (clamp-style add-on).
 > Both are pure label-wiring guides — no new tool code required.
+>
+> **Solar/battery instead?** [EG4 Web Monitor](../plugins/eg4_web_monitor_codex.md)
+> — a different Plant Manager slot family (`mode=electric`'s nested `solar`
+> key), built as of v5.7.0. Unlike the two above, this one *did* require new
+> tool code — Plant had no solar/battery concept before it.
 
 ---
 
