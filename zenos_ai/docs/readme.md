@@ -106,7 +106,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `components/room_manager_v3_reflex.md` — Room Manager v3 & REFLEX: per-room state cascade, wasp-hold, entertaining/guest hold, asleep window, REFLEX event bus
 * `plugins/emporia_vue_codex.md` — Plant Codex: Emporia Vue circuit-level energy monitoring
 * `plugins/span_panel_codex.md` — Plant Codex: SPAN Panel circuit-level energy monitoring
-* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate
+* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate, label_suggest (SPAN/Emporia circuit labeling)
 * `components/media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
 * `components/autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
@@ -114,7 +114,7 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
 * `components/systemtools.md` — SystemTools: home mode, quiet/work hours, scheduler anchors, guest/entertaining toggles, home_status rollup
 * `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
-* `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
+* `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync
 * `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
 
 ---
@@ -252,6 +252,7 @@ Includes:
 * `zen_dojotools_postman_readme.md` — Postman: ack loop, clear_tag consumer pattern, open_dashboard companion URI, actionable notifications, image support
 * `zen_dojotools_todo_readme.md` — Todo: HA todo + MS365 tasks, bulk complete, discoverability
 * `zen_dojotools_calendar_readme.md` — Calendar: full CRUD, MS365 native APIs, label-targeted reads, wildcard discovery
+* `zen_dojotools_utilities_readme.md` — Utilities: calculator, dice roller, announce, wait, canonical HA domain tools (select/boolean/number/text/climate/water_heater/datetime/zones/timekeeper)
 * `zen_dojotools_office_readme.md`
 * `zen_dojotools_event_emitter_readme.md`
 * `readme.md` – Overview
