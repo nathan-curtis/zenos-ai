@@ -59,15 +59,24 @@ never requires touching either file.
        max: 720
        initial: 30
    input_select:
-     <room>_control:
-       name: "<Room> Control"
-       options: [Auto, Paused, Automation, Cleaning]
-       initial: Auto
      <room>_room_timer_class:
        name: "<Room> Room Timer Class"
        options: [occupied, engaged, asleep]
        initial: occupied
    ```
+
+   > **TODO — undocumented:** `room_control_manager` (the manual-override
+   > select) is declared per-room, but there's no generic example of that
+   > declaration anywhere in the shared repo — it isn't an `input_select`
+   > helper (legacy `room_control` was; this replaced it after the
+   > isolation incident, see §22 "Full Disconnect"), and it isn't defined
+   > by any blueprint or template block in `room_state.yaml` or the
+   > dispatch script either. The only real declarations live in the
+   > house-specific per-room package files that intentionally stay out of
+   > this shared build. Tag whatever entity you do create with the label
+   > `room_control_manager` and the room's own label — the rest of the
+   > system is a safe no-op without it — but the actual entity
+   > declaration needs a real worked example here.
 
 2. **Deploy the state sensor** via the shared template blueprint:
    ```yaml
@@ -84,8 +93,8 @@ never requires touching either file.
    `trigger_entities` is the authoritative live-reactivity list — anything
    tagged for this room but missing from here will not cause the sensor to
    re-evaluate when it changes. Include every signal entity, every timer,
-   every latch, the `room_control` select, and every duration input_number
-   you declared in step 1.
+   every latch, the `room_control_manager` select, and every duration
+   input_number you declared in step 1.
 
 3. **Apply labels.** This is the entire "configuration" surface:
 
@@ -109,7 +118,7 @@ never requires touching either file.
 | `emergency_latch` | input_boolean | Enables the `emergency` tier |
 | `nap_latch` / `nap_minutes` / `asleep_minutes` | input_boolean / input_number | Shortens asleep decay while the nap latch is on |
 | `nightlight_timer` | Timer | Enables the nightlight construct (motion edge while asleep) |
-| `control_burnout` | Timer | Auto-reverts `room_control` out of `Automation` if not released in time |
+| `control_burnout` | Timer | Auto-reverts `room_control_manager` out of `Automation` if not released in time |
 | `vent_fan` | fan/switch entity | Enables occupancy-driven auto on/off |
 | `scene_<tier>` (e.g. `scene_occupied`, `scene_asleep`) | Scenes | REFLEX Stage 2 fires these on real transitions |
 | `zen_rm_ignore` | Any entity | Suppresses from whole-home rollups (shared with RoomReg's `home_overview`) |
@@ -153,7 +162,7 @@ states.sensor.<room>_state
 | `state` | The resolved tier — see cascade order below |
 | `engaged_active` / `occupied_active` / `asleep_active` / `checking_active` | Always true/false, never null |
 | `*_last_trigger` | `{entity_id, friendly_name, last_changed}` or a timer-decay reason — why this tier is (or isn't) true |
-| `emergency_active` / `paused_active` / `automation_active` / `cleaning_active` | `null` if this room has no `room_control`/`emergency_latch` at all — distinct from `false` |
+| `emergency_active` / `paused_active` / `automation_active` / `cleaning_active` | `null` if this room has no `room_control_manager`/`emergency_latch` at all — distinct from `false` |
 | `room_control_entity` / `room_control_state` | The override select and its current value |
 | `room_timer_entity` / `room_timer_state` / `room_timer_class` | The shared clock's current status |
 | `zone_presence` | Sub-zone dict (e.g. Aqara FP2 desk/bench zones), `null` if unused |
