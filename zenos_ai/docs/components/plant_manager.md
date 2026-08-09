@@ -99,6 +99,11 @@ Pin a sensor to any slot by applying the matching label. Overrides always take f
 | `zen_plant_water` | Whole-home water flow/usage | sensor.* |
 | `zen_plant_water_rate` | Water billing rate | sensor.* |
 | `zen_plant_gas` | Gas consumption (therms) | sensor.* |
+| `zen_plant_pv_power` | Solar: live PV power | sensor.* — summed across every tagged entity (multi-inverter) |
+| `zen_plant_battery_power` | Solar: live battery charge/discharge power | sensor.* — summed across every tagged entity (multi-bank) |
+| `zen_plant_battery_soc` | Solar: battery state of charge | sensor.* — averaged across every tagged entity (simple mean, not capacity-weighted) |
+| `zen_plant_grid_power` | Solar: live grid import/export power | sensor.* — summed across every tagged entity |
+| `zen_plant_off_grid` | Solar: off-grid/EPS mode indicator | binary_sensor.* |
 | `zen_plant_ignore` | Suppress from all waterfalls | Any domain |
 | `zen_plant_hot_tub` | Thermal: hot tub setpoint + temp | `climate.*` (setpoint+temp) or `sensor.*temp*` (read-only) |
 | `zen_plant_freezer` | Thermal: freezer temp (one node per entity) | `sensor.*` |
@@ -134,13 +139,13 @@ Primary discovery path when `zen_plant_*` overrides are absent.
 
 ## mode=validate — Slot Resolution Report
 
-Identifies what Plant Manager resolved (or did not) for each of the 15 slots.
+Identifies what Plant Manager resolved (or did not) for each slot.
 
 ```
 zen_dojotools_plant  mode=validate
 ```
 
-Response `slots{}` — one entry per slot:
+Response `slots{}` — one entry per single-pin slot:
 
 | Field | Notes |
 |-------|-------|
@@ -148,6 +153,8 @@ Response `slots{}` — one entry per slot:
 | `pinned` | `true` if resolved via `zen_plant_*` label override |
 | `raw_state` | Current state value, or `null` if no entity |
 | `ok` | `true` if entity resolved and state is readable |
+
+**Solar/battery slots are different — sum/average rollups, not single-pin.** `pv_power`, `battery_power`, `battery_soc`, and `grid_power` each carry an `entity_count` field instead of a single `entity_id`, since they aggregate across however many entities are tagged (multi-inverter, multi-bank). Use `entity_count` to confirm every inverter/bank actually got tagged, not just the first one.
 
 Summary includes `resolved`, `unresolved`, `total`, `unresolved_slots[]`, and a tip.
 
@@ -188,7 +195,7 @@ Write utility_index via `zen_dojotools_room_manager mode=utility utility_action=
 
 | Field | Content |
 |-------|---------|
-| `electric{}` | `available`, `live_power_w`, `live_power_kw`, `daily_kwh`, `weekly_kwh`, `monthly_kwh`, `tariff_usd_kwh`, `peak_billing_month`, `grid_fossil_pct`, `l1_voltage`, `l2_voltage`, `main_breaker_amps`, `source` |
+| `electric{}` | `available`, `live_power_w`, `live_power_kw`, `daily_kwh`, `weekly_kwh`, `monthly_kwh`, `tariff_usd_kwh`, `peak_billing_month`, `grid_fossil_pct`, `l1_voltage`, `l2_voltage`, `main_breaker_amps`, `source`, `solar{}` (null unless solar/battery labels resolve — see `electric` section below) |
 | `hvac{}` | `available`, `units[]`, `count` |
 | `water{}` | `available`, `usage_gal`, `rate_per_1000gal_usd`, `source` |
 | `gas{}` | `available`, `live_consumption_therms`, `note`, `source` |
@@ -198,6 +205,20 @@ Write utility_index via `zen_dojotools_room_manager mode=utility utility_action=
 ### electric
 
 Adds `panel_status{}` (`dsm_state`, `relay_state`) and `utility{}` (electric entry from utility_index).
+
+**`solar{}` (v5.7.0)** — nested inside the `electric` block. `null` unless at least one `zen_plant_pv_power`/`battery_power`/`battery_soc`/`grid_power`/`off_grid` label resolves.
+
+| Field | Content |
+|-------|---------|
+| `pv_power_w` | Summed live PV power across every tagged entity |
+| `battery_power_w` | Summed live battery charge/discharge power |
+| `battery_soc_pct` | Averaged battery state of charge (simple mean across banks, not capacity-weighted) |
+| `grid_power_w` | Summed live grid import/export power |
+| `grid_connected` | From `zen_plant_off_grid` — inverted (off-grid entity `on` means not grid-connected) |
+| `inverter_count` | How many `zen_plant_pv_power`-tagged entities were summed |
+| `battery_bank_count` | How many `zen_plant_battery_soc`-tagged entities were averaged |
+
+Read-only — EG4's write-capable entities (quick charge, EPS/backup mode, AC-couple toggle, SOC/limits) aren't surfaced here. Tag and use them directly via `zen_dojotools_number`/`select_control`/`boolean`. See [Plant Codex — EG4 Web Monitor](../plugins/eg4_web_monitor_codex.md).
 
 ### water
 
