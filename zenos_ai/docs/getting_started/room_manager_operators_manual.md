@@ -145,10 +145,7 @@ often are:
 |---|---|---|---|
 | Normal operation | Stop all automation for this room until a human flips it back | "I've got this room" until released or a human takes it back | Vacuum is working here right now (set for you, don't touch it) |
 
-<!-- ART: control_panel.png — literal NES-controller or arcade-cabinet
-     button row for the four positions above, one button lit to show
-     "currently pressed." Suggested size: ~400x120px, thin banner
-     strip under the table, not a standalone hero image. -->
+<img src="images/control_panel.png" alt="Room Control panel: Auto, Paused, Automation, Cleaning" width="500">
 
 **AUTO is the only position that means "figure it out normally."** Every
 other position, whether it's one of the four above or a state picked
