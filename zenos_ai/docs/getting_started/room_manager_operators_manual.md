@@ -148,13 +148,13 @@ more important one.
 ╠═══════════════╬════════════════════════════════════════════════╣
 ║ 😴 ASLEEP     ║ Someone's asleep in here.                       ║
 ╠═══════════════╬════════════════════════════════════════════════╣
-║ ⏳ HOLD       ║ Either presence is unconfirmed (motion with no  ║
-║               ║ door to corroborate it), or a policy is         ║
-║               ║ deliberately keeping the room conservative      ║
-║               ║ (entertaining/guest mode active) regardless of  ║
-║               ║ what the sensors already know. Clears on new    ║
-║               ║ information or the policy switch turning off —  ║
-║               ║ never on a timer.                                ║
+║ ⏳ HOLD       ║ One of exactly three lines is currently high:   ║
+║               ║ the wasp flag (motion with no door-open to      ║
+║               ║ confirm entry), Entertaining mode (room opted   ║
+║               ║ in), or Guest mode (room opted in). Whichever   ║
+║               ║ one is true, the room reports Hold — it stays   ║
+║               ║ Hold exactly as long as that source stays true, ║
+║               ║ clears the moment it goes false. Never a timer. ║
 ╠═══════════════╬════════════════════════════════════════════════╣
 ║ 🟢 OCCUPIED   ║ Somebody's in here. Presence detected, no       ║
 ║               ║ specific activity known.                        ║
@@ -453,13 +453,17 @@ to your AI the way it's described here, and it does the wiring.
  ▓  DOESN'T PRINT. READ ON, CHAMPION.                          ▓
  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
 
- ► HOLD HAS THREE SECRET IDENTITIES. Ask "why is the [room] hold
-   right now" and it'll tell you which one: unresolved motion
-   (nobody confirmed how someone got in or out), Entertaining
-   mode being conservative on purpose, or Guest mode doing the
-   same. Same word on the dashboard, three completely different
-   reasons underneath, the game never tells you which unless you
-   ask.
+ ► HOLD IS JUST "ONE OF THREE LINES IS HIGH." It's not its own
+   signal — it's the room reporting that the wasp flag, Entertaining
+   mode, or Guest mode currently reads true, whichever one it is.
+   These three are hardcoded checks today, not an open template
+   slot — there's no way to wire your own arbitrary condition onto
+   the Hold tier yet (the generic `hold` label is a different
+   mechanism — see below, it floors at Occupied, not Hold). Ask
+   "why is the [room] hold right now" and `last_trigger` tells you
+   which of the three is actually driving it — same word on the
+   dashboard, three different reasons underneath, the game never
+   tells you which unless you ask.
 
  ► THE DOOR, NOT THE LOCK. This is the single most common setup
    mistake and most people never find out they made it. A door's
