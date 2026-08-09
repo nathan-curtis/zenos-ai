@@ -134,6 +134,9 @@ For full drawer content, use FileCabinet directly.
 - `dry_run: true` returns `total_count` so you can plan a paging loop before executing
 - **Auto-cap:** when `expand_entities: true` and a topology/wildcard seed is used with no explicit `limit`, the result is automatically capped at **50 entities**. Set `limit` explicitly to override.
 - **`+history` requires `limit`:** requesting recorder statistics without a limit on a topology/wildcard seed is a hard error. Always set an explicit limit when using `+history`.
+- **`+history` bucket fields are state-class-dependent:** `measurement` sensors (instantaneous readings, e.g. W power) get `mean`/`min`/`max` per hour. `total`/`total_increasing` sensors (accumulating counters, e.g. Wh energy) get `sum`/`state` per hour instead — HA's recorder has no mean/min/max concept for an accumulating counter. Requesting the wrong bucket type used to silently return empty buckets.
+- **`period_total_24h`** (total/total_increasing sensors only, `null` for measurement): precomputed "usage over the last 24h," derived from the `state` series (`last.state - first.state`), not recorder's `sum` statistic. Also returns `period_total_24h_sum_series` as a cross-check and sets `anomaly_diverged: true` if the two disagree by more than 2x — treat both numbers as suspect when that flag is set rather than trusting either. Divergence is commonly caused by a recorder `statistic_id` re-registration (entity relabel/reload), not a real usage spike.
+- **`filter_json` unrecognized keys return a `warning` field**, not silence: `zen_dojotools_query`'s `dry_run` and `ok` responses both carry `warning`, populated when a `filter_json` key isn't recognized (e.g. `domains` instead of the real key `domain`). Empty string when nothing's wrong.
 
 Always `dry_run` first on topology seeds to check `total_count` before committing to `expand_entities: true`.
 

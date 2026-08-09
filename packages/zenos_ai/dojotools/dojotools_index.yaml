@@ -251,6 +251,50 @@ script:
             {%- endif -%}
           {%- endif -%}
         filter_domain: "{{- parsed_filter.get('domain') -}}"
+    # BUG FIX (2026-08-04): ZQ-1 never throws on an unrecognized filter_json
+    # key — it's silently ignored (by design, see zen_query.jinja's plain
+    # f.get() reads), which produces an empty/wrong result that looks
+    # identical to a legitimate zero-hit query. Found via a live agent call
+    # that used "domains" (plural, not a real key — the real key is "domain",
+    # singular) and got a silent empty result with no indication why. This
+    # surfaces that class of mistake directly in the response instead of
+    # leaving it as a easy-to-miss line buried in mode=help's warnings list.
+    - variables:
+        _zq1_recognized_keys:
+          - domain
+          - label
+          - areas
+          - area
+          - device_id
+          - device_class
+          - state_equals
+          - include_states
+          - exclude_states
+          - exclude_entity_ids
+          - exclude_domain
+          - exclude_label
+          - exclude_integration
+          - exclude_device
+          - numeric_above
+          - numeric_below
+          - label_regex
+          - regex
+          - entity_id_regex
+          - friendly_name_regex
+          - sort
+          - shortcuts
+        _zq1_unrecognized_keys: >-
+          {{ parsed_filter.keys() | reject('in', _zq1_recognized_keys) | list
+             if parsed_filter is mapping else [] }}
+        _zq1_filter_warning: >-
+          {%- if _zq1_unrecognized_keys | count > 0 -%}
+            Unrecognized filter_json key(s) {{ _zq1_unrecognized_keys }} — silently
+            ignored (ZQ-1 never throws), NOT applied to this query. Call mode=help
+            for the real key list. Common mistake: 'domains' (plural) is not a key —
+            the real key is 'domain', a single string.
+          {%- else -%}
+            {{ '' }}
+          {%- endif -%}
     - variables:
         auto_base_list: >
           {%- if (target_entities | count == 0) and filter_domain -%}
@@ -273,6 +317,7 @@ script:
             count: "{{- _dr_list | count -}}"
             result_chars: "{{- _dr_list | tojson | length -}}"
             sample: "{{- _dr_list[:5] -}}"
+            warning: "{{- _zq1_filter_warning -}}"
             caller_token: "{{- caller_token -}}"
       - stop: dry_run
         response_variable: final
@@ -322,6 +367,7 @@ script:
           domain: "{{- filter_domain -}}"
           baselist: "{{- auto_base_list -}}"
           result: "{{- result -}}"
+          warning: "{{- _zq1_filter_warning -}}"
           caller_token: "{{- caller_token -}}"
     - stop: Return query result
       response_variable: final
@@ -409,11 +455,17 @@ script:
                     "example": "+history,-device,-volume,-timestamps"
                   },
                   "history_result_schema": {
-                    "eligible_with_data": {"eligible": true, "state_class": "measurement", "unit": "W", "last_24h": [{"start": "<ISO UTC>", "end": "<ISO UTC>", "mean": 0.0, "min": 0.0, "max": 0.0}]},
+                    "note_2026_08_07": "Bucket fields are state_class-dependent — measurement sensors (e.g. instantaneous W power) get mean/min/max per hour; total/total_increasing sensors (e.g. cumulative Wh energy counters — this is what circuit-level consumed_energy sensors from SPAN/Emporia are) get sum/state per hour instead, since HA's recorder has no mean/min/max concept for an accumulating counter. Requesting the wrong type set used to silently return empty buckets ({start,end} only) — fixed same day this was caught live.",
+                    "note_2026_08_07b": "period_total_24h is computed from the 'state' series (last.state - first.state), NOT recorder's 'sum' statistic. Caught live: a relabeled circuit's 'sum' series had one single-hour ~157,000 Wh jump — a recorder statistic_id-reregistration artifact, NOT a real energy event — while that same sensor's own 'state' series climbed smoothly the whole window. 'sum' is designed to survive genuine DEVICE-side counter resets correctly; it is NOT immune to recorder-side backfill artifacts from an entity being relabeled/reloaded. 'state' has the opposite risk profile (wrong across a real device reset, immune to recorder backfill weirdness). Both totals are always returned so neither failure mode is hidden.",
+                    "eligible_with_data_measurement": {"eligible": true, "state_class": "measurement", "unit": "W", "period_total_24h": null, "last_24h": [{"start": "<ISO UTC>", "end": "<ISO UTC>", "mean": 0.0, "min": 0.0, "max": 0.0}]},
+                    "eligible_with_data_total_increasing": {"eligible": true, "state_class": "total_increasing", "unit": "Wh", "period_total_24h": 762.2, "period_total_24h_source": "state", "period_total_24h_sum_series": 158063.0, "anomaly_diverged": true, "last_24h": [{"start": "<ISO UTC>", "end": "<ISO UTC>", "sum": 0.0, "state": 0.0}]},
                     "eligible_no_data": {"eligible": true, "state_class": "measurement", "unit": "W", "reason": "No recorder data — check state_class and recorder config"},
                     "ineligible": {"eligible": false, "state_class": "", "reason": "<missing state_class or unit_of_measurement>"},
                     "traps": [
-                      "last_24h is an array of hourly buckets — NOT flat mean/min/max at history root.",
+                      "last_24h is an array of hourly buckets — NOT flat mean/min/max/sum at history root.",
+                      "Bucket fields depend on state_class: measurement → mean/min/max. total/total_increasing → sum/state. Don't expect mean/min/max on an energy accumulator.",
+                      "period_total_24h (state-series based) is the primary answer to 'how much did X use in the last 24h' for total/total_increasing sensors — always null for measurement sensors. period_total_24h_sum_series is the recorder-sum-based cross-check, kept alongside for comparison, not as the primary number.",
+                      "anomaly_diverged: true means the state-based and sum-based totals disagree by more than 2x — treat BOTH numbers as suspect and say so rather than confidently reporting either one. Commonly caused by a recent entity relabel/reload (recorder statistic_id churn), not a real usage spike.",
                       "eligible=true with no last_24h key means entity has no recorder data yet.",
                       "Run stats_eligible filter via Index BEFORE +history to avoid fetching ineligible entities."
                     ]
@@ -458,7 +510,8 @@ script:
                   "ai_user_guidance": [
                     "Use mode: help to retrieve this schema.",
                     "+history fires only for stats_eligible entities (state_class + unit_of_measurement set). Run stats_eligible filter first.",
-                    "History data is at results[N].history.last_24h — hourly array. There is NO history.mean at the root.",
+                    "History data is at results[N].history.last_24h — hourly array. There is NO history.mean at the root. Bucket fields depend on state_class: measurement=mean/min/max, total/total_increasing=sum/state.",
+                    "For total/total_increasing sensors (energy accumulators), results[N].history.period_total_24h is the precomputed 'usage over the last 24h' answer — use it instead of diffing last_24h buckets by hand.",
                     "+statistics is a cheap eligibility check. +history fetches actual recorder data. They are independent.",
                     "Inspect is called automatically by Index when expand_entities=true — output_fields passes through.",
                     "Cabinet sensors suppress attributes. Use FileCabinet tools for drawer data.",
@@ -1287,23 +1340,89 @@ script:
           - condition: template
             value_template: "{{- _show_history and stats_eligible -}}"
           then:
+          # STATE-CLASS-AWARE STATS TYPES (2026-08-07): mean/min/max only
+          # exist for state_class=measurement (instantaneous readings, e.g.
+          # W power sensors). For total/total_increasing (accumulating
+          # counters, e.g. Wh energy sensors — exactly what the new SPAN/
+          # Emporia circuit-level consumed_energy sensors are), HA's
+          # recorder tracks sum/state instead — requesting mean/min/max
+          # against one of these silently returns empty buckets ({start,
+          # end} with nothing else), which is exactly what happened live
+          # asking "how much did the dishwasher use today" against a
+          # consumed_energy-labeled circuit. Caught and fixed same day.
+          - variables:
+              _hs_types: >-
+                {%- if stat_class == 'measurement' -%}
+                  {{ ['mean', 'min', 'max'] }}
+                {%- else -%}
+                  {{ ['sum', 'state'] }}
+                {%- endif -%}
           - action: recorder.get_statistics
             data:
               statistic_ids:
                 - "{{- current_entity -}}"
               period: hour
-              types:
-                - mean
-                - min
-                - max
+              types: "{{- _hs_types -}}"
               start_time: "{{- (now() - timedelta(hours=24)).isoformat() -}}"
             response_variable: _entity_stats
           - variables:
               _hs_raw: "{{- _entity_stats.get('statistics', _entity_stats) if _entity_stats is mapping else {} -}}"
               _hs_buckets: "{{- _hs_raw.get(current_entity, []) -}}"
+          # PERIOD TOTAL (2026-08-07, revised same day after a live
+          # anomaly): for total/total_increasing sensors, the single most
+          # useful number for "how much did X use today" is last-first over
+          # the window — but NOT blindly from recorder's 'sum' statistic.
+          # Caught live: a circuit's 'sum' series had one single-hour jump
+          # of ~157,000 Wh (a physically implausible spike for that
+          # circuit) while the SAME sensor's own 'state' series that same
+          # hour climbed smoothly by ~1.3 Wh, consistent with every other
+          # hour in the window. Root cause: recorder's statistics table can
+          # misbehave across a statistic_id re-registration (exactly what
+          # happens when an entity gets relabeled/reloaded, as every
+          # SPAN/Emporia circuit sensor just was this session) — it is NOT
+          # the same thing as a genuine device-side counter reset, which is
+          # what 'sum' is actually designed to survive correctly. 'state'
+          # is the sensor's own raw hourly reading and has no equivalent
+          # recorder-side backfill risk, but WILL be wrong across a real
+          # device counter reset (state drops to near-zero, a naive diff
+          # goes negative). Neither series is unconditionally trustworthy,
+          # so: compute both, use 'state' as the primary answer (the more
+          # common failure mode observed in practice), and flag — never
+          # silently pick — whenever they diverge by more than 2x, so the
+          # caller sees the disagreement instead of a confidently wrong
+          # number.
+          - variables:
+              _hs_state_total: >-
+                {%- if stat_class != 'measurement' and _hs_buckets | count >= 2 -%}
+                  {%- set _first = _hs_buckets | first -%}
+                  {%- set _last = _hs_buckets | last -%}
+                  {%- if _first.state is not none and _last.state is not none -%}
+                    {{ (_last.state - _first.state) | round(2) }}
+                  {%- else -%}
+                    {{ none }}
+                  {%- endif -%}
+                {%- else -%}
+                  {{ none }}
+                {%- endif -%}
+              _hs_sum_total: >-
+                {%- if stat_class != 'measurement' and _hs_buckets | count >= 2 -%}
+                  {%- set _first = _hs_buckets | first -%}
+                  {%- set _last = _hs_buckets | last -%}
+                  {%- if _first.sum is not none and _last.sum is not none -%}
+                    {{ (_last.sum - _first.sum) | round(2) }}
+                  {%- else -%}
+                    {{ none }}
+                  {%- endif -%}
+                {%- else -%}
+                  {{ none }}
+                {%- endif -%}
+              _hs_totals_diverge: >-
+                {{ _hs_state_total is not none and _hs_sum_total is not none
+                   and _hs_state_total | abs > 0
+                   and (_hs_sum_total - _hs_state_total) | abs > (2 * (_hs_state_total | abs)) }}
               history_result: >-
                 {%- if _hs_buckets | count > 0 -%}
-                  {{- {'eligible': true, 'state_class': stat_class, 'unit': stat_uom, 'last_24h': _hs_buckets} -}}
+                  {{- {'eligible': true, 'state_class': stat_class, 'unit': stat_uom, 'period_total_24h': _hs_state_total, 'period_total_24h_source': 'state', 'period_total_24h_sum_series': _hs_sum_total, 'anomaly_diverged': _hs_totals_diverge, 'last_24h': _hs_buckets} -}}
                 {%- else -%}
                   {{- {'eligible': true, 'state_class': stat_class, 'unit': stat_uom, 'reason': 'No recorder data — check state_class and recorder config'} -}}
                 {%- endif -%}
@@ -2111,15 +2230,16 @@ script:
               \"office\",\n        \"filter_json\": {\"domain\": \"light\"}\n      },\n
               \     \"Example 2 — HVAC related sensors, hypergraph mode\": {\n        \"label_1\":
               \"hvac\",\n        \"mode\": \"hypergraph\",\n        \"expand_entities\":
-              true\n      },\n      \"Example 3 — Lights AND Switches in two rooms\":
+              true\n      },\n      \"Example 3 — Lights in two rooms (domain takes ONE string, never a list)\":
               {\n        \"label_1\": \"kitchen\",\n        \"label_2\": \"living_room\",\n
-              \       \"operator\": \"OR\",\n        \"filter_json\": {\"domain\": [\"light\",\"switch\"]}\n
-              \     },\n      \"Example 4 — All entities with environmental data > 60\":
+              \       \"operator\": \"OR\",\n        \"filter_json\": {\"domain\": \"light\"}\n
+              \     },\n      \"Example 3b — Multiple domains OR'd together — use the compound DSL, not a domain list\":
+              {\n        \"index_command\": \"{\\\"operator\\\": \\\"OR\\\", \\\"index_1\\\": {\\\"filter_json\\\": {\\\"domain\\\": \\\"light\\\"}}, \\\"index_2\\\": {\\\"filter_json\\\": {\\\"domain\\\": \\\"switch\\\"}}}\",\n        \"_note\": \"filter_json.domain (and the ZQ-1 'domain' key generally) is a SINGLE string only — it seeds via states[domain], which breaks on a list. There is no 'domains' (plural) key anywhere in this schema. For multiple domains, OR separate compound children together, one domain per child.\"\n      },\n      \"Example 4 — All entities with environmental data > 60\":
               {\n        \"label_1\": \"environment\",\n        \"filter_json\": {\"state_op\":
               \">\", \"state_value\": 60}\n      },\n      \"Example 5 — Build a root
               graph for Summarizer or Fusion\": {\n        \"label_1\": \"climate\",\n
               \       \"expand_entities\": true,\n        \"mode\": \"hypergraph\"\n
-              \     },\n      \"Example 6 — 24h recorder stats for energy entities\": {\n        \"label_1\": \"energy_manager\",\n        \"expand_entities\": true,\n        \"filter_json\": {\"shortcuts\": {\"stats_eligible\": true}},\n        \"output_fields\": \"+history,-device,-volume,-timestamps\",\n        \"_note\": \"History data at result.expanded[N].history.last_24h — array of hourly buckets {start,end,min,max,mean}. Run stats_eligible filter first to skip ineligible entities.\"\n      },\n      \"Example 7 — Compound OR: two label sets merged\": {\n        \"index_command\": \"{\\\"operator\\\": \\\"OR\\\", \\\"index_1\\\": {\\\"label\\\": \\\"security_camera\\\"}, \\\"index_2\\\": {\\\"label\\\": \\\"motion_sensor\\\"}}\",\n        \"_note\": \"Child key is 'label' (not 'label_1'). Each child resolved async via event bus, merged with OR.\"\n      },\n      \"Example 8 — Compound AND: intersection of two label sets\": {\n        \"index_command\": \"{\\\"operator\\\": \\\"AND\\\", \\\"index_1\\\": {\\\"label\\\": \\\"climate\\\"}, \\\"index_2\\\": {\\\"label\\\": \\\"priority\\\"}}\",\n        \"_note\": \"Both children must resolve non-empty for AND to return results. Use dry_run: true to preview entity_count.\"\n      },\n      \"Example 9 — Compound with domain filter scoped to child\": {\n        \"index_command\": \"{\\\"operator\\\": \\\"OR\\\", \\\"index_1\\\": {\\\"label\\\": \\\"office\\\", \\\"domain\\\": \\\"light\\\"}, \\\"index_2\\\": {\\\"label\\\": \\\"office\\\", \\\"domain\\\": \\\"switch\\\"}}\",\n        \"_note\": \"Domain filter inside child spec narrows that child only. Top-level filter_json applies after merge.\"\n      }\n    },\n    \"quick_recipes\": {\n      \"history_stats\": {\n        \"label_1\": \"<your_label>\",\n        \"expand_entities\": true,\n        \"filter_json\": {\"shortcuts\": {\"stats_eligible\": true}},\n        \"output_fields\": \"+history,-device,-volume,-timestamps\",\n        \"_NOTE\": \"expand_entities MUST be true or output_fields is ignored.\",\n        \"_result_path\": \"result.expanded[N].history.last_24h → [{start, end, min, max, mean}]\",\n        \"_trap\": \"stats_eligible filter BEFORE +history — avoids fetching stats for sensors with no recorder data.\"\n      }\n    },\n    \"compound_index_dsl\": {\n      \"overview\": \"index_command accepts a recursive compound DSL. Top-level operator merges two child specs, each resolved async via zen_indexer_request event bus before merge.\",\n      \"syntax\": {\n        \"operator\": \"OR|AND|XOR|NOT\",\n        \"index_1\": {\"label\": \"...\", \"domain\": \"...\", \"entity_ids\": []},\n        \"index_2\": {\"label\": \"...\"}\n      },\n      \"child_keys\": [\"label\", \"domain\", \"entity_ids\", \"filter_json\", \"operator\"],\n      \"nesting\": \"Supported — index_1 or index_2 can themselves be compound specs. Depth bounded by script max: 10 parallel instances.\",\n      \"critical\": \"Child spec key is 'label' (not 'label_1'). label_1/label_2 are top-level discrete fields only.\",\n      \"filter_note\": \"filter_json field post-filters the final merged result. filter_json inside a child spec filters that child's result before merge.\",\n      \"dry_run\": \"Pass dry_run: true to preview entity_count without full expansion.\"\n    },\n    \"best_practices\": [\n      \"Use (Hyper)Index before
+              \     },\n      \"Example 6 — 24h recorder stats for energy entities\": {\n        \"label_1\": \"energy_manager\",\n        \"expand_entities\": true,\n        \"filter_json\": {\"shortcuts\": {\"stats_eligible\": true}},\n        \"output_fields\": \"+history,-device,-volume,-timestamps\",\n        \"_note\": \"History data at result.expanded[N].history.last_24h — array of hourly buckets, fields depend on state_class: measurement={start,end,mean,min,max}, total/total_increasing={start,end,sum,state}. For total/total_increasing sensors (e.g. Wh energy circuit meters) result.expanded[N].history.period_total_24h is the direct 'how much did X use in the last 24h' answer — prefer it over diffing buckets by hand. Run stats_eligible filter first to skip ineligible entities.\"\n      },\n      \"Example 7 — Compound OR: two label sets merged\": {\n        \"index_command\": \"{\\\"operator\\\": \\\"OR\\\", \\\"index_1\\\": {\\\"label\\\": \\\"security_camera\\\"}, \\\"index_2\\\": {\\\"label\\\": \\\"motion_sensor\\\"}}\",\n        \"_note\": \"Child key is 'label' (not 'label_1'). Each child resolved async via event bus, merged with OR.\"\n      },\n      \"Example 8 — Compound AND: intersection of two label sets\": {\n        \"index_command\": \"{\\\"operator\\\": \\\"AND\\\", \\\"index_1\\\": {\\\"label\\\": \\\"climate\\\"}, \\\"index_2\\\": {\\\"label\\\": \\\"priority\\\"}}\",\n        \"_note\": \"Both children must resolve non-empty for AND to return results. Use dry_run: true to preview entity_count.\"\n      },\n      \"Example 9 — Compound with domain filter scoped to child\": {\n        \"index_command\": \"{\\\"operator\\\": \\\"OR\\\", \\\"index_1\\\": {\\\"label\\\": \\\"office\\\", \\\"domain\\\": \\\"light\\\"}, \\\"index_2\\\": {\\\"label\\\": \\\"office\\\", \\\"domain\\\": \\\"switch\\\"}}\",\n        \"_note\": \"Domain filter inside child spec narrows that child only. Top-level filter_json applies after merge.\"\n      }\n    },\n    \"quick_recipes\": {\n      \"history_stats\": {\n        \"label_1\": \"<your_label>\",\n        \"expand_entities\": true,\n        \"filter_json\": {\"shortcuts\": {\"stats_eligible\": true}},\n        \"output_fields\": \"+history,-device,-volume,-timestamps\",\n        \"_NOTE\": \"expand_entities MUST be true or output_fields is ignored. limit= is also required — +history without an explicit limit is a hard error.\",\n        \"_result_path\": \"result.expanded[N].history.last_24h — bucket fields depend on state_class: measurement=[{start,end,mean,min,max}], total/total_increasing=[{start,end,sum,state}].\",\n        \"_shortcut\": \"result.expanded[N].history.period_total_24h — for total/total_increasing sensors (e.g. circuit-level Wh energy meters), this is the direct 'how much did X use in the last 24h' number, computed from the state series (reset-safe against recorder backfill artifacts). period_total_24h_sum_series is the recorder-sum cross-check kept alongside; anomaly_diverged:true means the two disagree by >2x — say so rather than trust either blindly. Always null for measurement sensors. Use this instead of manually summing/diffing last_24h buckets.\",\n        \"_trap\": \"stats_eligible filter BEFORE +history — avoids fetching stats for sensors with no recorder data.\"\n      },\n      \"circuit_usage_today\": {\n        \"label_1\": \"consumed_energy\",\n        \"expand_entities\": true,\n        \"filter_json\": {\"shortcuts\": {\"stats_eligible\": true}, \"friendly_name_regex\": \"(?i)<circuit name, e.g. dishwasher>\"},\n        \"output_fields\": \"+history,-device,-volume,-timestamps\",\n        \"limit\": 5,\n        \"_note\": \"Answers 'how much did the <circuit> use today/in the last 24h' for any SPAN/Emporia-labeled circuit — see docs/plugins/span_panel_codex.md and emporia_vue_codex.md. Read result.expanded[0].history.period_total_24h directly, unit is history.unit (Wh for SPAN, kWh for Emporia).\"\n      }\n    },\n    \"compound_index_dsl\": {\n      \"overview\": \"index_command accepts a recursive compound DSL. Top-level operator merges two child specs, each resolved async via zen_indexer_request event bus before merge.\",\n      \"syntax\": {\n        \"operator\": \"OR|AND|XOR|NOT\",\n        \"index_1\": {\"label\": \"...\", \"domain\": \"...\", \"entity_ids\": []},\n        \"index_2\": {\"label\": \"...\"}\n      },\n      \"child_keys\": [\"label\", \"domain\", \"entity_ids\", \"filter_json\", \"operator\"],\n      \"nesting\": \"Supported — index_1 or index_2 can themselves be compound specs. Depth bounded by script max: 10 parallel instances.\",\n      \"critical\": \"Child spec key is 'label' (not 'label_1'). label_1/label_2 are top-level discrete fields only.\",\n      \"filter_note\": \"filter_json field post-filters the final merged result. filter_json inside a child spec filters that child's result before merge.\",\n      \"dry_run\": \"Pass dry_run: true to preview entity_count without full expansion.\"\n    },\n    \"best_practices\": [\n      \"Use (Hyper)Index before
               any fusion or summarization to avoid bloated context.\",\n      \"Prefer
               labels as the primary driver, entities only when needed.\",\n      \"Use
               expand_entities sparingly — hypergraph mode is already powerful.\",\n
@@ -2127,7 +2247,12 @@ script:
               operator '*' with no labels to get a system-wide label graph.\"\n    ],\n
               \   \"warnings\": [\n      \"Expanded entity blocks can get large; avoid
               unless required.\",\n      \"Hypergraph mode produces more data — summarizers
-              should prune aggressively.\",\n      \"If filter_json is malformed, it
+              should prune aggressively.\",\n      \"There is no 'domains' (plural) key — the
+              real key is 'domain', a SINGLE string. Unrecognized filter_json keys are
+              silently ignored (ZQ-1 never throws), which looks identical to a legitimate
+              zero-result query — if a result is unexpectedly empty, re-check every
+              filter_json key against this help output before assuming the query itself
+              was wrong.\",\n      \"If filter_json is malformed, it
               defaults to an empty filter.\"\n    ],\n    \"ai_user_guidance\": [\n
               \     \"Use 'mode': 'help' at any time to retrieve the full JSON schema.\",\n
               \     \"Use (Hyper)Index as your first step when reasoning about groups
@@ -2444,6 +2569,39 @@ script:
         _needs_cap: >-
           {{ expand_entities | default(false) and _limit == 0
           and (_uses_topology_seed or _wildcard_op) }}
+    - if:
+      - condition: template
+        # AREA-ONLY LABEL MISMATCH (2026-08-07, ticket #10256): label_1/
+        # label_2 resolve via label_entities() only — a label applied to an
+        # AREA (not any entity within it) is invisible here, since HA does
+        # not propagate area-level labels down to member entities. Caught
+        # live: 'glass_sheet' tagged directly on the back_office area
+        # (confirmed via room_manager mode=get -> ha_labels) returned 0
+        # entities from label_entities('glass_sheet') despite the label
+        # existing in the global vocabulary — silent, no error, just an
+        # empty result indistinguishable from "nobody ever used this
+        # label." Rather than change label_1's resolution semantics
+        # (label_entities() is used the same way system-wide; area_1=
+        # already exists as the correct tool for area-scoped queries —
+        # widening label_1 to auto-expand areas would be a much bigger,
+        # riskier behavior change for every other caller), surface the
+        # mismatch explicitly instead, matching this tool's existing
+        # advisory pattern (_cap_warning below).
+        value_template: >-
+          {{ (entities_base | count) == 0 and label_1 | default('') | trim != ''
+          and (label_areas(label_1 | slugify) | count) > 0 }}
+        alias: 'Detect area-only label mismatch (ticket #10256)'
+      then:
+      - variables:
+          _cap_warning: >-
+            Label '{{ label_1 }}' resolved to 0 entities via label_entities()
+            but IS applied to {{ label_areas(label_1 | slugify) | count }}
+            area(s) ({{ label_areas(label_1 | slugify) | map('area_name') | join(', ') }}).
+            Area-level labels do not automatically apply to entities inside
+            that area — label_1 only ever resolves entity-level tags. Either
+            tag the specific entities you want to surface directly with
+            '{{ label_1 }}', or query by area instead: area_1=<area_id> (see
+            zen_dojotools_inspect mode=area_list for area_ids).
     - if:
       - condition: template
         value_template: '{{ expand_entities | default(false) and _has_history and _limit == 0 }}'
