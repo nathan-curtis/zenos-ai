@@ -473,10 +473,11 @@ translation:
   walking a human through Settings → Labels. Confirm the label exists
   before assuming it does — several features in this system
   (`entertaining_hold`, `guest_hold`, `autosleep_disable`,
-  `asleep_window_disable`, and the per-room signal/class labels
-  described in Section 6) are existence-checked, safe no-ops if
-  missing, not errors — so a silently-absent label won't fail loudly,
-  it'll just quietly not do anything.
+  `asleep_window_disable`, `autosleep_schedule`, `asleep_hold`, and the
+  per-room signal/class labels described in Section 6) are
+  existence-checked, safe no-ops if missing, not errors — so a
+  silently-absent label won't fail loudly, it'll just quietly not do
+  anything.
 - **`room_control_manager` has a real declaration now** — see the
   component reference's "Deploying a New Room" step 1. It's a template
   `select` backed by the household cabinet, not a helper you create

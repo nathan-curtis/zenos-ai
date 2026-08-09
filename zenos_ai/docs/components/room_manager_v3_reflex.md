@@ -195,6 +195,8 @@ never requires touching either file.
 | `guest_hold` | `input_boolean.zen_guest_mode` + the room's own label | Same tier/ranking as `entertaining_hold`, independent source. |
 | `autosleep_disable` | Any entity carrying the room's label | Kills automatic asleep-firing for this room entirely. Manual `room_control_manager` "Asleep" pick is unaffected. |
 | `asleep_window_disable` | Any entity carrying the room's label | Keeps autosleep active but removes the night→wake window gate. |
+| `autosleep_schedule` | A truthy-resolving entity (`input_boolean`/`switch`/`binary_sensor`, or `calendar`/`schedule.*`) + the room's own label | Authoritative override of the night→wake window — **replaces** the clock check entirely for that room rather than OR'ing with it. `asleep_window_disable` still outranks it if a room somehow carries both. For non-standard schedules (shift work, etc.) — see the operator's manual §6. |
+| `asleep_hold` | A truthy-resolving entity + the room's own label | Forces the room to `asleep` directly while true — zero clock, zero trigger signal or window check needed. Structurally identical to `entertaining_hold`/`guest_hold` but feeds `asleep` instead of `hold`. Clears the instant the entity goes false, or a manual `room_control_manager` override. |
 | `emergency_latch` | input_boolean | Enables the `emergency` tier |
 | `nap_latch` / `nap_minutes` / `asleep_minutes` | input_boolean / input_number | Shortens asleep decay while the nap latch is on |
 | `nightlight_timer` | Timer | Enables the nightlight construct (motion edge while asleep) |

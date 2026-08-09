@@ -40,6 +40,10 @@ Taskmaster got the glow-up in Chef — a new file, a new expediter identity, top
 
 - **Asleep window — night gates the signal, doesn't replace it.** A direct `asleep`/`bed_occupancy` signal firing during the day — the real case that found this: a laundry hamper set on a bed tripped the bed sensor — previously auto-slept the room in broad daylight. Fixed with a default-on gate against the household's real scheduler-anchor clock (`zen_night_start`/`zen_am_start`), deliberately *not* `sensor.period_of_day`, a different sun-elevation-based sensor with no relation to those anchors that looks like a natural fit and isn't. Gated identically at three separate enforcement points — the live-gate, the edge-triggered timer-arming handler, and the periodic room-timer reconcile pass — because the reconcile pass independently re-derives asleep truthiness and would otherwise have silently bypassed the other two. Also fixed in the same pass: asleep-class room-timer default was 30 minutes, now a real 8 hours, closing a genuine format bug (`'00:%02d:00'` hardcoded 0 hours and silently broke for any duration ≥ 60 minutes — which 480 obviously is).
 
+- **`autosleep_schedule` — for rooms where "night" isn't at night.** A community request: shift workers, or anyone whose sleep schedule doesn't track the house's clock. Tag any truthy-resolving entity (a toggle, a calendar, an HA `schedule.*` helper) with `autosleep_schedule` plus the room's own label, and it becomes **authoritative** for that room — fully replacing the night→wake window check rather than widening it. `asleep_window_disable` still outranks it if a room somehow carries both labels. Same label-existence idiom every other opt-in construct here already uses, no new mechanism.
+
+- **`asleep_hold` — a third, independent path into Asleep.** Structurally identical to `entertaining_hold`/`guest_hold`, but feeds the `asleep` tier directly instead of `hold`. Tag a truthy-resolving entity with `asleep_hold` plus the room's label and the room reads `asleep` outright — no bed sensor, no trigger signal, no window check needed. Zero clock, zero decay: clears the instant the tagged entity goes false, or a manual override.
+
 **Cascade order, current:**
 ```
 emergency > manual override (room_control_manager) > asleep > engaged >
@@ -48,7 +52,7 @@ child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door ho
 
 **Verified live** across the full incident-and-fix cycle: a real garage door/motion sequence produced the documented `vacant → occupied → hold` sequence correctly; `entertaining_hold`/`guest_hold` confirmed via tagged rooms with `last_trigger` correctly attributing each hold to its source boolean. The asleep-window gate hasn't been exercised against a full overnight cycle yet — built and reloaded same-day, no night had passed at verification time.
 
-**Setup note:** four labels (`entertaining_hold`, `guest_hold`, `autosleep_disable`, `asleep_window_disable`) live in HA's label registry, not in git — the feature is a safe no-op until you create them: `zen_dojotools_labels mode=create label_list=["entertaining_hold","guest_hold","autosleep_disable","asleep_window_disable"] confirm=true`.
+**Setup note:** six labels (`entertaining_hold`, `guest_hold`, `autosleep_disable`, `asleep_window_disable`, `autosleep_schedule`, `asleep_hold`) live in HA's label registry, not in git — the feature is a safe no-op until you create them: `zen_dojotools_labels mode=create label_list=["entertaining_hold","guest_hold","autosleep_disable","asleep_window_disable","autosleep_schedule","asleep_hold"] confirm=true`.
 
 ## Steel Magnolia Phase 7 — Manifest Audit
 
