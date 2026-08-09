@@ -41,6 +41,8 @@
   9. TROUBLESHOOTING  . . . . . . . . . . . . . . . . . . . . .  page 9
  10. WHAT'S NEXT  . . . . . . . . . . . . . . . . . . . . . . page 10
  11. HOW TO REQUEST NEW FEATURES  . . . . . . . . . . . . . . page 10
+     FOR THE TECHNICALLY CURIOUS  . . . . . . . . . . . . . . page 11
+     ADDENDUM: FOR AGENTS READING THIS DOC  . . . . . . . . . page 11
 ```
 
 ---
@@ -274,16 +276,9 @@ closet doesn't need a vent fan.
   └──────────────────────────────────────────────────────────┘
 ```
 
-None of these require you to write anything technical. Ask your AI,
-"turn on control burnout for the office" or "give the guest bathroom a
-vent fan timer," and it handles the wiring.
-
-### Doing it by hand (no AI assistant? here's how)
-
-Everything above assumes you're asking an AI to do the wiring. If you
-don't have one hooked up, or you just want to see the gears turn, here's
-how it's done manually. Fair warning: this is the "read the instruction
-booklet by lamplight" option. How 2008 of you.
+None of it requires a code editor or a YAML file — every feature above
+turns on the same way: labels and helpers, done through the normal HA
+UI. Here's how.
 
 ```
   ┌──────────────────────────────────────────────────────────┐
@@ -330,6 +325,11 @@ Hold) is pure Step 1/Step 2 labeling, no separate blueprint needed. The
 dispatcher that reacts to all of it is already running in the
 background and needs no per-room setup of its own.
 
+If you have an AI assistant hooked up, you can also just describe what
+you want — "turn on control burnout for the office" — and let it do
+the labeling for you. Same four steps either way, it's just doing the
+clicking instead of you.
+
 ---
 
 ## 7. PATTERNS & PRACTICES (playing it well)
@@ -337,7 +337,9 @@ background and needs no per-room setup of its own.
 **Trust the state, don't fight it.** If a room says Occupied and you
 think it's wrong, the fix is almost always "the sensor that should be
 telling this room about presence isn't wired up yet," rather than "the
-system is broken." Ask your AI to check what's tagged for that room.
+system is broken." Check what's tagged for that room (Settings →
+Devices & Services → Entities, filter by the room's label) — or ask
+your AI to check for you.
 
 **Use PAUSED liberally, use it locally.** If a room is misbehaving,
 pausing that one room costs you nothing and doesn't touch the rest of
@@ -359,8 +361,9 @@ the bedroom always wins regardless.
 
 ### Worked examples: setting up common room types
 
-You don't need to know any of this technically. Just describe the room
-to your AI the way it's described here, and it does the wiring.
+Here's Section 6's Steps 1/2 recipe applied to the room types people
+actually set up. Each one lists what to tag by hand; the "Say" line is
+the equivalent shortcut if you're handing it to an AI instead.
 
 ```
   ┌──────────────────────────────────────────────────────────┐
@@ -543,23 +546,26 @@ to your AI the way it's described here, and it does the wiring.
 ╠════════════════════════════════════════════╬═══════════════════════╣
 ║ Fan / TV sleep timer never fires            ║ That feature isn't set ║
 ║                                              ║ up for this room yet.  ║
-║                                              ║ Ask your AI to add it. ║
+║                                              ║ See Section 6, Step 2. ║
 ╠════════════════════════════════════════════╬═══════════════════════╣
 ║ Bedroom won't go fully quiet at night       ║ Working as intended.   ║
 ║ because of the attached bathroom            ║ See Section 7.         ║
 ╠════════════════════════════════════════════╬═══════════════════════╣
-║ A newly added room doesn't show up yet      ║ Ask your AI to refresh ║
-║                                              ║ / reload. New rooms    ║
-║                                              ║ pick themselves up     ║
+║ A newly added room doesn't show up yet      ║ Settings → System →    ║
+║                                              ║ Restart, or reload     ║
+║                                              ║ templates/automations. ║
+║                                              ║ New rooms pick         ║
+║                                              ║ themselves up          ║
 ║                                              ║ automatically once     ║
 ║                                              ║ that happens.          ║
 ╚════════════════════════════════════════════╩═══════════════════════╝
 ```
 
-If none of these fit, just describe what you're seeing to your AI. "The
-office says occupied but nobody's in there" is a perfectly good bug
-report. It can check the room's actual sensors and tell you exactly what's
-triggering it.
+If none of these fit, check the room's `last_trigger` attribute (Section
+3) — it names the exact entity or timer currently driving the state. If
+you have an AI assistant, describing what you're seeing works just as
+well: "the office says occupied but nobody's in there" is a perfectly
+good bug report, and it can check the same attribute for you.
 
 ---
 
@@ -631,3 +637,44 @@ reference, and how to actually wire up a new room, see:
 
 - [Component Reference: Room Manager v3 & REFLEX](../components/room_manager_v3_reflex.md)
 - [Architecture Ch. 22: Room Manager v3 & REFLEX](../architecture/22_Room_Manager_v3_REFLEX.md)
+
+---
+
+## Addendum: For Agents Reading This Doc
+
+Everything above is written for a human operator doing this by hand —
+that's the default voice of this manual, on purpose. If you're an AI
+agent reading this to help a household set something up, here's the
+translation:
+
+- **Section 6's four steps are the ground truth.** "Ask your AI" lines
+  throughout this doc (worked examples' `Say:` prompts, troubleshooting
+  rows, etc.) all resolve to the same underlying action: apply the
+  right label(s) to the right entity, or create+label a helper, per
+  Section 6 Steps 1–2. There is no separate "AI path" — it's the same
+  mechanism, you're just doing the clicking.
+- **Use `zen_dojotools_labels`** to create/apply labels rather than
+  walking a human through Settings → Labels. Confirm the label exists
+  before assuming it does — several features in this system
+  (`entertaining_hold`, `guest_hold`, `autosleep_disable`,
+  `asleep_window_disable`, and the per-room signal/class labels
+  described in Section 6) are existence-checked, safe no-ops if
+  missing, not errors — so a silently-absent label won't fail loudly,
+  it'll just quietly not do anything.
+- **`room_control_manager` is the one gap you can't wire from this doc
+  alone.** Per the component reference's open TODO, its entity
+  declaration lives only in house-specific per-room package files, not
+  in any shared blueprint or template. If a task needs you to create
+  one from scratch rather than tag an existing one, say so explicitly
+  rather than guessing at the entity shape — this is a documented gap,
+  not something to improvise past.
+- **After any label/helper change, a reload or restart is required**
+  (Section 6 Step 4) before the room's state sensor will react. Don't
+  report a setup as complete without confirming that step happened.
+- **Cite `last_trigger`, not your own inference**, when explaining why
+  a room is in a given state — Section 3/9 both point at this attribute
+  as the authoritative answer. Guessing at a cause the attribute
+  doesn't actually name is exactly the kind of confident-but-wrong
+  answer this manual's plain-language framing is trying to prevent
+  humans from getting stuck with; don't reintroduce it from the other
+  side.
