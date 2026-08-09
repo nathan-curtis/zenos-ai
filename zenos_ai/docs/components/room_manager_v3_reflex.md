@@ -47,36 +47,108 @@ never requires touching either file.
    ```yaml
    timer:
      <room>_room_timer:
+       # THE shared clock. One timer backs decay for occupied, engaged,
+       # AND asleep — room_timer_class (below) says which tier currently
+       # owns it. Skip this and all three tiers become live-signal-only,
+       # no grace period (a safe, simpler default, not a broken one).
        name: "<Room> Room Timer"
      <room>_control_burnout:
+       # Safety net only. If room_control_manager is set to Automation
+       # and nobody releases it before this timer expires, it snaps
+       # back to Auto by itself. No effect on anything else.
        name: "<Room> Control Burnout"
      <room>_tv_sleep_timer:
+       # Backs the opt-in TV Sleep Timer construct (Section 6 of the
+       # operator's manual) — counts down while Asleep + media playing.
        name: "<Room> TV Sleep Timer"
    input_number:
      <room>_asleep_minutes:
+       # Per-room override of the shared clock's asleep-class duration
+       # (system default is 8h/480min). Only matters if room_timer is
+       # also declared — this is what room_timer_class=asleep decays
+       # against instead of the global default.
        name: "<Room> Asleep Timeout"
        min: 1
        max: 720
        initial: 30
    input_select:
      <room>_room_timer_class:
+       # Paired with room_timer above — records which of the three
+       # decay-backed tiers currently owns the shared clock. The
+       # dispatch script is the only writer; you never set this by hand.
        name: "<Room> Room Timer Class"
        options: [occupied, engaged, asleep]
        initial: occupied
    ```
 
-   > **TODO — undocumented:** `room_control_manager` (the manual-override
-   > select) is declared per-room, but there's no generic example of that
-   > declaration anywhere in the shared repo — it isn't an `input_select`
-   > helper (legacy `room_control` was; this replaced it after the
-   > isolation incident, see §22 "Full Disconnect"), and it isn't defined
-   > by any blueprint or template block in `room_state.yaml` or the
-   > dispatch script either. The only real declarations live in the
-   > house-specific per-room package files that intentionally stay out of
-   > this shared build. Tag whatever entity you do create with the label
-   > `room_control_manager` and the room's own label — the rest of the
-   > system is a safe no-op without it — but the actual entity
-   > declaration needs a real worked example here.
+   **`room_control_manager` (the manual-override select) needs its own
+   declaration** — it's a template `select`, not an `input_select` helper
+   like the legacy `room_control` it replaced (see §22 "Full Disconnect"
+   for why the swap happened). Its state comes from the household
+   cabinet, not from HA's own entity storage — picking an option doesn't
+   set the state directly, it fires an event and the dispatch script
+   does the actual write, so validation (e.g. Hold's restricted exit
+   list) lives in exactly one place instead of being duplicated wherever
+   something wants to change a room's control value:
+   ```yaml
+   template:
+     - select:
+         - name: "<Room> Control Manager"
+           unique_id: <room>_control_manager_cab
+           options:
+             - Auto
+             - Vacant
+             - Occupied
+             - Engaged
+             - Asleep
+             - Hold
+             - Paused
+             - Automation
+             - Cleaning
+           state: >-
+             {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+             {%- set hh = (label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first) | default('', true) -%}
+             {%- set drawer = CABS.cabinet_drawer_value_mounted(hh, 'room_control_manager', {}) | from_json({}) -%}
+             {{ drawer.get('<room>', 'Auto') }}
+           select_option:
+             - event: zen_event
+               event_data:
+                 event:
+                   kind: room_control_request
+                   metadata:
+                     room: <room>
+                     requested: "{{ option }}"
+                     source: manual
+   ```
+   Then tag the entity itself with two labels: `room_control_manager` and
+   the room's own label (same as everything else in this system). The
+   `<room>_control_manager_cab` unique_id suffix matters — reusing the
+   legacy select's `unique_id` silently blocks re-registration in the
+   entity registry (see the orphaned-registry note in the
+   [Steel Magnolia release notes](../releases/steel_magnolia.md)).
+
+   ```mermaid
+   sequenceDiagram
+       participant You as Human / AI
+       participant Select as select.<room>_control_manager
+       participant Bus as zen_event bus
+       participant Dispatch as zen_room_manager_dispatch
+       participant Cabinet as Household Cabinet<br/>drawer: room_control_manager
+       participant Sensor as sensor.<room>_state
+
+       You->>Select: pick "Asleep"
+       Select->>Bus: fire zen_event<br/>kind=room_control_request<br/>{room, requested: Asleep}
+       Bus->>Dispatch: reflex_event trigger
+       Dispatch->>Dispatch: validate against allowed<br/>exits for current value
+       Dispatch->>Cabinet: upsert {<room>: Asleep}
+       Cabinet-->>Select: state: template re-reads drawer
+       Select-->>Sensor: states(room_control_manager select) = Asleep
+       Sensor-->>Sensor: manual override tier wins,<br/>state = asleep
+   ```
+   The select never writes its own state — it only ever asks. Everything
+   that actually changes state goes through the dispatch script, which
+   is what keeps the "Hold can only exit to these five values" rule
+   (§22.2) enforced in one place instead of every caller having to know it.
 
 2. **Deploy the state sensor** via the shared template blueprint:
    ```yaml

@@ -441,13 +441,15 @@ translation:
   described in Section 6) are existence-checked, safe no-ops if
   missing, not errors — so a silently-absent label won't fail loudly,
   it'll just quietly not do anything.
-- **`room_control_manager` is the one gap you can't wire from this doc
-  alone.** Per the component reference's open TODO, its entity
-  declaration lives only in house-specific per-room package files, not
-  in any shared blueprint or template. If a task needs you to create
-  one from scratch rather than tag an existing one, say so explicitly
-  rather than guessing at the entity shape — this is a documented gap,
-  not something to improvise past.
+- **`room_control_manager` has a real declaration now** — see the
+  component reference's "Deploying a New Room" step 1. It's a template
+  `select` backed by the household cabinet, not a helper you create
+  through the UI like the others; the select fires an event on
+  `select_option` rather than storing state itself, so don't write to
+  its state directly or bypass the `room_control_request` event —
+  that's what keeps validation (Hold's restricted exit list) in one
+  place instead of duplicated everywhere something changes a room's
+  control value.
 - **After any label/helper change, a reload or restart is required**
   (Section 6 Step 4) before the room's state sensor will react. Don't
   report a setup as complete without confirming that step happened.
