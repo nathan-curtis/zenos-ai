@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager v3 & REFLEX
 
-**Version:** rev 4 (2026-08-07)
+**Version:** rev 5 (2026-08-08) — `room_control_manager` isolation, wasp-hold rewrite, entertaining/guest hold, asleep window
 **Files:** `blueprints/template/zenos/room_state.yaml`, `packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml`
 **Codename:** REFLEX
 
@@ -19,7 +19,7 @@ There is no chat-callable MCP tool for v3/REFLEX. It runs entirely as one
 Home Assistant automation and one script, reacting to real signals in real
 time. Operators interact with it through:
 
-- The room's `room_control` select (`Auto` / `Paused` / `Automation` / `Cleaning`)
+- The room's `room_control_manager` select (`Auto` / `Paused` / `Automation` / `Cleaning` / `Asleep` / `Occupied` / `Engaged` / `Hold` / `Vacant`) — cabinet-backed, fully isolated from the legacy `room_control` select that Node-RED still owns
 - HA Labels (Settings → Labels) — every opt-in feature is a label, not a config field
 - `sensor.<room>_state` — the read surface, one per deployed room
 
@@ -50,8 +50,6 @@ never requires touching either file.
        name: "<Room> Room Timer"
      <room>_control_burnout:
        name: "<Room> Control Burnout"
-     <room>_checking_timer:
-       name: "<Room> Checking Timer"
      <room>_tv_sleep_timer:
        name: "<Room> TV Sleep Timer"
    input_number:
@@ -100,11 +98,14 @@ never requires touching either file.
 | `engaged` | media_player(s), monitored docks | Drives `engaged` on start; on stop, arms the shared timer's engaged→occupied decay |
 | `asleep` / `bed_occupancy` | Sleep-detection sensor(s) | Drives `asleep` |
 | `hold` | Any binary_sensor/cover | Floors at `occupied` while true, no clock, instant fall-through on close ("fridge door mode") |
-| `wasp_door` | A door contact sensor | Arms `checking` (ambiguous, awaiting motion confirmation) |
+| `wasp_door` | A door contact sensor | Real wasp-in-a-box: opening floors to `occupied` and clears any latched wasp flag. Motion firing while every `wasp_door` for the room is closed sets `wasp_flag_active` (self-referencing template attribute, not a timer) and the cascade shows `hold`. Clears only on a fresh door-open or a manual `room_control_manager` override — never a timeout. `checking`/`checking_timer` no longer exist. |
 | `smoke` / `carbon_monoxide` / `moisture` / `siren` | Detector entities | Arms `emergency_latch` — human/agent ack-only clear |
-| `room_control` | The room's control select | Enables `Paused`/`Automation`/`Cleaning` overrides |
-| `room_timer` + `room_timer_class` | Timer + paired select | Enables decay-backed occupied/engaged/asleep — one shared clock for all three |
-| `checking_timer` | Timer | Enables the `checking` tier |
+| `room_control_manager` | The room's control select | Enables `Paused`/`Automation`/`Cleaning`/manual-tier overrides. Zero shared entity/label/code path with legacy `room_control`. |
+| `room_timer` + `room_timer_class` | Timer + paired select | Enables decay-backed occupied/engaged/asleep — one shared clock for all three. `asleep` class default is 8h (was 30m). |
+| `entertaining_hold` | `input_boolean.zen_entertaining` + the room's own label | Opt-in per room. Outranks `occupied`/`vacant`, outranked by `engaged`/`asleep`/manual override/emergency. |
+| `guest_hold` | `input_boolean.zen_guest_mode` + the room's own label | Same tier/ranking as `entertaining_hold`, independent source. |
+| `autosleep_disable` | Any entity carrying the room's label | Kills automatic asleep-firing for this room entirely. Manual `room_control_manager` "Asleep" pick is unaffected. |
+| `asleep_window_disable` | Any entity carrying the room's label | Keeps autosleep active but removes the night→wake window gate. |
 | `emergency_latch` | input_boolean | Enables the `emergency` tier |
 | `nap_latch` / `nap_minutes` / `asleep_minutes` | input_boolean / input_number | Shortens asleep decay while the nap latch is on |
 | `nightlight_timer` | Timer | Enables the nightlight construct (motion edge while asleep) |
@@ -162,9 +163,11 @@ states.sensor.<room>_state
 ### Cascade order (highest wins)
 
 ```
-emergency > paused > automation > cleaning > engaged > asleep >
-child-engaged > checking > occupied (or hold) > vacant
+emergency > manual override (room_control_manager) > engaged > asleep >
+child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door hold) > vacant
 ```
+
+`checking` no longer exists as a producible state anywhere in the system.
 
 ---
 
