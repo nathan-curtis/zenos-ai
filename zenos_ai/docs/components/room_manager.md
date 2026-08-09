@@ -4,6 +4,12 @@
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
+> **Not the same system as Room Manager v3 / REFLEX.** RoomReg (this doc)
+> answers "what is this room, physically" — topology, egress, emergency
+> snapshots. Room Manager v3/REFLEX answers "what is this room doing right
+> now" — live occupancy/activity state, reactive scenes. See
+> [Room Manager v3 & REFLEX](room_manager_v3_reflex.md).
+
 ---
 
 ## Overview

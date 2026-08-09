@@ -28,7 +28,12 @@ packages/zenos_ai/  →  <ha_config>/packages/zenos_ai/
 custom_templates/zenos_ai/  →  <ha_config>/custom_templates/zenos_ai/
 ```
 
-If `packages/` or `custom_templates/` directories don't exist in your HA config yet, create them.
+**Blueprints** (required for Room Manager v3):
+```
+blueprints/template/zenos/room_state.yaml  →  <ha_config>/blueprints/template/zenos/room_state.yaml
+```
+
+If `packages/`, `custom_templates/`, or `blueprints/template/zenos/` directories don't exist in your HA config yet, create them.
 
 ---
 

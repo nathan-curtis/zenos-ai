@@ -90,6 +90,7 @@ New to ZenOS-AI? Start here.
 * `oobe.md` — OOBE walkthrough: the six-step first-boot configuration protocol to your conversation agent: actionable vs contextable vs invisible, the three-tier model
 * `troubleshooting.md` — Gauges → Kill Switches → Repair Tools. Health sensor quick-reads, summarizer kill switches, and a seven-step graduated repair sequence (resolver refresh → reseed → label reset → nuclear cabinet reset)
 * `user_management.md` — Add/remove/move AI users and human users. Provision new identity cabinets, deprovision or swap existing ones, transfer default labels, and perform targeted identity-layer repairs or full nukes.
+* `room_manager_operators_manual.md` — Room Manager v3 in plain language: the state cascade, wasp-hold, entertaining/guest hold, asleep window, and manual override — written for the household operator, not the developer.
 
 If you just installed ZenOS-AI and want to know what to do next, start here.
 
@@ -102,6 +103,9 @@ If you just installed ZenOS-AI and want to know what to do next, start here.
 Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, parameters, and response shape.
 
 * `components/room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
+* `components/room_manager_v3_reflex.md` — Room Manager v3 & REFLEX: per-room state cascade, wasp-hold, entertaining/guest hold, asleep window, REFLEX event bus
+* `plugins/emporia_vue_codex.md` — Plant Codex: Emporia Vue circuit-level energy monitoring
+* `plugins/span_panel_codex.md` — Plant Codex: SPAN Panel circuit-level energy monitoring
 * `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate
 * `components/media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
 * `components/autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
