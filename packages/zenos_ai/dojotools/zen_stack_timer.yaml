@@ -1,0 +1,394 @@
+###############################################################################
+# zen_stack_timer v1.0.0
+# Timer Lens Provider — ZenOS Lens Bus integration.
+# Consume label anchors (room-slug labels, e.g. "office") → timer_evidence for
+# every timer entity carrying that label. Mirrors zen_stack_battery's shape.
+# Internal only: not MCP-exposed. Consumers call zen_dojotools_lens_dispatch.
+#
+# Lens Bus — Auto-Registration:
+#   tool_manifest returns: tier=stacks, provider_key=timer, register_mode=register.
+#   mode=register:   writes timer entry to lens_registry household cabinet key.
+#   mode=unregister: removes timer entry from lens_registry.
+###############################################################################
+script:
+  zen_stack_timer:
+    alias: Zen Stack Timer
+    description: >-
+      Timer Lens Provider (v1.0.0). Internal stack adapter for the ZenOS Lens Bus.
+      Provides timer_evidence for label anchors (room-slug labels) — every timer
+      entity carrying that label, with purpose (room_timer/checking_timer/
+      nightlight_timer/control_burnout/etc), state, remaining, duration. Not
+      MCP-exposed — consumers call zen_dojotools_lens_dispatch.
+    mode: parallel
+    max: 10
+    fields:
+      mode:
+        description: Provider mode (stacks_by_anchor, register, unregister, inspect, audit, tool_manifest, help)
+        selector:
+          text:
+      action:
+        description: Alias for mode (lens dispatcher compat)
+        selector:
+          text:
+      anchor_type:
+        description: Anchor type — label
+        selector:
+          text:
+      anchor_ids:
+        description: JSON array of anchor ID strings (room-slug labels)
+        selector:
+          text:
+      caller_token:
+        description: Caller token for audit trail
+        selector:
+          text:
+    sequence:
+    - variables:
+        _mode_norm: >-
+          {{ (mode | default('') if mode is defined and mode | string | trim != ''
+              else (action | default('help') if action is defined else 'help'))
+              | string | trim | lower }}
+        _anchor_type_norm: "{{ anchor_type | default('') | string | trim | lower }}"
+        _anchor_ids_raw: "{{ anchor_ids | default('[]') }}"
+        _anchor_ids: >-
+          {%- set _v = _anchor_ids_raw -%}
+          {%- if _v is sequence and _v is not string -%}{{ _v }}
+          {%- elif _v is string and _v | trim != '' -%}{{ _v | from_json(none) | default([]) }}
+          {%- else -%}[]{%- endif -%}
+        tool_name: zen_stack_timer
+        tool_version: 1.0.0
+        _st_purpose_labels: [room_timer, checking_timer, nightlight_timer, occupied_timer, asleep_timer, sleep_timer, control_burnout]
+
+    # ── tool_manifest ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "tool_manifest" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              tier: stacks
+              domain: rooms
+              provider_key: timer
+              register_mode: register
+              consumes: [label]
+              returns: [timer_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              lens_provider: true
+              kfc_manifest: false
+              preferred_state:
+                stripe: 3
+                impact: soft
+        - stop: return
+          response_variable: final_response
+
+    # ── inspect ────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "inspect" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: inspect
+              provider: timer
+              consumes: [label]
+              returns: [timer_evidence]
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              failure_policy: soft
+              content_policy: standard
+              description: >-
+                Maps room-slug label anchors to every timer.* entity carrying that
+                same label — purpose classified via a fixed purpose-label set
+                (room_timer/checking_timer/nightlight_timer/occupied_timer/
+                asleep_timer/sleep_timer/control_burnout). Read-only; state/
+                remaining/duration reflect live timer entity state.
+        - stop: return
+          response_variable: final_response
+
+    # ── audit ──────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "audit" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: audit
+              provider: timer
+              consumes: [label]
+              returns: [timer_evidence]
+              security_violations: []
+              notes: >-
+                Read-only lens path — timer entity state/attributes read via
+                states/state_attr only, no writes to any timer entity.
+                register/unregister write only to the lens_registry cabinet key.
+                Strictly r-only per security_act.
+        - stop: return
+          response_variable: final_response
+
+    # ── register ───────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "register" }}'
+        sequence:
+        - variables:
+            _st_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _st_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: register
+                  provider: timer
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot register
+                    without a household cabinet to write into.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _st_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _st_household_entity }}"
+            key: lens_registry
+        - variables:
+            _st_existing_reg: >-
+              {%- set raw = _st_reg_read if _st_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _st_provider_decl:
+              provider: timer
+              configured_by: zen_stack_timer
+              department: stacks
+              enabled: true
+              status: available
+              tool: zen_stack_timer
+              mode: stacks_by_anchor
+              consumes: [label]
+              returns: [timer_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+        - variables:
+            _st_new_reg: "{{ _st_existing_reg | combine({'timer': _st_provider_decl}) }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _st_reg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _st_household_entity }}"
+            key: lens_registry
+            value: "{{ _st_new_reg | tojson }}"
+        - variables:
+            _st_reg_ok: >-
+              {{ _st_reg_write is mapping and _st_reg_write.get('status', '') == 'success' }}
+            final_response:
+              status: "{{ 'success' if _st_reg_ok else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: register
+              provider: timer
+              message: >-
+                {{ 'Provider timer registered in lens_registry.' if _st_reg_ok else
+                   'Registration failed: ' ~ (_st_reg_write.get('error', 'unknown')
+                   if _st_reg_write is mapping else 'no response') }}
+        - stop: return
+          response_variable: final_response
+
+    # ── unregister ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "unregister" }}'
+        sequence:
+        - variables:
+            _st_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _st_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: unregister
+                  provider: timer
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot unregister
+                    without a household cabinet to read/write.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _st_ureg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _st_household_entity }}"
+            key: lens_registry
+        - variables:
+            _st_ureg_existing: >-
+              {%- set raw = _st_ureg_read if _st_ureg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _st_ureg_new: >-
+              {%- set ns = namespace(result={}) -%}
+              {%- for k, v in _st_ureg_existing.items() if k != 'timer' -%}
+                {%- set ns.result = ns.result | combine({k: v}) -%}
+              {%- endfor -%}
+              {{ ns.result }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _st_ureg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _st_household_entity }}"
+            key: lens_registry
+            value: "{{ _st_ureg_new | tojson }}"
+        - variables:
+            final_response:
+              status: "{{ 'success' if _st_ureg_write is mapping and _st_ureg_write.get('status', '') == 'success' else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: unregister
+              provider: timer
+              message: Provider timer removed from lens_registry.
+        - stop: return
+          response_variable: final_response
+
+    # ── stacks_by_anchor ───────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "stacks_by_anchor" }}'
+        sequence:
+        - variables:
+            _st_evidence: []
+        - repeat:
+            for_each: >-
+              {{ _anchor_ids if _anchor_ids is sequence and _anchor_ids is not string else [] }}
+            sequence:
+            - variables:
+                _st_anchor_id: "{{ repeat.item | string | trim }}"
+            - choose:
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "label" and _st_anchor_id != "" }}'
+                sequence:
+                - variables:
+                    _st_anchor_ents: >-
+                      {%- set ns = namespace(ents=[]) -%}
+                      {%- for e in states.timer -%}
+                        {%- if _st_anchor_id in labels(e.entity_id) -%}
+                          {%- set ns.ents = ns.ents + [e.entity_id] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.ents }}
+                - variables:
+                    _st_evidence_prev: >-
+                      {%- set _v = _st_evidence -%}
+                      {%- if _v is sequence and _v is not string -%}{{ _v }}
+                      {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+                      {%- else -%}[]{%- endif -%}
+                - variables:
+                    _st_evidence: >-
+                      {%- set ns = namespace(items=_st_evidence_prev) -%}
+                      {%- for ent in _st_anchor_ents -%}
+                        {%- set _labs = labels(ent) -%}
+                        {%- set _purpose = (_st_purpose_labels | select('in', _labs) | list | first) | default('', true) -%}
+                        {%- set ns.items = ns.items + [{
+                          'id': 'timer_' ~ _st_anchor_id ~ '_' ~ (ent | replace('.', '_')),
+                          'type': 'timer_evidence',
+                          'provider': 'timer',
+                          'entity_id': ent,
+                          'purpose': _purpose,
+                          'state': states(ent),
+                          'remaining': state_attr(ent, 'remaining') | string,
+                          'duration': state_attr(ent, 'duration') | string,
+                          'anchor_type': _anchor_type_norm,
+                          'anchor_id': _st_anchor_id,
+                          'content_redacted': false
+                        }] -%}
+                      {%- endfor -%}
+                      {{ ns.items | tojson }}
+
+        - variables:
+            _st_evidence_final: >-
+              {%- set _v = _st_evidence -%}
+              {%- if _v is sequence and _v is not string -%}{{ _v }}
+              {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+              {%- else -%}[]{%- endif -%}
+        - variables:
+            final_response:
+              status: success
+              result: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: stacks_by_anchor
+              provider: timer
+              anchor_type: '{{ _anchor_type_norm }}'
+              anchor_ids: '{{ _anchor_ids }}'
+              evidence: '{{ _st_evidence_final }}'
+              count: '{{ _st_evidence_final | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── help / unknown mode ────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: info
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          mode: help
+          provider: timer
+          description: >-
+            Timer Lens Provider. Internal stack adapter for the ZenOS Lens Bus.
+            Call via zen_dojotools_lens_dispatch, not directly.
+          modes:
+            stacks_by_anchor: Fetch timer_evidence for label anchors (room-slug labels) — every timer entity carrying that label, purpose, state, remaining, duration
+            register: Register this provider in the household lens_registry cabinet drawer
+            unregister: Remove this provider from lens_registry
+            inspect: Static capability descriptor — consumes/returns/security_act/description
+            audit: Read-only compliance self-attestation — security_violations + notes
+    - stop: return
+      response_variable: final_response

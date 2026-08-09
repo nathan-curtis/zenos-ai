@@ -995,6 +995,280 @@ script:
         response_variable: result
 
   # ============================================================================
+  # zen_dojotools_boolean
+  # NEW 2026-08-05 — every other domain (number, select, text, climate,
+  # covers, lights) has a canonical GET+SET dojotools tool; input_boolean/
+  # switch never did. Found the gap live: no way to flip a plain boolean
+  # helper without an API end-run (HassTurnOn/Off require conversation-
+  # exposure, which most helpers — especially test/sim ones — never have).
+  # Verb naming (turn_on/turn_off/toggle) models HA's own HassTurnOn/
+  # HassTurnOff/toggle intents; entity resolution + response shape mirrors
+  # zen_dojotools_select_control exactly. Ported from T 2026-08-08.
+  # ============================================================================
+  zen_dojotools_boolean:
+    alias: Zen DojoTools Boolean
+    mode: parallel
+    max: 10
+    description: >-
+      zen_dojotools_boolean (v1.0.0)
+
+      CANONICAL HA DOMAIN TOOL — input_boolean / switch
+      Preferred over HA MCP built-ins (HassTurnOn/HassTurnOff) for this
+      domain — those require conversation-exposure, which most helpers
+      (especially test/sim entities) don't have. Fall back to HA built-ins
+      ONLY if this tool is confirmed non-functional.
+
+      GET+SET for input_boolean and switch entities. Resolves shorthand
+      names or full entity_ids. Omit state (or pass get=true) to read
+      current state only.
+
+      Examples:
+        Read:   { "name": "sim_office_hold" }
+        On:     { "name": "sim_office_hold", "state": "on" }
+        Off:    { "name": "input_boolean.sim_office_hold", "state": "off" }
+        Toggle: { "name": "sim_office_hold", "state": "toggle" }
+
+    fields:
+      name:
+        name: Entity
+        description: input_boolean or switch entity_id, or shorthand name
+        required: true
+        selector:
+          text:
+
+      state:
+        name: State
+        description: >-
+          Target state to set: on/off/true/false/1/0, or toggle. Omit to
+          read current state.
+        required: false
+        selector:
+          text:
+
+      get:
+        name: Read-only
+        description: Pass any truthy value to force read-only mode even if state is set.
+        required: false
+        selector:
+          text:
+
+      mode:
+        description: >-
+          Optional explicit operation selector — "read" to force a
+          read-only reply (same as get=true), "set" to apply state (fails
+          clearly with a missing_state error if state isn't also given,
+          rather than silently falling back to a read), or "tool_manifest"
+          for this tool's own self-description/schema dump instead of
+          touching the entity. You can also just omit mode entirely and
+          use state/get directly — both styles work identically.
+        required: false
+        selector:
+          select:
+            options:
+              - read
+              - set
+              - tool_manifest
+
+      caller_token:
+        name: Caller Token
+        description: Opaque audit token echoed in response.
+        required: false
+        selector:
+          text:
+
+    sequence:
+      # ── Input normalization ────────────────────────────────────────────────
+      - variables:
+          _tm_mode: "{{ mode | default('') | lower }}"
+      - choose:
+        - conditions: "{{ _tm_mode == 'tool_manifest' }}"
+          sequence:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{ MF.tool_manifest(
+                    tool='zen_dojotools_boolean',
+                    display_name='Boolean Control',
+                    tier='dojotools',
+                    version='1.0.0',
+                    health={'configured': true, 'status': 'ok', 'notes': []},
+                    required_labels=['dojotools'],
+                    optional_labels=['input_boolean','switch'],
+                    consumes=['entity_name_or_id'],
+                    returns=['boolean_state'],
+                    icon='mdi:toggle-switch',
+                    color='blue-grey',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
+
+                    caller_token=caller_token | default('')
+                ) | from_json }}
+          - stop: tool_manifest
+            response_variable: result
+      - variables:
+          raw: "{{ name | string | trim }}"
+          state_raw: "{{ state | default(none, true) }}"
+          get_raw: "{{ get | default(none, true) }}"
+          _token: "{{ caller_token | default('', true) }}"
+
+      # ── Entity resolution ─────────────────────────────────────────────────
+      - variables:
+          _slug: "{{ raw | replace(':', '') | slugify }}"
+          _input_ent: "input_boolean.{{ _slug }}"
+          _switch_ent: "switch.{{ _slug }}"
+          # Same existence-check pattern as select_control — states() alone
+          # can't distinguish "real entity, no value yet" from "doesn't
+          # exist", so check against the state-machine collection directly.
+          _input_ent_exists: "{{ _input_ent in (states.input_boolean | map(attribute='entity_id') | list) }}"
+          _switch_ent_exists: "{{ _switch_ent in (states.switch | map(attribute='entity_id') | list) }}"
+          _entity_id: >-
+            {%- if '.' in raw -%}
+              {{ raw }}
+            {%- elif _input_ent_exists -%}
+              {{ _input_ent }}
+            {%- elif _switch_ent_exists -%}
+              {{ _switch_ent }}
+            {%- else -%}
+              INVALID
+            {%- endif -%}
+          _domain: >-
+            {%- if _entity_id.startswith('input_boolean.') -%}input_boolean
+            {%- elif _entity_id.startswith('switch.') -%}switch
+            {%- else -%}invalid{%- endif -%}
+
+      - if:
+          - condition: template
+            value_template: "{{ _domain == 'invalid' }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_boolean
+                caller_token: "{{ _token }}"
+                error: invalid_entity
+                input: "{{ raw }}"
+          - stop: error
+            response_variable: result
+
+      # ── Fetch current state ────────────────────────────────────────────────
+      - variables:
+          _state: "{{ states(_entity_id) }}"
+
+      # ── Normalize requested state to on/off/toggle ────────────────────────
+      - variables:
+          _state_norm: >-
+            {%- set s = (state_raw | string | lower | trim) if state_raw is not none else '' -%}
+            {%- if s in ['on','true','1','yes'] -%}on
+            {%- elif s in ['off','false','0','no'] -%}off
+            {%- elif s == 'toggle' -%}toggle
+            {%- else -%}invalid{%- endif -%}
+
+      # ── mode: set with no state is a real caller mistake — say so, don't silently read ──
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'set' and state_raw is none }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_boolean
+                caller_token: "{{ _token }}"
+                error: missing_state
+                message: "mode: \"set\" requires the state field — omit mode entirely (or use mode: \"read\") if you only meant to read."
+                entity_id: "{{ _entity_id }}"
+          - stop: missing_state
+            response_variable: result
+
+      # ── Read-only path ────────────────────────────────────────────────────
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'read' or get_raw is not none or state_raw is none }}"
+        then:
+          - variables:
+              result:
+                ok: true
+                tool: zen_dojotools_boolean
+                caller_token: "{{ _token }}"
+                mode: read
+                entity_id: "{{ _entity_id }}"
+                domain: "{{ _domain }}"
+                state: "{{ _state }}"
+          - stop: read
+            response_variable: result
+
+      # ── State validation ───────────────────────────────────────────────────
+      - if:
+          - condition: template
+            value_template: "{{ _state_norm == 'invalid' }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_boolean
+                caller_token: "{{ _token }}"
+                error: invalid_state
+                entity_id: "{{ _entity_id }}"
+                requested: "{{ state_raw }}"
+                supported: ["on", "off", "toggle", "true", "false", "1", "0"]
+          - stop: invalid_state
+            response_variable: result
+
+      # ── Apply state ─────────────────────────────────────────────────────────
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ _state_norm == 'toggle' }}"
+            sequence:
+              - action: "{{ _domain }}.toggle"
+                target:
+                  entity_id: "{{ _entity_id }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ _state_norm == 'on' }}"
+            sequence:
+              - action: "{{ _domain }}.turn_on"
+                target:
+                  entity_id: "{{ _entity_id }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ _state_norm == 'off' }}"
+            sequence:
+              - action: "{{ _domain }}.turn_off"
+                target:
+                  entity_id: "{{ _entity_id }}"
+
+      # ── Response ──────────────────────────────────────────────────────────
+      # Re-read instead of echoing the request back — same rationale as
+      # select_control: a template-backed switch whose state derives from
+      # something other than its own stored value could silently fail to
+      # reflect the write even though the service call reported no error.
+      - variables:
+          _post_state: "{{ states(_entity_id) }}"
+          _expected_state: >-
+            {%- if _state_norm == 'toggle' -%}
+              {{ 'off' if _state == 'on' else 'on' }}
+            {%- else -%}
+              {{ _state_norm }}
+            {%- endif -%}
+      - variables:
+          result:
+            ok: "{{ _post_state == _expected_state }}"
+            tool: zen_dojotools_boolean
+            caller_token: "{{ _token }}"
+            mode: set
+            entity_id: "{{ _entity_id }}"
+            domain: "{{ _domain }}"
+            previous: "{{ _state }}"
+            requested: "{{ _state_norm }}"
+            state: "{{ _post_state }}"
+            warning: >-
+              {{ none if _post_state == _expected_state else
+                 (_domain ~ '.' ~ ('toggle' if _state_norm == 'toggle' else ('turn_on' if _state_norm == 'on' else 'turn_off')) ~ " reported no error but the entity's state does not reflect the requested change — likely a template-backed entity whose state source wasn't updated.") }}
+      - stop: set
+        response_variable: result
+
+  # ============================================================================
   # zen_dojotools_number
   # Migrated from intent_script/numeric_set_value v1.0.0 — 2026-04-08
   # ============================================================================
@@ -1274,6 +1548,490 @@ script:
             amount: "{{ amt }}"
             value: "{{ _final_val }}"
             cast: "{{ cast_mode }}"
+      - stop: set
+        response_variable: result
+
+  # ============================================================================
+  # zen_dojotools_timekeeper
+  # Canonical GET+SET tool for the timer domain — 2026-08-05, glow-up
+  # 2026-08-06 (dashboard), renamed + expanded 2026-08-06 (Nathan: "timer
+  # becomes timekeeper. also should get a now() with world clock and the
+  # ability to read alarms from ents showing next alarm times *see Alexa
+  # devices*"). Ported from T originally, timekeeper additions built
+  # directly on H then mirrored to T.
+  # v1.2.0 — mode: worldclock (home local + UTC + caller-supplied named
+  #   offsets — no hardcoded city/DST table, HA's Jinja sandbox has no
+  #   arbitrary IANA zone conversion filter, so a static table would
+  #   silently go wrong across DST changes; caller supplies the offset).
+  #   mode: alarms — scans every sensor.*_next_alarm entity (Alexa/Echo
+  #   devices, phones, watches) for a parseable future datetime, sorted
+  #   soonest-first, separates "alarms_set" from "no_alarm" devices.
+  # ============================================================================
+  zen_dojotools_timekeeper:
+    alias: Zen DojoTools Timekeeper
+    mode: parallel
+    max: 10
+    description: >-
+      zen_dojotools_timekeeper (v1.2.0)
+
+      CANONICAL HA DOMAIN TOOL — timer (+ read-only schedule domain, world
+      clock, and Alexa/device next-alarm rollup)
+      GET+SET for a single timer entity. Resolves shorthand names or full
+      entity_ids. Operations: start (optional duration), pause, cancel,
+      finish. Omit operation (or pass get=true) to read current state,
+      remaining, and duration only.
+
+      mode: dashboard — house-wide rollup of every non-idle timer entity
+      (label-cross-referenced for room/purpose) plus every schedule.* helper
+      entity and its next_event. Pass include_idle=true to also list idle
+      timers; pass include_schedules=false to omit the schedule section.
+
+      mode: worldclock — home local time + UTC, plus any caller-supplied
+      named UTC offsets (utc_offsets="Tokyo:+9,London:+1").
+
+      mode: alarms — every device's next-set alarm (Alexa/Echo, phone,
+      watch — any sensor.*_next_alarm entity), soonest first.
+
+      Examples:
+        Read:          { "name": "sim_office_room_timer" }
+        Start:         { "name": "sim_office_room_timer", "operation": "start", "duration": "00:05:00" }
+        Resume (pause): { "name": "sim_office_room_timer", "operation": "start" }
+        Pause:         { "name": "sim_office_room_timer", "operation": "pause" }
+        Cancel:        { "name": "sim_office_room_timer", "operation": "cancel" }
+        Dashboard:     { "mode": "dashboard" }
+        World clock:   { "mode": "worldclock", "utc_offsets": "Tokyo:+9,London:+1" }
+        Alarms:        { "mode": "alarms" }
+
+    fields:
+      name:
+        name: Entity
+        description: timer entity_id, or shorthand name. Not used in mode:dashboard/tool_manifest.
+        required: false
+        selector:
+          text:
+
+      operation:
+        name: Operation
+        description: >-
+          start/pause/cancel/finish. Omit to read current state. start
+          without duration resumes a paused timer from where it left off
+          (HA timer domain behavior) — pass duration to start fresh or
+          restart an already-running timer with a new duration.
+        required: false
+        selector:
+          select:
+            options:
+              - start
+              - pause
+              - cancel
+              - finish
+
+      duration:
+        name: Duration
+        description: "HH:MM:SS duration string. Used with operation: start only. Omit to resume a paused timer from its remaining time."
+        required: false
+        selector:
+          text:
+
+      get:
+        name: Read-only
+        description: Pass any truthy value to force read-only mode even if operation is set.
+        required: false
+        selector:
+          text:
+
+      include_idle:
+        name: Include idle timers
+        description: "mode:dashboard only. Pass any truthy value to also list idle timer entities (default omits them)."
+        required: false
+        selector:
+          text:
+
+      include_schedules:
+        name: Include schedules
+        description: "mode:dashboard only. Pass a falsy value (false/no/0) to omit the schedule.* rollup section. Defaults to included."
+        required: false
+        selector:
+          text:
+
+      utc_offsets:
+        name: World clock offsets
+        description: >-
+          mode:worldclock only. Comma-separated Label:+/-N (whole or
+          half-hour UTC offset), e.g. "Tokyo:+9,London:+1,New York:-4".
+          No built-in city table — HA's Jinja sandbox has no arbitrary
+          IANA timezone conversion filter, so you supply the current
+          offset (DST-aware if you know it) rather than risk a hardcoded
+          table silently going wrong twice a year. Omit for just home
+          local + UTC.
+        required: false
+        selector:
+          text:
+
+      mode:
+        description: >-
+          Optional explicit operation selector — "read" to force a
+          read-only reply (same as get=true), "set" to require operation
+          also be given (fails clearly with missing_operation if omitted,
+          rather than silently falling back to a read), "dashboard" for a
+          house-wide active-timer + schedule rollup (no name needed),
+          "worldclock" for home local + UTC + caller-supplied named
+          offsets, "alarms" for every device's next-set alarm sorted
+          soonest first, or "tool_manifest" for this tool's own
+          self-description/schema dump instead of touching an entity. You
+          can also just omit mode entirely and use operation/get directly
+          — both styles work identically for single-entity access.
+        required: false
+        selector:
+          select:
+            options:
+              - read
+              - set
+              - dashboard
+              - worldclock
+              - alarms
+              - tool_manifest
+
+      caller_token:
+        name: Caller Token
+        description: Opaque audit token echoed in response.
+        required: false
+        selector:
+          text:
+
+    sequence:
+      # ── Input normalization ────────────────────────────────────────────────
+      - variables:
+          _tm_mode: "{{ mode | default('') | lower }}"
+      - choose:
+        - conditions: "{{ _tm_mode == 'tool_manifest' }}"
+          sequence:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{ MF.tool_manifest(
+                    tool='zen_dojotools_timekeeper',
+                    display_name='Timekeeper',
+                    tier='dojotools',
+                    version='1.2.0',
+                    health={'configured': true, 'status': 'ok', 'notes': []},
+                    required_labels=['dojotools'],
+                    optional_labels=['timer', 'room_timer', 'checking_timer', 'nightlight_timer', 'control_burnout'],
+                    consumes=['entity_name_or_id'],
+                    returns=['timer_state', 'timer_dashboard', 'worldclock', 'alarms'],
+                    icon='mdi:timer-outline',
+                    color='blue-grey',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
+
+                    caller_token=caller_token | default('')
+                ) | from_json }}
+          - stop: tool_manifest
+            response_variable: result
+
+        # ── mode: dashboard — house-wide rollup, no entity resolution needed ──
+        - conditions: "{{ _tm_mode == 'dashboard' }}"
+          sequence:
+          - variables:
+              _token: "{{ caller_token | default('', true) }}"
+              _incl_idle: "{{ include_idle | default(false, true) | bool(false) }}"
+              _incl_sched: "{{ include_schedules | default(true, true) | bool(true) }}"
+              _purpose_labels: [room_timer, checking_timer, nightlight_timer, occupied_timer, asleep_timer, sleep_timer, control_burnout]
+          - variables:
+              _td_timers: >-
+                {%- set ns = namespace(list=[]) -%}
+                {%- for e in states.timer -%}
+                  {%- if _incl_idle or e.state != 'idle' -%}
+                    {%- set _labs = labels(e.entity_id) -%}
+                    {%- set _purpose = (_purpose_labels | select('in', _labs) | list | first) | default('', true) -%}
+                    {%- set ns.list = ns.list + [{
+                      'entity_id': e.entity_id,
+                      'friendly_name': e.name,
+                      'state': e.state,
+                      'remaining': e.attributes.get('remaining'),
+                      'duration': e.attributes.get('duration'),
+                      'finishes_at': e.attributes.get('finishes_at'),
+                      'purpose': _purpose,
+                      'labels': _labs
+                    }] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.list }}
+          - variables:
+              _td_schedules: >-
+                {%- set ns2 = namespace(list=[]) -%}
+                {%- for e in states.schedule -%}
+                  {%- if _incl_sched -%}
+                    {%- set ns2.list = ns2.list + [{
+                      'entity_id': e.entity_id,
+                      'friendly_name': e.name,
+                      'state': e.state,
+                      'next_event': e.attributes.get('next_event') | string,
+                      'labels': labels(e.entity_id)
+                    }] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns2.list }}
+          - variables:
+              result:
+                ok: true
+                tool: zen_dojotools_timekeeper
+                caller_token: "{{ _token }}"
+                mode: dashboard
+                include_idle: "{{ _incl_idle }}"
+                timer_count: "{{ _td_timers | count }}"
+                timers: "{{ _td_timers }}"
+                schedule_count: "{{ _td_schedules | count }}"
+                schedules: "{{ _td_schedules }}"
+                note: >-
+                  schedules reflects HA's schedule.* helper domain (time-block
+                  on/off + next_event) — distinct from timer entities. Scene
+                  captured values are not readable here; see reflex_wire for
+                  room/scene wiring, not timer state.
+          - stop: dashboard
+            response_variable: result
+
+        # ── mode: worldclock — home local + UTC + caller-supplied offsets ──
+        - conditions: "{{ _tm_mode == 'worldclock' }}"
+          sequence:
+          - variables:
+              _token: "{{ caller_token | default('', true) }}"
+              _wc_offsets_raw: "{{ utc_offsets | default('', true) | string | trim }}"
+          - variables:
+              _wc_zones: >-
+                {%- set ns = namespace(list=[]) -%}
+                {%- for part in _wc_offsets_raw.split(',') if part.strip() != '' -%}
+                  {%- set _kv = part.split(':') -%}
+                  {%- if _kv | count == 2 -%}
+                    {%- set _label = _kv[0].strip() -%}
+                    {%- set _off = _kv[1].strip() | float(0) -%}
+                    {%- set _t = (utcnow().timestamp() + (_off * 3600)) | timestamp_custom('%Y-%m-%d %H:%M:%S', false) -%}
+                    {%- set ns.list = ns.list + [{'label': _label, 'utc_offset': _off, 'time': _t}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.list }}
+          - variables:
+              _wc_home_mode: "{{ states('sensor.zen_home_mode') }}"
+              _wc_schedule:
+                quiet_hours_active: "{{ is_state('binary_sensor.zen_quiet_hours', 'on') }}"
+                work_hours_active: "{{ is_state('binary_sensor.zen_work_hours', 'on') }}"
+                anchors:
+                  wake: "{{ states('input_datetime.zen_am_start') }}"
+                  morning: "{{ states('input_datetime.zen_morning_start') }}"
+                  daytime: "{{ states('input_datetime.zen_daytime_start') }}"
+                  evening: "{{ states('input_datetime.zen_evening_start') }}"
+                  night: "{{ states('input_datetime.zen_night_start') }}"
+                  late_night: "{{ states('input_datetime.zen_late_night_start') }}"
+          - variables:
+              result:
+                ok: true
+                tool: zen_dojotools_timekeeper
+                caller_token: "{{ _token }}"
+                mode: worldclock
+                home_local: "{{ now().strftime('%Y-%m-%d %H:%M:%S %Z') }}"
+                utc: "{{ utcnow().strftime('%Y-%m-%d %H:%M:%S') }}"
+                zones: "{{ _wc_zones }}"
+                home_mode: "{{ _wc_home_mode }}"
+                home_schedule: "{{ _wc_schedule }}"
+                note: >-
+                  zones are computed from a caller-supplied fixed UTC offset,
+                  not a real IANA timezone lookup — HA's Jinja sandbox has no
+                  arbitrary zone conversion filter. Supply the CURRENT
+                  (DST-aware, if applicable) offset for each label.
+                  home_schedule.anchors are the same daypart start times
+                  zen_home_mode itself transitions on (source: input_datetime,
+                  same values zen_dojotools_room_manager mode=home_overview
+                  reports as schedule.anchors — not a re-derivation).
+          - stop: worldclock
+            response_variable: result
+
+        # ── mode: alarms — every device's next-set alarm, soonest first ────
+        - conditions: "{{ _tm_mode == 'alarms' }}"
+          sequence:
+          - variables:
+              _token: "{{ caller_token | default('', true) }}"
+          - variables:
+              _al_set: >-
+                {%- set ns = namespace(list=[]) -%}
+                {%- for e in states.sensor | selectattr('entity_id', 'match', '.*_next_alarm$') -%}
+                  {%- if e.state not in ['unknown', 'unavailable', '', 'none'] and as_datetime(e.state) is not none -%}
+                    {%- set ns.list = ns.list + [{
+                      'entity_id': e.entity_id,
+                      'friendly_name': e.name,
+                      'area_id': area_id(e.entity_id),
+                      'next_alarm': e.state,
+                      'seconds_until': ((as_datetime(e.state).timestamp()) - now().timestamp()) | round(0) | int
+                    }] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.list | sort(attribute='seconds_until') }}
+              _al_none: >-
+                {%- set ns2 = namespace(list=[]) -%}
+                {%- for e in states.sensor | selectattr('entity_id', 'match', '.*_next_alarm$') -%}
+                  {%- if e.state in ['unknown', 'unavailable', '', 'none'] or as_datetime(e.state) is none -%}
+                    {%- set ns2.list = ns2.list + [{'entity_id': e.entity_id, 'friendly_name': e.name, 'area_id': area_id(e.entity_id), 'state': e.state}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns2.list }}
+          - variables:
+              _al_by_area: >-
+                {%- set ns3 = namespace(d={}) -%}
+                {%- for a in _al_set -%}
+                  {%- set _aid = a.area_id | default('unassigned', true) -%}
+                  {%- set _existing = ns3.d.get(_aid, []) -%}
+                  {%- set ns3.d = ns3.d | combine({_aid: _existing + [a]}) -%}
+                {%- endfor -%}
+                {{ ns3.d }}
+          - variables:
+              result:
+                ok: true
+                tool: zen_dojotools_timekeeper
+                caller_token: "{{ _token }}"
+                mode: alarms
+                alarms_set_count: "{{ _al_set | count }}"
+                alarms_set: "{{ _al_set }}"
+                by_area: "{{ _al_by_area }}"
+                no_alarm_count: "{{ _al_none | count }}"
+                no_alarm: "{{ _al_none }}"
+          - stop: alarms
+            response_variable: result
+
+      - variables:
+          raw: "{{ name | default('') | string | trim }}"
+          op_raw: "{{ operation | default(none, true) }}"
+          duration_raw: "{{ duration | default(none, true) }}"
+          get_raw: "{{ get | default(none, true) }}"
+          _token: "{{ caller_token | default('', true) }}"
+
+      # ── Entity resolution ─────────────────────────────────────────────────
+      - variables:
+          _slug: "{{ raw | replace(':', '') | slugify }}"
+          _timer_ent: "timer.{{ _slug }}"
+          _timer_ent_exists: "{{ _timer_ent in (states.timer | map(attribute='entity_id') | list) }}"
+          _entity_id: >-
+            {%- if raw.startswith('timer.') -%}
+              {{ raw }}
+            {%- elif _timer_ent_exists -%}
+              {{ _timer_ent }}
+            {%- else -%}
+              INVALID
+            {%- endif -%}
+
+      - if:
+          - condition: template
+            value_template: "{{ _entity_id == 'INVALID' }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_timekeeper
+                caller_token: "{{ _token }}"
+                error: invalid_entity
+                input: "{{ raw }}"
+          - stop: error
+            response_variable: result
+
+      # ── Fetch current state ────────────────────────────────────────────────
+      - variables:
+          _state: "{{ states(_entity_id) }}"
+          _remaining: "{{ state_attr(_entity_id, 'remaining') }}"
+          _duration_attr: "{{ state_attr(_entity_id, 'duration') }}"
+
+      # ── mode: set with no operation is a real caller mistake ──────────────
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'set' and op_raw is none }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_timekeeper
+                caller_token: "{{ _token }}"
+                error: missing_operation
+                message: "mode: \"set\" requires the operation field — omit mode entirely (or use mode: \"read\") if you only meant to read."
+                entity_id: "{{ _entity_id }}"
+          - stop: missing_operation
+            response_variable: result
+
+      # ── Read-only path ────────────────────────────────────────────────────
+      - if:
+          - condition: template
+            value_template: "{{ _tm_mode == 'read' or get_raw is not none or op_raw is none }}"
+        then:
+          - variables:
+              result:
+                ok: true
+                tool: zen_dojotools_timekeeper
+                caller_token: "{{ _token }}"
+                mode: read
+                entity_id: "{{ _entity_id }}"
+                state: "{{ _state }}"
+                remaining: "{{ _remaining }}"
+                duration: "{{ _duration_attr }}"
+          - stop: read
+            response_variable: result
+
+      # ── Operation validation ───────────────────────────────────────────────
+      - variables:
+          _op_norm: "{{ op_raw | string | lower | trim }}"
+      - if:
+          - condition: template
+            value_template: "{{ _op_norm not in ['start', 'pause', 'cancel', 'finish'] }}"
+        then:
+          - variables:
+              result:
+                ok: false
+                tool: zen_dojotools_timekeeper
+                caller_token: "{{ _token }}"
+                error: invalid_operation
+                entity_id: "{{ _entity_id }}"
+                requested: "{{ op_raw }}"
+                supported: ["start", "pause", "cancel", "finish"]
+          - stop: invalid_operation
+            response_variable: result
+
+      # ── Apply operation ─────────────────────────────────────────────────────
+      - choose:
+          - conditions: "{{ _op_norm == 'start' }}"
+            sequence:
+              - action: timer.start
+                target:
+                  entity_id: "{{ _entity_id }}"
+                data: >-
+                  {{ {'duration': duration_raw} if duration_raw is not none else {} }}
+          - conditions: "{{ _op_norm == 'pause' }}"
+            sequence:
+              - action: timer.pause
+                target:
+                  entity_id: "{{ _entity_id }}"
+          - conditions: "{{ _op_norm == 'cancel' }}"
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: "{{ _entity_id }}"
+          - conditions: "{{ _op_norm == 'finish' }}"
+            sequence:
+              - action: timer.finish
+                target:
+                  entity_id: "{{ _entity_id }}"
+
+      # ── Response ──────────────────────────────────────────────────────────
+      - variables:
+          _post_state: "{{ states(_entity_id) }}"
+          _post_remaining: "{{ state_attr(_entity_id, 'remaining') }}"
+      - variables:
+          result:
+            ok: true
+            tool: zen_dojotools_timekeeper
+            caller_token: "{{ _token }}"
+            mode: set
+            entity_id: "{{ _entity_id }}"
+            operation: "{{ _op_norm }}"
+            previous_state: "{{ _state }}"
+            previous_remaining: "{{ _remaining }}"
+            state: "{{ _post_state }}"
+            remaining: "{{ _post_remaining }}"
       - stop: set
         response_variable: result
 

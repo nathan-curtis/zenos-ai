@@ -25,7 +25,9 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `dojotools_volume_auditor` | Cabinet volume accessibility scanner |
 | `zen_dojotools_notification_router` | **Deprecated** — legacy push notification router |
 | `zen_dojotools_select_control` | CANONICAL: `select` / `input_select` GET+SET |
+| `zen_dojotools_boolean` | CANONICAL: `input_boolean` / `switch` GET+SET |
 | `zen_dojotools_number` | CANONICAL: `number` / `input_number` GET+SET+arithmetic |
+| `zen_dojotools_timekeeper` | CANONICAL: `timer` GET+SET, plus dashboard/worldclock/alarms read-only modes |
 | `zen_dojotools_text` | CANONICAL: `text` / `input_text` GET+SET+string ops |
 | `zen_dojotools_climate` | CANONICAL: `climate` GET+SET with topology context |
 | `zen_dojotools_water_heater` | CANONICAL: `water_heater` GET+SET |
@@ -214,7 +216,7 @@ Use this when a script can't find a cabinet it expects — it shows which volume
 
 ## Canonical HA Domain Tools
 
-These seven scripts are the preferred interface for their respective HA domains. They resolve shorthand names (e.g., `"office_occupancy"` → `input_select.office_occupancy`), validate inputs against entity constraints before writing, and return structured responses with `ok: true/false`. Fall back to HA built-ins only if a tool is confirmed non-functional.
+These nine scripts are the preferred interface for their respective HA domains. They resolve shorthand names (e.g., `"office_occupancy"` → `input_select.office_occupancy`), validate inputs against entity constraints before writing, and return structured responses with `ok: true/false`. Fall back to HA built-ins only if a tool is confirmed non-functional.
 
 All support `mode: tool_manifest` for self-description. All accept `caller_token` echoed in the response.
 
@@ -232,6 +234,42 @@ GET+SET for `select` and `input_select` entities.
 | `mode` | `read` forces a read-only reply regardless of other fields. `set` requires `option` — returns `missing_option` if omitted instead of silently falling back to a read. `tool_manifest` for self-description. Omitting `mode` and using `option`/`get` directly still works identically. |
 
 Validates `option` against `state_attr(entity_id, 'options')` before applying. Returns `error: invalid_option` with `supported` list if the option is not in the entity's option list. Entity existence is checked against domain membership, not state — a real entity that happens to be `unknown`/`unavailable` is not treated as nonexistent. Write responses re-read the entity after the call and report `ok: false` + a `warning` if the post-write state doesn't match what was requested, rather than echoing back the requested value as if it landed.
+
+---
+
+### zen_dojotools_boolean
+
+GET+SET for `input_boolean` and `switch` entities. Closes a long-standing gap — every other simple domain (select, number, text, covers, lights) had a canonical GET+SET tool; `input_boolean`/`switch` never did, forcing an API end-run through `HassTurnOn`/`HassTurnOff`, which require conversation-exposure that most helpers (especially test/sim entities) don't have.
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `state` | `on`/`off`/`true`/`false`/`1`/`0`, or `toggle`. Omit to read. |
+| `get` | Any truthy value forces read-only mode. |
+| `mode` | `read` forces a read-only reply. `set` requires `state` — returns `missing_state` if omitted. `tool_manifest` for self-description. Omitting `mode` and using `state`/`get` directly still works identically. |
+
+Verb naming (`turn_on`/`turn_off`/`toggle`) models HA's own intents; entity resolution and response shape mirror `zen_dojotools_select_control` exactly.
+
+---
+
+### zen_dojotools_timekeeper
+
+CANONICAL HA DOMAIN TOOL for `timer`, plus three read-only modes with no entity-domain equivalent before this: house-wide dashboard rollup, world clock, and a next-alarm sweep across every alarm-capable device.
+
+| Field | Description |
+|---|---|
+| `name` | Timer entity ID or shorthand name. Not used in `mode: dashboard`/`worldclock`/`alarms`/`tool_manifest`. |
+| `operation` | `start` (optional `duration`, resumes a paused timer if omitted), `pause`, `cancel`, `finish`. Omit to read. |
+| `duration` | `HH:MM:SS`, used with `operation: start` only. |
+| `get` | Any truthy value forces read-only mode. |
+| `include_idle` | `mode: dashboard` only — include idle timers (default omits them). |
+| `include_schedules` | `mode: dashboard` only — pass falsy to omit the `schedule.*` rollup section (default included). |
+| `utc_offsets` | `mode: worldclock` only — `Label:+/-N`, comma-separated (e.g. `"Tokyo:+9,London:+1"`). No built-in city table — HA's Jinja sandbox has no arbitrary IANA timezone filter, so you supply the current offset rather than risk a hardcoded table silently drifting across DST. |
+| `mode` | `read`, `set`, `dashboard` (house-wide active-timer + schedule rollup, no `name` needed), `worldclock`, `alarms` (every device's next-set alarm, soonest first), or `tool_manifest`. |
+
+- **`mode: dashboard`** — every non-idle `timer.*` entity, label-cross-referenced for room/purpose, plus every `schedule.*` helper and its `next_event`.
+- **`mode: alarms`** — scans every `sensor.*_next_alarm` entity (Alexa/Echo, phones, watches — anything HA assigns one to) for a parseable future datetime, sorted soonest-first, split into `alarms_set`/`no_alarm`.
+- Backed internally by two new Lens Bus stack providers, `zen_stack_timer` and `zen_stack_alarms` (both internal-only, not MCP-exposed — consumers go through `zen_dojotools_lens_dispatch`). `zen_stack_alarms` only surfaces devices with an assigned `area_id`; personal devices with no area (most phones/watches) only show up via this tool's own `mode: alarms`, not the Lens stack.
 
 ---
 

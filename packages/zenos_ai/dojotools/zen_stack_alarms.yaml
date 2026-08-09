@@ -1,0 +1,386 @@
+###############################################################################
+# zen_stack_alarms v1.0.0
+# Alarms Lens Provider — ZenOS Lens Bus integration.
+# Consume area_id anchors → alarm_evidence for every sensor.*_next_alarm
+# entity in that area (Alexa/Echo devices, tablets, TVs with far-field
+# voice — any device HA assigns an area to). Mirrors zen_stack_timer's
+# shape (2026-08-06). Internal only: not MCP-exposed. Consumers call
+# zen_dojotools_lens_dispatch.
+#
+# Lens Bus — Auto-Registration:
+#   tool_manifest returns: tier=stacks, provider_key=alarms, register_mode=register.
+#   mode=register:   writes alarms entry to lens_registry household cabinet key.
+#   mode=unregister: removes alarms entry from lens_registry.
+###############################################################################
+script:
+  zen_stack_alarms:
+    alias: Zen Stack Alarms
+    description: >-
+      Alarms Lens Provider (v1.0.0). Internal stack adapter for the ZenOS Lens
+      Bus. Provides alarm_evidence for area_id anchors — every
+      sensor.*_next_alarm entity assigned to that area (Alexa/Echo devices,
+      fire tablets, TVs with far-field voice), with next-alarm time and
+      seconds_until. Personal devices (phones/watches, no area assigned)
+      never surface here — see zen_dojotools_timekeeper mode=alarms for the
+      full house-wide list including those. Not MCP-exposed — consumers
+      call zen_dojotools_lens_dispatch.
+    mode: parallel
+    max: 10
+    fields:
+      mode:
+        description: Provider mode (stacks_by_anchor, register, unregister, inspect, audit, tool_manifest, help)
+        selector:
+          text:
+      action:
+        description: Alias for mode (lens dispatcher compat)
+        selector:
+          text:
+      anchor_type:
+        description: Anchor type — area_id
+        selector:
+          text:
+      anchor_ids:
+        description: JSON array of anchor ID strings (HA area_ids)
+        selector:
+          text:
+      caller_token:
+        description: Caller token for audit trail
+        selector:
+          text:
+    sequence:
+    - variables:
+        _mode_norm: >-
+          {{ (mode | default('') if mode is defined and mode | string | trim != ''
+              else (action | default('help') if action is defined else 'help'))
+              | string | trim | lower }}
+        _anchor_type_norm: "{{ anchor_type | default('') | string | trim | lower }}"
+        _anchor_ids_raw: "{{ anchor_ids | default('[]') }}"
+        _anchor_ids: >-
+          {%- set _v = _anchor_ids_raw -%}
+          {%- if _v is sequence and _v is not string -%}{{ _v }}
+          {%- elif _v is string and _v | trim != '' -%}{{ _v | from_json(none) | default([]) }}
+          {%- else -%}[]{%- endif -%}
+        tool_name: zen_stack_alarms
+        tool_version: 1.0.0
+
+    # ── tool_manifest ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "tool_manifest" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              tier: stacks
+              domain: rooms
+              provider_key: alarms
+              register_mode: register
+              consumes: [area_id]
+              returns: [alarm_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              lens_provider: true
+              kfc_manifest: false
+              preferred_state:
+                stripe: 3
+                impact: soft
+        - stop: return
+          response_variable: final_response
+
+    # ── inspect ────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "inspect" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: inspect
+              provider: alarms
+              consumes: [area_id]
+              returns: [alarm_evidence]
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              failure_policy: soft
+              content_policy: standard
+              description: >-
+                Maps area_id anchors to every sensor.*_next_alarm entity whose
+                device is assigned to that area — Alexa/Echo, fire tablets, TVs
+                with far-field voice. Read-only; next_alarm/seconds_until
+                reflect live entity state.
+        - stop: return
+          response_variable: final_response
+
+    # ── audit ──────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "audit" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: audit
+              provider: alarms
+              consumes: [area_id]
+              returns: [alarm_evidence]
+              security_violations: []
+              notes: >-
+                Read-only lens path — entity state read via states() only, no
+                writes to any alarm entity. register/unregister write only to
+                the lens_registry cabinet key. Strictly r-only per security_act.
+        - stop: return
+          response_variable: final_response
+
+    # ── register ───────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "register" }}'
+        sequence:
+        - variables:
+            _sa_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _sa_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: register
+                  provider: alarms
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot register
+                    without a household cabinet to write into.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sa_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sa_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sa_existing_reg: >-
+              {%- set raw = _sa_reg_read if _sa_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sa_provider_decl:
+              provider: alarms
+              configured_by: zen_stack_alarms
+              department: stacks
+              enabled: true
+              status: available
+              tool: zen_stack_alarms
+              mode: stacks_by_anchor
+              consumes: [area_id]
+              returns: [alarm_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+        - variables:
+            _sa_new_reg: "{{ _sa_existing_reg | combine({'alarms': _sa_provider_decl}) }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sa_reg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sa_household_entity }}"
+            key: lens_registry
+            value: "{{ _sa_new_reg | tojson }}"
+        - variables:
+            _sa_reg_ok: >-
+              {{ _sa_reg_write is mapping and _sa_reg_write.get('status', '') == 'success' }}
+            final_response:
+              status: "{{ 'success' if _sa_reg_ok else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: register
+              provider: alarms
+              message: >-
+                {{ 'Provider alarms registered in lens_registry.' if _sa_reg_ok else
+                   'Registration failed: ' ~ (_sa_reg_write.get('error', 'unknown')
+                   if _sa_reg_write is mapping else 'no response') }}
+        - stop: return
+          response_variable: final_response
+
+    # ── unregister ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "unregister" }}'
+        sequence:
+        - variables:
+            _sa_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _sa_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: unregister
+                  provider: alarms
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot unregister
+                    without a household cabinet to read/write.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sa_ureg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sa_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sa_ureg_existing: >-
+              {%- set raw = _sa_ureg_read if _sa_ureg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sa_ureg_new: >-
+              {%- set ns = namespace(result={}) -%}
+              {%- for k, v in _sa_ureg_existing.items() if k != 'alarms' -%}
+                {%- set ns.result = ns.result | combine({k: v}) -%}
+              {%- endfor -%}
+              {{ ns.result }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sa_ureg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sa_household_entity }}"
+            key: lens_registry
+            value: "{{ _sa_ureg_new | tojson }}"
+        - variables:
+            final_response:
+              status: "{{ 'success' if _sa_ureg_write is mapping and _sa_ureg_write.get('status', '') == 'success' else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: unregister
+              provider: alarms
+              message: Provider alarms removed from lens_registry.
+        - stop: return
+          response_variable: final_response
+
+    # ── stacks_by_anchor ───────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "stacks_by_anchor" }}'
+        sequence:
+        - variables:
+            _sa_evidence: []
+        - repeat:
+            for_each: >-
+              {{ _anchor_ids if _anchor_ids is sequence and _anchor_ids is not string else [] }}
+            sequence:
+            - variables:
+                _sa_anchor_id: "{{ repeat.item | string | trim }}"
+            - choose:
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "area_id" and _sa_anchor_id != "" }}'
+                sequence:
+                - variables:
+                    _sa_evidence_prev: >-
+                      {%- set _v = _sa_evidence -%}
+                      {%- if _v is sequence and _v is not string -%}{{ _v }}
+                      {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+                      {%- else -%}[]{%- endif -%}
+                - variables:
+                    _sa_evidence: >-
+                      {%- set ns = namespace(items=_sa_evidence_prev) -%}
+                      {%- for e in states.sensor | selectattr('entity_id', 'match', '.*_next_alarm$') -%}
+                        {%- if area_id(e.entity_id) == _sa_anchor_id and e.state not in ['unknown', 'unavailable', '', 'none'] and as_datetime(e.state) is not none -%}
+                          {%- set ns.items = ns.items + [{
+                            'id': 'alarm_' ~ _sa_anchor_id ~ '_' ~ (e.entity_id | replace('.', '_')),
+                            'type': 'alarm_evidence',
+                            'provider': 'alarms',
+                            'entity_id': e.entity_id,
+                            'friendly_name': e.name,
+                            'next_alarm': e.state,
+                            'seconds_until': ((as_datetime(e.state).timestamp()) - now().timestamp()) | round(0) | int,
+                            'anchor_type': _anchor_type_norm,
+                            'anchor_id': _sa_anchor_id,
+                            'content_redacted': false
+                          }] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.items | tojson }}
+
+        - variables:
+            _sa_evidence_final: >-
+              {%- set _v = _sa_evidence -%}
+              {%- if _v is sequence and _v is not string -%}{{ _v }}
+              {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+              {%- else -%}[]{%- endif -%}
+        - variables:
+            final_response:
+              status: success
+              result: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: stacks_by_anchor
+              provider: alarms
+              anchor_type: '{{ _anchor_type_norm }}'
+              anchor_ids: '{{ _anchor_ids }}'
+              evidence: '{{ _sa_evidence_final }}'
+              count: '{{ _sa_evidence_final | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── help / unknown mode ────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: info
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          mode: help
+          provider: alarms
+          description: >-
+            Alarms Lens Provider. Internal stack adapter for the ZenOS Lens Bus.
+            Call via zen_dojotools_lens_dispatch, not directly.
+          modes:
+            stacks_by_anchor: Fetch alarm_evidence for area_id anchors — every sensor.*_next_alarm entity assigned to that area, with next_alarm and seconds_until
+            register: Register this provider in the household lens_registry cabinet drawer
+            unregister: Remove this provider from lens_registry
+            inspect: Static capability descriptor — consumes/returns/security_act/description
+            audit: Read-only compliance self-attestation — security_violations + notes
+    - stop: return
+      response_variable: final_response
