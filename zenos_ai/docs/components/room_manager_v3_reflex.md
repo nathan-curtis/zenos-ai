@@ -127,6 +127,14 @@ never requires touching either file.
    entity registry (see the orphaned-registry note in the
    [Steel Magnolia release notes](../releases/steel_magnolia.md)).
 
+   <!-- ART (optional): control_flow_map.png — retro "level map"
+        restyling of the Mermaid diagram below: small sprite icons
+        (hand, joystick, mail envelope, filing cabinet, TV screen)
+        connected by a dotted path like an 8-bit overworld map.
+        Suggested size: ~500x200px, a companion beside the Mermaid
+        diagram, not a replacement — keep the real diagram as the
+        authoritative one. -->
+
    ```mermaid
    sequenceDiagram
        participant You as Human / AI

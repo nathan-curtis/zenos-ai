@@ -1,3 +1,11 @@
+<!-- ART: cover_boxart.png — NES box-art homage, "ROOM MANAGER" in
+     chunky block-letter title treatment, CRT-scanline texture,
+     "ZENOS-AI HOME SYSTEMS presents" as publisher banner. Optional
+     gag: the classic Duck Hunt dog silhouette, holding up a wasp
+     instead of a duck (sets up the Section 6 wasp-hold callback).
+     Suggested size: ~480x270px (16:9), keep it small/banner-scale so
+     it doesn't dominate the page. -->
+
 # ZENOS-AI HOME SYSTEMS presents: ROOM MANAGER
 
 ### Operator's Manual
@@ -99,6 +107,13 @@ connected to a parent room.
 
 ## 4. THE NINE STATES OF A ROOM
 
+<!-- ART: states_ladder.png — vertical priority ladder styled like an
+     arcade HUD/high-score list. Emergency glowing red at top like a
+     boss health bar, fading down to Vacant in grey at the bottom.
+     Reinforces "higher always beats lower" visually. Suggested size:
+     ~200x400px, small enough to sit inline beside the table (float
+     right) rather than replace it. -->
+
 Every room is always in exactly one of nine states. Higher on this list
 always beats lower. If two things are true at once, the room reports the
 more important one.
@@ -134,6 +149,11 @@ often are:
 | AUTO | PAUSED | AUTOMATION | CLEANING |
 |---|---|---|---|
 | Normal operation | Stop all automation for this room until a human flips it back | "I've got this room" until released or a human takes it back | Vacuum is working here right now (set for you, don't touch it) |
+
+<!-- ART: control_panel.png — literal NES-controller or arcade-cabinet
+     button row for the four positions above, one button lit to show
+     "currently pressed." Suggested size: ~400x120px, thin banner
+     strip under the table, not a standalone hero image. -->
 
 **AUTO is the only position that means "figure it out normally."** Every
 other position, whether it's one of the four above or a state picked
@@ -297,6 +317,12 @@ the equivalent shortcut if you're handing it to an AI instead.
    dashboard, three different reasons underneath, the game never
    tells you which unless you ask.
 
+<!-- ART: wasp_hold_gag.png — Duck Hunt homage. Two small panels:
+     (1) door opens + motion -> duck falls, "confirmed" checkmark;
+     (2) door stays closed + motion fires -> the dog pops up laughing
+     at you, "Hold." Suggested size: ~320x160px (two ~160x160 panels
+     side by side), small inline gag, not a section-dividing banner. -->
+
  ► THE DOOR, NOT THE LOCK. This is the single most common setup
    mistake and most people never find out they made it. A door's
    LOCK tells you security status. A door's CONTACT SENSOR tells
@@ -352,7 +378,6 @@ the equivalent shortcut if you're handing it to an AI instead.
    room can opt in or out independently. Flip Entertaining mode ON
    for a party and every opted-in room gets the memo instantly, no
    per-room flipping required.
-```
 
 ---
 
@@ -391,6 +416,12 @@ way around. A few directions already on the table:
 
 ## 11. HOW TO REQUEST NEW FEATURES
 
+<!-- ART: mail_in_card.png — actual torn-edge NES-era mail-in
+     registration card graphic: perforated left edge, faux postage-
+     stamp box top right, "NO STAMP NECESSARY." Suggested size:
+     ~350x200px (postcard-ish ratio), sits right above or behind the
+     blockquote text, doesn't replace it. -->
+
 > ✂ – – – – – – – – – – – – – – – – – – – – – – – –
 >
 > **FEATURE REQUEST: MAIL-IN CARD**
@@ -408,6 +439,10 @@ way around. A few directions already on the table:
 > Every feature in this manual started as a sentence exactly like that.
 
 ---
+
+<!-- ART: game_saved.png — small "GAME SAVED ✓" screen badge in place
+     of (or beside) the closing thank-you quote below. Suggested size:
+     ~200x100px, a footer-scale badge, not a full banner. -->
 
 > Thank you for choosing Room Manager. Your house appreciates knowing
 > what room it's in, even if it never says so out loud.
