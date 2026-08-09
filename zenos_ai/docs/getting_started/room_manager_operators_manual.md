@@ -1,10 +1,4 @@
-<!-- ART: cover_boxart.png — NES box-art homage, "ROOM MANAGER" in
-     chunky block-letter title treatment, CRT-scanline texture,
-     "ZENOS-AI HOME SYSTEMS presents" as publisher banner. Optional
-     gag: the classic Duck Hunt dog silhouette, holding up a wasp
-     instead of a duck (sets up the Section 6 wasp-hold callback).
-     Suggested size: ~480x270px (16:9), keep it small/banner-scale so
-     it doesn't dominate the page. -->
+<img src="images/cover_boxart.png" alt="ZenOS-AI Home Systems presents Room Manager — retro box art" width="480">
 
 # ZENOS-AI HOME SYSTEMS presents: ROOM MANAGER
 
@@ -107,16 +101,17 @@ connected to a parent room.
 
 ## 4. THE NINE STATES OF A ROOM
 
-<!-- ART: states_ladder.png — vertical priority ladder styled like an
-     arcade HUD/high-score list. Emergency glowing red at top like a
-     boss health bar, fading down to Vacant in grey at the bottom.
-     Reinforces "higher always beats lower" visually. Suggested size:
-     ~200x400px, small enough to sit inline beside the table (float
-     right) rather than replace it. -->
+<img src="images/states_ladder.png" alt="Priority ladder: Emergency, Paused, Automation, Cleaning, Asleep, Engaged, Hold, Occupied, Vacant — higher wins" width="210" align="right">
 
 Every room is always in exactly one of nine states. Higher on this list
 always beats lower. If two things are true at once, the room reports the
 more important one.
+
+> **Known issue:** Asleep should outrank Engaged (a room with media left
+> playing while someone's actually asleep should report Asleep, not
+> Engaged) — the graphic above shows the intended order. Today's live
+> system still has this backwards; fix is tracked and pending. The
+> table below reflects current, as-shipped behavior until that lands.
 
 | State | What it means |
 |---|---|
@@ -317,11 +312,7 @@ the equivalent shortcut if you're handing it to an AI instead.
    dashboard, three different reasons underneath, the game never
    tells you which unless you ask.
 
-<!-- ART: wasp_hold_gag.png — Duck Hunt homage. Two small panels:
-     (1) door opens + motion -> duck falls, "confirmed" checkmark;
-     (2) door stays closed + motion fires -> the dog pops up laughing
-     at you, "Hold." Suggested size: ~320x160px (two ~160x160 panels
-     side by side), small inline gag, not a section-dividing banner. -->
+<img src="images/wasp_hold_gag.png" alt="Left: door open plus motion is confirmed. Right: door closed plus motion is Hold, not confirmed." width="500">
 
  ► THE DOOR, NOT THE LOCK. This is the single most common setup
    mistake and most people never find out they made it. A door's
@@ -416,33 +407,23 @@ way around. A few directions already on the table:
 
 ## 11. HOW TO REQUEST NEW FEATURES
 
-<!-- ART: mail_in_card.png — actual torn-edge NES-era mail-in
-     registration card graphic: perforated left edge, faux postage-
-     stamp box top right, "NO STAMP NECESSARY." Suggested size:
-     ~350x200px (postcard-ish ratio), sits right above or behind the
-     blockquote text, doesn't replace it. -->
+Just... ask. Out loud, or in chat, to your AI. Say what room, what you
+want it to do, and when. There's no form. There's no queue number.
+There's no cartridge to send back.
 
-> ✂ – – – – – – – – – – – – – – – – – – – – – – – –
->
-> **FEATURE REQUEST: MAIL-IN CARD**
->
-> Just... ask. Out loud, or in chat, to your AI. Say what room, what
-> you want it to do, and when. There's no form. There's no queue
-> number. There's no cartridge to send back.
->
-> *"I want the guest room's vent fan to turn off faster after someone
-> leaves."*
->
-> *"Can the kitchen tell the difference between someone cooking and
-> just walking through?"*
->
-> Every feature in this manual started as a sentence exactly like that.
+<img src="images/mail_in_card.png" alt="Feature Request Mail-In Card: Room, What should it do, When, or just ask your AI. No stamp necessary." width="500">
+
+*"I want the guest room's vent fan to turn off faster after someone
+leaves."*
+
+*"Can the kitchen tell the difference between someone cooking and just
+walking through?"*
+
+Every feature in this manual started as a sentence exactly like that.
 
 ---
 
-<!-- ART: game_saved.png — small "GAME SAVED ✓" screen badge in place
-     of (or beside) the closing thank-you quote below. Suggested size:
-     ~200x100px, a footer-scale badge, not a full banner. -->
+<img src="images/game_saved.png" alt="Game Saved — Room state secure" width="300">
 
 > Thank you for choosing Room Manager. Your house appreciates knowing
 > what room it's in, even if it never says so out loud.
