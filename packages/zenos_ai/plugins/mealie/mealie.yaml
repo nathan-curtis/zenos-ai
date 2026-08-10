@@ -1,6 +1,33 @@
 ###############################################################################
 # ZenOS-AI Plugin: Kitchen — Mealie Recipe/Kitchen Integration
-# Version: 5.22.0
+# Version: 5.23.0
+#
+# v5.23.0 (2026-08-09/10): recipe_consume hardening, closing the loop on a
+#   real debugging session (Radar #289). Three separate bugs fixed:
+#   (1) leftovers_to_stock's item:-name product-creation path used a fuzzy
+#   Grocy search internally, not an exact match — two recipes sharing a
+#   long common name prefix silently booked BOTH onto the first fuzzy-
+#   matched product. Fixed by creating via catalog_add_product (exact
+#   name) and booking by the id it returns. (2) recipes_parse_ingredients
+#   created new Mealie foods via a raw POST that bypassed the shared Grocy
+#   sync block entirely — foods created this way had zero Grocy link,
+#   silently unresolvable by recipe_consume forever. Fixed by mirroring
+#   the same find-or-create-then-foods_tag idiom inline for this path.
+#   (3) recipe_consume crashed (UndefinedError) once enough ingredients
+#   reached the unit-resolution code — stock_get_product_details'
+#   quantity_unit_stock field returns a list instead of a dict for some
+#   products, and the existing `x or {}` fallback only guarded against
+#   falsy, not wrong type. Fixed with explicit is-mapping checks.
+#   NEW — needs_package_size: recipes_parse_ingredients now flags, in its
+#   own response, any brand-new Grocy product it just created for a real
+#   measured unit (gram/teaspoon/etc, not a bare count) — the exact
+#   moment recipe_consume will later hit needs_manual_check for it unless
+#   a package-size unit_conversions_add entry exists. Lets whichever agent
+#   is driving ask "what size do you buy this in?" once, at creation
+#   time, instead of the gap surfacing later during an actual cook.
+#   (Caught its own bug in testing: the fix's catalog_add_product call was
+#   missing the required location param, silently no-oping the whole
+#   flag — fixed before shipping.)
 #
 # v5.22.0 (2026-07-26/27): exec-chef gap closures. kitchen_brief — weekly
 #   food-cost rollup, deduped per unique recipe/ingredient across the whole
@@ -47,7 +74,7 @@
 #   compatible — omitting area behaves exactly as before (active_stay: none).
 #
 # v5.19.0 (2026-07-21): shopping_list_clear_completed rebuilt as a real Early
-#   exit — discovered live (while clearing the real HEB list post-incident)
+#   exit — discovered live (while clearing a real household shopping list post-incident)
 #   that it previously called a bulk DELETE households/shopping/items with no
 #   list/item scoping in the request; it returned status 200 but silently
 #   removed nothing. Now resolves shopping_list_id or item (list name), reads
@@ -2172,7 +2199,7 @@ script:
               level: batch
             requires:
             - item or shopping_list_id
-            example: "{'case':'notes_promote','item':'HEB'}"
+            example: "{'case':'notes_promote','item':'Groceries'}"
     - variables:
         safe_item: '{{ item | default('''') }}'
         safe_quantity: '{{ quantity | default(1) }}'
@@ -3702,9 +3729,11 @@ script:
                              and _rci_details_resp.get('result') is mapping)
                          else {} }}
                     _rci_stock_unit_id: >-
-                      {{ ((_rci_details.get('product', {}) or {}).get('qu_id_stock')) | int(none) }}
+                      {%- set _p = _rci_details.get('product') -%}
+                      {{ (_p.get('qu_id_stock') if _p is mapping else none) | int(none) }}
                     _rci_stock_unit_name: >-
-                      {{ (_rci_details.get('quantity_unit_stock', {}) or {}).get('name', '') | string | trim | lower }}
+                      {%- set _q = _rci_details.get('quantity_unit_stock') -%}
+                      {{ (_q.get('name', '') if _q is mapping else '') | string | trim | lower }}
                 # --- resolve a safe consume amount: no unit stated on the ingredient (bare
                 #     count), the ingredient's unit resolves to the SAME Grocy unit id as the
                 #     product's stock unit, or a real product-specific Grocy unit_conversions
@@ -5425,14 +5454,39 @@ script:
               best_before_date: '{{ _lts_best_before }}'
               note: "Leftovers from {{ _lts_recipe_name }} (recipe_id {{ _lts_recipe_id }}), booked {{ now().date().isoformat() }}."
           else:
+          # --- 2026-08-09 real bug, caught live: stock_buy_product's OWN
+          #     item:-name creation path does a fuzzy Grocy product search
+          #     internally, not an exact match — two recipes sharing a long
+          #     common name prefix ("Recipe X — Variation 1..." vs
+          #     "...Variation 2...") silently booked BOTH onto the FIRST
+          #     product it fuzzy-matched, mislabeling one recipe's stock as
+          #     the other's. _lts_existing_id above already proved there's
+          #     no EXACT match (selectattr('name','equalto',...) came back
+          #     none) — so explicitly create the product first via
+          #     catalog_add_product (exact name, no fuzzy resolution
+          #     involved) and book by the id it returns, mirroring the
+          #     already-safe by-id path above. Never call stock_buy_product
+          #     with a bare item: name for a genuinely new product again. ---
+          - action: script.zen_dojotools_inventory
+            response_variable: _lts_create_resp
+            continue_on_error: true
+            data:
+              mode: catalog_add_product
+              item: '{{ _lts_product_name }}'
+              location: '{{ safe_location }}'
+          - variables:
+              _lts_created_id: >-
+                {{ (_lts_create_resp.result.product_id | string)
+                   if (_lts_create_resp is mapping and _lts_create_resp.get('status') == 'success'
+                       and _lts_create_resp.get('result', {}).get('product_id') is not none)
+                   else none }}
           - action: script.zen_dojotools_inventory
             response_variable: _lts_stock_resp
             continue_on_error: true
             data:
               mode: stock_buy_product
-              item: '{{ _lts_product_name }}'
+              product_id: '{{ _lts_created_id }}'
               amount: '{{ _lts_amount }}'
-              unit: Serving
               location: '{{ safe_location }}'
               best_before_date: '{{ _lts_best_before }}'
               note: "Leftovers from {{ _lts_recipe_name }} (recipe_id {{ _lts_recipe_id }}), booked {{ now().date().isoformat() }}."
@@ -5785,6 +5839,7 @@ script:
             _rpi_matched: []
             _rpi_errors: []
             _rpi_updates: '{{ {} }}'
+            _rpi_needs_package_size: []
         # --- for each parsed line: resolve its plain food-name string to a real
         #     Mealie Food, exact-match-only (same "refuse to guess" precedent as
         #     recipe_fulfillment's id resolution). find-or-create idiom mirrors
@@ -5865,6 +5920,74 @@ script:
                         _rpii_food_id: >-
                           {{ _rpii_food_create_raw.result.content.id
                              if (_rpii_food_create_raw is defined and _rpii_food_create_raw.result.content is mapping) else none }}
+                    # --- GROCY SYNC (Radar-adjacent fix, 2026-08-09, caught
+                    #     live: 5 foods created here had zero Grocy link,
+                    #     silently unresolvable by recipe_consume forever).
+                    #     food_add's own Grocy sync ('Grocy sync on food
+                    #     write' below) only fires for case in
+                    #     ['food_add','food_update'] — this branch creates
+                    #     Mealie foods via a raw POST that never touches
+                    #     that shared block. Mirrors the same find-or-create
+                    #     idiom: exact-match an existing Grocy product first,
+                    #     else create one, then write grocy_product_id back
+                    #     onto the Mealie food via foods_tag. Best-effort —
+                    #     continue_on_error, never blocks the ingredient
+                    #     parse itself if Inventory is unavailable. ---
+                    - if: '{{ _rpii_food_id is not none }}'
+                      then:
+                        - action: script.zen_dojotools_inventory
+                          response_variable: _rpii_grocy_find
+                          continue_on_error: true
+                          data:
+                            mode: catalog_find_product
+                            item: '{{ _rpii_food_name }}'
+                        - variables:
+                            _rpii_grocy_exact: >-
+                              {%- set _gr = _rpii_grocy_find.result if (_rpii_grocy_find is mapping and _rpii_grocy_find.result is sequence) else [] -%}
+                              {{ _gr | selectattr('name', 'equalto', _rpii_food_name) | list | first | default(none) }}
+                        - if: '{{ _rpii_grocy_exact is none }}'
+                          then:
+                            - action: script.zen_dojotools_inventory
+                              response_variable: _rpii_grocy_create
+                              continue_on_error: true
+                              data:
+                                mode: catalog_add_product
+                                item: '{{ _rpii_food_name }}'
+                                location: Pantry
+                        - variables:
+                            _rpii_grocy_product_id: >-
+                              {{ _rpii_grocy_exact.id if _rpii_grocy_exact is not none
+                                 else (_rpii_grocy_create.result.product_id
+                                       if (_rpii_grocy_create is defined and _rpii_grocy_create is mapping
+                                           and _rpii_grocy_create.get('status') == 'success')
+                                       else none) }}
+                        - if: '{{ _rpii_grocy_product_id is not none }}'
+                          then:
+                            - action: script.zen_dojotools_kitchen
+                              continue_on_error: true
+                              data:
+                                mode: run
+                                case: foods_tag
+                                item_id: '{{ _rpii_food_id }}'
+                                grocy_product_id: '{{ _rpii_grocy_product_id }}'
+                        # --- PACKAGE-SIZE FLAG (2026-08-09, "bake it in — help
+                        #     those who come after"). A brand-new Grocy
+                        #     product (never catalog_add_product'd before
+                        #     this exact call) starts with no unit_conversions
+                        #     entry — if this ingredient's own unit is a real
+                        #     measured unit (gram/teaspoon/etc, not a bare
+                        #     count), recipe_consume WILL hit needs_manual_check
+                        #     for it later unless someone adds the real
+                        #     package-size conversion now, at the one moment
+                        #     the ingredient context is actually in hand.
+                        #     Surfaced in the top-level response so whichever
+                        #     agent is driving asks "what size do you buy
+                        #     this in?" right here instead of discovering the
+                        #     gap during a later recipe_consume failure. ---
+                        - if: '{{ _rpii_grocy_exact is none and _rpii_grocy_product_id is not none and _rpii_unit_resolved_name | trim != "" }}'
+                          then:
+                            - variables:
+                                _rpi_needs_package_size: '{{ _rpi_needs_package_size + [{"name": _rpii_food_name, "grocy_product_id": _rpii_grocy_product_id, "recipe_unit": _rpii_unit_resolved_name}] }}'
                     - if: '{{ _rpii_food_id is none }}'
                       then:
                         - variables:
@@ -5936,6 +6059,14 @@ script:
                 foods_matched: '{{ _rpi_matched }}'
                 already_structured_count: '{{ _rpi_already_structured_count }}'
                 errors: '{{ _rpi_errors }}'
+              needs_package_size: >-
+                {{ _rpi_needs_package_size if (_rpi_needs_package_size | count) > 0 else none }}
+              needs_package_size_note: >-
+                {%- if (_rpi_needs_package_size | count) > 0 -%}
+                  New Grocy product(s) created for a real measured unit (not a bare count) — recipe_consume will hit needs_manual_check for these later unless a package-size conversion is added now. Ask "what size do you buy this in?" and call zen_dojotools_inventory mode=unit_conversions_add for each before this recipe is actually cooked.
+                {%- else -%}
+                  {{ none }}
+                {%- endif -%}
               writes:
                 level: single
         - stop: return
@@ -6056,6 +6187,70 @@ script:
             _ru_recipe: '{{ _ru_get_raw.result.content if _ru_get_raw.result.content is mapping else {} }}'
         - variables:
             _ru_merged: '{{ _ru_recipe | combine(_ru_payload_parsed) }}'
+        # --- FOOD-REFERENCE HYDRATION (Radar #289, 2026-08-09) — Mealie's
+        #     recipeIngredient[].food is a full nested IngredientFood object,
+        #     not a foreign key: a caller-supplied {"food": {"id": "<uuid>"}}
+        #     (the natural, efficient way to link an ingredient to an EXISTING
+        #     structured food by id) fails PUT with a 422 — Mealie's schema
+        #     requires 'name' (and other fields) on that object, confirmed
+        #     live: "Field required" at food.name for exactly this shape. Fix:
+        #     detect any recipeIngredient[].food that has an id but no name,
+        #     GET the real food record for each UNIQUE id needing it (deduped,
+        #     same idiom as notes_promote's food-search loop above), and
+        #     replace the partial stub with the full record before the PUT —
+        #     the caller only ever has to supply the id. Freetext ingredients
+        #     (food: null, just a note) were never affected — confirmed live,
+        #     single AND bulk freetext updates already worked before this fix.
+        - variables:
+            _ru_ing_list: '{{ _ru_merged.get("recipeIngredient", []) if _ru_merged.recipeIngredient is sequence else [] }}'
+            _ru_food_ids_to_hydrate: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for ing in _ru_ing_list -%}
+                {%- if ing.food is mapping and (ing.food.get('id','') | trim) != '' and (ing.food.get('name','') | trim) == '' and ing.food.id not in ns.out -%}
+                  {%- set ns.out = ns.out + [ing.food.id] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - if: '{{ (_ru_food_ids_to_hydrate | count) > 0 }}'
+          then:
+            - variables:
+                _ru_hydrated_foods_list: []
+            - repeat:
+                for_each: '{{ _ru_food_ids_to_hydrate }}'
+                sequence:
+                  - action: script.zen_sutra_mealie
+                    response_variable: _ru_food_get_raw
+                    continue_on_error: true
+                    data:
+                      mode: run
+                      method: GET
+                      endpoint: 'foods/{{ repeat.item }}'
+                      payload: '{{ none }}'
+                  - variables:
+                      _ru_hydrated_foods_list: >-
+                        {{ (_ru_hydrated_foods_list + [_ru_food_get_raw.result.content])
+                           if (_ru_food_get_raw.result.content is mapping and (_ru_food_get_raw.result.status | default(200)) < 400)
+                           else _ru_hydrated_foods_list }}
+            - variables:
+                _ru_hydrated_foods_map: >-
+                  {%- set ns = namespace(out={}) -%}
+                  {%- for f in _ru_hydrated_foods_list -%}
+                    {%- set ns.out = ns.out | combine({f.id: f}) -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+            - variables:
+                _ru_ing_list: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for ing in _ru_ing_list -%}
+                    {%- if ing.food is mapping and (ing.food.get('id','') | trim) != '' and ing.food.id in _ru_hydrated_foods_map -%}
+                      {%- set ns.out = ns.out + [ing | combine({'food': _ru_hydrated_foods_map[ing.food.id]})] -%}
+                    {%- else -%}
+                      {%- set ns.out = ns.out + [ing] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+            - variables:
+                _ru_merged: '{{ _ru_merged | combine({"recipeIngredient": _ru_ing_list}) }}'
         - action: script.zen_sutra_mealie
           response_variable: _ru_put_raw
           data:
