@@ -231,11 +231,7 @@ clicking instead of you.
 
 ## 7. REFLEX: TURNING A STATE INTO A SCENE
 
-<!-- ART: reflex_match.png — small "scene match" diagram: a room-state
-     pill (e.g. "😴 Asleep") on one side, a scene icon on the other,
-     connected by a dotted line with a magnifying glass on it —
-     visually reinforcing "REFLEX matches, it doesn't invent."
-     Suggested size: ~400x160px, sits under the section header. -->
+<img src="images/reflex_match.png" alt="REFLEX scene match: Asleep state matched to Sleep Scene via a magnifying glass — match found" width="500">
 
 > **A MESSAGE FROM THE DEVELOPMENT TEAM.** We are extremely proud to
 > present: **R.E.F.L.E.X.** — **R**eactive **E**ngine **F**or
@@ -321,10 +317,7 @@ of treating it as a magic button:
    from, worth fixing), or "doesn't apply to this room" (Paused,
    Automation — these are always safe no-ops, not gaps).
 
-<!-- ART: reflex_classification_legend.png — small 4-icon legend strip
-     for the four outcomes above: ✅ wired, ↩️ borrowed, ⚠️ gap,
-     ➖ not-applicable. Suggested size: ~450x90px, thin strip under
-     item 2, a quick visual instead of re-reading the prose each time. -->
+<img src="images/reflex_classification_legend.png" alt="REFLEX classification: Wired (direct match), Borrowed (shared match), Gap (needs a scene), N/A (not applicable)" width="600">
 
 3. **If a found scene's name is ambiguous about which state or time of
    day it's for** ("Late Night" could mean "this room, empty, at night"
@@ -346,11 +339,7 @@ next step is building one in Home Assistant, not asking again.
 
 ### Testing before you trust it
 
-<!-- ART: reflex_rehearsal_showtime.png — two-panel retro badge pair,
-     "REHEARSAL" (dry run) vs "SHOWTIME" (live), playing off the
-     game-manual voice already established (box art, control panel,
-     mail-in card). Suggested size: ~400x150px, sits under this
-     subsection header. -->
+<img src="images/reflex_rehearsal_showtime.png" alt="REFLEX testing modes: Rehearsal (dry run, logs only, safe) vs Showtime (live, actions run, active)" width="550">
 
 Flip **dry run** on (ask your AI — one more house-wide switch, same as
 REFLEX itself) and REFLEX resolves everything exactly like it would
