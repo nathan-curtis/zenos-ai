@@ -140,7 +140,7 @@ On expiry, the room's normal asleep scene re-fires. The room's actual v3
 
 Distinct from the v2 input-signal labels (`zen_occupied`, `zen_engaged`,
 `zen_asleep`, which tag *source* entities that drive occupancy) — these tag
-*output* scenes: `scene_vacant`, `scene_checking`, `scene_occupied`,
+*output* scenes: `scene_vacant`, `scene_occupied`,
 `scene_engaged`, `scene_asleep`, `scene_paused`, `scene_automation`,
 `scene_cleaning`, `scene_emergency`, `scene_nightlight`. Only the tiers that
 actually have scenes need tagging — an untagged tier is a safe no-op scene

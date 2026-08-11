@@ -258,7 +258,7 @@ mechanism as everything else in Section 6:
 1. **Label a scene with the state it belongs to.** A scene meant to fire
    when a room goes Asleep gets the label `scene_asleep`. Occupied gets
    `scene_occupied`. Same pattern for `scene_vacant`, `scene_engaged`,
-   `scene_cleaning`, `scene_emergency`, `scene_checking`, `scene_nightlight`,
+   `scene_cleaning`, `scene_emergency`, `scene_nightlight`,
    and so on — one label per state, matching Section 4's state list.
 2. **Label the same scene with the room.** Exactly like tagging a sensor
    in Section 6 Step 1 — the scene needs both labels: which state it's
@@ -302,8 +302,8 @@ of treating it as a magic button:
 2. **For every state, it reports one of four things:** already wired
    directly, covered by borrowing another state's scene (fine, see
    above), a genuine gap (a state with no scene and nothing to borrow
-   from, worth fixing), or "doesn't apply to this room" (Checking,
-   Paused, Automation — these are always safe no-ops, not gaps).
+   from, worth fixing), or "doesn't apply to this room" (Paused,
+   Automation — these are always safe no-ops, not gaps).
 3. **If a found scene's name is ambiguous about which state or time of
    day it's for** ("Late Night" could mean "this room, empty, at night"
    or "this room, occupied, at night"), it gets flagged instead of

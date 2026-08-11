@@ -110,7 +110,7 @@ provider_key:
 | `media` | `zen_dojotools_media_manager` | label, person, area_id, zone, concept, mood, activity | track/album/artist/playlist/radio/podcast/audiobook/queue/playback_target evidence |
 | `paperless_ngx` | `zen_stack_paperless` | label, person, area_id, zone | document_evidence |
 | `wiki_js` | `zen_sutra_wikijs` | label, concept, area_id, zone, person | article_evidence |
-| `timer` | `zen_stack_timer` | label (room-slug) | timer_evidence — every `timer.*` entity carrying that room's label, with purpose (`room_timer`/`checking_timer`/`nightlight_timer`/`control_burnout`/etc), state, remaining, duration |
+| `timer` | `zen_stack_timer` | label (room-slug) | timer_evidence — every `timer.*` entity carrying that room's label, with purpose (`room_timer`/`nightlight_timer`/`control_burnout`/etc), state, remaining, duration |
 | `alarms` | `zen_stack_alarms` | area_id | alarm_evidence — every `sensor.*_next_alarm` entity assigned to that area (Alexa/Echo, fire tablets, far-field-voice TVs), next-alarm time + seconds_until. Personal devices with no area assigned (most phones/watches) don't surface here — see `zen_dojotools_timekeeper mode=alarms` for the full house-wide list including those. |
 
 ---
