@@ -22,11 +22,12 @@
 4. [The Nine States of a Room](#4-the-nine-states-of-a-room)
 5. [The Control Panel (your room_control_manager switch)](#5-the-control-panel-your-room_control_manager-switch)
 6. [Special Moves (opt-in features)](#6-special-moves-opt-in-features)
-7. [Patterns & Practices (playing it well)](#7-patterns--practices-playing-it-well)
-8. [Hints, Tips & Tricks](#8-hints-tips--tricks)
-9. [Troubleshooting](#9-troubleshooting)
-10. [What's Next](#10-whats-next)
-11. [How to Request New Features](#11-how-to-request-new-features)
+7. [REFLEX: Turning a State Into a Scene](#7-reflex-turning-a-state-into-a-scene)
+8. [Patterns & Practices (playing it well)](#8-patterns--practices-playing-it-well)
+9. [Hints, Tips & Tricks](#9-hints-tips--tricks)
+10. [Troubleshooting](#10-troubleshooting)
+11. [What's Next](#11-whats-next)
+12. [How to Request New Features](#12-how-to-request-new-features)
 - [For the Technically Curious](#for-the-technically-curious)
 - [Addendum: For Agents Reading This Doc](#addendum-for-agents-reading-this-doc)
 
@@ -115,7 +116,7 @@ more important one.
 | 🧹 **Cleaning** | The robot vacuum is in here right now. |
 | 😴 **Asleep** | Someone's asleep in here. Beats Engaged: a device staying active nearby never overrides a real Asleep signal in the same room. |
 | ⚡ **Engaged** | Someone is ACTIVELY using this room. Media is playing, a desk is in active use. Stronger than just "someone's here," but not stronger than the room's own Asleep. |
-| ⏳ **Hold** | One of exactly three lines is currently high: the wasp flag (motion with no door-open to confirm entry), Entertaining mode (room opted in), or Guest mode (room opted in). Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
+| ⏳ **Hold** | One of exactly three lines is currently high: the wasp flag (motion with no door-open to confirm entry, only for rooms opted in — see Section 6), Entertaining mode (room opted in), or Guest mode (room opted in). Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
 | 🟢 **Occupied** | Somebody's in here. Presence detected, no specific activity known. |
 | ⚪ **Vacant** | Nobody's in here. The default. Nothing wrong with it. Most rooms are Vacant most of the day. |
 
@@ -196,6 +197,8 @@ closet doesn't need a vent fan.
 
 **🍸 Entertaining Hold / Guest Hold** — "While entertaining mode or guest mode is on, opted-in rooms stay conservative instead of guessing." Prevents a busy house from flickering a room between Occupied and Vacant. Opt in per room; a room not opted in is unaffected.
 
+**🐝 Wasp (Hold from an unconfirmed entry)** — "Motion with no door-open to explain it holds the room, instead of guessing." Requires TWO things before it does anything: at least one door tagged `wasp_door` for that room (Section 8's "the door, not the lock" tip), AND the room itself opted in with the `wasp_enabled` label — either on the room's Area directly, or on any entity in that room. Both, not just one. This is opt-in on purpose: a room with an always-open archway instead of a real door (a connected front hall, say) can't safely tell "someone's inside with the door shut" from "there is no door" — tagging `wasp_door` there without also enabling the room would just misfire. If a room's Hold never seems to trigger from motion alone, check both halves are actually set before assuming something's broken. (See Section 9's "the door, not the lock" tip for the other common wasp_door setup mistake.)
+
 None of it requires a code editor or a YAML file — every feature above
 turns on the same way: labels and helpers, done through the normal HA
 UI. Here's how.
@@ -226,7 +229,117 @@ clicking instead of you.
 
 ---
 
-## 7. PATTERNS & PRACTICES (playing it well)
+## 7. REFLEX: TURNING A STATE INTO A SCENE
+
+Everything in Sections 1–6 gets you a room that *knows* what it's doing —
+Occupied, Asleep, Hold, whatever. Knowing isn't doing. **REFLEX is the
+engine that actually reacts** — the thing that takes "the office just
+became Asleep" and turns it into "the office's lights actually dim and
+the TV actually turns off." It's the "Engine" named on this manual's
+cover for a reason: it's a separate system from state-tracking, and it
+has its own on/off switch.
+
+**REFLEX is off by default, house-wide, even once every room's
+state-tracking is fully working.** This is one switch for the whole
+house, not a per-room setting — every room can know exactly what it's
+doing, with zero risk of any scene firing anywhere, until you flip
+REFLEX on. Ask your AI "is reflex on?" or "turn reflex on" any time.
+(Per-room *wiring* — which scenes belong to which room, described
+below — is separate and can absolutely be done room by room ahead of
+time; it just won't actually fire anything until the house-wide switch
+is on.)
+
+### How REFLEX picks a scene
+
+REFLEX doesn't guess which scene to fire. It looks for a scene labeled
+to match the room's new state, using the exact same label-tagging
+mechanism as everything else in Section 6:
+
+1. **Label a scene with the state it belongs to.** A scene meant to fire
+   when a room goes Asleep gets the label `scene_asleep`. Occupied gets
+   `scene_occupied`. Same pattern for `scene_vacant`, `scene_engaged`,
+   `scene_cleaning`, `scene_emergency`, `scene_checking`, `scene_nightlight`,
+   and so on — one label per state, matching Section 4's state list.
+2. **Label the same scene with the room.** Exactly like tagging a sensor
+   in Section 6 Step 1 — the scene needs both labels: which state it's
+   for, and which room it belongs to.
+3. **Optionally, label it for a specific time of day.** If you want the
+   office's Occupied scene to look different at 7am than at 9pm, create
+   two scenes, both labeled `scene_occupied` and the room, but each also
+   labeled for a daypart (morning, daytime, evening, night, etc.). A
+   scene with no daypart label is the room's fallback for that state, any
+   time of day. A scene WITH a daypart label wins over the fallback,
+   only during that daypart.
+
+Once a scene carries state + room (+ optionally daypart), REFLEX finds
+it automatically the instant the room changes state. Nothing to wire by
+hand beyond the labels — same "label it once, it just works" pattern as
+everything else in this manual.
+
+**Haven't gotten around to wiring every state for every room?** REFLEX
+quietly borrows a sensible scene instead of doing nothing. A room without
+its own Engaged scene borrows its Occupied one. Cleaning and Emergency
+do the same. Asleep, if unwired, borrows the room's Vacant scene (lights
+out is the safe default for "asleep, but nobody's built a dedicated
+scene for it yet"). Wire the real one whenever you get to it — the
+borrowed scene is a placeholder, not a requirement you're stuck with.
+
+### Setting it up — what actually happens
+
+Ask your AI: *"wire up scenes for the office"* — but here's what's
+really going on behind that sentence, so you know what to expect instead
+of treating it as a magic button:
+
+1. **It scans for scenes that already exist and look like they belong
+   to this room** — matching by scene name and by the room's own Area
+   assignment. This is a MATCH step, not a CREATE step: it can only find
+   scenes you (or whoever built your dashboard) already made in Home
+   Assistant's own Scene editor. **If no scene exists for a room yet,
+   nothing gets found, full stop** — REFLEX can't invent a scene, and
+   "ask your AI" can't either. A brand-new or rarely-used room (a
+   closet, a utility space) often genuinely has zero scenes, and that's
+   fine — see Section 8, not every room needs one.
+2. **For every state, it reports one of four things:** already wired
+   directly, covered by borrowing another state's scene (fine, see
+   above), a genuine gap (a state with no scene and nothing to borrow
+   from, worth fixing), or "doesn't apply to this room" (Checking,
+   Paused, Automation — these are always safe no-ops, not gaps).
+3. **If a found scene's name is ambiguous about which state or time of
+   day it's for** ("Late Night" could mean "this room, empty, at night"
+   or "this room, occupied, at night"), it gets flagged instead of
+   guessed at. That's a real decision only you can make — what should
+   the room actually look like in that situation — so expect to be
+   asked, not just told it's done.
+4. **Nothing is written until you confirm.** Everything above is a
+   preview: which scenes matched, what's covered, what's ambiguous, what
+   has nothing to wire at all. Confirming is the one moment state
+   actually gets written onto the scene's labels.
+
+So the realistic outcomes of asking your AI to wire a room are: it just
+does it (scenes existed, matches were unambiguous), it asks you one or
+two questions first (matches existed but which-state-is-this was
+genuinely unclear), or it comes back and tells you there's nothing to
+wire yet because no scene exists for this room — at which point the
+next step is building one in Home Assistant, not asking again.
+
+### Testing before you trust it
+
+Flip **dry run** on (ask your AI — one more house-wide switch, same as
+REFLEX itself) and REFLEX resolves everything exactly like it would
+live, for every room — same scene picked, same logic — but logs what it
+WOULD do instead of actually firing it. Once you've checked the log and
+you're happy, flip dry run off and REFLEX on, and it does the real
+thing. If REFLEX is ever switched on for real while dry run is also on,
+the real fire wins — dry run only matters while REFLEX itself is off.
+
+> **REFLEX vs. state-tracking, in one sentence:** state-tracking always
+> runs and always tells the truth about the room, REFLEX only acts on
+> that truth once you've told it to, and dry run lets it rehearse
+> without an audience.
+
+---
+
+## 8. PATTERNS & PRACTICES (playing it well)
 
 **Trust the state, don't fight it.** If a room says Occupied and you
 think it's wrong, the fix is almost always "the sensor that should be
@@ -288,14 +401,14 @@ the equivalent shortcut if you're handing it to an AI instead.
 
 ---
 
-## 8. HINTS, TIPS & TRICKS
+## 9. HINTS, TIPS & TRICKS
 
 - **Tip:** Ask "what's the state of the [room]?" any time. It's a free, instant answer. No need to guess from raw sensors.
 - **Tip:** If you want to see WHY a room is in a state before you trust it, ask "why is the [room] [state] right now?"
 - **Tip:** Setting a room to PAUSED is completely safe and fully reversible. When in doubt, pause first, ask questions later.
 - **Tip:** A minimally configured room still works. With only basic occupancy signals tagged, it simply moves between Vacant and Occupied. There is no minimum setup required to get value.
 - **Tip:** Bathrooms attached to bedrooms usually want the ensuite cascade left ON (the default). It's the behavior most people actually want, even if it surprises you the first time.
-- **Secret:** There's a "dry run" mode your builder can flip that logs exactly what WOULD happen without actually doing it. Useful for testing a brand-new room before trusting it live.
+- **Secret:** REFLEX has a house-wide "dry run" mode that logs exactly what every room WOULD do without actually doing it — see Section 7. It's currently ON, house-wide, as shipped.
 
 ---
 
@@ -383,16 +496,28 @@ the equivalent shortcut if you're handing it to an AI instead.
    for a party and every opted-in room gets the memo instantly, no
    per-room flipping required.
 
+ ► SCENES FADE IN BY DEFAULT, AND THAT'S ON PURPOSE. Every scene
+   this system fires — automatically, not scenes you trigger by
+   hand — takes 2 seconds to settle rather than slamming every
+   light in the room to full brightness instantly. This also keeps
+   a flickery room (a twitchy sensor, say) from hammering your
+   smart home network with rapid-fire commands. Want a specific
+   scene instant instead — a security scene, say, where the delay
+   actually matters? Ask your AI to tag it, or do it yourself:
+   label the scene `reflex_transition_0` for instant, or
+   `reflex_transition_5` for a slower 5-second fade, any number you
+   like. Untagged scenes just get the 2-second default.
+
 ---
 
-## 9. TROUBLESHOOTING
+## 10. TROUBLESHOOTING
 
 | Symptom | Likely cause |
 |---|---|
 | Room never leaves Vacant even though someone's clearly in there | The sensor that should confirm this room isn't wired to that room yet |
 | Room control keeps snapping back to Auto after I set it to Automation | Control Burnout is on for that room. That's the safety net doing its job. |
 | Fan / TV sleep timer never fires | That feature isn't set up for this room yet. See Section 6, Step 2. |
-| Bedroom won't go fully quiet at night because of the attached bathroom | Working as intended. See Section 7. |
+| Bedroom won't go fully quiet at night because of the attached bathroom | Working as intended. See Section 8. |
 | A newly added room doesn't show up yet | Settings → System → Restart, or reload templates/automations. New rooms pick themselves up automatically once that happens. |
 
 If none of these fit, check the room's `last_trigger` attribute (Section
@@ -403,7 +528,7 @@ good bug report, and it can check the same attribute for you.
 
 ---
 
-## 10. WHAT'S NEXT
+## 11. WHAT'S NEXT
 
 Room Manager is a living system. It grows with your house, not the other
 way around. A few directions already on the table:
@@ -418,7 +543,7 @@ way around. A few directions already on the table:
 
 ---
 
-## 11. HOW TO REQUEST NEW FEATURES
+## 12. HOW TO REQUEST NEW FEATURES
 
 Just... ask. Out loud, or in chat, to your AI. Say what room, what you
 want it to do, and when. There's no form. There's no queue number.
@@ -491,7 +616,7 @@ translation:
   (Section 6 Step 4) before the room's state sensor will react. Don't
   report a setup as complete without confirming that step happened.
 - **Cite `last_trigger`, not your own inference**, when explaining why
-  a room is in a given state — Section 3/9 both point at this attribute
+  a room is in a given state — Section 3/10 both point at this attribute
   as the authoritative answer. Guessing at a cause the attribute
   doesn't actually name is exactly the kind of confident-but-wrong
   answer this manual's plain-language framing is trying to prevent
