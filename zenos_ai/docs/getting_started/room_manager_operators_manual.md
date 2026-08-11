@@ -231,6 +231,12 @@ clicking instead of you.
 
 ## 7. REFLEX: TURNING A STATE INTO A SCENE
 
+<!-- ART: reflex_match.png — small "scene match" diagram: a room-state
+     pill (e.g. "😴 Asleep") on one side, a scene icon on the other,
+     connected by a dotted line with a magnifying glass on it —
+     visually reinforcing "REFLEX matches, it doesn't invent."
+     Suggested size: ~400x160px, sits under the section header. -->
+
 Everything in Sections 1–6 gets you a room that *knows* what it's doing —
 Occupied, Asleep, Hold, whatever. Knowing isn't doing. **REFLEX is the
 engine that actually reacts** — the thing that takes "the office just
@@ -304,6 +310,12 @@ of treating it as a magic button:
    above), a genuine gap (a state with no scene and nothing to borrow
    from, worth fixing), or "doesn't apply to this room" (Paused,
    Automation — these are always safe no-ops, not gaps).
+
+<!-- ART: reflex_classification_legend.png — small 4-icon legend strip
+     for the four outcomes above: ✅ wired, ↩️ borrowed, ⚠️ gap,
+     ➖ not-applicable. Suggested size: ~450x90px, thin strip under
+     item 2, a quick visual instead of re-reading the prose each time. -->
+
 3. **If a found scene's name is ambiguous about which state or time of
    day it's for** ("Late Night" could mean "this room, empty, at night"
    or "this room, occupied, at night"), it gets flagged instead of
@@ -323,6 +335,12 @@ wire yet because no scene exists for this room — at which point the
 next step is building one in Home Assistant, not asking again.
 
 ### Testing before you trust it
+
+<!-- ART: reflex_rehearsal_showtime.png — two-panel retro badge pair,
+     "REHEARSAL" (dry run) vs "SHOWTIME" (live), playing off the
+     game-manual voice already established (box art, control panel,
+     mail-in card). Suggested size: ~400x150px, sits under this
+     subsection header. -->
 
 Flip **dry run** on (ask your AI — one more house-wide switch, same as
 REFLEX itself) and REFLEX resolves everything exactly like it would
