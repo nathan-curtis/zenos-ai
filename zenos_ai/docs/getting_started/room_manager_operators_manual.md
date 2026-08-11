@@ -385,7 +385,7 @@ the equivalent shortcut if you're handing it to an AI instead.
 > Say: *"set up the guest room like a bedroom, and turn on guest hold for it."*
 
 **🚒 A bedroom for someone with a non-standard schedule** (shift worker, firefighter, anyone whose "night" isn't at night) — Set up like a bedroom, then point Autosleep Schedule at whatever actually reflects when this person sleeps: a calendar, an HA Schedule helper, or just a toggle they flip themselves before bed. This room stops caring what time the rest of the house thinks it is. If they just want to crash right now, Asleep Hold (or the manual Asleep pick, Section 5) skips the whole trigger/window question entirely — flip it, and the room is Asleep.
-> Say: *"set up the guest room like a bedroom, but point autosleep at my work calendar instead of the house's night hours."*
+> Say: *"set up the bedroom like a normal bedroom, but point autosleep at my work calendar instead of the house's night hours."*
 
 **🚪 A garage or any room with an entry door** — Motion for Occupied. Tag the actual door (not its lock) as the room's entry signal — this is what lets the room tell the difference between "someone's clearly walking through" and "motion fired but nobody actually came in." Skip TV Sleep Timer and Nightlight: a garage doesn't sleep.
 > Say: *"set up the garage: motion, and the entry door as the door signal, not the lock."*
@@ -490,7 +490,7 @@ the equivalent shortcut if you're handing it to an AI instead.
    X" almost always has a real answer, not a shrug.
 
  ► ROOMS TALK TO EACH OTHER, QUIETLY. The ensuite cascade (Section
-   7) isn't the only place this happens: Entertaining Hold and
+   8) isn't the only place this happens: Entertaining Hold and
    Guest Hold both key off ONE shared house-wide switch, and any
    room can opt in or out independently. Flip Entertaining mode ON
    for a party and every opted-in room gets the memo instantly, no
@@ -598,11 +598,11 @@ translation:
   walking a human through Settings → Labels. Confirm the label exists
   before assuming it does — several features in this system
   (`entertaining_hold`, `guest_hold`, `autosleep_disable`,
-  `asleep_window_disable`, `autosleep_schedule`, `asleep_hold`, and the
-  per-room signal/class labels described in Section 6) are
-  existence-checked, safe no-ops if missing, not errors — so a
-  silently-absent label won't fail loudly, it'll just quietly not do
-  anything.
+  `asleep_window_disable`, `autosleep_schedule`, `asleep_hold`,
+  `wasp_enabled`, and the per-room signal/class labels described in
+  Section 6) are existence-checked, safe no-ops if missing, not
+  errors — so a silently-absent label won't fail loudly, it'll just
+  quietly not do anything.
 - **`room_control_manager` has a real declaration now** — see the
   component reference's "Deploying a New Room" step 1. It's a template
   `select` backed by the household cabinet, not a helper you create
@@ -622,3 +622,12 @@ translation:
   answer this manual's plain-language framing is trying to prevent
   humans from getting stuck with; don't reintroduce it from the other
   side.
+- **Run `mode=coverage_map` before guessing at a wiring gap.** It's the
+  single diagnostic that combines label-discovery candidates, the
+  trigger_entities gap check, dormant-feature detection, and
+  `wasp_enabled` status in one call — advisory-only, never auto-applies
+  anything. If you find a real gap through your own reasoning instead
+  (a device that should carry a label but doesn't, say), surface it as
+  a candidate for the human to confirm rather than tagging it directly
+  — the "found it" and "applied it" steps must stay separated by a
+  confirm gate, always.
