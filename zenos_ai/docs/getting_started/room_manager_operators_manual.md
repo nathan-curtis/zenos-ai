@@ -237,6 +237,16 @@ clicking instead of you.
      visually reinforcing "REFLEX matches, it doesn't invent."
      Suggested size: ~400x160px, sits under the section header. -->
 
+> **A MESSAGE FROM THE DEVELOPMENT TEAM.** We are extremely proud to
+> present: **R.E.F.L.E.X.** — **R**eactive **E**ngine **F**or
+> **L**ights, **E**nvironment & e**X**perience. Six letters. Perfect
+> balance. Our finest engineers convened many times to arrive at this
+> name, and we are confident that no household anywhere requested it.
+> This does not diminish our pride. The name was decided before the
+> acronym existed to justify it, and — after careful internal review —
+> we have elected to keep both the name and our dignity. Thank you
+> for your understanding on this matter.
+
 Everything in Sections 1–6 gets you a room that *knows* what it's doing —
 Occupied, Asleep, Hold, whatever. Knowing isn't doing. **REFLEX is the
 engine that actually reacts** — the thing that takes "the office just
