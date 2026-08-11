@@ -60,7 +60,7 @@ cleanly or lands in `hold`.
 | `cleaning` | A vacuum is actively working this room. | manual override, set by the Cleaning Dispatcher |
 | `asleep` | Someone's asleep here. Beats direct Engaged in the same room — a device staying active nearby must never override a real Asleep signal. Own direct signal always beats a child room cascading up — using the ensuite mid-sleep must never wake the parent. Auto-fire is night→wake window-gated by default (or by `autosleep_schedule` if opted in) — see §22.9. | live signal (window-gated), room_timer decaying in class `asleep` (8h default), `asleep_hold` entity (zero clock, see §22.9), or manual override via `room_control_manager` (never window-gated) |
 | `engaged` | Active, direct use — someone is *doing something* here right now (media playing, a monitored desk dock in use). Outranks mere presence, but not a direct Asleep signal in the same room. | live signal, or the shared room_timer decaying in class `engaged` |
-| `hold` | Unresolved presence or a deliberate conservative-hold policy — three independent sources, same visible state, distinguishable via `last_trigger`. See §22.9. | wasp_flag (self-latched), entertaining_hold, guest_hold |
+| `hold` | Unresolved presence or a deliberate conservative-hold policy — three independent sources, same visible state, distinguishable via `last_trigger`. See §22.9. | wasp_flag (level-based, room-gated), entertaining_hold, guest_hold |
 | `occupied` | Presence detected, no specific activity signal, or a child room is non-vacant, or a `hold`-labeled entity is active ("fridge door mode" — floors at Occupied, no clock, instant fall-through on close). | live signal, room_timer decaying in class `occupied`, child cascade, or hold |
 | `vacant` | Nothing is true. Default. | — |
 
@@ -148,6 +148,36 @@ On expiry, the room's normal asleep scene re-fires. The room's actual v3
 fire points respect `reflex_dry_run` (fixed 2026-08-10, see above) — a
 dry-run rehearsal logs what nightlight would have armed/re-fired instead of
 calling `scene.turn_on`/`timer.start` for real.
+
+### Scene firing is debounced, transitioned by default
+
+A room bouncing through several states in quick succession (a noisy `wasp_door`
+contact, `hold` flickering) would otherwise fire a full scene activation on
+every single transition — real risk of flooding a Zigbee/Z-Wave mesh with
+back-to-back whole-room commands. Stage 2's `scene.turn_on` call is
+debounced; Stage 1's emitter and the room's own state sensor are **not** —
+`sensor.<room>_state` stays instant and truthful, only the mesh-facing side
+effect slows down.
+
+This is a true debounce, not a drop-within-window throttle: on each
+`room_state_changed` event, wait out the scene's transition length (or 2
+seconds, whichever is longer — no point re-checking before the previous
+scene's own transition would have finished anyway), then re-read the room's
+**live current state** and only fire if it still matches what this
+particular event resolved. A room that kept changing during the wait simply
+lets its own later event's delayed check fire the real final scene instead
+— self-cleaning, no cabinet state or per-room helper required, and
+`mode: parallel` lets every in-flight check run concurrently without
+blocking newer events from superseding it.
+
+Every `scene.turn_on` call also passes an explicit `transition:`, default 2
+seconds. A scene can override this by carrying a label matching
+`reflex_transition_<N>` (e.g. `reflex_transition_0` for instant, no
+transition; `reflex_transition_5` for 5 seconds) — untagged scenes get the
+default. Applies uniformly to REFLEX Stage 2's resolved scene, the
+Nightlight motion-edge scene, and the Nightlight-expiry re-fire of the
+room's normal scene — every mesh-facing scene call in this system, not just
+the state-cascade path.
 
 ### Scene label taxonomy
 
@@ -295,11 +325,16 @@ For an agent orienting itself to a room-aware task, the short version:
   questions — topology, egress, emergency, whole-house overview. It is a
   **different system** from Room Manager v3/REFLEX; don't conflate the two
   when a user says "room manager."
-* REFLEX itself has no MCP tool surface — it runs autonomously. An operator
-  interacts with it via the room's `room_control_manager` select and HA
-  labels, not through a chat-callable mode. See
-  `components/room_manager_v3_reflex.md` for the practical label reference
-  and deployment steps.
+* The v3/REFLEX ENGINE (the cascade/decay logic itself) has no MCP tool
+  surface — it runs autonomously, reacting to real signals. An operator
+  interacts with the live engine via the room's `room_control_manager`
+  select and HA labels, not through a chat-callable mode. Setup,
+  diagnostics, and REFLEX scene-wiring ARE chat-callable, though, via
+  `zen_dojotools_room_manager`'s v3-adjacent modes (`label_discover`,
+  `trigger_audit`, `coverage_map`, `wasp_enable`, `roomstate_enable`,
+  `reflex_enable`, `reflex_dry_run`, `reflex_wire`). See
+  `components/room_manager_v3_reflex.md` for the practical label reference,
+  deployment steps, and the coverage/wiring tool workflows.
 
 ---
 
@@ -331,23 +366,37 @@ code path:
   a version-numbered name becomes a portability problem the next time
   this gets revised.
 
-### Wasp-hold: live wasp-in-a-box semantics, no timer
+### Wasp-hold: pure physical-space semantics, no timer, no latch
 
-A `wasp_door` opening floors the room to `occupied` immediately (via the
-same room_timer mechanism motion/occupied use) and clears any latched wasp
-flag — a door opening is itself presence-adjacent evidence. If motion fires
-while **every** `wasp_door` for the room is closed — no door transition to
-corroborate how or when someone got in — that's unresolved presence, not
-confirmed presence: the room's `wasp_flag_active` attribute latches `true`,
-and the cascade shows `hold` instead of confidently collapsing to
-`occupied`.
+`wasp_flag_active` is a level-based formula, not an edge-triggered latch —
+purely a function of *current* state, recomputed fresh on every render:
 
-The latch is a self-referencing template attribute
-(`this.attributes.get('wasp_flag_active', false)`) inside `room_state.yaml`'s
-own trigger-based template, not an `input_boolean`. It clears on exactly two
-events, never on a timeout: a fresh `wasp_door` open, or a human/agent
-forcing the room via `room_control_manager`. An unresolved room stays
-unresolved until something actually resolves it.
+```
+wasp_room_enabled AND wasp_door_ents exist AND NOT manual_override
+  AND NOT any_wasp_door_open_now
+  AND (direct_occupied OR occupied_timer_holding)
+```
+
+If motion/occupancy is currently live and every `wasp_door` for the room
+reads closed, the room is held — full stop, no exception, no memory of
+what the last edge was. The moment any `wasp_door` opens, hold clears on
+that same render (a door opening is itself presence-adjacent evidence,
+handled by the same room_timer mechanism motion/occupied use). Close it
+again while occupancy is still live and hold resumes immediately — no
+timer, no history dependency, nothing to get stuck. This replaced an
+earlier self-latching design (a self-referencing template attribute that
+remembered the last edge) precisely because it could survive past the
+render where conditions actually changed — the current formula has no
+memory to go stale.
+
+**Room-level gate — `wasp_enabled`**: a room needs this label (on its
+Area, or on any entity carrying the room's label) *in addition to* a
+tagged `wasp_door` before wasp/hold can ever fire — `wasp_door` alone is
+not sufficient. Deliberately opt-in: a room connected by an open archway
+instead of a real door has no way to distinguish "someone's inside with
+the door shut" from "there is no door to begin with," so wasp there would
+misfire on ordinary household traffic rather than staying a genuine
+resolved/unresolved signal. Read/write via `mode=wasp_enable area=<room>`.
 
 **Anti-pattern**: a lock and a door for the same physical opening must
 never both be candidates for the same signal — tag the *door*

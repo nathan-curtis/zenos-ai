@@ -15,9 +15,17 @@ it"** — a different question from `zen_dojotools_room_manager` (RoomReg,
 see [room_manager.md](room_manager.md)), which answers "what is this room,
 physically, and how does it connect to the house."
 
-There is no chat-callable MCP tool for v3/REFLEX. It runs entirely as one
-Home Assistant automation and one script, reacting to real signals in real
-time. Operators interact with it through:
+The engine itself — the cascade/decay/timer logic that decides what
+`sensor.<room>_state` reads right now — runs entirely as one Home
+Assistant automation and one script, reacting to real signals in real
+time; there's no MCP call that computes a room's state, only ones that
+read or configure it. Setup, diagnostics, and REFLEX scene-wiring ARE
+chat-callable, through `zen_dojotools_room_manager`'s v3-adjacent modes
+(`label_discover`, `trigger_audit`, `coverage_map`, `wasp_enable`,
+`roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `reflex_wire`) —
+see [Coverage &amp; Diagnostics](#coverage--diagnostics) and
+[Wiring REFLEX Scenes](#wiring-reflex-scenes) below. Operators interact
+with the live engine through:
 
 - The room's `room_control_manager` select (`Auto` / `Paused` / `Automation` / `Cleaning` / `Asleep` / `Occupied` / `Engaged` / `Hold` / `Vacant`) — cabinet-backed, fully isolated from the legacy `room_control` select that Node-RED still owns
 - HA Labels (Settings → Labels) — every opt-in feature is a label, not a config field
@@ -187,7 +195,8 @@ never requires touching either file.
 | `engaged` | media_player(s), monitored docks | Drives `engaged` on start; on stop, arms the shared timer's engaged→occupied decay |
 | `asleep` / `bed_occupancy` | Sleep-detection sensor(s) | Drives `asleep` |
 | `hold` | Any binary_sensor/cover | Floors at `occupied` while true, no clock, instant fall-through on close ("fridge door mode") |
-| `wasp_door` | A door contact sensor | Real wasp-in-a-box: opening floors to `occupied` and clears any latched wasp flag. Motion firing while every `wasp_door` for the room is closed sets `wasp_flag_active` (self-referencing template attribute, not a timer) and the cascade shows `hold`. Clears only on a fresh door-open or a manual `room_control_manager` override — never a timeout. `checking`/`checking_timer` no longer exist. |
+| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §22.9](../architecture/22_Room_Manager_v3_REFLEX.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. `checking`/`checking_timer` no longer exist. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
+| `wasp_enabled` | The room's Area, OR any entity carrying the room's label | Room-level opt-in gate — a room needs this AND at least one `wasp_door`-tagged entity before `hold` can ever fire from wasp. Deliberately opt-in: a room connected by an open archway instead of a real door (no way to distinguish "someone's inside with the door shut" from "there is no door") would misfire constantly if wasp were on by default. Read/write via `zen_dojotools_room_manager mode=wasp_enable area=<room>` — omit `wasp_room_enabled=` to read, pass `true`/`false` to write. |
 | `smoke` / `carbon_monoxide` / `moisture` / `siren` | Detector entities | Arms `emergency_latch` — human/agent ack-only clear |
 | `room_control_manager` | The room's control select | Enables `Paused`/`Automation`/`Cleaning`/manual-tier overrides. Zero shared entity/label/code path with legacy `room_control`. |
 | `room_timer` + `room_timer_class` | Timer + paired select | Enables decay-backed occupied/engaged/asleep — one shared clock for all three. `asleep` class default is 8h (was 30m). |
@@ -259,6 +268,76 @@ child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door ho
 ```
 
 `checking` no longer exists as a producible state anywhere in the system.
+
+---
+
+## Coverage &amp; Diagnostics
+
+Two `zen_dojotools_room_manager` modes audit a room's real wiring against
+what it's actually labeled to have, both `area=` optional (omit for a
+whole-home rollup) and both advisory-only — neither ever auto-applies
+anything, `confirm_action` has no effect on either:
+
+**`trigger_audit`** — per-class `tagged_wired` vs `tagged_gap`. Separates
+classes covered by a purpose-trigger platform (motion/door/lock/media/
+window/garage_door/cover — matched automatically via `target: label_id`,
+no explicit listing needed) from classes that still require the entity to
+be listed in `trigger_entities` by hand for the sensor to react to it.
+
+**`coverage_map`** — the unified room-readiness view: `label_discover`'s
+untagged-candidate scan + `trigger_audit`'s gaps + a `needs_helper` check
+(a feature's label exists but its helper doesn't — e.g. `room_timer_class`
+tagged with no paired `timer.<room>_room_timer`) + `wasp_room_enabled`
+status + a `verify_domain_mismatch` flag (an entity's `device_class`
+doesn't match what its label implies — advisory only, several real
+device_classes are intentionally repurposed, e.g. `sensor.garage_bearing`
+carrying `garage_door` for autoclose direction logic despite not being a
+`binary_sensor`). Run this first when checking whether a room is actually
+ready, rather than reasoning about it from the label list alone.
+
+---
+
+## Wiring REFLEX Scenes
+
+REFLEX turns a `room_state.yaml` transition into a scene. Two label axes,
+applied to the scene entity itself:
+
+| Label | Meaning |
+|---|---|
+| `scene_<state>` | Which tier this scene fires for — `scene_vacant`, `scene_occupied`, `scene_engaged`, `scene_asleep`, `scene_paused`, `scene_automation`, `scene_cleaning`, `scene_emergency` |
+| `<room>` | The room's own label — same one every other v3 signal is tagged with |
+| `<home_mode_daypart>` (optional) | `home_wake` / `home_morning` / `home` / `home_evening` / `night` / `night_late` — reused directly from `zen_home_mode`'s own labels, no separate taxonomy. Omit for an any-daypart fallback. |
+
+**Resolution**: `label_entities(scene_<state>)` ∩ `label_entities(room)` ∩
+`label_entities(<daypart>)`, first match wins; falls back to dropping the
+daypart filter if nothing matches with it applied.
+
+**Inheritance**: `engaged`/`cleaning`/`emergency` fall through to
+`occupied`'s resolution when they have no scene of their own — a dedicated
+scene always wins over the fallback. `vacant`/`asleep`/`paused`/`automation`
+never inherit.
+
+**Checking the tool did this labeling correctly** (rather than tagging by
+hand): `zen_dojotools_room_manager mode=reflex_wire area=<room>` — shows
+candidate scenes already matched by name/label/area_id, the full
+`wired_matrix` (every state × every daypart, same resolution REFLEX itself
+uses), and `tier_status` per state (`wired`/`inherited` = covered, `gap` =
+worth wiring, `ok_by_design` = `checking`/`paused`/`automation`, which
+legitimately have nothing to wire). Omit `area=` for a whole-home rollup.
+
+**Writing an assignment**: `reflex_assignments` takes a list of JSON
+objects, one per scene — `{entity_id, state, mode?}` (`mode` optional,
+omit for the any-daypart fallback) — plus `confirm_action=true`:
+
+```
+reflex_assignments=['{"entity_id":"scene.office_occupied_day","state":"occupied","mode":"home"}']
+confirm_action=true
+```
+
+This creates the `scene_<state>` label if it doesn't exist yet, then tags
+`[scene_<state>, room, mode?]` onto the entity — additive, never removes an
+existing label. Writes are exact — no fuzzy matching on the way in, only
+on `reflex_wire`'s own candidate-scan read side.
 
 ---
 
