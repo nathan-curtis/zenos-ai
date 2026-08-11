@@ -125,16 +125,29 @@ that event and resolves a scene: `label_entities(scene_<state>)` intersect
 `label_entities(<room>)` intersect `label_entities(<home_mode_daypart>)`,
 first match wins, falling back to room+state only (drop the mode filter) if
 nothing matches with mode applied. No match at all is a safe no-op, never a
-guess. Gated by `reflex_enable` (or `reflex_dry_run`, which logs what
-*would* have fired instead of firing it — useful for verifying event payloads
-before ever touching a light).
+guess. Gated by `reflex_enable` — `reflex_dry_run` is a modifier of that
+gate, not an independent trigger: `reflex_enable` off means nothing happens
+regardless of `reflex_dry_run`; `reflex_enable` on with `reflex_dry_run` on
+logs what *would* have fired instead of firing it (useful for verifying
+event payloads before ever touching a light); `reflex_enable` on with
+`reflex_dry_run` off fires for real. Fixed 2026-08-10 — the gate previously
+read `(reflex_enable or reflex_dry_run)` with `reflex_enable` alone deciding
+real-vs-dry-run, which meant `reflex_dry_run` alone (enable off) produced
+dry-run logs for a system that was never going to fire anything, and
+`reflex_enable` on always fired for real even with `reflex_dry_run` also on
+— backwards from the intended rehearsal semantics. Same fix applied to the
+two nightlight fire sites below, which fired `scene.turn_on` unconditionally
+on `reflex_enable` with no dry-run check at all.
 
 **Nightlight** is a separate, opt-in construct riding the same `motion`
 purpose-trigger: while a room's v3 state is `asleep`, a motion *edge*
 (not the level — `occupied` can sit true all night; motion only pulses on
 real action) fires a `scene_nightlight` scene and starts a `nightlight_timer`.
 On expiry, the room's normal asleep scene re-fires. The room's actual v3
-`state` never changes during this — nightlight is scene-layer only.
+`state` never changes during this — nightlight is scene-layer only. Both
+fire points respect `reflex_dry_run` (fixed 2026-08-10, see above) — a
+dry-run rehearsal logs what nightlight would have armed/re-fired instead of
+calling `scene.turn_on`/`timer.start` for real.
 
 ### Scene label taxonomy
 

@@ -342,12 +342,15 @@ next step is building one in Home Assistant, not asking again.
 <img src="images/reflex_rehearsal_showtime.png" alt="REFLEX testing modes: Rehearsal (dry run, logs only, safe) vs Showtime (live, actions run, active)" width="550">
 
 Flip **dry run** on (ask your AI — one more house-wide switch, same as
-REFLEX itself) and REFLEX resolves everything exactly like it would
-live, for every room — same scene picked, same logic — but logs what it
-WOULD do instead of actually firing it. Once you've checked the log and
-you're happy, flip dry run off and REFLEX on, and it does the real
-thing. If REFLEX is ever switched on for real while dry run is also on,
-the real fire wins — dry run only matters while REFLEX itself is off.
+REFLEX itself), then flip **REFLEX** on too — dry run only does
+anything while REFLEX itself is on. With both on, REFLEX resolves
+everything exactly like it would for real, for every room — same scene
+picked, same logic — but logs what it WOULD do instead of actually
+firing it. Once you've checked the log and you're happy, flip dry run
+off (leave REFLEX on), and it does the real thing from then on.
+**REFLEX off, dry run on, by itself, does nothing at all** — dry run
+is a rehearsal mode for REFLEX, not a separate always-on simulator; if
+the engine itself isn't running, there's nothing to rehearse.
 
 > **REFLEX vs. state-tracking, in one sentence:** state-tracking always
 > runs and always tells the truth about the room, REFLEX only acts on

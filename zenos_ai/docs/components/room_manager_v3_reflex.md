@@ -290,10 +290,14 @@ room's label by hand once, and it will be maintained (shunted, not
 re-applied) from then on.
 
 **"How do I check if REFLEX is actually acting on state changes, without risking a wrong scene firing"**
-Set `reflex_dry_run` on instead of `reflex_enable` (via the labeled switch
-entities, or the household cabinet's `reflex_config` drawer). Every would-fire
-decision gets logged as a `reflex_dry_run` event instead of actually calling
-`scene.turn_on` — verify the payloads, then flip to `reflex_enable`.
+Set both `reflex_enable` AND `reflex_dry_run` on (via the labeled switch
+entities, or the household cabinet's `reflex_config` drawer) —
+`reflex_dry_run` is a modifier of `reflex_enable`, not a standalone
+alternative to it; with `reflex_enable` off, nothing happens regardless of
+`reflex_dry_run`. With both on, every would-fire decision gets logged as a
+`reflex_dry_run` event instead of actually calling `scene.turn_on`/
+`timer.start` — verify the payloads, then flip `reflex_dry_run` off (leave
+`reflex_enable` on) to go live.
 
 ---
 
