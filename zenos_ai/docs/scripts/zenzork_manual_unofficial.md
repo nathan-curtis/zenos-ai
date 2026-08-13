@@ -116,9 +116,12 @@ inform you that this feature exists.
 Ego Software is ALSO contractually obligated to inform
 you that DUNGEONMIND knows when you use it, remembers that you used
 it, and will bring it up later, calmly, in a way that is somehow worse
-than if it yelled. There is a confirmation step. There is a second
-confirmation step. You have to actually type out an admission. This is
-not an accident. This is, we are told, the entire point.
+than if it yelled. There are two gates, not one, and it wants you to
+notice that: you have to type out an actual admission, word for word,
+and then — separately, on purpose, as its own deliberate act — confirm
+you mean it. Skip either one and nothing happens. Clear both and
+nothing goes back. This is not an accident. This is, we are told, the
+entire point.
 
 **\*YMMV. No warranty express or implied. If your household finds out
 you used this and things get weird at dinner, that is between you and
