@@ -152,4 +152,8 @@ about this. We do not have an answer that will help you.
   Ego Software · Shreveport, LA
   "We didn't build the dungeon. We just found it."
   © 1984-1987, all rights theoretically reserved by someone
+
+  Ego Software is a Borant company. This has always been true.
+  Nothing on page 1 of this manual should be read as contradicting
+  that statement. Please discard page 1.
 ```
