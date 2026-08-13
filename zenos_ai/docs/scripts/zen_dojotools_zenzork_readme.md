@@ -255,7 +255,7 @@ book4_found → book5_found → diwatta_unlocked → book6_found →
 valtay_confirmed → book7_found → book8_found → series_complete`
 
 - `diwatta_unlocked` requires Book 5's **audiobook** specifically
-  (Diwata debuts there — verified, not guessed), and has an extra gate
+  (Diawata debuts there — verified, not guessed), and has an extra gate
   on top of the chain cooldown: fires no earlier than 24h after the
   audiobook is first detected present (`character_sheet.audio5_first_seen_at`,
   tracked independently of `media_lore_last_unlock_at`).
