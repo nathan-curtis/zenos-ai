@@ -64,6 +64,19 @@ child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door ho
 - **Retired `checking` state fully purged** from every remaining live reference (label registries, diagnostic state lists, help text) — it had already been dropped from the core cascade but was still lingering as a "valid" entry in half a dozen other places.
 - **Tool self-description stabilization**: `mode=help` was missing ~10 real modes entirely; REFLEX's explanation lived in one unstructured prose blob while every other mode got a clean one-liner; `reflex_assignments` converted from pipe-delimited strings to structured JSON, matching every other multi-field write in the tool. A follow-up UAT pass caught a third, independent bug — `tool_manifest` carries its own separate mode-description dict from `help`'s, already drifted, missing `reflex_dry_run` entirely.
 
+## ZenZork "Chapter 1" — Loot, Quests, Book-Lore, and a Chapter Release Model
+
+ZenZork ships its first real content chapter, SoftDisk-style — one bundled release, not staggered feature drips. Chapter 2 is a future, unscoped chapter, not a patch to this one.
+
+- **Real weighted loot table** — 13 items across 5 rarity tiers, replacing the old flat 10-name uniform pick. Ships with an obfuscated companion doc and a REDACTED answer key (full reveal at release +3), a pattern reused across this whole chapter to keep spoilers out of the readable repo.
+- **Diwatta / Valtay / Mongo book-lore sequence** — corrected against the actual source material, not just built out: Diwata (the character) debuts in Book 5 audio ("The Butcher's Masquerade"), and the real Borant/Valtay corporate-takeover reveal is Book 6 ("The Eye of the Bedlam Bride"), not Book 5 as first assumed. Landed as one data-driven 12-entry ordered sequence with a shared 24h cooldown, verified live against a real 8-book audiobook library.
+- **Quest markers: 3 → 15**, 12 of them table-driven through 10 reusable type handlers. `missing_clock` surfaces a real household setup gap (a room supporting the asleep tier with no `tv_sleep_timer` helper) as a quest — the win condition is building the real HA helper, since no agent can do it for you.
+- **Carl's Left Sock** — a real registered landmark via Room Manager, not flavor text, with a one-time achievement on the in-book gag.
+- **Game Genie cheat codes** — two independent gates (an exact confession string, plus a separate confirm step), 24 codes, permanent mark written before the code itself is even checked. All 6 scenarios verified live end-to-end.
+- **`mode=chapters`** — status view plus a catch-up path for new household members to claim released-but-unearned content without waiting out cooldowns. Publishing is per release chapter (bundled, not per-unlock — corrected mid-review from an initial wrong-grain layout), with engine-version gating: content can be "released" while still gated on an engine upgrade actually landing before it's "playable."
+- **Real bug fixed**: north-calibration (`mode=setup answer=calibrate=X`) wrote to a FileCabinet child drawer nothing ever read, including the global bearing variable every direction/portal calculation uses — calibration had silently never worked since it shipped.
+- **Four-layer docs**, deliberately separated by audience: in-script help/description, a tech reference brought current, a new devkit doc for extending the engine without touching core dispatch logic, and a new in-universe parody manual that's deliberately vague about real mechanics.
+
 ## Steel Magnolia Phase 7 — Manifest Audit
 
 Manifest gains audit/inference fields and missing-label detection, closing the gap between what a household's tools claim to expose and what's actually wired up.

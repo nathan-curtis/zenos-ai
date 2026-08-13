@@ -241,7 +241,7 @@ Includes:
 * `zen_dojotools_scheduler_readme.md` — Scheduler: trigger IDs, Dojo-driven dispatch, component subscription, force events, hardware trigger pattern
 * `zen_dojotools_summarizers_readme.md` — Ninja Summarizer + SuperSummary: kill switches, active component selection, monk pipeline
 * `zen_dojotools_library_readme.md` — Library v6.10.0: Lens Bus `stack=` routing, generic verbs, unified catalog (`section=catalog item_type=*`) with books/games/all works types, compounding capability tiers, hash_md5, slugify
-* `zen_dojotools_zenzork_readme.md` — ZenZork v1.6.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, quest system, setup commissioning
+* `zen_dojotools_zenzork_readme.md` — ZenZork v1.7.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, "Chapter 1" content (weighted loot table, 15 quest markers, Diwatta/Valtay/Mongo book-lore sequence, Carl's Left Sock, Game Genie cheat codes, per-release-chapter publishing with engine-version gating); see also [devkit](scripts/zenzork_devkit.md) and [unofficial manual](scripts/zenzork_manual_unofficial.md)
 * `zen_home_mode_readme.md` — Home Mode: 8-state machine, schedule anchors, quiet/work hours, scheduler trigger IDs
 * `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`
