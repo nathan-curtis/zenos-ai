@@ -1,3 +1,13 @@
+<!-- ART: zenzork_box_cover.png — Sierra/Infocom-style box cover.
+     DUNGEONMIND rendered as a glowing terminal deity (IBM AT 5170
+     silhouette, CRT-green glow, faint circuit/rune fusion), "EGO
+     SOFTWARE" logo top, "DUNGEONMIND" wordmark large and dramatic,
+     tagline treatment like an 80s adventure-game box. Suggested size:
+     ~500x650px (portrait, box-cover ratio), this is the hero image —
+     go big on mood, keep it painterly/airbrushed like the era, not
+     pixel-art (that's the ZenOS house style used elsewhere; this
+     manual is a period pastiche and should look period). -->
+
 # DUNGEONMIND⁽ᵗᵐ⁾ HOME DUNGEON SYSTEM
 ## OWNER'S MANUAL & QUICK REFERENCE CARD
 
@@ -14,6 +24,22 @@ peripherals may vary.
 **PRINTING:** First Edition. If your household received this manual
 without a matching cartridge, you may have acquired this product
 through channels this manual is not equipped to discuss.
+
+```
+   ┌─────────────────────────────────────────────────────────┐
+   │  CONTENT AUTHORIZATION NOTICE                            │
+   │                                                           │
+   │  This unit reads its Content Authorization Level          │
+   │  directly from your household's own settings — Ego        │
+   │  Software does not set this for you, does not know what   │
+   │  it currently is, and will not be adjusting it on your     │
+   │  behalf no matter how nicely you ask it in-game. If        │
+   │  DUNGEONMIND's narration seems tamer or spicier than       │
+   │  advertised, that's a household setting working exactly    │
+   │  as designed, not a defect. Take it up with whoever set    │
+   │  the household's rating, not with us.                      │
+   └─────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -32,6 +58,31 @@ regarding this product's fitness for any purpose, including but not
 limited to: entertainment, home security, emotional support, or
 continental defense. Your household. Your risk. YMMV. If it breaks,
 that is between you and it.
+
+---
+
+### PROOF OF OWNERSHIP — REQUIRED BEFORE FIRST USE
+
+To confirm you are a legitimate owner of this manual and not someone
+who found a photocopy at a garage sale, please locate the following
+before continuing:
+
+```
+   Page ____, Paragraph ____, Word ____: "____________________"
+```
+
+If you are unable to produce this information, DUNGEONMIND will still
+run. We just like watching you check.
+
+<!-- ART: zenzork_feelie_id_card.png — the "feelie": a laminated-
+     looking household ID/membership card, period Sierra/Infocom
+     insert style (think early internet driver's-license parody
+     cards). "CROSS LAKE SOFTWARE — AUTHORIZED CRAWLER" header, blank
+     fields for NAME / HOUSEHOLD / RANK, a fake hologram-foil corner
+     sticker, small print disclaiming legal validity. Suggested size:
+     ~500x300px (landscape, credit-card-ish ratio but bigger), photographed/
+     scanned-prop look rather than clean vector — should look like a
+     physical object that shipped in the box. -->
 
 ---
 
@@ -133,6 +184,29 @@ cartridge.**
 - One (1) household, currently occupied
 - Rooms, at least a few
 - Willingness to be narrated at
+- 640K of goodwill (should be enough for anybody)
+- No coprocessor required. DUNGEONMIND does not believe in
+  outsourcing its opinions.
+
+### NEED A HINT?
+
+Cross Lake Software once operated a Hint Line for products of this
+type. It is not operating one for this product. Ask your AI instead.
+It is faster, it is free, and — unlike the old Hint Line — it will not
+put you on hold to a recording of a synthesizer for eleven minutes
+before a bored teenager reads you the answer off an index card. We
+checked. We miss it anyway.
+
+<!-- ART: zenzork_foldout_map.png — the Infocom fold-out-map homage.
+     A hand-drawn-style dungeon cross-section that's secretly a house
+     floorplan — rooms rendered as dungeon chambers, corridors as
+     passages, compass rose in a corner, "HERE BE THE LAUNDRY ROOM"
+     style dungeon-flavor labels over mundane rooms. Deliberately
+     generic/no-real-layout (this is flavor art for the doc, not a
+     wiring diagram) — a few placeholder rooms is enough, the joke is
+     the treatment, not real cartography. Suggested size: ~700x500px
+     landscape, aged-parchment texture, fold-crease lines like it's
+     been unfolded from an envelope. -->
 
 ### TROUBLESHOOTING
 
