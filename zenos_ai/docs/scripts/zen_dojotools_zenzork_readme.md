@@ -238,9 +238,7 @@ the quest table): [`zenzork_loot_table.md`](zenzork_loot_table.md) /
 `mode=chapters` — the Diwatta/Valtay/Mongo lore arc, generalized into a
 12-entry ordered sequence keyed to the household's real Dungeon
 Crawler Carl audiobook/physical-book library
-(`.zenzork_quests/book_lore.json`). Doubles as spoiler-prevention tech
-— see [`zenzork_lore_dungeonmind.md`](zenzork_lore_dungeonmind.md) for
-the full design rationale and real-book research behind each keystone.
+(`.zenzork_quests/book_lore.json`). Doubles as spoiler-prevention tech.
 
 **Sequence** (each requires the previous one already earned, plus a
 shared 24h cooldown — max one reveal per day):
