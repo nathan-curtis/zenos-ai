@@ -85,9 +85,11 @@ big `{%- if _t == 'reach_room' -%} ... {%- elif _t == '...' -%}`
 chain, inside the go/look block's `_win_now` computation) and add one
 more `{%- elif _t == 'my_new_type' -%}` branch. The accept/win text
 stays entirely in the JSON — you're only ever adding the *condition*
-logic in the script, never the flavor text. Test on T first, same
-discipline as everything else in this repo: config-check, reload,
-live-test with seeded achievement data, then port to H.
+logic in the script, never the flavor text. If you have a staging
+install separate from your live one, test there first: config-check,
+reload, live-test with seeded achievement data, then promote to
+production. Single-install setups can test directly, just be
+deliberate about it — see Testing Discipline below either way.
 
 ---
 
@@ -173,9 +175,13 @@ tree (`zenos_ai/docs/scripts/`), never to `packages/`.
 
 ---
 
-## Testing discipline (same as everywhere else in this repo)
+## Testing discipline
 
-1. Edit on T first — never H directly.
+1. **If you run a separate staging install, edit there first — never
+   directly on the install your household actually uses.** Same
+   discipline as the rest of this framework: a quest/genie/chapter
+   edit is still a real script change, and it's much cheaper to break
+   a throwaway install than a live one.
 2. `ha_config_check`, then `ha_reload_scripts`. Reloads land async;
    if a change doesn't seem to have taken effect, wait longer before
    assuming it's a bug — this has produced real false alarms.
@@ -184,10 +190,14 @@ tree (`zenos_ai/docs/scripts/`), never to `packages/`.
    state that's hard to reach organically (a specific point mid-chain,
    a cooldown edge case).
 4. Reset any test achievements/game-state you seeded before moving on
-   — T is disposable but should still be left in a sane default state.
-5. Copy the exact same file to H, config-check, reload there too.
-6. Commit on T first, then H, with H's commit referencing T's hash
-   (`Mirrors T commit <hash>`).
+   — even a disposable staging install should be left in a sane
+   default state, and a single-install setup absolutely should.
+5. If you tested on staging, copy the exact same file to your
+   production install, config-check, reload there too — don't
+   re-derive the change by hand a second time.
+6. Commit staging first, then production, with the production commit
+   referencing the staging commit's hash if your workflow tracks both
+   separately.
 7. New MCP tool params (new `mode=` values, new fields) won't be
    callable through the MCP interface until its schema cache catches
    up — this is independent of the HA script reload and can lag by a
