@@ -235,10 +235,17 @@ the quest table): [`zenzork_loot_table.md`](zenzork_loot_table.md) /
 
 ## Book-Lore Chapters
 
-`mode=chapters` — the Diwatta/Valtay/Mongo lore arc, generalized into a
+`mode=chapters` — the Diawata/Valtay/Mongo lore arc, generalized into a
 12-entry ordered sequence keyed to the household's real Dungeon
 Crawler Carl audiobook/physical-book library
 (`.zenzork_quests/book_lore.json`). Doubles as spoiler-prevention tech.
+Unlike the loot/quest sidecars, this one isn't plaintext at rest either
+— `title`/`achievement_name`/`flavor` are base64-encoded in place (the
+engine decodes once at load; see `zenzork_devkit.md`'s Publishing
+section for why). Human-facing companion doc (md5-obfuscated spoiler
+curtain, same recipe as the others):
+[`zenzork_book_lore_table.md`](zenzork_book_lore_table.md) /
+[`zenzork_book_lore_answer_key_REDACTED.md`](zenzork_book_lore_answer_key_REDACTED.md).
 
 **Sequence** (each requires the previous one already earned, plus a
 shared 24h cooldown — max one reveal per day):
@@ -365,7 +372,7 @@ Two independent fallback paths, both silently returning template narration rathe
 
 | Version | Change |
 |---------|--------|
-| v1.7.0 ("Chapter 1", cont.) | Data-driven quest table (12 of 15 markers, `.zenzork_quests/quest_defs.json`, 10 reusable types). `mode=chapters` — 12-entry book-lore sequence (`book_lore.json`) replacing the old ad-hoc Diwatta/Valtay/Mongo mechanism, corrected against real book research (Diwatta=book5/audio-only, Valtay=book6 not book5), release-chapter publishing system (`chapter_releases.json`, one JSON bundle per SoftDisk-style content chapter — corrected mid-build from an initial one-file-per-entry design that was the wrong grain, see below) with new-player catch-up and an engine-version gate (`min_engine_version`/`engine_ready`/`playable`, since a future chapter can ship unlock types this build doesn't have a dispatcher for yet). `mode=genie` — Game Genie cheat codes (`genie_codes.json`), dual-gate confession requirement, god-tattoo meta callback. Real loot table (`.zenzork_loot/loot_table.json`, 13 items/5 rarity tiers) replacing placeholder treasure names. Carl's Left Sock (real registered landmarks + take-mode special case). Fixed north-calibration write/read drawer mismatch (`_cal` was always 0, silently, since the feature shipped). |
+| v1.7.0 ("Chapter 1", cont.) | Data-driven quest table (12 of 15 markers, `.zenzork_quests/quest_defs.json`, 10 reusable types). `mode=chapters` — 12-entry book-lore sequence (`book_lore.json`) replacing the old ad-hoc Diawata/Valtay/Mongo mechanism, corrected against real book research (Diawata=book5/audio-only, Valtay=book6 not book5), release-chapter publishing system (`chapter_releases.json`, one JSON bundle per SoftDisk-style content chapter — corrected mid-build from an initial one-file-per-entry design that was the wrong grain, see below) with new-player catch-up and an engine-version gate (`min_engine_version`/`engine_ready`/`playable`, since a future chapter can ship unlock types this build doesn't have a dispatcher for yet). `mode=genie` — Game Genie cheat codes (`genie_codes.json`), dual-gate confession requirement, god-tattoo meta callback. Real loot table (`.zenzork_loot/loot_table.json`, 13 items/5 rarity tiers) replacing placeholder treasure names. Carl's Left Sock (real registered landmarks + take-mode special case). Fixed north-calibration write/read drawer mismatch (`_cal` was always 0, silently, since the feature shipped). |
 | v1.7.0 (original) | `llm_narration` toggle — live LLM-generated narration via `ai_task.generate_data` with per-narrator persona prompts, falling back to template narration if the pipe is gated off or the response is too short. Domain-linking block on `help` mode (`domain: entertainment`). Cabinet reads refactored to `CABS.cabinet_drawer_value_mounted`. |
 | v1.6.0 | DUNGEONMIND narrator ("Primal AI, IBM AT 5170, binding active since 1984"). Character sheet in AI user cabinet `character_sheet` drawer (CabCeption sub-drawer `character_sheet/inventory` for carried items). Item commands: `take/get`, `drop`, `inventory/i`, `put`, `push`, `pull`. Interaction commands: `open/unlock`, `close/lock/shut`, `use`. Navigation additions: `face/turn`, `again/g` (`_last_cmd` tracking). Landmark survey wizard (FC-backed state machine). `game_mode`: `free_roam/treasure_hunt/timed_treasure_hunt`. `harassment_freq` and `difficulty` session fields. Post-game RM quality report on `stop`. |
 | v1.5.0 | DUNGEONMIND persona introduced. Quest mode (`explore_all`, `discover_all_landmarks`, `reach:<area_id>`). `narrator=` field. |

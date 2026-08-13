@@ -22,10 +22,11 @@
 -->
 
 Weighted like a Minecraft chest loot table — rarity tier determines the
-pool, weight determines the odds within it. Roll `1-100`, walk down the
-cumulative weight per tier, land on an item, reveal it (i.e., actually go
-look it up) only after the roll — don't pre-read the answer key, that's
-the whole point of the obfuscation.
+pool, weight determines the odds within it. Roll across the table's full
+weight total (215, the sum of every item's `weight` — not a fixed 1-100
+scale), walk down the cumulative weight, land on an item, reveal it
+(i.e., actually go look it up) only after the roll — don't pre-read the
+answer key, that's the whole point of the obfuscation.
 
 | Rarity | Weight | Item hash (md5) |
 |---|---|---|

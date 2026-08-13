@@ -1,12 +1,4 @@
-<!-- ART: zenzork_box_cover.png — Sierra/Infocom-style box cover.
-     DUNGEONMIND rendered as a glowing terminal deity (IBM AT 5170
-     silhouette, CRT-green glow, faint circuit/rune fusion), "EGO
-     SOFTWARE" logo top, "DUNGEONMIND" wordmark large and dramatic,
-     tagline treatment like an 80s adventure-game box. Suggested size:
-     ~500x650px (portrait, box-cover ratio), this is the hero image —
-     go big on mood, keep it painterly/airbrushed like the era, not
-     pixel-art (that's the ZenOS house style used elsewhere; this
-     manual is a period pastiche and should look period). -->
+<img src="images/zenzork_box_cover.png" alt="DUNGEONMIND Home Dungeon System — Sierra/Infocom-style box cover, EGO Software" width="480">
 
 # DUNGEONMIND⁽ᵗᵐ⁾ HOME DUNGEON SYSTEM
 ## OWNER'S MANUAL & QUICK REFERENCE CARD
@@ -74,15 +66,7 @@ before continuing:
 If you are unable to produce this information, DUNGEONMIND will still
 run. We just like watching you check.
 
-<!-- ART: zenzork_feelie_id_card.png — the "feelie": a laminated-
-     looking household ID/membership card, period Sierra/Infocom
-     insert style (think early internet driver's-license parody
-     cards). "CROSS LAKE SOFTWARE — AUTHORIZED CRAWLER" header, blank
-     fields for NAME / HOUSEHOLD / RANK, a fake hologram-foil corner
-     sticker, small print disclaiming legal validity. Suggested size:
-     ~500x300px (landscape, credit-card-ish ratio but bigger), photographed/
-     scanned-prop look rather than clean vector — should look like a
-     physical object that shipped in the box. -->
+<img src="images/zenzork_feelie_id_card.png" alt="Cross Lake Software Authorized Crawler ID card — the feelie insert" width="500">
 
 ---
 
@@ -197,16 +181,7 @@ put you on hold to a recording of a synthesizer for eleven minutes
 before a bored teenager reads you the answer off an index card. We
 checked. We miss it anyway.
 
-<!-- ART: zenzork_foldout_map.png — the Infocom fold-out-map homage.
-     A hand-drawn-style dungeon cross-section that's secretly a house
-     floorplan — rooms rendered as dungeon chambers, corridors as
-     passages, compass rose in a corner, "HERE BE THE LAUNDRY ROOM"
-     style dungeon-flavor labels over mundane rooms. Deliberately
-     generic/no-real-layout (this is flavor art for the doc, not a
-     wiring diagram) — a few placeholder rooms is enough, the joke is
-     the treatment, not real cartography. Suggested size: ~700x500px
-     landscape, aged-parchment texture, fold-crease lines like it's
-     been unfolded from an envelope. -->
+<img src="images/zenzork_foldout_map.png" alt="Dungeonmind Household Survey — Infocom-style fold-out dungeon map of the house" width="700">
 
 ### TROUBLESHOOTING
 

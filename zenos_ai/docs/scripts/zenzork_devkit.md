@@ -20,7 +20,7 @@ check is a script edit, but a small, contained one.
 | File | Powers | Dispatched by |
 |------|--------|----------------|
 | `quest_defs.json` | `mode=quest` (12 of 15 markers) | win-check block in the `go`/`look` sequence |
-| `book_lore.json` | `mode=chapters`, the Diwatta/Valtay/Mongo unlock chain | same win-check block, ordered-sequence variant |
+| `book_lore.json` | `mode=chapters`, the Diawata/Valtay/Mongo unlock chain | same win-check block, ordered-sequence variant |
 | `genie_codes.json` | `mode=genie` | the genie mode block directly |
 
 All three are loaded once, globally, near the top of the script
@@ -85,11 +85,9 @@ big `{%- if _t == 'reach_room' -%} ... {%- elif _t == '...' -%}`
 chain, inside the go/look block's `_win_now` computation) and add one
 more `{%- elif _t == 'my_new_type' -%}` branch. The accept/win text
 stays entirely in the JSON — you're only ever adding the *condition*
-logic in the script, never the flavor text. If you have a staging
-install separate from your live one, test there first: config-check,
-reload, live-test with seeded achievement data, then promote to
-production. Single-install setups can test directly, just be
-deliberate about it — see Testing Discipline below either way.
+logic in the script, never the flavor text. Test on T first, same
+discipline as everything else in this repo: config-check, reload,
+live-test with seeded achievement data, then port to H.
 
 ---
 
@@ -164,24 +162,59 @@ them short, keep them thematic if you want, but don't overthink the
 
 ## Publishing content (the obfuscation/release convention)
 
+There are **two** obfuscation patterns in this repo, for two different
+kinds of content. Don't reach for the wrong one — mixing them up is
+exactly the mistake `book_lore.json` briefly shipped with before this
+section was written.
+
+### Pattern 1 — irreversible docs curtain (loot table, quest table)
+
 Anything that would spoil the discovery experience if browsed in the
-repo gets the same treatment: an md5-hashed public doc (`Name::Flavor`
-or `Title::Summary`, lowercased, trimmed) with a REDACTED answer-key
-companion that reveals content on a schedule (see the loot table and
-quest table docs for the exact pattern). The engine's own sidecar JSON
-files are never obfuscated — they have to stay real, the game reads
-them every render. Obfuscation only applies to the human-facing docs
-tree (`zenos_ai/docs/scripts/`), never to `packages/`.
+repo, where the engine's own copy can just stay plaintext forever (the
+content doesn't carry ongoing narrative weight — a loot roll or a quest
+win-blurb reads fine cold), gets: an md5-hashed public doc
+(`Name::Flavor` or `Title::Summary`, lowercased, trimmed) with a
+REDACTED answer-key companion that reveals content on a schedule (see
+`zenzork_loot_table.md`/`zenzork_quest_table.md` + their answer-key
+companions for the exact pattern). The engine's own sidecar JSON stays
+fully plaintext in `packages/` — obfuscation only touches the
+human-facing docs tree (`zenos_ai/docs/scripts/`).
+
+### Pattern 2 — reversible sidecar obfuscation (book-lore only, so far)
+
+`book_lore.json` is different: DUNGEONMIND has to narrate the real
+achievement name and flavor text out of it every time a player earns
+an entry, forever — there's no point where the engine's copy can be a
+one-way hash. But Nathan wants it not casually plaintext-readable by
+someone browsing the repo either. So it gets BOTH layers:
+
+- **In `packages/`**: `title`/`achievement_name`/`flavor` are
+  base64-encoded per entry in `book_lore.json` itself — real content
+  (fully reversible, not a hash), just not sitting there in plaintext.
+  `id`/`book`/`format` stay plain — they're mechanical, needed to
+  reason about the gating logic, not spoilers on their own. The engine
+  decodes ALL THREE fields exactly once, right after the `!include`,
+  building a plain-string `_book_seq` that every downstream reader
+  (unlock dispatcher, `mode=chapters`, `mode=genie`) consumes
+  unchanged — decode at load, not at each call site, or you'll end up
+  threading `| base64_decode` through a dozen places and someone will
+  eventually miss one.
+- **In `docs/scripts/`**: same irreversible md5 curtain as Pattern 1
+  anyway (`zenzork_book_lore_table.md` +
+  `zenzork_book_lore_answer_key_REDACTED.md`) — the docs tree doesn't
+  care that the engine's copy is also obfuscated, it curtains the same
+  way regardless.
+
+If you're adding a new sidecar and it's unclear which pattern applies:
+does the engine need the real value on every future render (ongoing
+narration), or does it only need it once at the moment of the event
+(a roll, a win)? Ongoing narration → Pattern 2. One-shot → Pattern 1.
 
 ---
 
-## Testing discipline
+## Testing discipline (same as everywhere else in this repo)
 
-1. **If you run a separate staging install, edit there first — never
-   directly on the install your household actually uses.** Same
-   discipline as the rest of this framework: a quest/genie/chapter
-   edit is still a real script change, and it's much cheaper to break
-   a throwaway install than a live one.
+1. Edit on T first — never H directly.
 2. `ha_config_check`, then `ha_reload_scripts`. Reloads land async;
    if a change doesn't seem to have taken effect, wait longer before
    assuming it's a bug — this has produced real false alarms.
@@ -190,14 +223,10 @@ tree (`zenos_ai/docs/scripts/`), never to `packages/`.
    state that's hard to reach organically (a specific point mid-chain,
    a cooldown edge case).
 4. Reset any test achievements/game-state you seeded before moving on
-   — even a disposable staging install should be left in a sane
-   default state, and a single-install setup absolutely should.
-5. If you tested on staging, copy the exact same file to your
-   production install, config-check, reload there too — don't
-   re-derive the change by hand a second time.
-6. Commit staging first, then production, with the production commit
-   referencing the staging commit's hash if your workflow tracks both
-   separately.
+   — T is disposable but should still be left in a sane default state.
+5. Copy the exact same file to H, config-check, reload there too.
+6. Commit on T first, then H, with H's commit referencing T's hash
+   (`Mirrors T commit <hash>`).
 7. New MCP tool params (new `mode=` values, new fields) won't be
    callable through the MCP interface until its schema cache catches
    up — this is independent of the HA script reload and can lag by a
