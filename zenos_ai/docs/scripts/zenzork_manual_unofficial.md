@@ -113,8 +113,8 @@ will let you decide which. (It's the first one. Mostly.)
 Here is what we will confirm and nothing more: **DUNGEONMIND notices
 things about your actual household**, and some of those things unlock
 new material — story, achievements, reactions you have not seen
-before. It is tied to what you genuinely have in your house, not to
-anything you do inside the game itself.
+before. Some of it is tied to what you genuinely have in your house.
+Some of it is tied to things you actually do while playing.
 
 We are not going to tell you what it's looking for. We are not going
 to tell you how many of these there are, though we will confirm the
