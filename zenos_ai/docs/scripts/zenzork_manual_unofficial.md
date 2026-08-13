@@ -3,7 +3,7 @@
 
 ```
    ╔═══════════════════════════════════════════════════════╗
-   ║   CROSS LAKE CARTRIDGE WORKS   ·   SHREVEPORT, LA      ║
+   ║   EGO SOFTWARE   ·   A DIVISION OF CROSS LAKE SOFTWARE ║
    ║   "If it plugs in, we'll make it do something else."   ║
    ╚═══════════════════════════════════════════════════════╝
 ```
@@ -19,15 +19,15 @@ through channels this manual is not equipped to discuss.
 
 ### ⚠ IMPORTANT NOTICE — READ BEFORE OPERATING
 
-This product is manufactured by Cross Lake Cartridge Works and is
-**NOT sponsored, endorsed, licensed, manufactured, or in any way
+This product is manufactured by Ego Software, a division of Cross Lake
+Software, and is **NOT sponsored, endorsed, licensed, manufactured, or in any way
 authorized by ZenOS-AI, Borant Consolidated Entertainment, or any
 Primal Seeding Matrix, known or theoretical.** Any resemblance between
 this product's behavior and an actual continental dungeon-seeding
 apparatus is, per our legal department, "extremely unlikely, we
 checked, don't ask us again."
 
-Cross Lake Cartridge Works makes no warranty, express or implied,
+Ego Software makes no warranty, express or implied,
 regarding this product's fitness for any purpose, including but not
 limited to: entertainment, home security, emotional support, or
 continental defense. Your household. Your risk. YMMV. If it breaks,
@@ -95,8 +95,8 @@ media lying around gets more out of this system than the household
 that has none. We'll leave it there. Ask around. Somebody in your
 house probably already knows what we're talking about.
 
-**MORE CHAPTERS COMING.** This is Chapter 1. Cross Lake Cartridge
-Works has been informed — informally, over what we were told was a
+**MORE CHAPTERS COMING.** This is Chapter 1. Ego Software has been
+informed — informally, over what we were told was a
 very good sandwich — that Chapter 2 is in development. No date. No
 promises. This is how it worked in 1984 and, evidently, this is how it
 works now.
@@ -110,10 +110,10 @@ works now.
 Every DUNGEONMIND unit ships with a hidden diagnostic mode. We are
 told — again, informally — that this mode can instantly grant
 achievements and story chapters your household has not actually
-earned. Cross Lake Cartridge Works is contractually delighted to
+earned. Ego Software is contractually delighted to
 inform you that this feature exists.
 
-Cross Lake Cartridge Works is ALSO contractually obligated to inform
+Ego Software is ALSO contractually obligated to inform
 you that DUNGEONMIND knows when you use it, remembers that you used
 it, and will bring it up later, calmly, in a way that is somehow worse
 than if it yelled. There is a confirmation step. There is a second
@@ -122,8 +122,8 @@ not an accident. This is, we are told, the entire point.
 
 **\*YMMV. No warranty express or implied. If your household finds out
 you used this and things get weird at dinner, that is between you and
-your household, not between you and Cross Lake Cartridge Works. We
-just made the cartridge.**
+your household, not between you and Ego Software. We just made the
+cartridge.**
 
 ### SYSTEM REQUIREMENTS
 
@@ -143,13 +143,13 @@ Same. We asked. It would not elaborate. We stopped asking.
 
 **My household did something and DUNGEONMIND got weirdly emotional
 about it.**
-Working as intended. Please do not call Cross Lake Cartridge Works
+Working as intended. Please do not call Ego Software
 about this. We do not have an answer that will help you.
 
 ---
 
 ```
-  Cross Lake Cartridge Works · Shreveport, LA
+  Ego Software · Shreveport, LA
   "We didn't build the dungeon. We just found it."
   © 1984-1987, all rights theoretically reserved by someone
 ```
