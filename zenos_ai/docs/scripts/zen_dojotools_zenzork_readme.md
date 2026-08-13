@@ -62,7 +62,7 @@ Direction input resolves in priority order:
 3. **True bearing** — `0`–`359` (calibrated via `spatial_config.calibration_bearing` in household profile)
 4. **Room name / area_id** — fuzzy match on portal `to:` field
 
-Portal matching uses ±22.5° tolerance on bearings. Front door calibration reference: 340° (NNW). Player facing resets to the reverse of the exit bearing on each move.
+Portal matching uses ±22.5° tolerance on bearings. True-north is a per-installation calibration (`mode=setup answer=calibrate=<bearing>`), not a fixed value — this household's is currently 340° (NNW). Player facing resets to the reverse of the exit bearing on each move.
 
 If multiple portals fall within the same compass bucket (±22.5° of the same bearing), ZenZork asks you to specify by room name rather than picking one silently. Disambiguation message is narrator-aware — DUNGEONMIND consults the portal index, Zork narrator tells you bluntly. Say `go direction=<room name>` to resolve.
 
@@ -158,9 +158,14 @@ Sets one portal entry via Room Manager. `answer=` defaults to current room if om
 
 **Landmark survey wizard** (v1.6.0):
 ```
-mode=setup answer=survey_landmarks
+mode=setup answer=survey
 ```
 A FileCabinet-backed state machine that walks you through naming and registering landmarks for each room in the topology. State is persisted between turns so the wizard can be interrupted and resumed. Landmarks are written to RM topology as the wizard progresses.
+
+Once started, advance through it with:
+- `answer=bearing=X distance_ft=Y description=Z` — commit a landmark for the current room, advance to the next
+- `answer=skip` — defer the current room, move to the next without writing anything
+- `answer=done` — save state and exit the wizard
 
 ---
 
@@ -354,7 +359,7 @@ Two independent fallback paths, both silently returning template narration rathe
 - Session auto-persists on `go` moves. Explicit `mode=stop` to mark `ended_at`.
 - Bare `mode=look` without a prior `mode=start` reads whatever room is in `current_room` from saved state, or defaults to `front_hall` if no session exists.
 - `mode=stop` writes a post-game Room Manager quality report summarizing unmapped portals, unregistered rooms, and landmark coverage gaps. Useful for identifying topology gaps discovered during play.
-- `harassment_freq` (int, 1–10): how often DUNGEONMIND unsolicited-comments on the player's choices. `difficulty` (string: `easy`/`normal`/`hard`): affects puzzle complexity hints. Both are stored in session state.
+- `harassment_freq` (int, 0–20, default 5): taunt **interval** — DUNGEONMIND comments unprompted every N moves during a treasure hunt (`0` = off entirely, `3` = brutal, `5` = default, `10` = gentle; lower number means *more* frequent, not less). `difficulty` (string: `easy`/`normal`/`hard`, default `normal`): treasure placement distance for `treasure_hunt`/`timed_treasure_hunt` — `easy` 1+ hops, `normal` 2+ hops, `hard` 3+ hops from start. Not a puzzle-complexity setting. Both are stored in session state.
 
 ---
 
