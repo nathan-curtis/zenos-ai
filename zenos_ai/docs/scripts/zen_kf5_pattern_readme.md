@@ -60,7 +60,7 @@ Also absent: legacy per-component metadata that nothing raw-reads (`area_seed`, 
 
 ## Building a new KF5 component
 
-**1. File and naming.** New file at `packages/zenos_ai/dojotools/dojotools_<name>.yaml` (core) or `packages/curtisplace_custom_stuff/dojotools_<name>.yaml` (personal/custom). Script entity: `zen_dojotools_<name>`.
+**1. File and naming.** New file at `packages/zenos_ai/dojotools/dojotools_<name>.yaml` (core), or an equivalent path under your own non-core package directory for a personal/custom component. Script entity: `zen_dojotools_<name>`.
 
 **2. Required modes:** `status`, `help`, `kfc_manifest`, `tool_manifest`. `kfc_manifest` is the contract — it returns the full component list when called with no `component` field, or a single component dict when `component=<kata_key>` is passed (used by FC's live-mount resolution).
 
