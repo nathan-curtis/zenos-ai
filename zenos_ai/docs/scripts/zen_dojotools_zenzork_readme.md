@@ -62,7 +62,7 @@ Direction input resolves in priority order:
 3. **True bearing** — `0`–`359` (calibrated via `spatial_config.calibration_bearing` in household profile)
 4. **Room name / area_id** — fuzzy match on portal `to:` field
 
-Portal matching uses ±22.5° tolerance on bearings. True-north is a per-installation calibration (`mode=setup answer=calibrate=<bearing>`), not a fixed value — this household's is currently 340° (NNW). Player facing resets to the reverse of the exit bearing on each move.
+Portal matching uses ±22.5° tolerance on bearings. True-north is a per-installation calibration (`mode=setup answer=calibrate=<bearing>`), not a fixed value — it lives in `household_profile.spatial_config.calibration_bearing`, set once per install. Player facing resets to the reverse of the exit bearing on each move.
 
 If multiple portals fall within the same compass bucket (±22.5° of the same bearing), ZenZork asks you to specify by room name rather than picking one silently. Disambiguation message is narrator-aware — DUNGEONMIND consults the portal index, Zork narrator tells you bluntly. Say `go direction=<room name>` to resolve.
 
