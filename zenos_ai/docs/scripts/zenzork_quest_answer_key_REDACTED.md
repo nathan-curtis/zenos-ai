@@ -3,7 +3,7 @@
 **Full plaintext ships at release +3** — three versions out from
 ZenZork `1.7.0` (current as of this doc), realistically next quarter.
 Until then, this file holds the real methodology plus one fully
-worked example, and the remaining thirteen entries stay blanked. This
+worked example, and the remaining fourteen entries stay blanked. This
 is the "walkthrough" version of the spoiler curtain in
 [`zenzork_quest_table.md`](zenzork_quest_table.md) — same table, same
 hashes, one door left open on purpose so the method is provably real
@@ -33,10 +33,11 @@ always-open navigation quest, not a hidden one.
 
 Run it yourself: `python3 -c "import hashlib; print(hashlib.md5('waypoint one::reach the front hall.'.encode()).hexdigest())"`
 
-## The other thirteen
+## The other fourteen
 
 | Hash | Quest ID | Title / Win Condition |
 |---|---|---|
+| `ff13d1b3442366e0497a754a2634dbc4` | *[REDACTED — release +3]* | *[REDACTED — release +3]* |
 | `89ca4708b6d88ded08733b3b4cd2e074` | *[REDACTED — release +3]* | *[REDACTED — release +3]* |
 | `2a268d7a998e12403fb022f3cc30a266` | *[REDACTED — release +3]* | *[REDACTED — release +3]* |
 | `040909adb9992f97b783d195dbb5e416` | *[REDACTED — release +3]* | *[REDACTED — release +3]* |

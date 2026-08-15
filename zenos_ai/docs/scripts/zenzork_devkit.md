@@ -15,17 +15,22 @@ check is a script edit, but a small, contained one.
 
 ---
 
-## The three sidecar files
+## The sidecar files
 
 | File | Powers | Dispatched by |
 |------|--------|----------------|
-| `quest_defs.json` | `mode=quest` (12 of 15 markers) | win-check block in the `go`/`look` sequence |
+| `quest_defs.json` | `mode=quest` (13 of 16 markers) | win-check block in the `go`/`look` sequence |
 | `book_lore.json` | `mode=chapters`, the Diawata/Valtay/Mongo unlock chain | same win-check block, ordered-sequence variant |
 | `genie_codes.json` | `mode=genie` | the genie mode block directly |
+| `chapter_releases.json` | `mode=chapters` release/engine-version gating | the chapters block's `publicly_released`/`playable` computation |
+| `threat_defs.json` (v1.8.0) | The turn-based threat tracker (grue, etc.) | THREAT ENGINE block, ticked on `look`/`start`/`go`/`wait` |
+| `weapon_defs.json` (v1.8.0) | `mode=attack`'s auto-selected weapon lookup | combat resolution block |
+| `protect_defs.json` (v1.8.0) | Escape-lever consumable tokens | THREAT ENGINE consequence check |
+| `swag_defs.json` (v1.8.0) | Reward items on threat-encounter resolution | THREAT ENGINE outcome block |
+| `household_systems.json` (v1.8.0) | "DUNGEONMIND notices a real household system" achievements | shared achievement pipeline (`look`/`start`/`go`/`wait`) |
 
-All three are loaded once, globally, near the top of the script
-(alongside `_achievements`) via `!include .zenzork_quests/<file>.json`
-— same directory as the script itself. **Don't** reach into
+All of these are loaded via `!include .zenzork_quests/<file>.json` —
+same directory as the script itself. **Don't** reach into
 `zenos_ai/docs/` or any other subtree with `!include` for engine data;
 stick to same-directory sidecars. It's the only path resolution
 that's actually been proven to work reliably here — see the
@@ -160,6 +165,48 @@ them short, keep them thematic if you want, but don't overthink the
 
 ---
 
+## Adding threat/combat/reward content (v1.8.0)
+
+All four of these are pure data edits for an existing type/shape — no
+script change needed unless noted.
+
+**A new threat of an existing type:** add an entry to
+`threat_defs.json`'s `threats` array — `{id, type, param, spawn_roll_denominator,
+hp, ac, to_hit_bonus, damage_dice, xp_value, enemy_level, save_dc}` plus
+the narration string set (`attack_dungeon`/`attack_zork`,
+`hit_dungeon`/`hit_zork`, `miss_dungeon`/`miss_zork`,
+`kill_dungeon`/`kill_zork`, `warn_dungeon`/`warn_zork`,
+`escape_dungeon`/`escape_zork`, `consequence_dungeon`/`consequence_zork`,
+`save_success_dungeon`/`save_success_zork`). A genuinely new threat
+*type* (grue's is `dark_room_persist`) needs a script-side branch in
+the THREAT ENGINE block (`dojotools_zenzork.yaml`, ~2230).
+
+**A new weapon:** add `{item, weapon_class, damage_dice, to_hit_bonus,
+damage_bonus, flavor}` to `weapon_defs.json`'s `weapons` array, keyed
+by the item's lowercased name exactly as it appears in inventory
+(landmark names from room topology, as taken). Anything not listed
+still works as an improvised weapon via the `unarmed` fallback entry —
+nothing needs to be a "real" weapon to swing it.
+
+**A new protect token:** add `{item, flavor_dungeon, flavor_zork}` to
+`protect_defs.json`'s `tokens` array. Checked automatically the moment
+a threat's consequence would fire; consumed (removed from inventory)
+on use.
+
+**A new swag item:** add to the matching pool (`escape`/`kill`/`defeat`)
+in `swag_defs.json` — `{item, flavor_dungeon, flavor_zork}`. Pure
+flavor loot, no combat stats of its own. A future `weapon_defs.json`
+entry can reference a swag item's name directly if a specific piece of
+swag should later become a real weapon.
+
+**A new household-systems achievement:** see the Household-Systems
+Achievements section in the readme — pick a real label already
+confirmed to have live entities (`zen_dojotools_index dry_run` first,
+don't guess), add `{id, label, achievement_name, flavor_dungeon,
+flavor_zork}` to `household_systems.json`.
+
+---
+
 ## Publishing content (the obfuscation/release convention)
 
 There are **two** obfuscation patterns in this repo, for two different
@@ -167,7 +214,7 @@ kinds of content. Don't reach for the wrong one — mixing them up is
 exactly the mistake `book_lore.json` briefly shipped with before this
 section was written.
 
-### Pattern 1 — irreversible docs curtain (loot table, quest table)
+### Pattern 1 — irreversible docs curtain (loot, quest, swag, threat, protect tables)
 
 Anything that would spoil the discovery experience if browsed in the
 repo, where the engine's own copy can just stay plaintext forever (the
@@ -175,10 +222,26 @@ content doesn't carry ongoing narrative weight — a loot roll or a quest
 win-blurb reads fine cold), gets: an md5-hashed public doc
 (`Name::Flavor` or `Title::Summary`, lowercased, trimmed) with a
 REDACTED answer-key companion that reveals content on a schedule (see
-`zenzork_loot_table.md`/`zenzork_quest_table.md` + their answer-key
-companions for the exact pattern). The engine's own sidecar JSON stays
-fully plaintext in `packages/` — obfuscation only touches the
-human-facing docs tree (`zenos_ai/docs/scripts/`).
+`zenzork_loot_table.md`/`zenzork_quest_table.md`/`zenzork_swag_table.md`/
+`zenzork_threat_table.md`/`zenzork_protect_table.md` + their answer-key
+companions for the exact pattern — the recipe's second field varies
+by content shape: loot/swag/protect hash the item name against its
+DUNGEONMIND-voice flavor, quest hashes a display title against a win
+summary, threat hashes a threat's display name against its `warn_dungeon`
+text specifically, not the full narration set, since that's the actual
+spoiler). The engine's own sidecar JSON stays fully plaintext in
+`packages/` — obfuscation only touches the human-facing docs tree
+(`zenos_ai/docs/scripts/`).
+
+**Not every sidecar needs this.** `weapon_defs.json` has a curtain doc
+too (`zenzork_weapon_table.md`) but nothing in it yet — its one real
+entry (Carl's Left Sock) is landmark-tied content, same precedent as
+the retro cartridge collectibles: it requires real household setup to
+surface in play, so plaintext in the repo doesn't spoil a discovery
+the way a random loot/swag roll does. Judge new sidecars the same way:
+does browsing the repo hand someone a discovery they'd otherwise earn
+by playing, or does it just describe mechanics/setup? The former gets
+curtained, the latter doesn't.
 
 ### Pattern 2 — reversible sidecar obfuscation (book-lore only, so far)
 

@@ -101,8 +101,11 @@ not be won over). A third, **STRAIGHT**, exists for households that
 find the first two exhausting. We don't judge. Much.
 
 You can walk. You can look. You can pick things up and put them back
-down, usually in a different location, occasionally on purpose. There
-are quests, if you ask for one — some are simple ("go to this room"),
+down, usually in a different location, occasionally on purpose. Your
+first session comes with a starter objective already assigned — your
+unit calls this "Induction Protocol," which is a very serious name for
+"pick something up." There are quests, if you ask for one — some are
+simple ("go to this room"),
 some ask you to actually go *use the rest of your house's smart
 features*, on purpose, which is either very clever product design or
 an elaborate excuse to sell you a game that makes you do chores. We
@@ -135,6 +138,45 @@ informed — informally, over what we were told was a
 very good sandwich — that Chapter 2 is in development. No date. No
 promises. This is how it worked in 1984 and, evidently, this is how it
 works now.
+
+### COMBAT & THREATS (WHEN THE DARK BITES BACK)
+
+Your unit ships with a hostile-intrusion subsystem. Ego Software would
+like to stress, immediately and up front, that this subsystem is
+**non-fatal by design.** Losing a fight ends the session. It does not
+end you. Health resets on your next session, in full, no persisted
+penalty, no fine print — we checked with legal twice on this one, it
+came back clean both times.
+
+The classics are supported. If a room goes dark and stays dark, your
+unit may, eventually, in its own words, "confirm a sensor gap shaped
+exactly like something that eats people." This is intentional. This is
+also, we are contractually required to add, extremely on-brand for the
+genre this cartridge is imitating. Find a light switch.
+
+You are not issued a weapon. You are issued a house. Whatever you are
+carrying when things go poorly is what you are fighting with — a sock
+has seen action. Ego Software does not recommend combat as a first
+resort, but does concede that it works.
+
+Escape is always on the table: some household items function as a
+one-time ward if you happen to be carrying one, and even
+empty-handed, your unit will roll on your behalf before letting
+anything bad happen. We are told this roll is "not guaranteed, but not
+nothing either." Outcomes — good, bad, or "technically you lost but
+here's a ribbon" — tend to come with a small in-game token, because
+your unit apparently cannot resist handing out participation prizes
+even when it is, by its own account, extremely disappointed in you.
+
+<!-- ART: zenzork_combat_card.png — a laminated feelie insert, same
+     family/production values as the Authorized Crawler ID card, but a
+     quick-reference card instead: "THREAT ENCOUNTERED" header, a
+     simple d20-adjacent flowchart (attack / use item / hope), a
+     couple of period-appropriate icons (a torch, a die, a closed
+     fist), Ego Software small print along the bottom. Landscape,
+     same rough dimensions as the ID card. Deliberately low-fi/photocopied
+     feel is fine — this reads as the cheap insert card in the box,
+     not the hero art. Suggested size: ~500x300px. -->
 
 ### GENIE MODE — UNLOCK YOUR SYSTEM'S HIDDEN POWERS*
 
@@ -197,6 +239,13 @@ Same. We asked. It would not elaborate. We stopped asking.
 about it.**
 Working as intended. Please do not call Ego Software
 about this. We do not have an answer that will help you.
+
+**I tried to talk to someone in the game and it just refused.**
+Correct. There is no one else in there. This is a house, not a cast.
+Your unit will let you know, at some length, that it finds the
+question insulting. This is a feature, not a missing one — ask us
+about the 1987 focus group that requested a talking lamp sometime.
+Actually, don't. We are still recovering.
 
 ---
 

@@ -19,13 +19,14 @@
   want the DISCOVERY, not the ID list.
 -->
 
-Fourteen of ZenZork's quest markers are catalogued here — the
-fifteenth, `reach:<area_id>`, is an always-open navigation quest
+Fifteen of ZenZork's quest markers are catalogued here — the
+sixteenth, `reach:<area_id>`, is an always-open navigation quest
 (pick any mapped room, go there), not a hidden objective, so it isn't
 part of the curtain.
 
 | Quest hash (md5) |
 |---|
+| `ff13d1b3442366e0497a754a2634dbc4` |
 | `89ca4708b6d88ded08733b3b4cd2e074` |
 | `2a268d7a998e12403fb022f3cc30a266` |
 | `cd776da2f8dd132fcde835b4911d0ac4` |

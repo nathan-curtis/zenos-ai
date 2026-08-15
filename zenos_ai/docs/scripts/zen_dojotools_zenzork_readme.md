@@ -1,9 +1,11 @@
 # zen_dojotools_zenzork
 
-**ZenZork Adventure Engine** — v1.7.0 ("Chapter 1")
+**ZenZork Adventure Engine** — v1.8.0 ("Chapter 1")
 **File:** `packages/zenos_ai/dojotools/dojotools_zenzork.yaml`
 **Sidecar data:** `packages/zenos_ai/dojotools/.zenzork_quests/` — `quest_defs.json`,
-`book_lore.json`, `genie_codes.json`, `chapter_releases.json`.
+`book_lore.json`, `genie_codes.json`, `chapter_releases.json`,
+`threat_defs.json`, `weapon_defs.json`, `protect_defs.json`,
+`swag_defs.json`, `household_systems.json`.
 **Sidecar data:** `packages/zenos_ai/dojotools/.zenzork_loot/loot_table.json`.
 
 Building your own quest, achievement, or cheat code on top of this engine
@@ -40,11 +42,13 @@ Navigation is compass-bearing-native. Portals are the same bearing-tagged entrie
 | `open target=X` | Open a door/cover. Calls RM or HA service. Alias: `unlock`. |
 | `close target=X` | Close a door/cover. Aliases: `lock`, `shut`. |
 | `use target=X` | Use an item or entity (generic interaction). |
+| `attack target=<threat_id>` | Fight an active threat (v1.8.0). Lite-5e resolution — see Threats & Combat section. |
+| `talk` | Always refuses. There are no NPCs in this engine — deliberate King's Quest-style gag, not a missing feature. Three randomized lines per narrator voice. |
 | `examine target=X` | Inspect a landmark or entity via the Lens Bus. |
 | `map` | Explored rooms list with exit counts. `[*]` = current room. |
-| `status` | Session summary: room, facing, moves, rooms visited. |
+| `status` | Session summary: room, facing, moves, rooms visited, quest/quest_won, inventory, `player_hp`/`player_hp_max`/`player_level`/`player_xp`, `threats_active`, `difficulty`. |
 | `stop` | Save session state, write post-game Room Manager quality report, and end. |
-| `quest` | Set or check quest win condition. 15 quest markers. See Quest section. |
+| `quest` | Set or check quest win condition. 16 quest markers. See Quest section. |
 | `chapters` | Book-lore sequence status — which of the 12 chapters this player has earned vs. which the household has publicly released. `catch_up=true` claims released-but-unearned chapters. See Book-Lore Chapters section. |
 | `genie` | Cheat codes. `code=X confirm_text="I hereby admit I am a cheater" confirm=true`. See Game Genie section. |
 | `help` | Full mode list, navigation reference, compass point table. |
@@ -171,9 +175,9 @@ Once started, advance through it with:
 
 ## Quest / Win Conditions
 
-Set a win condition with `mode=quest quest_goal=X`. 15 markers total —
+Set a win condition with `mode=quest quest_goal=X`. 16 markers total —
 3 hardcoded (dynamic text: player name, live move counts, live room
-name — can't live in a data file, see Devkit doc for why), 12
+name — can't live in a data file, see Devkit doc for why), 13
 data-driven from `.zenzork_quests/quest_defs.json`.
 
 **Hardcoded (dynamic text):**
@@ -189,6 +193,7 @@ for the full type reference):
 
 | Quest | Type | Description |
 |-------|------|-------------|
+| `training_quest` (v1.8.0) | `inventory_nonempty` | Auto-seeded on every genuinely new session — "Induction Protocol." Pick up any item. Not a manually-set quest goal; it's the default. |
 | `waypoint_1` | `reach_room` | Reach the front hall. |
 | `find_burnout` | `entity_state_in_room` | Reach a room currently in control burnout. |
 | `find_asleep` | `entity_state_in_room` | Reach a room currently classed asleep. |
@@ -216,8 +221,51 @@ priority order, then `_flavor` renders its text.
 
 Non-quest achievements: `in_the_dark`, `century_crawler`,
 `half_a_hundred` (move-count/darkness milestones, hardcoded), plus the
-12 book-lore chapter ids (see next section) and `used_game_genie` (see
-Game Genie section).
+12 book-lore chapter ids (see Book-Lore Chapters section) and
+`used_game_genie` (see Game Genie section).
+
+**Real, persisted achievements (v1.8.0):**
+
+| Achievement | Fires on |
+|---|---|
+| `oriented` | First `mode=face`. |
+| `hands_on` | First `mode=take`, independent of any quest. |
+| `carls_briefing` | Both of the above earned — points the player at Book One. Extends the existing Carl's-sock easter egg without touching it. |
+| `grue_slayer` | Killed a grue in combat (`mode=attack`). |
+| `outran_the_dark` | Escaped an active grue threat by restoring light before it resolved. |
+| `eaten` | A grue threat resolved uninterrupted — non-fatal, `game_over: true`, HP resets on next `mode=start`. |
+| `retro_cart_kc_krazy_chase` / `retro_cart_et_atari` | Rare collectible cartridges — high loot tier, low occurrence (1-in-12 per attempt even with the landmark correctly placed). Both verified real (Odyssey² 1982 / Atari 2600 1983) before writing flavor text. |
+| `chapter_1_complete` | Real late-game capstone — both rare cartridges **AND** `series_complete` together, not either alone. |
+
+Plus the household-systems achievements (see next section) and
+`used_game_genie` (see Game Genie section).
+
+---
+
+## Household-Systems Achievements (v1.8.0)
+
+`household_systems.json` — "DUNGEONMIND notices a real household
+system," checked via `label_entities(label) | length > 0` in the
+shared achievement pipeline (same `look`/`start`/`go`/`wait` render
+path as everything else) — **real live entity presence required, not
+label-taxonomy membership.** A label can exist in the household's
+label registry with zero entities actually tagged; that does not
+count. One achievement fires per render, first unmet match wins.
+
+| Achievement | Label checked |
+|---|---|
+| `wont_starve` | `grocy` |
+| `ledgers_wired` | `finance` |
+| `additive_manufacturing_confirmed` | `3d_printer` |
+| `eyes_on_the_sky` | `flightradar24` |
+| `hot_tub_time_machine` | `hot_tub_manager` |
+| `leak_watch_confirmed` | `zen_plant_leak_sensor` |
+| `utility_rate_tracked` | `zen_plant_water_rate` |
+
+Adding a new one is a pure data edit — pick a real label already
+confirmed to have live entities (verify via `zen_dojotools_index
+dry_run` before adding, don't guess) and add an entry to
+`household_systems.json`. No script change needed.
 
 ---
 
@@ -230,6 +278,79 @@ Game Genie section).
 facing companion doc (md5-obfuscated spoiler curtain, same recipe as
 the quest table): [`zenzork_loot_table.md`](zenzork_loot_table.md) /
 [`zenzork_loot_answer_key_REDACTED.md`](zenzork_loot_answer_key_REDACTED.md).
+
+---
+
+## Threats & Combat (v1.8.0)
+
+Data-driven turn-based threat tracker, `.zenzork_quests/threat_defs.json`
+— same `type`-dispatch pattern as the quest table. Up to 5 concurrent
+threats tracked in `_gs.threats`.
+
+**Ticking:** threats tick once per "turn" — `look`/`start`/`go`/`wait`
+only. `face`/`take`/`examine`/etc. are free actions, matching classic
+IF convention.
+
+Human-facing companion docs (md5-obfuscated spoiler curtains, same
+recipe family as the loot/quest tables):
+[`zenzork_threat_table.md`](zenzork_threat_table.md) /
+[`zenzork_threat_answer_key_REDACTED.md`](zenzork_threat_answer_key_REDACTED.md).
+
+**Grue (threat #1, type `dark_room_persist`):** spawns only after
+`in_the_dark` is already earned (no jump-scare on someone's first dark
+room), rare roll, escalates while the room stays dark, clears
+instantly on light. Difficulty (`easy`/`normal`/`hard`, from
+`mode=start difficulty=`) scales spawn threshold/rate/concurrency cap;
+concurrency is independently capped by real room count
+(`room_count // 2`, floored 1, ceilinged 5) so a one-room install
+can't get buried regardless of difficulty setting.
+
+**Combat — `mode=attack target=<threat_id>`:** lite-5e resolution.
+Player AC/HP/proficiency derive from
+`character_sheet.stats.ability_scores` — deliberately reusing Friday's
+own `zen_ai_certs` vocabulary (`ability_scores`/`level`/`xp`) rather
+than inventing parallel terms; defaults to flat 10 if the sheet's never
+been touched, fully backward compatible. Best carried weapon
+auto-selected by average damage (`.zenzork_quests/weapon_defs.json`,
+unarmed `1d2` fallback — any carried item not listed still works as an
+improvised weapon; curtain doc exists at
+[`zenzork_weapon_table.md`](zenzork_weapon_table.md) but is currently
+empty — the one real entry, Carl's Left Sock, is landmark-tied content
+and intentionally not curtained, see devkit.md's Publishing section).
+XP on kill drives a simple level curve
+(`1 + xp // 100`), which gates `enemy_level` immunity — outlevel a
+threat and it stops spawning.
+
+**Non-fatal, always:** a lost fight or an unescaped darkness
+consequence ends the session (`game_over: true`), but HP resets to
+full on the next `mode=start`. No persisted penalty.
+
+**Escape levers:** a protect token (`.zenzork_quests/protect_defs.json`
+— e.g. "salt circle," consumed on use) or a CON saving throw vs. the
+threat's `save_dc`, either converts a would-be consequence into an
+escape. Curtain docs:
+[`zenzork_protect_table.md`](zenzork_protect_table.md) /
+[`zenzork_protect_answer_key_REDACTED.md`](zenzork_protect_answer_key_REDACTED.md).
+
+**DUNGEONMIND's swag** (`.zenzork_quests/swag_defs.json`): a random
+real inventory item from an escape/kill/defeat pool on every
+threat-encounter outcome — not just flavor text. Plus a one-time,
+MPAA-gated first-death gift, mutually exclusive: under R gets a
+Hermitcraft-flavored "Did You Die? Backup Box," R-and-above gets a
+DCC-flavored "Gold Rebound Box." Curtain docs:
+[`zenzork_swag_table.md`](zenzork_swag_table.md) /
+[`zenzork_swag_answer_key_REDACTED.md`](zenzork_swag_answer_key_REDACTED.md).
+
+**Narrator asides (situational, narrator-prompt-level, not tied to a
+specific mode):** a low-HP-but-survived hit in `mode=attack` can
+trigger a Fable Guildmaster cameo; a failed `go` has a rare (1-in-8)
+Mario nod; DUNGEONMIND's `narrator_prompt` also carries an in-universe
+justification for its pop-culture range ("why you know any of this" —
+40 years bound to Radio Shack-era hardware, nothing to do but watch
+whatever media routed through the house's own AV stack) and a real,
+hardware-verified Xbox/Halo preference. All real-world claims baked
+into these were verified (web search or explicit correction) before
+shipping — DUNGEONMIND citing a wrong fact breaks the bit completely.
 
 ---
 
@@ -372,6 +493,7 @@ Two independent fallback paths, both silently returning template narration rathe
 
 | Version | Change |
 |---------|--------|
+| v1.8.0 | Training quest (auto-seeded, `training_quest`), 3 real persisted achievements (`oriented`/`hands_on`/`carls_briefing`). Data-driven turn-based threat engine (`threat_defs.json`, grue is threat #1, up to 5 concurrent) ticking on `look`/`go`/`wait`/`start` only. Lite-5e `mode=attack` combat (`weapon_defs.json`, reuses Friday's `zen_ai_certs` ability-score vocabulary), non-fatal always. Protect-token/saving-throw escape levers (`protect_defs.json`). DUNGEONMIND's swag on every threat outcome plus a one-time MPAA-gated first-death gift (`swag_defs.json`). Rare verified-real cartridge collectibles + `chapter_1_complete` capstone. Household-systems achievements (`household_systems.json`, real live-entity presence via `label_entities()`). New `mode=talk` (deliberate no-NPCs gag). `mode=help`/`mode=status` brought current with the new surface; `mode=status` also picked up several fields it was silently missing and a real bug fix (`mpaa_rating` referenced an out-of-scope variable, always empty). Fixed a real pre-existing bug in `mode=start`'s reset path — `quest`/`quest_won` weren't re-derived on a genuinely new session, so it reported the prior session's quest. |
 | v1.7.0 ("Chapter 1", cont.) | Data-driven quest table (12 of 15 markers, `.zenzork_quests/quest_defs.json`, 10 reusable types). `mode=chapters` — 12-entry book-lore sequence (`book_lore.json`) replacing the old ad-hoc Diawata/Valtay/Mongo mechanism, corrected against real book research (Diawata=book5/audio-only, Valtay=book6 not book5), release-chapter publishing system (`chapter_releases.json`, one JSON bundle per SoftDisk-style content chapter — corrected mid-build from an initial one-file-per-entry design that was the wrong grain, see below) with new-player catch-up and an engine-version gate (`min_engine_version`/`engine_ready`/`playable`, since a future chapter can ship unlock types this build doesn't have a dispatcher for yet). `mode=genie` — Game Genie cheat codes (`genie_codes.json`), dual-gate confession requirement, god-tattoo meta callback. Real loot table (`.zenzork_loot/loot_table.json`, 13 items/5 rarity tiers) replacing placeholder treasure names. Carl's Left Sock (real registered landmarks + take-mode special case). Fixed north-calibration write/read drawer mismatch (`_cal` was always 0, silently, since the feature shipped). |
 | v1.7.0 (original) | `llm_narration` toggle — live LLM-generated narration via `ai_task.generate_data` with per-narrator persona prompts, falling back to template narration if the pipe is gated off or the response is too short. Domain-linking block on `help` mode (`domain: entertainment`). Cabinet reads refactored to `CABS.cabinet_drawer_value_mounted`. |
 | v1.6.0 | DUNGEONMIND narrator ("Primal AI, IBM AT 5170, binding active since 1984"). Character sheet in AI user cabinet `character_sheet` drawer (CabCeption sub-drawer `character_sheet/inventory` for carried items). Item commands: `take/get`, `drop`, `inventory/i`, `put`, `push`, `pull`. Interaction commands: `open/unlock`, `close/lock/shut`, `use`. Navigation additions: `face/turn`, `again/g` (`_last_cmd` tracking). Landmark survey wizard (FC-backed state machine). `game_mode`: `free_roam/treasure_hunt/timed_treasure_hunt`. `harassment_freq` and `difficulty` session fields. Post-game RM quality report on `stop`. |
