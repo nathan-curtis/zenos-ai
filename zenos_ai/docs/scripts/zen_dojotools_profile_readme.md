@@ -1,4 +1,4 @@
-# Zen DojoTools Profile Editor — 5.1.0
+# Zen DojoTools Profile Editor — 5.3.0
 
 *Read, write, sign, restore, and certify ZenOS identity profiles*
 
@@ -256,6 +256,29 @@ cert_constraints: '["purchase_without_confirmation"]'
 
 Certification levels are `1` observer, `2` advisor, `3` operator with confirmation, and `4` autonomous within policy.
 
+**Gating on `cert_grant`/`cert_revoke` (added after a real self-escalation
+hole was found and closed):** these two modes previously had zero
+gating — any MCP caller could grant itself any certification, including
+one meant to protect a capability an identity gate was built the same
+day to guard. Two independent, non-optional closures now apply to both
+modes:
+
+1. **Static cert catalog.** `cert_component` must already exist as a key
+   in `packages/zenos_ai/dojotools/.persona_certs/cert_catalog.json`,
+   loaded via HA's `!include` at config-parse time — not writable by any
+   exposed tool call. An unrecognized component is refused outright,
+   before any ack step. Currently catalogued: `infra_container_control`,
+   `lock_control`.
+2. **Live one-shot household-admin ack**, every single grant/revoke call
+   — not a time-boxed window (that's the wrong shape for a permanent
+   state change), a fresh yes/no each time, via
+   `zen_dojotools_identity mode=request_live_ack`.
+
+Skip either gate and the call fails closed with a `stop:` and no state
+change. See `zen_dojotools_identity_readme.md`'s `request_live_ack`
+section for the ack mechanism itself, and the Identity Architecture doc
+for the broader rationale.
+
 ---
 
 ## Write Behavior (AI User)
@@ -476,5 +499,6 @@ All modes return a consistent JSON envelope:
 
 | Version | Change |
 |---------|--------|
+| v5.3.0 (2026-08-15) | Closed a real self-escalation hole in `cert_grant`/`cert_revoke` — previously ungated, now requires the target `cert_component` to exist in a static, non-agent-writable catalog (`.persona_certs/cert_catalog.json`) plus a fresh live household-admin ack on every call via `zen_dojotools_identity mode=request_live_ack`. |
 | v5.2.0 | `inventory_root` field added to user and persona editor. Written as int to `inventory.root_location_id`. Used by Library lending (checkout target) and agent workspace resolution. Applies to both `zen_dojotools_profile_editor` and `zen_dojotools_persona_editor`. |
 | v5.1.0 | Baseline for Clue (2026.6.0). Profile editor GA-hardened; FC returns `confirmed` not `success`; second-write merge correctly parses JSON-encoded drawer value. |

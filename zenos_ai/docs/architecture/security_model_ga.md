@@ -200,11 +200,15 @@ This hierarchy is the structural spec at GA. Enforcement at the tool layer activ
 **When SP1 ships**, you will populate `provider` and `token_endpoint`, set `secure: true`,
 and the system activates. No architectural changes required — the plumbing is already there.
 
+**KFC certification grants are gated independently of SP1** (2026-08-15). `zen_dojotools_persona_editor mode=cert_grant`/`cert_revoke` previously had zero gating — any MCP caller could self-certify itself for any capability, including one an identity gate was built the same day to protect. Now closed with two non-optional checks regardless of SP1 status: the target certification must exist in a static, non-agent-writable catalog (`.persona_certs/cert_catalog.json`), and every grant/revoke requires a fresh live household-admin acknowledgment — see `zen_dojotools_profile_readme.md`'s certification section for the mechanism.
+
 ---
 
 ## Related
 
 - `09_Identity_Architecture.md` — full identity data model, ACL rules, Squirrel Safe / Content Safe filters
 - `roadmap.md` — SP1 timeline and scope
-- `docs/scripts/zen_dojotools_identity_readme.md` — identity tool reference
+- `docs/scripts/zen_dojotools_identity_readme.md` — identity tool reference, `request_live_ack`/`cert_list`
+- `docs/scripts/zen_dojotools_profile_readme.md` — `cert_grant`/`cert_revoke` gating
+- `docs/scripts/zen_dojotools_locks_readme.md` — identity-gate pattern applied to lock actuation
 - `sensor.zen_prompt_health` — prompt integrity sensor

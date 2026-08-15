@@ -181,23 +181,74 @@ Not every room needs every feature. Turn these on room by room, only
 where they make sense. A garage doesn't need a TV sleep timer, and a
 closet doesn't need a vent fan.
 
-**⏱ Control Burnout** — "Don't let a room get stuck in Automation forever." If a room is handed to Automation and nobody releases it within the timer window, it snaps back to Auto by itself. A safety net, not a nag.
+> **THREE LEVELS, IN CASE THAT HELPS.** Everything in this manual sorts
+> into exactly three tiers of effort. Knowing which tier you're on tells
+> you what to expect before you start.
+>
+> **① TAG IT. THAT'S THE WHOLE LEVEL.** Every Special Move below, and
+> every signal in Section 4's states, runs off labels — two clicks in
+> Settings, no file, no restart-and-pray. This is nearly everything in
+> this manual. If a feature is described anywhere below as "labels and
+> helpers, done through the normal HA UI," this is the tier it's in.
+> **What you get for doing nothing at all:** a room with zero labels
+> still exists, still reports a state (Vacant, forever, correctly — see
+> Section 9's tip on this), and breaks nothing. The floor here is high.
+>
+> **② DEPLOY THE TEMPLATE. ONCE PER ROOM, THEN NEVER AGAIN.** Before a
+> room can report a state at all, it needs its own status sensor — Step
+> 3 below, the one actual file. Five minutes, once, ever, per room. Every
+> Special Move in Tier ① then just works for that room, no separate
+> unlock needed per feature.
+>
+> **③ STACK LABELS FOR COMBINED EFFECTS.** This isn't a harder tier —
+> it's Tier ① again, just more of it on the same entity or the same room.
+> A media_player tagged `engaged` PLUS a vent fan tagged `vent_fan` PLUS
+> Entertaining Hold turned on isn't three separate systems fighting each
+> other; it's three labels the SAME dispatcher already reads, all at
+> once, resolved by the priority ladder in Section 4. This is what
+> Section 8's worked examples actually are: recipes for which labels to
+> stack together for a given room type. Nothing new to learn per
+> combination — just more Tier ① tagging, aimed well.
+>
+> **The honest cost:** Tier ① and ③ are genuinely just clicking. Tier ②
+> is the one place this system asks something real of you — a text file,
+> filled in from a template, once per room. We built it to be that small
+> on purpose; see Step 3 below for exactly what that five minutes looks
+> like, and Section 11 for why it isn't zero minutes yet.
+>
+> **Footnote key for what follows:** † = this feature needs the room's
+> state sensor already deployed (Tier ②) before it does anything — true
+> of almost everything below. ‡ = needs its own dedicated helper beyond
+> just a label (a specific timer, usually) — Step 2, not just Step 1.
+> Nothing below is marked with neither AND lacks †; if a feature isn't
+> marked †, it's the one deliberate exception — say so explicitly where
+> it applies.
 
-**📺 TV Sleep Timer** — "Falling asleep with the TV on? Not anymore." While a room is Asleep, media playing starts (or restarts) a countdown. When it hits zero, the TV shuts off and the room's normal sleep timer takes over.
+**⏱ Control Burnout** †‡ — "Don't let a room get stuck in Automation forever." If a room is handed to Automation and nobody releases it within the timer window, it snaps back to Auto by itself. A safety net, not a nag. *Needs its own `control_burnout`-labeled timer helper, not just the label on an existing one.*
 
-**🌬 Vent Fan Auto On/Off** — "The fan turns itself on shortly after you walk in, and stays on a little while after you leave." No switch-flipping required.
+**📺 TV Sleep Timer** †‡ — "Falling asleep with the TV on? Not anymore." While a room is Asleep, media playing starts (or restarts) a countdown. When it hits zero, the TV shuts off and the room's normal sleep timer takes over. *Needs its own `timer.<room>_tv_sleep_timer` (naming-convention, no label) plus a media_player already tagged `engaged`.*
 
-**🌙 Nightlight** — "A dim, gentle scene fires if you get up in the night," then quietly reverts once you settle back down without ever fully waking the room's Asleep state.
+**🌬 Vent Fan Auto On/Off** †‡ — "The fan turns itself on shortly after you walk in, and stays on a little while after you leave." No switch-flipping required. *Needs the fan/switch tagged `vent_fan`, and works out of the box from there — the delay/min-runtime helpers (naming-convention) are optional tuning, not required to function.*
 
-**🌃 Sleep Window** (on by default, per room) — "A room only falls asleep automatically at night." A bed sensor tripping at 2pm (someone folding laundry on the bed, say) won't put the room to sleep. Automatic sleep only fires between night and wake. Can be turned off per room if you want round-the-clock auto-sleep, or automatic sleep can be disabled entirely for a room (manual Asleep, Section 5, always still works either way).
+**🌙 Nightlight** †‡ — "A dim, gentle scene fires if you get up in the night," then quietly reverts once you settle back down without ever fully waking the room's Asleep state. *Needs its own `nightlight_timer`-labeled timer, plus Asleep already working for that room (motion or bed sensor tagged).*
 
-**🕐 Autosleep Schedule** — "No standard sleep pattern? No problem." Shift worker, firefighter, anyone whose "night" isn't actually at night — this room doesn't have to follow the house's clock at all. Point it at a calendar, an HA Schedule helper, or a toggle you flip yourself instead, and that becomes this room's own private night, completely replacing the house-wide clock check for it. Everybody else's rooms keep working off the normal night-to-wake window; this one just marches to its own schedule.
+**🌃 Sleep Window** † (on by default, per room) — "A room only falls asleep automatically at night." A bed sensor tripping at 2pm (someone folding laundry on the bed, say) won't put the room to sleep. Automatic sleep only fires between night and wake. Can be turned off per room if you want round-the-clock auto-sleep, or automatic sleep can be disabled entirely for a room (manual Asleep, Section 5, always still works either way).
 
-**😴 Asleep Hold** — "Sleep now — no bed sensor required." Tag a toggle, calendar, or schedule, and while it reads on, the room simply IS Asleep, full stop — no clock, no waiting on a sensor to catch up, no window check. Flip it back off (or let the calendar event end) and the room lets go instantly, no lingering.
+**🕐 Autosleep Schedule** † — "No standard sleep pattern? No problem." Shift worker, firefighter, anyone whose "night" isn't actually at night — this room doesn't have to follow the house's clock at all. Point it at a calendar, an HA Schedule helper, or a toggle you flip yourself instead, and that becomes this room's own private night, completely replacing the house-wide clock check for it. Everybody else's rooms keep working off the normal night-to-wake window; this one just marches to its own schedule.
 
-**🍸 Entertaining Hold / Guest Hold** — "While entertaining mode or guest mode is on, opted-in rooms stay conservative instead of guessing." Prevents a busy house from flickering a room between Occupied and Vacant. Opt in per room; a room not opted in is unaffected.
+**😴 Asleep Hold** † — "Sleep now — no bed sensor required." Tag a toggle, calendar, or schedule, and while it reads on, the room simply IS Asleep, full stop — no clock, no waiting on a sensor to catch up, no window check. Flip it back off (or let the calendar event end) and the room lets go instantly, no lingering.
 
-**🐝 Wasp (Hold from an unconfirmed entry)** — "Motion with no door-open to explain it holds the room, instead of guessing." Requires TWO things before it does anything: at least one door tagged `wasp_door` for that room (Section 8's "the door, not the lock" tip), AND the room itself opted in with the `wasp_enabled` label — either on the room's Area directly, or on any entity in that room. Both, not just one. This is opt-in on purpose: a room with an always-open archway instead of a real door (a connected front hall, say) can't safely tell "someone's inside with the door shut" from "there is no door" — tagging `wasp_door` there without also enabling the room would just misfire. If a room's Hold never seems to trigger from motion alone, check both halves are actually set before assuming something's broken. (See Section 9's "the door, not the lock" tip for the other common wasp_door setup mistake.)
+**🍸 Entertaining Hold / Guest Hold** † — "While entertaining mode or guest mode is on, opted-in rooms stay conservative instead of guessing." Prevents a busy house from flickering a room between Occupied and Vacant. Opt in per room; a room not opted in is unaffected.
+
+**🐝 Wasp (Hold from an unconfirmed entry)** † — "Motion with no door-open to explain it holds the room, instead of guessing." Requires TWO things before it does anything: at least one door tagged `wasp_door` for that room (Section 8's "the door, not the lock" tip), AND the room itself opted in with the `wasp_enabled` label — either on the room's Area directly, or on any entity in that room. Both, not just one. This is opt-in on purpose: a room with an always-open archway instead of a real door (a connected front hall, say) can't safely tell "someone's inside with the door shut" from "there is no door" — tagging `wasp_door` there without also enabling the room would just misfire. If a room's Hold never seems to trigger from motion alone, check both halves are actually set before assuming something's broken. (See Section 9's "the door, not the lock" tip for the other common wasp_door setup mistake.)
+
+**🔐 Exterior Lock Awareness** † — "Know how many doors are actually unlocked right now, not just whether any are." Tag exterior lock entities `ext_lock` (plus the room's own label) and the room's state sensor reports three things: whether ANY are unlocked (`ext_unlocked_active`), exactly how many (`ext_unlocked_count`), and how many exterior locks this room even has (`ext_lock_count`). No timer, no decay — a live read of real lock state, same instant it changes.
+&nbsp;&nbsp;&nbsp;&nbsp;**Acting on a room's locks**, not just reading them, is a separate tool: `zen_dojotools_locks mode=set room=<room> action=lock` (or `unlock`) locks/unlocks every lock in a room at once, no need to name each one. `mode=discover room=<room>` lists them with live state first if you want to check before acting. `entity_id=` still works for a single explicit lock instead of a whole room.
+&nbsp;&nbsp;&nbsp;&nbsp;**Not the same as `privacy_door`** (a different, older label) — that one doesn't feed anything right now (see the note in Section 10). If a lock is currently tagged `privacy_door` and you want it counted in `ext_lock_count`, retag it `ext_lock`.
+
+**📳 Vibration (occupancy, engagement, or "the load is done")** † (except `vibration_completion` — see below) — "A shaking washer means someone's using this room. A washer that stopped shaking twenty minutes ago means the load is done." Vibration is deliberately purpose-neutral: tagging a sensor `vibration` alone does nothing to the room's state by itself — it only makes the dispatcher notice the moment vibration starts and stops. To make it actually count toward Occupied or Engaged (your call, per room — a washer running is arguably "actively doing a thing," same tier as a media_player), tag that SAME sensor with `occupied` or `engaged` too, exactly like Section 4's other signals. Nothing new to learn here: it's Tier ① tagging, stacked.
+&nbsp;&nbsp;&nbsp;&nbsp;A separate, optional third label — `vibration_completion` — turns on "the load is done" detection on that same sensor. **This is the one feature in this entire manual that does NOT need † — no room state sensor required at all.** It's a standalone watcher, tracked in the household cabinet rather than the room sensor, so it works even on a room that's never had Step 3 done. This isn't just "vibration stopped": a half-second bump reads as noise, not a finished cycle, so it only fires after the vibration ran a genuine 20 minutes or longer before stopping, same anomaly-filter logic the household's real washing-machine automation already uses. When it fires for real, it's logged as an event (`vibration_load_complete`) — ask your AI "did the washer finish?" and it can check.
+&nbsp;&nbsp;&nbsp;&nbsp;**How to test it:** there's no dry-run mode for this one yet (unlike REFLEX, Section 7) — the honest way to check it's wired right is to trigger the sensor for real (run the appliance, or tap/shake it if that's enough to register) and then ask your AI whether the room went Occupied/Engaged, and separately whether a `vibration_load_complete` event showed up after a real, full-length run. A short test tap won't fire completion on purpose — that's the anomaly filter working, not a bug.
 
 None of it requires a code editor or a YAML file — every feature above
 turns on the same way: labels and helpers, done through the normal HA
@@ -419,6 +470,9 @@ the equivalent shortcut if you're handing it to an AI instead.
 **🚿 A powder room or small utility room** — Usually just motion, nothing else. These rooms don't need Asleep, Engaged, or any of the Special Moves — basic Occupied/Vacant is the whole job.
 > Say: *"set up the powder room, just basic occupancy."*
 
+**🧺 A laundry room** — Motion for the basic Occupied/Vacant question. Tag the washer's (and dryer's) vibration sensor with `vibration` PLUS `engaged` — a running machine is "actively doing a thing," not just presence. Add `vibration_completion` on the same sensor(s) if you want a "the load is done" event, not just a room state. Vent Fan usually applies here too if there's one installed.
+> Say: *"set up the laundry room: motion, and tag the washer and dryer vibration sensors for engaged and load-completion tracking."*
+
 ---
 
 ## 9. HINTS, TIPS & TRICKS
@@ -539,6 +593,9 @@ the equivalent shortcut if you're handing it to an AI instead.
 | Fan / TV sleep timer never fires | That feature isn't set up for this room yet. See Section 6, Step 2. |
 | Bedroom won't go fully quiet at night because of the attached bathroom | Working as intended. See Section 8. |
 | A newly added room doesn't show up yet | Settings → System → Restart, or reload templates/automations. New rooms pick themselves up automatically once that happens. |
+| Vibration sensor triggers but the room's state never changes | `vibration` alone doesn't feed the room — it only makes the dispatcher notice the edge. That same sensor also needs `occupied` or `engaged` tagged on it (Section 6). |
+| Washer/dryer finished but no "load complete" event | Either `vibration_completion` isn't tagged on that sensor yet, or the run was genuinely shorter than 20 minutes — the anomaly filter treats short runs as noise on purpose, not a bug. |
+| A lock tagged `privacy_door` doesn't show up in any count or affect any state | Correct, current behavior — `privacy_door` doesn't feed anything right now (fixed 2026-08-15: it used to try, incorrectly, and has been removed rather than left silently broken). Retag the lock `ext_lock` if you want it counted in `ext_unlocked_count`/`ext_lock_count`. |
 
 If none of these fit, check the room's `last_trigger` attribute (Section
 3) — it names the exact entity or timer currently driving the state. If
@@ -642,6 +699,18 @@ translation:
   answer this manual's plain-language framing is trying to prevent
   humans from getting stuck with; don't reintroduce it from the other
   side.
+- **`vibration_load_complete` is an event, not a poll-able state.** It's
+  emitted via `zen_dojotools_event_emitter` at the moment a genuine
+  (20-min+) run ends — there's no `sensor.X_load_complete` to check
+  after the fact. If asked "did the washer finish," check recent events
+  of that kind (logbook/history), don't assume a state exists to read.
+- **`privacy_door` exists as a label and a trigger, but nothing consumes
+  it.** `room_state.yaml` doesn't reference it at all (unlike the
+  generic `hold` label, which genuinely is consumed) and its dispatch
+  handler tries to toggle the *lock entity itself* as an `input_boolean`
+  — wrong domain, would fail. Don't tell a user this label does
+  anything; it doesn't yet. Flag it back to a human as dead/unfinished
+  code rather than debugging around it as if it were a real feature.
 - **Run `mode=coverage_map` before guessing at a wiring gap.** It's the
   single diagnostic that combines label-discovery candidates, the
   trigger_entities gap check, dormant-feature detection, and

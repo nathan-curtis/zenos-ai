@@ -168,15 +168,7 @@ here's a ribbon" — tend to come with a small in-game token, because
 your unit apparently cannot resist handing out participation prizes
 even when it is, by its own account, extremely disappointed in you.
 
-<!-- ART: zenzork_combat_card.png — a laminated feelie insert, same
-     family/production values as the Authorized Crawler ID card, but a
-     quick-reference card instead: "THREAT ENCOUNTERED" header, a
-     simple d20-adjacent flowchart (attack / use item / hope), a
-     couple of period-appropriate icons (a torch, a die, a closed
-     fist), Ego Software small print along the bottom. Landscape,
-     same rough dimensions as the ID card. Deliberately low-fi/photocopied
-     feel is fine — this reads as the cheap insert card in the box,
-     not the hero art. Suggested size: ~500x300px. -->
+<img src="images/zenzork_combat_card.png" alt="Threat Encountered quick-reference card — Roll, then Attack / Use Item / Hope" width="500">
 
 ### GENIE MODE — UNLOCK YOUR SYSTEM'S HIDDEN POWERS*
 

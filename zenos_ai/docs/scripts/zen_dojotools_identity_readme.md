@@ -83,6 +83,8 @@ flowchart TD
 | `is_member` | Depth-2 boolean check — is entity A a member of container B? | No |
 | `provision_member` | Full orchestration — provision expansion slot, wire into family, rebuild manifest | Yes |
 | `resolve_caller_identity` | Platform-wide SP1 identity/cert-check chokepoint — delegates to `zen_root_authentik`, enforces the OS sim_mode policy, optionally runs a cert check on the caller's behalf | No |
+| `request_live_ack` (2026-08-15) | Single shared chokepoint for "get a live human yes/no" — fires an alert via AlertManager, polls for response, returns approved/declined/timeout | No |
+| `cert_list` (2026-08-15) | Combined static cert catalog + live-grant view — what could exist, and what's actually held right now | No |
 
 `resolve` is the default mode — existing callers are unaffected.
 
@@ -525,6 +527,50 @@ zen_dojotools_identity:
 ```
 
 `block_reason` is populated only when `policy_status: blocked` (`"sim_mode result rejected: OS policy integrations_config.identity.sim_mode_allowed is false"`). `authorized` is `true` only when the identity was not blocked **and** any requested cert check passed — consumers should gate on `authorized`, not `policy_status` alone, when a cert was requested.
+
+### `request_live_ack` — Shared Live-Approval Chokepoint (2026-08-15)
+
+Extracted after the same ~40-line fire-and-poll block turned up hand-rolled four times (`zen_dojotools_infra`'s Portainer d-class ack, `zen_dojotools_locks`' `escalation_request`, `zen_dojotools_persona_editor`'s `cert_grant` and `cert_revoke`). Same "call identity, don't re-derive your own logic" principle as `resolve_caller_identity` — this is the ack-flow equivalent. One-shot per call: fires an alert, polls for a response, returns `approved`/`declined`/`timeout`. Callers that need a *time-boxed grant* (not just one action's approval) still own writing that grant to their own cabinet drawer after a true response here, same as `zen_dojotools_locks`' `escalation_request` does.
+
+```yaml
+zen_dojotools_identity:
+  mode: request_live_ack
+  ack_message: "Agent requests X. Approve?"     # required
+  # ack_key: my_custom_key                       # optional, default: live_ack_<timestamp>
+  # ack_max_wait_seconds: 90                      # optional, default 90, hard-capped at 150 regardless of input
+  # ack_poll_interval_seconds: 15                 # optional, default 15, floored at 5
+  # ack_notify_target: postman                    # optional, default 'postman' — see notify_target note below
+```
+
+**`ack_max_wait_seconds` is hard-capped at 150 in code, regardless of caller or cabinet input** — a longer approval window is a de-escalation attack surface, so this isn't tunable past that ceiling by design.
+
+**`notify_target` must be `postman`.** Only `'postman'` wires `response_type`/yes-no capture through `zen_dojotools_postman` (cached in the kata cabinet as `alert_response_<key>`, which `get_response` reads). `'mobile'` was the long-standing default across all four original hand-rolled call sites and silently falls through to a literal `notify.mobile` service call that doesn't exist — **every ack request on every one of those four call sites had been failing closed by accident, not by design, since the first one was built.** Fixed at this single default; not yet verified end-to-end with a real live approval (avoid firing an unnecessary real push before you need to).
+
+**Response shape:**
+
+```json
+{
+  "status": "ok",
+  "mode": "request_live_ack",
+  "approved": true,
+  "reason": "approved",
+  "waited_seconds": 15,
+  "caller_token": "..."
+}
+```
+
+`reason` is one of `approved`, `declined`, `timeout`, or `dispatch_failed` (alert never fired — `approved: false`, `waited_seconds: 0`, no polling attempted).
+
+### `cert_list` — Combined Cert Catalog + Live-Grant View (2026-08-15)
+
+"What could exist, and what do I actually hold right now." Combines the static catalog (`.persona_certs/cert_catalog.json` — every cert that *could* exist, its description, what it gates) with the live grant roster from `zen_dojotools_persona_editor`'s own `cert_list`, so a caller gets one answer instead of cross-referencing two tools.
+
+Gated on `resolve_caller_identity` returning `policy_status: allowed` — no specific cert required, no live ack. Reading your own current permission state isn't dangerous the way granting/revoking is (that's why `cert_grant`/`cert_revoke` get the full catalog-plus-live-ack treatment and this doesn't), but it isn't wide open to a caller whose identity resolution is itself blocked either.
+
+```yaml
+zen_dojotools_identity:
+  mode: cert_list
+```
 
 ---
 

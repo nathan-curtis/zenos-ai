@@ -85,7 +85,7 @@ An optional add-on bolted onto the same console script — same "inert unless co
 1. **Container resolution** — `container` must match exactly one container across the searched endpoint(s); ambiguous or zero matches are denied.
 2. **Allow-list check** — the resolved container's name must match an admin-configured pattern in `controllable_containers`.
 3. **Identity + certification** — `zen_dojotools_identity mode=resolve_caller_identity` is called with `required_cert: infra_container_control` and the mode's minimum level. Denied if `policy_status != allowed` or the resolved cert level is below the required minimum.
-4. **(`container_stop`/`container_remove` only) Live household-admin acknowledgment** — fires a `yes_no` alert via `zen_dojotools_alertmanager` (`notify_target: mobile`) and polls `get_response` every 15s for up to ~150s (10 tries). A decline or timeout denies the action (fail-closed).
+4. **(`container_stop`/`container_remove` only) Live household-admin acknowledgment** — delegates to the shared `zen_dojotools_identity mode=request_live_ack` chokepoint (2026-08-15; this exact fire+poll block used to be hand-rolled here, in `zen_dojotools_locks`, and twice in `zen_dojotools_persona_editor`, before consolidation). A decline or timeout denies the action (fail-closed). Note: the pre-consolidation default (`notify_target: mobile`) never actually dispatched — only `notify_target: postman` wires real yes/no capture — so every ack on this path had been failing closed by accident prior to the fix, not by design.
 5. **Execute** — POSTs the Docker action (`restart`/`start`/`stop`/`remove`) through `zen_root_portainer`, logs the outcome via `zen_dojotools_event_emitter` (`component: portainer`), and returns `status: success` or `status: error`.
 
 Every denial at any gate also fires a `container_action_denied` event with the specific `reason` (`ambiguous_or_not_found_container`, `not_in_allow_list`, `identity_policy_blocked`, `cert_insufficient`, `hoh_ack_timeout`, `hoh_ack_declined`).
@@ -138,8 +138,7 @@ Fail-closed throughout: any ambiguity, missing config, insufficient certificatio
 | `sensor.zen_default_household_cabinet_resolved` | `integrations_config.portainer` storage |
 | `script.zen_dojotools_filecabinet` | Drawer reads (config) |
 | `script.zen_root_portainer` | Portainer REST calls (codex only) |
-| `script.zen_dojotools_identity` (`mode=resolve_caller_identity`) | Cert check for x/d actions |
-| `script.zen_dojotools_alertmanager` | Household-admin acknowledgment round-trip (d-class actions) |
+| `script.zen_dojotools_identity` (`mode=resolve_caller_identity`, `mode=request_live_ack`) | Cert check for x/d actions; household-admin acknowledgment round-trip for d-class actions (delegated, not hand-rolled here) |
 | `script.zen_dojotools_event_emitter` | Audit trail for codex actions/denials |
 | `script.zen_dojotools_ha_log_viewer` | Backs `mode=log` |
 | Proxmox / Portainer / Uptime Kuma / WUD / IPP integrations (as labeled) | Data sources for the read modes |
@@ -150,6 +149,7 @@ Fail-closed throughout: any ambiguity, missing config, insufficient certificatio
 
 | Version | Change |
 |---|---|
+| 1.4.2 (2026-08-15) | d-class household-admin acknowledgment delegated to the shared `zen_dojotools_identity mode=request_live_ack` chokepoint, replacing a hand-rolled fire+poll block. Also fixed the underlying `notify_target` default — the acknowledgment path had been silently failing closed since it was first built (`mobile` was never a real dispatch target). |
 | 1.3.0 | Added `mode=log` (tail + restart/reload/error search peek) |
 | 1.2.0 | Added `mode=ha` (HA supervisor/addon/disk health); HA platform updates folded into `mode=updates` |
 | 1.1.0 | Label-driven rewrite; `integration_entities()` for Portainer isolation; fixed memory unit (MiB→GiB); `mode=discover` added |

@@ -25,6 +25,7 @@ Key capabilities:
 * Wake scene assembly from essence environment block
 * Prompt integrity check (`prompt_health_check()`) — schema, signature, manifest presence
 * Prompt length audit (`prompt_length_audit()`) — per-section character counts, 9 sections
+* `envelope()` — canonical OS-level response shape (Zammad #10297, pilot). Separates execution `status` from domain-level `result` state. `zen_health_report` and `zen_dojotools_locks` are the first two real consumers
 * Flynn detection chain: `zen_flynn_override` → blank persona → explicit `flynn` label → resolver error → `prompt_system_flynn()`
 * `prompt_system_flynn()` — hardcoded fallback prompt, zero cabinet dependencies, always works
 
@@ -60,6 +61,27 @@ Key macros:
 **Used by:** `zen_os_1.jinja`, `zenos_health.jinja`, `dojotools_filecabinet`, `dojotools_identity`, and all other templates that read cabinet drawers.
 
 → **[Full reference](zenos_cabinets_jinja.md)**
+
+---
+
+### `zen_target_resolve.jinja` — Shared DojoTools Targeting Core (Zammad #10308)
+
+Common core for DojoTools setter/getter target resolution — entity/label/room resolution was hand-rolled per tool before this file existed. `zen_dojotools_locks` is the first adopter and reference implementation; `zen_dojotools_covers` and every other setter/getter still hand-roll their own.
+
+Key macros:
+
+* `resolve_room_entities(room, domain_pattern)` — every entity in a room, RM-aware: unions native HA area assignment with Room Manager's own label-based room tagging, not area alone. Fixes a real gap the pre-existing per-tool implementations had — a helper labeled into a room without native area assignment (common for timers/input_selects, RM's own convention) was invisible to room-targeting before this.
+* `resolve_targets(entity_id, room, label, domain_pattern)` — unified precedence resolver for the three addressing modes (entity_id > label+room > label > room)
+* `entity_extended_notes(entity_id, exclude_labels)` — surfaces any label carrying a real `label_description()` as agent-facing guidance, e.g. a lock labeled with an instruction to always confirm out loud before unlocking
+* `discover_targets(...)` — bundles resolve+enrich into one call for any tool's discover mode
+
+All macros return JSON strings, same convention as `zenos_cabinets.jinja` — callers do `| from_json` on the result.
+
+**Two real bugs found building this, both generalizable to any macro-backed resolver:**
+1. HA's NativeEnvironment auto-coerces a template output of `"[]"` to a real Python empty list before `variables:` sees it — `| from_json` on that crashes with `invalid input '[]'`. Guard every crossing: `(_raw | from_json) if _raw is string else _raw`.
+2. `selector: area:` crashes MCP calls with a bare `list index out of range` whenever the caller's string doesn't cleanly fuzzy-match an existing HA area — confirmed it never even reaches the script's `sequence:`. Any field meant to accept both a native area and an RM label must use `selector: text:` instead and let the macro's own resolution validate it.
+
+**Used by:** `zen_dojotools_locks`
 
 ---
 
