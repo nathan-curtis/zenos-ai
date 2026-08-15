@@ -235,6 +235,8 @@ script:
               - is_member
               - provision_member
               - resolve_caller_identity
+              - request_live_ack
+              - cert_list
 
       user_label:
         selector:
@@ -378,6 +380,79 @@ script:
         default: false
         selector:
           boolean:
+      persona_target:
+        name: Persona Target (cert_list only)
+        description: "ai_user cabinet entity_id to check certs for. Omit for the default agent."
+        required: false
+        default: ''
+        selector:
+          entity:
+            filter:
+              domain: sensor
+      ack_message:
+        name: Ack Message (request_live_ack only)
+        description: >-
+          Required for request_live_ack. Text shown to the household admin
+          in the approval push, e.g. "Agent requests cert_grant: lock_control
+          level 1. Approve?"
+        required: false
+        default: ''
+        selector:
+          text:
+            multiline: true
+      ack_key:
+        name: Ack Key (request_live_ack only)
+        description: >-
+          Optional dedup/audit key for the underlying alert. Auto-generated
+          from a timestamp if omitted.
+        required: false
+        default: ''
+        selector:
+          text:
+      ack_max_wait_seconds:
+        name: Ack Max Wait Seconds (request_live_ack only)
+        description: >-
+          How long to poll for the admin's response before timing out.
+          Hard-capped at 150 (2:30) in code regardless of what's passed —
+          a longer approval window is a de-escalation attack surface, no
+          caller (compromised or not) can push it past this ceiling.
+        required: false
+        default: 90
+        selector:
+          number:
+            min: 15
+            max: 150
+            mode: box
+      ack_poll_interval_seconds:
+        name: Ack Poll Interval Seconds (request_live_ack only)
+        description: "How often to check for a response. Floored at 5 in code."
+        required: false
+        default: 15
+        selector:
+          number:
+            min: 5
+            max: 60
+            mode: box
+      ack_notify_target:
+        name: Ack Notify Target (request_live_ack only)
+        description: >-
+          Where the approval push goes. Default postman -- the ONLY
+          alertmanager notify_target that actually wires response_type/
+          yes-no capture (via zen_dojotools_postman + kata cabinet
+          alert_response_<key> caching that get_response reads). 'mobile'
+          is NOT a magic keyword alertmanager recognizes -- it falls
+          through to a literal `notify.mobile` service call (doesn't
+          exist) and never captures a response at all. Real, pre-existing
+          bug found 2026-08-15 during gap analysis: Portainer's original
+          d-class ack (and every consumer of this new mode, before this
+          fix) used notify_target=mobile and could never have actually
+          captured a real approval -- always silent dispatch failure or
+          eternal timeout, fail-closed by accident rather than by
+          working as designed.
+        required: false
+        default: postman
+        selector:
+          text:
       caller_token:
         name: Caller Token
         required: false
@@ -413,6 +488,168 @@ script:
                 caller_token=caller_token | default('')
             ) | from_json }}
       - stop: tool_manifest
+        response_variable: result
+
+    # ── request_live_ack — single chokepoint for "get me a live human
+    # yes/no", extracted 2026-08-15 after the same ~40-line fire+poll block
+    # turned up hand-rolled FOUR times (zen_dojotools_infra's Portainer
+    # d-class ack, zen_dojotools_locks' escalation_request, and
+    # zen_dojotools_persona_editor's cert_grant AND cert_revoke). Same
+    # "consumers must call identity instead of re-deriving their own
+    # resolved-identity fallback" principle resolve_caller_identity already
+    # established — this is the ack-flow equivalent. One-shot per call
+    # (fire, poll, return approved/declined/timeout) -- callers that need a
+    # TIME-BOXED grant (not just one action's approval) still own writing
+    # that grant to their own cabinet drawer after a true response here,
+    # same as zen_dojotools_locks' escalation_request does today. ──
+    - if: "{{ (mode | default('') | lower) == 'request_live_ack' }}"
+      then:
+      - variables:
+          _rla_message: "{{ ack_message | default('', true) | string | trim }}"
+      - if: "{{ _rla_message == '' }}"
+        then:
+        - variables:
+            result:
+              status: error
+              error: ack_message_required
+              detail: "request_live_ack requires ack_message."
+              caller_token: "{{ caller_token | default('') }}"
+        - stop: request_live_ack — missing message
+          response_variable: result
+      - variables:
+          _rla_key: "{{ ack_key | default('', true) | string | trim }}"
+          _rla_max_wait: "{{ [(ack_max_wait_seconds | default(90, true) | int(90)), 150] | min }}"
+          _rla_poll_interval: "{{ [(ack_poll_interval_seconds | default(15, true) | int(15)), 5] | max }}"
+          _rla_notify_target: "{{ ack_notify_target | default('postman', true) | string | trim }}"
+      - variables:
+          _rla_key: "{{ _rla_key if _rla_key != '' else 'live_ack_' ~ (now().timestamp() | int) }}"
+          _rla_max_tries: "{{ ([(ack_max_wait_seconds | default(90, true) | int(90)), 150] | min / [(ack_poll_interval_seconds | default(15, true) | int(15)), 5] | max) | round(0, 'ceil') | int }}"
+      - action: script.zen_dojotools_alertmanager
+        response_variable: _rla_fire_raw
+        continue_on_error: true
+        data:
+          mode: fire
+          alert_key: "{{ _rla_key }}"
+          severity: warn
+          message: "{{ _rla_message }}"
+          notify_target: "{{ _rla_notify_target }}"
+          response_type: yes_no
+      - if: "{{ _rla_fire_raw is not mapping or _rla_fire_raw.get('status') != 'success' }}"
+        then:
+        - variables:
+            result:
+              status: ok
+              mode: request_live_ack
+              approved: false
+              reason: dispatch_failed
+              waited_seconds: 0
+              caller_token: "{{ caller_token | default('') }}"
+        - stop: request_live_ack — dispatch failed
+          response_variable: result
+      - variables:
+          _rla_ack_result: pending
+          _rla_ack_tries: 0
+      - repeat:
+          while:
+            - condition: template
+              value_template: "{{ _rla_ack_result == 'pending' and _rla_ack_tries < _rla_max_tries }}"
+          sequence:
+          - delay:
+              seconds: "{{ _rla_poll_interval }}"
+          - action: script.zen_dojotools_alertmanager
+            response_variable: _rla_ack_raw
+            continue_on_error: true
+            data:
+              mode: get_response
+              alert_key: "{{ _rla_key }}"
+          - variables:
+              _rla_ack_result: >-
+                {%- if _rla_ack_raw is mapping and _rla_ack_raw.get('status') == 'captured' and _rla_ack_raw.get('ack_action', '') in ['yes', 'no'] -%}
+                  {{ _rla_ack_raw.get('ack_action') }}
+                {%- else -%}pending{%- endif -%}
+              _rla_ack_tries: "{{ _rla_ack_tries + 1 }}"
+      - variables:
+          result:
+            status: ok
+            mode: request_live_ack
+            approved: "{{ _rla_ack_result == 'yes' }}"
+            reason: "{{ 'approved' if _rla_ack_result == 'yes' else ('declined' if _rla_ack_result == 'no' else 'timeout') }}"
+            waited_seconds: "{{ _rla_ack_tries * _rla_poll_interval }}"
+            caller_token: "{{ caller_token | default('') }}"
+      - stop: request_live_ack complete
+        response_variable: result
+
+    # ── cert_list — "what could exist, and what do I actually hold right
+    # now." Nathan's framing: this is a protected gate of ident READ, not
+    # necessarily admin -- reading your own current permission state isn't
+    # dangerous the way granting/revoking is (that's why cert_grant/revoke
+    # get the full catalog+live-ack treatment above, and this doesn't), but
+    # it shouldn't be wide open to a caller whose identity resolution is
+    # itself blocked (sim_mode rejected by OS policy) either. Gate: calls
+    # itself (resolve_caller_identity, no required_cert) and requires
+    # policy_status == 'allowed' -- no specific cert, no live ack. Combines
+    # the static catalog (.persona_certs/cert_catalog.json -- every cert
+    # that COULD exist, its description, what it gates) with the live grant
+    # roster from persona_editor's own cert_list (what's actually held
+    # right now), so a caller gets one useful answer instead of having to
+    # cross-reference two tools itself. ──
+    - if: "{{ (mode | default('') | lower) == 'cert_list' }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _cl_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          caller_token: "{{ caller_token | default('') }}"
+      - variables:
+          _cl_policy_status: "{{ _cl_id_raw.get('policy_status', 'blocked') if _cl_id_raw is mapping else 'blocked' }}"
+      - if: "{{ _cl_policy_status != 'allowed' }}"
+        then:
+        - variables:
+            result:
+              status: denied
+              mode: cert_list
+              reason: identity_policy_blocked
+              detail: "resolve_caller_identity did not return an allowed identity -- cert_list refused."
+              caller_token: "{{ caller_token | default('') }}"
+        - stop: cert_list — identity blocked
+          response_variable: result
+      - variables:
+          _cl_catalog: !include .persona_certs/cert_catalog.json
+      - variables:
+          _cl_target: "{{ persona_target | default('', true) | string | trim }}"
+      - action: script.zen_dojotools_persona_editor
+        response_variable: _cl_pe_raw
+        continue_on_error: true
+        data:
+          mode: cert_list
+          target: "{{ _cl_target if _cl_target != '' else omit }}"
+      - variables:
+          _cl_held: "{{ _cl_pe_raw.get('certifications', {}) if _cl_pe_raw is mapping else {} }}"
+      - variables:
+          _cl_combined: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for _key, _def in _cl_catalog.get('certs', {}).items() -%}
+              {%- set _held_entry = _cl_held.get(_key, none) -%}
+              {%- set ns.items = ns.items + [{
+                'cert': _key,
+                'display_name': _def.get('display_name', _key),
+                'description': _def.get('description', ''),
+                'gates': _def.get('gates', []),
+                'max_level': _def.get('max_level', 4),
+                'held': _held_entry is not none,
+                'held_level': (_held_entry.get('level', 0) if _held_entry is not none else none)
+              }] -%}
+            {%- endfor -%}
+            {{ ns.items }}
+      - variables:
+          result:
+            status: ok
+            mode: cert_list
+            target: "{{ _cl_pe_raw.get('target', '') if _cl_pe_raw is mapping else '' }}"
+            certs: "{{ _cl_combined }}"
+            caller_token: "{{ caller_token | default('') }}"
+      - stop: cert_list complete
         response_variable: result
 
     # ── resolve_caller_identity — real call-site for SP1, shunted until active ──

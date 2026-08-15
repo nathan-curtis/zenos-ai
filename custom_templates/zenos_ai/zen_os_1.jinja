@@ -41,7 +41,7 @@
     https://github.com/nathan-curtis/zenos-ai?tab=MIT-1-ov-file#readme
 
     Copyright (c) 2025
-    Nathan Curtis / CurtisPlace / ZenOS-AI ("Project Friday")
+    Nathan Curtis / ZenOS-AI ("Project Friday")
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -899,6 +899,78 @@
     {% endif %}
 
 {% endmacro %}
+
+{# ====== envelope — canonical OS-level response shape (Zammad #10297) ======
+   PILOT / NOT YET ADOPTED BROADLY. Lives here (not a standalone macro file)
+   deliberately -- zen_os_1.jinja is already a hard dependency for the prompt
+   itself (imported by conversation_agent_prompt_template.yaml) and for Flynn
+   (flynn.yaml), so R0/debug tools importing THIS file for the envelope shape
+   take on zero NEW failure edge -- they already depend on it existing.
+   Import failures in HA Jinja are NOT soft: a missing/broken {% import %}
+   target raises a raw exception that kills the entire MCP call outright
+   (verified live 2026-08-14 -- TemplateNotFound surfaced as a tool-call
+   error, not a JSON status:error response). That's the whole reason this
+   lives in the one file every load-bearing tool already can't live without,
+   instead of a new standalone file that would BE a new failure edge.
+
+   system_message is the universal sideband channel -- reads the SAME
+   _zen_priority_inject drawer/GC/expiry the priority_inject() prompt macro
+   above already uses, filtered to entries whose 'display' field is
+   'tool_response' or 'both' (prompt-only entries, the default, never
+   surface here). Usually none -- returns null, not padded onto every call.
+   'display' is a new per-entry field, not yet written by any real provider
+   as of this pilot; existing entries default to 'prompt' (unchanged
+   behavior) via .get('display','prompt').
+#}
+{%- macro envelope(status='success', mode='', result=none, tool='', caller_token='') -%}
+  {%- set _sys_msg = none -%}
+  {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+  {%- if _hh not in ['', 'unknown', 'unavailable'] -%}
+    {%- set _vars = state_attr(_hh, 'variables') | default({}, true) -%}
+    {%- set _vars = _vars if _vars is mapping else {} -%}
+    {%- set _raw  = _vars.get('_zen_priority_inject', {}) -%}
+    {%- set _slot = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
+    {%- set _slot = _slot.get('value', _slot) if _slot is mapping else {} -%}
+    {%- if _slot is mapping -%}
+      {%- set _now = now() -%}
+      {%- set _ns  = namespace(candidates=[]) -%}
+      {%- for _pid, _entry in _slot.items() if _entry is mapping -%}
+        {%- set _disp = _entry.get('display', 'prompt') -%}
+        {%- if _disp in ['tool_response', 'both'] -%}
+          {%- set _exp_s  = _entry.get('expires', '') | string | trim -%}
+          {%- set _exp_dt = (_exp_s | as_datetime) if _exp_s != '' else none -%}
+          {#- Defensive: a naive (no tzinfo) or otherwise malformed expires
+              value must never crash this comparison -- one bad entry from
+              any provider would otherwise take down envelope() for EVERY
+              tool call, not just this one (verified live 2026-08-14: a
+              naive timestamp raised TypeError: can't compare offset-naive
+              and offset-aware datetimes, uncaught, killing the whole call).
+              Skip the entry (treat as not-current) instead of crashing. #}
+          {%- set _exp_valid = _exp_dt is not none and _exp_dt.tzinfo is not none -%}
+          {%- if _exp_valid and _now < _exp_dt -%}
+            {%- set _ns.candidates = _ns.candidates + [{'urg': _entry.get('urgency','urgent'), 'pid': _pid, 'entry': _entry}] -%}
+          {%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if _ns.candidates | length > 0 -%}
+        {%- set _pick = (_ns.candidates | sort(attribute='urg'))[0] -%}
+        {%- set _sys_msg = {
+              'class': _pick.entry.get('class', _pick.pid),
+              'message': _pick.entry.get('summary', ''),
+              'urgency': _pick.entry.get('urgency', 'urgent')
+            } -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endif -%}
+  {{ {
+    'status': status,
+    'mode': mode,
+    'tool': tool,
+    'result': result if result is not none else {},
+    'system_message': _sys_msg,
+    'caller_token': caller_token
+  } | tojson }}
+{%- endmacro -%}
 
 
 {# ================== AGENT CONTEXT ================== #}
@@ -1797,7 +1869,7 @@ identity_format() must run before ai_wake_sequence().
 
 {{logon_prompt(ai_entity)}}
 
-Executing: ~WAKE~ <{{ now().isoformat() }}>
+Executing: ~WAKE~ <<timestamp>>
 
     {# ----------------------------------------------------
        2. Pull AutoContext from AI Cabinet

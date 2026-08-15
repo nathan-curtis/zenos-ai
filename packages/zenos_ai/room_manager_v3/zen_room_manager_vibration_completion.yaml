@@ -1,0 +1,115 @@
+###############################################################################
+# ZenOS Room Manager — Vibration Load-Completion Tracker
+#
+# Entity-agnostic load-completion detector: works for any entity labeled
+# 'vibration_completion', not one hardcoded appliance. Opt in per entity by
+# applying that label -- a general shake/tamper vibration sensor that was
+# NOT meant to track "load completion" should not carry it.
+#
+# Anomaly-filtered by design: a brief vibration blip must not be mistaken
+# for a finished cycle. Minimum real-run duration before a completion event
+# is considered genuine: 20 minutes (WASHER_MIN_RUN_SECONDS below).
+#
+# State: tracked in the household cabinet, drawer 'vibration_tracking',
+# keyed per entity_id (not a dedicated input_datetime per appliance --
+# there's no fixed set of entities to pre-provision helpers for). Value
+# shape: {"<entity_id>": {"started_at": "<iso8601>"}}.
+#
+# On genuine completion (sustained run >= minimum duration, then cleared):
+# emits a zen_dojotools_event_emitter event, kind=vibration_load_complete,
+# same one-shot-notification shape already used elsewhere in this file's
+# sibling dispatch automation (kind=reflex_dry_run) -- consume it the same
+# way (e.g. a listener automation, or KFC/summarizer feed) rather than
+# polling this drawer directly.
+###############################################################################
+
+automation:
+  - alias: "ZenOS — Vibration Load-Completion Tracker"
+    id: zen_vibration_load_completion
+    mode: parallel
+    max: 10
+    trigger:
+      - id: vib_start
+        trigger: vibration.detected
+        target:
+          label_id: vibration_completion
+      - id: vib_end
+        trigger: vibration.cleared
+        target:
+          label_id: vibration_completion
+    condition:
+      - condition: template
+        value_template: "{{ 'vibration_completion' in labels(trigger.entity_id) }}"
+    action:
+      - variables:
+          _hh_cabinet: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('', true) }}"
+      - if: "{{ _hh_cabinet == '' }}"
+        then:
+          - stop: no household cabinet resolved
+      - variables:
+          _tracking_raw: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set t = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'vibration_tracking') -%}
+            {%- set t = (t | from_json) if t is string and t | trim not in ['', 'none', 'null'] else t -%}
+            {{ t if t is mapping else {} }}
+      - choose:
+          # ── START — record the run's start time, only if not already
+          # tracked (a second vibration.detected before a cleared edge is
+          # noise, not a new run -- keep the original start timestamp). ────
+          - conditions: "{{ trigger.id == 'vib_start' }}"
+            sequence:
+              - if: "{{ trigger.entity_id not in _tracking_raw }}"
+                then:
+                  - variables:
+                      _tracking_out: >-
+                        {{ _tracking_raw | combine({trigger.entity_id: {'started_at': now().isoformat()}}) }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: upsert
+                      volume_entity_id: ["{{ _hh_cabinet }}"]
+                      key: vibration_tracking
+                      value: "{{ _tracking_out | tojson }}"
+          # ── END — check real elapsed run time against the anomaly-filter
+          # minimum before treating this as a genuine completion. Either
+          # way, the tracking entry is cleared -- a short run doesn't
+          # linger as stale state waiting for the next start. ────────────
+          - conditions: "{{ trigger.id == 'vib_end' }}"
+            sequence:
+              - if: "{{ trigger.entity_id in _tracking_raw }}"
+                then:
+                  - variables:
+                      _started_at: "{{ _tracking_raw[trigger.entity_id].get('started_at', '') }}"
+                      _started_dt: "{{ as_datetime(_tracking_raw[trigger.entity_id].get('started_at', '')) }}"
+                  - variables:
+                      _run_seconds: "{{ ((now() - _started_dt).total_seconds() | int) if _started_dt is not none else 0 }}"
+                      # 20-minute minimum -- same anomaly-filter threshold as
+                      # washing_machine.yaml's real cycle-duration gate.
+                      _min_run_seconds: 1200
+                  - variables:
+                      _tracking_out: >-
+                        {%- set ns = namespace(d={}) -%}
+                        {%- for k, v in _tracking_raw.items() if k != trigger.entity_id -%}
+                          {%- set ns.d = ns.d | combine({k: v}) -%}
+                        {%- endfor -%}
+                        {{ ns.d }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: upsert
+                      volume_entity_id: ["{{ _hh_cabinet }}"]
+                      key: vibration_tracking
+                      value: "{{ _tracking_out | tojson }}"
+                  - if: "{{ (_run_seconds | int) >= (_min_run_seconds | int) }}"
+                    then:
+                      - action: script.zen_dojotools_event_emitter
+                        data:
+                          mode: emit
+                          component: room_manager
+                          kind: vibration_load_complete
+                          severity: info
+                          summary: >-
+                            {{ area_name(trigger.entity_id) | default(trigger.entity_id, true) }}
+                            vibration cycle complete ({{ (_run_seconds // 60) | int }} min).
+                          metadata:
+                            entity_id: "{{ trigger.entity_id }}"
+                            started_at: "{{ _started_at }}"
+                            run_seconds: "{{ _run_seconds }}"

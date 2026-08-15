@@ -1,0 +1,912 @@
+###############################################################################
+# DojoTools — Lock Manager
+# zen_dojotools_locks (v1.3.0)
+#
+# Room-targetable lock/unlock control for the lock.* domain — the gap
+# zen_dojotools_covers already closed for cover.* had no lock equivalent
+# until now.
+#
+# v1.1.0 — first tool built on the shared zen_target_resolve.jinja core
+# (Zammad #10308): supports all three addressing modes (entity_id,
+# label, room), room resolution is RM-aware (union of native HA area
+# assignment AND Room Manager's own label-based room tagging, not area
+# assignment alone — see that macro file's header for why that distinction
+# matters), and mode=discover surfaces entity_extended_notes: any label
+# on a lock that carries a real description gets surfaced as guidance,
+# not silently dropped.
+#
+# v1.2.0 — adopted the canonical envelope() shape (zen_os_1.jinja,
+# Zammad #10297) and single-entry/single-exit structure (#10304 SESE
+# audit target).
+#
+# v1.3.0 — "cadillac" pass (Zammad #10309): made this the tool other
+# systems actually consume, not just a standalone setter/getter.
+#   - mode=inspect: single-lock deep detail — ALL labels (not just
+#     described ones), area context, ext_lock aggregate membership,
+#     battery/device info if present. This is the answer to "what does
+#     zen know about this lock, in context" — a lock's own tool is the
+#     authority on that, not a generic entity dump (#10309's domain-
+#     tool-as-authority principle; sensor.* stays Inspect's own turf
+#     since sensors aren't actuatable — nothing to redirect to there).
+#   - mode=discover/status now also accept entity_id= (real gap fixed:
+#     previously silently ignored outside mode=set).
+#   - mode=stacks_by_anchor: Lens Bus provider, anchor_type=area_id —
+#     lets any Lens Bus consumer ask "what locks does this room have and
+#     what state are they in" without knowing this tool exists.
+#   - mode=register/unregister: lens_registry drawer entry (household
+#     cabinet), same shape as zen_dojotools_autovac's lens provider
+#     pattern — the precedent this cadillac pass follows, not invents.
+#   - mode=kfc_manifest: KFC component definition so summarizer/agent
+#     context can seed real lock state instead of falling back to raw
+#     label:lock entity scanning.
+#   - tool_manifest: lens_provider=true, register_mode='register',
+#     modes list expanded, version bumped.
+#
+# mode=discover: list locks (room and/or label and/or entity_id scoped)
+#        with live state + any extended notes their labels carry.
+# mode=set action=lock|unlock: act on entity_id, label, and/or room.
+# mode=status: same as discover.
+# mode=inspect: single-lock deep detail (entity_id, or room/label that
+#        resolves to exactly one lock).
+###############################################################################
+
+script:
+
+  zen_dojotools_locks:
+    alias: "Zen DojoTools Lock Manager"
+    description: >-
+      Room-targetable lock/unlock control (lock.* domain). Supports
+      entity_id=, label=, and room= targeting (any combination — see
+      field descriptions for precedence). mode=discover: list locks with
+      live state + any extended instructions their labels carry.
+      mode=set action=lock|unlock: act on the resolved target set.
+      mode=status: same as discover. mode=inspect: deep single-lock
+      detail (labels, area, ext_lock membership, device info).
+      mode=stacks_by_anchor: Lens Bus provider (area_id anchor).
+    icon: mdi:lock
+    mode: queued
+    max: 5
+    fields:
+      mode:
+        name: Mode
+        description: "discover | set | status | inspect | help | kfc_manifest | stacks_by_anchor | register | unregister | escalation_request | escalation_status | tool_manifest"
+        default: discover
+        selector:
+          select:
+            options:
+              - discover
+              - set
+              - status
+              - inspect
+              - help
+              - kfc_manifest
+              - stacks_by_anchor
+              - register
+              - unregister
+              - escalation_request
+              - escalation_status
+              - tool_manifest
+      room:
+        name: Room
+        description: "Area name/slug OR a Room Manager room label — both resolve. Omit along with label/entity_id on discover/status for a whole-house lock overview; for set unless entity_id or label given."
+        selector:
+          text:
+      label:
+        name: Label
+        description: "HA label id. Combined with room= narrows to that room; alone, targets every lock carrying it anywhere in the house."
+        selector:
+          text:
+      entity_id:
+        name: Entity ID
+        description: "Explicit lock entity override. Beats label/room if given. Also valid for discover/status/inspect (not just set)."
+        selector:
+          entity:
+            domain: lock
+      action:
+        name: Action
+        description: "lock | unlock. Required for mode=set."
+        selector:
+          select:
+            options:
+              - lock
+              - unlock
+      dry_run:
+        name: Dry Run
+        description: "Preview mode=set without moving hardware. Returns would_apply list."
+        default: false
+        selector:
+          boolean:
+      anchor_type:
+        name: Anchor Type
+        description: "For mode=stacks_by_anchor. Only area_id supported currently."
+        selector:
+          text:
+      anchor_ids:
+        name: Anchor IDs
+        description: "For mode=stacks_by_anchor. JSON array string of area_ids, e.g. [\"garage\"]."
+        selector:
+          text:
+      escalation_scope:
+        name: Escalation Scope
+        description: "For mode=escalation_request/escalation_status. A scope slug for the elevated capability being requested, e.g. 'code_reveal'. This tool has no capability gated behind a scope yet -- infrastructure only, see zen_target_resolve.jinja header."
+        selector:
+          text:
+      escalation_reason:
+        name: Escalation Reason
+        description: "For mode=escalation_request. Free-text reason shown to the household admin in the approval ask."
+        selector:
+          text:
+      escalation_minutes:
+        name: Escalation Window (minutes)
+        description: "For mode=escalation_request. How long the grant stays active once approved. Default 15."
+        default: 15
+        selector:
+          number:
+            min: 1
+            max: 120
+      caller_token:
+        name: Caller Token
+        description: "Opaque audit token echoed in response."
+        selector:
+          text:
+    sequence:
+      - variables:
+          _tm_check: "{{ mode | default('') | lower }}"
+          _caller_token_early: "{{ caller_token | default('', true) }}"
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # Utility/meta modes keep their own early exits — self-description and
+      # registry ops, not domain results (same precedent as tool_manifest
+      # elsewhere in DojoTools, e.g. systemtools/autovac).
+      # ═══════════════════════════════════════════════════════════════════════
+      - if: "{{ _tm_check == 'tool_manifest' }}"
+        then:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {%- set _tm = MF.tool_manifest(
+                    tool='zen_dojotools_locks',
+                    display_name='Lock Manager',
+                    tier='dojotools',
+                    version='1.4.0',
+                    health={'configured': true, 'status': 'ok', 'notes': []},
+                    required_labels=['dojotools'],
+                    optional_labels=['ext_lock'],
+                    consumes=['entity_or_label_or_room', 'area_id'],
+                    returns=['lock_state', 'lock_evidence'],
+                    icon='mdi:lock',
+                    color='brown',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
+                    lens_provider=true,
+                    caller_token=_caller_token_early
+                ) | from_json -%}
+                {{- _tm | combine({'provider_key': 'locks', 'register_mode': 'register'}) -}}
+          - stop: tool_manifest
+            response_variable: result
+
+      - if: "{{ _tm_check == 'kfc_manifest' }}"
+        then:
+          - variables:
+              result:
+                mode: kfc_manifest
+                status: ok
+                caller_token: "{{ _caller_token_early }}"
+                kfc:
+                  kata_key: locks
+                  friendly_name: Locks
+                  label: ext_lock
+                  component_summary: >-
+                    Lock domain authority — live lock/unlock state, room
+                    membership, and any household-authored guidance tagged
+                    onto a specific lock. Consult for lock questions instead
+                    of reading lock.* entities directly.
+                  component_instructions: >-
+                    You are reading lock state for this household.
+
+                    SEED OUTPUT (zen_dojotools_locks, mode=discover room=X or
+                    label=X): live lock/unlocked state per entity, plus any
+                    extended_notes — real household-authored guidance surfaced
+                    from that lock's own labels (e.g. a caution note on an
+                    exterior door). Use this as ground truth for lock
+                    questions; do not read lock.* state directly.
+
+                    INDEX-ONLY PATH (label:lock entity surface — automatic
+                    fallback): lock.* entities, state locked/unlocked/
+                    jammed/unknown. No extended_notes or room-aware
+                    label-union resolution in this fallback path.
+
+                    REPORTING: mode=inspect entity_id=X for full single-lock
+                    detail (all labels, area, ext_lock aggregate membership,
+                    battery/device info if present).
+          - stop: locks kfc_manifest
+            response_variable: result
+
+      - if: "{{ _tm_check == 'register' }}"
+        then:
+          - variables:
+              _reg_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+          - variables:
+              _reg_entry:
+                locks:
+                  provider: locks
+                  tool: zen_dojotools_locks
+                  configured_by: zen_dojotools_locks
+                  department: dojotools
+                  consumes: ["area_id"]
+                  returns: ["lock_evidence"]
+                  failure_policy: soft
+                  content_policy: standard
+                  risk_class: actuator
+                  enabled: true
+                  status: available
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _reg_hh }}"
+              key: lens_registry
+            response_variable: _reg_read_raw
+          - variables:
+              _reg_current: >-
+                {%- set raw = _reg_read_raw if _reg_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: write
+              volume_entity_id: "{{ _reg_hh }}"
+              key: lens_registry
+              value: "{{ (_reg_current | combine(_reg_entry)) | tojson }}"
+          - variables:
+              result:
+                mode: register
+                status: ok
+                caller_token: "{{ _caller_token_early }}"
+                provider: locks
+                registered: true
+          - stop: locks lens register
+            response_variable: result
+
+      - if: "{{ _tm_check == 'unregister' }}"
+        then:
+          - variables:
+              _unreg_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _unreg_hh }}"
+              key: lens_registry
+            response_variable: _unreg_read_raw
+          - variables:
+              _unreg_current: >-
+                {%- set raw = _unreg_read_raw if _unreg_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+              _unreg_removed: "{{ 'locks' in _unreg_current }}"
+          - variables:
+              _unreg_new: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- for k, v in _unreg_current.items() -%}
+                  {%- if k != 'locks' -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.d }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: write
+              volume_entity_id: "{{ _unreg_hh }}"
+              key: lens_registry
+              value: "{{ _unreg_new | tojson }}"
+          - variables:
+              result:
+                mode: unregister
+                status: ok
+                caller_token: "{{ _caller_token_early }}"
+                provider: locks
+                removed: "{{ _unreg_removed }}"
+          - stop: locks lens unregister
+            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # Time-boxed admin escalation (Zammad #10309, "give power to the people
+      # or nerf the agent" tier). Generalized pattern, stolen from
+      # zen_dojotools_infra's Portainer container-control codex d-class ack
+      # (mode=fire response_type=yes_no + poll mode=get_response) -- the ONLY
+      # difference is the grant is TIME-BOXED (written with an expiry into
+      # the household cabinet 'lock_escalations' drawer) rather than a
+      # one-shot approve-this-action. Any future capability that needs to
+      # read something genuinely sensitive (this tool currently has NONE --
+      # pin_set stays boolean-only, raw PIN values are never surfaced by any
+      # mode) would gate on escalation_status before running, the same way
+      # mode=set gates on the lock_control cert above. This infrastructure
+      # is the reusable half of #10309's third pillar; copy this shape when
+      # porting other tools rather than re-deriving it. ──
+      - if: "{{ _tm_check == 'escalation_request' }}"
+        then:
+          - variables:
+              _esc_scope: "{{ escalation_scope | default('', true) | string | trim }}"
+              _esc_reason: "{{ escalation_reason | default('requested via zen_dojotools_locks', true) | string | trim }}"
+              _esc_minutes: "{{ escalation_minutes | default(15, true) | int(15) }}"
+          - if: "{{ _esc_scope == '' }}"
+            then:
+              - variables:
+                  result:
+                    mode: escalation_request
+                    status: error
+                    error: escalation_scope_required
+                    detail: "Provide escalation_scope= (e.g. 'code_reveal')."
+              - stop: locks escalation_request — missing scope
+                response_variable: result
+          - variables:
+              _esc_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+          # ── Ack-wait timing, cabinet-overridable within a HARD ceiling
+          # enforced by zen_dojotools_identity's request_live_ack itself
+          # (max_wait clamped to 150s regardless of what's passed here --
+          # a longer window is a de-escalation attack surface). Default
+          # total wait 90s. This block used to hand-roll its own fire+poll
+          # loop; now delegates to the shared chokepoint (also used by
+          # zen_dojotools_infra's d-class and persona_editor's cert
+          # grant/revoke) so the timing logic and dedup-key generation
+          # live in exactly one place. ──
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _esc_hh }}"
+              key: lock_escalation_config
+            response_variable: _esc_cfg_raw
+          - variables:
+              _esc_cfg: >-
+                {%- set raw = _esc_cfg_raw if _esc_cfg_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+          - action: script.zen_dojotools_identity
+            response_variable: _esc_ack_result_raw
+            continue_on_error: true
+            data:
+              mode: request_live_ack
+              ack_message: "Lock tool requests time-boxed escalation, scope='{{ _esc_scope }}', {{ _esc_minutes }} min. Reason: {{ _esc_reason }}. Approve?"
+              ack_max_wait_seconds: "{{ _esc_cfg.get('max_wait_seconds', 90) | int(90) }}"
+              ack_poll_interval_seconds: "{{ _esc_cfg.get('poll_interval_seconds', 15) | int(15) }}"
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _esc_approved: "{{ _esc_ack_result_raw.get('approved', false) if _esc_ack_result_raw is mapping else false }}"
+              _esc_ack_reason: "{{ _esc_ack_result_raw.get('reason', 'dispatch_failed') if _esc_ack_result_raw is mapping else 'dispatch_failed' }}"
+              _esc_waited_seconds: "{{ _esc_ack_result_raw.get('waited_seconds', 0) if _esc_ack_result_raw is mapping else 0 }}"
+          - if: "{{ not _esc_approved }}"
+            then:
+              - variables:
+                  result:
+                    mode: escalation_request
+                    status: denied
+                    scope: "{{ _esc_scope }}"
+                    reason: "{{ _esc_ack_reason }}"
+                    waited_seconds: "{{ _esc_waited_seconds }}"
+              - stop: locks escalation_request — not approved
+                response_variable: result
+          - variables:
+              _esc_granted_at: "{{ now().isoformat() }}"
+              _esc_expires_at: "{{ (now() + timedelta(minutes=_esc_minutes)).isoformat() }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _esc_hh }}"
+              key: lock_escalations
+            response_variable: _esc_read_raw
+          - variables:
+              _esc_current: >-
+                {%- set raw = _esc_read_raw if _esc_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+              _esc_grant:
+                scope: "{{ _esc_scope }}"
+                granted_at: "{{ _esc_granted_at }}"
+                expires_at: "{{ _esc_expires_at }}"
+                reason: "{{ _esc_reason }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: write
+              volume_entity_id: "{{ _esc_hh }}"
+              key: lock_escalations
+              value: "{{ (_esc_current | combine({_esc_scope: _esc_grant})) | tojson }}"
+          - variables:
+              result:
+                mode: escalation_request
+                status: ok
+                scope: "{{ _esc_scope }}"
+                granted: true
+                expires_at: "{{ _esc_expires_at }}"
+          - stop: locks escalation_request — granted
+            response_variable: result
+
+      - if: "{{ _tm_check == 'escalation_status' }}"
+        then:
+          - variables:
+              _escs_scope: "{{ escalation_scope | default('', true) | string | trim }}"
+              _escs_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _escs_hh }}"
+              key: lock_escalations
+            response_variable: _escs_read_raw
+          - variables:
+              _escs_current: >-
+                {%- set raw = _escs_read_raw if _escs_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+          - variables:
+              _escs_grant: "{{ _escs_current.get(_escs_scope, none) if _escs_scope != '' else none }}"
+          - variables:
+              _escs_active: "{{ (_escs_grant is not none) and (now() < (_escs_grant.get('expires_at', '') | as_datetime)) if _escs_grant is not none else false }}"
+          - variables:
+              result:
+                mode: escalation_status
+                status: ok
+                scope: "{{ _escs_scope if _escs_scope != '' else none }}"
+                active: "{{ _escs_active }}"
+                grant: "{{ _escs_grant }}"
+                all_grants: "{{ _escs_current }}"
+          - stop: locks escalation_status
+            response_variable: result
+
+      # ── Normalize inputs ────────────────────────────────────────────────────
+      - variables:
+          _mode: "{{ mode | default('discover', true) | lower | trim }}"
+          _room: "{{ room | default('', true) | string | trim }}"
+          _label: "{{ label | default('', true) | string | trim }}"
+          _entity_id: "{{ entity_id | default('', true) | string | trim }}"
+          _action: "{{ action | default('', true) | lower | trim }}"
+          _dry_run: "{{ dry_run | default(false, true) | bool(false) }}"
+          _caller_token: "{{ caller_token | default('', true) }}"
+      # ── Resolve room to an area_id/label the shared core can use as-is.
+      # Kept minimal here on purpose: TARGET.resolve_room_entities already
+      # does area_entities(room) OR label_entities(room) internally, so
+      # 'room' just needs to be a valid area slug/name OR a real label --
+      # no separate area_id lookup needed before handing it to the macro. ──
+      - variables:
+          _room_resolved: "{{ _room | slugify if _room != '' else '' }}"
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # Single-entry/single-exit: every branch below builds `result` and falls
+      # through. ONE stop point at the bottom wraps it in OS.envelope().
+      # ═══════════════════════════════════════════════════════════════════════
+      - choose:
+          # ── HELP ──────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'help' }}"
+            sequence:
+              - variables:
+                  result:
+                    status: help
+                    message: >-
+                      mode=discover [room=X] [label=X] [entity_id=X] — list
+                      locks (room/label/entity_id scoped, at least one
+                      required) with live state and any extended notes their
+                      labels carry. mode=set action=lock|unlock [room=X]
+                      [label=X] [entity_id=X] — act on the resolved target
+                      set; entity_id beats label+room, label+room together
+                      narrows to that room, either alone works too.
+                      mode=status — same as discover. mode=inspect
+                      entity_id=X (or room/label resolving to exactly one
+                      lock) — full single-lock detail: all labels, area
+                      context, ext_lock aggregate membership, battery/device
+                      info if present. dry_run=true on mode=set previews
+                      without moving hardware. mode=stacks_by_anchor
+                      anchor_type=area_id anchor_ids=[...] — Lens Bus
+                      provider. mode=kfc_manifest/register/unregister —
+                      registry/discovery plumbing, not domain results.
+
+          # ── DISCOVER / STATUS ────────────────────────────────────────────────
+          # Bare call (no entity_id/room/label at all) is NOT an error --
+          # a locks tool called with nothing should answer "every lock in
+          # the house", the same way any human would read "call the lock
+          # tool" with no argument. Scoped variants (room=/label=/entity_id=)
+          # still go through the shared discover_targets core as before. ──
+          - conditions: "{{ _mode in ['discover', 'status'] }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _room_resolved == '' and _label == '' and _entity_id == '' }}"
+                    sequence:
+                      - variables:
+                          _discovered_raw: >-
+                            {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                            {%- set ns = namespace(items=[]) -%}
+                            {%- for e in states.lock | map(attribute='entity_id') | list -%}
+                              {%- set _notes_raw = TARGET.entity_extended_notes(e, ['ext_lock', 'dojotools']) -%}
+                              {%- set _notes = (_notes_raw | from_json) if _notes_raw is string else _notes_raw -%}
+                              {%- set ns.items = ns.items + [{
+                                'entity_id': e,
+                                'friendly_name': state_attr(e, 'friendly_name') | default(e, true),
+                                'state': states(e),
+                                'extended_notes': _notes
+                              }] -%}
+                            {%- endfor -%}
+                            {{ ns.items }}
+                      - variables:
+                          _discovered: "{{ (_discovered_raw | from_json) if _discovered_raw is string else _discovered_raw }}"
+                      - variables:
+                          result:
+                            status: ok
+                            mode: "{{ _mode }}"
+                            scope: whole_house
+                            room: "{{ none }}"
+                            label: "{{ none }}"
+                            lock_count: "{{ _discovered | length }}"
+                            locked_count: "{{ _discovered | selectattr('state', 'equalto', 'locked') | list | length }}"
+                            unlocked_count: "{{ _discovered | selectattr('state', 'equalto', 'unlocked') | list | length }}"
+                            locks: "{{ _discovered }}"
+                default:
+                  - variables:
+                      _discovered_raw: >-
+                        {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                        {{ TARGET.discover_targets(_entity_id, _room_resolved, _label, 'lock\\.', [_room_resolved, 'ext_lock', 'dojotools']) }}
+                  - variables:
+                      _discovered: "{{ (_discovered_raw | from_json) if _discovered_raw is string else _discovered_raw }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: "{{ _mode }}"
+                        scope: scoped
+                        room: "{{ _room_resolved if _room_resolved != '' else none }}"
+                        label: "{{ _label if _label != '' else none }}"
+                        lock_count: "{{ _discovered | length }}"
+                        locked_count: "{{ _discovered | selectattr('state', 'equalto', 'locked') | list | length }}"
+                        unlocked_count: "{{ _discovered | selectattr('state', 'equalto', 'unlocked') | list | length }}"
+                        locks: "{{ _discovered }}"
+
+          # ── INSPECT (single-lock deep detail) ────────────────────────────────
+          - conditions: "{{ _mode == 'inspect' }}"
+            sequence:
+              - variables:
+                  _insp_candidates_raw: >-
+                    {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                    {{ TARGET.resolve_targets(_entity_id, _room_resolved, _label, 'lock\\.') }}
+              - variables:
+                  _insp_candidates: "{{ (_insp_candidates_raw | from_json) if _insp_candidates_raw is string else _insp_candidates_raw }}"
+              - choose:
+                  - conditions: "{{ _insp_candidates | length == 0 }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: no_match
+                            detail: "entity_id=, room=, and/or label= resolved to zero locks."
+                  - conditions: "{{ _insp_candidates | length > 1 }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: ambiguous
+                            detail: "Resolved to more than one lock — narrow with entity_id= for mode=inspect."
+                            candidates: "{{ _insp_candidates }}"
+                default:
+                  - variables:
+                      _insp_ent: "{{ _insp_candidates[0] }}"
+                      _insp_area_id: "{{ area_id(_insp_candidates[0]) | default(none, true) }}"
+                      _insp_device_id: "{{ device_id(_insp_candidates[0]) | default(none, true) }}"
+                  - variables:
+                      _insp_labels: "{{ labels(_insp_ent) }}"
+                  - variables:
+                      _insp_notes_raw: >-
+                        {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                        {{ TARGET.entity_extended_notes(_insp_ent, []) }}
+                  - variables:
+                      _insp_notes: "{{ (_insp_notes_raw | from_json) if _insp_notes_raw is string else _insp_notes_raw }}"
+                  # ── Z-Wave deep dive. Home users don't differentiate "the
+                  # lock" from "the Z-Wave node underneath it" -- zwave_js
+                  # doesn't hand back config parameters via a service response
+                  # (confirmed live: zwave_js.get_config_parameters returned
+                  # empty with no error either way, wrong assumption). Real
+                  # shape: each config parameter zwave_js is set to expose
+                  # shows up as its OWN entity (number/select/switch) on the
+                  # SAME HA device as the lock -- so the walk is device_entities,
+                  # same pattern security_manager already uses for its zone
+                  # device-tree walk. Also catches Keymaster (Nathan's install
+                  # has it): its per-lock code-slot/connection entities live
+                  # on a SEPARATE device but the SAME area as the physical
+                  # lock, so an area-scoped keymaster-name-match sibling scan
+                  # catches those without hardcoding Keymaster's exact entity
+                  # naming across versions. ──
+                  - variables:
+                      _insp_is_zwave: "{{ 'z_wave' in _insp_labels }}"
+                  - variables:
+                      _insp_device_siblings: >-
+                        {%- set ns = namespace(items=[]) -%}
+                        {%- if _insp_device_id -%}
+                          {%- for e in device_entities(_insp_device_id) if e != _insp_ent -%}
+                            {%- set ns.items = ns.items + [{
+                              'entity_id': e,
+                              'domain': e.split('.')[0],
+                              'friendly_name': state_attr(e, 'friendly_name') | default(e, true),
+                              'state': states(e)
+                            }] -%}
+                          {%- endfor -%}
+                        {%- endif -%}
+                        {{ ns.items }}
+                  # Keymaster runs on its OWN integration device per lock
+                  # (integration=keymaster, name=<squashed slug>) -- NOT the
+                  # same HA device as the Z-Wave lock, and not area-assigned,
+                  # so neither device_entities(_insp_device_id) nor an area
+                  # scan finds it. Confirmed live: ~50+ entities PER CODE SLOT
+                  # (schedule toggles for every day of the week, date ranges,
+                  # sync status, etc) -- raw-dumping all of that is exactly
+                  # the noise #10308's safe-output requirement exists to
+                  # prevent, so this builds one compact record per slot
+                  # instead. PIN values are NEVER surfaced -- pin_set (bool)
+                  # only, never the raw code, regardless of what the text
+                  # entity's actual state holds. Match key: find any ONE
+                  # code-slot entity by squashed-slug substring, resolve ITS
+                  # device_id, then device_entities() gives the complete,
+                  # authoritative set for every slot on this lock. ──
+                  - variables:
+                      _insp_lock_slug: "{{ _insp_ent.split('.')[1] }}"
+                      _insp_lock_slug_squashed: "{{ _insp_ent.split('.')[1] | replace('_', '') }}"
+                  - variables:
+                      _insp_km_seed: >-
+                        {{ states.binary_sensor
+                           | selectattr('entity_id', 'search', _insp_lock_slug_squashed ~ '_code_slot_')
+                           | map(attribute='entity_id') | list | first | default('', true) }}
+                  - variables:
+                      _insp_km_device_id: "{{ device_id(_insp_km_seed) if _insp_km_seed != '' else none }}"
+                  - variables:
+                      _insp_km_controlled: "{{ _insp_km_device_id is not none }}"
+                  - variables:
+                      _insp_km_slots: >-
+                        {%- set ns = namespace(slots={}) -%}
+                        {%- if _insp_km_device_id -%}
+                          {%- for e in device_entities(_insp_km_device_id) -%}
+                            {%- set _m = e | regex_findall('code_slot_(\\d+)_(.+)$') -%}
+                            {%- if _m | length > 0 -%}
+                              {%- set _slot_num = _m[0][0] -%}
+                              {%- set _field = _m[0][1] -%}
+                              {%- set _slot = ns.slots.get(_slot_num, {'slot': _slot_num | int}) -%}
+                              {%- if _field == 'active' -%}
+                                {%- set _slot = _slot | combine({'active': states(e) == 'on'}) -%}
+                              {%- elif _field == 'enabled' -%}
+                                {%- set _slot = _slot | combine({'enabled': states(e) == 'on'}) -%}
+                              {%- elif _field == 'name' -%}
+                                {%- set _slot = _slot | combine({'name': states(e) if states(e) not in ['unavailable', 'unknown', ''] else none}) -%}
+                              {%- elif _field == 'pin' -%}
+                                {%- set _slot = _slot | combine({'pin_set': states(e) not in ['unavailable', 'unknown', '']}) -%}
+                              {%- elif _field == 'uses_remaining' -%}
+                                {%- set _slot = _slot | combine({'uses_remaining': states(e) if states(e) not in ['unavailable', 'unknown'] else none}) -%}
+                              {%- elif _field == 'sync_status' -%}
+                                {%- set _slot = _slot | combine({'sync_status': states(e)}) -%}
+                              {%- elif _field == 'use_day_of_week_limits' -%}
+                                {%- set _slot = _slot | combine({'has_day_of_week_schedule': states(e) == 'on'}) -%}
+                              {%- elif _field == 'use_date_range_limits' -%}
+                                {%- set _slot = _slot | combine({'has_date_range_limit': states(e) == 'on'}) -%}
+                              {%- endif -%}
+                              {%- set ns.slots = ns.slots | combine({_slot_num: _slot}) -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                        {%- endif -%}
+                        {{ ns.slots.values() | list | sort(attribute='slot') }}
+                  # Keymaster multi-lock parent/child sync topology (Nathan's
+                  # real setup: front_door is parent, garage_entry_door and
+                  # back_door are children syncing its code slots unless a
+                  # given slot's override_parent switch is on). sensor.<slug>
+                  # _parent_lock holds the PARENT's squashed slug as its state
+                  # ('' if this lock has no such sensor -- it IS the root).
+                  # Reverse lookup (who are MY children) scans every other
+                  # lock's parent_lock sensor for a value matching my own slug. ──
+                  - variables:
+                      _insp_km_parent_slug: >-
+                        {{ states('sensor.' ~ _insp_lock_slug_squashed ~ '_parent_lock') if states('sensor.' ~ _insp_lock_slug_squashed ~ '_parent_lock') not in ['unavailable', 'unknown'] else '' }}
+                  - variables:
+                      _insp_km_parent_entity: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- if _insp_km_parent_slug != '' -%}
+                          {%- for e in states.lock | map(attribute='entity_id') | list -%}
+                            {%- if e.split('.')[1] | replace('_', '') == _insp_km_parent_slug -%}
+                              {%- set ns.found = e -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                        {%- endif -%}
+                        {{ ns.found }}
+                  - variables:
+                      _insp_km_children: >-
+                        {%- set ns = namespace(items=[]) -%}
+                        {%- for e in states.lock | map(attribute='entity_id') | list if e != _insp_ent -%}
+                          {%- set _child_slug = e.split('.')[1] | replace('_', '') -%}
+                          {%- set _child_parent = states('sensor.' ~ _child_slug ~ '_parent_lock') -%}
+                          {%- if _child_parent == _insp_lock_slug_squashed -%}
+                            {%- set ns.items = ns.items + [e] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.items }}
+                  - variables:
+                      _insp_keymaster: >-
+                        {{ {
+                          'controlled': _insp_km_controlled,
+                          'device_id': _insp_km_device_id,
+                          'code_slots': _insp_km_slots,
+                          'is_parent': _insp_km_children | length > 0,
+                          'parent_lock': _insp_km_parent_entity if _insp_km_parent_entity != '' else none,
+                          'child_locks': _insp_km_children
+                        } }}
+                  - variables:
+                      result:
+                        status: ok
+                        entity_id: "{{ _insp_ent }}"
+                        friendly_name: "{{ state_attr(_insp_ent, 'friendly_name') | default(_insp_ent, true) }}"
+                        state: "{{ states(_insp_ent) }}"
+                        last_changed: "{{ states.lock | selectattr('entity_id', 'eq', _insp_ent) | map(attribute='last_changed') | first | default(none, true) }}"
+                        area_id: "{{ _insp_area_id }}"
+                        area_name: "{{ area_name(_insp_area_id) if _insp_area_id else none }}"
+                        labels: "{{ _insp_labels }}"
+                        extended_notes: "{{ _insp_notes }}"
+                        ext_lock_member: "{{ 'ext_lock' in _insp_labels }}"
+                        battery_level: "{{ state_attr(_insp_ent, 'battery_level') }}"
+                        device_id: "{{ _insp_device_id }}"
+                        device_name: "{{ device_attr(_insp_device_id, 'name') if _insp_device_id else none }}"
+                        device_manufacturer: "{{ device_attr(_insp_device_id, 'manufacturer') if _insp_device_id else none }}"
+                        device_model: "{{ device_attr(_insp_device_id, 'model') if _insp_device_id else none }}"
+                        zwave: "{{ _insp_is_zwave }}"
+                        device_entities: "{{ _insp_device_siblings }}"
+                        keymaster: "{{ _insp_keymaster }}"
+                        participates_in: >-
+                          {%- set ns = namespace(items=[]) -%}
+                          {%- if 'ext_lock' in _insp_labels -%}
+                            {%- set ns.items = ns.items + ['room_state.ext_lock aggregate (exterior unlocked-count/active)'] -%}
+                          {%- endif -%}
+                          {%- if _insp_area_id -%}
+                            {%- set ns.items = ns.items + ['room_manager topology (area: ' ~ _insp_area_id ~ ')'] -%}
+                          {%- endif -%}
+                          {%- if _insp_km_controlled -%}
+                            {%- set ns.items = ns.items + ['Keymaster (code slot / access management)'] -%}
+                          {%- endif -%}
+                          {{ ns.items }}
+
+          # ── SET ───────────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'set' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _action not in ['lock', 'unlock'] }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: action_required
+                            detail: "Provide action=lock or action=unlock."
+                default:
+                  - variables:
+                      _set_targets_raw: >-
+                        {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                        {{ TARGET.resolve_targets(_entity_id, _room_resolved, _label, 'lock\\.') }}
+                  - variables:
+                      _set_targets: "{{ (_set_targets_raw | from_json) if _set_targets_raw is string else _set_targets_raw }}"
+                  - choose:
+                      - conditions: "{{ _set_targets | length == 0 }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: no_targets
+                                detail: "Provide entity_id=, label=, and/or room= that resolves to at least one lock."
+                      - conditions: "{{ _dry_run }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: ok
+                                mode: set
+                                dry_run: true
+                                action: "{{ _action }}"
+                                would_apply: "{{ _set_targets }}"
+                    default:
+                      # ── Tier X (act) identity gate -- stolen and generalized
+                      # from zen_dojotools_infra's Portainer container-control
+                      # codex (#10309 identity mechanism pilot). Read (discover/
+                      # status/inspect) stays open; actuation requires the
+                      # default agent's own lock_control certification, fail-
+                      # closed exactly like the infra codex -- until Nathan
+                      # certifies it via persona_editor, this denies by design,
+                      # not by bug. caller_token is audit-only here too, never
+                      # a trust input (see feedback_caller_id_not_authenticated). ──
+                      - action: script.zen_dojotools_identity
+                        response_variable: _set_id_raw
+                        continue_on_error: true
+                        data:
+                          mode: resolve_caller_identity
+                          required_cert: lock_control
+                          required_cert_level: 1
+                          caller_token: "{{ _caller_token }}"
+                      - variables:
+                          _set_policy_status: "{{ _set_id_raw.get('policy_status', 'blocked') if _set_id_raw is mapping else 'blocked' }}"
+                          _set_authorized: "{{ _set_id_raw.get('authorized', false) if _set_id_raw is mapping else false }}"
+                          _set_cert_level: "{{ _set_id_raw.get('cert_level', 0) if _set_id_raw is mapping else 0 }}"
+                      - choose:
+                          - conditions: "{{ _set_policy_status != 'allowed' or not _set_authorized }}"
+                            sequence:
+                              - variables:
+                                  result:
+                                    status: error
+                                    error: "{{ 'identity_policy_blocked' if _set_policy_status != 'allowed' else 'cert_insufficient' }}"
+                                    mode: set
+                                    detail: >-
+                                      {%- if _set_policy_status != 'allowed' -%}
+                                        resolve_caller_identity did not return an allowed identity -- action denied.
+                                      {%- else -%}
+                                        lock_control cert level {{ _set_cert_level }} is below the required minimum (1). Certify the default agent via persona_editor to enable lock actuation.
+                                      {%- endif -%}
+                                    would_apply: "{{ _set_targets }}"
+                        default:
+                          - repeat:
+                              for_each: "{{ _set_targets }}"
+                              sequence:
+                                - action: "lock.{{ _action }}"
+                                  continue_on_error: true
+                                  target:
+                                    entity_id: "{{ repeat.item }}"
+                          - variables:
+                              result:
+                                status: ok
+                                mode: set
+                                action: "{{ _action }}"
+                                applied_to: "{{ _set_targets }}"
+
+          # ── LENS: stacks_by_anchor ──────────────────────────────────────────
+          - conditions: "{{ _mode == 'stacks_by_anchor' }}"
+            sequence:
+              - variables:
+                  _anchor_type: "{{ anchor_type | default('') | lower | trim }}"
+                  _anchor_ids: "{{ anchor_ids if anchor_ids is sequence and anchor_ids is not string else (anchor_ids | from_json(none) if anchor_ids is string and anchor_ids | trim != '' else []) }}"
+              - choose:
+                  - conditions: "{{ _anchor_type != 'area_id' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: ok
+                            provider: locks
+                            evidence: []
+                            note: "locks only handles area_id anchors"
+                default:
+                  - variables:
+                      _sba_evidence: >-
+                        {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                        {%- set ns = namespace(rooms=[]) -%}
+                        {%- for aid in _anchor_ids -%}
+                          {%- set _raw = TARGET.discover_targets('', aid, '', 'lock\\.', [aid, 'ext_lock', 'dojotools']) -%}
+                          {%- set _locks = (_raw | from_json) if _raw is string else _raw -%}
+                          {%- set ns.rooms = ns.rooms + [{
+                            'area_id': aid,
+                            'lock_count': _locks | length,
+                            'unlocked_count': _locks | selectattr('state', 'equalto', 'unlocked') | list | length,
+                            'locks': _locks
+                          }] -%}
+                        {%- endfor -%}
+                        {{ ns.rooms }}
+                  - variables:
+                      result:
+                        status: ok
+                        provider: locks
+                        evidence: "{{ _sba_evidence }}"
+
+        default:
+          - variables:
+              result:
+                status: error
+                error: unknown_mode
+                detail: "mode must be one of discover|set|status|inspect|help|kfc_manifest|stacks_by_anchor|register|unregister|tool_manifest."
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # SINGLE EXIT — envelope() wrap (Zammad #10297)
+      # ═══════════════════════════════════════════════════════════════════════
+      - variables:
+          _envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='success',
+              mode=_mode,
+              result=result,
+              tool='zen_dojotools_locks',
+              caller_token=_caller_token
+            ) -}}
+      - variables:
+          _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+      - stop: locks response
+        response_variable: _envelope
