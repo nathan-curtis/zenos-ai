@@ -156,6 +156,8 @@ control panel position and as a state in Section 4; they're the same
 thing seen from two sides, "I picked this" and "this is what the room is
 now.")
 
+**"Only a human" is enforced now, not just intended (2026-08-16).** Moving a room out of Paused requires the `room_control_override` certification, and — same as an exterior door unlock — a fresh live yes/no to *your* device every single time, even if that certification is already granted. There's no standing "always let it unpause" setting by design; if a specific room's back-and-forth is genuinely more friction than it's worth, an admin can scope an exemption to just that room. See the [Security & Certification System operator manual](security_certification_manual.md) for how certification grants and scoped exemptions actually work.
+
 **AUTOMATION** means an agent has deliberately taken over this room for
 a task, such as running a scene sequence or testing something, and will
 hand it back when done. Some rooms have a built-in safety net (Section

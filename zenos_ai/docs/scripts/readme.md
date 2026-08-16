@@ -235,13 +235,6 @@ Room-targetable lock/unlock control for the `lock.*` domain — the gap `zen_doj
 
 ---
 
-## 24. Zen DojoTools Covers (ZenShade) — v6.0.0
-**File:** `zen_dojotools_covers_readme.md`
-
-Room-aware cover/blind/shade/smart-vent manager, label-taxonomy-driven with scene presets. The other tool `zen_target_resolve.jinja` was extracted from — second adopter of the shared targeting core and the identity-gate pattern. New `cover_control` cert, asymmetric by risk: closing is cert-only, opening a barrier-class cover (garage/door/gate) is cert **and** a fresh live ack every call (same `cert_scope` override mechanism as locks), opening a non-barrier window cover stays cert-only. Barrier auto-exclusion from `scene_set` unchanged since v5.1.0.
-
----
-
 # Summary
 
 If Friday performs an action, reads something, correlates entities, inspects a device, updates a drawer, or leaves a breadcrumb — it came from here.

@@ -42,6 +42,8 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 
 **Self-published cert:** `security_control` is declared in this tool's own `tool_manifest.certs_required` — that's what makes it a valid `cert_grant` target under the live-calculated catalog (`zen_dojotools_manifest mode=cert_audit`; see `zen_dojotools_profile_readme.md`'s certification section). Grant via `zen_dojotools_persona_editor mode=cert_grant cert_component=security_control`.
 
+**Scoped disarm override:** unlike locks/covers, there's no per-entity target for a single alarm panel to scope against — an admin exempts disarm from the every-call ack via `cert_grant cert_component=security_control cert_scope=["disarm"]`, a literal token rather than an entity_id. Resolution goes through the same shared `cert_scope_check` macro as every other gated tool (2026-08-16 centralization) — see the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
+
 **v5.3.0 (2026-08-15):** full SESE (single-entry/single-exit) and canonical `envelope()` migration alongside the identity-gate work above — response shape internals changed accordingly (existing fields now live under `result`), same pattern as `zen_health_report`'s own envelope adoption.
 
 ---

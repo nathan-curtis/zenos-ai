@@ -1,6 +1,6 @@
 # ZenOS-AI ZenShade — Cover Manager
 
-**Version:** 5.1.0
+**Version:** 6.0.0
 **Script:** `zen_dojotools_covers`
 **Codename:** ZenShade
 
@@ -18,6 +18,8 @@ Key capabilities:
 * Dynamic `light_tx` — actual transmission calculated from cover position (or live lux sensor)
 * Privacy scene advisory — warns when open sensors detected
 * ZenLux integration — called by `bleed_set` when `sync_shades=true`
+* Identity-gated actuation: `cover_control` certification required on `discover`/`set`, asymmetric by risk (see Identity Gate below)
+* Full SESE (single-entry/single-exit) + canonical `envelope()` response shape (2026-08-15)
 
 ZenShade is stateless — no cabinet, no preferences stored.
 
@@ -74,7 +76,7 @@ Confirms roles assigned, `is_barrier` correct, `effective_light_tx` calculated.
 | Mode | Description |
 |------|-------------|
 | `discover` | Map all covers in a room. Returns per-cover: `position`, `tilt_supported`, `tilt_position`, `role`, `effective_light_tx`, `light_tx_method`, `device_class`, `is_barrier`, `is_primary`. |
-| `set` | Set `position` (0–100) and/or `tilt_position` (0–100) for a specific cover. Either or both valid. `0=close`, `100=open`. Resolves via `room` + `target_role` or direct `entity_id`. Supports `dry_run=true`. |
+| `set` | Set `position` (0–100) and/or `tilt_position` (0–100) for a specific cover. Either or both valid. `0=close`, `100=open`. Resolves via `room` + `target_role` or direct `entity_id`. Supports `dry_run=true`. Identity-gated — see below. |
 | `scene_set` | Apply a named scene to all covers in a room (see Scenes). Barriers always excluded. Vents excluded unless `include_vents=true`. |
 | `setup` | Creates 5 `zen_cv_*` label definitions. Idempotent. |
 | `help` | Full schema: modes, label taxonomy, scene mappings, tilt details, light_tx methods, setup flow. |
@@ -129,6 +131,23 @@ Vent covers (`zen_cv_vent`) always return `light_tx = n/a`.
 
 ---
 
+## Identity Gate (2026-08-15/16)
+
+`discover` and `set` target resolution runs through the shared `zen_target_resolve.jinja` core (the same shared targeting macros `zen_dojotools_locks` uses — ZenShade was the other tool it was originally extracted from). `scene_set` keeps its own `area_entities` walk — it applies per-role scene positions across a whole area rather than resolving a caller-specified target set, so it isn't a targeting-core candidate.
+
+`mode=set` requires the `cover_control` certification, asymmetric by risk:
+
+- **Closing** any cover, and **opening** a non-barrier cover (blind/shade/curtain), is cert-only.
+- **Opening** a barrier-class cover (`device_class` in `garage`/`door`/`gate`) requires the cert **and** a fresh live household-admin acknowledgment every single call — exact parallel to locks' exterior-unlock gate and security_manager's disarm gate.
+
+An admin can exempt specific barrier targets from the every-call ack via `zen_dojotools_persona_editor mode=cert_grant cert_component=cover_control cert_scope=["cover.garage_door"]`. A mixed-coverage call (some targets scoped, some not) still asks for the whole set — no partial silent authorization. Scope resolution is centralized (2026-08-16): this tool passes `target_entity=<cover entity_id>` on `zen_dojotools_identity mode=resolve_caller_identity` and reads `scope_decision` back from the shared `cert_scope_check` macro, rather than testing `cert_scope` locally.
+
+`cover_control` is self-published in this tool's own `tool_manifest.certs_required` — see `zen_dojotools_profile_readme.md`'s certification section for how that feeds the live cert catalog, and the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model.
+
+**Real bug found and fixed building the barrier gate:** `position`/`tilt_position` used Jinja's `default(-1, true)`, which substitutes on *any* falsy value, not just an undefined one — so `mode=set position=0` (a legitimate "close the cover" call) was silently coerced to the "no position given" sentinel for every caller, inherited from the v5.1.0 baseline. Fixed with explicit `is not defined`/`is none` checks. A follow-up `dry_run` bug was also found and fixed: the preview reported `would_require_live_ack: true` for a barrier cover even after a `cert_scope` exemption was granted for it, because the identity/scope resolve only ran in the actuation branch, after `dry_run` had already returned. `dry_run` output now includes `barrier_uncovered_by_scope` and `would_be_authorized` alongside the corrected `would_require_live_ack`.
+
+---
+
 ## ZenLux Integration
 
 ZenShade is called by `zen_dojotools_lights bleed_set` when `sync_shades=true`:
@@ -138,3 +157,12 @@ ZenShade is called by `zen_dojotools_lights bleed_set` when `sync_shades=true`:
 * `bleed_set` response includes ZenShade result: `status`, `scene`, `applied_count`, `tilt_applied_count`
 
 ZenShade has no return callback to ZenLux.
+
+---
+
+## Version History
+
+| Version | Change |
+|---------|--------|
+| 6.0.0 (2026-08-15) | Identity-gate "cadillac" pass matching locks/security_manager. Migrated `discover`/`set` onto the shared `zen_target_resolve.jinja` core. Full SESE + `envelope()` conversion. New `cover_control` cert, asymmetric by barrier risk. `cert_scope` per-target ack override, centralized onto the shared `cert_scope_check` resolver on 2026-08-16. Fixed the `position=0` coercion bug and a `dry_run`/`cert_scope` blind-spot bug, both found live while building the gate. |
+| 5.1.0 | Baseline — label taxonomy, tilt support, barrier auto-exclusion, `light_tx` calculation, ZenLux sync. |

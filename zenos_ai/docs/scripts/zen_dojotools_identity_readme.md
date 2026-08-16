@@ -109,6 +109,7 @@ flowchart TD
 | `confirm_action` | boolean | `set_principal` only. Required when the target HoH/prime slot is already occupied by a **different** entity than `member_entity`. Not required to fill an empty slot or re-set the same entity already occupying it. Default `false` |
 | `required_cert` | text | `resolve_caller_identity` only. Cert name to check on the caller's behalf (e.g. `infra_container_control`). When set, the mode runs the `cert_list` lookup itself against the resolved identity and returns `authorized: true/false` — the caller never touches `persona_editor` directly |
 | `required_cert_level` | number | `resolve_caller_identity` only. Minimum cert level needed when `required_cert` is set. Default `1` |
+| `target_entity` (2026-08-16) | text | `resolve_caller_identity` only, optional, pairs with `required_cert`. The specific entity the caller wants to act on. When passed, this mode resolves `scope_decision` (`allow`/`deny`/`default`) internally via the shared `cert_scope_check` macro against the held cert's `cert_scope` — consumers stop walking `cert_scope` themselves. Omit it and `scope_decision` is always `default`, unaffected for any existing caller that doesn't pass it. |
 
 **Resolution priority** (resolve/prompt modes):
 ```
@@ -504,6 +505,8 @@ zen_dojotools_identity:
 
 **Optional cert check:** If `required_cert` is set (and the identity resolution was not blocked), this mode calls `zen_dojotools_persona_editor mode=cert_list` against the resolved identity itself and folds the result into the response as `authorized`. Consumers must call this mode for cert checks instead of calling `persona_editor` directly — checking your own cert against your own resolved identity defeats the point of a single chokepoint.
 
+**Optional scope resolution (2026-08-16):** if `target_entity` is also set, this mode additionally resolves `scope_decision` — `allow`/`deny`/`default` — via the shared `cert_scope_check` macro (`zen_os_1.jinja`) against the held cert's `cert_scope`. This happens once, here, not re-walked per consumer tool: locks/covers/security_manager/room_manager/infra/ZenLux all read `scope_decision` straight off this response instead of each independently testing `entity_id in cert_scope`. Identity's job is only to surface the decision, never to interpret what a tool should do with it — each consumer still owns deciding whether `scope_decision: allow` means "skip a live ack" for its own action.
+
 **Response shape:**
 
 ```json
@@ -520,13 +523,17 @@ zen_dojotools_identity:
   "cert_name": "",
   "cert_level": 0,
   "cert_required_level": 1,
+  "cert_scope": [],
+  "cert_constraints": [],
+  "target_entity": "",
+  "scope_decision": "default",
   "authorized": true,
   "caller_token_received": "",
   "timestamp": "..."
 }
 ```
 
-`block_reason` is populated only when `policy_status: blocked` (`"sim_mode result rejected: OS policy integrations_config.identity.sim_mode_allowed is false"`). `authorized` is `true` only when the identity was not blocked **and** any requested cert check passed — consumers should gate on `authorized`, not `policy_status` alone, when a cert was requested.
+`block_reason` is populated only when `policy_status: blocked` (`"sim_mode result rejected: OS policy integrations_config.identity.sim_mode_allowed is false"`). `authorized` is `true` only when the identity was not blocked **and** any requested cert check passed — consumers should gate on `authorized`, not `policy_status` alone, when a cert was requested. `scope_decision` is independent of `authorized` — a caller can be `authorized: true` (holds the cert at the required level) with `scope_decision: default` (no scope override for this specific target), which is the normal case for a live-ack-tier action with no admin exemption granted.
 
 ### `request_live_ack` — Shared Live-Approval Chokepoint (2026-08-15)
 

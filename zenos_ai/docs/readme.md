@@ -112,11 +112,12 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * `components/autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * `components/alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
-* `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
+* `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern, `security_control` identity gate (disarm requires a fresh live ack every call)
+* `components/infra.md` — Infrastructure Console: node/container/monitor/update/cert health, container-control codex gated on `infra_container_control`
 * `components/systemtools.md` — SystemTools: home mode, quiet/work hours, scheduler anchors, guest/entertaining toggles, home_status rollup
 * `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
-* `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync
-* `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
+* `components/zenlux.md` — ZenLux: lighting *and switch* control, bleed-aware scenes, `scene_stage` (relocated in from Room Manager), media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync, `lighting_control` identity gate
+* `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync, `cover_control` identity gate (asymmetric barrier/non-barrier risk)
 
 ---
 
@@ -241,7 +242,7 @@ Includes:
 * `zen_dojotools_scheduler_readme.md` — Scheduler: trigger IDs, Dojo-driven dispatch, component subscription, force events, hardware trigger pattern
 * `zen_dojotools_summarizers_readme.md` — Ninja Summarizer + SuperSummary: kill switches, active component selection, monk pipeline
 * `zen_dojotools_library_readme.md` — Library v6.10.0: Lens Bus `stack=` routing, generic verbs, unified catalog (`section=catalog item_type=*`) with books/games/all works types, compounding capability tiers, hash_md5, slugify
-* `zen_dojotools_zenzork_readme.md` — ZenZork v1.7.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, "Chapter 1" content (weighted loot table, 15 quest markers, Diwatta/Valtay/Mongo book-lore sequence, Carl's Left Sock, Game Genie cheat codes, per-release-chapter publishing with engine-version gating); see also [devkit](scripts/zenzork_devkit.md) and [unofficial manual](scripts/zenzork_manual_unofficial.md)
+* `zen_dojotools_zenzork_readme.md` — ZenZork v1.7.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, "Chapter 1" content (weighted loot table, 15 quest markers, Diwatta/Valtay/Mongo book-lore sequence, Carl's Left Sock, Game Genie cheat codes, per-release-chapter publishing with engine-version gating); see also [devkit](scripts/zenzork_devkit.md) and [unofficial manual](getting_started/zenzork_manual_unofficial.md)
 * `zen_home_mode_readme.md` — Home Mode: 8-state machine, schedule anchors, quiet/work hours, scheduler trigger IDs
 * `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`
@@ -326,6 +327,13 @@ Two documents cover this:
   what is stubbed for SP1, the `security_policy` syscab drawer, caller_token plumbing,
   prompt integrity sensor (`zen_prompt_health`), delegation and nesting hard rules, and
   the SP1 claims engine architecture. No jargon — written for someone deploying the system.
+
+* `getting_started/security_certification_manual.md` — **the certification/identity-gate system in
+  practice.** How locks, exterior covers, the alarm panel, container control, room unpause, and
+  lighting each gate their riskiest actions behind a certification; how a certification is granted
+  (two mandatory gates, the second of which requires a real live acknowledgment on a real device
+  every time); scoped admin overrides; a full per-tool table of what's cert-only vs. cert-plus-
+  live-ack. Operator-manual voice, not architecture-doc voice — read this one to actually run the system.
 
 This is Friday’s trust spine — the system that decides which parts of the world are even visible before reasoning begins.
 
