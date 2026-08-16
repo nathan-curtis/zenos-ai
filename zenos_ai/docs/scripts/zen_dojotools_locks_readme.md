@@ -40,7 +40,7 @@ This tool self-declares `lock_control` in its own `tool_manifest`'s `certs_requi
 
 **Exterior unlock requires a fresh live ack every single call, even with `lock_control` already held (2026-08-15).** Holding the cert is necessary but not sufficient for `action=unlock` on an `ext_lock`-labeled target — every such call additionally fires `zen_dojotools_identity mode=request_live_ack`, no exceptions, because a standing cert was never meant to mean "unattended exterior access forever." An admin can exempt specific targets from this per-call ack via `cert_grant cert_component=lock_control cert_scope=["lock.front_door"]` — the scope list is checked by entity_id, not by label, so scope it to exactly the lock(s) intended. Interior-only actions and read modes are unaffected either way.
 
-**Audit-trail emission on real actuations (2026-08-15):** every successful `mode=set` fires `zen_dojotools_event_emitter`, and two purpose-neutral trigger labels — `lock_unlocked_armed` / `lock_unlocked_night` — are wired so other systems (e.g. REFLEX) can react to an unlock happening while armed or overnight without polling lock state themselves.
+**Audit-trail emission on real actuations (2026-08-15):** every successful `mode=set` fires `zen_dojotools_event_emitter`. Separately, an agent-initiated exterior unlock checks the security panel's real armed state and, only while actually armed, fires a real `security_manager` alert via the `lock_unlocked_armed`/`lock_unlocked_night` event types (`set_alert_policy` already defined these as schema, nothing previously fired them — closed here). Keypad/Keymaster/manual unlocks don't feed this yet — that would need a general `lock.*`-state listener, a separate and larger build.
 
 ---
 
