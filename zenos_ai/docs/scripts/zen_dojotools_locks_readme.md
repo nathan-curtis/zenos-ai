@@ -1,4 +1,4 @@
-# Zen DojoTools Locks — 1.4.0
+# Zen DojoTools Locks — 1.4.1
 
 *Room-targetable lock/unlock control for the `lock.*` domain, with a full Keymaster-aware inspect surface*
 
@@ -36,6 +36,12 @@ Bare `discover`/`status` with no filters returns a whole-house lock overview —
 
 Read modes (`discover`/`status`/`inspect`) stay open. Actuation (`set`) requires the default agent's own `lock_control` certification, checked via `zen_dojotools_identity mode=resolve_caller_identity required_cert=lock_control required_cert_level=1`. **Fail-closed by design, not by bug** — until `lock_control` is granted via `zen_dojotools_persona_editor mode=cert_grant` (itself gated, see that tool's readme), every `mode=set` call is denied with `error: identity_policy_blocked` or `error: cert_insufficient`. `caller_token` is audit-only here, same as everywhere else in the platform — never a trust input.
 
+This tool self-declares `lock_control` in its own `tool_manifest`'s `certs_required` field — that's what makes it a valid `cert_grant` target at all under the live-calculated catalog (see `zen_dojotools_profile_readme.md`'s certification section; there's no separate hand-maintained cert list to also update).
+
+**Exterior unlock requires a fresh live ack every single call, even with `lock_control` already held (2026-08-15).** Holding the cert is necessary but not sufficient for `action=unlock` on an `ext_lock`-labeled target — every such call additionally fires `zen_dojotools_identity mode=request_live_ack`, no exceptions, because a standing cert was never meant to mean "unattended exterior access forever." An admin can exempt specific targets from this per-call ack via `cert_grant cert_component=lock_control cert_scope=["lock.front_door"]` — the scope list is checked by entity_id, not by label, so scope it to exactly the lock(s) intended. Interior-only actions and read modes are unaffected either way.
+
+**Audit-trail emission on real actuations (2026-08-15):** every successful `mode=set` fires `zen_dojotools_event_emitter`, and two purpose-neutral trigger labels — `lock_unlocked_armed` / `lock_unlocked_night` — are wired so other systems (e.g. REFLEX) can react to an unlock happening while armed or overnight without polling lock state themselves.
+
 ---
 
 ## Escalation (Time-Boxed Grant)
@@ -64,8 +70,10 @@ The underlying mechanism took three wrong turns before landing right, worth know
 
 - `custom_templates/zenos_ai/zen_target_resolve.jinja` — shared targeting core (`resolve_targets`, `resolve_room_entities`, `entity_extended_notes`, `discover_targets`)
 - `custom_templates/zenos_ai/zen_os_1.jinja` — `envelope()` macro (response shape)
-- `zen_dojotools_identity` — `resolve_caller_identity` (set gate), `request_live_ack` (escalation)
+- `zen_dojotools_identity` — `resolve_caller_identity` (set gate), `request_live_ack` (escalation + every exterior unlock)
 - `zen_dojotools_persona_editor` — `lock_control` certification grant/revoke
+- `zen_dojotools_manifest` — `mode=cert_audit` reads this tool's self-declared `certs_required`
+- `zen_dojotools_event_emitter` — audit trail on real actuations
 - `zen_dojotools_autovac` — lens provider registration precedent
 
 ## Cross-References
@@ -80,6 +88,7 @@ The underlying mechanism took three wrong turns before landing right, worth know
 
 | Version | Change |
 |---------|--------|
+| v1.4.1 (2026-08-15) | Exterior unlock requires a fresh live ack every call, even with `lock_control` already held — `cert_scope` admin-override lets specific targets skip this. Audit-trail emission on real actuations (`zen_dojotools_event_emitter`, `lock_unlocked_armed`/`lock_unlocked_night` trigger labels). Self-publishes `lock_control` in `tool_manifest.certs_required` for the live cert catalog (`zen_dojotools_manifest mode=cert_audit`), replacing what was briefly a hand-maintained catalog file. |
 | v1.4.0 | Identity gate on `mode=set` (stolen from the Portainer container-control codex). Time-boxed escalation infra (`escalation_request`/`escalation_status`), cabinet-tunable ack-wait timing via `zen_dojotools_identity mode=request_live_ack`. Real parent/child Keymaster sync topology surfaced in `mode=inspect`. |
 | v1.3.0 | "Cadillac" pass (Zammad #10309): `mode=inspect` deep detail, `mode=stacks_by_anchor` (Lens Bus provider), `mode=register`/`unregister`, `mode=kfc_manifest`. `discover`/`status` now accept `entity_id=` (previously silently ignored outside `mode=set`). Bare `discover`/`status` with no filters returns whole-house overview instead of erroring. |
 | v1.2.0 | Adopted the canonical `envelope()` shape and single-entry/single-exit structure (#10304 SESE audit target). |

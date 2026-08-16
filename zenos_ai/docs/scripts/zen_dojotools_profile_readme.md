@@ -263,21 +263,37 @@ one meant to protect a capability an identity gate was built the same
 day to guard. Two independent, non-optional closures now apply to both
 modes:
 
-1. **Static cert catalog.** `cert_component` must already exist as a key
-   in `packages/zenos_ai/dojotools/.persona_certs/cert_catalog.json`,
-   loaded via HA's `!include` at config-parse time — not writable by any
-   exposed tool call. An unrecognized component is refused outright,
-   before any ack step. Currently catalogued: `infra_container_control`,
-   `lock_control`.
+1. **Live-calculated cert catalog, not a hand-maintained file** (revised
+   2026-08-15 from an earlier static-file design — "I need to not
+   maintain a separate list of available certs or we'll be in admin
+   hell"). `cert_component` must appear in the result of
+   `zen_dojotools_manifest mode=cert_audit`, which fans out to every
+   tool's own `tool_manifest` and aggregates whatever it self-declares
+   in `certs_required` — same shape as `mode=label_audit`. A tool can
+   claim anything here; this check only catches flat typos or a
+   cert name no tool has ever declared. It is explicitly **not** the
+   real security boundary — that's gate 2.
 2. **Live one-shot household-admin ack**, every single grant/revoke call
    — not a time-boxed window (that's the wrong shape for a permanent
    state change), a fresh yes/no each time, via
-   `zen_dojotools_identity mode=request_live_ack`.
+   `zen_dojotools_identity mode=request_live_ack`. **This is the actual
+   validation of the tool's claim**, not catalog membership.
 
 Skip either gate and the call fails closed with a `stop:` and no state
-change. See `zen_dojotools_identity_readme.md`'s `request_live_ack`
-section for the ack mechanism itself, and the Identity Architecture doc
-for the broader rationale.
+change. `.persona_certs/cert_catalog.json` no longer exists — deleted
+in the same cutover that moved to live calculation; if you see a
+reference to it anywhere, that's stale. See
+`zen_dojotools_identity_readme.md`'s `request_live_ack` section for the
+ack mechanism itself, `zen_dojotools_manifest_readme.md`'s `cert_audit`
+section for the live catalog, and the Identity Architecture doc for the
+broader rationale.
+
+**Scoped ack-override (2026-08-15):** an admin can exempt specific
+targets from the every-call live-ack via the existing `cert_scope`
+field on `cert_grant` — see the gating tool's own readme (e.g.
+`zen_dojotools_locks_readme.md`) for how a given tool consumes it. This
+doesn't weaken gate 1 or 2 above; it's an opt-in convenience a tool can
+check once it already holds a valid, ack'd cert.
 
 ---
 
@@ -499,6 +515,7 @@ All modes return a consistent JSON envelope:
 
 | Version | Change |
 |---------|--------|
-| v5.3.0 (2026-08-15) | Closed a real self-escalation hole in `cert_grant`/`cert_revoke` — previously ungated, now requires the target `cert_component` to exist in a static, non-agent-writable catalog (`.persona_certs/cert_catalog.json`) plus a fresh live household-admin ack on every call via `zen_dojotools_identity mode=request_live_ack`. |
+| v5.3.1 (2026-08-15, same day) | Cert catalog moved from a static hand-maintained file to live calculation (`zen_dojotools_manifest mode=cert_audit`, fanning out to every tool's self-declared `certs_required`) — the file-based version shipped earlier the same day and was already replaced before this doc's first draft went out. Added the `cert_scope` ack-override mechanism. |
+| v5.3.0 (2026-08-15) | Closed a real self-escalation hole in `cert_grant`/`cert_revoke` — previously ungated, now requires the target `cert_component` to exist in a cert catalog plus a fresh live household-admin ack on every call via `zen_dojotools_identity mode=request_live_ack`. |
 | v5.2.0 | `inventory_root` field added to user and persona editor. Written as int to `inventory.root_location_id`. Used by Library lending (checkout target) and agent workspace resolution. Applies to both `zen_dojotools_profile_editor` and `zen_dojotools_persona_editor`. |
 | v5.1.0 | Baseline for Clue (2026.6.0). Profile editor GA-hardened; FC returns `confirmed` not `success`; second-write merge correctly parses JSON-encoded drawer value. |

@@ -1,6 +1,6 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.2.0
+**Version:** 5.3.1
 **File:** `dojotools/dojotools_security_manager.yaml`
 **Replaces:** `zen_dojotools_alarm_panel` (deleted)
 
@@ -35,10 +35,14 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 |--------|-------------|
 | `read_state` (default) | Full panel snapshot: state, zones, system health, cameras_by_area, lens handoff note. |
 | `query` | List all `alarm_control_panel` entities tagged with `alarm_panel` label, with state. |
-| `arm` | Arm the panel. Requires `arm_mode`. |
-| `disarm` | Disarm the panel. |
+| `arm` | Arm the panel. Requires `arm_mode`. **Identity-gated (2026-08-15)** — requires the `security_control` certification, fail-closed until granted. |
+| `disarm` | Disarm the panel. **Identity-gated, higher tier than arm** — requires `security_control` **plus a fresh live household-admin ack every call**, no standing-cert shortcut. Disarming is the highest-risk direction; arming down is cert-only. |
 | `get_policy` | Read the `_alert_policy` from the household cabinet security_manager drawer. |
-| `set_alert_policy` | Merge `policy_patch` JSON into the alert policy. Partial update — existing keys not in patch are preserved. |
+| `set_alert_policy` | Merge `policy_patch` JSON into the alert policy. Partial update — existing keys not in patch are preserved. Same `security_control` cert gate as `arm`. |
+
+**Self-published cert:** `security_control` is declared in this tool's own `tool_manifest.certs_required` — that's what makes it a valid `cert_grant` target under the live-calculated catalog (`zen_dojotools_manifest mode=cert_audit`; see `zen_dojotools_profile_readme.md`'s certification section). Grant via `zen_dojotools_persona_editor mode=cert_grant cert_component=security_control`.
+
+**v5.3.0 (2026-08-15):** full SESE (single-entry/single-exit) and canonical `envelope()` migration alongside the identity-gate work above — response shape internals changed accordingly (existing fields now live under `result`), same pattern as `zen_health_report`'s own envelope adoption.
 
 ---
 

@@ -228,10 +228,17 @@ Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_
 
 ---
 
-## 23. Zen DojoTools Locks — v1.4.0
+## 23. Zen DojoTools Locks — v1.4.1
 **File:** `zen_dojotools_locks_readme.md`
 
-Room-targetable lock/unlock control for the `lock.*` domain — the gap `zen_dojotools_covers` already closed for `cover.*` had no lock equivalent. Reference implementation for `zen_target_resolve.jinja` (the first shared targeting core, #10308) and for the identity-gate pattern on actuation (stolen from the Portainer container-control codex). `mode=set` is fail-closed on the `lock_control` cert until granted. `mode=inspect` gives real Keymaster code-slot detail with PINs never surfaced. `mode=escalation_request`/`escalation_status` for time-boxed grants via the shared `request_live_ack` chokepoint. Lens Bus provider (`stacks_by_anchor`, `register`/`unregister`).
+Room-targetable lock/unlock control for the `lock.*` domain — the gap `zen_dojotools_covers` already closed for `cover.*` had no lock equivalent. Reference implementation for `zen_target_resolve.jinja` (the first shared targeting core, #10308) and for the identity-gate pattern on actuation (stolen from the Portainer container-control codex). `mode=set` is fail-closed on the `lock_control` cert until granted; exterior unlock additionally requires a fresh live household-admin ack every call (per-target `cert_scope` override available). Audit-trail emission on real actuations. `mode=inspect` gives real Keymaster code-slot detail with PINs never surfaced. `mode=escalation_request`/`escalation_status` for time-boxed grants via the shared `request_live_ack` chokepoint. Lens Bus provider (`stacks_by_anchor`, `register`/`unregister`).
+
+---
+
+## 24. Zen DojoTools Covers (ZenShade) — v6.0.0
+**File:** `zen_dojotools_covers_readme.md`
+
+Room-aware cover/blind/shade/smart-vent manager, label-taxonomy-driven with scene presets. The other tool `zen_target_resolve.jinja` was extracted from — second adopter of the shared targeting core and the identity-gate pattern. New `cover_control` cert, asymmetric by risk: closing is cert-only, opening a barrier-class cover (garage/door/gate) is cert **and** a fresh live ack every call (same `cert_scope` override mechanism as locks), opening a non-barrier window cover stays cert-only. Barrier auto-exclusion from `scene_set` unchanged since v5.1.0.
 
 ---
 
