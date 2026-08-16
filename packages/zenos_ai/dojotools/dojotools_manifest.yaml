@@ -104,6 +104,15 @@ script:
       unless auto_create=true confirm=true, which creates the distinct missing
       labels via zen_dojotools_labels mode=create. Pass include_optional=true
       to also sweep/create missing_optional_labels, not just required.
+      mode=cert_audit: same fan-out shape as label_audit, for certs. Aggregates
+      every tool's self-declared certs_required (tool_manifest field:
+      cert/display_name/description/gates/max_level/live_ack_required_for/
+      grant_via) into ONE live-calculated catalog -- no separate hand-
+      maintained cert list exists anywhere (2026-08-15: "I need to not
+      maintain a separate list of available certs or we'll be in admin
+      HELL"). cert_grant/cert_list read this same calculation. conflicts:
+      same cert declared by 2+ tools with different max_level, a real
+      authoring bug to flag.
     icon: mdi:home-map-marker
     fields:
       show_hidden:
@@ -140,6 +149,7 @@ script:
               - structure
               - audit
               - label_audit
+              - cert_audit
               - repair
               - audit_help
               - health
@@ -266,7 +276,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.3.1',
+                version='6.3.2',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -1306,6 +1316,135 @@ script:
                 errors: "{{ _la_errors }}"
                 caller_token: "{{ caller_token }}"
         - stop: label_audit complete
+          response_variable: result
+
+      # ── mode: cert_audit ──────────────────────────────────────────────────────
+      # Same fan-out-tool_manifest-and-aggregate shape as label_audit above, for
+      # certs instead of labels -- Nathan's question ("does the profile tool read
+      # all from manifest call for all certs, or is that in ID") answered: neither
+      # -- this broker already does exactly this pattern for labels, certs get the
+      # same home, not a new one. THIS mode's output IS the catalog now -- no
+      # separate static file (.persona_certs/cert_catalog.json, deleted 2026-08-
+      # 15) to keep in sync. A tool's tool_manifest certs_required is the single
+      # source of truth for what that cert is/does; a tool can SAY whatever it
+      # wants here, self-escalation is prevented downstream by cert_grant's live-
+      # ack gate (validating the CLAIM, not gatekeeping the catalog) -- not by
+      # this broker refusing to list something. conflicts surfaces the one real
+      # authoring bug worth flagging: the same cert name declared by two+ tools
+      # with a different max_level (should never happen; means someone typo'd
+      # or duplicated a cert name instead of reusing the shared one). ──
+      - conditions: "{{ mode_norm == 'cert_audit' }}"
+        sequence:
+        - variables:
+            _ca_self: "{{ this.entity_id }}"
+            _ca_no_mode: "{{ label_entities('zen_no_mode') | list }}"
+            _ca_name_filter: "{{ name | default('') | lower }}"
+            _ca_scan_targets: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for e in states.script -%}
+                {%- set eid = e.entity_id -%}
+                {%- if (eid.startswith('script.zen_dojotools_')
+                    or eid.startswith('script.zen_stack_') or eid.startswith('script.zen_sutra_'))
+                    and e.state in ('off', 'on')
+                    and eid != _ca_self
+                    and eid not in _ca_no_mode
+                    and (_ca_name_filter == '' or _ca_name_filter in eid) -%}
+                  {%- set ns.out = ns.out + [eid] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+            _ca_results: []
+            _ca_errors: []
+        - repeat:
+            for_each: "{{ _ca_scan_targets }}"
+            sequence:
+            - variables:
+                _ca_tool_name: "{{ repeat.item | replace('script.', '') }}"
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _ca_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _ca_tm: "{{ _ca_tm_raw if _ca_tm_raw is mapping else {} }}"
+            - choose:
+              - conditions: "{{ _ca_tm.get('status', '') not in ['ok', 'success'] }}"
+                sequence:
+                - variables:
+                    _ca_errors: >-
+                      {{ _ca_errors + [{'tool': _ca_tool_name, 'error': 'tool_manifest call failed or non-compliant'}] }}
+              - conditions: "{{ (_ca_tm.get('certs_required', []) | length) > 0 }}"
+                sequence:
+                - variables:
+                    _ca_results: >-
+                      {{ _ca_results + [{'tool': _ca_tool_name, 'certs_required': _ca_tm.get('certs_required', [])}] }}
+        - variables:
+            _ca_declared_certs: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for entry in _ca_results -%}
+                {%- for c in entry.get('certs_required', []) -%}
+                  {%- set _cn = c.get('cert', '') -%}
+                  {%- if _cn != '' and _cn not in ns.out -%}{%- set ns.out = ns.out + [_cn] -%}{%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+        # ── The catalog itself, calculated -- not read from a file. For each
+        # declared cert name, merge every tool's declaration of it (usually
+        # exactly one tool per cert, but the shape tolerates more than one
+        # legitimately sharing a cert). Later declarations don't silently win --
+        # any field-level disagreement across tools is caught by _ca_conflicts
+        # below rather than one declaration quietly overwriting another. ──
+        - variables:
+            _ca_catalog: >-
+              {%- set ns = namespace(map={}) -%}
+              {%- for entry in _ca_results -%}
+                {%- for c in entry.get('certs_required', []) -%}
+                  {%- set _cn = c.get('cert', '') -%}
+                  {%- if _cn != '' -%}
+                    {%- set _existing = ns.map.get(_cn, {'declared_by': [], 'gates': []}) -%}
+                    {%- set _merged = {
+                      'cert': _cn,
+                      'display_name': c.get('display_name', _existing.get('display_name', _cn)),
+                      'description': c.get('description', _existing.get('description', '')),
+                      'max_level': c.get('max_level', _existing.get('max_level', 4)),
+                      'gates': (_existing.get('gates', []) + c.get('gates', [])) | unique | list,
+                      'live_ack_required_for': (_existing.get('live_ack_required_for', []) + c.get('live_ack_required_for', [])) | unique | list,
+                      'grant_via': c.get('grant_via', _existing.get('grant_via', '')),
+                      'declared_by': (_existing.get('declared_by', []) + [entry.get('tool', '')]) | unique | list
+                    } -%}
+                    {%- set ns.map = ns.map | combine({_cn: _merged}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.map }}
+        - variables:
+            _ca_conflicts: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for entry in _ca_results -%}
+                {%- for c in entry.get('certs_required', []) -%}
+                  {%- set _cn = c.get('cert', '') -%}
+                  {%- set _canon = _ca_catalog.get(_cn, {}) -%}
+                  {%- if _cn != '' and c.get('max_level') is not none and _canon.get('max_level') is not none and c.get('max_level') != _canon.get('max_level') -%}
+                    {%- set ns.out = ns.out + [{'cert': _cn, 'tool': entry.get('tool', ''), 'declared_max_level': c.get('max_level'), 'canonical_max_level': _canon.get('max_level')}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.out | list }}
+        - variables:
+            result:
+              status: "{{ 'issues_found' if _ca_conflicts | length > 0 else 'clean' }}"
+              mode: cert_audit
+              generated_at: "{{ now().isoformat() }}"
+              scanned: "{{ _ca_scan_targets | length }}"
+              tools_declaring_certs: "{{ _ca_results }}"
+              declared_certs: "{{ _ca_declared_certs }}"
+              catalog: "{{ _ca_catalog }}"
+              conflicts: "{{ _ca_conflicts }}"
+              note: >-
+                {{ 'Same cert name declared with mismatched max_level across tools -- authoring bug, pick one canonical declaration.' if _ca_conflicts | length > 0 else '' }}
+              errors: "{{ _ca_errors }}"
+              caller_token: "{{ caller_token }}"
+        - stop: cert_audit complete
           response_variable: result
 
       # ── mode: repair ─────────────────────────────────────────────────────────

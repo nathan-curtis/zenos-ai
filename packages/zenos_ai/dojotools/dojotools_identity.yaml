@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Identity
-# Version: 5.4.0
+# Version: 5.4.1
 #
 # v5.4.0 — resolve_caller_identity performs cert checks on the caller's behalf (2026-07-18)
 #   New optional required_cert / required_cert_level inputs. When set, this mode
@@ -473,7 +473,7 @@ script:
                 tool='zen_dojotools_identity',
                 display_name='Identity',
                 tier='dojotools',
-                version='1.0.0',
+                version='1.0.2',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['identity', 'personality_module'],
@@ -534,7 +534,18 @@ script:
           message: "{{ _rla_message }}"
           notify_target: "{{ _rla_notify_target }}"
           response_type: yes_no
-      - if: "{{ _rla_fire_raw is not mapping or _rla_fire_raw.get('status') != 'success' }}"
+      # ── alertmanager's fire mode is fire-and-forget: it emits a zen_event
+      # and returns immediately (real dispatch happens async in a separate
+      # listener automation) -- its response is {'mode':'fire',...,
+      # 'queued':true}, NEVER a 'status':'success' key. Checking for
+      # 'status'=='success' here was always false regardless of real
+      # outcome -- a second bug found live 2026-08-15 alongside the
+      # notify_target=mobile one, inherited from the SAME wrong pattern in
+      # Portainer's original d-class ack (which has this same bug, not yet
+      # fixed there independently -- it's the same call shape now that
+      # infra delegates to this shared mode, so this fix covers it too).
+      # Real signal: did the call even complete without erroring. ──
+      - if: "{{ _rla_fire_raw is not mapping or _rla_fire_raw.get('mode') != 'fire' }}"
         then:
         - variables:
             result:
@@ -588,9 +599,10 @@ script:
     # itself blocked (sim_mode rejected by OS policy) either. Gate: calls
     # itself (resolve_caller_identity, no required_cert) and requires
     # policy_status == 'allowed' -- no specific cert, no live ack. Combines
-    # the static catalog (.persona_certs/cert_catalog.json -- every cert
-    # that COULD exist, its description, what it gates) with the live grant
-    # roster from persona_editor's own cert_list (what's actually held
+    # the LIVE-CALCULATED catalog (zen_dojotools_manifest mode=cert_audit --
+    # every cert any tool actually declares via tool_manifest certs_required,
+    # no separate hand-maintained file, 2026-08-15 cutover) with the live
+    # grant roster from persona_editor's own cert_list (what's actually held
     # right now), so a caller gets one useful answer instead of having to
     # cross-reference two tools itself. ──
     - if: "{{ (mode | default('') | lower) == 'cert_list' }}"
@@ -614,8 +626,14 @@ script:
               caller_token: "{{ caller_token | default('') }}"
         - stop: cert_list — identity blocked
           response_variable: result
+      - action: script.zen_dojotools_manifest
+        response_variable: _cl_catalog_raw
+        continue_on_error: true
+        data:
+          mode: cert_audit
+          caller_token: "{{ caller_token | default('') }}"
       - variables:
-          _cl_catalog: !include .persona_certs/cert_catalog.json
+          _cl_catalog: "{{ (_cl_catalog_raw.get('result', _cl_catalog_raw) if _cl_catalog_raw is mapping else {}).get('catalog', {}) }}"
       - variables:
           _cl_target: "{{ persona_target | default('', true) | string | trim }}"
       - action: script.zen_dojotools_persona_editor
@@ -629,7 +647,7 @@ script:
       - variables:
           _cl_combined: >-
             {%- set ns = namespace(items=[]) -%}
-            {%- for _key, _def in _cl_catalog.get('certs', {}).items() -%}
+            {%- for _key, _def in _cl_catalog.items() -%}
               {%- set _held_entry = _cl_held.get(_key, none) -%}
               {%- set ns.items = ns.items + [{
                 'cert': _key,
@@ -638,7 +656,9 @@ script:
                 'gates': _def.get('gates', []),
                 'max_level': _def.get('max_level', 4),
                 'held': _held_entry is not none,
-                'held_level': (_held_entry.get('level', 0) if _held_entry is not none else none)
+                'held_level': (_held_entry.get('level', 0) if _held_entry is not none else none),
+                'held_scope': (_held_entry.get('scope', []) if _held_entry is not none else []),
+                'held_constraints': (_held_entry.get('constraints', []) if _held_entry is not none else [])
               }] -%}
             {%- endfor -%}
             {{ ns.items }}
@@ -707,9 +727,23 @@ script:
                 _rci_cert_level: "{{ (_rci_cert_entry.get('level', 0) | int(0)) if _rci_cert_entry is mapping else 0 }}"
                 _rci_cert_required_level: "{{ required_cert_level | default(1) | int(1) }}"
                 _rci_cert_ok: "{{ _rci_pe_raw is mapping and _rci_pe_raw.get('status') == 'ok' and _rci_cert_level >= (required_cert_level | default(1) | int(1)) }}"
+            # ── Scope/constraints pass-through -- Nathan's "begrudging
+            # override" ask (2026-08-15): cert_grant already had cert_scope/
+            # cert_constraints fields, never consumed anywhere. A tool with
+            # its own "ask live every time" tier (locks exterior unlock,
+            # security_manager disarm, infra d-class) checks THIS field
+            # against its own target before deciding whether to still ask --
+            # identity's job is only to surface it, never to interpret it,
+            # same separation resolve_caller_identity already keeps between
+            # policy/cert resolution and each tool's own gate logic. ──
+            - variables:
+                _rci_cert_scope: "{{ (_rci_cert_entry.get('scope', []) if _rci_cert_entry is mapping else []) }}"
+                _rci_cert_constraints: "{{ (_rci_cert_entry.get('constraints', []) if _rci_cert_entry is mapping else []) }}"
         - variables:
             _rci_cert_level: "{{ _rci_cert_level | default(0) }}"
             _rci_cert_ok: "{{ _rci_cert_ok | default(false) }}"
+            _rci_cert_scope: "{{ _rci_cert_scope | default([]) }}"
+            _rci_cert_constraints: "{{ _rci_cert_constraints | default([]) }}"
         - variables:
             response: >-
               {{-
@@ -726,6 +760,8 @@ script:
                   'cert_name': required_cert | default(''),
                   'cert_level': _rci_cert_level,
                   'cert_required_level': required_cert_level | default(1) | int(1),
+                  'cert_scope': _rci_cert_scope,
+                  'cert_constraints': _rci_cert_constraints,
                   'authorized': (not _rci_blocked) and ((not _rci_cert_requested) or _rci_cert_ok),
                   'caller_token_received': caller_token | default(''),
                   'timestamp': now().isoformat()

@@ -188,11 +188,11 @@ script:
           - variables:
               result: >-
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
-                {{- MF.tool_manifest(
+                {%- set _tm = MF.tool_manifest(
                   tool='zen_dojotools_infra',
                   display_name='IT Console',
                   tier='dojotools',
-                  version='1.4.2',
+                  version='1.4.3',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['infra', 'proxmox', 'portainer', 'kuma'],
@@ -201,7 +201,18 @@ script:
                   impact='mixed',
                   risk_class='read_soft_plus_gated_container_control',
                   caller_token=_caller_token
-                ) | from_json -}}
+                ) | from_json -%}
+                {{- _tm | combine({
+                    'certs_required': [{
+                      'cert': 'infra_container_control',
+                      'display_name': 'Infra Container Control',
+                      'description': "Portainer container start/restart/stop/remove via zen_dojotools_infra's container-control codex.",
+                      'max_level': 4,
+                      'gates': ['mode=container_restart/container_start (x-class, cert only)'],
+                      'live_ack_required_for': ['mode=container_stop/container_remove (d-class) -- every call, cert alone is never sufficient'],
+                      'grant_via': "persona_editor mode=cert_grant cert_component=infra_container_control (or zen_dojotools_identity mode=cert_list to see current status)"
+                    }]
+                  }) -}}
           - stop: zen_dojotools_infra tool_manifest
             response_variable: result
 
@@ -475,6 +486,7 @@ script:
               _pc_sim_mode: "{{ _pc_id_raw.get('sim_mode', true) if _pc_id_raw is mapping else true }}"
               _pc_cert_level: "{{ _pc_id_raw.get('cert_level', 0) if _pc_id_raw is mapping else 0 }}"
               _pc_authorized: "{{ _pc_id_raw.get('authorized', false) if _pc_id_raw is mapping else false }}"
+              _pc_cert_scope: "{{ _pc_id_raw.get('cert_scope', []) if _pc_id_raw is mapping else [] }}"
           - if: "{{ _pc_policy_status != 'allowed' }}"
             then:
               - action: script.zen_dojotools_event_emitter
@@ -532,14 +544,26 @@ script:
           # chokepoint (extracted 2026-08-15 -- this exact fire+poll block
           # had been hand-rolled here, in zen_dojotools_locks, and TWICE in
           # zen_dojotools_persona_editor before consolidation).
-          - if: "{{ _pc_required_class == 'd' }}"
+          # Scoped override: admin can grant infra_container_control with
+          # cert_scope=["<container_name>"] to stop the every-call ask for
+          # that specific container (same "begrudging override" mechanism
+          # as locks' per-door scope and security_manager's disarm scope,
+          # 2026-08-15). ──
+          - if: "{{ _pc_required_class == 'd' and _pc_target.get('name', '') not in _pc_cert_scope }}"
             then:
               - action: script.zen_dojotools_identity
                 response_variable: _pc_ack_raw
                 continue_on_error: true
                 data:
                   mode: request_live_ack
-                  ack_message: "Agent '{{ _caller_id }}' requests {{ 'stop' if _mode == 'container_stop' else 'removal' }} of container '{{ _pc_target.get('name', '') }}'. Approve?"
+                  ack_message: >-
+                    Agent '{{ _caller_id }}' requests {{ 'stop' if _mode == 'container_stop' else 'removal' }}
+                    of container '{{ _pc_target.get('name', '') }}'. No standing override on file
+                    for this container, so asking every time as designed. Approve this one
+                    {{ 'stop' if _mode == 'container_stop' else 'removal' }}? (Tip: grant
+                    cert_grant cert_component=infra_container_control
+                    cert_scope=["{{ _pc_target.get('name', '') }}"] via persona_editor if you
+                    want this container to stop asking.)
                   caller_token: "{{ _caller_token }}"
               - variables:
                   _pc_ack_approved: "{{ _pc_ack_raw.get('approved', false) if _pc_ack_raw is mapping else false }}"
@@ -569,6 +593,19 @@ script:
                         caller_token: "{{ _caller_token }}"
                   - stop: "portainer codex hoh ack not granted"
                     response_variable: response
+          - if: "{{ _pc_required_class == 'd' and _pc_target.get('name', '') in _pc_cert_scope }}"
+            then:
+              - action: script.zen_dojotools_event_emitter
+                continue_on_error: true
+                data:
+                  component: portainer
+                  severity: info
+                  kind: container_ack_skipped_scoped_override
+                  summary: "Ack skipped for '{{ _pc_target.get('name', '') }}' -- admin-granted scope override."
+                  metadata:
+                    container: "{{ _pc_target.get('name', '') }}"
+                    mode: "{{ _mode }}"
+                    caller_token: "{{ _caller_token }}"
 
           # All gates passed — execute.
           - variables:

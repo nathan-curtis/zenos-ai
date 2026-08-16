@@ -168,7 +168,7 @@ script:
                     tool='zen_dojotools_locks',
                     display_name='Lock Manager',
                     tier='dojotools',
-                    version='1.4.0',
+                    version='1.4.1',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['ext_lock'],
@@ -182,7 +182,19 @@ script:
                     lens_provider=true,
                     caller_token=_caller_token_early
                 ) | from_json -%}
-                {{- _tm | combine({'provider_key': 'locks', 'register_mode': 'register'}) -}}
+                {{- _tm | combine({
+                    'provider_key': 'locks',
+                    'register_mode': 'register',
+                    'certs_required': [{
+                      'cert': 'lock_control',
+                      'display_name': 'Lock Control',
+                      'description': 'Physical lock/unlock actuation via zen_dojotools_locks mode=set.',
+                      'max_level': 4,
+                      'gates': ['mode=set action=lock (cert only)', 'mode=set action=unlock on non-ext_lock targets (cert only)'],
+                      'live_ack_required_for': ['mode=set action=unlock on ext_lock (exterior) targets -- every call, cert alone is never sufficient'],
+                      'grant_via': "persona_editor mode=cert_grant cert_component=lock_control (or zen_dojotools_identity mode=cert_list to see current status)"
+                    }]
+                  }) -}}
           - stop: tool_manifest
             response_variable: result
 
@@ -819,6 +831,7 @@ script:
                           _set_policy_status: "{{ _set_id_raw.get('policy_status', 'blocked') if _set_id_raw is mapping else 'blocked' }}"
                           _set_authorized: "{{ _set_id_raw.get('authorized', false) if _set_id_raw is mapping else false }}"
                           _set_cert_level: "{{ _set_id_raw.get('cert_level', 0) if _set_id_raw is mapping else 0 }}"
+                          _set_cert_scope: "{{ _set_id_raw.get('cert_scope', []) if _set_id_raw is mapping else [] }}"
                       - choose:
                           - conditions: "{{ _set_policy_status != 'allowed' or not _set_authorized }}"
                             sequence:
@@ -831,23 +844,183 @@ script:
                                       {%- if _set_policy_status != 'allowed' -%}
                                         resolve_caller_identity did not return an allowed identity -- action denied.
                                       {%- else -%}
-                                        lock_control cert level {{ _set_cert_level }} is below the required minimum (1). Certify the default agent via persona_editor to enable lock actuation.
+                                        lock_control cert level {{ _set_cert_level }} is below the required minimum (1) to {{ _action }} {{ _set_targets | map('regex_replace', '^lock\.', '') | map('replace', '_', ' ') | join(', ') }}.
                                       {%- endif -%}
+                                    can_request: "{{ _set_policy_status == 'allowed' }}"
+                                    request_via:
+                                      tool: zen_dojotools_persona_editor
+                                      mode: cert_grant
+                                      cert_component: lock_control
+                                      cert_level: 1
+                                      note: "Fires a live household-admin approval push -- see zen_dojotools_identity mode=cert_list for current status."
                                     would_apply: "{{ _set_targets }}"
                         default:
-                          - repeat:
-                              for_each: "{{ _set_targets }}"
-                              sequence:
-                                - action: "lock.{{ _action }}"
-                                  continue_on_error: true
-                                  target:
-                                    entity_id: "{{ repeat.item }}"
+                          # ── Exterior unlock requires a FRESH live ack every
+                          # time, even with lock_control already held --
+                          # UNLESS the admin has explicitly granted a scoped
+                          # override for that specific door via cert_grant
+                          # cert_scope=["lock.front_door"] (2026-08-15, "the
+                          # biggest problem with most security is they're not
+                          # given an override when appropriate so they don't
+                          # set it up right"). Scope is per-target, not
+                          # blanket: only targets in _set_cert_scope skip the
+                          # ask, anything uncovered still asks -- and if the
+                          # ext_lock target set is mixed (some covered, some
+                          # not), the WHOLE call still asks rather than
+                          # silently splitting into a partial auto-unlock. ──
                           - variables:
-                              result:
-                                status: ok
-                                mode: set
-                                action: "{{ _action }}"
-                                applied_to: "{{ _set_targets }}"
+                              _set_ext_targets: >-
+                                {%- set ns = namespace(items=[]) -%}
+                                {%- for e in _set_targets if 'ext_lock' in labels(e) -%}
+                                  {%- set ns.items = ns.items + [e] -%}
+                                {%- endfor -%}
+                                {{ ns.items }}
+                          - variables:
+                              _set_ext_uncovered: >-
+                                {%- set ns = namespace(items=[]) -%}
+                                {%- for e in _set_ext_targets if e not in _set_cert_scope -%}
+                                  {%- set ns.items = ns.items + [e] -%}
+                                {%- endfor -%}
+                                {{ ns.items }}
+                          - choose:
+                              - conditions: "{{ _action == 'unlock' and _set_ext_uncovered | length > 0 }}"
+                                sequence:
+                                  - action: script.zen_dojotools_identity
+                                    response_variable: _set_ack_raw
+                                    continue_on_error: true
+                                    data:
+                                      mode: request_live_ack
+                                      ack_message: >-
+                                        Unlock request: {{ _set_ext_targets | map('regex_replace', '^lock\.', '') | map('replace', '_', ' ') | join(', ') }}
+                                        (exterior door -- unlocking reduces security). No standing
+                                        override on file for this door, so asking every time as
+                                        designed. Approve this one unlock? (Tip: grant
+                                        cert_grant cert_component=lock_control cert_scope=["{{ _set_ext_targets[0] }}"]
+                                        via persona_editor if you want this specific door to stop asking.)
+                                      caller_token: "{{ _caller_token }}"
+                                      # NOTE: uses the regex-cleaned entity_id slug rather than
+                                      # state_attr friendly_name deliberately -- the {{ _set_ext_targets[0] }}
+                                      # in the tip text above MUST be the raw entity_id (that's
+                                      # literally what cert_scope matches against), so the message
+                                      # already has to show the real entity_id for THAT part to be
+                                      # copy-pasteable. The door NAME in the first line is cleaned
+                                      # for readability but the tip's entity_id is intentionally raw.
+                                  - variables:
+                                      _set_ack_approved: "{{ _set_ack_raw.get('approved', false) if _set_ack_raw is mapping else false }}"
+                                      _set_ack_reason: "{{ _set_ack_raw.get('reason', 'dispatch_failed') if _set_ack_raw is mapping else 'dispatch_failed' }}"
+                                  - if: "{{ not _set_ack_approved }}"
+                                    then:
+                                      - variables:
+                                          result:
+                                            status: denied
+                                            mode: set
+                                            action: unlock
+                                            reason: "{{ _set_ack_reason }}"
+                                            detail: "Exterior unlock requires a fresh live household-admin ack every time -- not granted."
+                                            would_apply: "{{ _set_targets }}"
+                              - conditions: "{{ _action == 'unlock' and _set_ext_targets | length > 0 and _set_ext_uncovered | length == 0 }}"
+                                sequence:
+                                  - action: script.zen_dojotools_event_emitter
+                                    continue_on_error: true
+                                    data:
+                                      mode: emit
+                                      component: locks
+                                      kind: lock_ack_skipped_scoped_override
+                                      severity: info
+                                      summary: >-
+                                        Exterior unlock ack skipped -- admin-granted scope override
+                                        covers {{ _set_ext_targets | join(', ') }}.
+                                      metadata:
+                                        targets: "{{ _set_ext_targets }}"
+                                        cert_scope: "{{ _set_cert_scope }}"
+                                        caller_token: "{{ _caller_token }}"
+                          - if: "{{ result is not defined }}"
+                            then:
+                              - repeat:
+                                  for_each: "{{ _set_targets }}"
+                                  sequence:
+                                    - action: "lock.{{ _action }}"
+                                      continue_on_error: true
+                                      target:
+                                        entity_id: "{{ repeat.item }}"
+                              # ── Audit trail. Real gap found and closed
+                              # 2026-08-15: the whole lock_control cert gate +
+                              # exterior-unlock-ack system had ZERO durable
+                              # record of what actually happened after
+                              # approval -- only HA's own last_changed
+                              # timestamp and the ephemeral ack cache (GC'd).
+                              # Every real actuation through this tool now
+                              # emits one, tagged with whether it went through
+                              # the exterior-unlock ack gate. ──
+                              - action: script.zen_dojotools_event_emitter
+                                continue_on_error: true
+                                data:
+                                  mode: emit
+                                  component: locks
+                                  kind: lock_actuation
+                                  severity: info
+                                  summary: >-
+                                    {{ _action }} applied to
+                                    {{ _set_targets | map('regex_replace', '^lock\.', '') | join(', ') }}
+                                    via zen_dojotools_locks.
+                                  metadata:
+                                    action: "{{ _action }}"
+                                    targets: "{{ _set_targets }}"
+                                    ext_lock_targets: "{{ _set_ext_targets }}"
+                                    ack_required: "{{ _action == 'unlock' and _set_ext_uncovered | length > 0 }}"
+                                    scope_override_used: "{{ _action == 'unlock' and _set_ext_targets | length > 0 and _set_ext_uncovered | length == 0 }}"
+                                    caller_token: "{{ _caller_token }}"
+                              # ── security_manager's own _alert_policy already
+                              # defines lock_unlocked_armed/lock_unlocked_night
+                              # as real event types (set_alert_policy schema)
+                              # but nothing in the codebase ever fired them --
+                              # confirmed via grep, a pre-existing gap not
+                              # introduced by this tool. Wiring it here for
+                              # AGENT-initiated unlocks specifically (keypad/
+                              # Keymaster/manual unlocks still go unreported --
+                              # that's a broader lock.*-state-change listener,
+                              # a separate build, not silently added here).
+                              # Only fires while the panel is actually armed --
+                              # a routine unlock while disarmed/home is not a
+                              # security event, just the audit log above. ──
+                              - if: "{{ _action == 'unlock' and _set_ext_targets | length > 0 }}"
+                                then:
+                                  - variables:
+                                      _set_panel_ent: "{{ label_entities('alarm_panel') | select('match', 'alarm_control_panel\\.') | list | first | default('', true) }}"
+                                  - variables:
+                                      _set_panel_state: "{{ states(_set_panel_ent) if _set_panel_ent != '' else '' }}"
+                                  - if: "{{ _set_panel_state.startswith('armed') }}"
+                                    then:
+                                      - variables:
+                                          _set_sec_event_type: "{{ 'lock_unlocked_night' if _set_panel_state == 'armed_night' else 'lock_unlocked_armed' }}"
+                                      - action: script.zen_dojotools_security_manager
+                                        response_variable: _set_sec_policy_raw
+                                        continue_on_error: true
+                                        data:
+                                          action: get_policy
+                                      - variables:
+                                          _set_sec_policy: >-
+                                            {%- set p = _set_sec_policy_raw.get('policy', _set_sec_policy_raw) if _set_sec_policy_raw is mapping else {} -%}
+                                            {%- set p = p if p is mapping else {} -%}
+                                            {{ p.get(_set_sec_event_type, {}) }}
+                                      - action: script.zen_dojotools_alertmanager
+                                        continue_on_error: true
+                                        data:
+                                          mode: fire
+                                          alert_key: "lock_unlocked_armed_{{ now().timestamp() | int }}"
+                                          severity: "{{ 'error' if (_set_sec_policy.get('urgency', 6) | int(6)) >= 8 else 'warn' }}"
+                                          message: >-
+                                            {{ _set_sec_policy.get('title', 'Exterior unlock while armed') }}:
+                                            {{ _set_targets | map('regex_replace', '^lock\.', '') | join(', ') }}
+                                            unlocked while panel is {{ _set_panel_state }}.
+                                          notify_target: "{{ 'postman' if _set_sec_policy.get('notify', true) else 'persistent' }}"
+                                          channel_hint: "{{ _set_sec_policy.get('channel_hint', 'push') }}"
+                              - variables:
+                                  result:
+                                    status: ok
+                                    mode: set
+                                    action: "{{ _action }}"
+                                    applied_to: "{{ _set_targets }}"
 
           # ── LENS: stacks_by_anchor ──────────────────────────────────────────
           - conditions: "{{ _mode == 'stacks_by_anchor' }}"

@@ -1174,7 +1174,7 @@ script:
                     tool='zen_dojotools_persona_editor',
                     display_name='Persona Editor',
                     tier='dojotools',
-                    version='1.0.0',
+                    version='1.0.1',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['personality_module', 'identity'],
@@ -1737,8 +1737,8 @@ script:
                   _comp:       "{{ cert_component | default('') | trim | lower }}"
                   _lvl:        "{{ cert_level | default(2) | int }}"
                   _ctool:      "{{ cert_tool | default('') | trim }}"
-                  _ccons_raw:  "{{ cert_constraints | default('') | trim }}"
-                  _cscope_raw: "{{ cert_scope | default('') | trim }}"
+                  _ccons_raw:  "{{ cert_constraints if cert_constraints is defined and cert_constraints is sequence and cert_constraints is not string else (cert_constraints | default('', true) | string | trim) }}"
+                  _cscope_raw: "{{ cert_scope if cert_scope is defined and cert_scope is sequence and cert_scope is not string else (cert_scope | default('', true) | string | trim) }}"
                   _spatch_raw: "{{ stats_patch | default('') | trim }}"
               - choose:
                   - conditions: "{{ _comp == '' }}"
@@ -1756,35 +1756,84 @@ script:
               # for any capability, including ones an identity gate was
               # JUST built to protect, e.g. lock_control. Two independent
               # closures, neither optional:
-              # 1. cert_component must exist in the static sidecar catalog
-              #    (.persona_certs/cert_catalog.json, HA !include -- same
-              #    non-agent-writable property ZenZork's swag_defs.json/
-              #    loot_table.json already proved out). An agent has no
-              #    exposed path to add a new grantable cert.
+              # 1. cert_component must be a cert some tool actually
+              #    self-declares via its own tool_manifest certs_required
+              #    (zen_dojotools_manifest mode=cert_audit calculates this
+              #    live -- no separate hand-maintained catalog file exists,
+              #    2026-08-15 cutover: "I need to not maintain a separate
+              #    list of available certs or we'll be in admin HELL"). A
+              #    tool can SAY whatever it wants here; what actually gates
+              #    escalation is #2, not this list-membership check --
+              #    this just rejects flat typos/nonexistent cert names.
               # 2. Every grant requires a live household-admin yes/no ack
               #    (same fire+poll pattern as the infra codex's d-class and
               #    the new lock escalation infra) -- one-shot per call, not
               #    a time-boxed window, because granting a cert is itself
               #    a permanent state change and must never be reusable
-              #    without asking again. ──
+              #    without asking again. THIS is the real validation of the
+              #    tool's claim, not catalog membership. ──
+              - action: script.zen_dojotools_manifest
+                response_variable: _cg_catalog_raw
+                continue_on_error: true
+                data:
+                  mode: cert_audit
+                  caller_token: "{{ caller_token }}"
               - variables:
-                  _cert_catalog: !include .persona_certs/cert_catalog.json
+                  _cert_catalog: "{{ (_cg_catalog_raw.get('result', _cg_catalog_raw) if _cg_catalog_raw is mapping else {}).get('catalog', {}) }}"
               - choose:
-                  - conditions: "{{ _comp not in _cert_catalog.get('certs', {}) }}"
+                  - conditions: "{{ _comp not in _cert_catalog }}"
                     sequence:
                       - variables:
                           final_response:
                             status: error
-                            message: "cert_grant refused: '{{ _comp }}' is not in the static cert catalog (.persona_certs/cert_catalog.json). Available: {{ _cert_catalog.get('certs', {}).keys() | list }}. Add it there first -- not writable by any exposed tool call."
+                            message: "cert_grant refused: '{{ _comp }}' is not declared by any tool's tool_manifest certs_required. Available: {{ _cert_catalog.keys() | list }}. No tool currently gates on this cert name -- check spelling, or the gating tool needs to self-declare it first."
                             caller_token: "{{ caller_token }}"
                       - stop: cert_grant — unknown cert
                         response_variable: final_response
+              # ── Descriptive ack -- Nathan's ask (2026-08-15): the household
+              # admin should see WHAT a cert actually gates and WHAT scope/
+              # constraints are being requested, not just a bare cert name +
+              # level. Pulled straight from the catalog entry's own
+              # description/gates fields -- one source of truth, no separate
+              # copy to keep in sync. Scope/constraints parsed HERE (was
+              # previously parsed only after the ack fired, too late to
+              # describe in the ask itself). ──
+              - variables:
+                  _ccons: >-
+                    {{ _ccons_raw if _ccons_raw is sequence and _ccons_raw is not string
+                       else ((_ccons_raw | from_json(default=[])) if (_ccons_raw is string and _ccons_raw != '' and _ccons_raw[:1] == '[') else []) }}
+                  _cscope: >-
+                    {{ _cscope_raw if _cscope_raw is sequence and _cscope_raw is not string
+                       else ((_cscope_raw | from_json(default=[])) if (_cscope_raw is string and _cscope_raw != '' and _cscope_raw[:1] == '[') else []) }}
+                  _cg_catalog_entry: "{{ _cert_catalog.get(_comp, {}) }}"
+              # ── Resolve a real persona name for the ack, not a raw cabinet
+              # entity_id -- "I don't call you o:/vault/nyx, do I?" (Nathan,
+              # 2026-08-15). HA's own friendly_name attribute on the cabinet
+              # sensor is still internal-sounding ("ZenOS Default AI User
+              # Cabinet"), not the actual persona name ("Friday") -- that
+              # lives in the essence schema's jacket.name field, same path
+              # mode=read already uses. ──
+              - variables:
+                  _cg_persona_name: >-
+                    {%- set raw = _cab_vars.get('zenai_essence', {}) -%}
+                    {%- set ev_raw = raw.get('value', {}) if raw is mapping else {} -%}
+                    {%- set ev = ev_raw if ev_raw is mapping else (ev_raw | from_json if ev_raw is string else {}) -%}
+                    {%- set _j = ev.get('jacket', {}) if ev.get('jacket') is mapping else {} -%}
+                    {{ _j.get('name', '') }}
               - action: script.zen_dojotools_identity
                 response_variable: _cg_ack_result_raw
                 continue_on_error: true
                 data:
                   mode: request_live_ack
-                  ack_message: "Agent requests cert_grant: '{{ _comp }}' level {{ _lvl }} for {{ _target if _target is defined else 'default agent' }}. Approve?"
+                  ack_message: >-
+                    Agent requests cert_grant: '{{ _cg_catalog_entry.get('display_name', _comp) }}'
+                    level {{ _lvl }} for {{ _cg_persona_name if _cg_persona_name != '' else 'default agent' }}.
+                    This cert gates: {{ _cg_catalog_entry.get('description', 'no description on file') }}
+                    {%- if _cscope | length > 0 %} Requested SCOPE (limits the standing-override
+                    exemption to only these -- everything else still asks live every time):
+                    {{ _cscope | join(', ') }}.{% endif -%}
+                    {%- if _ccons | length > 0 %} Requested CONSTRAINTS (still require confirmation
+                    even with this cert): {{ _ccons | join(', ') }}.{% endif %} Approve?
                   caller_token: "{{ caller_token }}"
               - variables:
                   _cg_approved: "{{ _cg_ack_result_raw.get('approved', false) if _cg_ack_result_raw is mapping else false }}"
@@ -1802,10 +1851,6 @@ script:
                       - stop: cert_grant — not approved
                         response_variable: final_response
               - variables:
-                  _ccons: >-
-                    {{ _ccons_raw | from_json(default=[]) if (_ccons_raw != '' and _ccons_raw[:1] == '[') else [] }}
-                  _cscope: >-
-                    {{ _cscope_raw | from_json(default=[]) if (_cscope_raw != '' and _cscope_raw[:1] == '[') else [] }}
                   _spatch: >-
                     {{ _spatch_raw | from_json(default={}) if (_spatch_raw != '' and _spatch_raw[:1] == '{') else {} }}
                   _craw: "{{ _cab_vars.get('zen_ai_certs', {}) }}"
