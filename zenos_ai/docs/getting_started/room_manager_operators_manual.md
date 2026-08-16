@@ -263,20 +263,33 @@ another setup pass.
 
 1. **Tag a sensor as a signal.** Settings → Areas, Labels & Zones → Labels. Create a label matching the signal type you need (`motion`, `occupied`, `engaged`, `asleep`, `bed_occupancy`, `hold`, `wasp_door`, etc.) if it doesn't already exist. Then open the sensor itself (Settings → Devices & Services → Entities, find it, click in), and add TWO labels to it: the signal type AND the room's own label (which should already match the room's Area name). Both labels, same entity, every time.
 2. **Create a helper** (timer, latch, etc.). Settings → Devices & Services → Helpers → "+ Create Helper". Pick the type (Timer, Number, Toggle/Boolean, Select). Give it whatever name you like. Once created, go tag it the same way as Step 1: the class label (`room_timer`, `emergency_latch`, `asleep_minutes`, etc.) plus the room's own label.
-3. **Deploy the room's state sensor** (once per room). Settings → Automations & Scenes → Blueprints tab → find "ZenOS Room Manager v3: Room State" → the ⋮ menu → Create. Fill in: Room (pick the Area), Friendly Name (e.g. "Office State"), Unique ID (e.g. "office_state"), and Trigger Entities: EVERY entity you tagged in Steps 1 and 2 for this room, listed explicitly. Miss one and it just won't react when that entity changes; nothing breaks, it's simply blind to that one signal.
+3. **Deploy the room's state sensor** (once per room). **This one step is
+   the exception to "no YAML file"** — Home Assistant has no working UI for
+   this kind of blueprint (confirmed against HA's own documentation and
+   support channels: template-domain blueprints have never had a Settings
+   UI, YAML is the only way they've ever been instantiated). This is not
+   a bug in this system, and no AI assistant can do it for you either — a
+   chat-based agent only has tool calls, not filesystem access, and this
+   step genuinely requires writing a file. A person with access to the
+   configuration files needs to copy `room_deployment_template.md` (right
+   next to this manual) into a new room package file, fill in the room
+   name and trigger entities, and reload. It's a five-minute copy-paste-fill
+   job, not a coding task — the template does the hard part for you.
 4. **Save, then reload.** After creating or editing anything above, Settings → System → Restart, or use a YAML reload if you know which domain changed. When unsure, a full restart always picks everything up.
 
-That's it: no code editor, no YAML file, just labels, helpers, and one
-blueprint form per room. Everything past Step 3 (Control Burnout, TV
-Sleep Timer, Vent Fan, Nightlight, Sleep Window, Autosleep Schedule,
-Asleep Hold, Entertaining/Guest Hold) is pure Step 1/Step 2 labeling, no
-separate blueprint needed. The dispatcher that reacts to all of it is
-already running in the background and needs no per-room setup of its own.
+Steps 1, 2, and 4 need no code editor, ever. Step 3 is the one real
+exception — a one-time, once-per-room file edit, unavoidable given how HA
+itself works. Everything past Step 3 (Control Burnout, TV Sleep Timer,
+Vent Fan, Nightlight, Sleep Window, Autosleep Schedule, Asleep Hold,
+Entertaining/Guest Hold) is pure Step 1/Step 2 labeling again, no file
+access needed. The dispatcher that reacts to all of it is already running
+in the background and needs no per-room setup of its own.
 
-If you have an AI assistant hooked up, you can also just describe what
-you want — "turn on control burnout for the office" — and let it do
-the labeling for you. Same four steps either way, it's just doing the
-clicking instead of you.
+If you have an AI assistant hooked up, it can do Steps 1, 2, and 4 for
+you — "turn on control burnout for the office" — genuinely hands-off.
+Step 3 is the one place it has to hand the actual file edit to a human;
+it can tell you exactly what to put in the file, but can't submit it for
+you.
 
 ---
 
@@ -610,6 +623,16 @@ good bug report, and it can check the same attribute for you.
 Room Manager is a living system. It grows with your house, not the other
 way around. A few directions already on the table:
 
+- **High priority: eliminating the one manual-file-edit step (Section 6,
+  Step 3).** Home Assistant itself has no UI for instantiating
+  template-domain blueprints today — this isn't something this system can
+  route around, it's a gap in Home Assistant core. Upstream tracking:
+  [home-assistant/architecture#1027 — Blueprints for template
+  entities](https://github.com/home-assistant/architecture/discussions/1027).
+  Watching this for movement; if/when HA ships UI support, Step 3 goes
+  away entirely. In the meantime, worth a real look at whether the state
+  sensor could be re-architected to avoid needing a blueprint instance at
+  all for new-room setup specifically.
 - Teaching Alexa-style devices to set their own wake alarms through the
   system directly (currently manual, via the device itself)
 - Deeper ticket-desk integration so Room Manager issues show up
