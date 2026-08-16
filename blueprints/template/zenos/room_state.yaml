@@ -203,6 +203,19 @@ trigger:
     entity_id: !input trigger_entities
   - trigger: event
     event_type: zen_resolver_refresh
+  # PER-ROOM FORCED REFRESH (2026-08-16, Nathan: "we need an event to force
+  # refresh a room fire it from the tool if called"). zen_resolver_refresh
+  # above is whole-house -- every room's sensor re-renders on it, no
+  # per-room targeting. This is the scoped equivalent: event_data.room
+  # filters to ONLY this room's own sensor, fired via
+  # zen_dojotools_room_manager mode=room_refresh area=X. Same event-based
+  # trigger mechanism as zen_resolver_refresh, just with a matching
+  # condition on event_data so it doesn't force every room in the house
+  # to re-render for a one-room diagnostic check. ──
+  - trigger: event
+    event_type: zen_room_refresh
+    event_data:
+      room: !input room
   - trigger: homeassistant
     event: start
   # PURPOSE-TRIGGER + LABEL TARGET (2026-08-10, design note: "figure it out now...
@@ -364,6 +377,41 @@ variables:
   # pattern as everything else. This is why every H room currently has NO
   # manual-override behavior: none have been migrated to the new entity.
   _room_control: "{{ (label_entities('room_control_manager') | intersect(_room_ents) | list | first) | default('', true) }}"
+  # CABINET-BACKED OVERRIDE (2026-08-16, "without the helper we can still
+  # save state" -- real gap found live: the entity-only path above meant
+  # NO room could ever be manually overridden via a tool call unless a
+  # human had already hand-created a select helper for that specific
+  # room first -- zero rooms had one, so manual override was a no-op
+  # everywhere despite being fully designed. Legacy Node-RED's own engine
+  # never had this problem: one entity did double duty as both the
+  # display AND the write target, no separate helper ever required (see
+  # flows.json 'Room Occupancy State Engine' -- input_select.select_option
+  # IS the override, detected via a self-write flag, not a second entity's
+  # existence). Same spirit here, adapted for a template-sensor
+  # architecture that can't literally be "written to": every room's
+  # override now lives as a field on that room's own room_topology entry,
+  # written via zen_dojotools_room_manager mode=room_control_set (a real
+  # tool call, works on every room immediately, nothing to provision
+  # first -- a per-room select ENTITY was tried too but hit a real HA
+  # platform wall, "more than one platform defined per blueprint" --
+  # reverted, the tool is the only write path, not a fallback). Cabinet wins over the
+  # legacy entity path when both are present; legacy entity stays live as
+  # a fallback for any room that already had one hand-created before this
+  # change.
+  # CORRECTED 2026-08-16: this room's override is a FIELD on its existing
+  # room_topology[area_id] object (the same per-room cabinet object
+  # zen_dojotools_room_manager mode=set/get already reads and writes,
+  # via cabinet_drawer_value_mounted -- follows the same mount-pointer
+  # RM itself uses, NOT a separate drawer). First pass wrongly invented a
+  # standalone 'room_control_overrides' drawer -- a duplicate structure
+  # alongside the real one RM's own mode=setup already provisioned an
+  # expansion cabinet for. Fixed to extend the existing object instead. ──
+  _hh_cab: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('', true) }}"
+  _room_topology_raw: >-
+    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+    {{ CABS.cabinet_drawer_value_mounted(_hh_cab, 'room_topology', {}) if _hh_cab != '' else '{}' }}
+  _room_topology: "{{ (_room_topology_raw | from_json) if _room_topology_raw is string else _room_topology_raw }}"
+  _room_control_cab_value: "{{ _room_topology.get(room, {}).get('room_control', 'Auto') if _room_topology is mapping else 'Auto' }}"
   _asleep_minutes_ent: "{{ (label_entities('asleep_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
   _nap_minutes_ent: "{{ (label_entities('nap_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
   _hold_ents: "{{ label_entities('hold') | intersect(_room_ents) | list }}"
@@ -444,7 +492,29 @@ variables:
   _engaged_timer_holding: "{{ _room_timer_holding and _room_timer_class == 'engaged' }}"
   _occupied_timer_holding: "{{ _room_timer_holding and _room_timer_class == 'occupied' }}"
   _asleep_timer_holding: "{{ _room_timer_holding and _room_timer_class == 'asleep' }}"
-  _engaged_hi: "{{ (_engaged_source_ents | map('states') | select('in', ['playing','on','open']) | list | count) > 0 or _engaged_timer_holding }}"
+  # PER-ENTITY 'on' EXCLUSION (2026-08-16, real bug: AVR/receiver devices
+  # report state 'on' for hours after actual playback stops -- 'on' means
+  # powered up, not actively engaged, same class of false-truthy as the
+  # media_player.paused_playing case already fixed above ("Including
+  # 'paused' here too meant a paused desktop session held engaged=true
+  # INDEFINITELY"). Rather than hardcode a device_class/domain exception
+  # (brittle -- the next false-truthy device won't share this one's
+  # domain), same label-gated opt-out convention as everything else in
+  # this system: tag the SPECIFIC entity with 'rm_exclude_state_on' and
+  # its bare 'on' state stops counting toward engaged truthy for THAT
+  # entity only -- 'playing'/'open' still count normally, and every
+  # other engaged-tagged entity in the room is completely unaffected.
+  # Untagged = unchanged behavior, safe no-op, same guarantee as every
+  # other opt-in/opt-out label here. ──
+  _engaged_state_on_excluded_ents: "{{ label_entities('rm_exclude_state_on') | list }}"
+  _engaged_hi: >-
+    {%- set ns = namespace(found=false) -%}
+    {%- for e in _engaged_source_ents -%}
+      {%- set _st = states(e) -%}
+      {%- set _on_excluded = (e in _engaged_state_on_excluded_ents and _st == 'on') -%}
+      {%- if _st in ['playing', 'on', 'open'] and not _on_excluded -%}{%- set ns.found = true -%}{%- endif -%}
+    {%- endfor -%}
+    {{ ns.found or _engaged_timer_holding }}
   _direct_occ_hi: "{{ (_occ_source_ents | map('states') | select('eq','on') | list | count) > 0 }}"
   # ASLEEP WINDOW (2026-08-08, design note: "night through start of wake all
   # will autosleep if the sleep entities fire. Outside the window no auto
@@ -514,9 +584,12 @@ variables:
   _hold_hi: "{{ (_hold_ents | map('states') | select('in',['on','open']) | list | count) > 0 }}"
   _asleep_hi: "{{ _direct_asleep_hi or _asleep_timer_holding or _asleep_hold_hi }}"
   _emergency_hi: "{{ _emergency_latch != '' and is_state(_emergency_latch, 'on') }}"
-  _paused_hi: "{{ _room_control != '' and is_state(_room_control, 'Paused') }}"
-  _automation_hi: "{{ _room_control != '' and is_state(_room_control, 'Automation') }}"
-  _cleaning_hi: "{{ _room_control != '' and is_state(_room_control, 'Cleaning') }}"
+  # Redefined 2026-08-16 to check the cabinet-backed override (see
+  # _room_control_cab_value above) ahead of the legacy entity -- same
+  # values, same meaning, just no longer requires the entity to exist.
+  _paused_hi: "{{ _room_control_cab_value == 'Paused' or (_room_control != '' and is_state(_room_control, 'Paused')) }}"
+  _automation_hi: "{{ _room_control_cab_value == 'Automation' or (_room_control != '' and is_state(_room_control, 'Automation')) }}"
+  _cleaning_hi: "{{ _room_control_cab_value == 'Cleaning' or (_room_control != '' and is_state(_room_control, 'Cleaning')) }}"
   # MANUAL OVERRIDE — UNIFIED (2026-08-08, restores legacy one-flip parity:
   # "there is no reason those three timers ever run concurrent... ONE
   # flip did everything"). room_control now accepts the full state list
@@ -531,8 +604,12 @@ variables:
   # top-level state (its own value, distinct from the live-signal
   # `hold`/_hold_hi door-sensor tier above, which floors at Occupied and
   # is never itself selectable). Confirmed live end-to-end 2026-08-08 (T).
-  _manual_override_hi: "{{ _room_control != '' and states(_room_control) not in ['Auto', 'unknown', 'unavailable', ''] }}"
-  _manual_override_value: "{{ (states(_room_control) | lower) if _manual_override_hi else '' }}"
+  # Cabinet wins when set to anything other than 'Auto'; legacy entity is
+  # the fallback for any room that already has a hand-created select.
+  _manual_override_value_cab: "{{ _room_control_cab_value if _room_control_cab_value not in ['Auto', 'unknown', 'unavailable', '', none] else '' }}"
+  _manual_override_value_legacy: "{{ (states(_room_control)) if (_room_control != '' and states(_room_control) not in ['Auto', 'unknown', 'unavailable', '']) else '' }}"
+  _manual_override_hi: "{{ _manual_override_value_cab != '' or _manual_override_value_legacy != '' }}"
+  _manual_override_value: "{{ (_manual_override_value_cab if _manual_override_value_cab != '' else _manual_override_value_legacy) | lower }}"
   # WASP FLAG (2026-08-08, design note: "if motion fires and all wasp = closed
   # there is no win. wasp=true. WASP HOLD"). PHYSICAL-SPACE SEMANTICS
   # (2026-08-10 correction, design note: "it has NOTHING TO DO WITH uncertainty.
@@ -721,14 +798,25 @@ variables:
   # Single source of truth for the cascade result, referenced by BOTH the
   # sensor's own state below AND the REFLEX emitter action further down —
   # computed exactly once per trigger, never duplicated. CASCADE ORDER:
-  # emergency > manual override (whatever room_control_manager says) >
-  # asleep > engaged > child-engaged > hold (wasp/entertaining/guest) >
-  # occupied (or hold) > vacant. Emergency always wins, even while paused —
-  # life-safety visibility is never silenced; paused only suppresses
-  # routine automation reactions. Paused/Automation/Cleaning/Vacant/
-  # Occupied/Engaged/Asleep/Hold are all just values room_control_manager
-  # can hold; whichever one it's set to wins outright at that single
-  # priority tier. Only emergency outranks a manual override — life-safety
+  # emergency > paused > asleep > (any other manual override) > engaged >
+  # child-engaged > hold (wasp/entertaining/guest) > occupied (or hold) >
+  # vacant.
+  #
+  # CORRECTED 2026-08-16 (Nathan, verbatim: "everything except pause and
+  # emergency yields to sleep else you get to explain to your household
+  # why you woke them up") -- traced against the real old Node-RED engine (flows.json,
+  # "Room Occupancy State Engine 5.1.1"): its transition table explicitly
+  # guards Locked against every other event (asleep/hold/engaged/occupied
+  # all stay 'locked' while locked) but has NO equivalent guard for
+  # Automation -- asleep genuinely could interrupt Automation/Cleaning in
+  # the old system. The first pass here put ALL manual-override values
+  # (Paused/Automation/Cleaning/Vacant/Occupied/Engaged/Hold) in one
+  # undifferentiated tier ahead of asleep, which silently regressed that:
+  # a room manually set to Automation or Cleaning could never register a
+  # real person falling asleep in it. Only Paused (the actual safety
+  # all-stop) now outranks Asleep -- every other override value yields to
+  # real sleep evidence, matching old exactly. Emergency still wins
+  # outright over everything, including Paused -- life-safety visibility
   # is never suppressible by a human/agent pick.
   #
   # Below the override tier, two DIFFERENT priority rules govern
@@ -742,10 +830,12 @@ variables:
   _resolved_state: >-
     {%- if _emergency_hi -%}
       emergency
-    {%- elif _manual_override_hi -%}
-      {{ _manual_override_value }}
+    {%- elif _manual_override_hi and _manual_override_value == 'paused' -%}
+      paused
     {%- elif _asleep_hi -%}
       asleep
+    {%- elif _manual_override_hi -%}
+      {{ _manual_override_value }}
     {%- elif _engaged_hi -%}
       engaged
     {%- elif _child_engaged_hi -%}
@@ -817,6 +907,7 @@ sensor:
       # e.g. asleep_active can be true even while state shows "emergency"
       # (emergency outranks it in the cascade but doesn't erase it).
       engaged_active: "{{ _engaged_hi or _child_engaged_hi }}"
+      engaged_on_excluded_entities: "{{ _engaged_state_on_excluded_ents if _engaged_state_on_excluded_ents | count > 0 else none }}"
       occupied_active: "{{ _occ_hi or _child_occ_hi or _hold_hi }}"
       asleep_active: "{{ _asleep_hi }}"
       wasp_flag_active: "{{ _wasp_flag_hi if (_wasp_door_ents | count > 0 and _wasp_room_enabled) else none }}"
@@ -844,6 +935,8 @@ sensor:
       cleaning_active: "{{ _cleaning_hi if _room_control != '' else none }}"
       room_control_entity: "{{ _room_control if _room_control != '' else none }}"
       room_control_state: "{{ states(_room_control) if _room_control != '' else none }}"
+      room_control_source: "{{ 'cabinet' if _manual_override_value_cab != '' else ('legacy_entity' if _manual_override_value_legacy != '' else none) }}"
+      room_control_value: "{{ _room_control_cab_value }}"
       hold_active: "{{ _hold_hi if _hold_ents | count > 0 else none }}"
       window_open_active: "{{ (_window_ents | map('states') | select('in',['on','open']) | list | count) > 0 if _window_ents | count > 0 else none }}"
       garage_open_active: "{{ (_garage_ents | map('states') | select('in',['on','open']) | list | count) > 0 if _garage_ents | count > 0 else none }}"
@@ -888,10 +981,14 @@ sensor:
       last_trigger: >-
         {%- if _emergency_hi -%}
           {{ {'entity_id': _emergency_latch, 'friendly_name': (state_attr(_emergency_latch, 'friendly_name') | default(_emergency_latch, true)), 'last_changed': states[_emergency_latch].last_changed.isoformat()} }}
-        {%- elif _manual_override_hi -%}
-          {{ {'entity_id': _room_control, 'friendly_name': (state_attr(_room_control, 'friendly_name') | default(_room_control, true)), 'last_changed': states[_room_control].last_changed.isoformat()} }}
+        {%- elif _manual_override_hi and _manual_override_value == 'paused' -%}
+          {{ {'reason': 'manual override set to Paused -- outranks everything except emergency, including real asleep evidence', 'value': _room_control_cab_value} }}
         {%- elif _asleep_hi -%}
           {{ _asleep_last_trigger }}
+        {%- elif _manual_override_value_cab != '' -%}
+          {{ {'reason': 'room_topology[room].room_control -- set via zen_dojotools_room_manager mode=room_control_set', 'value': _room_control_cab_value} }}
+        {%- elif _manual_override_value_legacy != '' -%}
+          {{ {'entity_id': _room_control, 'friendly_name': (state_attr(_room_control, 'friendly_name') | default(_room_control, true)), 'last_changed': states[_room_control].last_changed.isoformat()} }}
         {%- elif _engaged_hi -%}
           {{ _engaged_last_trigger }}
         {%- elif _child_engaged_hi -%}
@@ -920,3 +1017,20 @@ sensor:
       # find "labeled but never wired" gaps — exactly the class of bug the
       # garage wasp fix and garage_windows both turned out to be.
       wired_trigger_entities: "{{ _trigger_entities }}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NOTE (2026-08-16): a per-room `select:` platform auto-deployed alongside
+# this sensor via the SAME use_blueprint: was attempted and reverted --
+# real HA platform limitation, not a design choice: "more than one
+# platform defined per blueprint" is a hard error at setup (config_check
+# does not catch it, only live load does). A second platform needs its
+# own separate use_blueprint: deployment per room, which reintroduces a
+# per-room step -- exactly what the cabinet-backed override above exists
+# to avoid. zen_dojotools_room_manager mode=room_control_set is
+# therefore the tool-mediated write path GUARANTEED to work on every
+# room, with nothing to provision first -- but it is NOT the only
+# mechanism: a room's legacy room_control_manager select entity, where
+# one has been deployed, is a real, equally-valid mirror of the SAME
+# state, not a deprecated fallback -- either one changes the SAME
+# room_topology[room].room_control field, both read as identical truth.
+# ═══════════════════════════════════════════════════════════════════════════
