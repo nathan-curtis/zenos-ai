@@ -29,7 +29,7 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `zen_dojotools_number` | CANONICAL: `number` / `input_number` GET+SET+arithmetic |
 | `zen_dojotools_timekeeper` | CANONICAL: `timer` GET+SET, plus dashboard/worldclock/alarms read-only modes |
 | `zen_dojotools_text` | CANONICAL: `text` / `input_text` GET+SET+string ops |
-| `zen_dojotools_climate` | CANONICAL: `climate` GET+SET with topology context |
+| `zen_dojotools_climate` | CANONICAL: `climate` **and `fan`** GET+SET with topology context, `climate_control` identity gate |
 | `zen_dojotools_water_heater` | CANONICAL: `water_heater` GET+SET |
 | `zen_dojotools_datetime` | CANONICAL: `input_datetime` GET+SET |
 | `zen_dojotools_zones` | CANONICAL: zone CRUD + haversine bearing |
@@ -307,27 +307,35 @@ Entity existence is checked against domain membership, not state — an entity w
 
 ---
 
-### zen_dojotools_climate
+### zen_dojotools_climate (v2.0.0 — also owns `fan.*`)
 
-GET+SET for `climate` entities. Inspects `supported_features` before applying — fails closed on unsupported feature. Multiple setters may be sent in one call. Omit all to read state and capabilities.
+GET+SET for `climate` **and, as of 2026-08-16, `fan`** entities — domain auto-detected from `name` after resolution, no separate mode needed. Closes a real gap: before this, there was no general-purpose fan primitive anywhere in the codebase (only `spa_manager`'s hardcoded hot-tub jets/air-purifier fan calls, not usable generally). Inspects `supported_features` before applying — fails closed on unsupported feature, same philosophy for both domains (fan capability detection via the real `FanEntityFeature` bitmask). Multiple setters may be sent in one call. Omit all to read state and capabilities.
 
-GET response includes a `topology_context` block: open doors/windows, area temperature/humidity sensors, adjacent HVAC bleed portals (via Room Manager), and a natural vent advisory.
+GET response includes a `topology_context` block: open doors/windows, area temperature/humidity sensors, adjacent HVAC bleed portals (via Room Manager), and a natural vent advisory. A top-level `domain` field on both GET and SET responses reports which domain was actually resolved.
 
 | Field | Description |
 |---|---|
-| `name` | Entity ID or shorthand name |
+| `name` | Entity ID or shorthand name — `climate.*` or `fan.*` |
 | `room` | Area for topology context in GET mode (auto-detected if omitted) |
 | `temperature` | Target temperature (single setpoint) |
 | `target_low` / `target_high` | Auto/heat-cool range |
 | `hvac_mode` | HVAC operating mode — read first to see supported modes |
-| `fan_mode` | Fan mode |
+| `fan_mode` | Climate entity's own internal fan mode (e.g. thermostat fan setting) — **not** the same as `fan_percentage`/`fan_preset_mode` below, which target a real `fan.*` entity |
 | `swing_mode` | Swing mode |
 | `preset` | Preset mode (eco, sleep, away, etc.) |
 | `humidity` | Target humidity (if supported) |
 | `aux_heat` | ~~Auxiliary heat~~ — `not_implemented`. `climate.set_aux_heat` was removed from HA with no replacement (surfaced by Spook v6 sweep). |
-| `power` | Power control — `on`/`off` (via hvac_mode) |
+| `power` | Power control — `on`/`off`. Domain-routed: `hvac_mode` for climate, fan power for a `fan.*` target |
+| `fan_percentage` | Fan speed 0–100%. `fan.*` targets only |
+| `fan_preset_mode` | Fan preset (e.g. `low`/`medium`/`high`/`auto`). `fan.*` targets only |
+| `fan_oscillate` | Oscillation on/off. `fan.*` targets only |
+| `fan_direction` | Fan direction. `fan.*` targets only |
 | `get` | Any truthy value forces read-only |
-| `mode` | `read` forces a read-only reply. `set` requires at least one real setter field (`temperature`, `hvac_mode`, etc.) — returns `missing_setter` if none given. `tool_manifest` for self-description. Omitting `mode` still works identically. |
+| `mode` | `read` forces a read-only reply. `set` requires at least one real setter field — returns `missing_setter` if none given. `tool_manifest` for self-description. Omitting `mode` still works identically. |
+
+**Identity gate (2026-08-16):** GET stays open. Any real setter requires the `climate_control` certification — cert-only, no live-ack tier (same shape as ZenLux's `lighting_control`; nothing on a thermostat or fan is exterior-security-grade). `cert_scope` deny is enforced as a hard block via the shared `cert_scope_check` macro. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
+
+**SESE conversion note:** this tool doesn't fit the mode-dispatch `choose:` shape the other gated tools use — multiple setters can combine in one call, always could. Uses a flat-guard restructure instead: every stop point sets `result` and falls through, every later block gains `result is not defined and` on its own condition. GET keeps its own terminal exit, same read/write split every tool in this file uses.
 
 ---
 

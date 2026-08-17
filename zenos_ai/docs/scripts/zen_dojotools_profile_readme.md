@@ -295,6 +295,20 @@ field on `cert_grant` — see the gating tool's own readme (e.g.
 doesn't weaken gate 1 or 2 above; it's an opt-in convenience a tool can
 check once it already holds a valid, ack'd cert.
 
+**`cert_scope` entries and merge behavior (2026-08-16):** each entry is
+either a bare string (shorthand for `{"entity": "<id>", "acl": "allow"}`)
+or the explicit `{"entity": ..., "acl": "allow"|"deny"}` form — `deny`
+hard-blocks that target outright, ahead of the certification check,
+with no live ack ever offered, distinct from an unscoped target which
+still asks normally. A second `cert_grant` for a certification already
+held **merges** into the existing scope by entity (upsert), it does
+not replace it — fixed after an earlier version silently wiped prior
+exemptions on any follow-up grant unless the caller re-sent every
+entry, a real data-loss risk for a "just add one more" call. To remove
+a single entry without touching the rest, submit that entity with
+`"acl": "remove"` — this deletes it from the merged scope rather than
+adding a third ACL state.
+
 ---
 
 ## Write Behavior (AI User)

@@ -107,11 +107,23 @@ zen_dojotools_persona_editor mode=cert_grant
     cert_scope=["lock.front_door"]
 ```
 
-A target covered by a granted scope skips the per-call live ack for that certification's live-ack-tier actions, on that target only. A call covering multiple targets, some scoped and some not, still asks for the whole set — there is no partial silent authorization.
+A target covered by a granted **allow** scope skips the per-call live ack for that certification's live-ack-tier actions, on that target only. A call covering multiple targets, some scoped and some not, still asks for the whole set — there is no partial silent authorization.
 
-**Scope does not weaken Gate 1 or Gate 2 in Section 4.** Granting a scope, narrow or broad, is itself a certification grant and goes through the exact same live-ack requirement as any other. The system will accept a `cert_scope` covering every actuatable target in the household if you request it, with the same single real-time confirmation as any narrower request. It does not evaluate whether the scope you are requesting is a good idea. That evaluation is the human's, made once, at the moment of the ack. The system's only job past that point is to enforce whatever you approved.
+**Scope entries have two forms.** A bare string (`"lock.front_door"`) is shorthand for an allow entry. A full form, `{"entity": "lock.front_door", "acl": "allow"}` or `{"entity": "lock.front_door", "acl": "deny"}`, is explicit. **A `deny` entry is a hard block**, evaluated ahead of the certification check itself — a target explicitly denied is refused regardless of what level the certification is held at, with no live ack offered at all. This is not the inverse of an unscoped default; an unscoped target still asks normally, a denied target is refused outright.
 
-If you grant broad scope and later regret it, revoke it (Section 5) — the same live-ack requirement applies to removing a scope as to granting one.
+**Granting again merges, it does not replace.** A second `cert_grant` for a certification already held adds to the existing scope rather than overwriting it — each entry is upserted by entity, so granting a new exemption never silently drops previously granted ones. To remove a single entry without touching the rest of the scope or re-granting the whole certification, submit that entity with `"acl": "remove"`:
+
+```
+zen_dojotools_persona_editor mode=cert_grant
+    cert_component=lock_control
+    cert_scope=[{"entity": "lock.front_door", "acl": "remove"}]
+```
+
+This still goes through both gates in Section 4 like any other grant — removing one exemption requires the same live ack as adding one.
+
+**Scope does not weaken Gate 1 or Gate 2 in Section 4.** Granting a scope, narrow or broad, allow or deny, is itself a certification grant and goes through the exact same live-ack requirement as any other. The system will accept a `cert_scope` covering every actuatable target in the household if you request it, with the same single real-time confirmation as any narrower request. It does not evaluate whether the scope you are requesting is a good idea. That evaluation is the human's, made once, at the moment of the ack. The system's only job past that point is to enforce whatever you approved.
+
+If you grant broad allow scope and later regret it, remove the specific entry as shown above, or revoke the entire certification (Section 5) — the same live-ack requirement applies either way.
 
 ---
 
@@ -124,9 +136,15 @@ If you grant broad scope and later regret it, revoke it (Section 5) — the same
 | `zen_dojotools_security_manager` | `security_control` | Arm; change alert policy | Disarm |
 | `zen_dojotools_infra` (container-control codex) | `infra_container_control` | Restart/start a container (level ≥ 2 by default) | Stop/remove a container (level ≥ 3 by default) |
 | `zen_dojotools_room_manager` | `room_control_override` | — (no cert-only tier; see next column) | Move a room out of a human-set Paused state |
+| `zen_dojotools_room_manager` | `room_topology_edit` | Structural edits: `set`/`setup`/`area_create`/`area_update`/`link`/`unlink`/`boundary_link`/`boundary_unlink`/`zone_set`/`zone_remove`/`landmark_set`/`landmark_remove` (level 1); `area_delete` (level 2) | — |
+| `zen_dojotools_room_manager` | `room_behavior_control` | `room_status_set`, `roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `wasp_enable`, `reflex_wire` area writes, `room_control_set` writes (except setting Paused, which stays open) | — |
 | `zen_dojotools_lights` (ZenLux) | `lighting_control` | All gated light/switch writes | — (no live-ack tier; lighting is not treated as a physical-security action) |
+| `zen_dojotools_climate` (also owns `fan.*`) | `climate_control` | All real setters on a `climate.*` or `fan.*` target | — |
+| `zen_dojotools_spa_manager` | `spa_control` | `scene`, `lights`, `jets`, `temperature`, `cover` | — |
 
-Every entry in the middle and right columns requires holding the listed certification at the tool's required level as a baseline. The right column additionally requires Section 4's live ack, per call, unless the specific target is covered by a granted `cert_scope` (Section 6).
+Every entry in the middle and right columns requires holding the listed certification at the tool's required level as a baseline. The right column additionally requires Section 4's live ack, per call, unless the specific target is covered by a granted allow `cert_scope` (Section 6) — and refused outright, no ack offered, if covered by a `deny` entry instead.
+
+**ZenZork** (the text-adventure engine) is not itself gated, but every in-game `open`/`close`/`use`/`push`/`pull` that resolves to a real lock or cover now routes through `zen_dojotools_locks`/`zen_dojotools_covers` in `dry_run` mode — the game narrates from the same real `cert_scope`/live-ack check this table describes, without ever performing the real actuation. See the ZenZork readme's Identity Gate section.
 
 ---
 
@@ -146,6 +164,7 @@ This system does not evaluate whether a given grant is wise. It enforces exactly
 |---|---|
 | `error: identity_policy_blocked` | `resolve_caller_identity` did not return an allowed identity — a prerequisite failure upstream of certification entirely. Not a cert problem; check the identity/sim_mode policy gate. |
 | `error: cert_insufficient` | The identity resolved, but the held certification level is below what the action requires (or the certification isn't held at all). Grant it per Section 4. |
+| A gated action refuses a specific target with no live ack ever offered | The target is covered by a `deny` scope entry (Section 6) — a hard block, evaluated ahead of the certification check, not something a live ack can override. Remove the `deny` entry (submit it again with `"acl": "remove"`) if it was unintended. |
 | `reason: dispatch_failed` on a `cert_grant`/`cert_revoke`/gated actuation | The live-ack request never reached a real device. Check the household's Postman/mobile notification configuration — this is the Section 4 prerequisite not being met. |
 | `reason: declined` | A human received the request and answered no. Working as intended. |
 | `reason: timeout` | The request dispatched, but no response arrived within the wait window. Check that the device that received the push is actually being watched. |

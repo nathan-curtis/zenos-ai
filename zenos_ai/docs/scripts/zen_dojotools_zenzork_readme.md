@@ -39,9 +39,9 @@ Navigation is compass-bearing-native. Portals are the same bearing-tagged entrie
 | `put target=X container=Y` | Put an item into a container. |
 | `push target=X` | Push an object (triggers RM interaction if portal). |
 | `pull target=X` | Pull an object. |
-| `open target=X` | Open a door/cover. Calls RM or HA service. Alias: `unlock`. |
-| `close target=X` | Close a door/cover. Aliases: `lock`, `shut`. |
-| `use target=X` | Use an item or entity (generic interaction). |
+| `open target=X` | Open a door/cover. Alias: `unlock`. Routed through `zen_dojotools_locks`/`zen_dojotools_covers` — see Identity Gate below. |
+| `close target=X` | Close a door/cover. Aliases: `lock`, `shut`. Same routing as `open`. |
+| `use target=X` | Use an item or entity (generic interaction). Same routing when the target resolves to a real lock/cover entity. |
 | `attack target=<threat_id>` | Fight an active threat (v1.8.0). Lite-5e resolution — see Threats & Combat section. |
 | `talk` | Always refuses. There are no NPCs in this engine — deliberate King's Quest-style gag, not a missing feature. Three randomized lines per narrator voice. |
 | `examine target=X` | Inspect a landmark or entity via the Lens Bus. |
@@ -458,6 +458,14 @@ cold aside in all future narration, not just the moment of confession.
 
 ---
 
+## Identity Gate (2026-08-16)
+
+`open`/`close`/`use`/`push`/`pull` used to issue raw `lock.unlock`/`lock.lock`/`cover.open_cover`/`cover.close_cover`/`cover.toggle` directly against whatever real household entity a room-topology landmark resolved to — a game command like "open garage door" hit real hardware with zero identity check, a hard end-run around the `cert_scope` deny hard-block and the exterior-unlock live-ack requirement documented for `zen_dojotools_locks`/`zen_dojotools_covers`. Found by the same audit that closed `spa_manager`'s equivalent gap.
+
+All lock/cover actuation from inside a ZenZork session now routes through `script.zen_dojotools_locks`/`script.zen_dojotools_covers mode=set`, **and always passes `dry_run: true`** — a deliberate choice, not a bug: the game narrates from the dry_run preview's `would_be_denied`/`would_require_live_ack`/`would_be_authorized` fields (a real `cert_scope` check against the real entity, zero physical side effect) rather than ever claiming a hardware state change actually happened. In practice this means "open the garage door" inside the game reports honestly whether that action *would* succeed for the real household right now — denied by an admin scope, blocked pending a live ack that can't be granted from inside a game session, or simply not certified yet — without ever actually moving the real door. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for what those three fields mean.
+
+---
+
 ## Narrator Styles
 
 Set with `narrator=` field (default: `zork`).
@@ -493,6 +501,7 @@ Two independent fallback paths, both silently returning template narration rathe
 
 | Version | Change |
 |---------|--------|
+| (2026-08-16) | Real security fix: `open`/`close`/`use`/`push`/`pull` no longer issue raw lock/cover service calls directly — routed through the same identity-gated tools (`zen_dojotools_locks`/`zen_dojotools_covers`), always in `dry_run` mode, narrating from the real `cert_scope`/live-ack check instead of a real actuation. `tool_manifest` version wasn't bumped for this fix — flagging per the known Zammad #10300 version-source gap rather than inventing a number. |
 | v1.8.0 | Training quest (auto-seeded, `training_quest`), 3 real persisted achievements (`oriented`/`hands_on`/`carls_briefing`). Data-driven turn-based threat engine (`threat_defs.json`, grue is threat #1, up to 5 concurrent) ticking on `look`/`go`/`wait`/`start` only. Lite-5e `mode=attack` combat (`weapon_defs.json`, reuses Friday's `zen_ai_certs` ability-score vocabulary), non-fatal always. Protect-token/saving-throw escape levers (`protect_defs.json`). DUNGEONMIND's swag on every threat outcome plus a one-time MPAA-gated first-death gift (`swag_defs.json`). Rare verified-real cartridge collectibles + `chapter_1_complete` capstone. Household-systems achievements (`household_systems.json`, real live-entity presence via `label_entities()`). New `mode=talk` (deliberate no-NPCs gag). `mode=help`/`mode=status` brought current with the new surface; `mode=status` also picked up several fields it was silently missing and a real bug fix (`mpaa_rating` referenced an out-of-scope variable, always empty). Fixed a real pre-existing bug in `mode=start`'s reset path — `quest`/`quest_won` weren't re-derived on a genuinely new session, so it reported the prior session's quest. |
 | v1.7.0 ("Chapter 1", cont.) | Data-driven quest table (12 of 15 markers, `.zenzork_quests/quest_defs.json`, 10 reusable types). `mode=chapters` — 12-entry book-lore sequence (`book_lore.json`) replacing the old ad-hoc Diawata/Valtay/Mongo mechanism, corrected against real book research (Diawata=book5/audio-only, Valtay=book6 not book5), release-chapter publishing system (`chapter_releases.json`, one JSON bundle per SoftDisk-style content chapter — corrected mid-build from an initial one-file-per-entry design that was the wrong grain, see below) with new-player catch-up and an engine-version gate (`min_engine_version`/`engine_ready`/`playable`, since a future chapter can ship unlock types this build doesn't have a dispatcher for yet). `mode=genie` — Game Genie cheat codes (`genie_codes.json`), dual-gate confession requirement, god-tattoo meta callback. Real loot table (`.zenzork_loot/loot_table.json`, 13 items/5 rarity tiers) replacing placeholder treasure names. Carl's Left Sock (real registered landmarks + take-mode special case). Fixed north-calibration write/read drawer mismatch (`_cal` was always 0, silently, since the feature shipped). |
 | v1.7.0 (original) | `llm_narration` toggle — live LLM-generated narration via `ai_task.generate_data` with per-narrator persona prompts, falling back to template narration if the pipe is gated off or the response is too short. Domain-linking block on `help` mode (`domain: entertainment`). Cabinet reads refactored to `CABS.cabinet_drawer_value_mounted`. |
