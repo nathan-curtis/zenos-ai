@@ -1135,7 +1135,17 @@ script:
 
       cert_scope:
         name: Cert Scope (JSON array)
-        description: "Actions in scope for this certification. JSON array."
+        description: >-
+          Per-target exemptions from a cert's live-ack requirement. JSON
+          array, each item either a bare entity_id string (shorthand for
+          allow) or a {"entity": "...", "acl": "allow"|"deny"|"remove"}
+          object. MERGES into any existing scope for this cert_component --
+          does NOT replace it, so a second cert_grant call only needs to
+          list the entries it's actually changing. acl="deny" is read by
+          cert_scope_check (zen_os_1.jinja) but not yet enforced by any
+          tool's write gate. acl="remove" deletes that one entity from the
+          merged scope without touching the rest or needing a full
+          cert_revoke. Example: '[{"entity":"lock.front_door","acl":"deny"}]'.
         default: ""
         selector:
           text:
@@ -1174,7 +1184,7 @@ script:
                     tool='zen_dojotools_persona_editor',
                     display_name='Persona Editor',
                     tier='dojotools',
-                    version='1.0.1',
+                    version='1.1.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['personality_module', 'identity'],
@@ -1865,13 +1875,52 @@ script:
                     {%- endif -%}
                   _existing_certs: "{{ _cev.get('kfc_certifications', {}) if _cev is mapping else {} }}"
                   _existing_stats: "{{ _cev.get('stats', {}) if _cev is mapping else {} }}"
+              # ── Scope MERGE, not replace (2026-08-16, Nathan: "work through
+              # the parts" on the deny-ACL plan). Before this, a second
+              # cert_grant for an already-granted cert silently WIPED the
+              # existing scope unless the caller re-sent every prior entry --
+              # real data-loss risk for a "just add one more exemption" call.
+              # Now: existing scope + new _cscope are both normalized to
+              # {entity, acl} dicts (bare string = legacy 'allow' shorthand),
+              # then upserted by entity (new entries win). acl='remove' on a
+              # new entry deletes that entity from the merged result instead
+              # of adding it -- this IS the per-entry removal mechanism (no
+              # separate mode/field needed): cert_grant cert_scope='[{"entity":
+              # "lock.x","acl":"remove"}]' drops just that one exemption
+              # without touching the rest of the scope or re-granting the
+              # whole cert. ──
+              - variables:
+                  _cg_existing_scope: "{{ _existing_certs.get(_comp, {}).get('scope', []) if _comp in _existing_certs else [] }}"
+                  _cg_merged_scope: >-
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for raw in _cg_existing_scope -%}
+                      {%- if raw is mapping -%}
+                        {%- set n = {'entity': raw.get('entity', ''), 'acl': raw.get('acl', 'allow') | lower} -%}
+                      {%- else -%}
+                        {%- set n = {'entity': raw | string, 'acl': 'allow'} -%}
+                      {%- endif -%}
+                      {%- set ns.out = ns.out + [n] -%}
+                    {%- endfor -%}
+                    {%- for raw in _cscope -%}
+                      {%- if raw is mapping -%}
+                        {%- set n = {'entity': raw.get('entity', ''), 'acl': raw.get('acl', 'allow') | lower} -%}
+                      {%- else -%}
+                        {%- set n = {'entity': raw | string, 'acl': 'allow'} -%}
+                      {%- endif -%}
+                      {%- set ns.out = (ns.out | rejectattr('entity', 'equalto', n.entity) | list) -%}
+                      {%- if n.acl != 'remove' -%}
+                        {%- set ns.out = ns.out + [n] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.out }}
+              - variables:
                   _new_cert_entry: >-
                     {%- set e = {'level': _lvl, 'certified': now().strftime('%Y-%m-%d'), 'tool': _ctool} -%}
                     {%- if _ccons is sequence and _ccons | length > 0 -%}
                       {%- set e = e | combine({'constraints': _ccons}) -%}
                     {%- endif -%}
-                    {%- if _cscope is sequence and _cscope | length > 0 -%}
-                      {%- set e = e | combine({'scope': _cscope}) -%}
+                    {%- if _cg_merged_scope is sequence and _cg_merged_scope | length > 0 -%}
+                      {%- set e = e | combine({'scope': _cg_merged_scope}) -%}
                     {%- endif -%}
                     {{ e }}
                   _updated_certs: "{{ _existing_certs | combine({_comp: _new_cert_entry}) }}"

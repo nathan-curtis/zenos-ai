@@ -570,7 +570,7 @@ script:
                 tool='zen_dojotools_room_manager',
                 display_name='Room Manager',
                 tier='dojotools',
-                version='5.9.0',
+                version='5.11.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['zen_household_cabinet', 'zen_kfc_provider', 'carbon_monoxide', 'moisture', 'privacy_door', 'siren', 'smoke'],
                 optional_labels=['room_layout', 'hps', 'hold', 'engaged', 'occupied', 'asleep', 'motion', 'wasp_door', 'bed_occupancy', 'sleep_off_target', 'tv_sleep_target', 'vent_fan', 'window', 'garage_door', 'occupied_timer', 'asleep_timer', 'emergency_latch', 'nap_latch', 'asleep_minutes', 'nap_minutes', 'occupied_minutes', 'zenos_roomstate_master_switch', 'zenos_reflex_master_switch', 'scene_vacant', 'scene_occupied', 'scene_engaged', 'scene_asleep', 'scene_paused', 'scene_automation', 'scene_cleaning', 'scene_emergency', 'vibration', 'vibration_completion'],
@@ -634,6 +634,22 @@ script:
                     'gates': ['mode=room_control_set (setting room_control_state=Paused is always open, no cert needed)'],
                     'live_ack_required_for': ['mode=room_control_set clearing a room OUT of Paused (any other room_control_state while currently Paused) -- every call, cert alone is never sufficient, unless cert_scope names that exact area_id'],
                     'grant_via': "persona_editor mode=cert_grant cert_component=room_control_override (or zen_dojotools_identity mode=cert_list to see current status)"
+                  }, {
+                    'cert': 'room_topology_edit',
+                    'display_name': 'Room Topology Editing',
+                    'description': '2026-08-16, Nathan: "its time for RM to participate" -- structural edits to the shared house model every other domain tool trusts (egress routing, ZenLux bleed math, climate portal context, autovac room list). No hardware actuation, but bad data here silently corrupts every other tool downstream. area_delete requires level 2 (a higher bar than routine edits) since it deletes a real HA area and is irreversible -- same graduated-level shape as other tools use max_level for, rather than a separate cert class.',
+                    'max_level': 4,
+                    'gates': ['mode=set/setup/area_create/area_update/link/unlink/boundary_link/boundary_unlink/zone_set/zone_remove/landmark_set/landmark_remove (level 1) / area_delete (level 2, cert only)'],
+                    'live_ack_required_for': [],
+                    'grant_via': "persona_editor mode=cert_grant cert_component=room_topology_edit (or zen_dojotools_identity mode=cert_list to see current status)"
+                  }, {
+                    'cert': 'room_behavior_control',
+                    'display_name': 'Room Behavior Control',
+                    'description': '2026-08-16, Nathan: "its time for RM to participate" -- per-room and house-wide behavioral toggles: housekeeping status, the v3 state engine and REFLEX master switches, REFLEX rehearsal mode, the wasp-hold gate, live REFLEX cascade re-trigger, and non-Paused room_control_set writes (setting Paused itself stays open -- increasing safety never needs permission, same asymmetric shape as room_control_override). No hardware touch beyond reflex_wire, which is bounded to replaying the room own currently-resolved state, not setting arbitrary state.',
+                    'max_level': 4,
+                    'gates': ['mode=room_status_set/roomstate_enable/reflex_enable/reflex_dry_run/wasp_enable/reflex_wire (area= write)/room_control_set (non-Paused writes only) (cert only, deny enforced)'],
+                    'live_ack_required_for': [],
+                    'grant_via': "persona_editor mode=cert_grant cert_component=room_behavior_control (or zen_dojotools_identity mode=cert_list to see current status)"
                   }]
                 }) -}}
         - stop: room_manager tool manifest
@@ -769,6 +785,75 @@ script:
             {%- endif -%}
           _area_b_name: >-
             {{ area_name(_area_b_id) | default('', true) if _area_b_input != '' else '' }}
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 0e. room_topology_edit cert gate (2026-08-16, Nathan: "its time for RM
+      # to participate" -- structural topology edits had zero auth of any
+      # kind). Covers every mode that writes room_topology structure/HA area
+      # metadata. area_delete requires level 2 (higher bar, irreversible,
+      # deletes a real HA area) -- everything else requires level 1. Runs
+      # unconditionally for these modes, including area_delete's own preview
+      # (confirm_action=false) -- same precedent as locks' dry_run fix
+      # earlier today, cert_scope visibility shouldn't differ between
+      # preview and real write. Read modes (get/list/zones/landmarks/
+      # pathfind/etc) are untouched -- this system's universal convention
+      # (climate/ZenLux/locks/covers/spa_manager all agree) is read stays
+      # open, only the write/actuation boundary gets a cert. ──
+      # ═══════════════════════════════════════════════════════════════════════
+      - variables:
+          _rm_topo_modes: ['set', 'setup', 'area_create', 'area_update', 'area_delete', 'link', 'unlink', 'boundary_link', 'boundary_unlink', 'zone_set', 'zone_remove', 'landmark_set', 'landmark_remove']
+      - if: "{{ _mode in _rm_topo_modes }}"
+        then:
+          - action: script.zen_dojotools_identity
+            response_variable: _rte_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: room_topology_edit
+              required_cert_level: "{{ 2 if _mode == 'area_delete' else 1 }}"
+              target_entity: "{{ _area_id }}"
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _rte_policy_status: "{{ _rte_id_raw.get('policy_status', 'blocked') if _rte_id_raw is mapping else 'blocked' }}"
+              _rte_authorized: "{{ _rte_id_raw.get('authorized', false) if _rte_id_raw is mapping else false }}"
+              _rte_cert_level: "{{ _rte_id_raw.get('cert_level', 0) if _rte_id_raw is mapping else 0 }}"
+              _rte_scope_decision: "{{ _rte_id_raw.get('scope_decision', 'default') if _rte_id_raw is mapping else 'default' }}"
+          - if: "{{ _rte_scope_decision == 'deny' }}"
+            then:
+              - variables:
+                  _result:
+                    status: denied
+                    mode: "{{ _mode }}"
+                    error: cert_scope_denied
+                    detail: >-
+                      room_topology_edit cert_scope explicitly denies {{ _area_id }} --
+                      an admin has scoped this room out via cert_grant. No ack is
+                      offered for a denied target; removing the denial requires
+                      cert_grant cert_scope=[{"entity":"{{ _area_id }}","acl":"remove"}].
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_topology_edit cert_scope denied
+                response_variable: _result
+          - if: "{{ _result is not defined and (_rte_policy_status != 'allowed' or not _rte_authorized) }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    mode: "{{ _mode }}"
+                    error: "{{ 'identity_policy_blocked' if _rte_policy_status != 'allowed' else 'cert_insufficient' }}"
+                    detail: >-
+                      {%- if _rte_policy_status != 'allowed' -%}
+                        resolve_caller_identity did not return an allowed identity -- action denied.
+                      {%- else -%}
+                        room_topology_edit cert level {{ _rte_cert_level }} is below the required minimum ({{ 2 if _mode == 'area_delete' else 1 }}).
+                      {%- endif -%}
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_grant
+                      cert_component: room_topology_edit
+                      cert_level: "{{ 2 if _mode == 'area_delete' else 1 }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_topology_edit cert insufficient
+                response_variable: _result
 
       # ═══════════════════════════════════════════════════════════════════════
       # 1. LIST
@@ -918,7 +1003,9 @@ script:
               _cs:          "{{ context_slices | default('') }}"
               _show_topo:   "{{ '+topo'    in (context_slices | default('')) }}"
               _show_light:  "{{ '+light'   in (context_slices | default('')) }}"
+              _light_ctx:   "{{ none }}"
               _show_clim:   "{{ '+climate' in (context_slices | default('')) }}"
+              _clim_ctx:    "{{ none }}"
               _show_covers: "{{ '+covers'  in (context_slices | default('')) }}"
               _show_media:  "{{ '+media'   in (context_slices | default('')) }}"
               _show_timers: "{{ '+timers'  in (context_slices | default('')) }}"
@@ -953,28 +1040,6 @@ script:
                     {%- if states(eid) == 'on' -%}{%- set ns.open = ns.open + [eid] -%}{%- endif -%}
                   {%- endfor -%}
                   {{ {"open_count": ns.open | count, "total_count": _bs | count, "open": ns.open} }}
-                {%- else -%}{{ none }}{%- endif -%}
-              _light_ctx: >-
-                {%- if _show_light -%}
-                  {%- set _lights = area_entities(_area_id) | select('match', 'light\\.') | list -%}
-                  {%- set ns = namespace(on=[], bvals=[]) -%}
-                  {%- for eid in _lights -%}
-                    {%- if states(eid) == 'on' -%}
-                      {%- set ns.on = ns.on + [eid] -%}
-                      {%- set _b = state_attr(eid, 'brightness') -%}
-                      {%- if _b is number -%}{%- set ns.bvals = ns.bvals + [_b] -%}{%- endif -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                  {%- set _avg = (ns.bvals | sum / (ns.bvals | count) / 255 * 100) | round(0) if ns.bvals else 0 -%}
-                  {{ {"lights_total": _lights | count, "lights_on": ns.on, "avg_brightness_pct": _avg} }}
-                {%- else -%}{{ none }}{%- endif -%}
-              _clim_ctx: >-
-                {%- if _show_clim -%}
-                  {%- set _climates = area_entities(_area_id) | select('match', 'climate\\.') | list -%}
-                  {%- set _first = _climates | first | default('') -%}
-                  {%- if _first -%}
-                    {{ {"entity_id": _first, "hvac_mode": states(_first), "setpoint": state_attr(_first, 'temperature'), "current_temp": state_attr(_first, 'current_temperature')} }}
-                  {%- else -%}{{ none }}{%- endif -%}
                 {%- else -%}{{ none }}{%- endif -%}
               _covers_ctx: >-
                 {%- if _show_covers -%}
@@ -1383,6 +1448,74 @@ script:
                           'hint': 'Next-set alarm for every Alexa/Echo/tablet/TV device assigned to this room. Personal phones/watches have no area and never appear here — see zen_dojotools_timekeeper mode=alarms for the full house-wide list.'} }}
                     {%- else -%}{{ none }}{%- endif -%}
 
+          # ── context_slices: +light reads via zen_dojotools_lights
+          # mode=room_state (2026-08-16, Nathan: "pull zenlux into
+          # compliance for full room" / "fix zenlux room scope" -- same
+          # fix as +climate below, applied to lighting once ZenLux grew a
+          # room-aggregate mode to receive it. New lightweight mode=
+          # room_state built into ZenLux specifically for this -- discover
+          # room=X already existed but is a heavy setup/exploration
+          # payload (roles, scenes, RM state, bleed topology), overkill
+          # for RM's tiny lights_total/lights_on/avg_brightness need.
+          # Pure read, cert-ungated -- only actuation modes require
+          # lighting_control. ──
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: >-
+                  {{ _show_light
+                     and area_entities(_area_id) | select('match', 'light\\.') | list | count > 0
+                     and states('script.zen_dojotools_lights') not in ['unavailable', 'unknown'] }}
+              sequence:
+              - action: script.zen_dojotools_lights
+                response_variable: _light_raw
+                continue_on_error: true
+                data:
+                  mode: room_state
+                  room: "{{ _area_id }}"
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _light_ctx: >-
+                    {%- if _light_raw is defined and _light_raw is mapping and _light_raw.get('status') == 'success' -%}
+                      {%- set _r = _light_raw.get('result', {}) -%}
+                      {%- if _r is mapping and _r.get('status') == 'ok' -%}
+                        {{ {"lights_total": _r.get('lights_total', 0), "lights_on": _r.get('lights_on', []), "avg_brightness_pct": _r.get('avg_brightness_pct', 0)} }}
+                      {%- else -%}{{ none }}{%- endif -%}
+                    {%- else -%}{{ none }}{%- endif -%}
+
+          # ── context_slices: +climate reads via zen_dojotools_climate GET
+          # (2026-08-16, Nathan: "I want it to read from domain tool and be
+          # a good little tool" -- was a raw states()/state_attr() read that
+          # duplicated the domain tool's own entity-pick logic. climate's
+          # GET is a clean fit here (single "first climate entity in the
+          # room" shape, same as RM already assumed) -- ZenLux has no
+          # equivalent room-aggregate GET yet, so +light stays a raw read
+          # for now. GET is cert-ungated by design (only setters require
+          # climate_control), so this is a pure read, no auth concern. ──
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: >-
+                  {{ _show_clim
+                     and area_entities(_area_id) | select('match', 'climate\\.') | list | count > 0
+                     and states('script.zen_dojotools_climate') not in ['unavailable', 'unknown'] }}
+              sequence:
+              - variables:
+                  _clim_first: "{{ area_entities(_area_id) | select('match', 'climate\\.') | list | first }}"
+              - action: script.zen_dojotools_climate
+                response_variable: _clim_raw
+                continue_on_error: true
+                data:
+                  name: "{{ _clim_first }}"
+                  mode: read
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _clim_ctx: >-
+                    {%- if _clim_raw is defined and _clim_raw is mapping and _clim_raw.get('ok') -%}
+                      {%- set _st = _clim_raw.get('state', {}) -%}
+                      {{ {"entity_id": _clim_raw.get('entity_id', _clim_first), "hvac_mode": _st.get('hvac_mode'), "setpoint": _st.get('temperature'), "current_temp": _st.get('current_temperature')} }}
+                    {%- else -%}{{ none }}{%- endif -%}
+
           # ── context_slices: assemble non-null slices into context dict ────
           - variables:
               _context_block: >-
@@ -1759,6 +1892,38 @@ script:
                   _result: {status: error, mode: room_status_set, message: "room_status= required (clean|dirty|in_service|occupied).", caller_token: "{{ _caller_token }}"}
               - stop: room_status_set error — missing status
                 response_variable: _result
+          # ── room_behavior_control gate (2026-08-16). ──
+          - action: script.zen_dojotools_identity
+            response_variable: _rss_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: room_behavior_control
+              required_cert_level: 1
+              target_entity: "{{ _area_id }}"
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _rss_policy_status: "{{ _rss_id_raw.get('policy_status', 'blocked') if _rss_id_raw is mapping else 'blocked' }}"
+              _rss_authorized: "{{ _rss_id_raw.get('authorized', false) if _rss_id_raw is mapping else false }}"
+              _rss_scope_decision: "{{ _rss_id_raw.get('scope_decision', 'default') if _rss_id_raw is mapping else 'default' }}"
+          - if: "{{ _rss_scope_decision == 'deny' }}"
+            then:
+              - variables:
+                  _result: {status: denied, mode: room_status_set, area_id: "{{ _area_id }}", error: cert_scope_denied, detail: "room_behavior_control cert_scope explicitly denies {{ _area_id }}.", caller_token: "{{ _caller_token }}"}
+              - stop: room_status_set cert_scope denied
+                response_variable: _result
+          - if: "{{ _rss_policy_status != 'allowed' or not _rss_authorized }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    mode: room_status_set
+                    area_id: "{{ _area_id }}"
+                    error: "{{ 'identity_policy_blocked' if _rss_policy_status != 'allowed' else 'cert_insufficient' }}"
+                    request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: room_behavior_control, cert_level: 1}
+                    caller_token: "{{ _caller_token }}"
+              - stop: room_status_set cert insufficient
+                response_variable: _result
           - variables:
               _rss_entry:
                 status: "{{ room_status }}"
@@ -1844,6 +2009,31 @@ script:
               _re_sw_ents: "{{ label_entities('zenos_roomstate_master_switch') }}"
           - if: "{{ _re_written }}"
             then:
+              # ── room_behavior_control gate (2026-08-16) -- house-wide
+              # toggle, no per-area target. ──
+              - action: script.zen_dojotools_identity
+                response_variable: _re_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: room_behavior_control
+                  required_cert_level: 1
+                  target_entity: ""
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _re_policy_status: "{{ _re_id_raw.get('policy_status', 'blocked') if _re_id_raw is mapping else 'blocked' }}"
+                  _re_authorized: "{{ _re_id_raw.get('authorized', false) if _re_id_raw is mapping else false }}"
+              - if: "{{ _re_policy_status != 'allowed' or not _re_authorized }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: roomstate_enable
+                        error: "{{ 'identity_policy_blocked' if _re_policy_status != 'allowed' else 'cert_insufficient' }}"
+                        request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: room_behavior_control, cert_level: 1}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: roomstate_enable cert insufficient
+                    response_variable: _result
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: >-
@@ -1922,6 +2112,31 @@ script:
               _rx_sw_ents: "{{ label_entities('zenos_reflex_master_switch') }}"
           - if: "{{ _rx_written }}"
             then:
+              # ── room_behavior_control gate (2026-08-16) -- house-wide
+              # toggle, no per-area target. ──
+              - action: script.zen_dojotools_identity
+                response_variable: _rx_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: room_behavior_control
+                  required_cert_level: 1
+                  target_entity: ""
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _rx_policy_status: "{{ _rx_id_raw.get('policy_status', 'blocked') if _rx_id_raw is mapping else 'blocked' }}"
+                  _rx_authorized: "{{ _rx_id_raw.get('authorized', false) if _rx_id_raw is mapping else false }}"
+              - if: "{{ _rx_policy_status != 'allowed' or not _rx_authorized }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: reflex_enable
+                        error: "{{ 'identity_policy_blocked' if _rx_policy_status != 'allowed' else 'cert_insufficient' }}"
+                        request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: room_behavior_control, cert_level: 1}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: reflex_enable cert insufficient
+                    response_variable: _result
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: >-
@@ -2007,6 +2222,36 @@ script:
               _rd_sw_ents: "{{ label_entities('zenos_reflex_dry_run_switch') }}"
           - if: "{{ _rd_written }}"
             then:
+              # ── room_behavior_control gate (2026-08-16) -- house-wide
+              # toggle, no per-area target. Note: turning dry_run ON
+              # reduces real-world effect (rehearsal instead of actual
+              # firing) same as room_control's "Paused is always open"
+              # exemption logic would suggest, but for simplicity/
+              # consistency with every other behavior toggle this session
+              # gates on write regardless of direction. ──
+              - action: script.zen_dojotools_identity
+                response_variable: _rd_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: room_behavior_control
+                  required_cert_level: 1
+                  target_entity: ""
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _rd_policy_status: "{{ _rd_id_raw.get('policy_status', 'blocked') if _rd_id_raw is mapping else 'blocked' }}"
+                  _rd_authorized: "{{ _rd_id_raw.get('authorized', false) if _rd_id_raw is mapping else false }}"
+              - if: "{{ _rd_policy_status != 'allowed' or not _rd_authorized }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: reflex_dry_run
+                        error: "{{ 'identity_policy_blocked' if _rd_policy_status != 'allowed' else 'cert_insufficient' }}"
+                        request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: room_behavior_control, cert_level: 1}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: reflex_dry_run cert insufficient
+                    response_variable: _result
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: >-
@@ -2231,6 +2476,38 @@ script:
                       _rw_err2: {status: error, message: "confirm_action=true required to apply reflex_assignments"}
                   - stop: "reflex_wire write requires confirm_action=true."
                     response_variable: _rw_err2
+              # ── room_behavior_control gate (2026-08-16). ──
+              - action: script.zen_dojotools_identity
+                response_variable: _rw_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: room_behavior_control
+                  required_cert_level: 1
+                  target_entity: "{{ area }}"
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _rw_policy_status: "{{ _rw_id_raw.get('policy_status', 'blocked') if _rw_id_raw is mapping else 'blocked' }}"
+                  _rw_authorized: "{{ _rw_id_raw.get('authorized', false) if _rw_id_raw is mapping else false }}"
+                  _rw_scope_decision: "{{ _rw_id_raw.get('scope_decision', 'default') if _rw_id_raw is mapping else 'default' }}"
+              - if: "{{ _rw_scope_decision == 'deny' }}"
+                then:
+                  - variables:
+                      _rw_err3: {status: denied, mode: reflex_wire, area: "{{ area }}", error: cert_scope_denied, detail: "room_behavior_control cert_scope explicitly denies {{ area }}.", caller_token: "{{ _caller_token }}"}
+                  - stop: reflex_wire cert_scope denied
+                    response_variable: _rw_err3
+              - if: "{{ _rw_policy_status != 'allowed' or not _rw_authorized }}"
+                then:
+                  - variables:
+                      _rw_err4:
+                        status: error
+                        mode: reflex_wire
+                        area: "{{ area }}"
+                        error: "{{ 'identity_policy_blocked' if _rw_policy_status != 'allowed' else 'cert_insufficient' }}"
+                        request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: room_behavior_control, cert_level: 1}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: reflex_wire cert insufficient
+                    response_variable: _rw_err4
               - repeat:
                   for_each: "{{ reflex_assignments }}"
                   sequence:
@@ -2954,8 +3231,27 @@ script:
                       caller_token: "{{ _caller_token }}"
                   - variables:
                       _rcs_cert_scope: "{{ _rcs_id_raw.get('cert_scope', []) if _rcs_id_raw is mapping else [] }}"
-                      _rcs_scoped_ok: "{{ (_rcs_id_raw.get('scope_decision', 'default') if _rcs_id_raw is mapping else 'default') == 'allow' }}"
-                  - if: "{{ not _rcs_scoped_ok }}"
+                      _rcs_scope_decision: "{{ _rcs_id_raw.get('scope_decision', 'default') if _rcs_id_raw is mapping else 'default' }}"
+                      _rcs_scoped_ok: "{{ _rcs_id_raw.get('scope_decision', 'default') == 'allow' if _rcs_id_raw is mapping else false }}"
+                  # 'deny' is a hard block, never offered the ack path --
+                  # distinct from 'default' (still asks every time).
+                  # (2026-08-16, Nathan: "now do they all properly support
+                  # deny?" -- this tool didn't, fixed now.)
+                  - if: "{{ _rcs_scope_decision == 'deny' }}"
+                    then:
+                      - variables:
+                          _result:
+                            status: denied
+                            mode: room_control_set
+                            area: "{{ _area_id }}"
+                            error: cert_scope_denied
+                            detail: >-
+                              room_control_override cert_scope explicitly denies
+                              {{ _area_id }} -- an admin has scoped this room out via
+                              cert_grant. No ack is offered; removing the denial requires
+                              cert_grant cert_scope=[{"entity":"{{ _area_id }}","acl":"remove"}].
+                            caller_token: "{{ _caller_token }}"
+                  - if: "{{ _result is not defined and not _rcs_scoped_ok }}"
                     then:
                       - action: script.zen_dojotools_identity
                         response_variable: _rcs_ack_raw
@@ -2974,7 +3270,8 @@ script:
                       - variables:
                           _rcs_ack_approved: "{{ _rcs_ack_raw.get('approved', false) if _rcs_ack_raw is mapping else false }}"
                           _rcs_ack_reason: "{{ _rcs_ack_raw.get('reason', 'dispatch_failed') if _rcs_ack_raw is mapping else 'dispatch_failed' }}"
-                    else:
+                  - if: "{{ _result is not defined and _rcs_scoped_ok }}"
+                    then:
                       - action: script.zen_dojotools_event_emitter
                         continue_on_error: true
                         data:
@@ -2991,7 +3288,7 @@ script:
                       - variables:
                           _rcs_ack_approved: true
                           _rcs_ack_reason: scoped_override
-                  - if: "{{ not _rcs_ack_approved }}"
+                  - if: "{{ _result is not defined and not _rcs_ack_approved }}"
                     then:
                       - variables:
                           _result:
@@ -3000,6 +3297,48 @@ script:
                             area: "{{ _area_id }}"
                             reason: "{{ _rcs_ack_reason }}"
                             detail: "Clearing Paused requires a fresh live household-admin ack every time -- not granted. Room stays Paused."
+                            caller_token: "{{ _caller_token }}"
+              # ── room_behavior_control gate (2026-08-16) -- covers every
+              # room_control_set write EXCEPT setting Paused (always open --
+              # increasing safety never needs permission) and the unpause
+              # path already gated above (its own room_control_override
+              # cert + mandatory live-ack). ──
+              - if: "{{ _result is not defined and _rcs_state_in != 'Paused' and not _rcs_is_unpause }}"
+                then:
+                  - action: script.zen_dojotools_identity
+                    response_variable: _rcs_bc_id_raw
+                    continue_on_error: true
+                    data:
+                      mode: resolve_caller_identity
+                      required_cert: room_behavior_control
+                      required_cert_level: 1
+                      target_entity: "{{ _area_id }}"
+                      caller_token: "{{ _caller_token }}"
+                  - variables:
+                      _rcs_bc_policy_status: "{{ _rcs_bc_id_raw.get('policy_status', 'blocked') if _rcs_bc_id_raw is mapping else 'blocked' }}"
+                      _rcs_bc_authorized: "{{ _rcs_bc_id_raw.get('authorized', false) if _rcs_bc_id_raw is mapping else false }}"
+                      _rcs_bc_scope_decision: "{{ _rcs_bc_id_raw.get('scope_decision', 'default') if _rcs_bc_id_raw is mapping else 'default' }}"
+                  - if: "{{ _rcs_bc_scope_decision == 'deny' }}"
+                    then:
+                      - variables:
+                          _result:
+                            status: denied
+                            mode: room_control_set
+                            area: "{{ _area_id }}"
+                            error: cert_scope_denied
+                            detail: >-
+                              room_behavior_control cert_scope explicitly denies {{ _area_id }} --
+                              an admin has scoped this room out via cert_grant.
+                            caller_token: "{{ _caller_token }}"
+                  - if: "{{ _result is not defined and (_rcs_bc_policy_status != 'allowed' or not _rcs_bc_authorized) }}"
+                    then:
+                      - variables:
+                          _result:
+                            status: error
+                            mode: room_control_set
+                            area: "{{ _area_id }}"
+                            error: "{{ 'identity_policy_blocked' if _rcs_bc_policy_status != 'allowed' else 'cert_insufficient' }}"
+                            request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: room_behavior_control, cert_level: 1}
                             caller_token: "{{ _caller_token }}"
               - if: "{{ _result is not defined }}"
                 then:
@@ -3099,6 +3438,37 @@ script:
               _we_written: "{{ wasp_room_enabled is defined and wasp_room_enabled not in [none, ''] }}"
           - if: "{{ _we_written }}"
             then:
+              # ── room_behavior_control gate (2026-08-16). ──
+              - action: script.zen_dojotools_identity
+                response_variable: _we_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: room_behavior_control
+                  required_cert_level: 1
+                  target_entity: "{{ area }}"
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _we_policy_status: "{{ _we_id_raw.get('policy_status', 'blocked') if _we_id_raw is mapping else 'blocked' }}"
+                  _we_authorized: "{{ _we_id_raw.get('authorized', false) if _we_id_raw is mapping else false }}"
+                  _we_scope_decision: "{{ _we_id_raw.get('scope_decision', 'default') if _we_id_raw is mapping else 'default' }}"
+              - if: "{{ _we_scope_decision == 'deny' }}"
+                then:
+                  - variables:
+                      _result: {status: denied, mode: wasp_enable, area: "{{ area }}", error: cert_scope_denied, detail: "room_behavior_control cert_scope explicitly denies {{ area }}.", caller_token: "{{ _caller_token }}"}
+                  - stop: wasp_enable cert_scope denied
+                    response_variable: _result
+              - if: "{{ _we_policy_status != 'allowed' or not _we_authorized }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: wasp_enable
+                        error: "{{ 'identity_policy_blocked' if _we_policy_status != 'allowed' else 'cert_insufficient' }}"
+                        request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: room_behavior_control, cert_level: 1}
+                        caller_token: "{{ _caller_token }}"
+                  - stop: wasp_enable cert insufficient
+                    response_variable: _result
               - if: "{{ wasp_room_enabled | bool }}"
                 then:
                   - action: script.zen_dojotools_ectoplasm

@@ -168,7 +168,7 @@ script:
                     tool='zen_dojotools_locks',
                     display_name='Lock Manager',
                     tier='dojotools',
-                    version='1.4.1',
+                    version='1.6.1',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['ext_lock'],
@@ -792,6 +792,53 @@ script:
                         {{ TARGET.resolve_targets(_entity_id, _room_resolved, _label, 'lock\\.') }}
                   - variables:
                       _set_targets: "{{ (_set_targets_raw | from_json) if _set_targets_raw is string else _set_targets_raw }}"
+                  # ── Identity/cert_scope resolved BEFORE branching on
+                  # dry_run -- resolve_caller_identity is read-only, safe to
+                  # run unconditionally (same fix covers already had; locks
+                  # never got it -- 2026-08-16, Nathan: "fix them", dry_run
+                  # used to always return would_apply with zero visibility
+                  # into cert/scope, since the identity call only happened
+                  # in the actuation branch after dry_run had already
+                  # returned). Moving it up means dry_run and the real
+                  # actuation path see the exact same real cert_scope. ──
+                  - action: script.zen_dojotools_identity
+                    response_variable: _set_id_raw
+                    continue_on_error: true
+                    data:
+                      mode: resolve_caller_identity
+                      required_cert: lock_control
+                      required_cert_level: 1
+                      caller_token: "{{ _caller_token }}"
+                  - variables:
+                      _set_policy_status: "{{ _set_id_raw.get('policy_status', 'blocked') if _set_id_raw is mapping else 'blocked' }}"
+                      _set_authorized: "{{ _set_id_raw.get('authorized', false) if _set_id_raw is mapping else false }}"
+                      _set_cert_level: "{{ _set_id_raw.get('cert_level', 0) if _set_id_raw is mapping else 0 }}"
+                      _set_cert_scope: "{{ _set_id_raw.get('cert_scope', []) if _set_id_raw is mapping else [] }}"
+                  - variables:
+                      _set_ext_targets: >-
+                        {%- set ns = namespace(items=[]) -%}
+                        {%- for e in _set_targets if 'ext_lock' in labels(e) -%}
+                          {%- set ns.items = ns.items + [e] -%}
+                        {%- endfor -%}
+                        {{ ns.items }}
+                  - variables:
+                      # Shared cert_scope_check macro (zen_os_1.jinja) -- 'deny'
+                      # and 'default' are NOT the same thing -- deny is a hard
+                      # block (2026-08-16).
+                      _set_ext_denied: >-
+                        {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+                        {%- set ns = namespace(items=[]) -%}
+                        {%- for e in _set_ext_targets if zen.cert_scope_check(_set_cert_scope, e) == 'deny' -%}
+                          {%- set ns.items = ns.items + [e] -%}
+                        {%- endfor -%}
+                        {{ ns.items }}
+                      _set_ext_uncovered: >-
+                        {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+                        {%- set ns = namespace(items=[]) -%}
+                        {%- for e in _set_ext_targets if zen.cert_scope_check(_set_cert_scope, e) not in ['allow', 'deny'] -%}
+                          {%- set ns.items = ns.items + [e] -%}
+                        {%- endfor -%}
+                        {{ ns.items }}
                   - choose:
                       - conditions: "{{ _set_targets | length == 0 }}"
                         sequence:
@@ -809,6 +856,12 @@ script:
                                 dry_run: true
                                 action: "{{ _action }}"
                                 would_apply: "{{ _set_targets }}"
+                                ext_lock_targets: "{{ _set_ext_targets }}"
+                                denied_by_scope: "{{ _set_ext_denied }}"
+                                uncovered_by_scope: "{{ _set_ext_uncovered }}"
+                                would_be_denied: "{{ _action == 'unlock' and _set_ext_denied | length > 0 }}"
+                                would_require_live_ack: "{{ _action == 'unlock' and _set_ext_denied | length == 0 and _set_ext_uncovered | length > 0 }}"
+                                would_be_authorized: "{{ _set_policy_status == 'allowed' and _set_authorized }}"
                     default:
                       # ── Tier X (act) identity gate -- stolen and generalized
                       # from zen_dojotools_infra's Portainer container-control
@@ -819,19 +872,6 @@ script:
                       # certifies it via persona_editor, this denies by design,
                       # not by bug. caller_token is audit-only here too, never
                       # a trust input (see feedback_caller_id_not_authenticated). ──
-                      - action: script.zen_dojotools_identity
-                        response_variable: _set_id_raw
-                        continue_on_error: true
-                        data:
-                          mode: resolve_caller_identity
-                          required_cert: lock_control
-                          required_cert_level: 1
-                          caller_token: "{{ _caller_token }}"
-                      - variables:
-                          _set_policy_status: "{{ _set_id_raw.get('policy_status', 'blocked') if _set_id_raw is mapping else 'blocked' }}"
-                          _set_authorized: "{{ _set_id_raw.get('authorized', false) if _set_id_raw is mapping else false }}"
-                          _set_cert_level: "{{ _set_id_raw.get('cert_level', 0) if _set_id_raw is mapping else 0 }}"
-                          _set_cert_scope: "{{ _set_id_raw.get('cert_scope', []) if _set_id_raw is mapping else [] }}"
                       - choose:
                           - conditions: "{{ _set_policy_status != 'allowed' or not _set_authorized }}"
                             sequence:
@@ -867,27 +907,27 @@ script:
                           # ask, anything uncovered still asks -- and if the
                           # ext_lock target set is mixed (some covered, some
                           # not), the WHOLE call still asks rather than
-                          # silently splitting into a partial auto-unlock. ──
-                          - variables:
-                              _set_ext_targets: >-
-                                {%- set ns = namespace(items=[]) -%}
-                                {%- for e in _set_targets if 'ext_lock' in labels(e) -%}
-                                  {%- set ns.items = ns.items + [e] -%}
-                                {%- endfor -%}
-                                {{ ns.items }}
-                          - variables:
-                              # Shared cert_scope_check macro (zen_os_1.jinja) -- single
-                              # resolver every cert-gated tool uses, not a bare
-                              # containment check, so a future structured deny-ACL
-                              # format works here with no rewrite (2026-08-16).
-                              _set_ext_uncovered: >-
-                                {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
-                                {%- set ns = namespace(items=[]) -%}
-                                {%- for e in _set_ext_targets if zen.cert_scope_check(_set_cert_scope, e) != 'allow' -%}
-                                  {%- set ns.items = ns.items + [e] -%}
-                                {%- endfor -%}
-                                {{ ns.items }}
+                          # silently splitting into a partial auto-unlock.
+                          # _set_ext_targets/_set_ext_denied/_set_ext_uncovered
+                          # already computed once, up top, shared with the
+                          # dry_run preview (2026-08-16). ──
                           - choose:
+                              - conditions: "{{ _action == 'unlock' and _set_ext_denied | length > 0 }}"
+                                sequence:
+                                  - variables:
+                                      result:
+                                        status: denied
+                                        mode: set
+                                        action: unlock
+                                        error: cert_scope_denied
+                                        detail: >-
+                                          lock_control cert_scope explicitly denies
+                                          {{ _set_ext_denied | join(', ') }} -- an admin has scoped
+                                          this door out via cert_grant. No ack is offered for a
+                                          denied target; removing the denial requires cert_grant
+                                          cert_scope=[{"entity":"{{ _set_ext_denied[0] }}","acl":"remove"}].
+                                        denied_targets: "{{ _set_ext_denied }}"
+                                        would_apply: "{{ _set_targets }}"
                               - conditions: "{{ _action == 'unlock' and _set_ext_uncovered | length > 0 }}"
                                 sequence:
                                   - action: script.zen_dojotools_identity

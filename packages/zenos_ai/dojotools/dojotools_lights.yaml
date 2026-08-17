@@ -131,6 +131,7 @@ script:
               - prefs_apply
               - room_default_get
               - room_default_set
+              - room_state
               - scene_list
               - auto_label
               - prefs_sweep
@@ -328,7 +329,7 @@ script:
                     tool='zen_dojotools_lights',
                     display_name='Lights',
                     tier='dojotools',
-                    version='2.2.0',
+                    version='2.4.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['light'],
@@ -726,6 +727,67 @@ script:
           _sw_resolved_entity: >-
             {{ _entity_id if _entity_id != '' else _sw_role_resolved }}
 
+      # ── 0g2. LIGHTING_CONTROL deny enforcement (2026-08-16, Nathan: "fix
+      # lighting controls missing gates with appropriate cert checks" --
+      # part 4 of the deny-ACL plan, enforcement half). The earlier cert
+      # gate (0c-2) only ever checked scope_decision against the RAW
+      # caller-supplied _entity_id -- for the common room=/target_role=
+      # call shape, _entity_id is '' at that point (resolution hasn't run
+      # yet), so scope_decision was always 'default' and a deny entry on a
+      # room-resolved lamp/switch was silently never checked. Also:
+      # scope_decision was computed but never actually gated on anywhere --
+      # a deny result was functionally identical to 'default'. Both fixed
+      # here: re-resolve scope_decision (reusing the already-fetched
+      # _zl_cert_scope, no second identity call needed) against whichever
+      # entity THIS mode is actually about to act on, and hard-block on
+      # deny. Per-mode target:
+      #   toggle          -> _entity_id (already the real, explicit target)
+      #   switch_set      -> _sw_resolved_entity (room/role-resolved switch)
+      #   scene_set       -> _scene if given (real HA scene), else
+      #                      _resolved_entity (intent path)
+      #   brightness_set/color_temp_set/rgb_set/bleed_set -> _resolved_entity
+      #   prefs_apply     -> NOT covered -- its real target isn't resolved
+      #     until deep inside the mode body (stored pref -> role -> entity,
+      #     computed live at apply time). Flagging as a known gap rather
+      #     than silently checking the wrong entity.
+      # bleed_set's chain propagation to ADJACENT rooms (_bt_main per
+      # portal) is also NOT covered -- this only checks the primary target.
+      # That's the real "block travels up the chain" work, still open.
+      - variables:
+          _zl_deny_target: >-
+            {%- if _mode == 'toggle' -%}{{ _entity_id }}
+            {%- elif _mode == 'switch_set' -%}{{ _sw_resolved_entity }}
+            {%- elif _mode == 'scene_set' -%}{{ _scene if _scene != '' else _resolved_entity }}
+            {%- elif _mode in ['brightness_set', 'color_temp_set', 'rgb_set', 'bleed_set'] -%}{{ _resolved_entity }}
+            {%- else -%}{{ '' }}{%- endif -%}
+      - if: >-
+          {{ _mode in _zl_write_modes and _zl_deny_target != ''
+             and _zl_policy_status == 'allowed' and _zl_authorized }}
+        then:
+          - variables:
+              _zl_final_scope_decision: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_scope_check(_zl_cert_scope, _zl_deny_target) | trim }}
+          - if: "{{ _zl_final_scope_decision == 'deny' }}"
+            then:
+              - variables:
+                  result:
+                    ok: false
+                    tool: zen_dojotools_lights
+                    mode: "{{ _mode }}"
+                    error: cert_scope_denied
+                    detail: >-
+                      lighting_control cert_scope explicitly denies
+                      '{{ _zl_deny_target }}' -- an admin has scoped this
+                      entity out via cert_grant cert_scope=[{"entity":
+                      "{{ _zl_deny_target }}","acl":"deny"}]. Removing the
+                      denial requires cert_grant cert_scope=[{"entity":
+                      "{{ _zl_deny_target }}","acl":"remove"}].
+                    target_entity: "{{ _zl_deny_target }}"
+                    caller_token: "{{ _caller_token }}"
+              - stop: lighting_control cert_scope deny
+                response_variable: result
+
       # ── 0h. Capability snapshot ───────────────────────────────────────────
       # REAL BUG (found live 2026-08-16, same session as the rgb_color
       # parsing fix, TWO layers): (1) supported_color_modes mixes real
@@ -851,7 +913,8 @@ script:
       - if: >-
           {{ _rm_hold and _room_slug != ''
              and _mode in ['brightness_set','color_temp_set','rgb_set',
-                           'scene_set','prefs_apply','toggle','switch_set'] }}
+                           'scene_set','prefs_apply','toggle','switch_set',
+                           'bleed_set'] }}
         then:
           - variables:
               _result:
@@ -1409,6 +1472,46 @@ script:
                           {{ 'zen_lm_group' if _r_group != ''
                              else ('zen_lm_main/legacy' if _r_main != ''
                              else 'first_in_room') }}
+                        caller_token: "{{ _caller_token }}"
+          - conditions: "{{ _mode == 'room_state' }}"
+            sequence:
+              # Lightweight per-room light aggregate -- lights_total/on/
+              # avg_brightness_pct only, no role/scene/topology payload
+              # (that's what discover room=X is for). Built 2026-08-16 so
+              # RM's +light context slice can call a real domain-tool mode
+              # instead of re-deriving this itself with a raw states() loop
+              # (same "read from domain tool" fix already applied to
+              # +climate). Pure read, cert-ungated like every other GET in
+              # this tool -- only actuation modes require lighting_control.
+              - if: "{{ _room_slug == '' }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        error: "room required."
+                        caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                  - variables:
+                      _rs_bvals: >-
+                        {%- set ns = namespace(v=[]) -%}
+                        {%- for eid in _room_ents if states(eid) == 'on' -%}
+                          {%- set _b = state_attr(eid, 'brightness') -%}
+                          {%- if _b is number -%}{%- set ns.v = ns.v + [_b] -%}{%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.v }}
+                      _rs_on: >-
+                        {%- set ns = namespace(v=[]) -%}
+                        {%- for eid in _room_ents if states(eid) == 'on' -%}{%- set ns.v = ns.v + [eid] -%}{%- endfor -%}
+                        {{ ns.v }}
+                  - variables:
+                      result:
+                        status: ok
+                        mode: room_state
+                        room: "{{ _room_slug }}"
+                        lights_total: "{{ _room_ents | length }}"
+                        lights_on: "{{ _rs_on }}"
+                        avg_brightness_pct: "{{ ((_rs_bvals | sum / (_rs_bvals | count) / 255 * 100) | round(0)) if _rs_bvals | count > 0 else 0 }}"
                         caller_token: "{{ _caller_token }}"
           - conditions: "{{ _mode == 'scene_list' }}"
             sequence:
@@ -2016,7 +2119,45 @@ script:
                         {%- if _pa_role != '' -%}
                           {{ _room_ents | select('in', label_entities(_pa_role)) | list | first | default(_auto_resolved) }}
                         {%- else -%}{{ _auto_resolved }}{%- endif -%}
-                  - if: "{{ _dry_run }}"
+                  # "Block travels up the chain" part 2 (2026-08-16, Nathan:
+                  # "fix those pls") -- prefs_apply's real target isn't
+                  # known until the stored pref is read and its role
+                  # resolved (right above), well after the earlier deny
+                  # gate (0g2) already ran against '' -- so it was never
+                  # covered. Checked here against both possible targets
+                  # (the resolved light entity, and the stored scene if the
+                  # pref includes one) -- deny on either blocks the whole
+                  # apply, matching brightness_set/rgb_set/etc.'s single-
+                  # target block semantics rather than bleed_set's partial-
+                  # skip (a room's stored "look" is one unit, not a
+                  # multi-room propagation).
+                  - variables:
+                      _pa_denied_target: >-
+                        {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                        {%- if _pa_entity != '' and OS.cert_scope_check(_zl_cert_scope, _pa_entity) | trim == 'deny' -%}
+                          {{ _pa_entity }}
+                        {%- elif _pa_scene != '' and OS.cert_scope_check(_zl_cert_scope, _pa_scene) | trim == 'deny' -%}
+                          {{ _pa_scene }}
+                        {%- else -%}{{ '' }}{%- endif -%}
+                  - if: "{{ _pa_denied_target != '' }}"
+                    then:
+                      - variables:
+                          result:
+                            ok: false
+                            status: error
+                            mode: prefs_apply
+                            error: cert_scope_denied
+                            detail: >-
+                              lighting_control cert_scope explicitly denies
+                              '{{ _pa_denied_target }}' -- an admin has
+                              scoped this entity out via cert_grant
+                              cert_scope=[{"entity":"{{ _pa_denied_target }}",
+                              "acl":"deny"}]. Removing the denial requires
+                              cert_grant cert_scope=[{"entity":
+                              "{{ _pa_denied_target }}","acl":"remove"}].
+                            target_entity: "{{ _pa_denied_target }}"
+                            caller_token: "{{ _caller_token }}"
+                  - if: "{{ result is not defined and _dry_run }}"
                     then:
                       - variables:
                           result:
@@ -2446,7 +2587,20 @@ script:
                       {%- endfor -%}
                       {{ ns.b | sort(attribute='light_tx', reverse=true) }}
 
-                # Propagate to each adjacent room
+                # "Block travels up the chain" (2026-08-16, Nathan: "fix those
+                # pls" -- the two gaps flagged in the deny-enforcement
+                # commit). bleed_set's propagation targets are resolved
+                # per-adjacent-room INSIDE this repeat loop -- the earlier
+                # deny gate (0g2) only ever saw the PRIMARY target, so a
+                # denied lamp in an adjacent room's bleed path was never
+                # checked. Each iteration now re-checks cert_scope_check
+                # against its own resolved _bt_main (reusing the same
+                # _zl_cert_scope already fetched once by the cert gate, no
+                # extra identity call) and skips actuation on deny --
+                # doesn't abort the whole bleed_set, just that one member,
+                # same as a real chain-propagated block should behave.
+                - variables:
+                    _bs_denied_targets: []
                 - if: "{{ not _dry_run and _bs_bleed_map | length > 0 }}"
                   then:
                     - repeat:
@@ -2460,7 +2614,15 @@ script:
                                 {%- set t3=_bl_ents|select('in',label_entities('main_lighting')|list)|list -%}
                                 {%- set t4=_bl_ents|select('in',label_entities('lighting')|list)|list -%}
                                 {{ (t1|first) if t1 else ((t2|first) if t2 else ((t3|first) if t3 else ((t4|first) if t4 else (_bl_ents|first|default(''))))) }}
-                          - if: "{{ _bt_main != '' }}"
+                          - variables:
+                              _bt_denied: >-
+                                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                                {{ (OS.cert_scope_check(_zl_cert_scope, _bt_main) | trim == 'deny') if _bt_main != '' else false }}
+                          - if: "{{ _bt_denied }}"
+                            then:
+                              - variables:
+                                  _bs_denied_targets: "{{ _bs_denied_targets + [_bt_main] }}"
+                          - if: "{{ _bt_main != '' and not _bt_denied }}"
                             then:
                               - if: "{{ repeat.item.bleed_bri | int == 0 }}"
                                 then:
@@ -2493,6 +2655,7 @@ script:
                         color_temp_k: "{{ _intent_ct_k if _intent_ct_k | int(-1) > 0 else none }}"
                       bleed_applied: "{{ _bs_bleed_map }}"
                       bleed_count: "{{ _bs_bleed_map | length }}"
+                      denied_targets: "{{ _bs_denied_targets if _bs_denied_targets | length > 0 else none }}"
                       threshold_used: "{{ _bs_threshold }}"
                       topology_source: "{{ 'room_manager' if _bs_topo is mapping else 'none — register room first via zen_dojotools_room_manager' }}"
                       blend_modes: "propagate (light_tx≥0.65) = same brightness as primary. scale (0.20-0.65) = primary_bri × light_tx."

@@ -3866,40 +3866,113 @@ script:
             then:
               - variables:
                   _oc_domain: "{{ _oc_entity_id.split('.')[0] if '.' in _oc_entity_id else '' }}"
+              # ── 2026-08-16, Nathan: "fix zenzork lock/cover reroute" --
+              # real doors/covers get routed through the gated domain tools
+              # now, not raw cover./lock. service calls. A game command like
+              # "open garage door" used to be a hard end-run around locks'/
+              # covers' cert_scope deny and (for exterior doors) the live-ack
+              # requirement -- it hit the real hardware with zero identity
+              # check. Now it goes through the same gate every other caller
+              # goes through. Both tools wrap their response in OS.envelope()
+              # ({tool,mode,status,result:{...}}) -- unwrap .result before
+              # reading the real payload, same lesson learned wiring Room
+              # Manager's +light slice through ZenLux earlier today.
+              #
+              # dry_run=true (2026-08-16, "also make game use dry run by
+              # default" -- a text adventure should never be the thing that
+              # actually moves a real exterior door/lock; dry_run gives the
+              # real cert_scope/would_be_denied/would_require_live_ack
+              # preview -- same accuracy, zero physical effect, and no
+              # live-ack push fired from inside a game session). ──
               - choose:
                   - conditions: "{{ _mode == 'open' and _oc_domain == 'cover' }}"
                     sequence:
-                      - action: cover.open_cover
-                        target:
+                      - action: script.zen_dojotools_covers
+                        response_variable: _oc_gate_raw
+                        continue_on_error: true
+                        data:
+                          mode: set
                           entity_id: "{{ _oc_entity_id }}"
+                          position: 100
+                          dry_run: true
+                          caller_token: "{{ _caller_token }}"
                   - conditions: "{{ _mode == 'close' and _oc_domain == 'cover' }}"
                     sequence:
-                      - action: cover.close_cover
-                        target:
+                      - action: script.zen_dojotools_covers
+                        response_variable: _oc_gate_raw
+                        continue_on_error: true
+                        data:
+                          mode: set
                           entity_id: "{{ _oc_entity_id }}"
+                          position: 0
+                          dry_run: true
+                          caller_token: "{{ _caller_token }}"
                   - conditions: "{{ _mode == 'open' and _oc_domain == 'lock' }}"
                     sequence:
-                      - action: lock.unlock
-                        target:
+                      - action: script.zen_dojotools_locks
+                        response_variable: _oc_gate_raw
+                        continue_on_error: true
+                        data:
+                          mode: set
                           entity_id: "{{ _oc_entity_id }}"
+                          action: unlock
+                          dry_run: true
+                          caller_token: "{{ _caller_token }}"
                   - conditions: "{{ _mode == 'close' and _oc_domain == 'lock' }}"
                     sequence:
-                      - action: lock.lock
-                        target:
+                      - action: script.zen_dojotools_locks
+                        response_variable: _oc_gate_raw
+                        continue_on_error: true
+                        data:
+                          mode: set
                           entity_id: "{{ _oc_entity_id }}"
+                          action: lock
+                          dry_run: true
+                          caller_token: "{{ _caller_token }}"
                 default:
                   - action: "homeassistant.turn_{{ 'on' if _mode == 'open' else 'off' }}"
                     target:
                       entity_id: "{{ _oc_entity_id }}"
+              - variables:
+                  _oc_gated: "{{ _oc_domain in ['cover', 'lock'] }}"
+                  _oc_gate_result: "{{ (_oc_gate_raw.get('result', {}) if _oc_gate_raw is defined and _oc_gate_raw is mapping else {}) }}"
+                  _oc_gate_status: "{{ _oc_gate_result.get('status', 'error') if _oc_gate_result is mapping else 'error' }}"
+                  _oc_gate_denied: "{{ _oc_gate_result.get('would_be_denied', false) if _oc_gate_result is mapping else false }}"
+                  _oc_gate_needs_ack: "{{ _oc_gate_result.get('would_require_live_ack', false) if _oc_gate_result is mapping else false }}"
+                  _oc_gate_authorized: "{{ _oc_gate_result.get('would_be_authorized', true) if _oc_gate_result is mapping else false }}"
+                  _oc_gate_ok: "{{ (not _oc_gated) or (_oc_gate_status == 'ok' and not _oc_gate_denied and not _oc_gate_needs_ack and _oc_gate_authorized) }}"
+                  _oc_gate_detail: >-
+                    {%- if _oc_gate_denied -%}an admin has scoped this specific one out via cert_grant.
+                    {%- elif _oc_gate_needs_ack -%}exterior unlocks need a live household-admin ack every time -- can't be granted from inside a game session.
+                    {%- elif not _oc_gate_authorized -%}you don't hold the required cert for this yet.
+                    {%- else -%}{{ _oc_gate_result.get('detail', _oc_gate_result.get('message', 'the household security policy declined this.')) if _oc_gate_result is mapping else 'the household security policy declined this.' }}
+                    {%- endif -%}
               - variables:
                   result:
                     status: ok
                     mode: "{{ _mode }}"
                     current_room: "{{ _current_room }}"
                     entity_id: "{{ _oc_entity_id }}"
+                    dry_run: "{{ _oc_gated }}"
                     message: >-
                       {%- set _iname = _oc_name | replace('_',' ') -%}
-                      {%- if _narrator == 'dungeon' -%}
+                      {%- if not _oc_gate_ok -%}
+                        {%- if _narrator == 'dungeon' -%}
+                        *mechanism refuses* {{ _iname | title }} does not yield. Something -- or someone -- has secured it against you. ({{ _oc_gate_detail }})
+                        {%- elif _narrator == 'zork' -%}
+                        {{ _iname | capitalize }} refuses to budge. A ward, perhaps. Or a very stubborn household policy. ({{ _oc_gate_detail }})
+                        {%- else -%}
+                        {{ _iname | capitalize }} did not {{ _mode }} -- blocked by household security policy. ({{ _oc_gate_detail }})
+                        {%- endif -%}
+                      {%- elif _oc_gated -%}
+                        {%- if _narrator == 'dungeon' -%}
+                        *mechanism WOULD respond* {{ _iname | title }} would {{ _mode }} -- the household policy allows it, nothing was actually moved. (dry run: real hardware untouched)
+                        {%- elif _narrator == 'zork' -%}
+                        {{ _iname | capitalize }} would {{ _mode }}, if this weren't a dry run. It stays exactly where it was.
+                        {%- else -%}
+                        {{ _iname | capitalize }} would {{ _mode }} -- preview only, nothing actually moved.
+                        {%- endif -%}
+                      {%- elif _narrator == 'dungeon' -%}
                       *state change logged* {{ _iname | title }} is now {{ _mode }}ed. The mechanism responded. State confirmed.
                       {%- elif _narrator == 'zork' -%}
                       {{ _iname | capitalize }} {{ _mode }}ed. It complied, for once.
@@ -4024,12 +4097,39 @@ script:
                     response_variable: result
               - variables:
                   _u2_domain: "{{ _u2_lm_eid.split('.')[0] if _u2_lm_eid is not none and '.' in (_u2_lm_eid | string) else '' }}"
+              # ── 2026-08-16, same reroute as the open/close handler above --
+              # "use key on front door" was a raw lock.unlock/cover.toggle
+              # end-run identical in shape to the open/close one. Routed
+              # through the gated tools now; cover.toggle has no equivalent
+              # in zen_dojotools_covers (position-only, no toggle mode), so
+              # toggle intent is resolved to an explicit target position from
+              # current state first. ──
               - choose:
                   - conditions: "{{ _u2_domain == 'lock' }}"
                     sequence:
-                      - action: lock.unlock
-                        target:
+                      - action: script.zen_dojotools_locks
+                        response_variable: _u2_gate_raw
+                        continue_on_error: true
+                        data:
+                          mode: set
                           entity_id: "{{ _u2_lm_eid }}"
+                          action: unlock
+                          dry_run: true
+                          caller_token: "{{ _caller_token }}"
+                      - variables:
+                          _u2_gate_result: "{{ (_u2_gate_raw.get('result', {}) if _u2_gate_raw is defined and _u2_gate_raw is mapping else {}) }}"
+                          _u2_gate_ok: >-
+                            {{ (_u2_gate_result.get('status', 'error') == 'ok'
+                                and not _u2_gate_result.get('would_be_denied', false)
+                                and not _u2_gate_result.get('would_require_live_ack', false)
+                                and _u2_gate_result.get('would_be_authorized', false))
+                               if _u2_gate_result is mapping else false }}
+                          _u2_gate_detail: >-
+                            {%- if _u2_gate_result.get('would_be_denied', false) -%}an admin has scoped this one out via cert_grant.
+                            {%- elif _u2_gate_result.get('would_require_live_ack', false) -%}exterior unlocks need a live household-admin ack -- can't be granted from inside a game session.
+                            {%- elif not _u2_gate_result.get('would_be_authorized', true) -%}you don't hold the required cert for this yet.
+                            {%- else -%}{{ _u2_gate_result.get('detail', _u2_gate_result.get('message', 'the household security policy declined this.')) if _u2_gate_result is mapping else 'the household security policy declined this.' }}
+                            {%- endif -%}
                       - variables:
                           result:
                             status: ok
@@ -4037,18 +4137,47 @@ script:
                             current_room: "{{ _current_room }}"
                             item_used: "{{ _u2_item_match }}"
                             target: "{{ _u2_lm_name }}"
+                            dry_run: true
                             message: >-
-                              {%- if _narrator == 'dungeon' -%}
-                              *mechanism engaged* You insert the {{ _u2_item_match | replace('_',' ') }} into the {{ _u2_lm_name | replace('_',' ') }}. The mechanism yields.
+                              {%- if not _u2_gate_ok -%}
+                                {%- if _narrator == 'dungeon' -%}
+                                *mechanism refuses* The {{ _u2_item_match | replace('_',' ') }} turns, but nothing yields. ({{ _u2_gate_detail }})
+                                {%- else -%}
+                                You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}, but it doesn't work. ({{ _u2_gate_detail }})
+                                {%- endif -%}
+                              {%- elif _narrator == 'dungeon' -%}
+                              *mechanism WOULD engage* The {{ _u2_item_match | replace('_',' ') }} fits the {{ _u2_lm_name | replace('_',' ') }} -- policy allows it, but nothing was actually moved. (dry run)
                               {%- else -%}
-                              You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}. Click.
+                              You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}. It would click -- preview only, nothing actually moved.
                               {%- endif -%}
                             caller_token: "{{ _caller_token }}"
                   - conditions: "{{ _u2_domain == 'cover' }}"
                     sequence:
-                      - action: cover.toggle
-                        target:
+                      - variables:
+                          _u2_cv_target_pos: "{{ 100 if is_state(_u2_lm_eid, 'closed') else 0 }}"
+                      - action: script.zen_dojotools_covers
+                        response_variable: _u2_gate_raw
+                        continue_on_error: true
+                        data:
+                          mode: set
                           entity_id: "{{ _u2_lm_eid }}"
+                          position: "{{ _u2_cv_target_pos }}"
+                          dry_run: true
+                          caller_token: "{{ _caller_token }}"
+                      - variables:
+                          _u2_gate_result: "{{ (_u2_gate_raw.get('result', {}) if _u2_gate_raw is defined and _u2_gate_raw is mapping else {}) }}"
+                          _u2_gate_ok: >-
+                            {{ (_u2_gate_result.get('status', 'error') == 'ok'
+                                and not _u2_gate_result.get('would_be_denied', false)
+                                and not _u2_gate_result.get('would_require_live_ack', false)
+                                and _u2_gate_result.get('would_be_authorized', false))
+                               if _u2_gate_result is mapping else false }}
+                          _u2_gate_detail: >-
+                            {%- if _u2_gate_result.get('would_be_denied', false) -%}an admin has scoped this one out via cert_grant.
+                            {%- elif _u2_gate_result.get('would_require_live_ack', false) -%}this needs a live household-admin ack -- can't be granted from inside a game session.
+                            {%- elif not _u2_gate_result.get('would_be_authorized', true) -%}you don't hold the required cert for this yet.
+                            {%- else -%}{{ _u2_gate_result.get('detail', _u2_gate_result.get('message', 'the household security policy declined this.')) if _u2_gate_result is mapping else 'the household security policy declined this.' }}
+                            {%- endif -%}
                       - variables:
                           result:
                             status: ok
@@ -4056,11 +4185,18 @@ script:
                             current_room: "{{ _current_room }}"
                             item_used: "{{ _u2_item_match }}"
                             target: "{{ _u2_lm_name }}"
+                            dry_run: true
                             message: >-
-                              {%- if _narrator == 'dungeon' -%}
-                              *override applied* You apply the {{ _u2_item_match | replace('_',' ') }} to the {{ _u2_lm_name | replace('_',' ') }}. Motion ensues.
+                              {%- if not _u2_gate_ok -%}
+                                {%- if _narrator == 'dungeon' -%}
+                                *override rejected* The {{ _u2_lm_name | replace('_',' ') }} does not move. ({{ _u2_gate_detail }})
+                                {%- else -%}
+                                You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}, but nothing happens. ({{ _u2_gate_detail }})
+                                {%- endif -%}
+                              {%- elif _narrator == 'dungeon' -%}
+                              *override WOULD apply* Policy allows it -- nothing actually moved. (dry run)
                               {%- else -%}
-                              You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}. It moves.
+                              You use the {{ _u2_item_match | replace('_',' ') }} on the {{ _u2_lm_name | replace('_',' ') }}. It would move -- preview only, nothing actually moved.
                               {%- endif -%}
                             caller_token: "{{ _caller_token }}"
                 default:
@@ -5249,43 +5385,100 @@ script:
                 response_variable: result
           - variables:
               _pp_domain: "{{ _pp_eid.split('.')[0] if _pp_eid is not none and '.' in (_pp_eid | string) else '' }}"
+          # ── 2026-08-16, same reroute as open/close and use-on above --
+          # PUSH/PULL on a real cover was a raw cover.open_cover/close_cover
+          # end-run too. Routed through zen_dojotools_covers now. ──
           - choose:
               - conditions: "{{ _mode == 'push' and _pp_domain == 'cover' }}"
                 sequence:
-                  - action: cover.open_cover
-                    target:
+                  - action: script.zen_dojotools_covers
+                    response_variable: _pp_gate_raw
+                    continue_on_error: true
+                    data:
+                      mode: set
                       entity_id: "{{ _pp_eid }}"
+                      position: 100
+                      dry_run: true
+                      caller_token: "{{ _caller_token }}"
+                  - variables:
+                      _pp_gate_result: "{{ (_pp_gate_raw.get('result', {}) if _pp_gate_raw is defined and _pp_gate_raw is mapping else {}) }}"
+                      _pp_gate_ok: >-
+                        {{ (_pp_gate_result.get('status', 'error') == 'ok'
+                            and not _pp_gate_result.get('would_be_denied', false)
+                            and not _pp_gate_result.get('would_require_live_ack', false)
+                            and _pp_gate_result.get('would_be_authorized', false))
+                           if _pp_gate_result is mapping else false }}
+                      _pp_gate_detail: >-
+                        {%- if _pp_gate_result.get('would_be_denied', false) -%}an admin has scoped this one out via cert_grant.
+                        {%- elif _pp_gate_result.get('would_require_live_ack', false) -%}this needs a live household-admin ack -- can't be granted from inside a game session.
+                        {%- elif not _pp_gate_result.get('would_be_authorized', true) -%}you don't hold the required cert for this yet.
+                        {%- else -%}{{ _pp_gate_result.get('detail', _pp_gate_result.get('message', 'the household security policy declined this.')) if _pp_gate_result is mapping else 'the household security policy declined this.' }}
+                        {%- endif -%}
                   - variables:
                       result:
                         status: ok
                         mode: push
                         current_room: "{{ _current_room }}"
                         entity_id: "{{ _pp_eid }}"
+                        dry_run: true
                         message: >-
                           {%- set _pn = _pp_name | replace('_',' ') -%}
-                          {%- if _narrator == 'dungeon' -%}
-                          *force applied* You push the {{ _pn }}. The mechanism yields. Opening sequence engaged.
+                          {%- if not _pp_gate_ok -%}
+                            {%- if _narrator == 'dungeon' -%}
+                            *force rejected* You push the {{ _pn }}. It does not yield. ({{ _pp_gate_detail }})
+                            {%- else -%}
+                            You push the {{ _pn }}, but it doesn't budge. ({{ _pp_gate_detail }})
+                            {%- endif -%}
+                          {%- elif _narrator == 'dungeon' -%}
+                          *force WOULD apply* You push the {{ _pn }}. Policy allows it -- nothing was actually moved. (dry run)
                           {%- else -%}
-                          You push the {{ _pn }}. It opens.
+                          You push the {{ _pn }}. It would open -- preview only, nothing actually moved.
                           {%- endif -%}
                         caller_token: "{{ _caller_token }}"
               - conditions: "{{ _mode == 'pull' and _pp_domain == 'cover' }}"
                 sequence:
-                  - action: cover.close_cover
-                    target:
+                  - action: script.zen_dojotools_covers
+                    response_variable: _pp_gate_raw
+                    continue_on_error: true
+                    data:
+                      mode: set
                       entity_id: "{{ _pp_eid }}"
+                      position: 0
+                      dry_run: true
+                      caller_token: "{{ _caller_token }}"
+                  - variables:
+                      _pp_gate_result: "{{ (_pp_gate_raw.get('result', {}) if _pp_gate_raw is defined and _pp_gate_raw is mapping else {}) }}"
+                      _pp_gate_ok: >-
+                        {{ (_pp_gate_result.get('status', 'error') == 'ok'
+                            and not _pp_gate_result.get('would_be_denied', false)
+                            and not _pp_gate_result.get('would_require_live_ack', false)
+                            and _pp_gate_result.get('would_be_authorized', false))
+                           if _pp_gate_result is mapping else false }}
+                      _pp_gate_detail: >-
+                        {%- if _pp_gate_result.get('would_be_denied', false) -%}an admin has scoped this one out via cert_grant.
+                        {%- elif _pp_gate_result.get('would_require_live_ack', false) -%}this needs a live household-admin ack -- can't be granted from inside a game session.
+                        {%- elif not _pp_gate_result.get('would_be_authorized', true) -%}you don't hold the required cert for this yet.
+                        {%- else -%}{{ _pp_gate_result.get('detail', _pp_gate_result.get('message', 'the household security policy declined this.')) if _pp_gate_result is mapping else 'the household security policy declined this.' }}
+                        {%- endif -%}
                   - variables:
                       result:
                         status: ok
                         mode: pull
                         current_room: "{{ _current_room }}"
                         entity_id: "{{ _pp_eid }}"
+                        dry_run: true
                         message: >-
                           {%- set _pn = _pp_name | replace('_',' ') -%}
-                          {%- if _narrator == 'dungeon' -%}
-                          *retraction sequence* You pull the {{ _pn }}. It draws closed with mechanical dignity.
+                          {%- if not _pp_gate_ok -%}
+                            {%- if _narrator == 'dungeon' -%}
+                            *retraction rejected* You pull the {{ _pn }}. It holds fast. ({{ _pp_gate_detail }})
+                            {%- else -%}
+                            You pull the {{ _pn }}, but it doesn't move. ({{ _pp_gate_detail }})
+                            {%- endif -%}
+                          {%- elif _narrator == 'dungeon' -%}
+                          *retraction WOULD apply* You pull the {{ _pn }}. Policy allows it -- nothing was actually moved. (dry run)
                           {%- else -%}
-                          You pull the {{ _pn }}. It closes.
+                          You pull the {{ _pn }}. It would close -- preview only, nothing actually moved.
                           {%- endif -%}
                         caller_token: "{{ _caller_token }}"
               - conditions: "{{ _mode == 'push' and _pp_domain in ['switch', 'input_boolean'] }}"

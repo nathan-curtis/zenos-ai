@@ -478,11 +478,11 @@ script:
       - variables:
           result: >-
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
-            {{ MF.tool_manifest(
+            {%- set _tm = MF.tool_manifest(
                 tool='zen_dojotools_spamaster',
                 display_name='Spa Master',
                 tier='dojotools',
-                version='1.0.0',
+                version='1.1.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['spa', 'hot_tub_manager'],
@@ -495,7 +495,18 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-            ) | from_json }}
+            ) | from_json -%}
+            {{- _tm | combine({
+                'certs_required': [{
+                  'cert': 'spa_control',
+                  'display_name': 'Spa/Hot Tub Control',
+                  'description': 'Jets/lights/water-temp/cover actuation via zen_dojotools_spamaster mode=scene/lights/jets/temperature/cover. Cert-only, no live-ack tier -- spa equipment is not exterior-security-grade. cert_scope deny is enforced as a hard block via the shared cert_scope_check pattern used across every other gated domain tool.',
+                  'max_level': 4,
+                  'gates': ['mode=scene/lights/jets/temperature/cover (cert only, deny enforced)'],
+                  'live_ack_required_for': [],
+                  'grant_via': "persona_editor mode=cert_grant cert_component=spa_control (or zen_dojotools_identity mode=cert_list to see current status)"
+                }]
+              }) -}}
       - stop: tool_manifest
         response_variable: result
     - variables:
@@ -809,6 +820,85 @@ script:
         _e_subwoofer:   "{{ _found_subwoofer }}"
         _e_media_zone: >-
           {{ label_entities('hot_tub') | select('match', 'media_player\\..*') | list | first | default('') }}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 2b. spa_control cert gate (2026-08-16, Nathan: "fix spa_manager auth" --
+    # jets/lights/water-temp/cover actuation had ZERO auth of any kind, the
+    # same shape of gap climate_control fixed earlier today, surfaced by the
+    # same audit that found ZenZork's raw lock/cover end-run). Gates every
+    # real setter mode (scene/lights/jets/temperature/cover) -- discover/
+    # status/chemistry/log/help/consumables/setup/audio stay open (audio is
+    # media_player volume/source, out of scope for this session's domain-
+    # tool cert work). New spa_control cert, cert-only tier (no live-ack --
+    # same shape as lighting_control/climate_control; spa equipment isn't
+    # exterior-security-grade). cert_scope deny hard-blocks, same shared
+    # macro/pattern as every other gated tool this session. Runs after
+    # entity resolution (above) so target_entity is a real resolved spa
+    # entity, not an unresolved caller string.
+    # ─────────────────────────────────────────────────────────────────────────
+    - variables:
+        _sc_actuation_modes: ['scene', 'lights', 'jets', 'temperature', 'cover']
+        _sc_caller_token: "{{ caller_token | default('', true) }}"
+    - if: "{{ _mode in _sc_actuation_modes }}"
+      then:
+      - variables:
+          _sc_target: >-
+            {%- if _mode == 'lights' -%}{{ _e_lights_grp }}
+            {%- elif _mode == 'jets' -%}{{ _e_jets_all }}
+            {%- elif _mode == 'temperature' -%}{{ _e_climate }}
+            {%- elif _mode == 'cover' -%}{{ _e_cover }}
+            {%- else -%}{{ _e_jets_all if _e_jets_all != '' else (_e_lights_grp if _e_lights_grp != '' else _e_climate) }}
+            {%- endif -%}
+      - action: script.zen_dojotools_identity
+        response_variable: _sc_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: spa_control
+          required_cert_level: 1
+          target_entity: "{{ _sc_target }}"
+          caller_token: "{{ _sc_caller_token }}"
+      - variables:
+          _sc_policy_status: "{{ _sc_id_raw.get('policy_status', 'blocked') if _sc_id_raw is mapping else 'blocked' }}"
+          _sc_authorized: "{{ _sc_id_raw.get('authorized', false) if _sc_id_raw is mapping else false }}"
+          _sc_cert_level: "{{ _sc_id_raw.get('cert_level', 0) if _sc_id_raw is mapping else 0 }}"
+          _sc_scope_decision: "{{ _sc_id_raw.get('scope_decision', 'default') if _sc_id_raw is mapping else 'default' }}"
+      - if: "{{ _sc_scope_decision == 'deny' }}"
+        then:
+        - variables:
+            _result:
+              mode: "{{ _mode }}"
+              status: denied
+              error: cert_scope_denied
+              detail: >-
+                spa_control cert_scope explicitly denies {{ _sc_target }} --
+                an admin has scoped this entity out via cert_grant. No ack
+                is offered for a denied target; removing the denial
+                requires cert_grant cert_scope=[{"entity":"{{ _sc_target }}","acl":"remove"}].
+              caller_token: "{{ _sc_caller_token }}"
+        - stop: spa_control cert_scope denied
+          response_variable: _result
+      - if: "{{ _result is not defined and (_sc_policy_status != 'allowed' or not _sc_authorized) }}"
+        then:
+        - variables:
+            _result:
+              mode: "{{ _mode }}"
+              status: error
+              error: "{{ 'identity_policy_blocked' if _sc_policy_status != 'allowed' else 'cert_insufficient' }}"
+              detail: >-
+                {%- if _sc_policy_status != 'allowed' -%}
+                  resolve_caller_identity did not return an allowed identity -- action denied.
+                {%- else -%}
+                  spa_control cert level {{ _sc_cert_level }} is below the required minimum (1).
+                {%- endif -%}
+              request_via:
+                tool: zen_dojotools_persona_editor
+                mode: cert_grant
+                cert_component: spa_control
+                cert_level: 1
+              caller_token: "{{ _sc_caller_token }}"
+        - stop: spa_control cert insufficient
+          response_variable: _result
 
     # ─────────────────────────────────────────────────────────────────────────
     # 3. Route
