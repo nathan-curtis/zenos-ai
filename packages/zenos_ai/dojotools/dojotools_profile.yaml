@@ -1,5 +1,5 @@
 ###############################################################################
-# ZENOS-AI DOJOTOOL: PROFILE EDITOR (v5.3.0) + PERSONA EDITOR (v5.2.0)
+# ZENOS-AI DOJOTOOL: PROFILE EDITOR (v5.3.0) + PERSONA EDITOR (v1.2.0)
 # Version: 5.3.0
 #
 # Script: zen_dojotools_profile_editor
@@ -15,6 +15,14 @@
 #   mode: read | write | sign | restore | cert_grant | cert_revoke | cert_list | help
 #   Leaf merge strategy: each essence section patched independently.
 #   essence_patch (JSON) deep-merges anything not covered by named fields.
+#
+#   2026-08-18: cert_grant/cert_revoke/cert_list logic MOVED to the new
+#   zen_admintools_certadmin (admintools, not MCP-exposed). This tool's
+#   three cert modes are now thin delegates forwarding only the fields
+#   already declared below (cert_component, cert_level, cert_tool,
+#   cert_constraints, cert_scope, stats_patch) — waives_live_ack and
+#   ack_phrase are certadmin-only, never declared here, so nothing an
+#   agent calling this tool passes can reach them.
 ###############################################################################
 
 script:
@@ -1184,7 +1192,7 @@ script:
                     tool='zen_dojotools_persona_editor',
                     display_name='Persona Editor',
                     tier='dojotools',
-                    version='1.1.0',
+                    version='1.2.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['personality_module', 'identity'],
@@ -1717,338 +1725,93 @@ script:
                 response_variable: final_response
 
       ###########################################################################
-      # 4 — CERT_LIST
+      # 4 — CERT_LIST (delegated to zen_admintools_certadmin, 2026-08-18)
+      #
+      # 2026-08-18, ticket #310: Zammad #10310 -- a real cert_grant hard-
+      # failed with a raw ServiceNotFound (an orphaned entity registry
+      # ghost, unrelated to this tool, several hops deep inside certadmin's
+      # own cert_audit catalog check) because THIS delegate call had zero
+      # fault isolation. continue_on_error alone two hops further in did
+      # NOT stop it from propagating all the way up -- so the fix is here,
+      # at the boundary an agent actually calls: continue_on_error PLUS an
+      # explicit fallback so a failure anywhere downstream (this ghost, or
+      # anything else) always degrades to a clean {status: error} response,
+      # never a raw unhandled exception. Same shape on all three cert modes
+      # below. ──
       ###########################################################################
       - choose:
           - conditions: "{{ _mode == 'cert_list' }}"
             sequence:
+              - action: script.zen_admintools_certadmin
+                response_variable: final_response
+                continue_on_error: true
+                data:
+                  mode: cert_list
+                  target: "{{ _target }}"
+                  caller_token: "{{ caller_token }}"
               - variables:
-                  _craw: "{{ _cab_vars.get('zen_ai_certs', {}) }}"
-                  _cev:  "{{ _craw.get('value', _craw) if _craw is mapping else {} }}"
-                  final_response:
-                    status: ok
-                    mode: cert_list
-                    target: "{{ _target }}"
-                    jacket_id: "{{ _cev.get('jacket_id', '') if _cev is mapping else '' }}"
-                    cert_count: "{{ (_cev.get('kfc_certifications', {}) if _cev is mapping else {}) | length }}"
-                    certifications: "{{ _cev.get('kfc_certifications', {}) if _cev is mapping else {} }}"
-                    stats: "{{ _cev.get('stats', {}) if _cev is mapping else {} }}"
-                    caller_token: "{{ caller_token }}"
+                  final_response: >-
+                    {{ final_response if final_response is mapping and final_response.get('status', '') != ''
+                       else {'status': 'error', 'mode': 'cert_list', 'message': 'certadmin call failed -- see system log for the underlying error.', 'caller_token': caller_token} }}
               - stop: cert_list complete
                 response_variable: final_response
 
       ###########################################################################
-      # 5 — CERT_GRANT
+      # 5 — CERT_GRANT (delegated to zen_admintools_certadmin, 2026-08-18)
+      #
+      # persona_editor is agent-facing (MCP-exposed) — cert_grant logic and
+      # the waives_live_ack capability now live in zen_admintools_certadmin
+      # (admintools, mcp_exposed: false, never reachable by an agent even
+      # indirectly). This block forwards ONLY the fields persona_editor's
+      # own schema declares: target, cert_component, cert_level, cert_tool,
+      # cert_constraints, cert_scope, stats_patch, caller_token.
+      # waives_live_ack and ack_phrase are NOT declared anywhere in this
+      # tool's fields: block above — there is nothing for a caller of THIS
+      # tool to set, even if it tried. That absence is the hard exclusion,
+      # not a runtime permission check bolted on top of it. Getting that
+      # capability requires an operator calling certadmin directly. ──
       ###########################################################################
       - choose:
           - conditions: "{{ _mode == 'cert_grant' }}"
             sequence:
-              - variables:
-                  _comp:       "{{ cert_component | default('') | trim | lower }}"
-                  _lvl:        "{{ cert_level | default(2) | int }}"
-                  _ctool:      "{{ cert_tool | default('') | trim }}"
-                  _ccons_raw:  "{{ cert_constraints if cert_constraints is defined and cert_constraints is sequence and cert_constraints is not string else (cert_constraints | default('', true) | string | trim) }}"
-                  _cscope_raw: "{{ cert_scope if cert_scope is defined and cert_scope is sequence and cert_scope is not string else (cert_scope | default('', true) | string | trim) }}"
-                  _spatch_raw: "{{ stats_patch | default('') | trim }}"
-              - choose:
-                  - conditions: "{{ _comp == '' }}"
-                    sequence:
-                      - variables:
-                          final_response:
-                            status: error
-                            message: "cert_grant requires cert_component (kata_key)."
-                            caller_token: "{{ caller_token }}"
-                      - stop: Missing cert_component
-                        response_variable: final_response
-              # ── Catalog + live-ack gate (real hole found and closed
-              # 2026-08-15: cert_grant previously had ZERO gating -- an
-              # agent that can call this tool could self-certify itself
-              # for any capability, including ones an identity gate was
-              # JUST built to protect, e.g. lock_control. Two independent
-              # closures, neither optional:
-              # 1. cert_component must be a cert some tool actually
-              #    self-declares via its own tool_manifest certs_required
-              #    (zen_dojotools_manifest mode=cert_audit calculates this
-              #    live -- no separate hand-maintained catalog file exists,
-              #    2026-08-15 cutover: "I need to not maintain a separate
-              #    list of available certs or we'll be in admin HELL"). A
-              #    tool can SAY whatever it wants here; what actually gates
-              #    escalation is #2, not this list-membership check --
-              #    this just rejects flat typos/nonexistent cert names.
-              # 2. Every grant requires a live household-admin yes/no ack
-              #    (same fire+poll pattern as the infra codex's d-class and
-              #    the new lock escalation infra) -- one-shot per call, not
-              #    a time-boxed window, because granting a cert is itself
-              #    a permanent state change and must never be reusable
-              #    without asking again. THIS is the real validation of the
-              #    tool's claim, not catalog membership. ──
-              - action: script.zen_dojotools_manifest
-                response_variable: _cg_catalog_raw
+              - action: script.zen_admintools_certadmin
+                response_variable: final_response
                 continue_on_error: true
                 data:
-                  mode: cert_audit
+                  mode: cert_grant
+                  target: "{{ _target }}"
+                  cert_component: "{{ cert_component | default('') }}"
+                  cert_level: "{{ cert_level | default(2) }}"
+                  cert_tool: "{{ cert_tool | default('') }}"
+                  cert_constraints: "{{ cert_constraints | default('') }}"
+                  cert_scope: "{{ cert_scope | default('') }}"
+                  stats_patch: "{{ stats_patch | default('') }}"
                   caller_token: "{{ caller_token }}"
               - variables:
-                  _cert_catalog: "{{ (_cg_catalog_raw.get('result', _cg_catalog_raw) if _cg_catalog_raw is mapping else {}).get('catalog', {}) }}"
-              - choose:
-                  - conditions: "{{ _comp not in _cert_catalog }}"
-                    sequence:
-                      - variables:
-                          final_response:
-                            status: error
-                            message: "cert_grant refused: '{{ _comp }}' is not declared by any tool's tool_manifest certs_required. Available: {{ _cert_catalog.keys() | list }}. No tool currently gates on this cert name -- check spelling, or the gating tool needs to self-declare it first."
-                            caller_token: "{{ caller_token }}"
-                      - stop: cert_grant — unknown cert
-                        response_variable: final_response
-              # ── Descriptive ack -- Nathan's ask (2026-08-15): the household
-              # admin should see WHAT a cert actually gates and WHAT scope/
-              # constraints are being requested, not just a bare cert name +
-              # level. Pulled straight from the catalog entry's own
-              # description/gates fields -- one source of truth, no separate
-              # copy to keep in sync. Scope/constraints parsed HERE (was
-              # previously parsed only after the ack fired, too late to
-              # describe in the ask itself). ──
-              - variables:
-                  _ccons: >-
-                    {{ _ccons_raw if _ccons_raw is sequence and _ccons_raw is not string
-                       else ((_ccons_raw | from_json(default=[])) if (_ccons_raw is string and _ccons_raw != '' and _ccons_raw[:1] == '[') else []) }}
-                  _cscope: >-
-                    {{ _cscope_raw if _cscope_raw is sequence and _cscope_raw is not string
-                       else ((_cscope_raw | from_json(default=[])) if (_cscope_raw is string and _cscope_raw != '' and _cscope_raw[:1] == '[') else []) }}
-                  _cg_catalog_entry: "{{ _cert_catalog.get(_comp, {}) }}"
-              # ── Resolve a real persona name for the ack, not a raw cabinet
-              # entity_id -- "I don't call you o:/vault/nyx, do I?" (Nathan,
-              # 2026-08-15). HA's own friendly_name attribute on the cabinet
-              # sensor is still internal-sounding ("ZenOS Default AI User
-              # Cabinet"), not the actual persona name ("Friday") -- that
-              # lives in the essence schema's jacket.name field, same path
-              # mode=read already uses. ──
-              - variables:
-                  _cg_persona_name: >-
-                    {%- set raw = _cab_vars.get('zenai_essence', {}) -%}
-                    {%- set ev_raw = raw.get('value', {}) if raw is mapping else {} -%}
-                    {%- set ev = ev_raw if ev_raw is mapping else (ev_raw | from_json if ev_raw is string else {}) -%}
-                    {%- set _j = ev.get('jacket', {}) if ev.get('jacket') is mapping else {} -%}
-                    {{ _j.get('name', '') }}
-              - action: script.zen_dojotools_identity
-                response_variable: _cg_ack_result_raw
-                continue_on_error: true
-                data:
-                  mode: request_live_ack
-                  ack_message: >-
-                    Agent requests cert_grant: '{{ _cg_catalog_entry.get('display_name', _comp) }}'
-                    level {{ _lvl }} for {{ _cg_persona_name if _cg_persona_name != '' else 'default agent' }}.
-                    This cert gates: {{ _cg_catalog_entry.get('description', 'no description on file') }}
-                    {%- if _cscope | length > 0 %} Requested SCOPE (limits the standing-override
-                    exemption to only these -- everything else still asks live every time):
-                    {{ _cscope | join(', ') }}.{% endif -%}
-                    {%- if _ccons | length > 0 %} Requested CONSTRAINTS (still require confirmation
-                    even with this cert): {{ _ccons | join(', ') }}.{% endif %} Approve?
-                  caller_token: "{{ caller_token }}"
-              - variables:
-                  _cg_approved: "{{ _cg_ack_result_raw.get('approved', false) if _cg_ack_result_raw is mapping else false }}"
-                  _cg_ack_reason: "{{ _cg_ack_result_raw.get('reason', 'dispatch_failed') if _cg_ack_result_raw is mapping else 'dispatch_failed' }}"
-              - choose:
-                  - conditions: "{{ not _cg_approved }}"
-                    sequence:
-                      - variables:
-                          final_response:
-                            status: denied
-                            mode: cert_grant
-                            component: "{{ _comp }}"
-                            reason: "{{ _cg_ack_reason }}"
-                            caller_token: "{{ caller_token }}"
-                      - stop: cert_grant — not approved
-                        response_variable: final_response
-              - variables:
-                  _spatch: >-
-                    {{ _spatch_raw | from_json(default={}) if (_spatch_raw != '' and _spatch_raw[:1] == '{') else {} }}
-                  _craw: "{{ _cab_vars.get('zen_ai_certs', {}) }}"
-                  _cev:  "{{ _craw.get('value', _craw) if _craw is mapping else {} }}"
-                  _jacket_id: >-
-                    {%- if _cev is mapping and _cev.get('jacket_id', '') != '' -%}
-                      {{ _cev.get('jacket_id') }}
-                    {%- else -%}
-                      {%- set _ess = _cab_vars.get('zenai_essence', {}) -%}
-                      {%- set _ev  = _ess.get('value', _ess) if _ess is mapping else {} -%}
-                      {{ (_ev.get('jacket', {}) if _ev is mapping else {}).get('id', '') }}
-                    {%- endif -%}
-                  _existing_certs: "{{ _cev.get('kfc_certifications', {}) if _cev is mapping else {} }}"
-                  _existing_stats: "{{ _cev.get('stats', {}) if _cev is mapping else {} }}"
-              # ── Scope MERGE, not replace (2026-08-16, Nathan: "work through
-              # the parts" on the deny-ACL plan). Before this, a second
-              # cert_grant for an already-granted cert silently WIPED the
-              # existing scope unless the caller re-sent every prior entry --
-              # real data-loss risk for a "just add one more exemption" call.
-              # Now: existing scope + new _cscope are both normalized to
-              # {entity, acl} dicts (bare string = legacy 'allow' shorthand),
-              # then upserted by entity (new entries win). acl='remove' on a
-              # new entry deletes that entity from the merged result instead
-              # of adding it -- this IS the per-entry removal mechanism (no
-              # separate mode/field needed): cert_grant cert_scope='[{"entity":
-              # "lock.x","acl":"remove"}]' drops just that one exemption
-              # without touching the rest of the scope or re-granting the
-              # whole cert. ──
-              - variables:
-                  _cg_existing_scope: "{{ _existing_certs.get(_comp, {}).get('scope', []) if _comp in _existing_certs else [] }}"
-                  _cg_merged_scope: >-
-                    {%- set ns = namespace(out=[]) -%}
-                    {%- for raw in _cg_existing_scope -%}
-                      {%- if raw is mapping -%}
-                        {%- set n = {'entity': raw.get('entity', ''), 'acl': raw.get('acl', 'allow') | lower} -%}
-                      {%- else -%}
-                        {%- set n = {'entity': raw | string, 'acl': 'allow'} -%}
-                      {%- endif -%}
-                      {%- set ns.out = ns.out + [n] -%}
-                    {%- endfor -%}
-                    {%- for raw in _cscope -%}
-                      {%- if raw is mapping -%}
-                        {%- set n = {'entity': raw.get('entity', ''), 'acl': raw.get('acl', 'allow') | lower} -%}
-                      {%- else -%}
-                        {%- set n = {'entity': raw | string, 'acl': 'allow'} -%}
-                      {%- endif -%}
-                      {%- set ns.out = (ns.out | rejectattr('entity', 'equalto', n.entity) | list) -%}
-                      {%- if n.acl != 'remove' -%}
-                        {%- set ns.out = ns.out + [n] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {{ ns.out }}
-              - variables:
-                  _new_cert_entry: >-
-                    {%- set e = {'level': _lvl, 'certified': now().strftime('%Y-%m-%d'), 'tool': _ctool} -%}
-                    {%- if _ccons is sequence and _ccons | length > 0 -%}
-                      {%- set e = e | combine({'constraints': _ccons}) -%}
-                    {%- endif -%}
-                    {%- if _cg_merged_scope is sequence and _cg_merged_scope | length > 0 -%}
-                      {%- set e = e | combine({'scope': _cg_merged_scope}) -%}
-                    {%- endif -%}
-                    {{ e }}
-                  _updated_certs: "{{ _existing_certs | combine({_comp: _new_cert_entry}) }}"
-                  _updated_stats: >-
-                    {{ _existing_stats | combine(_spatch, recursive=true)
-                       if (_spatch is mapping and _spatch | length > 0)
-                       else _existing_stats }}
-                  _new_doc: >-
-                    {{
-                      (_cev if _cev is mapping else {})
-                      | combine({
-                          'jacket_id': _jacket_id,
-                          'kfc_certifications': _updated_certs,
-                          'stats': _updated_stats
-                        })
-                      | tojson
-                    }}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: create
-                  force_action: true
-                  set_timestamp: true
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target }}"
-                  key: zen_ai_certs
-                  value: "{{ _new_doc }}"
-              - variables:
-                  final_response:
-                    status: ok
-                    mode: cert_grant
-                    target: "{{ _target }}"
-                    component: "{{ _comp }}"
-                    level: "{{ _lvl }}"
-                    jacket_id: "{{ _jacket_id }}"
-                    message: "Cert granted: {{ _comp }} level {{ _lvl }}."
-                    cert: "{{ _new_cert_entry }}"
-                    caller_token: "{{ caller_token }}"
+                  final_response: >-
+                    {{ final_response if final_response is mapping and final_response.get('status', '') != ''
+                       else {'status': 'error', 'mode': 'cert_grant', 'message': 'certadmin call failed -- see system log for the underlying error. No cert was granted.', 'caller_token': caller_token} }}
               - stop: cert_grant complete
                 response_variable: final_response
 
       ###########################################################################
-      # 6 — CERT_REVOKE
+      # 6 — CERT_REVOKE (delegated to zen_admintools_certadmin, 2026-08-18)
       ###########################################################################
       - choose:
           - conditions: "{{ _mode == 'cert_revoke' }}"
             sequence:
-              - variables:
-                  _comp: "{{ cert_component | default('') | trim | lower }}"
-              - choose:
-                  - conditions: "{{ _comp == '' }}"
-                    sequence:
-                      - variables:
-                          final_response:
-                            status: error
-                            message: "cert_revoke requires cert_component (kata_key)."
-                            caller_token: "{{ caller_token }}"
-                      - stop: Missing cert_component
-                        response_variable: final_response
-              - variables:
-                  _craw:           "{{ _cab_vars.get('zen_ai_certs', {}) }}"
-                  _cev:            "{{ _craw.get('value', _craw) if _craw is mapping else {} }}"
-                  _existing_certs: "{{ _cev.get('kfc_certifications', {}) if _cev is mapping else {} }}"
-              - choose:
-                  - conditions: "{{ _comp not in _existing_certs }}"
-                    sequence:
-                      - variables:
-                          final_response:
-                            status: warning
-                            message: "cert_revoke: '{{ _comp }}' not found in certifications. No change."
-                            caller_token: "{{ caller_token }}"
-                      - stop: Cert not found
-                        response_variable: final_response
-              # ── Same live-ack gate as cert_grant, "alter" covers revoke
-              # too -- no catalog check needed here (revoking something
-              # that's already live is fine even if catalog definitions
-              # have drifted since it was granted). ──
-              - action: script.zen_dojotools_identity
-                response_variable: _cr_ack_result_raw
+              - action: script.zen_admintools_certadmin
+                response_variable: final_response
                 continue_on_error: true
                 data:
-                  mode: request_live_ack
-                  ack_message: "Agent requests cert_revoke: '{{ _comp }}' from {{ _target }}. Approve?"
+                  mode: cert_revoke
+                  target: "{{ _target }}"
+                  cert_component: "{{ cert_component | default('') }}"
                   caller_token: "{{ caller_token }}"
               - variables:
-                  _cr_approved: "{{ _cr_ack_result_raw.get('approved', false) if _cr_ack_result_raw is mapping else false }}"
-                  _cr_ack_reason: "{{ _cr_ack_result_raw.get('reason', 'dispatch_failed') if _cr_ack_result_raw is mapping else 'dispatch_failed' }}"
-              - choose:
-                  - conditions: "{{ not _cr_approved }}"
-                    sequence:
-                      - variables:
-                          final_response:
-                            status: denied
-                            mode: cert_revoke
-                            component: "{{ _comp }}"
-                            reason: "{{ _cr_ack_reason }}"
-                            caller_token: "{{ caller_token }}"
-                      - stop: cert_revoke — not approved
-                        response_variable: final_response
-              - variables:
-                  _pruned_certs: >-
-                    {%- set ns = namespace(d={}) -%}
-                    {%- for k, v in _existing_certs.items() if k != _comp -%}
-                      {%- set ns.d = ns.d | combine({k: v}) -%}
-                    {%- endfor -%}
-                    {{ ns.d }}
-                  _updated_doc: >-
-                    {{ (_cev if _cev is mapping else {})
-                       | combine({'kfc_certifications': _pruned_certs})
-                       | tojson }}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: create
-                  force_action: true
-                  set_timestamp: true
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target }}"
-                  key: zen_ai_certs
-                  value: "{{ _updated_doc }}"
-              - variables:
-                  final_response:
-                    status: ok
-                    mode: cert_revoke
-                    target: "{{ _target }}"
-                    component: "{{ _comp }}"
-                    message: "Cert revoked: {{ _comp }} removed from {{ _target }}."
-                    caller_token: "{{ caller_token }}"
+                  final_response: >-
+                    {{ final_response if final_response is mapping and final_response.get('status', '') != ''
+                       else {'status': 'error', 'mode': 'cert_revoke', 'message': 'certadmin call failed -- see system log for the underlying error.', 'caller_token': caller_token} }}
               - stop: cert_revoke complete
                 response_variable: final_response
 
