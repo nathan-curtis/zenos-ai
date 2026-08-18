@@ -137,13 +137,14 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 
 ## zen_dojotools_help — Global Help Front Door (v3.0.0)
 
-`zen_dojotools_help` is now more than the system-overview tool — it's the front door for discovering and proxying to any tool's own help. Four modes:
+`zen_dojotools_help` is now more than the system-overview tool — it's the front door for discovering and proxying to any tool's own help. Five modes:
 
 | Mode | Does |
 |------|------|
 | `about` (default) | System overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA. |
 | `help` | Proxy to a specific tool's own `mode=help` — pass `tool=<script_name>`. Returns that tool's canonical help schema directly. Requires `tool`; without it, returns an error naming `mode=directory` as the discovery path. |
 | `directory` | Auto-discover every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) and check each one's `tool_manifest` for `help` in its supported modes — no static list to maintain, new tools appear automatically as long as they implement `mode=help`. |
+| `troubleshooting` | **Static** — zero live calls, zero fan-out (deliberately: a fan-out-based troubleshooting mode would hit the exact failure class it documents). System-level known platform quirks — currently the `script:` platform's entity_id/unique_id drift class (symptom `ServiceNotFound` from a dynamically-templated action even though the entity looks healthy in `states.script`; cause, fix, and diagnostic path all included) — plus pointers to every other diagnostic surface (`zen_dojotools_systemtools` health report, `zen_dojotools_manifest` audit modes, this tool's own `mode=about`/`mode=directory`, the entity registry, repo/community links). Wired bidirectionally with this tool's own `mode=about` Diagnostics section. Start-here reference for an agent in a vacuum with an unexplained error and no other context. |
 | `tool_manifest` | Self-description (UMP contract). |
 
 ```yaml
@@ -159,6 +160,10 @@ zen_dojotools_help:
 # Discover every help-capable tool currently loaded
 zen_dojotools_help:
   mode: directory
+
+# Static system-level gotchas + where else to look (no live calls)
+zen_dojotools_help:
+  mode: troubleshooting
 ```
 
 `action=` remains as a backward-compatible alias for `about`/`tool_manifest` only — use `mode=` for the full mode set, including `help` and `directory`.

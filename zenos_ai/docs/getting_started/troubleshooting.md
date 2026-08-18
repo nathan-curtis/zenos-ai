@@ -419,6 +419,7 @@ Flynn handles the full rebuild sequence automatically.
 | Labels not assigning | `sensor.zen_label_health` → `missing_label_ids`, `unassigned_label_ids` |
 | Cabinet missing or corrupt | `sensor.zen_cabinet_health` → `missing_cabinets` → Step 6 |
 | Reload did nothing | Run `ha_config_check`; if clean, use `ha_reload_all`, then `zen_resolver_refresh` |
+| `Action script.<x> not found` / `ServiceNotFound` from a dynamically-templated action, but `states.script` shows the entity is fine | Static reference: `script.zen_dojotools_help tool: zen_dojotools_help mode: troubleshooting` — documents the `script:` platform's entity_id/unique_id drift class. Zero live calls, so it still works even when the thing it's diagnosing is broken. |
 | HA log file missing | Use `script.zen_dojotools_ha_log_viewer`; HA 2025.11+ journal mode is expected and returns guidance |
 | New install stuck — cabinets all in `init`, nothing initializing | Flynn Gate 2.1 handles this post-warmup. Wait ~5 min after HA start. If still stuck → Step 6 (single cabinet reset). |
 | Schema missing / Gate 3 keeps firing | Step 2 (`reset_template`) |
@@ -439,6 +440,7 @@ Flynn handles the full rebuild sequence automatically.
 
 ## Cross-References
 
+- [Zen DojoTools Help — `mode=troubleshooting`](../scripts/zen_dojotools_utilities_readme.md) — static, zero-live-call reference for system-level platform quirks (e.g. `script:` platform entity_id/unique_id drift) plus pointers to every other diagnostic surface. Safe to check even when whatever you were doing just broke.
 - [SystemTools](../scripts/zen_dojotools_systemtools_readme.md) — health report, reload/restart wrappers, log viewer, pipeline monitor
 - [Entity Exposure](entity_exposure.md) — expose SystemTools and Log Viewer to Assist; keep HA API internal
 - [Script Modules](../scripts/readme.md) — internal tool map and module index

@@ -136,7 +136,7 @@ If you grant broad allow scope and later regret it, remove the specific entry as
 | `zen_dojotools_security_manager` | `security_control` | Arm; change alert policy | Disarm |
 | `zen_dojotools_infra` (container-control codex) | `infra_container_control` | Restart/start a container (level ≥ 2 by default) | Stop/remove a container (level ≥ 3 by default) |
 | `zen_dojotools_room_manager` | `room_control_override` | — (no cert-only tier; see next column) | Move a room out of a human-set Paused state |
-| `zen_dojotools_room_manager` | `room_topology_edit` | Structural edits: `set`/`setup`/`area_create`/`area_update`/`link`/`unlink`/`boundary_link`/`boundary_unlink`/`zone_set`/`zone_remove`/`landmark_set`/`landmark_remove` (level 1); `area_delete` (level 2) | — |
+| `zen_dojotools_room_manager` | `room_topology_edit` | Structural edits: `set`/`setup`/`area_create`/`area_update`/`link`/`unlink`/`boundary_link`/`boundary_unlink`/`room_zone_set`/`room_zone_remove`/`landmark_set`/`landmark_remove` (level 1); `area_delete` (level 2) | — |
 | `zen_dojotools_room_manager` | `room_behavior_control` | `room_status_set`, `roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `wasp_enable`, `reflex_wire` area writes, `room_control_set` writes (except setting Paused, which stays open) | — |
 | `zen_dojotools_lights` (ZenLux) | `lighting_control` | All gated light/switch writes | — (no live-ack tier; lighting is not treated as a physical-security action) |
 | `zen_dojotools_climate` (also owns `fan.*`) | `climate_control` | All real setters on a `climate.*` or `fan.*` target | — |

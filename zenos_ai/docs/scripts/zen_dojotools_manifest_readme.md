@@ -1,4 +1,4 @@
-# Zen DojoTools Manifest — v6.3.1 (ZenOS-AI 2026.9.0)
+# Zen DojoTools Manifest — v6.4.0 (ZenOS-AI 2026.9.0)
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 
@@ -45,7 +45,7 @@ The `mode` field routes the broker to the appropriate subsystem. Default is `cab
 | `tools` | Discovers all `zen_*` scripts by namespace scan. Optional `name` field for single-tool lookup; optional `tier` field to filter by namespace. |
 | `automations` | Roster of all `automation.zen_*` entities including state and last-triggered timestamps. |
 | `structure` | Lens registry topology. |
-| `audit` | Gap analysis: unlabeled, broken, and ghost tools. Optionally filtered by `tier`. |
+| `audit` | Gap analysis: unlabeled, broken, and ghost tools. Optionally filtered by `tier`. Scans the full tool roster — `dojotools` + `admintools` + `stacks` + `sutra` (admintools re-included 2026-08-18, see below). |
 | `health` | Aggregate health roll-up across subsystems. |
 | `autotag` | Tag discovered tools. Optionally filtered by `tier`. |
 | `publish` | Writes three mini-manifests to the household cabinet: `zen_tool_manifest`, `zen_label_manifest`, `zen_automation_manifest`. Also writes the domain routing table — built dynamically from `label_entities('zen_domain_*')`, no hardcoded domain:entity_id list. |
@@ -55,11 +55,12 @@ The `mode` field routes the broker to the appropriate subsystem. Default is `cab
 | `health_refresh` | Runs a full per-tool compliance scan and caches the result to the `_health_report` cabinet drawer. `mode=health` reads this cache first, falling back to a live check only if the cache is absent. |
 | `domains` | Live tool/domain/peers graph — which tool owns which domain and what else shares that domain. |
 | `audit_help` | Scans `mode=help` across every discovered `zen_*` tool — surfaces tools with a missing or malformed help surface. |
-| `label_audit` | Read-only gap scan: calls `tool_manifest` on every discovered `zen_*` tool, aggregates `missing_required_labels`/`missing_optional_labels` (`include_optional` default `true`). Reports gaps, creates nothing. |
-| `cert_audit` (2026-08-15) | Same fan-out shape as `label_audit`, for KFC certifications instead of labels — calls `tool_manifest` on every discovered tool and aggregates whatever each one self-declares in its own `certs_required` field into `catalog: {cert_name: {declared_by: [tools], display_name, description, max_level, gates, live_ack_required_for, grant_via}}`. This is the live replacement for what was briefly a hand-maintained `.persona_certs/cert_catalog.json` file (deleted, same day — "I need to not maintain a separate list of available certs or we'll be in admin hell") — `zen_dojotools_persona_editor`'s `cert_grant`/`cert_revoke` read this to validate a cert name isn't a flat typo before the real gate (a live household-admin ack) fires. Catalog membership is a spell-check, never the security boundary — a tool can self-declare whatever it wants here; what actually validates the claim is the live ack, unchanged. `status: issues_found` plus a populated `conflicts` array is the one real authoring bug this catches without an external file to typo-check against: the same cert name declared by two or more tools with a mismatched `max_level`. A tool declaring `certs_required` needs no separate registration step anywhere else — calculated fresh on every call, nothing to keep in sync. |
-| `repair` | Confirm-gated remediation — wraps `label_audit`'s scan, creates missing labels and syncs KFC-bound label description/icon/color. See [`mode=repair`](#moderepair--label-remediation) below. |
+| `label_audit` | Read-only gap scan: calls `tool_manifest` on every discovered `zen_*` tool, aggregates `missing_required_labels`/`missing_optional_labels` (`include_optional` default `true`). Reports gaps, creates nothing. Scans the full tool roster including `admintools` (re-included 2026-08-18, see below). |
+| `cert_audit` (2026-08-15, `my_certs` added 2026-08-18) | Same fan-out shape as `label_audit`, for KFC certifications instead of labels — calls `tool_manifest` on every discovered tool (full roster including `admintools`, re-included 2026-08-18) and aggregates whatever each one self-declares in its own `certs_required` field into `catalog: {cert_name: {declared_by: [tools], display_name, description, max_level, gates, live_ack_required_for, grant_via}}`. This is the live replacement for what was briefly a hand-maintained `.persona_certs/cert_catalog.json` file (deleted, same day — "I need to not maintain a separate list of available certs or we'll be in admin hell") — `zen_dojotools_persona_editor`'s `cert_grant`/`cert_revoke` read this to validate a cert name isn't a flat typo before the real gate (a live household-admin ack) fires. Catalog membership is a spell-check, never the security boundary — a tool can self-declare whatever it wants here; what actually validates the claim is the live ack, unchanged. `status: issues_found` plus a populated `conflicts` array is the one real authoring bug this catches without an external file to typo-check against: the same cert name declared by two or more tools with a mismatched `max_level`. A tool declaring `certs_required` needs no separate registration step anywhere else — calculated fresh on every call, nothing to keep in sync. `my_certs` (2026-08-18) cross-references the catalog against `target=`'s actual holdings — held/level/scope per cert — read through `zen_admintools_certadmin mode=cert_list`, the same path `persona_editor` uses. `target=` optional, defaults to the default AI user. One call now answers both "what cert types exist" (`catalog`) and "what do I hold" (`my_certs`); `my_certs_note` is populated if the certadmin read fails, and the response still returns `catalog` alone in that case. |
+| `repair` | Confirm-gated remediation — wraps `label_audit`'s scan, creates missing labels and syncs KFC-bound label description/icon/color. Scans the full tool roster including `admintools` (re-included 2026-08-18, see below). See [`mode=repair`](#moderepair--label-remediation) below. |
 | `all` | Full system manifest. Calls subsystems directly and aggregates. If `force_refresh: true`, runs `publish` first to refresh cached drawers. |
 | `tool_manifest` | Self-description. See below. |
+| `help` (2026-08-18) | Full per-mode reference, including field requirements and `cert_audit`'s `my_certs` shape. The top-level tool `description` was trimmed from 2735 to 657 characters and now points callers at `mode=help` instead of carrying the full per-mode prose inline. See [`mode=help`](#modehelp--full-reference) below. |
 
 ### Mode fields
 
@@ -69,7 +70,8 @@ The `mode` field routes the broker to the appropriate subsystem. Default is `cab
 | `show_hidden` | `cabinets` | Include hidden/system volumes. |
 | `show_stacks` | `cabinets` | Include `online_unmounted` (stacks) cabinets. Default false. |
 | `extended` | `cabinets`, `all` | Return full metadata (cabinets) or extended manifests (all). |
-| `name` | `tools` | Filter to a single tool by entity_id. |
+| `name` | `tools`, `label_audit`, `cert_audit` | Filter to a single tool (`tools`) or substring-filter the scan target list (`label_audit`, `cert_audit`). |
+| `target` | `cert_audit` | Whose cert holdings to report in `my_certs`. Omit for the default AI user. |
 | `tier` | `tools`, `audit`, `autotag` | Filter by namespace tier: `dojotools`, `admintools`, `stacks`, `sutra`. |
 | `force_refresh` | `all` | Bypass cached drawer reads, force live subsystem calls. |
 | `mcp_tool_list` | `mcp_sync` | JSON array of entity_ids visible to the calling agent via MCP. |
@@ -110,6 +112,24 @@ It is defined statically in the broker and written out on every `publish` run. A
 | `system` | `script.zen_dojotools_manifest` |
 
 Design note: room-oriented queries prefer `room_manager` over raw entity state queries.
+
+---
+
+## admintools Tier Re-Inclusion (2026-08-18)
+
+The scan-target builders for `mode=audit`, `label_audit`, `cert_audit`, and `repair` had silently excluded the entire `admintools` tier since 2026-07-29. That exclusion was a workaround, not a design decision: `zen_admintools_kitchen_sync` had no `mode=tool_manifest` branch and unconditionally evaluated `{{ limit | int }}` before any mode check — the `limit` field's default is UI-only and is never injected on a raw service call, so any bare `tool_manifest` scan against it threw `'limit' is undefined`. `zen_admintools_kungfu_loader` had a related gap: it silently normalized an unrecognized `tool_manifest` mode to `status` and ran a real filecabinet read instead of erroring.
+
+Both are fixed — `kitchen_sync`, `kungfu_loader`, and `reset_labels` all now have proper `mode=tool_manifest` branches — and all four scan-target builders once again include `admintools`. `tools`/`audit`/`cert_audit`/`label_audit`/`repair` modes now scan the full tool roster (`dojotools` + `admintools` + `stacks` + `sutra`) for the first time since the 2026-07-29 workaround landed.
+
+This is a different thing from `mode=health_refresh`'s scan target, which **deliberately** excludes `admintools` as a security perimeter — that exclusion is untouched by this change.
+
+---
+
+## `mode=help` — Full Reference
+
+The tool's top-level `description` field used to carry the entire per-mode reference inline, which pushed it past the 2048-character soft limit and buried the actual UMP contract detail (per-mode field requirements, the `my_certs` shape, etc.) in prose. `description` is now 657 characters and points callers at `mode=help` for the full reference instead.
+
+`mode=help` is an early exit — same shape as `mode=tool_manifest` — before any mode normalization or cabinet resolution, with no side effects. It returns a `summary` plus a `modes` mapping of every mode name to a one-line description (including `cert_audit`'s `my_certs` behavior), and echoes `caller_token`.
 
 ---
 
@@ -176,7 +196,7 @@ The self-description is produced by `MF.tool_manifest()` from `zenos_ai/zenos_ma
 tool: zen_dojotools_manifest
 display_name: System Manifest Broker
 tier: dojotools
-version: 6.2.0
+version: 6.4.0
 health:
   configured: true
   status: ok

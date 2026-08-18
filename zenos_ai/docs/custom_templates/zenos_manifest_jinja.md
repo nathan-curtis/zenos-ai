@@ -1,6 +1,6 @@
 # zenos_manifest.jinja — Shared Manifest Macro Library
 
-**Version:** 1.0.0 (ZenOS-AI 2026.8.0 'Chef')
+**Version:** 1.0.0 (ZenOS-AI 2026.9.0)
 **File:** `custom_templates/zenos_ai/zenos_manifest.jinja`
 **Status:** New in 2026.7.0. Required for all Level 1+ manifest-compliant tools.
 
@@ -127,7 +127,32 @@ These fields are merged into the output at the top level alongside the base iden
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `audit` | mapping | Opt-in, describes an audit entry only — the macro cannot emit actions. The calling script must persist it itself (e.g. via `script.zen_dojotools_event_emitter`), same pattern as `essence_signed` events in `dojotools_profile.yaml`. Only merged in when a mapping is passed. |
-| `inference` | mapping | Declaration only, e.g. `{'calls_inference': true}`. Set on any tool that itself invokes a model/LLM call. No usage/cost estimation logic yet — designed to grow additively (`estimated_tokens`/`estimated_cost` keys) without breaking tools that only declare `calls_inference`. Only merged in when a mapping is passed. |
+| `inference` | mapping | Declaration only, e.g. `{'calls_inference': true, 'ai_task_type': 'summarize'}`. Set on any tool that itself invokes `ai_task`/an LLM. Combined over the false-shaped default (see below) — a partial dict overriding only the keys it needs is fine. Omit entirely for a non-inference tool; the macro still emits the full `inference{}` block with the false-shaped default automatically. |
+
+### `inference` — always reported (2026-08-18)
+
+Unlike `audit`, `inference` is **not** opt-in — every `tool_manifest()` call now returns an `inference{}` block, whether or not the caller passes one. Non-declaring tools get this default automatically:
+
+```json
+{
+  "calls_inference": false,
+  "ai_task_type": null,
+  "requires_capabilities": [],
+  "est_tokens_in": 0,
+  "est_tokens_out": 0
+}
+```
+
+A tool that itself calls `ai_task.*` passes `inference={...}` to override just the keys it needs — the passed mapping is combined over these defaults, not swapped in wholesale. Fields:
+
+| Key | Description |
+|-----|-------------|
+| `calls_inference` | `true` if this tool ever calls `ai_task`/an LLM itself. |
+| `ai_task_type` | What kind, e.g. `'summarize'`/`'generate'`/`'classify'`/`'extract'`. |
+| `requires_capabilities` | List, e.g. `['image_understanding', 'tool_use', 'structured_output']` — whatever the underlying `ai_task` call needs. |
+| `est_tokens_in` / `est_tokens_out` | Rough per-run estimate, for capacity planning. Not measured or enforced — a declared estimate only. |
+
+Real `ai_task.*` callers were swept 2026-08-18 and now correctly declare `inference`: `ninja_summarizer`, `supersummary`, `zenzork` (`ai_task.generate_data`), `camera` (`ai_task.generate_data` — `image_understanding`/`structured_output` depending on the `structure` param), and `generate_image` (`ai_task.generate_image` — `image_generation`). `systemtools`/`zenos_agent_health` reference `ai_task.*` too, but only for entity-picker plumbing — they correctly do **not** declare `calls_inference: true`.
 
 ### Optional parameters — runtime
 
@@ -187,6 +212,13 @@ The macro returns a single-line JSON string. After `| from_json`, the structure 
   "cortex": "claude-sonnet-4-5",
   "cortex_codename": "Nyx",
   "os_release": { "..." : "..." },
+  "inference": {
+    "calls_inference": false,
+    "ai_task_type": null,
+    "requires_capabilities": [],
+    "est_tokens_in": 0,
+    "est_tokens_out": 0
+  },
   "caller_token": "",
   "consumes": ["label", "person"],
   "returns": ["ticket_evidence"]
