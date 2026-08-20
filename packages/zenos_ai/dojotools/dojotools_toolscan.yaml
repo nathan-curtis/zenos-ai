@@ -1,0 +1,317 @@
+###############################################################################
+# ZENOS-AI ADMINTOOL: TOOLSCAN (v1.2.0)
+#
+# 2026-08-19. Extracted from zen_dojotools_manifest's internal _scan_collect
+# mode after discovering (via HA's own log) that a script cannot call itself
+# recursively -- HA hard-blocks it as loop protection, independent of mode/
+# max/parallel settings: "Disallowed recursion detected... tried to start
+# script.Zen DojoTools Manifest which is already running in the current
+# execution path." No amount of mode=queued/parallel or raising max fixes
+# this -- it's an unconditional safety guard, not a concurrency limit.
+#
+# So the shared fan-out collector Nathan asked for ("we may have to plan
+# something similar on our fan out tools as we see we have damn near 100")
+# has to live in a genuinely separate script entity, not inside the tool
+# whose modes are meant to call it. This is that entity -- admintools tier,
+# not agent-exposed (this is plumbing other tools call into, not something
+# an agent should ever call directly).
+#
+# Consolidation complete as of 2026-08-19: five of zen_dojotools_manifest's
+# modes now call through here instead of hand-rolling their own scan --
+# toolmap, domains, label_audit, cert_audit, audit. Five modes were
+# deliberately NOT migrated (bootstrap_stacks, bootstrap_kfc, health_refresh,
+# mcp_sync, repair) -- each has a structural reason (interleaved mutation,
+# a different discovery mechanism/collect verb, deliberate staggered-sweep
+# load management, or no fan-out to begin with) that a shared generic
+# collector doesn't accommodate without losing real behavior. See
+# dojotools_manifest.yaml's own header changelog for the per-mode detail.
+#
+# Two scopes:
+#   full=true (or target= omitted): whole-system scan -- every
+#     zen_dojotools_*/zen_admintools_*/zen_stack_*/zen_sutra_* script
+#     (prefixes= overrides this set; see domains' call for an example).
+#   target=<tool>: scan only that tool + its declared dependencies=[],
+#     recursively up to depth= hops (default 1), deduped against cycles.
+#
+# Returns health, mcp_exposed, kfc_active, dependencies, certs_required,
+# missing labels, lens_provider, managed, manifest_status per tool, plus
+# (with include_help=true) display_name/help_domain/help_peers.
+###############################################################################
+
+script:
+  zen_admintools_toolscan:
+    alias: Zen AdminTools ToolScan
+    description: >-
+      Internal shared fan-out collector for manifest's various audit/graph
+      modes. Not for direct agent use -- call zen_dojotools_manifest's own
+      modes (toolmap, audit, etc) instead; they call this. mode=scan (or
+      tool_manifest for self-description).
+    mode: queued
+    max: 20
+    icon: mdi:radar
+    fields:
+      mode:
+        name: Mode
+        description: "scan (default): run the collector. tool_manifest: UMP self-description."
+        default: scan
+        selector:
+          select:
+            options:
+              - scan
+              - tool_manifest
+      target:
+        name: Target
+        description: "Tool name to scope the scan to. Omit (or full=true) for a whole-system scan."
+        default: ""
+        selector:
+          text:
+      depth:
+        name: Depth
+        description: "Hops to recurse through target='s declared dependencies. Default 1 (target + its direct deps)."
+        default: 1
+        selector:
+          number:
+            min: 0
+            max: 10
+      full:
+        name: Full Scan
+        description: "true = whole-system scan regardless of target=. Implied true if target= is omitted."
+        default: false
+        selector:
+          boolean:
+      exclude:
+        name: Exclude
+        description: >-
+          Comma-separated tool names to exclude from the scan, IN ADDITION
+          to this script's own self-exclusion. Callers that are themselves
+          mid-execution when they call this (e.g. zen_dojotools_manifest's
+          own toolmap mode calling out to toolscan) MUST pass their own
+          entity name here -- HA blocks a script calling itself even
+          indirectly through an intermediary, so an unexcluded caller shows
+          up in its own scan as falsely unhealthy/unavailable (busy, not
+          actually broken). Discovered live: 2026-08-19, zen_dojotools_
+          manifest showed configured=false mid-toolmap-scan until excluded.
+        default: ""
+        selector:
+          text:
+      prefixes:
+        name: Prefixes
+        description: >-
+          Comma-separated script entity_id prefixes to scan (each including
+          the trailing underscore, e.g. "script.zen_dojotools_"). Default:
+          the standard four (zen_dojotools_/zen_admintools_/zen_stack_/
+          zen_sutra_). Callers with a different scope (e.g. mode=domains
+          also includes zen_codex_ but excludes zen_admintools_) pass their
+          own set here rather than toolscan guessing -- prevents a silent
+          behavior change on migration.
+        default: ""
+        selector:
+          text:
+      include_help:
+        name: Include Help
+        description: >-
+          Also call mode=help on every tool that declares it in its modes{}
+          (tool_manifest), storing help_domain/help_peers on each result
+          entry. Off by default -- doubles the call count for tools with
+          help, only worth it for callers that actually need domain/peers
+          data (e.g. mode=domains).
+        default: false
+        selector:
+          boolean:
+      caller_token:
+        name: Caller Token
+        description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
+        required: false
+        selector:
+          text:
+
+    sequence:
+      - variables:
+          caller_token: "{{- caller_token | default('') -}}"
+          _mode: "{{- mode | default('scan') -}}"
+
+      - if: "{{- _mode == 'tool_manifest' -}}"
+        then:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{- MF.tool_manifest(
+                  tool='zen_admintools_toolscan',
+                  display_name='ToolScan — Shared Fan-Out Collector',
+                  tier='admintools',
+                  version='1.2.0',
+                  health={'configured': true, 'status': 'ok', 'notes': []},
+                  required_labels=['admintools'],
+                  optional_labels=[],
+                  consumes=['target', 'depth', 'full', 'exclude', 'prefixes', 'include_help'],
+                  returns=['scan_results'],
+                  failure_policy='soft',
+                  modes={'scan': 'scan', 'manifest': 'tool_manifest'},
+                  icon='mdi:radar',
+                  color='deep-orange',
+                  caller_token=caller_token | default('')
+                ) | from_json -}}
+          - stop: toolscan tool manifest
+            response_variable: result
+
+      - variables:
+          _sc_self: "{{ this.entity_id }}"
+          _sc_no_mode: "{{ label_entities('zen_no_mode') | list }}"
+          _sc_target: "{{ (target | default('') | string | trim | replace('script.', '')) }}"
+          _sc_depth: "{{ depth | default(1) | int(1) }}"
+          _sc_full: "{{ (full | default(false) | bool(false)) or _sc_target == '' }}"
+          _sc_exclude: >-
+            {{ (exclude | default('', true) | string | trim
+                | regex_findall('[^,]+') | map('trim') | map('replace', 'script.', '') | list)
+               if (exclude | default('', true) | trim) != '' else [] }}
+          _sc_include_help: "{{ include_help | default(false) | bool(false) }}"
+          _sc_prefixes: >-
+            {{ (prefixes | default('', true) | string | trim
+                | regex_findall('[^,]+') | map('trim') | list)
+               if (prefixes | default('', true) | trim) != ''
+               else ['script.zen_dojotools_', 'script.zen_admintools_', 'script.zen_stack_', 'script.zen_sutra_'] }}
+      - variables:
+          _sc_all_targets: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for e in states.script -%}
+              {%- set eid = e.entity_id -%}
+              {%- set _matches_prefix = namespace(out=false) -%}
+              {%- for p in _sc_prefixes -%}
+                {%- if eid.startswith(p) -%}{%- set _matches_prefix.out = true -%}{%- endif -%}
+              {%- endfor -%}
+              {%- if _matches_prefix.out
+                  and e.state in ('off', 'on')
+                  and eid != _sc_self
+                  and eid not in _sc_no_mode
+                  and (eid | replace('script.', '')) not in _sc_exclude -%}
+                {%- set ns.out = ns.out + [eid | replace('script.', '')] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out | list }}
+      - variables:
+          _sc_results: []
+          _sc_visited: []
+      # ── Scoped case: BFS from target, depth hops through declared deps.
+      # Frontier starts as [target]; each round calls every unvisited
+      # frontier tool, collects it, then expands the frontier to its
+      # declared dependencies for the next round -- bounded by _sc_depth
+      # rounds total (round 0 = target itself, round 1 = its direct deps,
+      # etc). Dedup via _sc_visited so a cycle can't loop forever. ──
+      - if: "{{ not _sc_full }}"
+        then:
+        - variables:
+            _sc_frontier: "{{ [_sc_target] if _sc_target in _sc_all_targets else [] }}"
+            _sc_round: 0
+        - repeat:
+            while: "{{ _sc_frontier | length > 0 and _sc_round <= _sc_depth }}"
+            sequence:
+            - variables:
+                _sc_next_frontier: []
+            - repeat:
+                for_each: "{{ _sc_frontier }}"
+                sequence:
+                - if: "{{ repeat.item not in _sc_visited }}"
+                  then:
+                  - action: "script.{{ repeat.item }}"
+                    continue_on_error: true
+                    response_variable: _sc_tm_raw
+                    data:
+                      mode: tool_manifest
+                  - variables:
+                      _sc_tm: "{{ _sc_tm_raw if _sc_tm_raw is mapping else {} }}"
+                      _sc_visited: "{{ _sc_visited + [repeat.item] }}"
+                  - if: "{{ _sc_include_help and 'help' in (_sc_tm.get('modes', {}) if _sc_tm is mapping else {}) }}"
+                    then:
+                    - action: "script.{{ repeat.item }}"
+                      continue_on_error: true
+                      response_variable: _sc_help_raw
+                      data:
+                        mode: help
+                    else:
+                    - variables:
+                        _sc_help_raw: none
+                  - variables:
+                      _sc_help: "{{ ((_sc_help_raw if _sc_help_raw is mapping else {}).get('help') or {}) }}"
+                  - variables:
+                      _sc_results: >-
+                        {{ _sc_results + [{
+                          'tool': repeat.item,
+                          'manifest_status': _sc_tm.get('status', '') if _sc_tm is mapping else '',
+                          'health': _sc_tm.get('health', {'configured': false, 'status': 'unavailable'}) if _sc_tm is mapping else {'configured': false, 'status': 'unavailable'},
+                          'mcp_exposed': _sc_tm.get('mcp_exposed', false) | bool,
+                          'kfc_active': _sc_tm.get('kfc_manifest', false) | bool,
+                          'dependencies': _sc_tm.get('dependencies', []) if _sc_tm is mapping else [],
+                          'certs_required': _sc_tm.get('certs_required', []) if _sc_tm is mapping else [],
+                          'missing_required_labels': _sc_tm.get('missing_required_labels', []) if _sc_tm is mapping else [],
+                          'missing_optional_labels': _sc_tm.get('missing_optional_labels', []) if _sc_tm is mapping else [],
+                          'lens_provider': _sc_tm.get('lens_provider', false) | bool,
+                          'provider_key': _sc_tm.get('provider_key', '') if _sc_tm is mapping else '',
+                          'managed': _sc_tm.get('managed', false) | bool,
+                          'display_name': _sc_tm.get('display_name', '') if _sc_tm is mapping else '',
+                          'help_domain': _sc_help.get('domain', '') | string | trim if _sc_help is mapping else '',
+                          'help_peers': _sc_help.get('peers', {}) if _sc_help is mapping else {}
+                        }] }}
+                  - variables:
+                      _sc_next_frontier: >-
+                        {{ _sc_next_frontier + ((_sc_tm.get('dependencies', []) if _sc_tm is mapping else []) | map(attribute='tool') | map('replace', 'script.', '') | list) }}
+            - variables:
+                _sc_frontier: "{{ _sc_next_frontier | unique | reject('in', _sc_visited) | reject('in', _sc_exclude) | list }}"
+                _sc_round: "{{ _sc_round + 1 }}"
+      # ── Full-scan case: identical shape to every existing fan-out mode's
+      # own loop -- kept byte-identical so a later migration phase can swap
+      # its bespoke loop for a call into this one with full=true and get
+      # the same scan_targets it already computes itself. ──
+      - if: "{{ _sc_full }}"
+        then:
+        - repeat:
+            for_each: "{{ _sc_all_targets }}"
+            sequence:
+            - action: "script.{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _sc_tm_raw
+              data:
+                mode: tool_manifest
+            - variables:
+                _sc_tm: "{{ _sc_tm_raw if _sc_tm_raw is mapping else {} }}"
+            - if: "{{ _sc_include_help and 'help' in (_sc_tm.get('modes', {}) if _sc_tm is mapping else {}) }}"
+              then:
+              - action: "script.{{ repeat.item }}"
+                continue_on_error: true
+                response_variable: _sc_help_raw
+                data:
+                  mode: help
+              else:
+              - variables:
+                  _sc_help_raw: none
+            - variables:
+                _sc_help: "{{ ((_sc_help_raw if _sc_help_raw is mapping else {}).get('help') or {}) }}"
+            - variables:
+                _sc_results: >-
+                  {{ _sc_results + [{
+                    'tool': repeat.item,
+                    'manifest_status': _sc_tm.get('status', '') if _sc_tm is mapping else '',
+                    'health': _sc_tm.get('health', {'configured': false, 'status': 'unavailable'}) if _sc_tm is mapping else {'configured': false, 'status': 'unavailable'},
+                    'mcp_exposed': _sc_tm.get('mcp_exposed', false) | bool,
+                    'kfc_active': _sc_tm.get('kfc_manifest', false) | bool,
+                    'dependencies': _sc_tm.get('dependencies', []) if _sc_tm is mapping else [],
+                    'certs_required': _sc_tm.get('certs_required', []) if _sc_tm is mapping else [],
+                    'missing_required_labels': _sc_tm.get('missing_required_labels', []) if _sc_tm is mapping else [],
+                    'missing_optional_labels': _sc_tm.get('missing_optional_labels', []) if _sc_tm is mapping else [],
+                    'lens_provider': _sc_tm.get('lens_provider', false) | bool,
+                    'provider_key': _sc_tm.get('provider_key', '') if _sc_tm is mapping else '',
+                    'managed': _sc_tm.get('managed', false) | bool,
+                    'display_name': _sc_tm.get('display_name', '') if _sc_tm is mapping else '',
+                    'help_domain': _sc_help.get('domain', '') | string | trim if _sc_help is mapping else '',
+                    'help_peers': _sc_help.get('peers', {}) if _sc_help is mapping else {}
+                  }] }}
+      - variables:
+          result:
+            status: ok
+            mode: scan
+            scope: "{{ 'full' if _sc_full else ('target=' ~ _sc_target ~ ' depth=' ~ _sc_depth) }}"
+            scanned: "{{ _sc_results | length }}"
+            results: "{{ _sc_results }}"
+            excluded: "{{ _sc_exclude }}"
+            caller_token: "{{ caller_token | default('') }}"
+      - stop: toolscan complete
+        response_variable: result

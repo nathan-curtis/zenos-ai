@@ -329,7 +329,7 @@ script:
                     tool='zen_dojotools_lights',
                     display_name='Lights',
                     tier='dojotools',
-                    version='2.4.0',
+                    version='2.5.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['light'],
@@ -355,11 +355,11 @@ script:
                     }, {
                       'cert': 'scene_handling',
                       'display_name': 'Basic Scene Handling',
-                      'description': 'Scene creation/staging via zen_dojotools_lights mode=scene_stage (relocated here 2026-08-16 from zen_dojotools_room_manager, RBAC locality -- room_manager now delegates to this tool instead of owning the logic directly). NOT YET ENFORCED -- declared ahead of gating going live.',
+                      'description': 'Scene creation/staging via zen_dojotools_lights mode=scene_stage (relocated here 2026-08-16 from zen_dojotools_room_manager, RBAC locality -- room_manager now delegates to this tool instead of owning the logic directly). Gated at the action level -- scene_stage snapshots/restores light/cover/climate/media_player/switch/fan/humidifier state for a whole room in one call, so it is its own gated surface regardless of which of those domains'' own certs the caller separately holds.',
                       'max_level': 4,
-                      'gates': ['mode=scene_stage (not yet gated -- declaration only)'],
+                      'gates': ['mode=scene_stage (cert only)'],
                       'live_ack_required_for': [],
-                      'grant_via': "persona_editor mode=cert_grant cert_component=scene_handling (or zen_dojotools_identity mode=cert_list to see current status) -- not yet enforced by this tool"
+                      'grant_via': "persona_editor mode=cert_grant cert_component=scene_handling (or zen_dojotools_identity mode=cert_list to see current status)"
                     }]
                   }) -}}
           - stop: tool_manifest
@@ -499,7 +499,7 @@ script:
           _zl_hold_active: "{{ (_zl_hold_ents | map('states') | select('in', ['on', 'open']) | list | count) > 0 }}"
           _zl_room_locked: "{{ _zl_rc_locked or _zl_hold_active }}"
           _zl_write_modes: [scene_set, brightness_set, color_temp_set, rgb_set, bleed_set, prefs_apply, toggle, switch_set]
-      - if: "{{ _mode in _zl_write_modes and _zl_room_locked and not _force }}"
+      - if: "{{ (_mode in _zl_write_modes or _mode == 'scene_stage') and _zl_room_locked and not _force }}"
         then:
           - variables:
               _zl_lock_reason: >-
@@ -586,6 +586,55 @@ script:
                       note: "Fires a live household-admin approval push -- see zen_dojotools_identity mode=cert_list for current status."
                     caller_token: "{{ _caller_token }}"
               - stop: lighting_control cert insufficient
+                response_variable: result
+
+      # ── 0c-3. SCENE_HANDLING cert gate (2026-08-19) -- closing the gap the
+      # 0c-2 comment above flagged as the chokepoint's next real consumer.
+      # scene_stage snapshots/restores light+cover+climate+media_player+
+      # switch+fan+humidifier state for a whole room (see _ss_domains) --
+      # gated at the ACTION level (staging/tagging a scene), same shape as
+      # room_control_override/room_topology_edit, not per-entity/per-domain.
+      # A caller without scene_handling cannot use scene_stage to write
+      # cover/climate/etc. state even if they separately hold those
+      # domains' own certs -- scene_stage is its own gated surface.
+      - if: "{{ _mode == 'scene_stage' }}"
+        then:
+          - action: script.zen_dojotools_identity
+            response_variable: _ss_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: scene_handling
+              required_cert_level: 1
+              target_entity: ""
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _ss_policy_status: "{{ _ss_id_raw.get('policy_status', 'blocked') if _ss_id_raw is mapping else 'blocked' }}"
+              _ss_authorized: "{{ _ss_id_raw.get('authorized', false) if _ss_id_raw is mapping else false }}"
+              _ss_cert_level: "{{ _ss_id_raw.get('cert_level', 0) if _ss_id_raw is mapping else 0 }}"
+          - if: "{{ _ss_policy_status != 'allowed' or not _ss_authorized }}"
+            then:
+              - variables:
+                  result:
+                    ok: false
+                    tool: zen_dojotools_lights
+                    mode: scene_stage
+                    error: "{{ 'identity_policy_blocked' if _ss_policy_status != 'allowed' else 'cert_insufficient' }}"
+                    detail: >-
+                      {%- if _ss_policy_status != 'allowed' -%}
+                        resolve_caller_identity did not return an allowed identity -- action denied.
+                      {%- else -%}
+                        scene_handling cert level {{ _ss_cert_level }} is below the required minimum (1).
+                      {%- endif -%}
+                    can_request: "{{ _ss_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_grant
+                      cert_component: scene_handling
+                      cert_level: 1
+                      note: "Fires a live household-admin approval push -- see zen_dojotools_identity mode=cert_list for current status."
+                    caller_token: "{{ _caller_token }}"
+              - stop: scene_handling cert insufficient
                 response_variable: result
 
       # ── 0c. Stored room default role (guarded) ────────────────────────────
@@ -933,8 +982,8 @@ script:
             response_variable: _result
 
       # ═══════════════════════════════════════════════════════════════════════
-      # SESE conversion complete (2026-08-16, Zammad #10304-style audit
-      # target, matching locks/covers/security_manager's shape). Every mode
+      # SESE conversion complete (2026-08-16,
+      # matching locks/covers/security_manager's shape). Every mode
       # lives in this ONE choose: block, sets `result`, and falls through --
       # NO internal stop anywhere in this file. default: handles unknown
       # mode the same way every real mode does. The final envelope()+stop
