@@ -64,7 +64,7 @@ child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door ho
 
 ## ZenZork "Chapter 1" — Loot, Quests, Book-Lore, and a Chapter Release Model
 
-ZenZork ships its first real content chapter, SoftDisk-style — one bundled release, not staggered feature drips. Chapter 2 is a future, unscoped chapter, not a patch to this one.
+ZenZork ships its first real content chapter, SoftDisk-style — one bundled release, not staggered feature drips. Chapter 2 is a future, unscoped chapter, not a patch to this one. See [the unofficial player's manual](../getting_started/zenzork_manual_unofficial.md) for the in-universe guide, and the [devkit doc](../scripts/zenzork_devkit.md) if you're extending it.
 
 - **Real weighted loot table** — 13 items across 5 rarity tiers, replacing the old flat 10-name uniform pick. Ships with an obfuscated companion doc and a REDACTED answer key (full reveal at release +3), a pattern reused across this whole chapter to keep spoilers out of the readable repo.
 - **Book-lore sequence** — corrected against the actual source material, not just built out: two keystone reveals were originally mis-keyed to the wrong volume, fixed after checking the real books rather than guessing. Landed as one data-driven 12-entry ordered sequence with a shared 24h cooldown, verified live against a real 8-book audiobook library. Spoiler-curtained the same way as the loot table — see the devkit doc if you're extending it.
