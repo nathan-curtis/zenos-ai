@@ -1,6 +1,6 @@
 # Release Notes — 2026.9.0 'Steel Magnolia'
 
-**Status:** Beta — ETA Saturday, 2026-09-05
+**Status:** RC1 — ETA Saturday, 2026-09-05
 **Branch:** `feat/2026.9.0`
 **Base:** 2026.8.0 'Chef'
 
