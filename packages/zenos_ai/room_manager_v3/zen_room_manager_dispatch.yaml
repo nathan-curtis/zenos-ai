@@ -233,27 +233,75 @@ script:
                               _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
                               _current_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
                               _occupied_minutes: "{{ (label_entities('occupied_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
-                          - if: "{{ _room_timer != '' and _room_timer_class_ent != '' and _current_class in ['', 'occupied'] }}"
+                              # 2026-08-23 (Nathan: "All hold signals going hi
+                              # stop the timer... it'll decay and fire and it
+                              # doesn't need to" / "You can't have a wasp
+                              # without motion" -- this IS the right place).
+                              # Mirrors room_state.yaml's own _wasp_flag_hi
+                              # spatial check (wasp_enabled + doors tagged +
+                              # none currently open) -- if THIS motion event
+                              # is about to self-latch wasp-hold, a
+                              # room_timer arming/continuing to decay
+                              # underneath is moot (hold outranks occupied
+                              # regardless) and worse, will eventually finish
+                              # and fire a timer.finished event for no
+                              # reason. Cancel instead of arm.
+                              _wasp_room_enabled: "{{ (_room in label_areas('wasp_enabled')) or ((label_entities('wasp_enabled') | intersect(_room_ents) | list | count) > 0) }}"
+                              _wasp_door_ents: "{{ label_entities('wasp_door') | intersect(_room_ents) | list }}"
+                              _wasp_any_door_open_now: "{{ (_wasp_door_ents | map('states') | select('in', ['on','open']) | list | count) > 0 }}"
+                              _wasp_would_latch: "{{ _wasp_room_enabled and (_wasp_door_ents | count > 0) and not _wasp_any_door_open_now }}"
+                              # 2026-08-23 (Nathan: "if the room is on hold for
+                              # ANY reason the mo sig should be basically info
+                              # only" -- generalizes the wasp guard above from
+                              # "about to self-latch" to "already held, by any
+                              # mechanism, right now": manual Hold override,
+                              # any of the wasp/entertaining/guest/presence
+                              # hold tiers (all resolve to the literal 'hold'
+                              # state), or cascade-held via an active child
+                              # (child_occupied true, resolves 'occupied' but
+                              # functions identically -- the LOCAL timer isn't
+                              # what's sustaining the room either way). Same
+                              # room_state.yaml sensor this file already reads
+                              # elsewhere (nightlight_motion below uses the
+                              # identical zen_room_state label-intersect
+                              # pattern).
+                              _room_state_ent: "{{ (label_entities('zen_room_state') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              _room_currently_held: >-
+                                {%- set _s = states(_room_state_ent) if _room_state_ent != '' else '' -%}
+                                {%- set _child_occ = state_attr(_room_state_ent, 'child_occupied') if _room_state_ent != '' else none -%}
+                                {{ _s == 'hold' or _child_occ == true }}
+                          - if: "{{ _wasp_would_latch or _room_currently_held }}"
                             then:
-                              - action: input_select.select_option
-                                target:
-                                  entity_id: "{{ _room_timer_class_ent }}"
-                                data:
-                                  option: occupied
-                              - action: timer.start
-                                target:
-                                  entity_id: "{{ _room_timer }}"
-                                data:
-                                  duration: >-
-                                    {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
-                          # WASP CORROBORATION CHECK — RETIRED HERE (2026-08-08
-                          # rev 2, design note: "no need for a bool - just an attr
-                          # on the sensor"). No dispatch action needed at all
-                          # for the flag itself anymore — room_state.yaml's
-                          # own trigger-based template self-latches it via
+                              - if: "{{ _room_timer != '' and states(_room_timer) in ['active', 'paused'] }}"
+                                then:
+                                  - action: timer.cancel
+                                    target:
+                                      entity_id: "{{ _room_timer }}"
+                                    continue_on_error: true
+                            else:
+                              - if: "{{ _room_timer != '' and _room_timer_class_ent != '' and _current_class in ['', 'occupied'] }}"
+                                then:
+                                  - action: input_select.select_option
+                                    target:
+                                      entity_id: "{{ _room_timer_class_ent }}"
+                                    data:
+                                      option: occupied
+                                  - action: timer.start
+                                    target:
+                                      entity_id: "{{ _room_timer }}"
+                                    data:
+                                      duration: >-
+                                        {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
+                          # WASP CORROBORATION CHECK — the flag ITSELF still
+                          # needs no dispatch action (2026-08-08 rev 2,
+                          # design note: "no need for a bool - just an attr
+                          # on the sensor") -- room_state.yaml's own
+                          # trigger-based template self-latches it via
                           # this.attributes.get(...), reacting directly to
                           # the same motion/wasp_door state changes already
-                          # in trigger_entities. Nothing to write here.
+                          # in trigger_entities. Only the room_timer
+                          # side-effect above is new -- the flag computation
+                          # itself is untouched.
                       - conditions: "{{ 'wasp_door' in _ent_labels and edge == 'start' }}"
                         sequence:
                           - variables:
@@ -274,12 +322,45 @@ script:
                               _room_timer_class_ent: "{{ (label_entities('room_timer_class') | intersect(_room_ents) | list | first) | default('', true) }}"
                               _current_class: "{{ states(_room_timer_class_ent) if _room_timer_class_ent != '' else '' }}"
                               _occupied_minutes: "{{ (label_entities('occupied_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
+                              # 2026-08-23 (Nathan live-tested: entered garage
+                              # with the door open -- motion armed the timer
+                              # normally, correctly, since wasp couldn't latch
+                              # yet -- then closed the door behind him, which
+                              # fires THIS branch, not the motion branch. Both
+                              # door.opened AND door.closed map to edge=='start'
+                              # here (see the trigger list above), so this one
+                              # branch has to handle both directions itself --
+                              # it can't assume "a door edge = presence,
+                              # always arm." Same _wasp_would_latch guard as
+                              # the motion branch: if THIS specific door event
+                              # is the one completing the wasp condition (all
+                              # doors now closed, wasp enabled), cancel instead
+                              # of arm -- the motion-branch guard only fires
+                              # AT motion time and has no way to catch a wasp
+                              # latch completing seconds later when the last
+                              # door swings shut.
+                              _wasp_room_enabled: "{{ (_room in label_areas('wasp_enabled')) or ((label_entities('wasp_enabled') | intersect(_room_ents) | list | count) > 0) }}"
+                              _wasp_door_ents: "{{ label_entities('wasp_door') | intersect(_room_ents) | list }}"
+                              _wasp_any_door_open_now: "{{ (_wasp_door_ents | map('states') | select('in', ['on','open']) | list | count) > 0 }}"
+                              _wasp_would_latch: "{{ _wasp_room_enabled and (_wasp_door_ents | count > 0) and not _wasp_any_door_open_now }}"
+                          - if: "{{ _wasp_would_latch }}"
+                            then:
+                              - if: "{{ _room_timer != '' and states(_room_timer) in ['active', 'paused'] }}"
+                                then:
+                                  - action: timer.cancel
+                                    target:
+                                      entity_id: "{{ _room_timer }}"
+                                    continue_on_error: true
                           # A door opening is itself presence-adjacent
                           # evidence (2026-08-08, design note: "boss opens garage
                           # door... room goes occupied from vacant right?")
                           # — floor to Occupied via the same room_timer
-                          # mechanism 'motion'/'occupied' use.
-                          - if: "{{ _room_timer != '' and _room_timer_class_ent != '' and _current_class in ['', 'occupied'] }}"
+                          # mechanism 'motion'/'occupied' use. Only when this
+                          # event ISN'T the one completing a wasp latch (see
+                          # guard above) -- a door closing that just self-
+                          # latched wasp-hold shouldn't ALSO re-arm Occupied
+                          # underneath it.
+                          - if: "{{ not _wasp_would_latch and _room_timer != '' and _room_timer_class_ent != '' and _current_class in ['', 'occupied'] }}"
                             then:
                               - action: input_select.select_option
                                 target:
@@ -642,6 +723,72 @@ automation:
         trigger: media_player.paused_playing
         target:
           label_id: engaged
+      # ── parent full-burnout on child release (2026-08-23, Nathan: "if a
+      # parent's hold line is hi it's clock has already vaporized. Full
+      # burnout is how legacy handles it" -- folded into THIS one
+      # automation per "we do not need a thousand automation files",
+      # not a standalone one). FIRST PASS BROKE PROD: used
+      # `trigger: state` + `target: label_id:` -- this file's OWN
+      # earlier design note (search "WTH Trigger automation by label")
+      # already documented that trigger: state does NOT support
+      # label-based targeting at all, and this fell into exactly that
+      # trap ("extra keys not allowed @ data['target']... required key
+      # not provided @ data['entity_id']" -- the whole dispatch
+      # automation failed to set up). Fixed using the SAME safe pattern
+      # already proven elsewhere in this file (autovac_resync/
+      # control_resync below): a template trigger over the label-
+      # collected list of child_occupied/child_engaged VALUES across
+      # every zen_room_state sensor -- fires on ANY change, action loops
+      # every such room and re-checks each one's own current attribute
+      # + timer state directly (no per-entity trigger.entity_id needed,
+      # matching the resync branches' own full-recompute-on-any-change
+      # shape). ──
+      # 2026-08-23 CORRECTION #1: template triggers are a rising-edge
+      # boolean latch (fires false->true only, confirmed against HA docs),
+      # NOT a generic "value changed" watcher. The original value_template
+      # rendered a raw list -- always truthy once non-empty -- so this
+      # fired exactly once at automation setup and never again.
+      #
+      # 2026-08-23 CORRECTION #2 (found live, 2-level cascade test):
+      # replaced with a single aggregate "does any room qualify" boolean --
+      # still wrong, for a subtler reason. It's a LEVEL condition across
+      # the WHOLE house: powder_room releasing made master_bathroom
+      # qualify (true), then master_bathroom releasing made master_bedroom
+      # ALSO qualify a moment later -- but the aggregate was already true
+      # from master_bathroom, so there was no false->true EDGE for
+      # master_bedroom's own transition, and its clock silently never
+      # started. Same root failure class, one level more subtle.
+      #
+      # 2026-08-23 CORRECTION #3 (found live, "pop MBath vac" retest):
+      # the state-trigger version above STILL self-re-armed -- calling
+      # room_signal_fire vacant on master_bathroom changes
+      # sensor.master_bathroom_room_state, which is itself one of the two
+      # watched entities, so the action's full re-scan immediately saw
+      # master_bathroom's own child (powder) still released + its own
+      # timer freshly idle and re-armed master_bathroom right back to
+      # occupied -- fighting its own vacant call. The action treated
+      # "child released + timer idle" as a LEVEL condition to re-check
+      # for every room on every trigger, when it needed to be an EDGE
+      # reaction scoped to the ONE parent of whichever child actually just
+      # transitioned.
+      #
+      # REAL FIX: use HA's native `to:` filter for genuine edge detection
+      # (no boolean-cast/latch involved, no full re-scan) -- child_rooms
+      # is a small, static, already-declared-per-room list (see
+      # child_rooms: in each parent room's own package file), same
+      # multi-trigger-same-id pattern this file already uses for
+      # tv_sleep_media below. Each trigger only fires when THAT specific
+      # child transitions INTO vacant/paused, and the action below only
+      # ever arms THAT child's own parent -- never the triggering entity
+      # itself -- so a parent can never re-trigger its own release.
+      - id: child_release
+        trigger: state
+        entity_id: sensor.powder_room_state
+        to: ["vacant", "paused"]
+      - id: child_release
+        trigger: state
+        entity_id: sensor.master_bathroom_room_state
+        to: ["vacant", "paused"]
       # ── REFLEX nightlight (same motion event as sig_start, own id) ────
       - id: nightlight_motion
         trigger: motion.detected
@@ -664,14 +811,50 @@ automation:
         trigger: event
         event_type: zen_resolver_refresh
       # ── dedicated resync-pass triggers ─────────────────────────────────
+      # 2026-08-23: same rising-edge fix as child_release, same way, no
+      # new entities/automations/scripts -- render the real boolean each
+      # pass's own action already checks (does a mismatch currently
+      # exist), mirrored exactly from the CLEANING CONTROL RESYNC / CONTROL
+      # BURNOUT RESYNC branches below. Both passes are idempotent
+      # correct-if-wrong sweeps, so this boolean genuinely toggles
+      # false<->true on real edges (mismatch appears -> fires -> pass
+      # fixes it -> mismatch gone -> false again), same shape as
+      # child_release's eligibility boolean.
       - id: autovac_resync
         trigger: template
         value_template: >-
-          {{ label_entities('autovac_current_room') | sort | map('states') | list }}
+          {%- set ns = namespace(found=false) -%}
+          {%- set _active_rooms = label_entities('autovac_current_room') | map('states') | map('area_id') | reject('eq', none) | unique | list -%}
+          {%- for e in label_entities('room_control_manager') -%}
+            {%- set _should = (labels(e) | intersect(_active_rooms) | list | count) > 0 -%}
+            {%- set _cur = states(e) -%}
+            {%- if (_cur == 'Auto' and _should) or (_cur == 'Cleaning' and not _should) -%}
+              {%- set ns.found = true -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.found }}
       - id: control_resync
         trigger: template
         value_template: >-
-          {{ label_entities('room_control_manager') | sort | map('states') | list }}
+          {%- set ns = namespace(found=false) -%}
+          {%- for e in label_entities('room_control_manager') -%}
+            {%- set _rm = namespace(v='') -%}
+            {%- for l in labels(e) -%}
+              {%- if _rm.v == '' and area_name(l) is not none -%}
+                {%- set _rm.v = l -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if _rm.v != '' -%}
+              {%- set _bt = (label_entities('control_burnout') | intersect(label_entities(_rm.v)) | list | first) | default('', true) -%}
+              {%- if _bt != '' -%}
+                {%- set _cur = states(e) -%}
+                {%- if (_cur == 'Automation' and states(_bt) not in ['active', 'paused']) or (_cur != 'Automation' and states(_bt) in ['active', 'paused']) -%}
+                  {%- set ns.found = true -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.found }}
       # ── timer expiry (routes internally by which label/pattern owns it) ─
       - id: timer_finished
         trigger: event
@@ -747,6 +930,104 @@ automation:
                       mode: signal_dispatch
                       entity_id: "{{ trigger.entity_id }}"
                       edge: end
+
+          # ── PARENT FULL BURNOUT ON CHILD RELEASE — see trigger comment
+          # above for the design rationale. Reuses room_signal_fire
+          # (mode=room_signal_fire, signal_class=occupied) rather than
+          # re-deriving the arm-a-timer logic a third time -- single
+          # source of truth, already built, already tested. Guarded so
+          # it only fires when the parent's own room_timer is genuinely
+          # idle right now (real independent evidence, if any, is never
+          # stomped). ──
+          - conditions: "{{ trigger.id == 'child_release' }}"
+            sequence:
+              - if: "{{ _roomstate_enabled }}"
+                then:
+                  # 2026-08-23 rewrite: no more loop over every
+                  # zen_room_state sensor. trigger.entity_id is exactly
+                  # the ONE child that just transitioned into
+                  # vacant/paused (the `to:` filter on the trigger above
+                  # guarantees this is a real edge, not a level recheck).
+                  # Find THAT child's own parent (reverse-scan for whose
+                  # child_rooms list contains it) and act on the PARENT
+                  # only -- never on the triggering entity itself. This is
+                  # what actually fixes the self-re-arm bug: previously
+                  # the action re-scanned ALL rooms including the one that
+                  # just fired, so calling room_signal_fire vacant on
+                  # master_bathroom (which changes sensor.master_bathroom_
+                  # room_state, one of the two watched entities) caused
+                  # the SAME run to see master_bathroom's own child still
+                  # released + its own timer freshly idle and immediately
+                  # re-arm master_bathroom right back to occupied. Acting
+                  # only on the PARENT structurally prevents that -- a
+                  # room can never be the target of its own release check.
+                  - variables:
+                      _cr_child_ent: "{{ trigger.entity_id }}"
+                      _cr_parent_state_ent: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for e in label_entities('zen_room_state') -%}
+                          {%- set _crs = state_attr(e, 'child_rooms') -%}
+                          {%- if ns.found == '' and _crs is not none and _cr_child_ent in _crs -%}
+                            {%- set ns.found = e -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                  - if: "{{ _cr_parent_state_ent != '' }}"
+                    then:
+                      # 2026-08-23 CORRECTION #4 (found live, "insta-vacant,
+                      # not dropping hold->occ"): reading the parent's own
+                      # cached child_occupied ATTRIBUTE is a race -- that
+                      # attribute depends on the parent's OWN separate
+                      # trigger-based recompute (fired by the same
+                      # underlying event), which isn't guaranteed to land
+                      # before this automation's action runs. Lost that
+                      # race here: read a stale child_occupied=true right
+                      # after a real release, so the arm never fired and
+                      # the room fell straight through to vacant instead
+                      # of getting its burnout. Fixed by computing
+                      # child-occupied directly from the children's live
+                      # states (same logic _child_occ_hi itself uses) --
+                      # no dependency on the parent's own async recompute
+                      # at all, so no race window exists.
+                      - variables:
+                          _cr_child_occupied: >-
+                            {%- set ns = namespace(found=false) -%}
+                            {%- for c in state_attr(_cr_parent_state_ent, 'child_rooms') | default([], true) -%}
+                              {%- if states(c) not in ['vacant', 'paused'] -%}{%- set ns.found = true -%}{%- endif -%}
+                            {%- endfor -%}
+                            {{ ns.found }}
+                      - if: "{{ _cr_child_occupied == false }}"
+                        then:
+                          # area_id(_cr_parent_state_ent) is wrong here --
+                          # these v3 room-state template sensors carry the
+                          # room slug as a LABEL, not an actual area
+                          # registry assignment (confirmed live:
+                          # sensor.master_bathroom_room_state is absent
+                          # from area_info's entity_ids for
+                          # master_bathroom). Same label-scan pattern the
+                          # nightlight_motion branch already uses below.
+                          - variables:
+                              _cr_parent_area: >-
+                                {%- set ns = namespace(found=none) -%}
+                                {%- for l in labels(_cr_parent_state_ent) -%}
+                                  {%- if ns.found is none and area_name(l) is not none -%}
+                                    {%- set ns.found = l -%}
+                                  {%- endif -%}
+                                {%- endfor -%}
+                                {{ ns.found }}
+                          - if: "{{ _cr_parent_area is not none }}"
+                            then:
+                              - variables:
+                                  _cr_parent_ents: "{{ label_entities(_cr_parent_area) }}"
+                                  _cr_room_timer: "{{ (label_entities('room_timer') | intersect(_cr_parent_ents) | list | first) | default('', true) }}"
+                              - if: "{{ _cr_room_timer != '' and states(_cr_room_timer) == 'idle' }}"
+                                then:
+                                  - action: script.zen_dojotools_room_manager
+                                    data:
+                                      mode: room_signal_fire
+                                      area: "{{ _cr_parent_area }}"
+                                      signal_class: occupied
+                                    continue_on_error: true
 
           # ── REFLEX NIGHTLIGHT TRIGGER (motion, while asleep) ─────────
           - conditions: "{{ trigger.id == 'nightlight_motion' }}"

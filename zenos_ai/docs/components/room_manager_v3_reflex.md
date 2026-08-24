@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager v3 & REFLEX
 
-**Version:** rev 5 (2026-08-08) — `room_control_manager` isolation, wasp-hold rewrite, entertaining/guest hold, asleep window
+**Version:** rev 6 (2026-08-24) — `room_signal_fire` (evidence-simulating manual mode), `presence_hold` tier, `entertaining_cascade_enable`/`_check`, cascade redesign (child-engaged retired, child_emergency/child_paused cascade unconditionally), `room_control_override` restored as its own distinct unpause cert, per-state sensor icons, real fixes to the wasp self-latch/`asleep_hold`/`child_release` and several `room_control_set` race conditions. Previous: rev 5 (2026-08-08) — `room_control_manager` isolation, wasp-hold rewrite, entertaining/guest hold, asleep window
 **Files:** `blueprints/template/zenos/room_state.yaml`, `packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml`
 **Codename:** REFLEX
 
@@ -22,7 +22,8 @@ time; there's no MCP call that computes a room's state, only ones that
 read or configure it. Setup, diagnostics, and REFLEX scene-wiring ARE
 chat-callable, through `zen_dojotools_room_manager`'s v3-adjacent modes
 (`label_discover`, `trigger_audit`, `coverage_map`, `wasp_enable`,
-`roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `reflex_wire`) —
+`roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `reflex_wire`,
+`room_signal_fire`, `entertaining_cascade_enable`, `entertaining_cascade_check`) —
 see [Coverage &amp; Diagnostics](#coverage--diagnostics) and
 [Wiring REFLEX Scenes](#wiring-reflex-scenes) below. Operators interact
 with the live engine through:
@@ -206,6 +207,7 @@ never requires touching either file.
 | `room_timer` + `room_timer_class` | Timer + paired select | Enables decay-backed occupied/engaged/asleep — one shared clock for all three. `asleep` class default is 8h (was 30m). |
 | `entertaining_hold` | `input_boolean.zen_entertaining` + the room's own label | Opt-in per room. Outranks `occupied`/`vacant`, outranked by `engaged`/`asleep`/manual override/emergency. |
 | `guest_hold` | `input_boolean.zen_guest_mode` + the room's own label | Same tier/ranking as `entertaining_hold`, independent source. |
+| `presence_hold` | A continuous-presence (mmWave, not PIR motion) sensor + the room's own label | Same tier/ranking as `entertaining_hold`/`guest_hold`, independent source. Distinct from the generic `hold` label above — `hold` only floors at `occupied` ("fridge door mode"), `presence_hold` resolves to the literal `hold` state. Traces back to legacy Node-RED's deliberate Hold-class wiring for continuous-presence sensors, which v3 had no equivalent for until 2026-08-22. |
 | `autosleep_disable` | Any entity carrying the room's label | Kills automatic asleep-firing for this room entirely. Manual `room_control_manager` "Asleep" pick is unaffected. |
 | `asleep_window_disable` | Any entity carrying the room's label | Keeps autosleep active but removes the night→wake window gate. |
 | `autosleep_schedule` | A truthy-resolving entity (`input_boolean`/`switch`/`binary_sensor`, or `calendar`/`schedule.*`) + the room's own label | Authoritative override of the night→wake window — **replaces** the clock check entirely for that room rather than OR'ing with it. `asleep_window_disable` still outranks it if a room somehow carries both. For non-standard schedules (shift work, etc.) — see the operator's manual §6. |
@@ -261,17 +263,78 @@ states.sensor.<room>_state
 | `room_control_entity` / `room_control_state` | The override select and its current value |
 | `room_timer_entity` / `room_timer_state` / `room_timer_class` | The shared clock's current status |
 | `zone_presence` | Sub-zone dict (e.g. Aqara FP2 desk/bench zones), `null` if unused |
-| `child_rooms` / `child_engaged` / `child_occupied` | Present only when this room has children configured |
+| `child_rooms` / `child_occupied` / `child_emergency` / `child_paused` | Present only when this room has children configured. `child_engaged` was retired 2026-08-23 — the child-Engaged→parent-Engaged cascade tier was collapsed into `child_occupied` (see cascade order below); `child_emergency`/`child_paused` are new, cascade all the way up regardless of the ensuite-cascade toggle. |
 | `last_trigger` | Top-level "why is `state` what it is right now" |
 
 ### Cascade order (highest wins)
 
 ```
-emergency > manual override (room_control_manager) > asleep > engaged >
-child-engaged > hold (wasp / entertaining / guest) > occupied (or fridge-door hold) > vacant
+emergency (or child-emergency) > paused (manual, or child-paused) > asleep >
+manual override (any other room_control_manager value) > engaged >
+hold (wasp / entertaining / guest / presence) > occupied (or child-occupied, or fridge-door hold) > vacant
 ```
 
+**Updated 2026-08-23.** Two real changes from the previous ladder:
+- **`emergency`/`paused` now cascade from a child room regardless of the
+  ensuite-cascade toggle** — `child_emergency`/`child_paused` are checked
+  ahead of everything below them, including a sleeping parent, and are
+  never gated by `_child_link_disabled`. A smoke alarm or a Paused child
+  is visible at every parent/grandparent automatically.
+- **`child-engaged` no longer exists as its own cascade tier.** A child
+  room being non-vacant/non-paused (occupied, engaged, asleep, held,
+  whatever) now only ever holds the parent at `occupied`, via
+  `child_occupied` — a subroom in active use implies the parent space is
+  occupied, not that the parent itself is Engaged. De-escalation is now
+  always a single step (occupied → vacant), never two.
+
 `checking` no longer exists as a producible state anywhere in the system.
+
+---
+
+## Setting State Manually — `room_control_set` vs `room_signal_fire`
+
+Two different `zen_dojotools_room_manager` modes write to a room, and
+they're not interchangeable:
+
+- **`room_control_set`** writes a **persistent override** to
+  `room_topology[area].room_control` — right for `Hold`/`Paused`/etc,
+  genuinely indefinite states that shouldn't decay. `Auto` clears it back
+  to live cascade.
+- **`room_signal_fire`** (new 2026-08-22/23) **simulates real evidence**
+  instead — `signal_class=vacant|occupied|engaged|asleep` arms (or, for
+  `vacant`, cancels) the room's own `room_timer`/`room_timer_class`
+  exactly the way a real motion/media event would, and decays normally
+  per that room's `occupied_minutes`/`engaged_minutes`/`asleep_minutes`
+  labels. No persistent pin. This is what the dashboard's per-state
+  buttons use — a casual "yes I'm here right now" tap should behave like
+  real evidence, not an indefinite override.
+- A `signal_class=vacant` fire against a room currently in `Hold` clears
+  the Hold first (Hold is casual, yields to any evidence tap, no ack).
+  Against a room in `Paused`, the same call requires the same
+  mandatory live ack described below — Paused is never casually
+  breakable, regardless of which mode is used to try.
+
+**Clearing `Paused` — the unpause gate.** Setting `Paused` is open to any
+agent, no friction (raising a safety flag never needs permission).
+Clearing a room OUT of Paused (via either mode above) always requires a
+fresh live household-admin ack, every single call, UNLESS the caller
+holds a scoped `room_control_override` cert naming that exact
+`area_id`. This is a real, code-enforced gate — see
+`components/room_manager.md`'s certs section — not merely a documented
+convention. `room_control_override` is deliberately its own distinct
+cert, separate from the broader `room_behavior_control` cert that gates
+every other non-Paused write; holding `room_behavior_control` alone does
+not grant the unpause exemption.
+
+## Entertaining Cascade (opt-in, default off)
+
+`entertaining_cascade_enable` (read/write, cert-gated) and
+`entertaining_cascade_check` (system-invoked, ungated) — when enabled,
+`input_boolean.zen_entertaining` turning on also turns on
+`input_boolean.zen_guest_mode` automatically, via a companion automation
+watching that toggle. Off by default; nothing changes for anyone until
+explicitly enabled per-household via `mode=entertaining_cascade_enable
+entertaining_cascade_enabled=true`.
 
 ---
 

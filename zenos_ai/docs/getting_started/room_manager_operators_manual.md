@@ -116,7 +116,7 @@ more important one.
 | 🧹 **Cleaning** | The robot vacuum is in here right now. |
 | 😴 **Asleep** | Someone's asleep in here. Beats Engaged: a device staying active nearby never overrides a real Asleep signal in the same room. |
 | ⚡ **Engaged** | Someone is ACTIVELY using this room. Media is playing, a desk is in active use. Stronger than just "someone's here," but not stronger than the room's own Asleep. |
-| ⏳ **Hold** | One of exactly three lines is currently high: the wasp flag (motion with no door-open to confirm entry, only for rooms opted in — see Section 6), Entertaining mode (room opted in), or Guest mode (room opted in). Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
+| ⏳ **Hold** | One of exactly four lines is currently high: the wasp flag (motion with no door-open to confirm entry, only for rooms opted in — see Section 6), Entertaining mode (room opted in), Guest mode (room opted in), or a continuous-presence (mmWave) sensor tagged for Presence Hold (room opted in). Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
 | 🟢 **Occupied** | Somebody's in here. Presence detected, no specific activity known. |
 | ⚪ **Vacant** | Nobody's in here. The default. Nothing wrong with it. Most rooms are Vacant most of the day. |
 
@@ -241,6 +241,8 @@ closet doesn't need a vent fan.
 **😴 Asleep Hold** † — "Sleep now — no bed sensor required." Tag a toggle, calendar, or schedule, and while it reads on, the room simply IS Asleep, full stop — no clock, no waiting on a sensor to catch up, no window check. Flip it back off (or let the calendar event end) and the room lets go instantly, no lingering.
 
 **🍸 Entertaining Hold / Guest Hold** † — "While entertaining mode or guest mode is on, opted-in rooms stay conservative instead of guessing." Prevents a busy house from flickering a room between Occupied and Vacant. Opt in per room; a room not opted in is unaffected.
+
+**📡 Presence Hold** † — "A continuous-presence sensor is trusted enough to hold the room outright, no guessing." Tag a continuous-presence (mmWave) sensor — not a PIR motion sensor — `presence` plus the room's own label, and while it reads on, the room reports Hold, no clock, no decay. Clears the instant the sensor goes false. Different from the generic `hold` label (Section 8), which only floors a room at Occupied — this one resolves to the actual Hold state, same as the wasp flag or Entertaining/Guest Hold.
 
 **🐝 Wasp (Hold from an unconfirmed entry)** † — "Motion with no door-open to explain it holds the room, instead of guessing." Requires TWO things before it does anything: at least one door tagged `wasp_door` for that room (Section 8's "the door, not the lock" tip), AND the room itself opted in with the `wasp_enabled` label — either on the room's Area directly, or on any entity in that room. Both, not just one. This is opt-in on purpose: a room with an always-open archway instead of a real door (a connected front hall, say) can't safely tell "someone's inside with the door shut" from "there is no door" — tagging `wasp_door` there without also enabling the room would just misfire. If a room's Hold never seems to trigger from motion alone, check both halves are actually set before assuming something's broken. (See Section 9's "the door, not the lock" tip for the other common wasp_door setup mistake.)
 
@@ -457,6 +459,13 @@ your partner can stay asleep in their favorite sleep scene, because
 Asleep sits higher on the ladder than Occupied — the bedroom's own
 direct Asleep state always wins regardless of what the child room is
 reporting.
+
+**Paused and Emergency are the exception — those cascade all the way up,
+always.** Unlike the Occupied-only cascade above, a Paused or Emergency
+child room is never optional and is never blocked by the ensuite-cascade
+toggle: it shows up at every parent and grandparent above it, and it can
+wake a sleeping parent room. A smoke alarm in the ensuite means the
+bedroom sees Emergency too, full stop.
 
 ### Worked examples: setting up common room types
 
