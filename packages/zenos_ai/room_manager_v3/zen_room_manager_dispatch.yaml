@@ -808,6 +808,33 @@ automation:
         trigger: state
         entity_id: sensor.master_bathroom_room_state
         to: ["vacant", "paused"]
+      # ── CHILD CASCADE ARM — mirror image of child_release above (2026-08-24,
+      # Nathan, live: "grandparent burning down occupied [while] the gchild
+      # [is occupied]. Parent goes hold gparent keeps ticking. And does not
+      # hold. (missed trigger up)"). Root cause traced live: this ISN'T a
+      # missed trigger -- cascade correctly resolves the SAME 'occupied'
+      # value whether the child is occupied/engaged/hold/etc (by design, one
+      # tier only, see _child_occ_hi), so there's genuinely nothing for the
+      # grandparent's OWN resolved STATE to visibly transition to. The real
+      # bug: the grandparent's own local room_timer (armed earlier from its
+      # OWN direct evidence, unrelated to the child) keeps ticking down even
+      # though it's now ALSO being indefinitely cascade-sustained by the
+      # child -- exact same "redundant timer left running under a sustain
+      # that outranks it" bug class already fixed tonight for wasp and
+      # asleep_hold, just never extended to cover child-cascade. Same
+      # single-hop, portable-by-construction pattern as child_release: each
+      # level only ever watches its OWN immediate child transitioning, never
+      # reaches down to the grandchild directly -- "the grandparent should
+      # not rely on direct signal from gchild, it should completely derive
+      # from its child, that's what makes this portable" (Nathan). ──
+      - id: child_cascade_arm
+        trigger: state
+        entity_id: sensor.powder_room_state
+        to: ["occupied", "engaged", "asleep", "hold", "automation", "cleaning", "emergency"]
+      - id: child_cascade_arm
+        trigger: state
+        entity_id: sensor.master_bathroom_room_state
+        to: ["occupied", "engaged", "asleep", "hold", "automation", "cleaning", "emergency"]
       # ── REFLEX nightlight (same motion event as sig_start, own id) ────
       - id: nightlight_motion
         trigger: motion.detected
@@ -882,6 +909,18 @@ automation:
       - id: reflex_event
         trigger: event
         event_type: zen_event
+      # ── DEBUG: chronological state-change log (2026-08-24, temporary --
+      # Nathan: "make it report every change, read back the log" -- settle
+      # the double-pop question with real recorded timestamps instead of
+      # polling that might miss a sub-second flip. Every zen_room_state
+      # sensor's every transition, logged with real precision. Remove once
+      # the flash question is settled either way. ──
+      - id: debug_state_log
+        trigger: state
+        entity_id:
+          - sensor.powder_room_state
+          - sensor.master_bathroom_room_state
+          - sensor.master_bedroom_room_state
     action:
       - variables:
           _roomstate_enabled: >-
@@ -1047,6 +1086,73 @@ automation:
                                       area: "{{ _cr_parent_area }}"
                                       signal_class: occupied
                                     continue_on_error: true
+
+          # ── CHILD CASCADE ARM — see trigger comment above. Same
+          # reverse-scan-for-parent shape as child_release (never acts on
+          # the triggering entity itself, only its immediate parent -- a
+          # room can never target its own cascade check). Cancels the
+          # parent's own local room_timer the moment a child starts
+          # cascade-sustaining it, since that timer is now redundant --
+          # cascade keeps the parent Occupied regardless of whether its own
+          # timer is running or not. Mirrors the wasp/asleep_hold
+          # "don't leave a stray clock ticking under a sustain that
+          # outranks it" fix from earlier tonight, extended to cover
+          # child-cascade specifically. ──
+          - conditions: "{{ trigger.id == 'child_cascade_arm' }}"
+            sequence:
+              - if: "{{ _roomstate_enabled }}"
+                then:
+                  - variables:
+                      _cca_child_ent: "{{ trigger.entity_id }}"
+                      _cca_parent_state_ent: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for e in label_entities('zen_room_state') -%}
+                          {%- set _crs = state_attr(e, 'child_rooms') -%}
+                          {%- if ns.found == '' and _crs is not none and _cca_child_ent in _crs -%}
+                            {%- set ns.found = e -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                  - if: "{{ _cca_parent_state_ent != '' }}"
+                    then:
+                      - variables:
+                          _cca_parent_area: >-
+                            {%- set ns = namespace(found=none) -%}
+                            {%- for l in labels(_cca_parent_state_ent) -%}
+                              {%- if ns.found is none and area_name(l) is not none -%}
+                                {%- set ns.found = l -%}
+                              {%- endif -%}
+                            {%- endfor -%}
+                            {{ ns.found }}
+                      - if: "{{ _cca_parent_area is not none }}"
+                        then:
+                          - variables:
+                              _cca_parent_ents: "{{ label_entities(_cca_parent_area) }}"
+                              _cca_parent_timer: "{{ (label_entities('room_timer') | intersect(_cca_parent_ents) | list | first) | default('', true) }}"
+                          - if: "{{ _cca_parent_timer != '' and states(_cca_parent_timer) in ['active', 'paused'] }}"
+                            then:
+                              - action: timer.cancel
+                                target:
+                                  entity_id: "{{ _cca_parent_timer }}"
+                                continue_on_error: true
+
+          # ── DEBUG STATE LOG — see trigger comment above. Logs every real
+          # transition of every zen_room_state sensor with full-precision
+          # timestamps + old/new state + which entity, so the flash
+          # question can be settled by reading back home-assistant.log
+          # instead of polling. ──
+          # Flip to true to re-enable -- left wired in place (2026-08-24,
+          # Nathan: "leave it in, but disable it") rather than torn out,
+          # so it's a one-line flip next time this needs re-checking
+          # instead of re-wiring the trigger/action from scratch.
+          - conditions: "{{ trigger.id == 'debug_state_log' and false }}"
+            sequence:
+              - action: system_log.write
+                data:
+                  level: warning
+                  logger: zenos_room_state_debug
+                  message: >-
+                    {{ trigger.entity_id }}: {{ trigger.from_state.state if trigger.from_state else 'none' }} -> {{ trigger.to_state.state if trigger.to_state else 'none' }} @ {{ now().isoformat() }}
 
           # ── REFLEX NIGHTLIGHT TRIGGER (motion, while asleep) ─────────
           - conditions: "{{ trigger.id == 'nightlight_motion' }}"
