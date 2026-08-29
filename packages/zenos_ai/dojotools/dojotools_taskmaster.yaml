@@ -7,7 +7,7 @@
 # delay_seconds bumped 30->180 so briefing doesn't crowd the raw quarter-hour
 # tick alongside every other component's firing.
 #
-# v0.2.0 — added mode=almanac: weather + meal plan +
+# v0.2.0 — added mode=almanac (Radar #10270): weather + meal plan +
 # appointments in one daily context surface.
 #
 # MCP-facing:
@@ -45,7 +45,7 @@ script:
                 tool='zen_dojotools_taskmaster',
                 display_name='Taskmaster',
                 tier='dojotools',
-                version='0.2.0',
+                version='0.3.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
@@ -265,8 +265,14 @@ script:
           kfc_manifest:
             intent: KF5 self-registration — Dojo KFC component definition(s), consumed by zen_dojotools_manifest mode=bootstrap_kfc.
             optional: [component (kata_key to fetch a single component; omit for all)]
+          register:
+            intent: Lens Bus self-registration — writes this tool's provider entry (consumes/returns/anchor_mode/department) into the household cabinet's lens_registry, merging with whatever's already registered there.
+            needs: []
+          unregister:
+            intent: Lens Bus self-removal — removes this tool's own entry from the household cabinet's lens_registry.
+            needs: []
           briefing:
-            intent: Urgency-scored household briefing — conductor items (Friday's schedule-driven list) surfaced first, then everything else from task_list scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Deterministic scoring can be disabled via household cabinet key taskmaster_scoring_enabled (default true) — when off, items are returned unscored. Medication-classification overrides read from household cabinet key medication_classifications (title -> SUPPLEMENT/STANDARD/CLINICAL/BIOLOGIC). Also returns a context block — real (not LLM-guessed) situational signals, namely home_mode/is_away (input_select.zen_home_mode), is_weekday, quiet_hours_active/work_hours_active (binary_sensor.zen_quiet_hours/zen_work_hours), guest_present/guest_note (manual flags + Rolodex stays_list for today), upcoming_appointments (Rolodex appointments_list), prep_schedule (zen_dojotools_kitchen prep_brief for today — scheduled [PREP:N]-tagged dishes sorted by start_by, plus unscheduled_count), and weather.outdoor_ok (label zen_weather -> weather.* entity, false when condition is rain/snow/storm). This is the seed called live by the self-registered taskmaster KFC on every trigger firing.
+            intent: Urgency-scored household briefing — conductor items (Friday's schedule-driven list) surfaced first, then everything else from task_list scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Deterministic scoring can be disabled via household cabinet key taskmaster_scoring_enabled (default true) — when off, items are returned unscored. Medication-classification overrides read from household cabinet key medication_classifications (title -> SUPPLEMENT/STANDARD/CLINICAL/BIOLOGIC). Also returns a context block — real (not LLM-guessed) situational signals, namely home_mode/is_away (input_select.zen_home_mode), is_weekday, quiet_hours_active/work_hours_active (binary_sensor.zen_quiet_hours/zen_work_hours), guest_present/guest_note (manual flags + Rolodex stays_active_list — Twenty CRM's structured stays, correctly date-scoped), upcoming_appointments (Rolodex appointments_list), prep_schedule (zen_dojotools_kitchen prep_brief for today — scheduled [PREP:N]-tagged dishes sorted by start_by, plus unscheduled_count), and weather.outdoor_ok (label zen_weather -> weather.* entity, false when condition is rain/snow/storm). This is the seed called live by the self-registered taskmaster KFC on every trigger firing.
             needs: []
           tier_status:
             intent: Report which upgrade tiers are currently active (crm, radar, inventory) by checking each subsystem's tool_manifest health.configured flag.
@@ -293,6 +299,9 @@ script:
           facilities_brief:
             intent: "Building-super / housekeeping-lead view — the report they'd hand the GM. Reads live kata entries directly for physical-plant components (energy_manager, water_manager, hot_tub_manager, garage_freezer_thermal_model, dishwasher_manager, laundry_manager), surfacing only urgency>=2 (a clean building produces an empty mechanical list). Plus open Radar ticket count and the house-wide housekeeping chore backlog (chores_due). overall_status is red/yellow/green; gm_summary is one deterministic sentence, not LLM-generated."
             needs: []
+          catch_up:
+            intent: "Bulk 'skip to today' for stale recurring To Do items (dailies — meds, chores, Friday's own schedule) — the app has no server-side skip-occurrence action (confirmed: todoTask.recurrence exists on the Graph object but is read-only metadata, no endpoint acts on it, and the ms365_todo HA integration doesn't even surface it), so this rolls due_date forward to today via the same ms365_todo.update_todo path zen_dojotools_todo already uses for a normal edit. Scans every todo list tagged 'taskmaster' or 'schedule', finds items with status=needs_action and due < today. Pass items to restrict to specific titles (substring match, case-insensitive); omit for a full stale sweep. Nothing is marked complete and no recurrence pattern is touched — only due_date moves."
+            optional: [items (list of title substrings to restrict the sweep — omit to catch up everything stale), dry_run (report matches only, no writes, default false)]
 
     - choose:
 
@@ -320,7 +329,7 @@ script:
             final_response:
               status: info
               tool: Zen DojoTools Taskmaster
-              version: "0.2.0"
+              version: "0.3.0"
               setup_status: "{{ 'complete' if _hl_setup_done else 'incomplete — run mode=setup' }}"
               notice: >-
                 {{
@@ -789,7 +798,23 @@ script:
               {%- set ns = namespace(items=[]) -%}
               {%- set tk = _tm_radar_tickets.get('tickets', []) if _tm_radar_tickets is defined and _tm_radar_tickets is mapping else [] -%}
               {%- for t in (tk if tk is iterable and tk is not string else []) -%}
-                {%- set ns.items = ns.items + [{'source': 'radar', 'id': t.get('number', t.get('id', '')), 'title': t.get('title', ''), 'status': _tm_radar_state_map.get(t.get('state_id', 0), 'unknown'), 'priority_id': t.get('priority_id', none), 'area': _area if _area != '' else none}] -%}
+                {# 2026-08-28 REAL BUG (household, live: Trapper Keeper and Taskmaster
+                   stuck in a self-sustaining alert loop since 2026-08-22, 130+
+                   recurrences, zero real fix each time). Alert Manager auto-files
+                   Radar tickets titled 'Action required — <component>' about the
+                   summarizer pipeline's OWN health (trapper_keeper, taskmaster,
+                   autovac, battery_health, etc) -- these were getting scored and
+                   surfaced here as regular household tasks, which put them in
+                   Taskmaster's own ambient kata, which Trapper Keeper then reads
+                   as ambient input -- seeing a ticket literally titled 'Action
+                   required — trapper_keeper' reflected back at it, it re-alarms
+                   about itself, re-opening the loop every recheck. These are ops
+                   noise about the AI's own machinery, not something a household
+                   briefing should ever surface as a task -- excluded by the exact
+                   title stamp Alert Manager uses for pipeline self-tickets. #}
+                {%- if not (t.get('title', '') | trim).startswith('Action required — ') -%}
+                  {%- set ns.items = ns.items + [{'source': 'radar', 'id': t.get('number', t.get('id', '')), 'title': t.get('title', ''), 'status': _tm_radar_state_map.get(t.get('state_id', 0), 'unknown'), 'priority_id': t.get('priority_id', none), 'area': _area if _area != '' else none}] -%}
+                {%- endif -%}
               {%- endfor -%}
               {{ ns.items }}
             _tm_inv_evidence: >-
@@ -815,7 +840,11 @@ script:
               {%- set ns = namespace(items=[]) -%}
               {%- for it in (_tm_todo_accum if _tm_todo_accum is iterable and _tm_todo_accum is not string else []) -%}
                 {%- if it.get('uid', '') not in _tm_crm_ids -%}
-                  {%- set ns.items = ns.items + [{'source': 'todo', 'id': it.get('uid', ''), 'title': it.get('summary', ''), 'status': it.get('status', ''), 'due': it.get('due', none), 'area': none}] -%}
+                  {%- set _entry = {'source': 'todo', 'id': it.get('uid', ''), 'title': it.get('summary', ''), 'status': it.get('status', ''), 'due': it.get('due', none), 'area': none} -%}
+                  {%- if it.get('checklist_count', 0) > 0 -%}
+                    {%- set _entry = _entry | combine({'checklist_count': it.get('checklist_count', 0), 'checklist_open': it.get('checklist_open', 0)}) -%}
+                  {%- endif -%}
+                  {%- set ns.items = ns.items + [_entry] -%}
                 {%- endif -%}
               {%- endfor -%}
               {{ ns.items }}
@@ -969,6 +998,32 @@ script:
                 {%- set ns.items = ns.items + [{'title': it.get('summary', ''), 'status': it.get('status', ''), 'due': it.get('due', none)}] -%}
               {%- endfor -%}
               {{ ns.items }}
+        # 2026-08-27 (trapper_keeper flagged, household: "the conductor
+        # should not KEEP a separate list" -- the separate surfacing is
+        # deliberate (Friday's own schedule, unscored, always first),
+        # but conductor items were entirely invisible to top_line's
+        # overdue/due_today/stale counts, since those only ever summed
+        # the SCORED items list conductor items are explicitly excluded
+        # from. A conductor item could sit overdue for weeks (confirmed
+        # live: real items dated 2026-08-02) and never register as
+        # overdue anywhere. Same day-bucket thresholds as the generic
+        # 'task' category below (stale >30d, overdue 1-30d, due_today
+        # ==0d) -- conductor items stay unscored (no urgency/category
+        # fabricated), this only feeds the counts.
+        - variables:
+            _br_conductor_counts: >-
+              {%- set ns = namespace(overdue=0, due_today=0, stale=0) -%}
+              {%- set _today = now().date() -%}
+              {%- for it in conductor_items -%}
+                {%- set _due_dt = ((it.get('due') | as_datetime).date()) if it.get('due') else none -%}
+                {%- set _days_over = ((_today - _due_dt).days) if _due_dt is not none else none -%}
+                {%- if _days_over is not none -%}
+                  {%- if _days_over > 30 -%}{%- set ns.stale = ns.stale + 1 -%}
+                  {%- elif _days_over >= 1 -%}{%- set ns.overdue = ns.overdue + 1 -%}
+                  {%- elif _days_over == 0 -%}{%- set ns.due_today = ns.due_today + 1 -%}{%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ {'overdue': ns.overdue, 'due_today': ns.due_today, 'stale': ns.stale} }}
         # ── merged cross-tier view (reuse task_list rather than duplicate it)
         - action: script.zen_dojotools_taskmaster
           response_variable: _br_raw
@@ -1053,13 +1108,25 @@ script:
               {{ is_state('input_boolean.zen_guest_mode', 'on') or is_state('input_boolean.zen_entertaining', 'on') }}
             _br_today: "{{ now().strftime('%Y-%m-%d') }}"
             _br_tomorrow: "{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}"
+        # 2026-08-26 (Vee, cohesion review: "Rolodex is fixed; Taskmaster's
+        # guest context is still stale/incorrect... the ghost has moved
+        # one layer up the stack"). Root cause: this called mode=stays_list
+        # (reads from whatever calendar carries the 'crm_stays' label) --
+        # confirmed live that label is mistakenly also on
+        # calendar.ai_assistant_calendar, a generic catch-all (hot tub
+        # logs, appointments, scratchpad), which is why an unrelated
+        # "Check Spa Chemicals Manually" reminder was making Taskmaster
+        # report guest_present:true. Twenty CRM's structured `stays`
+        # object is the real source of truth (stay_create/stay_release/
+        # stays_active_list) -- switched to mode=stays_active_list, the
+        # same case just fixed to correctly exclude expired-but-
+        # unreleased records. Response shape is the same (result.stays),
+        # so the parsing below needed no change.
         - action: script.zen_dojotools_rolodex
           response_variable: _br_stays_raw
           continue_on_error: true
           data:
-            mode: stays_list
-            start_date: "{{ _br_today }}"
-            end_date: "{{ _br_tomorrow }}"
+            mode: stays_active_list
         - action: script.zen_dojotools_rolodex
           response_variable: _br_appts_raw
           continue_on_error: true
@@ -1136,17 +1203,103 @@ script:
               conductor_items: "{{ conductor_items }}"
               items: "{{ _br_scored['items'] }}"
               top_line:
-                overdue_count: "{{ _br_scored['overdue_count'] }}"
-                due_today_count: "{{ _br_scored['due_today_count'] }}"
-                stale_count: "{{ _br_scored['stale_count'] }}"
+                overdue_count: "{{ _br_scored['overdue_count'] + _br_conductor_counts['overdue'] }}"
+                due_today_count: "{{ _br_scored['due_today_count'] + _br_conductor_counts['due_today'] }}"
+                stale_count: "{{ _br_scored['stale_count'] + _br_conductor_counts['stale'] }}"
               suggested_act_event: >-
                 {{ 'zen_dojotools_postman' if (_br_scored['items'] | selectattr('action_required') | list | length) > 0 else none }}
               caller_token: "{{ caller_token }}"
         - stop: briefing
           response_variable: final_response
 
+      # ── catch_up ──────────────────────────────────────────────────────────
+      # 2026-08-27 (household: for dailies like meds, wanted the mobile app's
+      # "skip to current task" to roll a stale item's due date to today
+      # instead of letting it sit overdue. Confirmed via Graph docs + the
+      # ms365_todo HA integration's own services.yaml: no skip-occurrence
+      # action exists anywhere in reach — todoTask.recurrence is real but
+      # read-only metadata, no endpoint acts on it, and this integration
+      # doesn't even expose it. The only real lever is patching due_date,
+      # which ms365_todo.update_todo already supports (zen_dojotools_todo
+      # action_type=update already routes through it). This mode just does
+      # that in bulk across every taskmaster/schedule-labeled todo list,
+      # for every item that's actually overdue (due < today) rather than
+      # one item at a time.
+      - conditions:
+        - condition: template
+          value_template: "{{ mode_norm == 'catch_up' }}"
+        sequence:
+        - variables:
+            _cu_today: "{{ now().strftime('%Y-%m-%d') }}"
+            _cu_filter_raw: "{{ items | default([]) }}"
+            _cu_filter: >-
+              {{ (_cu_filter_raw if _cu_filter_raw is iterable and _cu_filter_raw is not string else [_cu_filter_raw])
+                 | map('lower') | list }}
+            _cu_dry_run: "{{ dry_run | default(false) | bool(false) }}"
+            _cu_list_ids: >-
+              {{ (label_entities('taskmaster') + label_entities('schedule'))
+                 | select('match', '^todo\\.') | list | unique | list }}
+        - variables:
+            _cu_candidates: []
+        - repeat:
+            for_each: "{{ _cu_list_ids }}"
+            sequence:
+            - action: script.zen_dojotools_todo
+              response_variable: _cu_read_one
+              continue_on_error: true
+              data:
+                action_type: read
+                list_name: "{{ repeat.item }}"
+            - variables:
+                _cu_candidates: >-
+                  {%- set _its = _cu_read_one.get('items', []) if _cu_read_one is mapping else [] -%}
+                  {%- set _list_ent = repeat.item -%}
+                  {%- set ns = namespace(items=_cu_candidates) -%}
+                  {%- for it in (_its if _its is iterable and _its is not string else []) -%}
+                    {%- set _title = it.get('summary', '') -%}
+                    {%- set _due = it.get('due', none) -%}
+                    {%- set _due_date = ((_due | as_datetime).date() | string) if _due else none -%}
+                    {%- set _stale = (_due_date is not none) and (_due_date < _cu_today) -%}
+                    {%- set _active = it.get('status', '') == 'needs_action' -%}
+                    {%- set _matches_filter = (_cu_filter | length == 0) or (_cu_filter | select('in', _title | lower) | list | length > 0) -%}
+                    {%- if _stale and _active and _matches_filter -%}
+                      {%- set ns.items = ns.items + [{'list': _list_ent, 'item': _title, 'old_due': _due_date}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.items }}
+        # zen_dojotools_todo's update action only processes items[0] for a
+        # due_date change (multi-item in one call is status-only, per its
+        # own "Multiple complex updates not supported" guard) — so this has
+        # to be one call per item, not one call per list.
+        - if: "{{ not _cu_dry_run and (_cu_candidates | length > 0) }}"
+          then:
+          - repeat:
+              for_each: "{{ _cu_candidates }}"
+              sequence:
+              - action: script.zen_dojotools_todo
+                response_variable: _cu_write_one
+                continue_on_error: true
+                data:
+                  action_type: update
+                  list_name: "{{ repeat.item.list }}"
+                  items: ["{{ repeat.item.item }}"]
+                  due_date: "{{ _cu_today }}"
+        - variables:
+            final_response:
+              status: success
+              mode: catch_up
+              dry_run: "{{ _cu_dry_run }}"
+              today: "{{ _cu_today }}"
+              matched_count: "{{ _cu_candidates | length }}"
+              applied: "{{ not _cu_dry_run }}"
+              results: >-
+                {{ _cu_candidates | map('combine', {'new_due': _cu_today}) | list }}
+              caller_token: "{{ caller_token }}"
+        - stop: catch_up
+          response_variable: final_response
+
       # ── almanac ───────────────────────────────────────────────────────────
-      # Friday's own feature request: a single daily context
+      # Friday's own feature request (Radar #10270): a single daily context
       # surface — weather, meal plan, and appointments in one stack — so the
       # assistant can answer "what does today look like" without three calls.
       # Reuses the same weather-resolution pattern already proven in briefing.
@@ -1317,7 +1470,7 @@ script:
           response_variable: final_response
 
       # ── facilities_brief ──────────────────────────────────────────────────
-      # "Building super" view. Reads urgency-scored kata
+      # "Building super" view — ships Radar #10271. Reads urgency-scored kata
       # entries directly for the physical-plant KFC components (already fresh
       # from the normal summarizer cycle — no live re-query of each subsystem)
       # plus open Radar tickets tagged to a physical area, plus the
@@ -1440,7 +1593,7 @@ script:
       Self-registers with the Lens Bus. Use mode=help for full case reference.
     fields:
       mode:
-        description: "help | setup | tool_manifest | kfc_manifest | briefing | almanac | stale_review | facilities_brief | tier_status | task_create | task_list | task_complete | register | unregister"
+        description: "help | setup | tool_manifest | kfc_manifest | briefing | almanac | stale_review | facilities_brief | tier_status | task_create | task_list | task_complete | catch_up | register | unregister"
         required: true
         selector:
           select:
@@ -1457,11 +1610,18 @@ script:
               - task_create
               - task_list
               - task_complete
+              - catch_up
               - register
               - unregister
         default: help
+      items:
+        description: "For catch_up only — title substrings to restrict the sweep to (case-insensitive). Omit to catch up every stale item found."
+        required: false
+        selector:
+          text:
+            multiple: true
       dry_run:
-        description: "For setup only — report what would be fixed without writing anything. Default false."
+        description: "For setup: report what would be fixed without writing. For catch_up: report matches without moving any due_date. Default false."
         required: false
         selector:
           boolean:

@@ -1,17 +1,26 @@
 ###############################################################################
 # DojoTools — Autovac
-# zen_dojotools_autovac (v5.2.0)
+# zen_dojotools_autovac (v5.4.0)
 #
 # Full vacuum control surface. All room state stored in the household cabinet
 # ('autovac' drawer). Zero hardcoded entity IDs — all discovery via HA labels.
 #
 # Quick-start:
 #   1. Apply labels in HA Settings > Labels + Entities:
-#        autovac           → vacuum entity, map camera, last-clean sensors
+#        autovac           → vacuum entity, map entity (camera.* OR image.*), last-clean sensors
+#        autovac_battery        → battery-level sensor (optional — integrations that split battery
+#                                  off the vacuum entity itself, e.g. core roborock, need this;
+#                                  falls back to the vacuum's own battery_level attribute otherwise)
 #        autovac_dnd           → DnD binary_sensor (optional — disables runs when on)
 #        autovac_water_low     → water-low binary_sensor (optional — warns in briefing)
 #        autovac_schedule      → schedule entities that trigger runs
-#        autovac_current_room  → vacuum current-room sensor (optional — enables per-room timing stats)
+#        autovac_current_room  → vacuum current-room sensor (optional — enables per-room timing
+#                                  stats AND manual-run tracking, see mode=analyze)
+#        autovac_wear          → consumable wear sensors (optional — wired to catalog at provision)
+#        autovac_error_detail  → vacuum's own richer error-detail sensor (optional — e.g. Roborock's
+#                                  error enum; surfaced in the error notification. vacuum.errored
+#                                  itself needs no label beyond 'autovac' — same purpose-trigger
+#                                  family as vacuum.returned_to_dock, fires natively)
 #   2. Add rooms:
 #        mode=configure room=<slug> config='{"enabled":true,"segment":<num>,"days_between":7}'
 #   3. Run mode=setup — verifies label wiring, inits cabinet drawer, deploys KFC dojo entry.
@@ -24,9 +33,15 @@
 #   rooms:   {<slug>: {enabled, segment, days_between, require_confirmation,
 #              last_cleaned, queued, skip_next, ready_to_clean, requires_mop}}
 #
-# Modes: status, help, setup, queue, dequeue, clear, skip, unskip, ready,
-#        unready, mark_cleaned, configure, pause, unpause, clean, run,
-#        analyze, briefing, handle_ack, nightly_reset, morning_reset,
+# Modes: see mode=help or mode=tool_manifest for the current full list and
+#        per-mode field reference -- this header is a summary, not the
+#        source of truth, and has drifted stale before. As of this pull:
+#        status, help, setup, queue, dequeue, clear, skip, unskip, ready,
+#        unready, mark_cleaned, configure, preset, pause, unpause, clean,
+#        run, run_elected, schedule, schedule_blocks, analyze, briefing,
+#        handle_ack, nightly_reset, morning_reset, kfc_manifest,
+#        stacks_by_anchor, register, unregister, health, inspect,
+#        tool_manifest,
 #        consumables (action=status|add_to_shopping|log_replaced|log_purchased|provision),
 #        check_wear (wear_entity= optional; omit for post-dock scan-all via analyze)
 ###############################################################################
@@ -42,7 +57,7 @@ script:
       mode=setup: verify labels, init cabinet drawer, deploy KFC dojo entry (idempotent). mode=configure: view/update room or system settings.
       mode=preset preset=<name> rooms=<csv>: apply named config bundle.
       mode=queue/dequeue/skip/unskip/ready/unready/mark_cleaned room=<slug>: room state ops.
-      mode=clean rooms=<csv>: immediate clean. mode=run_elected: run elected rooms now.
+      mode=clean rooms=<csv>: immediate clean (dry_run=true previews without dispatching). mode=run_elected: run elected rooms now.
       mode=pause/unpause: gate today runs.
       mode=consumables action=status: stock levels. action=add_to_shopping: queue low/out.
       action=log_replaced part=<key>: record swap. action=log_purchased part=<key> amount=<n>: log spares.
@@ -112,7 +127,13 @@ script:
           text:
       dry_run:
         name: Dry Run
-        description: "run_elected: preview without firing vacuum. setup: preview without writing cabinet or deploying KFC."
+        description: "run_elected/clean: preview without firing vacuum (clean still runs every validation/DND check and returns what would happen). setup: preview without writing cabinet or deploying KFC."
+        default: false
+        selector:
+          boolean:
+      force:
+        name: Force
+        description: "mode=clean only. Bypasses the DND election gate (room state emergency/paused/asleep/etc.) for this one immediate call. Never applies to run_elected — automatic election always respects DND."
         default: false
         selector:
           boolean:
@@ -204,6 +225,48 @@ script:
           _ack_context:        "{{ ack_context | default('') | string | trim }}"
           _pm_tag:             "{{ pm_tag | default('') | string | trim }}"
           _config:             "{{ config | default('{}') | string | trim }}"
+          _force:               "{{ force | default(false) | bool(false) }}"
+
+      # -- 0.4 Setup/Operate cert gate (2026-08-22, steel-mag pattern — mirrors
+      # room_manager's room_topology_edit/room_behavior_control split).
+      # status/help/inspect/health/etc. stay ungated (read-only). ------------
+      - variables:
+          _av_required_cert: >-
+            {%- if _mode in ['configure', 'setup', 'preset'] -%}autovac_setup
+            {%- elif _mode in ['clean', 'run_elected', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'pause', 'unpause'] -%}autovac_operate
+            {%- else -%}{%- endif -%}
+      - if: "{{ _av_required_cert != '' }}"
+        then:
+          - action: script.zen_dojotools_identity
+            response_variable: _av_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: "{{ _av_required_cert }}"
+              required_cert_level: 1
+              target_entity: "{{ _room if _room != '' else 'autovac' }}"
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _av_policy_status: "{{ _av_id_raw.get('policy_status', 'blocked') if _av_id_raw is mapping else 'blocked' }}"
+              _av_authorized: "{{ _av_id_raw.get('authorized', false) if _av_id_raw is mapping else false }}"
+              _av_scope_decision: "{{ _av_id_raw.get('scope_decision', 'default') if _av_id_raw is mapping else 'default' }}"
+          - if: "{{ _av_scope_decision == 'deny' }}"
+            then:
+              - variables:
+                  _av_gate_result: {status: denied, mode: "{{ _mode }}", error: cert_scope_denied, detail: "{{ _av_required_cert }} cert_scope explicitly denies this target.", caller_token: "{{ _caller_token }}"}
+              - stop: "autovac cert_scope denied"
+                response_variable: _av_gate_result
+          - if: "{{ _av_policy_status != 'allowed' or not _av_authorized }}"
+            then:
+              - variables:
+                  _av_gate_result:
+                    status: error
+                    mode: "{{ _mode }}"
+                    error: "{{ 'identity_policy_blocked' if _av_policy_status != 'allowed' else 'cert_insufficient' }}"
+                    request_via: {tool: zen_dojotools_persona_editor, mode: cert_grant, cert_component: "{{ _av_required_cert }}", cert_level: 1}
+                    caller_token: "{{ _caller_token }}"
+              - stop: "autovac cert insufficient"
+                response_variable: _av_gate_result
 
       # -- 0.5 Entity discovery via labels ------------------------------------
       - variables:
@@ -215,9 +278,13 @@ script:
             {{ label_entities('autovac')
                | select('match', 'vacuum\.')
                | list | first | default('') }}
+          # 2026-08-27: Rosie's live coverage map is an image.* entity under
+          # the core roborock integration (image.rosie_curtis_home), not
+          # camera.* — zen_dojotools_camera now handles image.* domains too,
+          # so widen the match here to actually find it.
           _cam_ent: >-
             {{ label_entities('autovac')
-               | select('match', 'camera\.')
+               | select('match', 'camera\.|image\.')
                | list | first | default('') }}
           _dnd_ent: >-
             {{ label_entities('autovac_dnd')
@@ -227,6 +294,17 @@ script:
             {{ label_entities('autovac_water_low')
                | select('match', 'binary_sensor\.')
                | list | first | default('') }}
+          # 2026-08-27 (household: dock's clean-water tank went empty for the
+          # first time, flagged it wasn't reflected anywhere -- turned out
+          # autovac only ever checked the ROBOT's own onboard tank
+          # (binary_sensor.rosie_water_shortage), never the DOCK's separate
+          # clean-water reservoir (binary_sensor.rosie_dock_clean_water_box)
+          # -- two physically different tanks. Both now labeled
+          # autovac_water_low; this checks ANY of them, not just the first
+          # match, since _water_low_ent alone (used elsewhere for display)
+          # only ever names one.
+          _water_low_ents: >-
+            {{ label_entities('autovac_water_low') | select('match', 'binary_sensor\.') | list }}
           _last_area_ent: >-
             {{ label_entities('autovac')
                | select('match', 'sensor\.')
@@ -872,8 +950,32 @@ script:
       # -- 1 System state ------------------------------------------------------
       - variables:
           _vacuum_state: "{{ states(_vac_ent) if _vac_ent != '' else 'unavailable' }}"
-          _battery:      "{{ state_attr(_vac_ent, 'battery_level') | int(0) if _vac_ent != '' else 0 }}"
-          _water_low:    "{{ is_state(_water_low_ent, 'on') if _water_low_ent != '' else false }}"
+          # 2026-08-27 (real regression found live: HA deprecated the vacuum
+          # platform's battery_level attribute. Migrated Rosie from xiaomi_miio
+          # to core roborock the same day, which does expose a real dedicated
+          # battery sensor (sensor.rosie_battery, device_class battery) --
+          # labeled autovac_battery so this isn't hardcoded to one entity name.
+          # Falls back to the old vacuum-attribute read for any install still
+          # on an integration that puts battery on the vacuum entity itself,
+          # and _battery_known distinguishes "genuinely 0%" from "we have no
+          # idea" either way, so the critical-battery checks below never fire
+          # on missing data (the false-CRITICAL bug confirmed live before the
+          # migration).
+          _battery_ent: >-
+            {{ label_entities('autovac_battery')
+               | select('match', 'sensor\.')
+               | list | first | default('') }}
+          _battery_raw: >-
+            {%- if _battery_ent != '' and states(_battery_ent) not in ['unknown','unavailable'] -%}
+              {{ states(_battery_ent) }}
+            {%- elif _vac_ent != '' and state_attr(_vac_ent, 'battery_level') is not none -%}
+              {{ state_attr(_vac_ent, 'battery_level') }}
+            {%- else -%}
+              {{ none }}
+            {%- endif -%}
+          _battery_known: "{{ _battery_raw not in [none, ''] }}"
+          _battery:      "{{ _battery_raw | int(0) if _battery_known else 100 }}"
+          _water_low:    "{{ _water_low_ents | map('states') | select('equalto', 'on') | list | length > 0 }}"
           _water_low_action: "{{ _av_system.get('water_low_action', 'warn') | string | lower }}"
           _dnd:          "{{ is_state(_dnd_ent, 'on') if _dnd_ent != '' else false }}"
           _enabled:      "{{ _av_system.get('enabled', true) }}"
@@ -898,7 +1000,29 @@ script:
                 {%- set req_ready = room.get('requires_ready', room.get('require_confirmation', false)) -%}
                 {%- set is_rdy = room.get('is_ready', room.get('ready_to_clean', false)) -%}
                 {%- set ready_pass = (not req_ready) or is_rdy -%}
-                {%- set can_schedule = (not skip_next) and ready_pass -%}
+                {# 2026-08-22 (household): DND election gate -- fail-safe allow-list, not
+                   deny-list. Automatic election (run_elected only, never mode=clean)
+                   requires the room's live v3 state to be 'vacant'. Every other state
+                   (emergency/paused/automation/cleaning/asleep/engaged/hold/occupied)
+                   blocks election -- new cascade tiers fall on the safe side by
+                   default, no list to maintain. Room resolved via the zen_room_state
+                   label (not a hardcoded entity suffix -- v3 sensors are inconsistently
+                   named sensor.<area>_state vs sensor.<area>_room_state across rooms). #}
+                {%- set _rm_area = room.get('area_id', room_name) -%}
+                {# 2026-08-28 REAL BUG (household, live via Friday: kitchen showed
+                   vacant/due/ready everywhere else but the DND gate resolved
+                   'unknown' and silently blocked election forever). area_entities()
+                   requires a literal HA Area assignment on the entity/device --
+                   v3 room-state sensors are template entities with no device and
+                   no Area, organized entirely by LABEL instead (area_id doubles
+                   as the room's own label, same convention as room_state.yaml/
+                   zen_room_manager_dispatch.yaml throughout). area_entities(_rm_area)
+                   always returned empty for every room, every time -- this gate
+                   never actually passed, for anyone, since the day it shipped. #}
+                {%- set _rm_state_ent = label_entities(_rm_area) | select('match', 'sensor\.') | select('in', label_entities('zen_room_state')) | list | first | default('') -%}
+                {%- set _rm_state = states(_rm_state_ent) if _rm_state_ent != '' else 'unknown' -%}
+                {%- set dnd_pass = _rm_state == 'vacant' -%}
+                {%- set can_schedule = (not skip_next) and ready_pass and dnd_pass -%}
                 {%- if can_schedule and (autoschedule or queued) -%}
                   {%- set ns.rooms = ns.rooms + [{'room': room_name, 'segment': room.get('segment', 0), 'requires_mop': room.get('requires_mop', false), 'blocked': false}] -%}
                 {%- endif -%}
@@ -1107,14 +1231,14 @@ script:
               _sys_patch: "{{ _config | from_json(default={}) }}"
           - variables:
               _sys_filtered: >-
-                {%- set allowed = ['water_low_action', 'enabled'] -%}
+                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call'] -%}
                 {%- set ns = namespace(p={}) -%}
                 {%- for k, v in _sys_patch.items() -%}
                   {%- if k in allowed -%}{%- set ns.p = ns.p | combine({k: v}) -%}{%- endif -%}
                 {%- endfor -%}
                 {{ ns.p }}
               _sys_ignored: >-
-                {%- set allowed = ['water_low_action', 'enabled'] -%}
+                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call'] -%}
                 {%- set ns = namespace(ign=[]) -%}
                 {%- for k in _sys_patch.keys() -%}
                   {%- if k not in allowed -%}{%- set ns.ign = ns.ign + [k] -%}{%- endif -%}
@@ -1636,10 +1760,21 @@ script:
                 response_variable: _prov_bom_raw
 
               # Step 4b: Resolve autovac_wear sensor entities → part key map
+              # 2026-08-27 (real bug found live: these key fragments matched
+              # xiaomi_miio's old sensor names (sensor.rosie_main_brush_left,
+              # etc). Core roborock inserts "_time_" (sensor.rosie_main_brush
+              # _time_left), so none of these substrings matched anymore post-
+              # migration -- wear/consumables tracking silently found zero
+              # sensors. Updated to the real roborock names, plus the two new
+              # dock-side consumables (strainer, cleaning brush) that only
+              # exist under roborock -- xiaomi_miio never exposed a dock
+              # device at all. mop_lifespan was never a real sensor (mop wear
+              # is chore-period-tracked, not sensor-tracked) -- dropped, it
+              # never matched anything even before the migration.
               - variables:
                   _prov_wear_map: >-
                     {%- set ns = namespace(m={}) -%}
-                    {%- set keys = ['main_brush_left', 'side_brush_left', 'filter_remaining', 'mop_lifespan'] -%}
+                    {%- set keys = ['main_brush_time_left', 'side_brush_time_left', 'filter_time_left', 'dock_maintenance_brush_time_left', 'dock_strainer_time_left'] -%}
                     {%- for ent in label_entities('autovac_wear') -%}
                       {%- for k in keys -%}
                         {%- if k in ent -%}
@@ -1671,6 +1806,7 @@ script:
                         'category':              pd.get('category', pd.location_category),
                         'wear_sensor_key':       pd.get('wear_sensor_key'),
                         'wear_threshold':        pd.get('wear_threshold'),
+                        'wear_kind':             pd.get('wear_kind', 'percent'),
                         'wear_entity':           we
                       }}) -%}
                     {%- endfor -%}
@@ -1687,6 +1823,23 @@ script:
                       'machine_product_id':     _prov_mpid,
                       'parts':                  ns.parts
                     } }}
+
+              # 2026-08-27 (real bug found live, pre-existing on BOTH
+              # integrations, not a migration regression: _prov_catalog was
+              # computed and returned in the response but never actually
+              # persisted to the cabinet. check_wear reads
+              # autovac.system.grocy_catalog and always found nothing,
+              # regardless of whether Grocy itself had real provisioned
+              # products — confirmed live via catalog_find_by_tag returning
+              # 7 real products while the cabinet drawer had no
+              # grocy_catalog key at all). Write it now.
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                  value: >-
+                    {{ {'rooms': _av_rooms, 'system': _av_system | combine({'grocy_catalog': _prov_catalog})} | tojson }}
 
               # Step 7: Spares advisory — inform user what was seeded, ask about additional spares
               - variables:
@@ -1989,16 +2142,26 @@ script:
           # Used by post-dock analyze flow and direct calls without a specific entity.
           - if: "{{ _cw_entity == '' }}"
             then:
+              # 2026-08-27 (household: "make sure xiaomi mode continues to work
+              # as it did but make roborock the flagship"). Roborock's wear
+              # sensors are device_class duration (real hours/days left),
+              # not percent like xiaomi_miio's -- comparison logic (alert
+              # when value <= threshold) is identical either way, only the
+              # UNIT differs, so wear_kind (default 'percent', preserving
+              # every existing xiaomi_miio preset's behavior untouched)
+              # drives message text only. Roborock presets set
+              # wear_kind: duration_hours explicitly.
               - variables:
                   _cw_scan_worn: >-
                     {%- set ns = namespace(worn=[]) -%}
                     {%- for k, v in _cw_parts.items() -%}
                       {%- set ent = v.get('wear_entity') -%}
                       {%- if ent is not none and ent != '' -%}
-                        {%- set val = states(ent) | int(-1) -%}
-                        {%- set thr = v.get('wear_threshold', 20) | int(20) -%}
+                        {%- set val = states(ent) | float(-1) -%}
+                        {%- set thr = v.get('wear_threshold', 20) | float(20) -%}
+                        {%- set kind = v.get('wear_kind', 'percent') -%}
                         {%- if val >= 0 and val <= thr -%}
-                          {%- set ns.worn = ns.worn + [{'key': k, 'part': v, 'wear_pct': val, 'threshold': thr}] -%}
+                          {%- set ns.worn = ns.worn + [{'key': k, 'part': v, 'wear_val': val, 'wear_kind': kind, 'threshold': thr}] -%}
                         {%- endif -%}
                       {%- endif -%}
                     {%- endfor -%}
@@ -2009,7 +2172,9 @@ script:
                     - variables:
                         _sw_pk:         "{{ repeat.item.key }}"
                         _sw_pv:         "{{ repeat.item.part }}"
-                        _sw_wear_pct:   "{{ repeat.item.wear_pct }}"
+                        _sw_wear_val:   "{{ repeat.item.wear_val }}"
+                        _sw_wear_kind:  "{{ repeat.item.wear_kind }}"
+                        _sw_wear_unit:  "{{ '%' if repeat.item.wear_kind == 'percent' else ' hours' }}"
                         _sw_product_id: "{{ repeat.item.part.product_id | int(none) }}"
                     - action: script.zen_sutra_grocy
                       data:
@@ -2032,10 +2197,10 @@ script:
                         _sw_pm_msg: >-
                           {%- set name = _sw_pv.get('name', _sw_pk) -%}
                           {%- if _sw_stock_amt > 0 -%}
-                            {{ name }} is worn ({{ _sw_wear_pct }}% left). Spare on hand — run
+                            {{ name }} is worn ({{ _sw_wear_val }}{{ _sw_wear_unit }} left). Spare on hand — run
                             consumables action=log_replaced part={{ _sw_pk }} to install.
                           {%- else -%}
-                            {{ name }} is worn ({{ _sw_wear_pct }}% left) and out of stock. Added to shopping list.
+                            {{ name }} is worn ({{ _sw_wear_val }}{{ _sw_wear_unit }} left) and out of stock. Added to shopping list.
                           {%- endif -%}
                     - action: script.zen_dojotools_postman
                       data:
@@ -2091,8 +2256,10 @@ script:
 
           - variables:
               _cw_part:       "{{ _cw_parts[_cw_part_key] }}"
-              _cw_threshold:  "{{ _cw_part.get('wear_threshold', 20) | int(20) }}"
-              _cw_wear_pct:   "{{ states(_cw_entity) | int(-1) }}"
+              _cw_threshold:  "{{ _cw_part.get('wear_threshold', 20) | float(20) }}"
+              _cw_wear_val:   "{{ states(_cw_entity) | float(-1) }}"
+              _cw_wear_kind:  "{{ _cw_part.get('wear_kind', 'percent') }}"
+              _cw_wear_unit:  "{{ '%' if _cw_part.get('wear_kind', 'percent') == 'percent' else ' hours' }}"
               _cw_product_id: "{{ _cw_part.get('product_id') | int(none) }}"
 
           - action: script.zen_sutra_grocy
@@ -2106,7 +2273,7 @@ script:
 
           - variables:
               _cw_stock_amt: "{{ _cw_stock_content.get('stock_amount', 0) | int(0) }}"
-              _cw_alert:     "{{ _cw_wear_pct >= 0 and _cw_wear_pct <= _cw_threshold }}"
+              _cw_alert:     "{{ _cw_wear_val >= 0 and _cw_wear_val <= _cw_threshold }}"
 
           - if: "{{ _cw_alert and _cw_stock_amt == 0 }}"
             then:
@@ -2123,10 +2290,10 @@ script:
                   _cw_pm_msg: >-
                     {%- set name = _cw_part.get('name', _cw_part_key) -%}
                     {%- if _cw_stock_amt > 0 -%}
-                      {{ name }} is worn ({{ _cw_wear_pct }}% left). Spare on hand — run
+                      {{ name }} is worn ({{ _cw_wear_val }}{{ _cw_wear_unit }} left). Spare on hand — run
                       consumables action=log_replaced part={{ _cw_part_key }} to install.
                     {%- else -%}
-                      {{ name }} is worn ({{ _cw_wear_pct }}% left) and out of stock. Added to shopping list.
+                      {{ name }} is worn ({{ _cw_wear_val }}{{ _cw_wear_unit }} left) and out of stock. Added to shopping list.
                     {%- endif -%}
               - action: script.zen_dojotools_postman
                 data:
@@ -2156,7 +2323,9 @@ script:
                   'part': _cw_part_key,
                   'part_name': _cw_part.get('name', _cw_part_key),
                   'category': _cw_part.get('category', 'bot'),
-                  'wear_pct': _cw_wear_pct,
+                  'wear_pct': _cw_wear_val if _cw_wear_kind == 'percent' else none,
+                  'wear_value': _cw_wear_val,
+                  'wear_kind': _cw_wear_kind,
                   'threshold': _cw_threshold,
                   'stock': _cw_stock_amt,
                   'action': 'added_to_shopping' if (_cw_alert and _cw_stock_amt == 0) else
@@ -2193,6 +2362,38 @@ script:
                         'note': 'Vacuum not available — state: ' ~ _vacuum_state, 'vacuum_state': _vacuum_state} }}
               - stop: "autovac clean — vacuum not ready"
                 response_variable: response
+          # 2026-08-22 (household): DND check for explicit mode=clean calls. Unlike
+          # run_elected's silent exclusion, an explicit clean call that hits a DND
+          # room refuses with a clear error naming the blocked room(s) --
+          # force=true bypasses this (deliberate human override, e.g. Emergency
+          # cleanup), never available on run_elected.
+          - if: "{{ not _force }}"
+            then:
+              - variables:
+                  _clean_dnd_blocked: >-
+                    {%- set ns = namespace(blocked=[]) -%}
+                    {%- for r in _rooms.split(',') -%}
+                      {%- set slug = r | trim | lower | replace(' ', '_') -%}
+                      {%- set rm_area = _av_rooms.get(slug, {}).get('area_id', slug) -%}
+                      {# 2026-08-28: same area_entities() -> label_entities() fix as
+                         the run_elected gate above -- see that comment for the
+                         root cause. Same bug, same fix, second call site. #}
+                      {%- set rm_state_ent = label_entities(rm_area) | select('match', 'sensor\.') | select('in', label_entities('zen_room_state')) | list | first | default('') -%}
+                      {%- set rm_state = states(rm_state_ent) if rm_state_ent != '' else 'unknown' -%}
+                      {%- if rm_state != 'vacant' -%}
+                        {%- set ns.blocked = ns.blocked + [{'room': slug, 'state': rm_state}] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.blocked }}
+              - if: "{{ _clean_dnd_blocked | length > 0 }}"
+                then:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'clean', 'result': 'error', 'caller_token': _caller_token,
+                            'error': 'dnd_blocked', 'blocked': _clean_dnd_blocked,
+                            'note': 'One or more rooms are not vacant (DND). Pass force=true to override.'} }}
+                  - stop: "autovac clean — DND blocked"
+                    response_variable: response
           - variables:
               _segments: >-
                 {%- set ns = namespace(segs=[]) -%}
@@ -2231,6 +2432,22 @@ script:
                         'vacuum_state': _vacuum_state} }}
               - stop: "autovac clean — no rooms resolved"
                 response_variable: response
+          # 2026-08-28 (household: verifying the DND-gate fix above accidentally
+          # dispatched a real clean, since mode=clean had no preview option —
+          # run_elected already has one, this closes the same gap here).
+          # Placed AFTER every validation/DND/not_found check above so a
+          # dry_run response reflects exactly what a real call would have
+          # done — never touches the vacuum.
+          - if: "{{ dry_run | default(false) | bool(false) }}"
+            then:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'clean', 'result': 'dry_run', 'caller_token': _caller_token,
+                        'rooms': _clean_rooms, 'segments': _segments, 'areas': _clean_areas,
+                        'vacuum_state': _vacuum_state,
+                        'note': 'Preview only — no vacuum dispatch. Pass dry_run=false (or omit) to run for real.'} }}
+              - stop: "autovac clean — dry run"
+                response_variable: response
           - variables:
               _vacuum_service: >-
                 {{ 'xiaomi_miio.vacuum_clean_segment' }}
@@ -2251,9 +2468,16 @@ script:
                     })} | tojson }}
           - if: "{{ _use_clean_area }}"
             then:
+              # 2026-08-27 (real bug found live, never yet exercised — Rosie
+              # was on xiaomi_miio until today's migration, so roborock_native
+              # branch had never actually fired): HA's real clean_area service
+              # field is cleaning_area_id, not areas -- confirmed against
+              # homeassistant/components/vacuum/services.yaml directly, not
+              # docs-site summarization. Same fix applied at all 4 call sites
+              # in this file.
               - action: vacuum.clean_area
                 data:
-                  areas: "{{ _clean_areas }}"
+                  cleaning_area_id: "{{ _clean_areas }}"
                 target:
                   entity_id: "{{ _vac_ent }}"
             else:
@@ -2378,9 +2602,11 @@ script:
                     })} | tojson }}
           - if: "{{ _use_clean_area }}"
             then:
+              # 2026-08-27: cleaning_area_id, not areas — see note at the
+              # first vacuum.clean_area call site in this file.
               - action: vacuum.clean_area
                 data:
-                  areas: "{{ _re_areas }}"
+                  cleaning_area_id: "{{ _re_areas }}"
                 target:
                   entity_id: "{{ _vac_ent }}"
             else:
@@ -2573,9 +2799,11 @@ script:
                     })} | tojson }}
           - if: "{{ _use_clean_area }}"
             then:
+              # 2026-08-27: cleaning_area_id, not areas — see note at the
+              # first vacuum.clean_area call site in this file.
               - action: vacuum.clean_area
                 data:
-                  areas: "{{ _elected_areas }}"
+                  cleaning_area_id: "{{ _elected_areas }}"
                 target:
                   entity_id: "{{ _vac_ent }}"
             else:
@@ -2612,25 +2840,54 @@ script:
                     You are presented with a coverage map from a robotic vacuum on either
                     completion of its last job or upon error.
 
-                    Analyze the map and summarize in 255 characters or less.
+                    Analyze the map and summarize in 320 characters or less.
 
-                    Identify if the vacuum appears to have covered the targeted area without
-                    issue. The image shows a lighter 'path' across boundary boxes (rooms).
-                    Nogo zones are vivid red lines or enclosed polygons. X's denote found
-                    obstacles. A thin line shows the robot's path and estimated coverage.
+                    The image shows a lighter 'path' across boundary boxes (rooms), room names
+                    labeled directly on the map, nogo zones as vivid red lines or enclosed
+                    polygons, and X's for found obstacles.
 
-                    Look for: vacuum stopped or trapped without completing a room; poor or
-                    missed coverage; obstacles noted during the path.
+                    Report ONLY clear, unambiguous problems: a room the vacuum never entered,
+                    stopped/trapped, genuinely poor or missed coverage, or a real path-blocking
+                    obstacle. A minor gap or normal edge effect is not a problem. If you're not
+                    confident something is a real issue, don't report it -- under-reporting is
+                    better than guessing. Do not mention anything that worked correctly or
+                    wasn't a problem; omit it rather than stating its absence.
 
-                    If only some rooms show coverage, assume only those areas were called
-                    and assess coverage for those areas only.
+                    When flagging a problem, name the specific room using its on-map label as
+                    best you can read it -- naming the room is what makes the report actionable.
+                    If you can't read a label clearly, describe its location relative to a room
+                    you ARE sure of instead of guessing a name.
 
-                    Title your report AutoVac: (Success|Fail|Attention) as appropriate.
+                    If only some rooms show coverage, assess only those rooms.
 
-                    Your summary MUST fit within 255 characters.
+                    Title your report AutoVac: (Success|Fail|Attention) as appropriate. If
+                    nothing meets the bar above, say only "AutoVac: Success — full coverage, no
+                    issues." Nothing else.
+
+                    Your summary MUST fit within 320 characters.
                 response_variable: camera_response
           - variables:
               _current_run: "{{ _av_system.get('current_run', {}) | default({}, true) }}"
+              # 2026-08-28 REAL BUG (household, live: a real autovac-dispatched
+              # multi-room run stamped 4 rooms correctly at 16:11, then a
+              # SECOND 'returned_to_dock' fired ~3 min later for the same
+              # physical finish. Root cause confirmed by household: this dock
+              # genuinely docks TWICE at the end of a real run -- once to
+              # wash the mop, then again (backing in) to actually charge --
+              # two real physical dock events, not a bus glitch. The second
+              # analyze pass found _run_rooms already empty (correctly
+              # cleared by the first pass) and wrongly concluded the run was
+              # never tracked at all. last_finish_at (stamped alongside the
+              # successful clear above) lets this second, expected dock-to-
+              # charge pass recognize "we JUST finished this run" and skip
+              # the false untracked-run notification instead of misreporting
+              # it. 5-minute window comfortably covers the mop-wash-to-charge
+              # gap without risking suppressing a genuine new short run.
+              _last_finish_at: "{{ _av_system.get('last_finish_at', '') }}"
+              _seconds_since_finish: >-
+                {{ (now() - as_datetime(_last_finish_at)).total_seconds()
+                   if _last_finish_at not in [none, ''] else 99999 }}
+              _recent_duplicate_dock: "{{ _seconds_since_finish < 300 }}"
           - variables:
               # Parse the LLM verdict from the analysis title prefix (contract: "AutoVac: Success|Fail|Attention").
               # FAIL suppresses last_cleaned stamp so the room re-enters election immediately.
@@ -2644,7 +2901,16 @@ script:
                 {%- else -%}unknown{%- endif -%}
               _stamp_last_cleaned: "{{ _cam_ent == '' or _cam_verdict != 'fail' }}"
           - variables:
-              _run_rooms: "{{ _current_run.get('rooms', []) }}"
+              # 2026-08-27: fall back to the manual-run room tracker
+              # (session_rooms, built off sensor.rosie_current_room by the
+              # cleaning_started/room_changed triggers) whenever autovac
+              # didn't dispatch this run itself and current_run.rooms is
+              # empty — this is what actually closes the loop household wants:
+              # a manually-started clean still gets last_cleaned stamped and
+              # falls out of election.
+              _run_rooms: >-
+                {{ _current_run.get('rooms', []) if (_current_run.get('rooms', []) | length > 0)
+                   else _av_system.get('session_rooms', []) }}
               _updated_rooms: >-
                 {%- set ns = namespace(r=_av_rooms) -%}
                 {%- for rn in _run_rooms -%}
@@ -2666,13 +2932,27 @@ script:
                 {{ ns.r }}
           - if: "{{ _run_rooms | length > 0 }}"
             then:
+              # 2026-08-27: session_rooms only clears when this pass actually
+              # stamped something (_stamp_last_cleaned true -- camera verdict
+              # wasn't FAIL, or no camera at all). If the verdict WAS FAIL,
+              # nothing got stamped and session_rooms is left untouched
+              # instead of being wiped -- these rooms genuinely weren't
+              # confirmed clean, so they stay tracked for the next dock
+              # (interim mop-wash stop or the real finish) to try stamping
+              # again, rather than silently losing them. current_run always
+              # clears regardless -- that's autovac's own dispatch tracking,
+              # a fresh dispatch sets it again from scratch next time.
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: update
                   volume_entity_id: "{{ _hh_cabinet }}"
                   key: autovac
                   value: >-
-                    {{ {'rooms': _updated_rooms, 'system': _av_system | combine({'current_run': {}})} | tojson }}
+                    {{ {'rooms': _updated_rooms, 'system': _av_system | combine(
+                        {'current_run': {}, 'session_rooms': [], 'session_rooms_updated_at': '',
+                         'last_finish_at': now().isoformat()} if _stamp_last_cleaned
+                        else {'current_run': {}}
+                    )} | tojson }}
             else:
               - alias: Clear stale current_run when no rooms were tracked
                 action: script.zen_dojotools_filecabinet
@@ -2681,18 +2961,36 @@ script:
                   volume_entity_id: "{{ _hh_cabinet }}"
                   key: autovac
                   value: >-
-                    {{ {'rooms': _av_rooms, 'system': _av_system | combine({'current_run': {}})} | tojson }}
-              - alias: Warn — vacuum docked but run not tracked
-                action: script.zen_dojotools_postman
-                data:
-                  mode: resolve_and_dispatch
-                  message: >-
-                    Autovac docked but no rooms were tracked for this run — last_cleaned stamps not updated.
-                    If the vacuum was started manually, run mode=mark_cleaned room=<slug> for each cleaned room.
-                  urgency: 6
-                  channel_hint: push
-                  title: "Autovac — Rooms Not Tracked"
-                  tag: autovac_untracked_run
+                    {{ {'rooms': _av_rooms, 'system': _av_system | combine({'current_run': {}, 'session_rooms': []})} | tojson }}
+              # 2026-08-28 (household: the 2026-08-27 copy below is now stale —
+              # session_rooms (built off sensor.rosie_current_room via the
+              # cleaning_started/room_changed triggers) was added specifically
+              # to auto-capture manually-started runs, room by room, as they
+              # happen. This branch used to be the NORMAL case for any manual
+              # start; now it only fires in the genuinely unusual case where
+              # session_rooms ALSO ended up empty — e.g. a run so short no
+              # room_changed edge fired, or the tracker wasn't wired for this
+              # particular run. The old wording ("Autovac only auto-stamps
+              # runs it starts itself") is no longer true and was actively
+              # misleading callers into thinking mark_cleaned is always
+              # required for a manual run — it isn't, this notification not
+              # firing IS the normal/expected outcome for a manual run now.
+              - if: "{{ not _recent_duplicate_dock }}"
+                then:
+                  - alias: Note — manual run, room-tracking came back empty
+                    action: script.zen_dojotools_postman
+                    data:
+                      mode: resolve_and_dispatch
+                      message: >-
+                        Rosie docked after a run Autovac didn't dispatch (started from the Roborock app or
+                        vacuum tile, most likely). Normally the room tracker catches this automatically as she
+                        moves — this time it came back empty, which usually means a very short run with no
+                        tracked room change. Not an error, just unusual. If she actually cleaned somewhere, call
+                        mode=mark_cleaned room=<slug> for each room to log it manually.
+                      urgency: 3
+                      channel_hint: push
+                      title: "Autovac — Manual Clean, Room Tracking Empty"
+                      tag: autovac_untracked_run
           - alias: Broadcast run-complete event for downstream consumers
             event: zen_event
             event_data:
@@ -2913,7 +3211,7 @@ script:
                 {%- if ns.blocked | length > 0 -%}
                   {%- set ns.parts = ns.parts + ["Waiting on your OK: " ~ (ns.blocked | join(', ')) ~ "."] -%}
                 {%- endif -%}
-                {%- if _water_low_ent != '' and is_state(_water_low_ent, 'on') -%}
+                {%- if _water_low_ents | map('states') | select('equalto', 'on') | list | length > 0 -%}
                   {%- set ns.parts = ns.parts + ["Water tank is low — top it up!"] -%}
                 {%- endif -%}
                 {%- set battery = state_attr(_vac_ent, 'battery_level') | int(100) if _vac_ent != '' else 100 -%}
@@ -2948,7 +3246,7 @@ script:
                 {%- endif -%}
                 {{ ns.parts | join(' ') }}
               _urgency: >-
-                {{ 7 if ((_water_low_ent != '' and is_state(_water_low_ent, 'on'))
+                {{ 7 if ((_water_low_ents | map('states') | select('equalto', 'on') | list | length > 0)
                     or (_vac_ent != '' and (state_attr(_vac_ent, 'battery_level') | int(100)) < 50))
                    else 4 }}
           - alias: Auto-mark ready + stamp block_data for run to consume
@@ -3061,9 +3359,11 @@ script:
                             )} | tojson }}
                       - if: "{{ _use_clean_area }}"
                         then:
+                          # 2026-08-27: cleaning_area_id, not areas — see
+                          # note at the first vacuum.clean_area call site.
                           - action: vacuum.clean_area
                             data:
-                              areas: "{{ _go_areas }}"
+                              cleaning_area_id: "{{ _go_areas }}"
                             target:
                               entity_id: "{{ _vac_ent }}"
                         else:
@@ -3472,14 +3772,14 @@ script:
                 tool='zen_dojotools_autovac',
                 display_name='Autovac',
                 tier='dojotools',
-                version='5.3.0',
+                version='5.4.0',
                 health='sensor.zen_autovac_health',
                 required_labels=['autovac'],
-                optional_labels=['autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room'],
+                optional_labels=['autovac_battery','autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room','autovac_wear','autovac_calendar','autovac_error_detail'],
                 consumes=['household_cabinet:autovac'],
                 returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear|cleaning_evidence results',
                 failure_policy='return error shape',
-                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest'],
+                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','schedule','schedule_blocks','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest'],
                 icon='mdi:robot-vacuum',
                 color='teal',
                 stripe=3,
@@ -3488,7 +3788,23 @@ script:
                 lens_provider=true,
                 caller_token='{{ _caller_token }}'
               ) | from_json -%}
-              {{- _tm | combine({'provider_key': 'autovac', 'register_mode': 'register'}) -}}
+              {{- _tm | combine({'provider_key': 'autovac', 'register_mode': 'register', 'certs_required': [{
+                  'cert': 'autovac_setup',
+                  'display_name': 'Autovac Setup',
+                  'description': "2026-08-22, household: steel-mag pattern -- structural/config edits to autovac room definitions and system settings (including allow_room_control_cleaning_call). Mirrors the room_manager room_topology_edit split between structure and behavior.",
+                  'max_level': 4,
+                  'gates': ['mode=configure/setup/preset'],
+                  'live_ack_required_for': [],
+                  'grant_via': "persona_editor mode=cert_grant cert_component=autovac_setup (or zen_dojotools_identity mode=cert_list to see current status)"
+                }, {
+                  'cert': 'autovac_operate',
+                  'display_name': 'Autovac Operate',
+                  'description': "2026-08-22, household: steel-mag pattern -- runtime dispatch of the vacuum and its per-room queue state, including the force override that bypasses the DND election gate. mode=status/help stay ungated (read-only).",
+                  'max_level': 4,
+                  'gates': ['mode=clean/run_elected/queue/dequeue/clear/skip/unskip/ready/unready/mark_cleaned/pause/unpause'],
+                  'live_ack_required_for': [],
+                  'grant_via': "persona_editor mode=cert_grant cert_component=autovac_operate (or zen_dojotools_identity mode=cert_list to see current status)"
+                }]}) -}}
         - stop: autovac tool manifest
           response_variable: result
 
@@ -3645,7 +3961,8 @@ script:
               'integration': 'roborock_native' if _use_clean_area else 'xiaomi_miio',
               'vacuum_state': _vacuum_state,
               'vacuum_entity': _vac_ent,
-              'battery_pct': _battery,
+              'battery_pct': _battery if _battery_known else none,
+              'battery_known': _battery_known,
               'water_low': _water_low,
               'dnd': _dnd,
               'system_config': _system_config,
@@ -3695,6 +4012,94 @@ automation:
           for: "00:00:05"
         id: dock
 
+      # 2026-08-27 (household: "can our autovac handler catch Roborock native
+      # where our tagged status ent changes to error?"). vacuum.errored is a
+      # real purpose trigger from the same family as vacuum.returned_to_dock
+      # (make_entity_target_state_trigger() internally, confirmed against
+      # HA core source) -- fully generic, target: label_id works exactly
+      # like the dock trigger. This makes the docs' old advice to hardcode
+      # an error-state watch in the personal KFC file unnecessary; removed
+      # from autovac.md. mode=analyze reads sensor.rosie_vacuum_error-style
+      # detail (Roborock's own richer enum, e.g. "stuck", "dustbin full" --
+      # not just a bare error boolean) via the autovac_error_detail label
+      # for the actual notification text, since the vacuum entity's own
+      # state alone doesn't carry that detail.
+      - trigger: vacuum.errored
+        target:
+          label_id: autovac
+        id: error
+
+      # 2026-08-27 (household: "my expectation is I send vac to clean the LR —
+      # it goes — last_cleaned gets tagged and falls out of election — that's
+      # why I track it in the first place"). Manual starts (Roborock app,
+      # vacuum tile) never write current_run.rooms, so analyze had nothing to
+      # stamp on dock. These two triggers build an independent room-visited
+      # list off sensor.rosie_current_room (real, per-room, only exists under
+      # the new core roborock integration) regardless of how the run started
+      # — reset on cleaning start, appended to on every room change while
+      # actively cleaning. analyze falls back to this when current_run.rooms
+      # is empty.
+      # 2026-08-27 CORRECTION #1 (real bug found live, hours after landing):
+      # `target: {label_id: ...}` is NOT valid schema for the generic
+      # `state` trigger platform -- only specialized device triggers like
+      # vacuum.returned_to_dock (the `dock` trigger above) support `target`.
+      # This silently disabled the ENTIRE controller automation at setup
+      # ("Automation with alias 'Zen Autovac — Controller' failed to setup
+      # triggers and has been disabled: extra keys not allowed @
+      # data['target']") -- dock analysis, wear checks, scheduled runs, and
+      # room tracking were all dark for hours before this was caught.
+      #
+      # CORRECTION #2 (found live minutes later): rewriting these as
+      # `trigger: template` chaining label_entities() into states() inside
+      # ONE render also didn't work -- confirmed via log: zero firings after
+      # real state changes on both the vacuum (docked, went idle -> filling
+      # -> cleaning) and the current-room sensor. HA's template-trigger
+      # dependency tracker doesn't reliably follow a dynamically-resolved
+      # entity_id chained through a filter pipeline the way it follows a
+      # literal states('entity_id') call.
+      #
+      # CORRECTION #3 (found live minutes after THAT): `entity_id:` on a
+      # plain `state` trigger does NOT accept a Jinja template either --
+      # confirmed via log: "Entity {{ label_entities(... is neither a valid
+      # entity ID nor a valid UUID for dictionary value @ data['entity_id']".
+      # It's validated as a literal string/list at config-load time, full
+      # stop -- disabled the whole automation a third time.
+      #
+      # CORRECTION #4 (household: "whatever you do must be generic and work for
+      # all users of the tool, not just us" -- correctly caught that
+      # hardcoding vacuum.roborock_rosie/sensor.rosie_current_room here,
+      # even with the honest comment explaining why, broke this file's own
+      # zero-hardcoded-entity-IDs contract for every other install).
+      #
+      # CORRECTION #5: cleaning_started has a real, generic fix --
+      # `vacuum.started_cleaning` is a purpose trigger from the SAME family
+      # as the `dock` trigger above (vacuum.returned_to_dock,
+      # make_entity_target_state_trigger() internally) and genuinely
+      # supports `target: {label_id: ...}`, confirmed by
+      # zen_room_manager_dispatch.yaml's own sig_start triggers using the
+      # identical shape successfully (motion.detected, lock.locked, etc. --
+      # all purpose triggers, not plain `state`). Generic and shared-file-
+      # safe, no personal file needed for this one at all.
+      #
+      # room_changed has no such purpose trigger -- there's no device-class
+      # concept for "an arbitrary enum sensor changed" the way there is for
+      # motion/vacuum-activity. That one still bridges from a personal-file
+      # blueprint import (blueprints/automation/zenos/zen_cleaning_dispatch
+      # .yaml) via a generic zen_event, same bridge shape every other
+      # install-agnostic trigger here already uses (autovac_prerun_briefing,
+      # postman_ack, etc.).
+      - trigger: vacuum.started_cleaning
+        target:
+          label_id: autovac
+        id: cleaning_started
+
+      - trigger: event
+        event_type: zen_event
+        event_data:
+          event:
+            kind: autovac_room_changed
+        id: room_changed
+
       - trigger: template
         value_template: >-
           {{ expand(label_entities('autovac_schedule'))
@@ -3738,6 +4143,49 @@ automation:
               - condition: trigger
                 id: dock
             sequence:
+              # 2026-08-27: a successful dock is a real recovery signal --
+              # she wouldn't get here while genuinely stuck/erroring. Clears
+              # any standing autovac_error alert instead of leaving it to
+              # Alert Manager's own TTL. No-op (dedup-safe) if nothing was
+              # actually firing.
+              - action: script.zen_dojotools_alertmanager
+                data:
+                  mode: clear
+                  alert_key: autovac_error
+                continue_on_error: true
+              # 2026-08-28 (household: "the dock sequence should clear all
+              # remaining cleaning rooms to auto"). Hard backstop, no
+              # exceptions, no should-be-cleaning inference — a real dock
+              # event means she's genuinely done. Any room still marked
+              # 'Cleaning' at this point is stale by definition, whether the
+              # room_changed clear above missed it (single-room run, no
+              # intermediate room_changed edge ever fired) or anything else
+              # left it behind.
+              - variables:
+                  _dk_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+              - variables:
+                  _dk_topo: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {%- set t = CABS.cabinet_drawer_value_mounted(_dk_hh, 'room_topology') | from_json -%}
+                    {{ (t.keys() | list) if t is mapping else [] }}
+              - repeat:
+                  for_each: "{{ _dk_topo }}"
+                  sequence:
+                    - action: script.zen_dojotools_room_manager
+                      data:
+                        mode: room_control_set
+                        area: "{{ repeat.item }}"
+                      response_variable: _dk_current
+                      continue_on_error: true
+                    - if: "{{ _dk_current is mapping and _dk_current.get('current_value', '') == 'Cleaning' }}"
+                      then:
+                        - action: script.zen_dojotools_room_manager
+                          data:
+                            mode: room_control_set
+                            area: "{{ repeat.item }}"
+                            room_control_state: Auto
+                          continue_on_error: true
+                alias: Dock sweep — clear every remaining 'Cleaning' room to Auto, unconditionally
               - action: script.zen_dojotools_autovac
                 data:
                   mode: analyze
@@ -3755,6 +4203,185 @@ automation:
                   event:
                     kind: autovac_docked
             alias: Dock — analyze, wear check, ninja refresh, latch event
+
+          - conditions:
+              - condition: trigger
+                id: error
+            sequence:
+              - variables:
+                  _err_detail_ent: >-
+                    {{ (label_entities('autovac_error_detail') | select('match', 'sensor\\.') | list | first) | default('', true) }}
+                  _err_detail: >-
+                    {{ states(_err_detail_ent) if (_err_detail_ent != '' and states(_err_detail_ent) not in ['none','unknown','unavailable','']) else '' }}
+              - action: script.zen_dojotools_autovac
+                data:
+                  mode: analyze
+                  trigger_id: error
+              # 2026-08-27 (household: "in not work hours quiet hours and etc we
+              # should raise the err to alert manager and let it determine
+              # what to do"). Was calling zen_dojotools_postman directly --
+              # bypassed the house's own quiet-hours/authority-stack policy
+              # entirely (a stuck vacuum would push at 2am same as noon).
+              # zen_dojotools_alertmanager mode=fire is the actual sanctioned
+              # entry point for "something's wrong, you decide how/when to
+              # surface it" -- respects quiet hours by default (only
+              # breakthrough:true, deliberately NOT set here, bypasses that
+              # gate), dedupes by alert_key so a stuck vacuum doesn't spam
+              # repeat fires, and still routes through Postman internally.
+              # severity: warn, not error -- a stuck/erroring vacuum is real
+              # but not life-safety-tier, so it doesn't also escalate
+              # sensor.zen_priority_context the way severity=error would.
+              - action: script.zen_dojotools_alertmanager
+                data:
+                  mode: fire
+                  alert_key: autovac_error
+                  severity: warn
+                  notify_target: postman
+                  channel_hint: push
+                  message: >-
+                    {{ 'Vacuum reported an error' ~ (': ' ~ _err_detail if _err_detail != '' else '.') }}
+            alias: Error — analyze + alert manager (real detail if autovac_error_detail is wired, quiet-hours aware)
+
+          - conditions:
+              - condition: trigger
+                id: cleaning_started
+            sequence:
+              # 2026-08-27 CORRECTION (real bug found live: a mop-wash
+              # pit-stop mid-run also fires vacuum.returned_to_dock
+              # (Roborock treats it as a real dock event) and then
+              # vacuum.started_cleaning again on resume -- this branch used
+              # to reset session_rooms to [] on EVERY resume, not just a
+              # genuinely new task. Rooms visited before a mid-run mop-wash
+              # stop got silently discarded unless that interim dock's own
+              # analyze call happened to stamp them (it doesn't if the
+              # camera verdict came back anything but a clean pass -- see
+              # mode=analyze). Confirmed live: front_hall and master_bedroom
+              # were tracked mid-run, then vanished with no last_cleaned
+              # stamp after several mop-wash cycles. Fix: session_rooms is
+              # no longer reset here at all -- it only clears in
+              # mode=analyze, and only once it actually succeeds at
+              # stamping something, so it accumulates safely across however
+              # many mop-wash interruptions a single overall run takes.
+              # Only the alert-clear (a real, independent recovery signal)
+              # stays in this branch.
+              #
+              # STALENESS GUARD (household: "how do you prevent restarts from
+              # overloading that attr" -- real question: removing the reset
+              # above fixes losing rooms mid-run, but if analyze never
+              # successfully consumes session_rooms (she just doesn't dock
+              # for a long stretch, or keeps failing verdicts), a genuinely
+              # NEW, unrelated cleaning session days later would append onto
+              # stale leftovers from an old one and mix two unrelated runs'
+              # rooms into one stamp. session_rooms_updated_at (stamped by
+              # room_changed on every append) answers "is this actually the
+              # same ongoing task, or old debris": older than 3h (generous
+              # for a battery-recall + several mop-wash cycles, tonight's
+              # longest real gap was well under that) means treat this as a
+              # fresh task and reset. Restarts themselves are already safe
+              # regardless -- room_changed's own write already dedupes via
+              # `unique`/`not in _cur`, so a re-armed trigger firing again
+              # for the same room never duplicates an entry.
+              - variables:
+                  _cs_hc: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+              - variables:
+                  _cs_av: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {{- CABS.cabinet_drawer_value(_cs_hc, 'autovac') | from_json() -}}
+                  _cs_updated_at: "{{ (_cs_av.get('system', {}) if _cs_av is mapping else {}).get('session_rooms_updated_at', '') }}"
+              - variables:
+                  _cs_stale: >-
+                    {{ _cs_updated_at == '' or
+                       (now() - as_datetime(_cs_updated_at)).total_seconds() > 10800 }}
+              - if: "{{ _cs_stale }}"
+                then:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      volume_entity_id: "{{ _cs_hc }}"
+                      key: autovac
+                      value: >-
+                        {{ {'rooms': _cs_av.get('rooms', {}), 'system': _cs_av.get('system', {}) | combine({'session_rooms': [], 'session_rooms_updated_at': ''})} | tojson }}
+              - action: script.zen_dojotools_alertmanager
+                data:
+                  mode: clear
+                  alert_key: autovac_error
+                continue_on_error: true
+            alias: Cleaning started — clear any standing error alert, reset room tracker only if stale
+
+          - conditions:
+              - condition: trigger
+                id: room_changed
+              - condition: template
+                value_template: >-
+                  {%- set _room = trigger.event.data.event.get('room') if trigger.event is defined else none -%}
+                  {{ _room not in [none, 'unknown', 'unavailable', '']
+                     and (label_entities('autovac') | select('match', 'vacuum\\.') | list | map('states') | select('equalto', 'cleaning') | list | count > 0) }}
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: update
+                  volume_entity_id: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+                  key: autovac
+                  value: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {%- set _hc = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') -%}
+                    {%- set _av = CABS.cabinet_drawer_value(_hc, 'autovac') | from_json() -%}
+                    {%- set _sys = _av.get('system', {}) -%}
+                    {%- set _room = trigger.event.data.event.get('room', '') -%}
+                    {%- set _slug = area_id(_room) | default('', true) -%}
+                    {%- set _cur = _sys.get('session_rooms', []) -%}
+                    {%- set _new = (_cur + [_slug]) | unique | list if (_slug != '' and _slug not in _cur) else _cur -%}
+                    {{ {'rooms': _av.get('rooms', {}), 'system': _sys | combine({'session_rooms': _new, 'session_rooms_updated_at': now().isoformat()})} | tojson }}
+            alias: Room changed mid-clean — append to the manual-run room tracker
+          # 2026-08-28 (household, live: Living Room and Dining Room stuck on
+          # 'Cleaning' hours after she'd genuinely left both — cleaning_
+          # control_resync's own clear branch (zen_room_manager_dispatch.yaml)
+          # infers "is she still in this room" from sensor.rosie_current_room's
+          # live value via area_id() -- but that sensor has no clean "not
+          # cleaning anywhere" state once docked, it just holds the last real
+          # room indefinitely, so the inference never resolves to "clear it."
+          # Direct fix instead of a smarter inference: room_changed already
+          # tells us, unambiguously, which room she just entered -- so clear
+          # every OTHER room still marked Cleaning right here, on the same
+          # real-time edge, no polling/inference involved. Leaves her new
+          # current room's own Cleaning flag untouched (that's cleaning_
+          # control_resync's job to set, unchanged).
+          - conditions:
+              - condition: trigger
+                id: room_changed
+              - condition: template
+                value_template: >-
+                  {%- set _room = trigger.event.data.event.get('room') if trigger.event is defined else none -%}
+                  {{ _room not in [none, 'unknown', 'unavailable', ''] }}
+            sequence:
+              - variables:
+                  _rc_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+                  _rc_slug: "{{ area_id(trigger.event.data.event.get('room', '')) | default('', true) }}"
+              - variables:
+                  _rc_topo: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {%- set t = CABS.cabinet_drawer_value_mounted(_rc_hh, 'room_topology') | from_json -%}
+                    {{ (t.keys() | list) if t is mapping else [] }}
+              - repeat:
+                  for_each: "{{ _rc_topo }}"
+                  sequence:
+                    - if: "{{ repeat.item != _rc_slug }}"
+                      then:
+                        - action: script.zen_dojotools_room_manager
+                          data:
+                            mode: room_control_set
+                            area: "{{ repeat.item }}"
+                          response_variable: _rc_current
+                          continue_on_error: true
+                        - if: "{{ _rc_current is mapping and _rc_current.get('current_value', '') == 'Cleaning' }}"
+                          then:
+                            - action: script.zen_dojotools_room_manager
+                              data:
+                                mode: room_control_set
+                                area: "{{ repeat.item }}"
+                                room_control_state: Auto
+                              continue_on_error: true
+            alias: Room changed mid-clean — clear 'Cleaning' from every room she's not in anymore
 
           - conditions:
               - condition: trigger

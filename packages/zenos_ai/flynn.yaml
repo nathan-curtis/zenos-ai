@@ -360,8 +360,18 @@ automation:
           #_oobe_name: >-
           #  {{ (_oobe_essence_val.get('identity', {}).get('name', '') | trim)
           #     if _oobe_essence_val is mapping else '' }}
+          # 2026-08-27: same bug as the seed-write branch below — legacy-only
+          # identity.name lookup reads empty on a real three_layer essence
+          # (name lives at jacket.name there), wrongly marking OOBE as
+          # pending on an already-named, signed persona.
           _oobe_name: >-
-            {{- (_oobe_essence_val.get('identity', {}).get('name', '') | trim) -}}
+            {%- if _oobe_essence_val is mapping and _oobe_essence_val.get('core') is mapping and _oobe_essence_val.get('jacket') is mapping -%}
+              {{ _oobe_essence_val.get('jacket', {}).get('name', '') | trim }}
+            {%- elif _oobe_essence_val is mapping -%}
+              {{ _oobe_essence_val.get('identity', {}).get('name', '') | trim }}
+            {%- else -%}
+              {{ '' }}
+            {%- endif -%}
           _oobe_pending: "{{ not _oobe_complete and (_oobe_name in ['', 'your AI', 'unknown']) }}"
           _early_in_warmup: >-
             {%- import 'zenos_ai/zenos_health.jinja' as HEALTH -%}
@@ -1481,9 +1491,28 @@ script:
           _seed_essence_val: >-
             {{ _seed_essence_raw.get('value', _seed_essence_raw)
                if _seed_essence_raw is mapping else {} }}
+          # 2026-08-27 (real bug found live: this only ever checked the
+          # LEGACY shape's identity.name. A three_layer essence (name lives
+          # at jacket.name) always read back as _seed_name == '' here, so
+          # a healthy signed essence looked "unseeded" and got stomped by
+          # the default-seed write below. Confirmed live — Friday's real
+          # three_layer essence got replaced with zen.essence_defaults()
+          # this way, losing the signature and relationship.arc data
+          # (recovered from zenai_essence_prev, but the actual signature
+          # was already gone since prev predates it). Check schema shape
+          # first now, same pattern dojotools_profile.yaml's write mode
+          # already uses correctly.
+          _seed_is_three_layer: >-
+            {{ _seed_essence_val.get('core') is mapping and _seed_essence_val.get('jacket') is mapping
+               if _seed_essence_val is mapping else false }}
           _seed_name: >-
-            {{ (_seed_essence_val.get('identity', {}).get('name', '') | trim)
-               if _seed_essence_val is mapping else '' }}
+            {%- if _seed_essence_val is mapping and _seed_is_three_layer -%}
+              {{ _seed_essence_val.get('jacket', {}).get('name', '') | trim }}
+            {%- elif _seed_essence_val is mapping -%}
+              {{ _seed_essence_val.get('identity', {}).get('name', '') | trim }}
+            {%- else -%}
+              {{ '' }}
+            {%- endif -%}
 
       # Write persona name into essence only when input_text has a name AND the
       # cabinet still holds the placeholder. force_action: true required to
@@ -1742,7 +1771,16 @@ script:
             {%- set _e = (state_attr(_bs_ai_cab, 'variables') or {}).get('zenai_essence', {}) -%}
             {%- set _e = _e.get('value', _e) if _e is mapping else {} -%}
             {{ (_e | from_json) if _e is string else _e }}
-          _bs_ai_name: "{{ (_bs_ai_essence.get('identity', {}).get('name', '') if _bs_ai_essence is mapping else '') | trim }}"
+          # 2026-08-27: same legacy-only identity.name bug — three_layer name
+          # lives at jacket.name.
+          _bs_ai_name: >-
+            {%- if _bs_ai_essence is mapping and _bs_ai_essence.get('core') is mapping and _bs_ai_essence.get('jacket') is mapping -%}
+              {{ _bs_ai_essence.get('jacket', {}).get('name', '') | trim }}
+            {%- elif _bs_ai_essence is mapping -%}
+              {{ _bs_ai_essence.get('identity', {}).get('name', '') | trim }}
+            {%- else -%}
+              {{ '' }}
+            {%- endif -%}
           _bs_verified: >-
             {{ _bs_household_name not in ['', 'unknown', 'unavailable']
                and _bs_ai_name not in ['', 'unknown', 'unavailable', 'your AI'] }}
@@ -2162,15 +2200,24 @@ script:
           essence_val: >-
             {{ essence_raw.get('value', essence_raw)
                if essence_raw is mapping else {} }}
+          # 2026-08-27: same legacy-only identity.{name,primary_user} bug as
+          # the other Flynn spots — a real three_layer essence keeps the
+          # name at jacket.name and the primary-user concept at
+          # core.minted_for (same field write mode in dojotools_profile.yaml
+          # stamps for _in_puser). Reading only 'identity' made a signed
+          # persona look permanently unset to this tool.
+          is_three_layer: "{{ essence_val.get('core') is mapping and essence_val.get('jacket') is mapping }}"
           identity: "{{ essence_val.get('identity', {}) }}"
+          jacket: "{{ essence_val.get('jacket', {}) if is_three_layer else {} }}"
+          core: "{{ essence_val.get('core', {}) if is_three_layer else {} }}"
           has_ack: "{{ '_flynn_builder_ack' in ai_cab_vars }}"
           effective_mode: "{{ 'help' if (not has_ack and mode | default('help') != 'oobe') else mode | default('help') }}"
-          cur_persona: "{{ identity.get('name', '') | trim }}"
+          cur_persona: "{{ (jacket.get('name', '') if is_three_layer else identity.get('name', '')) | trim }}"
           cur_hh_raw: "{{ hh_cab_vars.get('_household_name', '') }}"
           cur_household: >-
             {{ cur_hh_raw.get('value', cur_hh_raw) | trim
                if cur_hh_raw is mapping else cur_hh_raw | trim }}
-          cur_primary_user: "{{ identity.get('primary_user', '') | trim }}"
+          cur_primary_user: "{{ (core.get('minted_for', '') if is_three_layer else identity.get('primary_user', '')) | trim }}"
 
       #########################################################################
       # 2 — DISPATCH
@@ -2287,19 +2334,39 @@ script:
                   do_family: >-
                     {{ in_fam not in ['[]', '', 'null']
                        and 'zenai_family' not in ai_cab_vars }}
-                  # Build merged identity and essence in one pass to avoid double-write
+                  # Build merged identity and essence in one pass to avoid double-write.
+                  # 2026-08-27: schema-aware now — a three_layer essence writes
+                  # name into jacket.name / minted_for into core.minted_for and
+                  # keeps the core/jacket/companion/environment/inventory shape
+                  # intact, instead of bolting a stray legacy 'identity' key
+                  # onto a three_layer essence (which dojotools_profile.yaml's
+                  # own read logic would then never see).
                   new_identity: >-
                     {{
                       identity
                       | combine({'name': in_pn} if (in_pn != '' and cur_persona == '') else {})
                       | combine({'primary_user': in_pu} if (in_pu != '' and cur_primary_user == '') else {})
                     }}
-                  new_essence_json: >-
+                  new_jacket: >-
                     {{
-                      (essence_val | combine({'identity': new_identity}) | tojson)
-                      if (in_pn != '' and cur_persona == '') or (in_pu != '' and cur_primary_user == '')
-                      else ''
+                      jacket
+                      | combine({'name': in_pn} if (in_pn != '' and cur_persona == '') else {})
                     }}
+                  new_core: >-
+                    {{
+                      core
+                      | combine({'minted_for': in_pu} if (in_pu != '' and cur_primary_user == '') else {})
+                    }}
+                  new_essence_json: >-
+                    {%- if (in_pn != '' and cur_persona == '') or (in_pu != '' and cur_primary_user == '') -%}
+                      {%- if is_three_layer -%}
+                        {{ essence_val | combine({'jacket': new_jacket, 'core': new_core}) | tojson }}
+                      {%- else -%}
+                        {{ essence_val | combine({'identity': new_identity}) | tojson }}
+                      {%- endif -%}
+                    {%- else -%}
+                      {{ '' }}
+                    {%- endif -%}
 
               # Household name → household cabinet
               - choose:

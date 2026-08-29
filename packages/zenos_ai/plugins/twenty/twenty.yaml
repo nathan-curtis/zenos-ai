@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI Plugin: Twenty CRM
-# Version: 1.13.1 — hospitality lifecycle scans + local/UTC datetime fix (2026-08-19)
+# Version: 1.13.3 — hospitality lifecycle scans + local/UTC datetime fix (2026-08-19)
 #   New stay_prep_check (arrival, mirrors stay_release's shape) and its
 #   departure counterpart stay_checkout_check + a read-only checkout_status
 #   query -- both idempotent via new prepSpawned/checkoutNudgeSpawned
@@ -655,7 +655,10 @@ script:
       object, not just a calendar entry — area-validated, overlap-warned, auto-dispatches
       a turnover chore + hot-tub recheck on checkout) and stay_amenity_add for mid-stay
       housekeeping (towel refresh, welcome basket — a dated, location-tied task, distinct
-      from the checkout turnover). Lifecycle scans (periodic-automation-driven, but also
+      from the checkout turnover). Multi-room bookings: reservation_create/_get/
+      reservations_active_list/_checkout/_cancel — one reservation-level record spanning
+      several rooms, each becoming its own member stay; checkout/cancel operate on the
+      whole booking at once. Lifecycle scans (periodic-automation-driven, but also
       directly agent-queryable): stay_prep_check/checkout_status/stay_checkout_check —
       arrival-prep and checkout-approaching signals, closing the "does the agent already
       know a departure/arrival is coming" gap on both ends of a stay. Vendor appointments: appt_create/_start/_complete/
@@ -793,7 +796,7 @@ script:
         selector:
           text:
       address:
-        description: "Street address for company_create. Single freetext line — e.g. '2815 N. Loop 1604 W, Suite 119, San Antonio, TX 78248'. Stored as-is on the Twenty company's addressStreet1 field; city/state/postcode are not parsed out separately."
+        description: "Street address for company_create. Single freetext line — e.g. '123 Main St, Suite 100, Anytown, TX 00000'. Stored as-is on the Twenty company's addressStreet1 field; city/state/postcode are not parsed out separately."
         selector:
           text:
       company:
@@ -921,7 +924,7 @@ script:
     sequence:
     - variables:
         tool_name: Zen DojoTools Rolodex
-        tool_version: 1.10.0
+        tool_version: 1.13.3
         crm_schema_version: '1.6.0'
         case_norm: '{{ mode | default("help") | string | trim | lower }}'
         item_norm: '{{ item | default("") | string | trim }}'
@@ -1117,6 +1120,31 @@ script:
             needs: [item_id (stay UUID), amenity (task title)]
             optional: [day_offset (default 0), note_body]
             example: "{'mode':'stay_amenity_add','item_id':'stay-uuid','amenity':'Fresh towels','day_offset':3}"
+          reservation_create:
+            intent: "Book multiple rooms as one reservation-level record, each becoming its own member stay. Every room's area_id is validated against real HA areas up front — fails before creating anything if any room is bad, rather than partway through."
+            needs: [rooms_json (JSON array of {area_id, item_id, start_date, end_date, occupant_names, note} objects)]
+            optional: []
+            example: "{'mode':'reservation_create','rooms_json':'[{\"area_id\":\"guest_room\",\"item_id\":\"contact-uuid\",\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-03\"}]'}"
+          reservation_get:
+            intent: Full reservation-level record — the booking, not an individual member stay.
+            needs: [item_id (reservation UUID)]
+            optional: []
+            example: "{'mode':'reservation_get','item_id':'uuid-here'}"
+          reservations_active_list:
+            intent: "Who's here or arriving, at the reservation level (date-scoped — a reservation with a past checkout that was never explicitly released does not count as active)."
+            needs: []
+            optional: []
+            example: "{'mode':'reservations_active_list'}"
+          reservation_checkout:
+            intent: "Reservation-level checkout — releases every member stay not yet RELEASED (each gets the same turnover-chore-dispatch + hot-tub-recheck logic stay_release runs, one room at a time), then marks the reservation itself checked out. Idempotent."
+            needs: [item_id (reservation UUID)]
+            optional: []
+            example: "{'mode':'reservation_checkout','item_id':'uuid-here'}"
+          reservation_cancel:
+            intent: "Cancels the booking-level record only — does NOT touch child stays' own status or any chores already spawned. Cannot cancel a reservation already CHECKED_OUT; release/manage the individual stays instead."
+            needs: [item_id (reservation UUID)]
+            optional: []
+            example: "{'mode':'reservation_cancel','item_id':'uuid-here'}"
           stay_prep_check:
             intent: "Arrival counterpart to stay_release — scans RESERVED stays and spawns a Taskmaster prep chore (guest name, check-in time, allergen/music/spa summary) plus a Postman notice for any check-in within lookahead_hours that hasn't been prepped yet. Idempotent via prepSpawned, same shape as turnoverSpawned. Scan operation, not single-stay — no item_id. Intended caller: a periodic automation, not a live agent request."
             needs: []
@@ -1462,7 +1490,7 @@ script:
             result:
               status: ok
               tool: zen_dojotools_rolodex
-              version: "1.8.0"
+              version: "1.13.3"
               mode: kfc_manifest
               kfc: '{{ _kfc_out }}'
               count: '{{ _kfc_out | length }}'
@@ -2967,10 +2995,26 @@ script:
               {%- set _d = _d if _d is mapping else {} -%}
               {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
         - variables:
+            # 2026-08-26 (Vee, cohesion review: "stays_active_list treating
+            # any unreleased RESERVED record as active without checking
+            # whether today falls between check-in and checkout" -- exact
+            # bug, confirmed live via a stale Allison Wright reservation
+            # from 2026-08-07/08 still reporting as an active stay 18 days
+            # after checkout). status != 'RELEASED' alone matches the
+            # documented "who's here or arriving" intent for a genuine
+            # future/current stay, but doesn't distinguish that from a
+            # RESERVED record whose checkout already passed without ever
+            # being explicitly released -- that's not "arriving," it's
+            # abandoned. Added: drop any record whose check_out is
+            # already in the past, regardless of status. A blank
+            # check_out is treated as not-expired (never assume expiry
+            # from missing data).
             _sal_filtered: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for s in _sal_all if s is mapping -%}
-                {%- if s.get('status','') != 'RELEASED' and (area_id_norm == '' or s.get('roomAreaId','') == area_id_norm) -%}
+                {%- set _co = s.get('checkOut','') -%}
+                {%- set _not_expired = (_co == '') or (as_datetime(_co) is not none and as_datetime(_co) >= now()) -%}
+                {%- if s.get('status','') != 'RELEASED' and _not_expired and (area_id_norm == '' or s.get('roomAreaId','') == area_id_norm) -%}
                   {%- set ns.out = ns.out + [{'id': s.get('id',''), 'guest_contact_id': s.get('guestContactId',''), 'area_id': s.get('roomAreaId',''), 'check_in': s.get('checkIn',''), 'check_out': s.get('checkOut',''), 'status': s.get('status',''), 'occupant_names': s.get('occupantNames',''), 'reservation_id': s.get('reservationId','')}] -%}
                 {%- endif -%}
               {%- endfor -%}
@@ -3336,7 +3380,7 @@ script:
     # ── case: checkout_status ────────────────────────────────────────────────────
     # Read-only, no side effects, safe to call any time -- this is the "does
     # the agent already know a departure is approaching" answer (2026-08-19,
-    # Nathan: result should be an agent-queryable fact, not just a background
+    # household: result should be an agent-queryable fact, not just a background
     # push). Scans ACTIVE stays with a set checkOut inside lookahead_hours
     # (default 24 -- a broader natural window than the nudge dispatch below,
     # since "who's leaving today" is a wider ask than "fire the reminder
