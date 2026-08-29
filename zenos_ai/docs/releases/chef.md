@@ -135,4 +135,24 @@ None of this changes behavior on an already-healthy, already-provisioned system 
 
 ---
 
+## 2026.8.1 — Patch
+
+**Status:** Released
+**Branch:** `feat/2026.8.1` (off `main`/2026.8.0)
+
+A small, deliberately narrow patch for households not yet ready to move onto Steel Magnolia's new identity-gate/cert-scope security architecture. Every fix below is a genuine bug that predates Steel Magnolia entirely — nothing here depends on, or drags in, any of that new machinery. If you're already running (or planning to run) 2026.9.0 'Steel Magnolia', this patch has nothing for you that isn't already there; it exists purely as a safe, known-good parking spot on the Chef line.
+
+| File | Fix |
+|---|---|
+| `custom_templates/zenos_ai/zen_os_1.jinja`, `zenos_manifest.jinja`, `dojotools_utilities.yaml` | New canonical `os_version()` macro replaces a stale, un-refreshed cabinet-based version read across 4 call sites. |
+| `dojotools_index.yaml` (ZQ-1) | `filter_json` keys that don't exist (a stray `domains` instead of `domain`) used to vanish silently, producing a confidently-empty result indistinguishable from a real zero-hit query. State-class-aware history stats — requesting stats against a `total`/`total_increasing` energy sensor used to silently return empty buckets. |
+| `plugins/mealie/mealie.yaml` | `recipe_consume`/`recipes_update` hardening — real 422s on food-object hydration, traced back through a real household-reported bug (Radar #289). |
+| `plugins/twenty/twenty.yaml` | `stays_list`'s `ha_area:`/`crm_link:` tag parsing rebuilt to handle a stay carrying multiple `ha_area:` tags (multi-room booking on one calendar event) correctly — the old raw-regex filter could never match these. |
+| `plugins/grocy/grocy.yaml` | The inventory lens's `by_anchor` path self-called its own wrapper script, which HA correctly blocks as disallowed recursion when reached via a call chain that loops back through itself (Room Manager → Lens Dispatch → Media Manager → Inventory → Inventory) — fixed to call the underlying primitive directly. Separately, the OpenAPI REST sensor has always pointed at a path Grocy has never served (`/openapi.json`, 404) instead of the real spec path, causing an hourly failure regardless of configuration — fixed, plus a longer timeout since the real spec generates slower than HA's default. |
+| `dojotools_manifest.yaml` | The same self-call recursion bug as the Grocy fix above, in `mode=all`'s force-refresh republish path — the sibling `bootstrap_stacks` instance of this bug was already fixed on `main`; this was the one remaining site using the same broken pattern. |
+
+No new features, no schema changes, no behavior changes to anything not listed above.
+
+---
+
 *ZenOS-AI 2026.8.0 'Chef' — service.*

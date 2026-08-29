@@ -1,6 +1,6 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.8.0 'Chef' | **Last Updated:** Jul 2026 | **License:** MIT
+> **Version:** 2026.8.1 (patch on 2026.8.0 'Chef') | **Last Updated:** Aug 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 

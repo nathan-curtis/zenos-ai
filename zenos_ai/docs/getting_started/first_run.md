@@ -1,6 +1,6 @@
 # ZenOS-AI: First Run Guide
 
-> **Version:** 2026.8.0 'Chef' | **Last Updated:** Jul 2026
+> **Version:** 2026.8.1 (patch on 'Chef') | **Last Updated:** Aug 2026
 
 ---
 

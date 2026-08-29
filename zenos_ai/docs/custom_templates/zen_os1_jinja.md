@@ -2,7 +2,7 @@ ZenOS-AI Template Engine: zen_os_1.jinja
 
 Technical Specification & Prompt Loader Requirements
 
-Version: 2026.8.0
+Version: 2026.8.1
 Status: Stable & Required for All Front-Line Agents
 
 > **2026.7.0:** Version scheme changed from semantic (e.g. `4.5.5`) to date-based (`YYYY.M.patch`) aligned with Home Assistant release conventions. `{%- import 'zenos_ai/flynn_onboarding.jinja' as flynn %}` added at the top of the template. `~COMMANDS~` / `command_interpreter.jinja` interface fully retired — replaced by `zen_dojotools_library` + KFC. Library Commands Window removed from the prompt.
