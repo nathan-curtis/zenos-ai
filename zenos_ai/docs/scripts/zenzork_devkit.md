@@ -248,7 +248,7 @@ curtained, the latter doesn't.
 `book_lore.json` is different: DUNGEONMIND has to narrate the real
 achievement name and flavor text out of it every time a player earns
 an entry, forever — there's no point where the engine's copy can be a
-one-way hash. But Nathan wants it not casually plaintext-readable by
+one-way hash. It still shouldn't be casually plaintext-readable by
 someone browsing the repo either. So it gets BOTH layers:
 
 - **In `packages/`**: `title`/`achievement_name`/`flavor` are

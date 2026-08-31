@@ -4,7 +4,7 @@
 
 **White Paper v1.1 — ZenOS-AI / Friday’s Party**
 **Author:** Notebook LM
-**Revisions / Reviewers** Nathan Curtis & Veronica, ZenOS-AI Project
+**Revisions / Reviewers** The household & Veronica, ZenOS-AI Project
 **Date:** November 2025
 
 ---

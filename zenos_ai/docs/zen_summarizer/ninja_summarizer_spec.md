@@ -2,7 +2,7 @@
 
 **Subsystem:** ZenOS-AI → DojoTools → Summarization Pipeline
 **Version:** 4.5.5 'Ready Player Two'
-**Authors:** Nathan & Veronica (The Monastery Collective)
+**Authors:** The household & Veronica (The Monastery Collective)
 
 The **Ninja Summarizer** is Friday’s first-stage summarizer — a modular AI agent that gathers data from the Dojo, resolves labels through the Index, runs Library commands, and generates structured **Kata summaries** stored in the **Kata Cabinet** for higher-level reasoning by the **High Priestess**.
 
