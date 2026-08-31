@@ -1,6 +1,24 @@
 ###############################################################################
-# zen_dojotools_lights v2.2.0 (codename: ZenLux)
+# zen_dojotools_lights v2.6.0 (codename: ZenLux)
 # Room-aware lighting intent resolver with memory + label-driven topology
+#
+# 2.6.0 (2026-08-30, Vee + household, morning after Spook 5.2 dropped) —
+#   brightness_set/color_temp_set/rgb_set gained adjust_only=true (Spook
+#   v5.2.0+): routes through Spook's own light.set_brightness/
+#   light.set_color_temperature/light.set_color instead of light.turn_on,
+#   so adjusting a room leaves lights
+#   that are deliberately off alone and steps group members from their own
+#   level instead of flattening to an average. Default false — today's
+#   force-on behavior is completely unchanged unless a caller opts in. Two
+#   brand-new modes, both Spook-only with no safe core fallback:
+#   brightness_increase/brightness_decrease (step_pct=, ZenLux never had a
+#   relative dim mode before this) and effect_set (effect= — confirmed live
+#   against the hot tub's own color-wheel light channel, which already
+#   carries a real effect_list + EFFECT feature flag, no extra wiring
+#   needed). All three gate cleanly via the same has_service capability
+#   probe zen_health_report/ectoplasm already use for Spook 5.1 features —
+#   never a raw "unknown action" error on older Spook, always a clean
+#   spook_version_required status with nothing changed.
 #
 # 2.0.0-2.2.0 (2026-08-16) — SESE conversion (all 21 modes now live in one
 #   choose: block, single envelope()-wrapped exit, matching locks/covers/
@@ -113,6 +131,11 @@ script:
           write control, same room/role/'primary'-tiebreak resolution as
           the light modes (no fixed role-label taxonomy for switches
           though — target_role= is just a plain label filter).
+          brightness_set/color_temp_set/rgb_set accept adjust_only=true
+          (Spook v5.2.0+) to adjust only lights already on instead of the
+          default force-on behavior — see the adjust_only field for detail.
+          brightness_increase/brightness_decrease (step_pct=) and effect_set
+          (effect=) are new, Spook v5.2.0+ only modes with no core fallback.
         selector:
           select:
             options:
@@ -139,6 +162,10 @@ script:
               - scene_stage
               - toggle
               - switch_set
+              - brightness_increase
+              - brightness_decrease
+              - effect_set
+              - nightlight_scene_sync
               - tool_manifest
               - help
 
@@ -187,6 +214,37 @@ script:
           number:
             min: 0
             max: 100
+
+      adjust_only:
+        name: Adjust Only (Spook v5.2.0+)
+        description: >-
+          For brightness_set/color_temp_set/rgb_set. Default false — today's
+          behavior, unchanged: light.turn_on, which also turns ON any light
+          that's currently off (or a whole group, flattened to one value).
+          Pass true to instead route through Spook's real light.set_brightness/
+          light.set_color_temperature/light.set_color — adjusts only lights
+          already on, leaves off lights off, steps group members from their
+          own level rather than averaging. Requires Spook v5.2.0+; returns a
+          clean spook_version_required error (nothing changed) if unavailable
+          — never silently falls back to the force-on behavior you explicitly
+          asked to avoid.
+        default: false
+        selector:
+          boolean:
+
+      step_pct:
+        name: Brightness Step
+        description: "1–100 percent. Required for brightness_increase/brightness_decrease (Spook v5.2.0+ only — no safe core fallback, core's own brightness_step_pct has the same off-light/group-flattening bug Spook fixed)."
+        selector:
+          number:
+            min: 1
+            max: 100
+
+      effect:
+        name: Effect
+        description: "Effect name, e.g. 'Colorloop', 'Cycle Slow'. Required for effect_set (Spook v5.2.0+ only). Names differ per manufacturer/device — check the target entity's effect_list first (mode=inspect)."
+        selector:
+          text:
 
       color_temp_k:
         name: Color Temperature (Kelvin)
@@ -308,7 +366,8 @@ script:
         description: >-
           Bypass the room_control_manager guard (Paused/Automation/Cleaning override
           active for this room). Only the write-taking modes (scene_set,
-          brightness_set, color_temp_set, rgb_set, bleed_set, prefs_apply)
+          brightness_set, color_temp_set, rgb_set, bleed_set, prefs_apply,
+          brightness_increase, brightness_decrease, effect_set)
           are guarded — pass true for an explicit human override. Default
           false.
         default: false
@@ -329,7 +388,7 @@ script:
                     tool='zen_dojotools_lights',
                     display_name='Lights',
                     tier='dojotools',
-                    version='2.5.0',
+                    version='2.6.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['light'],
@@ -374,7 +433,7 @@ script:
           _intent:       "{{ intent | default('', true) | string | trim | lower }}"
           _brightness:   "{{ brightness | default(-1) | int(-1) }}"
           _color_temp_k: "{{ color_temp_k | default(-1) | int(-1) }}"
-          # REAL BUG (found live 2026-08-16, Nathan mid-session), TWO
+          # REAL BUG (found live 2026-08-16, household mid-session), TWO
           # LAYERS DEEP: naive `| string | trim` on rgb_color silently
           # mis-coerced. First fix attempt stored an intermediate
           # bare-comma string (e.g. "75,20,140", no brackets/quotes) into
@@ -421,6 +480,9 @@ script:
           _dry_run:      "{{ dry_run | default(false) | bool }}"
           _caller_token: "{{ caller_token | default('') | string | trim }}"
           _search:       "{{ search | default('', true) | string | trim | lower }}"
+          _adjust_only:  "{{ adjust_only | default(false) | bool }}"
+          _step_pct:     "{{ step_pct | default(-1) | int(-1) }}"
+          _effect_want:  "{{ effect | default('', true) | string | trim }}"
 
       # ── 0a2. Shade sync ───────────────────────────────────────────────────
       - variables:
@@ -458,7 +520,7 @@ script:
             {%- endif -%}
           # Same area-first/label-fallback shape, switch\. domain -- for
           # mode=switch_set's room=/target_role= resolution (2026-08-16,
-          # Nathan: "extended into it now"). No zen_lm_*-style role taxonomy
+          # household: "extended into it now"). No zen_lm_*-style role taxonomy
           # exists for switches (there's nothing equivalent to main/accent/
           # task lighting roles), so resolution is flatter: target_role=
           # still works as a plain label filter (any label name, not
@@ -498,7 +560,7 @@ script:
           _zl_hold_ents: "{{ label_entities('hold') | intersect(label_entities(_room_slug)) | list }}"
           _zl_hold_active: "{{ (_zl_hold_ents | map('states') | select('in', ['on', 'open']) | list | count) > 0 }}"
           _zl_room_locked: "{{ _zl_rc_locked or _zl_hold_active }}"
-          _zl_write_modes: [scene_set, brightness_set, color_temp_set, rgb_set, bleed_set, prefs_apply, toggle, switch_set]
+          _zl_write_modes: [scene_set, brightness_set, color_temp_set, rgb_set, bleed_set, prefs_apply, toggle, switch_set, brightness_increase, brightness_decrease, effect_set]
       - if: "{{ (_mode in _zl_write_modes or _mode == 'scene_stage') and _zl_room_locked and not _force }}"
         then:
           - variables:
@@ -526,14 +588,14 @@ script:
           - stop: room locked — write blocked
             response_variable: result
 
-      # ── 0c-2. LIGHTING_CONTROL cert gate (2026-08-16, Nathan: "now add
+      # ── 0c-2. LIGHTING_CONTROL cert gate (2026-08-16, household: "now add
       # the gates" -- turning on the cert declared earlier this session).
       # Cert-only, matching the SAFE tier of locks'/covers' asymmetric-risk
       # shape (the "lock"/"close" direction) -- no live-ack tier yet, since
       # ZenLux has no built write action with the same physical-exposure
       # shape as an exterior unlock/barrier-open. cert_scope IS resolved
       # and carried on the identity result regardless, so the exemption
-      # mechanism (Nathan: "allow certain lamps to be excepted/exempted...
+      # mechanism (household: "allow certain lamps to be excepted/exempted...
       # for scene and lamp and switch", same cert_scope semantic as locks
       # -- an allow-list, not a disallow-list) is structurally ready the
       # moment a real ack-requiring action lands here (e.g. scene_stage's
@@ -776,7 +838,7 @@ script:
           _sw_resolved_entity: >-
             {{ _entity_id if _entity_id != '' else _sw_role_resolved }}
 
-      # ── 0g2. LIGHTING_CONTROL deny enforcement (2026-08-16, Nathan: "fix
+      # ── 0g2. LIGHTING_CONTROL deny enforcement (2026-08-16, household: "fix
       # lighting controls missing gates with appropriate cert checks" --
       # part 4 of the deny-ACL plan, enforcement half). The earlier cert
       # gate (0c-2) only ever checked scope_decision against the RAW
@@ -1771,8 +1833,20 @@ script:
                     caller_token: "{{ _caller_token }}"
                 - variables:
                     _zl_rw: "{{ _zl_rw_raw if _zl_rw_raw is mapping else {} }}"
-                    _zl_room_state_ent: "sensor.{{ _room_area_id }}_room_state"
-                    _zl_current_state: "{{ states('sensor.' ~ _room_area_id ~ '_room_state') }}"
+                    # 2026-08-30 (found live, testing the site-1/site-3
+                    # migration onto this mode): was guessing entity_id as
+                    # sensor.<room>_room_state -- wrong suffix AND wrong
+                    # approach. Real entity is sensor.<room>_state, and the
+                    # established convention everywhere else in this
+                    # codebase (dispatch itself, repeatedly) resolves it via
+                    # the zen_room_state LABEL intersected with the room's
+                    # own entities, never a guessed string -- label-driven
+                    # discovery, never hardcode IDs. This mode has never
+                    # actually worked in production before this fix; every
+                    # call hit room_state_unavailable regardless of real
+                    # live state.
+                    _zl_room_state_ent: "{{ (label_entities('zen_room_state') | intersect(label_entities(_room_area_id)) | list | first) | default('', true) }}"
+                    _zl_current_state: "{{ states((label_entities('zen_room_state') | intersect(label_entities(_room_area_id)) | list | first) | default('', true)) }}"
                     _zl_mode_slug: "{{ states('sensor.zen_home_mode') | lower | replace(' ', '_') | replace('-', '_') }}"
                 - if: "{{ _zl_rw.get('status', '') != 'ok' or _zl_current_state in ['unknown', 'unavailable', ''] }}"
                   then:
@@ -1785,7 +1859,7 @@ script:
                           room: "{{ _room_area_id }}"
                           room_state_entity: "{{ _zl_room_state_ent }}"
                           current_state: "{{ _zl_current_state }}"
-                          message: "Could not read reflex_wire data or this room has no v3 room_state sensor deployed (sensor.{{ _room_area_id }}_room_state)."
+                          message: "Could not read reflex_wire data or this room has no v3 room_state sensor deployed (no entity carries both the zen_room_state and {{ _room_area_id }} labels)."
                 - if: "{{ result is not defined }}"
                   then:
                   - variables:
@@ -1809,6 +1883,23 @@ script:
                     then:
                     - if: "{{ not _dry_run }}"
                       then:
+                        # TRAP (2026-08-30, real incident): if this throws
+                        # -- 'NoneType' object is not subscriptable or
+                        # similar mid-service-call errors -- this
+                        # resolution code is very likely NOT the bug.
+                        # Confirmed live: scene.office_occupied_day crashed
+                        # here, traced three layers deep through HA core's
+                        # scene reproduction into custom_components/
+                        # localtuya/light.py's async_turn_on indexing
+                        # self._hs[0] with no None-check on a light whose
+                        # cached HS value was stale. Fixed by disabling
+                        # localtuya; scene fired clean immediately after.
+                        # Before suspecting resolution/routing logic here,
+                        # check what the scene's OWN member entities do on
+                        # reproduction -- "does firing the identical scene
+                        # a different way (NR, frontend, another tool) also
+                        # error" is the fastest way to tell whether the bug
+                        # is in this call or in what it's calling.
                         - action: scene.turn_on
                           target:
                             entity_id: "{{ _zl_scene_to_fire }}"
@@ -1825,6 +1916,75 @@ script:
                           scene_fired: "{{ _zl_scene_to_fire }}"
                           dry_run: "{{ _dry_run }}"
                           caller_token: "{{ _caller_token }}"
+          # ── NIGHTLIGHT_SCENE_SYNC ──────────────────────────────────────────
+          # 2026-08-30 (household: "pull in site 2 as well be we have a second
+          # scene-less mode coming for that"). Same shape and same
+          # deliberately-ungated rationale as reflex_sync above -- pure
+          # replay of a decision dispatch's own room_state/nightlight-timer
+          # logic already made, nothing here for an external caller to
+          # authorize. Resolves scene_nightlight (mode-qualified preferred,
+          # same tie-break dispatch's own nightlight-timer-start site
+          # already used), NOT scene_<state> -- deliberately not folded into
+          # reflex_sync, which resolves a different label entirely. This
+          # separate mode is also the intended seam for a future scene-less
+          # nightlight implementation: when that lands, only THIS mode's
+          # internals change -- dispatch's call site never has to move
+          # again.
+          - conditions: "{{ _mode == 'nightlight_scene_sync' }}"
+            sequence:
+              - if: "{{ _room_area_id == '' }}"
+                then:
+                  - variables:
+                      result:
+                        ok: false
+                        tool: zen_dojotools_lights
+                        mode: nightlight_scene_sync
+                        error: missing_room
+                        message: "room= required and must resolve to a real HA area."
+              - if: "{{ result is not defined }}"
+                then:
+                - variables:
+                    _nls_room_ents: "{{ label_entities(_room_area_id) }}"
+                    _nls_mode_ents: "{{ label_entities(states('sensor.zen_home_mode') | lower | replace(' ', '_') | replace('-', '_')) }}"
+                    _nls_scene_ents: "{{ label_entities('scene_nightlight') }}"
+                - variables:
+                    _nls_scene_with_mode: "{{ (_nls_scene_ents | intersect(_nls_room_ents) | intersect(_nls_mode_ents) | select('match', 'scene\\.') | list | first) | default('', true) }}"
+                    _nls_scene_no_mode: "{{ (_nls_scene_ents | intersect(_nls_room_ents) | select('match', 'scene\\.') | list | first) | default('', true) }}"
+                - variables:
+                    _nls_scene_to_fire: "{{ _nls_scene_with_mode if _nls_scene_with_mode != '' else _nls_scene_no_mode }}"
+                - if: "{{ _nls_scene_to_fire | trim == '' }}"
+                  then:
+                    - variables:
+                        result:
+                          ok: false
+                          tool: zen_dojotools_lights
+                          mode: nightlight_scene_sync
+                          error: no_scene_wired
+                          room: "{{ _room_area_id }}"
+                          message: "No scene_nightlight wired for this room/mode."
+                - if: "{{ result is not defined }}"
+                  then:
+                  - if: "{{ not _dry_run }}"
+                    then:
+                      # TRAP -- same note as reflex_sync's fire site above.
+                      # If this throws, check the scene's own member
+                      # entities/integrations first (real 2026-08-30
+                      # incident: a localtuya null-check bug, not this
+                      # resolution code).
+                      - action: scene.turn_on
+                        target:
+                          entity_id: "{{ _nls_scene_to_fire | trim }}"
+                        data:
+                          transition: "{{ _transition }}"
+                  - variables:
+                      result:
+                        ok: true
+                        tool: zen_dojotools_lights
+                        mode: nightlight_scene_sync
+                        room: "{{ _room_area_id }}"
+                        scene_fired: "{{ _nls_scene_to_fire | trim }}"
+                        dry_run: "{{ _dry_run }}"
+                        caller_token: "{{ _caller_token }}"
           - conditions: "{{ _mode == 'brightness_set' }}"
             sequence:
               - variables:
@@ -1850,22 +2010,62 @@ script:
                           would_set_brightness_pct: "{{ _eff_bri }}"
                           dusk_dawn_warning: "{{ 'auto-managed entity' if _is_dusk_dawn else none }}"
                           caller_token: "{{ _caller_token }}"
-                - if: "{{ result is not defined }}"
+                - if: "{{ result is not defined and _adjust_only }}"
                   then:
-                  - if: "{{ _eff_bri == 0 }}"
+                    # 2026-08-30 (Vee + household, morning after Spook 5.2
+                    # dropped: "gate the new adjust actions on Spook >=5.2
+                    # using the same feature-detection pattern already used
+                    # for 5.1; preserve existing authoritative set/scene
+                    # behavior, but use Spook for non-destructive adjustments
+                    # that must leave currently-off lights off"). Same
+                    # has_service probe zen_health_report/ectoplasm already
+                    # use for the spook_installed / automation_snooze checks
+                    # -- never assume, always confirm the real service
+                    # exists before calling it.
+                    - action: script.zen_sutra_ha_api
+                      continue_on_error: true
+                      data:
+                        mode: services
+                        has_service: light.set_brightness
+                      response_variable: _bri_svc_check
+                    - if: "{{ not (_bri_svc_check is mapping and _bri_svc_check.get('found', false) == true) }}"
+                      then:
+                        - variables:
+                            result:
+                              status: error
+                              error: spook_version_required
+                              mode: brightness_set
+                              message: >-
+                                adjust_only=true requires Spook v5.2.0+
+                                (light.set_brightness not found). Nothing
+                                was changed -- retry without adjust_only for
+                                today's force-on behavior, or upgrade Spook.
+                              caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                  - if: "{{ _adjust_only }}"
                     then:
-                      - action: light.turn_off
+                      - action: light.set_brightness
                         target:
                           entity_id: "{{ _resolved_entity }}"
                         data:
+                          brightness_pct: "{{ _eff_bri }}"
                           transition: "{{ _transition }}"
                     else:
-                      - action: light.turn_on
-                        target:
-                          entity_id: "{{ _resolved_entity }}"
-                        data:
-                          brightness: "{{ (_eff_bri * 2.55) | round(0) | int }}"
-                          transition: "{{ _transition }}"
+                      - if: "{{ _eff_bri == 0 }}"
+                        then:
+                          - action: light.turn_off
+                            target:
+                              entity_id: "{{ _resolved_entity }}"
+                            data:
+                              transition: "{{ _transition }}"
+                        else:
+                          - action: light.turn_on
+                            target:
+                              entity_id: "{{ _resolved_entity }}"
+                            data:
+                              brightness: "{{ (_eff_bri * 2.55) | round(0) | int }}"
+                              transition: "{{ _transition }}"
                   - variables:
                       result:
                         status: ok
@@ -1873,6 +2073,7 @@ script:
                         entity: "{{ _resolved_entity }}"
                         brightness_pct: "{{ _eff_bri }}"
                         transition: "{{ _transition }}"
+                        adjust_only: "{{ _adjust_only }}"
                         dusk_dawn_warning: "{{ 'auto-managed — verify photosensor not fighting command' if _is_dusk_dawn else none }}"
                         room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
                         caller_token: "{{ _caller_token }}"
@@ -1906,14 +2107,45 @@ script:
                           would_set_color_temp_k: "{{ _eff_ct_k }}"
                           would_set_mired: "{{ _ct_mired }}"
                           caller_token: "{{ _caller_token }}"
-                - if: "{{ result is not defined }}"
+                - if: "{{ result is not defined and _adjust_only }}"
                   then:
-                  - action: light.turn_on
-                    target:
-                      entity_id: "{{ _resolved_entity }}"
-                    data:
-                      color_temp_kelvin: "{{ _eff_ct_k }}"
-                      transition: "{{ _transition }}"
+                    - action: script.zen_sutra_ha_api
+                      continue_on_error: true
+                      data:
+                        mode: services
+                        has_service: light.set_color_temperature
+                      response_variable: _ct_svc_check
+                    - if: "{{ not (_ct_svc_check is mapping and _ct_svc_check.get('found', false) == true) }}"
+                      then:
+                        - variables:
+                            result:
+                              status: error
+                              error: spook_version_required
+                              mode: color_temp_set
+                              message: >-
+                                adjust_only=true requires Spook v5.2.0+
+                                (light.set_color_temperature not found).
+                                Nothing was changed -- retry without
+                                adjust_only for today's force-on behavior,
+                                or upgrade Spook.
+                              caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                  - if: "{{ _adjust_only }}"
+                    then:
+                      - action: light.set_color_temperature
+                        target:
+                          entity_id: "{{ _resolved_entity }}"
+                        data:
+                          kelvin: "{{ _eff_ct_k }}"
+                          transition: "{{ _transition }}"
+                    else:
+                      - action: light.turn_on
+                        target:
+                          entity_id: "{{ _resolved_entity }}"
+                        data:
+                          color_temp_kelvin: "{{ _eff_ct_k }}"
+                          transition: "{{ _transition }}"
                   - variables:
                       result:
                         status: ok
@@ -1922,6 +2154,7 @@ script:
                         color_temp_k: "{{ _eff_ct_k }}"
                         color_temp_mired: "{{ _ct_mired }}"
                         transition: "{{ _transition }}"
+                        adjust_only: "{{ _adjust_only }}"
                         room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
                         caller_token: "{{ _caller_token }}"
           - conditions: "{{ _mode == 'rgb_set' }}"
@@ -1961,17 +2194,50 @@ script:
                           would_set_entity: "{{ _resolved_entity }}"
                           would_set_rgb: "{{ _rgb_raw }}"
                           caller_token: "{{ _caller_token }}"
-                - if: "{{ result is not defined }}"
+                - if: "{{ result is not defined and _adjust_only }}"
                   then:
-                  - action: light.turn_on
-                    target:
-                      entity_id: "{{ _resolved_entity }}"
-                    data:
-                      rgb_color:
-                        - "{{ _rgb_parts[0] | int }}"
-                        - "{{ _rgb_parts[1] | int }}"
-                        - "{{ _rgb_parts[2] | int }}"
-                      transition: "{{ _transition }}"
+                    - action: script.zen_sutra_ha_api
+                      continue_on_error: true
+                      data:
+                        mode: services
+                        has_service: light.set_color
+                      response_variable: _rgb_svc_check
+                    - if: "{{ not (_rgb_svc_check is mapping and _rgb_svc_check.get('found', false) == true) }}"
+                      then:
+                        - variables:
+                            result:
+                              status: error
+                              error: spook_version_required
+                              mode: rgb_set
+                              message: >-
+                                adjust_only=true requires Spook v5.2.0+
+                                (light.set_color not found). Nothing was
+                                changed -- retry without adjust_only for
+                                today's force-on behavior, or upgrade Spook.
+                              caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                  - if: "{{ _adjust_only }}"
+                    then:
+                      - action: light.set_color
+                        target:
+                          entity_id: "{{ _resolved_entity }}"
+                        data:
+                          rgb_color:
+                            - "{{ _rgb_parts[0] | int }}"
+                            - "{{ _rgb_parts[1] | int }}"
+                            - "{{ _rgb_parts[2] | int }}"
+                          transition: "{{ _transition }}"
+                    else:
+                      - action: light.turn_on
+                        target:
+                          entity_id: "{{ _resolved_entity }}"
+                        data:
+                          rgb_color:
+                            - "{{ _rgb_parts[0] | int }}"
+                            - "{{ _rgb_parts[1] | int }}"
+                            - "{{ _rgb_parts[2] | int }}"
+                          transition: "{{ _transition }}"
                   - variables:
                       result:
                         status: ok
@@ -1979,6 +2245,149 @@ script:
                         entity: "{{ _resolved_entity }}"
                         rgb_color: "{{ _rgb_raw }}"
                         transition: "{{ _transition }}"
+                        adjust_only: "{{ _adjust_only }}"
+                        room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
+                        caller_token: "{{ _caller_token }}"
+          # ── BRIGHTNESS_INCREASE / BRIGHTNESS_DECREASE (Spook v5.2.0+) ────────
+          # 2026-08-30 (Vee + household). Genuinely new capability -- ZenLux had
+          # no relative dim/brighten mode before this. No safe core fallback:
+          # HA's own light.turn_on brightness_step_pct has the exact bug
+          # Spook's PR #1503 measured and fixed (turns an OFF light on at a
+          # low level; averages a group then flattens every member to the
+          # same value on one step). Spook-only, clean gate, no silent
+          # fallback to the flawed core primitive.
+          - conditions: "{{ _mode in ['brightness_increase', 'brightness_decrease'] }}"
+            sequence:
+              - if: "{{ _step_pct <= 0 or _resolved_entity == '' }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        mode: "{{ _mode }}"
+                        error: "step_pct (1-100) and room/entity required."
+                        caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                - if: "{{ _dry_run }}"
+                  then:
+                    - variables:
+                        result:
+                          status: ok
+                          dry_run: true
+                          mode: "{{ _mode }}"
+                          would_step_entity: "{{ _resolved_entity }}"
+                          would_step_pct: "{{ _step_pct }}"
+                          caller_token: "{{ _caller_token }}"
+                - if: "{{ result is not defined }}"
+                  then:
+                    - action: script.zen_sutra_ha_api
+                      continue_on_error: true
+                      data:
+                        mode: services
+                        has_service: "light.{{ 'increase_brightness' if _mode == 'brightness_increase' else 'decrease_brightness' }}"
+                      response_variable: _step_svc_check
+                    - if: "{{ not (_step_svc_check is mapping and _step_svc_check.get('found', false) == true) }}"
+                      then:
+                        - variables:
+                            result:
+                              status: error
+                              error: spook_version_required
+                              mode: "{{ _mode }}"
+                              message: >-
+                                {{ _mode }} requires Spook v5.2.0+ (no safe
+                                core fallback -- light.turn_on's own
+                                brightness_step_pct turns off lights on and
+                                flattens groups, the exact bug this mode
+                                exists to avoid). Nothing was changed.
+                              caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                  - action: "light.{{ 'increase_brightness' if _mode == 'brightness_increase' else 'decrease_brightness' }}"
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                    data:
+                      step_pct: "{{ _step_pct }}"
+                      transition: "{{ _transition }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: "{{ _mode }}"
+                        entity: "{{ _resolved_entity }}"
+                        step_pct: "{{ _step_pct }}"
+                        transition: "{{ _transition }}"
+                        room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
+                        caller_token: "{{ _caller_token }}"
+          # ── EFFECT_SET (Spook v5.2.0+) ────────────────────────────────────────
+          # 2026-08-30 (Vee + household, hot tub lights as the motivating case --
+          # confirmed live those carry a real effect_list + EFFECT feature
+          # flag already, no extra wiring needed once this mode exists).
+          # Generic to any light with an effect_list -- not integration-
+          # specific, works the same for a Govee-on-local-control light as
+          # for the spa's own color-wheel channel.
+          - conditions: "{{ _mode == 'effect_set' }}"
+            sequence:
+              - if: "{{ _effect_want == '' or _resolved_entity == '' }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        mode: effect_set
+                        error: "effect and room/entity required."
+                        caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined and (_effects | count) > 0 and _effect_want not in _effects }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        mode: effect_set
+                        error: >-
+                          '{{ _effect_want }}' not in this entity's
+                          effect_list: {{ _effects }}.
+                        caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                - if: "{{ _dry_run }}"
+                  then:
+                    - variables:
+                        result:
+                          status: ok
+                          dry_run: true
+                          would_set_entity: "{{ _resolved_entity }}"
+                          would_set_effect: "{{ _effect_want }}"
+                          caller_token: "{{ _caller_token }}"
+                - if: "{{ result is not defined }}"
+                  then:
+                    - action: script.zen_sutra_ha_api
+                      continue_on_error: true
+                      data:
+                        mode: services
+                        has_service: light.set_effect
+                      response_variable: _fx_svc_check
+                    - if: "{{ not (_fx_svc_check is mapping and _fx_svc_check.get('found', false) == true) }}"
+                      then:
+                        - variables:
+                            result:
+                              status: error
+                              error: spook_version_required
+                              mode: effect_set
+                              message: >-
+                                effect_set requires Spook v5.2.0+
+                                (light.set_effect not found). Nothing was
+                                changed.
+                              caller_token: "{{ _caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                  - action: light.set_effect
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                    data:
+                      effect: "{{ _effect_want }}"
+                  - variables:
+                      result:
+                        status: ok
+                        mode: effect_set
+                        entity: "{{ _resolved_entity }}"
+                        effect: "{{ _effect_want }}"
                         room_manager_advisory: "{{ 'Room Manager active (' + _rm_state + ') — occupancy automation may override this command' if _rm_active else none }}"
                         caller_token: "{{ _caller_token }}"
           - conditions: "{{ _mode == 'scene_set' }}"
@@ -2168,7 +2577,7 @@ script:
                         {%- if _pa_role != '' -%}
                           {{ _room_ents | select('in', label_entities(_pa_role)) | list | first | default(_auto_resolved) }}
                         {%- else -%}{{ _auto_resolved }}{%- endif -%}
-                  # "Block travels up the chain" part 2 (2026-08-16, Nathan:
+                  # "Block travels up the chain" part 2 (2026-08-16, household:
                   # "fix those pls") -- prefs_apply's real target isn't
                   # known until the stored pref is read and its role
                   # resolved (right above), well after the earlier deny
@@ -2312,7 +2721,7 @@ script:
                       note: "Pass target_role=auto to clear back to auto-chain."
                       caller_token: "{{ _caller_token }}"
           # scene_stage -- relocated from zen_dojotools_room_manager
-          # 2026-08-16 (Nathan: "put the appr scene handlers in zenlux as
+          # 2026-08-16 (household: "put the appr scene handlers in zenlux as
           # necc"). Works around scene.create's real platform limit (never
           # persists, gone on restart). before/after: ephemeral snapshot
           # pair. confirm: auto-detects the real scene the human saved by
@@ -2636,7 +3045,7 @@ script:
                       {%- endfor -%}
                       {{ ns.b | sort(attribute='light_tx', reverse=true) }}
 
-                # "Block travels up the chain" (2026-08-16, Nathan: "fix those
+                # "Block travels up the chain" (2026-08-16, household: "fix those
                 # pls" -- the two gaps flagged in the deny-enforcement
                 # commit). bleed_set's propagation targets are resolved
                 # per-adjacent-room INSIDE this repeat loop -- the earlier
@@ -2901,7 +3310,7 @@ script:
           # overrides; otherwise room= (+ optional target_role=) resolves
           # via the switch chain above (_sw_resolved_entity) -- same
           # room/role/'primary'-tiebreak convention as the light modes,
-          # just without a fixed role-label taxonomy (2026-08-16, Nathan:
+          # just without a fixed role-label taxonomy (2026-08-16, household:
           # "extended into it now").
           - conditions: "{{ _mode == 'switch_set' }}"
             sequence:

@@ -1397,7 +1397,7 @@ script:
               {
                 'tool': 'help',
                 'result': 'info',
-                'version': '5.2.0',
+                'version': '2.1.0',
                 'reload_response_contract': 'ha_reload_all and ha_reload_scripts now return a response immediately — reload is deferred via zen_event to the scheduler, which fires it from automation context. No self-destruct. ha_reload_automations, ha_reload_templates, and ha_reload_template_entities also return responses (different domain). All reloads respond with result: success when queued/complete.',
                 'reload_tools': {
                   'ha_reload_all': 'LAST RESORT ONLY — use ha_reload_scripts, ha_reload_automations, ha_reload_templates, or ha_reload_template_entities first. ha_reload_all takes ~2 minutes and disrupts all in-flight actions. Only use it when the domain you need is NOT covered by one of the targeted reload tools. Covers: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, homeassistant: core block. Config check runs first — blocked on nogo. Deferred via scheduler.',
@@ -1655,33 +1655,60 @@ script:
               dependency: Xiaomi Miio integration
               install_hint: Install/configure the Xiaomi Miio integration for the vacuum entity.
               degrades: ['Autovac: segment-clean command']
+        # 2026-08-29 REAL BUG (household: "ignored issues don't exist as far as
+        # the user at console perceives -- we strive for meaning not
+        # noise"). This loop iterated issues() with ZERO regard for
+        # dismissed_version -- an issue a human explicitly dismissed in the
+        # Repairs UI months ago and a genuinely fresh one were presented
+        # identically in a report whose whole job is a curated, plain-
+        # English signal. Fixed: known_issues now excludes anything with
+        # dismissed_version set (respecting the dismissal as the user's own
+        # decision, not something this report should second-guess) UNLESS
+        # is_persistent is true (a persistent issue is HA's own signal that
+        # dismissal doesn't make it go away -- it keeps re-asserting itself,
+        # so it stays worth surfacing regardless). known_issues_ignored_count
+        # keeps the fact that dismissed issues exist visible without
+        # dumping them back in as noise -- "there are N parked" is signal,
+        # re-listing all N every time is not. mode=repairs_list stays
+        # deliberately unfiltered (raw dump, including dismissed_version
+        # per-issue) -- that is the correct tool for someone who actually
+        # wants the full, un-curated list to act on.
         - variables:
             _known_issues: >-
-              {%- set ns = namespace(l=[]) -%}
+              {%- set ns = namespace(l=[], ignored=0) -%}
               {%- for k, v in issues().items() -%}
                 {%- set _domain = v.get('domain', k[0] if k is sequence and k | length > 0 else '') -%}
                 {%- set _iid = v.get('issue_id', k[1] if k is sequence and k | length > 1 else '') -%}
-                {%- set _cat = namespace(val='unclassified', dep='', hint='', deg=[]) -%}
-                {%- if 'unknown_label' in _iid -%}
-                  {%- set _cat.val = 'label_gap' -%}
-                  {%- set _cat.hint = 'Missing HA label reference — use zen_dojotools_manifest mode=repair confirm=true to create it (Spook self-clears this ghost once the label exists).' -%}
-                {%- elif _domain == 'hacs' and 'restart_required' in _iid -%}
-                  {%- set _cat.val = 'informational' -%}
-                  {%- set _cat.hint = 'HACS package updated — restart required to apply, not a functional gap.' -%}
+                {%- set _dismissed = v.get('dismissed_version', none) -%}
+                {%- set _persistent = v.get('is_persistent', false) -%}
+                {%- if _dismissed is not none and not _persistent -%}
+                  {%- set ns.ignored = ns.ignored + 1 -%}
                 {%- else -%}
-                  {%- for m in _dependency_map if m.match in _iid -%}
-                    {%- set _cat.val = 'missing_dependency' -%}
-                    {%- set _cat.dep = m.dependency -%}
-                    {%- set _cat.hint = m.install_hint -%}
-                    {%- set _cat.deg = m.degrades -%}
-                  {%- endfor -%}
+                  {%- set _cat = namespace(val='unclassified', dep='', hint='', deg=[]) -%}
+                  {%- if 'unknown_label' in _iid -%}
+                    {%- set _cat.val = 'label_gap' -%}
+                    {%- set _cat.hint = 'Missing HA label reference — use zen_dojotools_manifest mode=repair confirm=true to create it (Spook self-clears this ghost once the label exists).' -%}
+                  {%- elif _domain == 'hacs' and 'restart_required' in _iid -%}
+                    {%- set _cat.val = 'informational' -%}
+                    {%- set _cat.hint = 'HACS package updated — restart required to apply, not a functional gap.' -%}
+                  {%- else -%}
+                    {%- for m in _dependency_map if m.match in _iid -%}
+                      {%- set _cat.val = 'missing_dependency' -%}
+                      {%- set _cat.dep = m.dependency -%}
+                      {%- set _cat.hint = m.install_hint -%}
+                      {%- set _cat.deg = m.degrades -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {%- set ns.l = ns.l + [{
+                    'issue_id': _iid, 'domain': _domain, 'category': _cat.val,
+                    'dependency': _cat.dep, 'install_hint': _cat.hint, 'degrades': _cat.deg
+                  }] -%}
                 {%- endif -%}
-                {%- set ns.l = ns.l + [{
-                  'issue_id': _iid, 'domain': _domain, 'category': _cat.val,
-                  'dependency': _cat.dep, 'install_hint': _cat.hint, 'degrades': _cat.deg
-                }] -%}
               {%- endfor -%}
-              {{ ns.l }}
+              {{ {'active': ns.l, 'ignored_count': ns.ignored} }}
+        - variables:
+            _known_issues_active: "{{ _known_issues.active }}"
+            _known_issues_ignored_count: "{{ _known_issues.ignored_count }}"
         - variables:
             _kata_vars: >-
               {{ state_attr(_kata, 'variables') or {}
@@ -2017,7 +2044,8 @@ script:
               monk_status: "{{ _monk_status }}"
               active_components: "{{ _active_raw }}"
               component_freshness: "{{ _component_freshness }}"
-              known_issues: "{{ _known_issues }}"
+              known_issues: "{{ _known_issues_active }}"
+              known_issues_ignored_count: "{{ _known_issues_ignored_count }}"
               diagnosis: "{{ _diagnosis }}"
               logging:
                 persistent_log_enabled: "{{ _persistent_log_enabled }}"
@@ -2879,6 +2907,10 @@ script:
                     time: "{{ value }}"
           else:
           - variables:
+              _sa_vacation_active: >-
+                {{ is_state('input_boolean.zen_vacation_wake_shift_enabled', 'on')
+                   and (label_entities('zen_vacation_mode') | select('match', 'calendar\\.') | map('states') | select('equalto', 'on') | list | count) > 0 }}
+          - variables:
               response:
                 tool: "{{ tool }}"
                 result: ok
@@ -2890,7 +2922,23 @@ script:
                   evening: "{{ states('input_datetime.zen_evening_start') }}"
                   night: "{{ states('input_datetime.zen_night_start') }}"
                   late_night: "{{ states('input_datetime.zen_late_night_start') }}"
-                note: "To set: anchor=<name> value=HH:MM. Names: wake, morning, daytime, evening, night, late_night"
+                vacation_mode_active: "{{ _sa_vacation_active }}"
+                effective_anchors_today:
+                  wake: "{{ (strptime(states('input_datetime.zen_am_start'), '%H:%M:%S') + timedelta(hours=1)).strftime('%H:%M:%S') if _sa_vacation_active else states('input_datetime.zen_am_start') }}"
+                  morning: "{{ (strptime(states('input_datetime.zen_morning_start'), '%H:%M:%S') + timedelta(hours=2)).strftime('%H:%M:%S') if _sa_vacation_active else states('input_datetime.zen_morning_start') }}"
+                  daytime: "{{ (strptime(states('input_datetime.zen_daytime_start'), '%H:%M:%S') + timedelta(hours=1)).strftime('%H:%M:%S') if _sa_vacation_active else states('input_datetime.zen_daytime_start') }}"
+                note: >-
+                  To set: anchor=<name> value=HH:MM. Names: wake, morning,
+                  daytime, evening, night, late_night. These stored values
+                  are what you write/read here — while
+                  input_boolean.zen_vacation_wake_shift_enabled is on (off by
+                  default) AND a zen_vacation_mode-labeled calendar is
+                  active, zen_hm_evaluate_window applies a live shift
+                  (wake +1h, morning +2h, daytime +1h — parity-matched
+                  against the real legacy NR vacation modifier, non-uniform
+                  by design) to those three anchors ONLY (see
+                  effective_anchors_today); the stored anchors themselves
+                  are never rewritten by that shift.
 
       - conditions:
         - alias: guest_mode toggle
@@ -2949,7 +2997,7 @@ script:
       response_variable: response
     alias: Zen DojoTools SystemTools
     description: >-
-      Zen DojoTools SystemTools (5.2.0) — ZenOS platform kernel: health, YAML
+      Zen DojoTools SystemTools (2.3.0) — ZenOS platform kernel: health, YAML
       reload, notifications, repairs, home-mode/settings control. CALL
       mode=help FIRST — it has the full mode list, the reload-tool decision
       guide (ha_reload_all vs surgical scripts/automations/templates/
@@ -3084,7 +3132,7 @@ script:
       anchor:
         selector:
           text:
-        description: "Anchor name for scheduler_anchors set. One of: wake, morning, daytime, evening, night, late_night."
+        description: "Anchor name for scheduler_anchors set. One of: wake, morning, daytime, evening, night, late_night. Note: while input_boolean.zen_vacation_wake_shift_enabled is on (off by default) and a zen_vacation_mode-labeled calendar is active, wake/morning/daytime apply live at +1h/+2h/+1h respectively (see effective_anchors_today on the get response) — the stored anchor value itself is unaffected."
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
