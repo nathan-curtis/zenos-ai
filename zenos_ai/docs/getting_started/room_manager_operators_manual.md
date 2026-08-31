@@ -116,7 +116,7 @@ more important one.
 | 🧹 **Cleaning** | The robot vacuum is in here right now. |
 | 😴 **Asleep** | Someone's asleep in here. Beats Engaged: a device staying active nearby never overrides a real Asleep signal in the same room. |
 | ⚡ **Engaged** | Someone is ACTIVELY using this room. Media is playing, a desk is in active use. Stronger than just "someone's here," but not stronger than the room's own Asleep. |
-| ⏳ **Hold** | One of exactly four lines is currently high: the wasp flag (motion with no door-open to confirm entry, only for rooms opted in — see Section 6), Entertaining mode (room opted in), Guest mode (room opted in), or a continuous-presence (mmWave) sensor tagged for Presence Hold (room opted in). Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
+| ⏳ **Hold** | One of exactly five lines is currently high: the wasp flag (motion with no door-open to confirm entry, only for rooms opted in — see Section 6), Entertaining mode (room opted in), Guest mode (room opted in), a continuous-presence (mmWave) sensor tagged for Presence Hold (room opted in), or any entity tagged with the plain `hold` label for that room. Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
 | 🟢 **Occupied** | Somebody's in here. Presence detected, no specific activity known. |
 | ⚪ **Vacant** | Nobody's in here. The default. Nothing wrong with it. Most rooms are Vacant most of the day. |
 
@@ -242,9 +242,12 @@ closet doesn't need a vent fan.
 
 **🍸 Entertaining Hold / Guest Hold** † — "While entertaining mode or guest mode is on, opted-in rooms stay conservative instead of guessing." Prevents a busy house from flickering a room between Occupied and Vacant. Opt in per room; a room not opted in is unaffected.
 
-**📡 Presence Hold** † — "A continuous-presence sensor is trusted enough to hold the room outright, no guessing." Tag a continuous-presence (mmWave) sensor — not a PIR motion sensor — `presence` plus the room's own label, and while it reads on, the room reports Hold, no clock, no decay. Clears the instant the sensor goes false. Different from the generic `hold` label (Section 8), which only floors a room at Occupied — this one resolves to the actual Hold state, same as the wasp flag or Entertaining/Guest Hold.
+**📡 Presence Hold** † — "A continuous-presence sensor is trusted enough to hold the room outright, no guessing." Tag a continuous-presence (mmWave) sensor — not a PIR motion sensor — `presence` plus the room's own label, and while it reads on, the room reports Hold, no clock, no decay. Clears the instant the sensor goes false. This is one of five sources that can put a room in Hold (see Section 4 and the Power User Secrets in Section 9) — the others are the wasp flag, Entertaining Hold, Guest Hold, and the plain `hold` label on any entity tagged for the room.
 
 **🐝 Wasp (Hold from an unconfirmed entry)** † — "Motion with no door-open to explain it holds the room, instead of guessing." Requires TWO things before it does anything: at least one door tagged `wasp_door` for that room (Section 8's "the door, not the lock" tip), AND the room itself opted in with the `wasp_enabled` label — either on the room's Area directly, or on any entity in that room. Both, not just one. This is opt-in on purpose: a room with an always-open archway instead of a real door (a connected front hall, say) can't safely tell "someone's inside with the door shut" from "there is no door" — tagging `wasp_door` there without also enabling the room would just misfire. If a room's Hold never seems to trigger from motion alone, check both halves are actually set before assuming something's broken. (See Section 9's "the door, not the lock" tip for the other common wasp_door setup mistake.)
+&nbsp;&nbsp;&nbsp;&nbsp;**Release has a cooldown, on purpose.** The instant the door opens, wasp Hold doesn't just vanish and re-arm on the next flicker — it holds off re-latching for a short blind period (5 seconds by default) so a door that swings shut and immediately reopens doesn't false-trigger a fresh Hold. Tune it per room by tagging a number helper `wasp_blind_seconds` plus the room's own label; untagged rooms just use the 5-second default.
+
+**🔓 Generic Hold** † — "Tag anything, and while it's on, this room is in Hold — full stop." The plainest of the five Hold sources: tag any entity `hold` plus the room's own label, and while that entity reads on/open, the room reports Hold, no clock, no decay, clears the instant it goes false. No opt-in flag needed beyond the tag itself — this is the general-purpose escape hatch for "I have some other condition that should hold this room" without waiting on a dedicated feature to be built for it.
 
 **🔐 Exterior Lock Awareness** † — "Know how many doors are actually unlocked right now, not just whether any are." Tag exterior lock entities `ext_lock` (plus the room's own label) and the room's state sensor reports three things: whether ANY are unlocked (`ext_unlocked_active`), exactly how many (`ext_unlocked_count`), and how many exterior locks this room even has (`ext_lock_count`). No timer, no decay — a live read of real lock state, same instant it changes.
 &nbsp;&nbsp;&nbsp;&nbsp;**Acting on a room's locks**, not just reading them, is a separate tool: `zen_dojotools_locks mode=set room=<room> action=lock` (or `unlock`) locks/unlocks every lock in a room at once, no need to name each one. `mode=discover room=<room>` lists them with live state first if you want to check before acting. `entity_id=` still works for a single explicit lock instead of a whole room.
@@ -425,6 +428,8 @@ the engine itself isn't running, there's nothing to rehearse.
 > that truth once you've told it to, and dry run lets it rehearse
 > without an audience.
 
+**Checking whether the last fire actually matches the room's current state** is its own diagnostic — ask your AI "did REFLEX fire the right scene for the [room]?" It compares what actually last fired against what REFLEX would resolve for the room's state right now. A mismatch usually just means the room has since changed state again (the fire wasn't wrong, it's just stale), but it can also catch a scene fired manually from outside REFLEX, or a state that never fired anything at all.
+
 ---
 
 ## 8. PATTERNS & PRACTICES (playing it well)
@@ -466,6 +471,8 @@ child room is never optional and is never blocked by the ensuite-cascade
 toggle: it shows up at every parent and grandparent above it, and it can
 wake a sleeping parent room. A smoke alarm in the ensuite means the
 bedroom sees Emergency too, full stop.
+
+**Disarming the alarm can occupy a room on its own, if you've set that up.** Security Manager's `disarm_occupies_arrival_area_enabled` setting (off by default) makes any real disarm fire a synthetic occupied signal into every room tagged `arrival_area` — the entryway you walk through when you get home, say. That room goes Occupied the moment you disarm, not whenever its own motion sensor happens to catch up. See the [Security & Certification System operator manual](security_certification_manual.md) for how to turn it on.
 
 ### Worked examples: setting up common room types
 
@@ -514,18 +521,17 @@ the equivalent shortcut if you're handing it to an AI instead.
 
 > YOU FOUND THE HIDDEN PAGE. THE STUFF THE STRATEGY GUIDE DOESN'T PRINT. READ ON, CHAMPION.
 
- ► HOLD IS JUST "ONE OF THREE LINES IS HIGH." It's not its own
+ ► HOLD IS JUST "ONE OF FIVE LINES IS HIGH." It's not its own
    signal — it's the room reporting that the wasp flag, Entertaining
-   mode, or Guest mode currently reads true, whichever one it is.
-   These three are hardcoded checks today, not an open template
-   slot — there's no way to wire your own arbitrary condition onto
-   the Hold tier yet (the generic `hold` label is a different
-   mechanism — see below, it prevents the room from dropping out of
-   Occupied, it doesn't put the room in Hold). Ask
-   "why is the [room] hold right now" and `last_trigger` tells you
-   which of the three is actually driving it — same word on the
-   dashboard, three different reasons underneath, the game never
-   tells you which unless you ask.
+   mode, Guest mode, Presence Hold, or the plain `hold` label
+   currently reads true, whichever one it is. The first four are
+   dedicated features (Section 6); the plain `hold` label is the
+   general-purpose one — tag any entity `hold` plus the room's own
+   label and it carries exactly the same weight as the other four,
+   full Hold, not just a floor at Occupied. Ask "why is the [room]
+   hold right now" and `last_trigger` tells you which of the five is
+   actually driving it — same word on the dashboard, five different
+   reasons underneath, the game never tells you which unless you ask.
 
 <img src="images/wasp_hold_gag.png" alt="Left: door open plus motion is confirmed. Right: door closed plus motion is Hold, not confirmed." width="500">
 
