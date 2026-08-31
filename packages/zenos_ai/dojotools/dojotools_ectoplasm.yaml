@@ -1,13 +1,21 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Ectoplasm
-# Version: 6.0.0
+# Version: 6.1.0
 #
 # Scripts:
 #   zen_dojotools_ectoplasm — Spook/HA extended surface wrapper
 #
 # Requires: Spook integration (https://spook.boo) — listed ZenOS prerequisite.
 #
-# Covers (v6.0.0):
+# v6.1.0: automation_snooze / automation_turn_on_for (Spook v5.1.0 #1494/
+#         #1495) -- both self-gate on the real service existing via the
+#         same has_service capability-probe zen_health_report already uses
+#         for spook_installed, never a raw "unknown action" error on older
+#         Spook. No reliable way to read a custom integration's version
+#         from a template; probing the actual service is strictly better
+#         anyway (works across hotfixes without a version-string to maintain).
+#
+# Covers (v6.1.0):
 #   Repairs:      repair_list, ghost_list, repair_create, repair_remove,
 #                 repair_ignore_all, repair_unignore_all
 #   Areas:        area_create, area_delete, area_assign_device,
@@ -21,6 +29,7 @@
 #   Integrations: integration_disable, integration_enable
 #   Input Numbers: input_number_create, input_number_delete (Spook v5.0.0)
 #   Housekeeping: orphan_cleanup
+#   Automations:  automation_snooze, automation_turn_on_for (Spook v5.1.0+)
 #
 # REVERTED 2026-08-05: timer_create/input_boolean_create/input_text_create
 # were added and then removed same night — confirmed via live bisection
@@ -56,7 +65,7 @@ script:
       cleanup. All destructive/functional writes are confirm-gated
       (confirm_action: true required — omit or false returns status: start
       preview). Read actions (repair_list, ghost_list) execute immediately
-      without confirm. Fires zen_event on all writes. Requires Spook. (v6.0.0)
+      without confirm. Fires zen_event on all writes. Requires Spook. (v6.1.0)
 
     fields:
       mode:
@@ -74,6 +83,11 @@ script:
           Integrations: integration_disable, integration_enable.
           Input Numbers: input_number_create, input_number_delete.
           Housekeeping: orphan_cleanup.
+          Automations (Spook v5.1.0+, self-gated — returns a clean
+          spook_version_required error on older Spook, never a raw service
+          error): automation_snooze (turn an automation off for `duration`,
+          survives restart, always turns back on), automation_turn_on_for
+          (same, inverted — turn on for `duration`).
         required: false
         selector:
           select:
@@ -110,6 +124,8 @@ script:
               - input_number_create
               - input_number_delete
               - orphan_cleanup
+              - automation_snooze
+              - automation_turn_on_for
               - tool_manifest
             custom_value: false
       action_type:
@@ -205,10 +221,20 @@ script:
         name: Entity ID
         description: >-
           Entity ID. Required for entity_hide, entity_unhide, entity_disable,
-          entity_enable, entity_rename, area_assign_entity, area_unassign_entity.
+          entity_enable, entity_rename, area_assign_entity, area_unassign_entity,
+          automation_snooze, automation_turn_on_for (target automation entity).
         required: false
         selector:
           entity:
+      duration:
+        name: Duration
+        description: >-
+          HH:MM:SS duration. Required for automation_snooze (how long the
+          automation stays off) and automation_turn_on_for (how long it
+          stays on). Spook v5.1.0+ only — see mode description.
+        required: false
+        selector:
+          duration:
       device_id:
         name: Device ID
         description: >-
@@ -370,6 +396,7 @@ script:
           _floor_name: "{{ floor_name | default('') | trim }}"
           _floor_level: "{{ floor_level | default(none) }}"
           _entity_id: "{{ entity_id | default('') | trim }}"
+          _duration: "{{ duration | default('') | trim }}"
           _device_id: "{{ device_id | default('') | trim }}"
           _label_id: "{{ label_id | default('') | trim }}"
           _new_name: "{{ new_name | default('') | trim }}"
@@ -411,7 +438,8 @@ script:
             'label_assign_device', 'label_unassign_device',
             'integration_disable', 'integration_enable',
             'input_number_create', 'input_number_delete',
-            'orphan_cleanup'
+            'orphan_cleanup',
+            'automation_snooze', 'automation_turn_on_for'
           ] }}
         then:
           - variables:
@@ -1634,6 +1662,156 @@ script:
                     action_type: input_number_delete
                     entity_id: "{{ _entity_id }}"
                     message: "Input number '{{ _entity_id }}' deleted."
+                    caller_token: "{{ caller_token }}"
+
+          # ── AUTOMATION_SNOOZE (Spook v5.1.0+) ────────────────────────────────
+          # HA templates have no reliable way to read an
+          # installed custom integration's semantic version — but gating on
+          # the actual SERVICE existing is strictly better anyway (works
+          # across hotfixes/backports without a version-string maintenance
+          # burden, and directly probes the capability we actually need
+          # instead of trusting a number). Same has_service mechanism the
+          # spook_installed health check already uses -- see
+          # dojotools_systemtools.yaml zen_health_report for the sibling
+          # pattern. Never lets a missing Spook 5.1 surface as a raw
+          # "unknown action" error -- always a clean, actionable status.
+          - conditions: "{{ _action == 'automation_snooze' }}"
+            sequence:
+              - if: "{{ _entity_id == '' or _duration == '' }}"
+                then:
+                  - variables:
+                      _final:
+                        status: error
+                        action_type: automation_snooze
+                        message: "automation_snooze requires entity_id and duration."
+                        caller_token: "{{ caller_token }}"
+                  - stop: Validation failed
+                    response_variable: _final
+              - action: script.zen_sutra_ha_api
+                continue_on_error: true
+                data:
+                  mode: services
+                  has_service: automation.snooze
+                response_variable: _as_svc_check
+              - if: "{{ not (_as_svc_check is mapping and _as_svc_check.get('found', false) == true) }}"
+                then:
+                  - variables:
+                      _final:
+                        status: error
+                        error: spook_version_required
+                        action_type: automation_snooze
+                        message: >-
+                          automation.snooze service not found -- requires
+                          Spook v5.1.0 or later. Nothing was changed.
+                        caller_token: "{{ caller_token }}"
+                  - stop: Spook version gate failed
+                    response_variable: _final
+              - if: "{{ not _confirm }}"
+                then:
+                  - variables:
+                      _final:
+                        status: start
+                        action_type: automation_snooze
+                        preview:
+                          entity_id: "{{ _entity_id }}"
+                          duration: "{{ _duration }}"
+                        message: >-
+                          Would turn off '{{ _entity_id }}' for {{ _duration }},
+                          then turn it back on automatically (survives a
+                          restart). Set confirm_action: true to execute.
+                        caller_token: "{{ caller_token }}"
+                  - stop: Preview only
+                    response_variable: _final
+              - action: automation.snooze
+                target:
+                  entity_id: "{{ _entity_id }}"
+                data:
+                  duration: "{{ _duration }}"
+              - event: zen_event
+                event_data:
+                  event:
+                    kind: ectoplasm_automation_snooze
+                    entity_id: "{{ _entity_id }}"
+                    duration: "{{ _duration }}"
+                    severity: info
+                    summary: "Automation snoozed: {{ _entity_id }} for {{ _duration }}"
+              - variables:
+                  _final:
+                    status: success
+                    action_type: automation_snooze
+                    entity_id: "{{ _entity_id }}"
+                    duration: "{{ _duration }}"
+                    message: "'{{ _entity_id }}' snoozed for {{ _duration }}."
+                    caller_token: "{{ caller_token }}"
+
+          # ── AUTOMATION_TURN_ON_FOR (Spook v5.1.0+) ───────────────────────────
+          - conditions: "{{ _action == 'automation_turn_on_for' }}"
+            sequence:
+              - if: "{{ _entity_id == '' or _duration == '' }}"
+                then:
+                  - variables:
+                      _final:
+                        status: error
+                        action_type: automation_turn_on_for
+                        message: "automation_turn_on_for requires entity_id and duration."
+                        caller_token: "{{ caller_token }}"
+                  - stop: Validation failed
+                    response_variable: _final
+              - action: script.zen_sutra_ha_api
+                continue_on_error: true
+                data:
+                  mode: services
+                  has_service: automation.turn_on_for
+                response_variable: _atof_svc_check
+              - if: "{{ not (_atof_svc_check is mapping and _atof_svc_check.get('found', false) == true) }}"
+                then:
+                  - variables:
+                      _final:
+                        status: error
+                        error: spook_version_required
+                        action_type: automation_turn_on_for
+                        message: >-
+                          automation.turn_on_for service not found -- requires
+                          Spook v5.1.0 or later. Nothing was changed.
+                        caller_token: "{{ caller_token }}"
+                  - stop: Spook version gate failed
+                    response_variable: _final
+              - if: "{{ not _confirm }}"
+                then:
+                  - variables:
+                      _final:
+                        status: start
+                        action_type: automation_turn_on_for
+                        preview:
+                          entity_id: "{{ _entity_id }}"
+                          duration: "{{ _duration }}"
+                        message: >-
+                          Would turn on '{{ _entity_id }}' for {{ _duration }},
+                          then turn it back off automatically (survives a
+                          restart). Set confirm_action: true to execute.
+                        caller_token: "{{ caller_token }}"
+                  - stop: Preview only
+                    response_variable: _final
+              - action: automation.turn_on_for
+                target:
+                  entity_id: "{{ _entity_id }}"
+                data:
+                  duration: "{{ _duration }}"
+              - event: zen_event
+                event_data:
+                  event:
+                    kind: ectoplasm_automation_turn_on_for
+                    entity_id: "{{ _entity_id }}"
+                    duration: "{{ _duration }}"
+                    severity: info
+                    summary: "Automation turned on for {{ _duration }}: {{ _entity_id }}"
+              - variables:
+                  _final:
+                    status: success
+                    action_type: automation_turn_on_for
+                    entity_id: "{{ _entity_id }}"
+                    duration: "{{ _duration }}"
+                    message: "'{{ _entity_id }}' turned on for {{ _duration }}."
                     caller_token: "{{ caller_token }}"
 
           # ── ORPHAN_CLEANUP ─────────────────────────────────────────────────
