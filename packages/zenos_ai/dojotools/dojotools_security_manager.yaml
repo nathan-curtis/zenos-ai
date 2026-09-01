@@ -30,8 +30,9 @@
 # v5.3.0 — full SESE + envelope() migration + gated actuation ("does lock management need to contribute anything to
 # security manager" -> the reverse question: security_manager was found
 # with ZERO gating on arm/disarm while zen_dojotools_locks got a full
-# identity gate the same session. Unlock and disarm, or arm and lock --
-# these two tools are the same risk class and get the same treatment.
+# identity gate the same session -- the move is unlock
+# and disarm, or arm and lock, so these two tools are the same risk
+# class and get the same treatment.
 #   - Tier R (read): read_state, query, get_policy -- unchanged, open.
 #   - Tier X (act): arm, set_alert_policy -- require the security_control
 #     cert (same zen_dojotools_identity resolve_caller_identity chokepoint
@@ -874,6 +875,21 @@ script:
                                     then:
                                       - action: alarm_control_panel.alarm_arm_away
                                         target: { entity_id: "{{ _aa_panel_entity }}" }
+                                      # FYI only, no cancel option -- the downgrade-side
+                                      # notice already gave the human a say (cancel there
+                                      # now sends the vac home instead); by the time we're
+                                      # back here re-arming, that decision is done.
+                                      - action: script.zen_dojotools_postman
+                                        data:
+                                          mode: resolve_and_dispatch
+                                          title: "Vacuum done — re-arming Away"
+                                          message: >-
+                                            Rosie's cleaning run finished. Re-arming Away
+                                            now that the house is clear.
+                                          response_type: ok
+                                          tag: "pm_auto_arm_vac_rearmed_{{ now().timestamp() | int }}"
+                                          ack_owner: security_manager
+                                        continue_on_error: true
                                   - action: script.zen_dojotools_filecabinet
                                     data:
                                       action_type: update
@@ -924,6 +940,16 @@ script:
                                       volume_entity_id: ["{{ _hh_cab }}"]
                                       key: security_manager
                                       value: "{{ (_sm_val | combine({'_auto_arm_config': _aa_cfg | combine({'vacuum_alarm_mode_active': true})})) | tojson }}"
+                                else:
+                                  # Keeping Away armed means the vac itself has to stop
+                                  # roaming, not just skip the downgrade -- otherwise it
+                                  # keeps triggering the exact false motion alarm this
+                                  # whole handler exists to prevent. Send her home.
+                                  - if: "{{ _aa_vac_ent != '' }}"
+                                    then:
+                                      - action: vacuum.return_to_base
+                                        target: { entity_id: "{{ _aa_vac_ent }}" }
+                                        continue_on_error: true
                           - variables:
                               result:
                                 status: ok
@@ -932,8 +958,8 @@ script:
                                 cancelled: "{{ _aa_vac_notify is defined and _aa_vac_notify is mapping and _aa_vac_notify.get('ack_action', '') == 'cancel' }}"
 
                       # -- Night-Late: arm to Home (stay), only if currently disarmed --
-                      # Deliberately no auto-disarm counterpart -- that's
-                      # wired to a door-unlock event elsewhere. Own sub-flag
+                      # Auto-arm only, no auto-disarm (that's handled separately
+                      # via a door unlock event). Own sub-flag
                       # (night_arm_enabled), default off, independent of the
                       # vac override flag -- gated the same off-by-default
                       # pattern as everything else in this action. Never
@@ -1019,8 +1045,8 @@ script:
                       # directly; lets whatever that room already does on
                       # occupancy -- REFLEX scene, timers, etc. -- happen
                       # naturally, no separate lighting mechanism needed).
-                      # NOT hardcoded to any one room -- generic and
-                      # portable. Tag any entity in the room you want
+                      # Not hardcoded to any specific room -- installs vary
+                      # in which room serves as their arrival point. Tag any entity in the room you want
                       # treated as an arrival point (e.g. that room's own
                       # zen_room_state sensor) with label arrival_area;
                       # area_id(entity) resolves the area, same entity-
@@ -1089,48 +1115,105 @@ script:
                                 disarmed: "{{ _aa_lock_will_disarm }}"
 
                       # -- occupancy path (zone.home changed) --
+                      # Departure sequence: 1min after zone.home hits 0, notify
+                      # admin with a waive-off window covering the remaining time
+                      # to the 5min mark (ok_cancel, response_timeout_s=240 --
+                      # same postman pattern as vac_started below). If not waived
+                      # and still empty, a second short-window notice (30s) fires
+                      # right before the actual arm, giving one more chance to
+                      # cancel. Either cancel aborts the whole cycle -- a later
+                      # genuine departure re-triggers this path fresh.
                       - conditions: "{{ _aa_trigger == 'occupancy' }}"
                         sequence:
                           - choose:
                               - conditions: "{{ _aa_home_count == 0 }}"
                                 sequence:
                                   - delay:
-                                      minutes: 5
+                                      minutes: 1
                                   - variables:
-                                      _aa_recheck_count: "{{ states('zone.home') | int(0) }}"
-                                  - if: "{{ _aa_recheck_count == 0 and _aa_panel_entity != '' }}"
+                                      _aa_recheck1: "{{ states('zone.home') | int(0) }}"
+                                  - if: "{{ _aa_recheck1 == 0 and _aa_panel_entity != '' }}"
                                     then:
-                                      - if: "{{ _aa_vac_override and _aa_vac_ent != '' and states(_aa_vac_ent) in ['cleaning', 'returning'] }}"
-                                        then:
-                                          - action: alarm_control_panel.alarm_arm_home
-                                            target: { entity_id: "{{ _aa_panel_entity }}" }
-                                          - action: script.zen_dojotools_filecabinet
-                                            data:
-                                              action_type: update
-                                              force_action: true
-                                              volume_entity_id: ["{{ _hh_cab }}"]
-                                              key: security_manager
-                                              value: "{{ (_sm_val | combine({'_auto_arm_config': _aa_cfg | combine({'vacuum_alarm_mode_active': true})})) | tojson }}"
-                                        else:
-                                          - action: alarm_control_panel.alarm_arm_away
-                                            target: { entity_id: "{{ _aa_panel_entity }}" }
-                                      # Lock-it-up (best-effort, skipped while entertaining) — ports
-                                      # Node-RED's Security: Secure Home closure list via labels
-                                      # rather than hardcoded per-room entities.
-                                      - if: "{{ states('input_boolean.zen_entertaining') != 'on' }}"
-                                        then:
-                                          - action: lock.lock
-                                            target: { entity_id: "{{ label_entities('lock') | select('match', 'lock\\.') | list }}" }
-                                            continue_on_error: true
-                                          - action: cover.close_cover
-                                            target: { entity_id: "{{ label_entities('secure_on_arm') | select('match', 'cover\\.') | list }}" }
-                                            continue_on_error: true
+                                      - action: script.zen_dojotools_postman
+                                        data:
+                                          mode: resolve_and_dispatch
+                                          title: "House is empty — auto-arm in ~4 min"
+                                          message: >-
+                                            Zone.home dropped to 0. Auto-arming
+                                            Away in about 4 more minutes unless
+                                            waived off.
+                                          response_type: ok_cancel
+                                          response_timeout_s: 240
+                                          tag: "pm_auto_arm_departure_{{ now().timestamp() | int }}"
+                                          ack_owner: security_manager
+                                        response_variable: _aa_departure_notify
+                                        continue_on_error: true
                                   - variables:
+                                      _aa_departure_cancelled: >-
+                                        {{ _aa_departure_notify is defined and _aa_departure_notify is mapping
+                                           and _aa_departure_notify.get('ack_action', '') == 'cancel' }}
+                                      _aa_recheck2: "{{ states('zone.home') | int(0) }}"
+                                  - if: "{{ not _aa_departure_cancelled and _aa_recheck1 == 0 and _aa_recheck2 == 0 and _aa_panel_entity != '' }}"
+                                    then:
+                                      - action: script.zen_dojotools_postman
+                                        data:
+                                          mode: resolve_and_dispatch
+                                          title: "Auto-arming Away now"
+                                          message: >-
+                                            Arming Away in 30 seconds. Cancel
+                                            to waive off this cycle.
+                                          response_type: ok_cancel
+                                          response_timeout_s: 30
+                                          tag: "pm_auto_arm_final_{{ now().timestamp() | int }}"
+                                          ack_owner: security_manager
+                                        response_variable: _aa_final_notify
+                                        continue_on_error: true
+                                      - variables:
+                                          _aa_final_cancelled: >-
+                                            {{ _aa_final_notify is defined and _aa_final_notify is mapping
+                                               and _aa_final_notify.get('ack_action', '') == 'cancel' }}
+                                          _aa_recheck3: "{{ states('zone.home') | int(0) }}"
+                                      - if: "{{ not _aa_final_cancelled and _aa_recheck3 == 0 }}"
+                                        then:
+                                          - if: "{{ _aa_vac_override and _aa_vac_ent != '' and states(_aa_vac_ent) in ['cleaning', 'returning'] }}"
+                                            then:
+                                              - action: alarm_control_panel.alarm_arm_home
+                                                target: { entity_id: "{{ _aa_panel_entity }}" }
+                                              - action: script.zen_dojotools_filecabinet
+                                                data:
+                                                  action_type: update
+                                                  force_action: true
+                                                  volume_entity_id: ["{{ _hh_cab }}"]
+                                                  key: security_manager
+                                                  value: "{{ (_sm_val | combine({'_auto_arm_config': _aa_cfg | combine({'vacuum_alarm_mode_active': true})})) | tojson }}"
+                                            else:
+                                              - action: alarm_control_panel.alarm_arm_away
+                                                target: { entity_id: "{{ _aa_panel_entity }}" }
+                                          # Lock-it-up (best-effort, skipped while entertaining) — ports
+                                          # Node-RED's Security: Secure Home closure list via labels
+                                          # rather than hardcoded per-room entities.
+                                          - if: "{{ states('input_boolean.zen_entertaining') != 'on' }}"
+                                            then:
+                                              - action: lock.lock
+                                                target: { entity_id: "{{ label_entities('lock') | select('match', 'lock\\.') | list }}" }
+                                                continue_on_error: true
+                                              - action: cover.close_cover
+                                                target: { entity_id: "{{ label_entities('secure_on_arm') | select('match', 'cover\\.') | list }}" }
+                                                continue_on_error: true
+                                  - variables:
+                                      _aa_armed_final: >-
+                                        {{ not (_aa_departure_cancelled | default(false)) and not (_aa_final_cancelled | default(false))
+                                           and _aa_recheck1 == 0 and _aa_recheck2 == 0 and (_aa_recheck3 | default(0)) == 0
+                                           and _aa_panel_entity != '' }}
                                       result:
                                         status: ok
                                         action: auto_arm_check
-                                        result: "{{ 'armed_away' if (_aa_recheck_count == 0 and _aa_panel_entity != '') else 'aborted_recheck_failed' }}"
-                                        home_count_at_recheck: "{{ _aa_recheck_count }}"
+                                        result: >-
+                                          {{ 'waived_off_departure' if (_aa_departure_cancelled | default(false))
+                                             else 'waived_off_final' if (_aa_final_cancelled | default(false))
+                                             else 'armed_away' if _aa_armed_final
+                                             else 'aborted_recheck_failed' }}
+                                        home_count_at_recheck: "{{ _aa_recheck3 | default(_aa_recheck2) }}"
                               - conditions: "{{ _aa_home_count > 0 }}"
                                 sequence:
                                   - if: "{{ _aa_panel_entity != '' and states(_aa_panel_entity) == 'armed_away' }}"
@@ -1645,7 +1728,7 @@ script:
 # the script's own auto_arm_check reads auto_arm_enabled (off by default,
 # written via action=auto_arm_config, security_control cert) and no-ops
 # immediately if it's off, so this automation firing costs nothing until
-# household explicitly turns the feature on post-Node-RED.
+# an admin explicitly turns the feature on post-Node-RED.
 ###############################################################################
 automation:
   - id: '1755840000001'
