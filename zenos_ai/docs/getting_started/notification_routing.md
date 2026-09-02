@@ -1,10 +1,12 @@
 # ZenOS-AI: Notification Routing Guide
 
-> **Version:** 2026.5.0 | **Last Updated:** May 2026
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
 
 ---
 
 ## Why `notify.admin_devices` Alone Isn't Enough
+
+**If you did [First Alert's Step 7](first_alert.md#step-7--connect-a-real-device-required-before-certifications-work), your user profile already has a working push path** — certifications and personal alerts work. This doc covers the rest: the household-wide policy (life-safety bypass, quiet hours), routing to more than one person, and troubleshooting if something still isn't arriving.
 
 ZenOS-AI doesn't call your `notify.*` services directly. All notifications — alerts, summaries, responses — route through `zen_dojotools_postman`, the household communications layer. Postman reads a **policy** from your cabinets before dispatching, and that policy tells it which `notify.*` service to use and when.
 
@@ -30,7 +32,7 @@ The policy is read at dispatch time. No policy = no dispatch.
 
 ## One-Time Setup: Seed Your Postman Profile
 
-Run these three `author_policy` calls once. They're idempotent — safe to re-run to update.
+Run these three `author_policy` calls once. They're idempotent — safe to re-run to update. **If you already ran First Alert's Step 7, Step 2 below is done** — re-running it with the same values is harmless, or skip straight to Steps 1 and 3.
 
 ### Step 1 — Household Policy (sleep gate + life safety)
 

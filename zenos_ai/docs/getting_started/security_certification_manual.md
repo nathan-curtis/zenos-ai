@@ -3,6 +3,8 @@ ZENOS-AI SECURITY & CERTIFICATION SYSTEM
 OPERATOR REFERENCE MANUAL
 ```
 
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+
 **Applies to:** `zen_dojotools_identity`, `zen_dojotools_persona_editor`, and every domain tool that gates actuation behind a certification (`zen_dojotools_locks`, `zen_dojotools_covers`, `zen_dojotools_security_manager`, `zen_dojotools_infra`, `zen_dojotools_room_manager`, `zen_dojotools_lights`).
 
 **Read this before you grant your first certification.** Section 4 describes a hard requirement that will block you if you have not configured it.
@@ -75,7 +77,7 @@ Every call to `cert_grant` or `cert_revoke` passes through two gates, in order, 
 
 **Gate 2 — live household-admin acknowledgment.** Every grant or revoke, with no exception, triggers a real request sent through `zen_dojotools_identity mode=request_live_ack`, which dispatches a notification and blocks waiting for a real yes/no response. This is not a standing approval and cannot be pre-authorized. It fires fresh on every call, including a call that would only re-grant a certification already held.
 
-**This is the requirement stated at the top of this manual: a working notification path capable of reaching a real person, configured before you attempt your first grant.**
+**This is the requirement stated at the top of this manual: a working notification path capable of reaching a real person, configured before you attempt your first grant.** If you followed the getting-started path in order, this is already done — Install Guide Step 3.5 connects your phone, and First Alert Step 7 seeds the Postman profile that routes to it. If you jumped straight here, go do those two steps first.
 
 The dispatch uses `notify_target: postman` internally — this is the only notification target that wires a real yes/no response capture back to the waiting call. If your household's Postman/mobile notification integration is not configured, or the configured device cannot receive and respond to the push, the request will time out or fail to dispatch. The result in either case is `approved: false`. **There is no fallback path.** A certification cannot be granted, at any level, for any purpose, without a real human successfully receiving and responding to a real notification at the moment of the request.
 

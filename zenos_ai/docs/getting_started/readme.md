@@ -38,6 +38,7 @@ Start here. Covers:
 
 * File drop: `packages/zenos_ai/` and `custom_templates/zenos_ai/` into your HA config
 * `configuration.yaml` setup
+* **Connecting your phone (Companion App + notify service)** — new, required as of 2026.9.0: certifications need this working before you can grant your AI anything
 * Pasting the conversation agent system prompt
 * Setting your conversation agent with the friendly `select.zenos_conversation_agent` dropdown once the package has loaded
 * Restarting HA and verifying Flynn initializes cleanly
@@ -69,8 +70,9 @@ After first boot. Covers:
 * Listing active alerts through `zen_dojotools_alertmanager`
 * Testing error-severity priority context
 * Clearing alerts safely
+* **Connecting the real device you set up in Install Step 3.5 to Postman** — required before certifications work, not just a nice-to-have
 
-**Do this next — it's the fastest way to prove ZenOS-AI can get your attention.**
+**Do this next — it's the fastest way to prove ZenOS-AI can get your attention, and it's the step that unblocks certifications later.**
 
 ---
 
@@ -114,7 +116,7 @@ The six-step first-boot configuration protocol in detail. Covers:
 
 ### 7. `security_certification_manual.md` — Security & Certification System
 
-**Read this before you grant your AI its first certification** — locks, covers, alarm, infra, and room overrides are all gated behind this system, and Section 4 has a hard prerequisite that will block you if you skip it. Covers:
+**Read this before you grant your AI its first certification** — locks, covers, alarm, infra, and room overrides are all gated behind this system. If you did Install Step 3.5 and First Alert Step 7, its Section 4 prerequisite is already satisfied — otherwise it will hard-block your first grant. Covers:
 
 * What a certification is (`cert_component`, `cert_level`, `cert_scope`) and how it differs from just having a tool exposed
 * The two gate types: cert-only vs. cert-plus-a-live-ack-every-call
@@ -145,7 +147,7 @@ Use this when you want to prove ZenOS-AI can move from first-run setup to a full
 
 ### 10. `notification_routing.md` — Notification Routing Guide
 
-Read this if `first_alert.md`'s test worked but you want notifications actually reaching a specific device or person — this is the doc that seeds Postman's real delivery policy (who gets what, on which channel, and when).
+First Alert's Step 7 already seeded your own device. Read this for the rest: household-wide policy (life-safety bypass, quiet hours), routing to more than one person, and troubleshooting if something still isn't arriving.
 
 ---
 
