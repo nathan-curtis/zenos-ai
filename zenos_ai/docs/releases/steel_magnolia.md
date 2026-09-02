@@ -18,6 +18,14 @@ Room Manager v3 is the clearest expression of the first half of that idea: a roo
 
 ---
 
+## Upgrading from an Earlier Release? Read This First
+
+**If you're already running ZenOS-AI and upgrading in place, do this before you restart:** confirm your Home Assistant Companion App is installed and can actually receive a push notification. The new identity-gate system (below) makes this a hard requirement, not optional infrastructure — every certification grant (locks, alarm, covers, infra, room overrides) now needs a real yes/no push to a real device, every time, with no fallback.
+
+A fresh install gets walked through this automatically (Install Guide [Step 3.5](../getting_started/install.md#step-35--set-up-your-mobile-notification-path)). An existing install upgrading to 2026.9.0 won't be prompted — if you haven't already got Postman routing to a real device, the first certification your AI needs after upgrading (which can happen on the very next restart, well before you'd think to check) will hit a wall with no obvious explanation. If you're not sure whether you're already set up, see [First Alert Step 7](../getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) — it's idempotent, safe to run again even if you think you're covered.
+
+---
+
 ## Inherited from 2026.8.0 'Chef'
 
 Everything shipped in Chef — Taskmaster, the SP1 identity gate, Portainer container control, Kitchen's fulfillment/costing layer, Twenty CRM, Room Manager's guest/occupant-prefs lookup, and the full Reset Test hardening pass — is present here as a baseline. See [chef.md](chef.md) for the full writeup; this document covers what's new on top of it.

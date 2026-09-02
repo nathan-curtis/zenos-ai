@@ -17,6 +17,8 @@ And a few things that are.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
+> **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way).
+
 **What's in 2026.9.0 'Steel Magnolia' (RC1):** *The duck looks calm, and the fence is exactly where it's supposed to be.*
 
 **Room Manager v3** reads a room by what's actually happening in the space right now, not a clock — a real wasp-in-a-box occupancy model, opt-in `entertaining_hold`/`guest_hold`/`presence_hold`, a nighttime-gated asleep window, hold-release timer restart, a generic `trouble` attribute with native SPAN breaker confirmation, and unconditional Paused/Emergency cascade through nested rooms.
