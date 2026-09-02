@@ -274,15 +274,32 @@ packages/zenos_ai/
     dojotools_security_manager.yaml — Security Manager — zone inventory, cameras_by_area
     dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
     dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
+    dojotools_locks.yaml          — Lock Manager — lock inventory and control
+    dojotools_music_assistant.yaml — Music Assistant bridge (internal)
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
     dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
     dojotools_zenzork.yaml        — ZenZork v1.7.0 — text adventure on live RM topology, DUNGEONMIND narrator, item commands, character sheet, quests, LLM narration
+    dojotools_infra.yaml          — ZenOS IT Console — Proxmox/Portainer/Uptime Kuma status, container control
+    dojotools_print.yaml          — Print Shop — networked-printer job dispatch
+    dojotools_taskmaster.yaml     — Taskmaster — task/conductor scheduling
+    zen_stack_alarms.yaml         — Stack alarms provider (Lens Bus)
+    zen_stack_timer.yaml          — Stack timer provider (Lens Bus)
 
     — Productivity —
     dojotools_office.yaml      — Office integrations (Teams, mail)
     dojotools_todo.yaml        — Todo list management
     dojotools_calendar.yaml    — Calendar integrations
+
+    — AdminTools (operator-only, not exposed to Assist by default) —
+    dojotools_certadmin.yaml      — Cert grant/revoke administration
+    dojotools_portainer_admin.yaml — Portainer connection + ACL setup
+    dojotools_toolscan.yaml       — Tool-surface audit (what's exposed vs. labeled)
+
+  room_manager_v3/
+    zen_room_manager_dispatch.yaml — Room Manager v3's live dispatcher: signal handling, REFLEX scene resolution, cleaning/timer resync
+    zenos_roomstate_<room>.yaml    — One file per room (kitchen, master_bedroom, living_room, etc.) — each declares that room's sensor.<room>_state and its wired triggers
+    zen_resolver_epoch.yaml, zen_room_manager_vibration_completion.yaml — supporting internals
 
   maint/
     maint_4_5_6.yaml           — One-time repair scripts (not AI-accessible, run manually)

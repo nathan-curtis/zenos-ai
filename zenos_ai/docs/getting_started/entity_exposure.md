@@ -1,22 +1,26 @@
 # What to Expose to Your Conversation Agent
 
-*How to decide which entities Friday can see, which she finds through the index, and which stay invisible*
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+
+*How to decide which entities your AI can see, which it finds automatically through labels, and which stay invisible.*
 
 ---
+
+Your Home Assistant install probably has hundreds of entities — lights, sensors, switches, helpers. Your AI doesn't need direct access to all of them, and giving it access to all of them would actually make it worse at its job (a longer tool list is a slower, less reliable one). This doc is about drawing that line deliberately instead of by accident.
 
 ## The Three-Tier Model
 
 Every entity in your Home Assistant install falls into one of three tiers:
 
-| Tier | What It Means | How Friday Sees It |
+| Tier | What It Means | How Your AI Sees It |
 |---|---|---|
-| **Actionable** | Friday needs to control it or read it immediately | Exposed directly to the conversation agent |
-| **Contextable** | Friday benefits from knowing about it | Tagged with labels — the HyperIndex finds it |
-| **Invisible** | Friday never needs it | Neither exposed nor labeled |
+| **Actionable** | your AI needs to control it or read it immediately | Exposed directly to the conversation agent |
+| **Contextable** | your AI benefits from knowing about it | Tagged with labels — the HyperIndex finds it |
+| **Invisible** | your AI never needs it | Neither exposed nor labeled |
 
 The goal is a **small, curated exposed set** and a **large, richly labeled contextable set**. The HyperIndex is designed to handle thousands of labeled entities efficiently. Your conversation agent's tool list is not.
 
-In 2026.6.0, labels also connect entities to the Room Manager map and to operational tools. A camera with a room label and `security_camera` is not just searchable; it can participate in room security views. A vacuum labeled `autovac` can become an AutoVac actor. A person entity tied to an identity profile can receive Postman questions under that user's quiet/work-hour policy.
+Labels also connect entities to the Room Manager map and to operational tools. A camera with a room label and `security_camera` is not just searchable; it can participate in room security views. A vacuum labeled `autovac` can become an AutoVac actor. A person entity tied to an identity profile can receive Postman questions under that user's quiet/work-hour policy.
 
 Use this rule of thumb:
 
@@ -50,16 +54,16 @@ flowchart TB
 
 ## Tier 1: Actionable — Expose to Assist
 
-Expose an entity to the conversation agent when Friday needs to:
+Expose an entity to the conversation agent when your AI needs to:
 
 * **Control it directly** — run a script, toggle a switch, call a service
 * **Read it immediately** — check a value that isn't worth summarizing or indexing
 
-Keep this list as short as possible. Every entity exposed to Assist is a token in Friday's context window and a potential action surface. The vast majority of your home does not belong here.
+Keep this list as short as possible. Every entity exposed to Assist is a token in your AI's context window and a potential action surface. The vast majority of your home does not belong here.
 
 ### Always Expose
 
-**All ZenOS-AI DojoTools scripts** — these are Friday's hands. Every `script.zen_dojotools_*` belongs in the exposed set.
+**All ZenOS-AI DojoTools scripts** — these are your AI's hands. Every `script.zen_dojotools_*` belongs in the exposed set.
 
 If you skip this, important things simply will not work. OOBE needs DojoTools to create rooms, tag entities, write profile data, resolve identity, call Room Manager, fire alerts, and talk through Postman.
 
@@ -92,15 +96,15 @@ Default deny:
 | Cabinet sensors | Use resolver + FileCabinet tools instead |
 | Secrets/debug/internal helpers | Not needed for normal operation |
 
-**Conversation agent helper** — `input_text.zenos_conversation_agent` (Friday needs to know her own entity ID for self-reference)
+**Conversation agent helper** — `input_text.zenos_conversation_agent` (your AI needs to know its own entity ID for self-reference)
 
 Use `select.zenos_conversation_agent` on a dashboard when available; it writes the same helper with a valid `conversation.*` entity.
 
-**Home mode** — `input_select.zen_home_mode` or equivalent (Friday actively sets this based on presence and context)
+**Home mode** — `input_select.zen_home_mode` or equivalent (your AI actively sets this based on presence and context)
 
 ### Expose When Needed
 
-* **Controllable devices** where Friday acts on user request — lights you ask her to dim, locks you ask her to check, thermostats you ask her to adjust
+* **Controllable devices** where your AI acts on user request — lights you ask it to dim, locks you ask it to check, thermostats you ask it to adjust
 * **Sensors with immediate operational meaning** — door/lock state when you're asking "is the front door locked right now?" is a valid direct read. But if it's summarized by a Kata every 15 minutes, skip the direct exposure and let the Kata answer.
 
 ### Do Not Expose
@@ -110,14 +114,14 @@ Use `select.zenos_conversation_agent` on a dashboard when available; it writes t
 * Media player attributes
 * Energy/power monitors
 * Cabinet sensors (`sensor.zenos_*_cabinet`)
-* Health sensors — these are for your eyes, not Friday's tool list
+* Health sensors — these are for your eyes, not your AI's tool list
 * Anything that HyperIndex can find better than a direct read
 
 ---
 
 ## Tier 2: Contextable — Tag with Labels
 
-If Friday should *know about* an entity but not necessarily control it on demand, tag it with labels instead of exposing it.
+If your AI should *know about* an entity but not necessarily control it on demand, tag it with labels instead of exposing it.
 
 The HyperIndex traverses the label graph and assembles a structured entity snapshot for the Ninja Summarizer. This means a single label on 50 entities produces a rich, token-efficient context block — far better than 50 individual direct reads.
 
@@ -128,7 +132,7 @@ The HyperIndex traverses the label graph and assembles a structured entity snaps
 3. Reference the label in your KFC drawer (`label: water`)
 4. The Ninja Summarizer runs HyperIndex against that label, finds all tagged entities, and builds the Kata
 
-Friday gets a compressed, timestamped summary of everything tagged — without those entities ever appearing in her tool list.
+Your AI gets a compressed, timestamped summary of everything tagged — without those entities ever appearing in its tool list.
 
 ### What Belongs Here
 
@@ -145,7 +149,7 @@ Friday gets a compressed, timestamped summary of everything tagged — without t
 
 Some labels feed summaries. Others feed immediate tools. Both are contextable.
 
-**Labels now connect entities to operational context, not just summaries.** When an entity carries a room or area label, Room Manager can surface not just its live state but the full operational picture for that space: inventory held there, chores due there, and pre-built action sequences (`replace_action`, `chore_actions`) for acting on what's found. A wear sensor labeled `autovac_wear` doesn't just feed a Kata — it feeds a live catalog lookup that tells Friday exactly which spare to pull and how to log the replacement. The label is the permission slip; the operational context is what gets built from it.
+**Labels now connect entities to operational context, not just summaries.** When an entity carries a room or area label, Room Manager can surface not just its live state but the full operational picture for that space: inventory held there, chores due there, and pre-built action sequences (`replace_action`, `chore_actions`) for acting on what's found. A wear sensor labeled `autovac_wear` doesn't just feed a Kata — it feeds a live catalog lookup that tells your AI exactly which spare to pull and how to log the replacement. The label is the permission slip; the operational context is what gets built from it.
 
 The best camera example is a fence or driveway camera. Do not expose every camera attribute directly just because it exists. Label the camera with its room/area and role, then let the camera/security tools resolve it when a component needs perception.
 
@@ -163,7 +167,7 @@ Examples:
 
 ## Tier 3: Invisible — Neither
 
-Some entities should never reach Friday at all:
+Some entities should never reach your AI at all:
 
 * Internal automation helpers not intended for AI use
 * Debug/test entities
@@ -171,7 +175,7 @@ Some entities should never reach Friday at all:
 * Duplicate or legacy entities you haven't cleaned up yet
 * Anything containing credentials, tokens, or sensitive config
 
-If an entity isn't tagged and isn't exposed, Friday cannot see it. That's the correct outcome for most of your install.
+If an entity isn't tagged and isn't exposed, your AI cannot see it. That's the correct outcome for most of your install.
 
 ---
 
@@ -184,7 +188,7 @@ In your conversation agent configuration, add:
 * All `script.zen_dojotools_*` (except admin-only scripts)
 * `input_text.zenos_conversation_agent`
 * Home mode entity
-* Any entities Friday needs to directly control on user request
+* Any entities your AI needs to directly control on user request
 
 ### Step 2 — Tag everything contextable
 
@@ -224,7 +228,7 @@ Invisible   →  Do nothing
                (correct default for most of your install)
 ```
 
-The system is designed so that the labeled+indexed path handles the overwhelming majority of your home. The exposed path handles commands. Keep the boundary clean and Friday stays fast, accurate, and predictable.
+The system is designed so that the labeled+indexed path handles the overwhelming majority of your home. The exposed path handles commands. Keep the boundary clean and your AI stays fast, accurate, and predictable.
 
 ---
 

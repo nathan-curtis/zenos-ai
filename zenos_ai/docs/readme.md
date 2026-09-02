@@ -8,6 +8,22 @@
 
 ---
 
+> ### 2026.9.0 'Steel Magnolia' — Beta, ETA 2026-09-05
+>
+> Room Manager v3's live state engine and REFLEX (autonomous scene-firing) reach their fullest form yet, plus the hospitality lifecycle (guest arrival/checkout) and cert-gated permission tightening. See root **[README](../../README.md)** (the "What's in Steel Magnolia" section near the top) and the **[Room Manager v3 & REFLEX operator's manual](getting_started/room_manager_operators_manual.md)** for the full picture — this hub's own body below this banner had drifted behind the top-line version; treat the root README and the getting_started docs as the current source of truth for anything not yet reflected here.
+>
+> → [Full Release Notes — Steel Magnolia](releases/steel_magnolia.md)
+
+---
+
+> ### 2026.8.0 'Chef' — Stable
+>
+> Taskmaster, the SP1 identity gate, Portainer container control, Kitchen's fulfillment/costing layer, Twenty CRM, Room Manager's guest/occupant-prefs lookup, full Reset Test hardening pass.
+>
+> → [Full Release Notes — Chef](releases/chef.md)
+
+---
+
 > ### 2026.7.1 — Patch
 >
 > **1. KF5 — Self-Registering Tools.** Tools declare their own KFC dojo-drawer contract via `mode=kfc_manifest`; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts them automatically. 5 dojotools files adopted it (Room Manager, AlertManager, Camera, Security Manager, SystemTools).
@@ -91,6 +107,9 @@ New to ZenOS-AI? Start here.
 * `troubleshooting.md` — Gauges → Kill Switches → Repair Tools. Health sensor quick-reads, summarizer kill switches, and a seven-step graduated repair sequence (resolver refresh → reseed → label reset → nuclear cabinet reset)
 * `user_management.md` — Add/remove/move AI users and human users. Provision new identity cabinets, deprovision or swap existing ones, transfer default labels, and perform targeted identity-layer repairs or full nukes.
 * `room_manager_operators_manual.md` — Room Manager v3 in plain language: the state cascade, wasp-hold, entertaining/guest hold, asleep window, and manual override — written for the household operator, not the developer.
+* `security_certification_manual.md` — The certification system that gates locks, covers, alarm, infra, and room overrides: cert_component/cert_level/cert_scope, cert-only vs. cert-plus-live-ack, and the Section 4 prerequisite.
+* `notification_routing.md` — Seeding Postman's actual delivery policy so notifications reach the right device/person.
+* `zenzork_manual_unofficial.md` — Optional: the in-universe player's manual for ZenZork, the text adventure built on your live Room Manager topology.
 
 If you just installed ZenOS-AI and want to know what to do next, start here.
 
@@ -145,6 +164,7 @@ Highlighted chapters:
 * `18_Context_Frame_Operational_Cognitive_Surface.md` – Context assembly + prompt loader
 * `19_Resilience_and_Failure_Modes.md` – Highlander resolver, health sensor stack
 * `20_tool_invocation_and_security.md` – Tool ACLs, safety classes, caller_token
+* `22_Room_Manager_v3_REFLEX.md` – The state cascade and REFLEX's autonomous scene-firing, from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
 * `security_model_ga.md` – **Operator reference:** what's active at GA vs SP1
 
 If you want to know how the mind works, start here.
