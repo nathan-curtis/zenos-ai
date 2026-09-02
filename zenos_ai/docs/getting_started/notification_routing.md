@@ -86,7 +86,7 @@ zen_dojotools_postman
 | `Default User Phone` | `notify.default_user` |
 | `Secondary User Phone` | `notify.secondary_user` |
 
-If you followed `first_alert.md` and created `notify.admin_devices`, use `"Admin Devices"` here.
+If you followed [First Alert](first_alert.md) and created `notify.admin_devices`, use `"Admin Devices"` here.
 
 ### Step 3 — Family Policy (seed empty for now)
 

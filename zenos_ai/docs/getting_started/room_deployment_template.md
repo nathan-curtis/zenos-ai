@@ -8,7 +8,7 @@ isn't a UI for template blueprints at this time... for now they must be
 configured in YAML"*). That means deploying a new room's sensor is a
 human-with-file-access task, every time, by design — not something a
 household agent can ever do on its own from a chat message. See
-`getting_started/room_manager_operators_manual.md` §6 for the plain-language
+[Room Manager v3 & REFLEX manual](room_manager_operators_manual.md) §6 for the plain-language
 version of why.
 
 **This file itself is intentionally NOT `.yaml`** — it lives in `docs/`, not

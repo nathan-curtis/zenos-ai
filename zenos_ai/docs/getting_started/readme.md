@@ -126,7 +126,7 @@ The six-step first-boot configuration protocol in detail. Covers:
 
 ### 8. `autovac_quick_start.md` — AutoVac Quick Start
 
-The fast path to your first real component: 5 steps, ~15 minutes, gets the vacuum running on a schedule with briefings. See **`autovac_first_setup.md`** (next) when you want the full chain.
+The fast path to your first real component: 5 steps, ~15 minutes, gets the vacuum running on a schedule with briefings. See **[AutoVac First Setup](autovac_first_setup.md)** (next) when you want the full chain.
 
 ---
 
@@ -212,7 +212,7 @@ concepts.md -> install.md -> first_run.md -> first_alert.md -> entity_exposure.m
   -> autovac_quick_start.md -> autovac_first_setup.md -> notification_routing.md
 ```
 
-`cabinet_placement.md` and `room_deployment_template.md` are references, not linear reading — jump to them when you need them. Keep `troubleshooting.md` and `user_management.md` open in a tab too. You might need them. `zenzork_manual_unofficial.md` isn't part of onboarding at all — it's there when you want it.
+[Cabinet Placement](cabinet_placement.md) and [Room Deployment Template](room_deployment_template.md) are references, not linear reading — jump to them when you need them. Keep [Troubleshooting](troubleshooting.md) and [User Management](user_management.md) open in a tab too. You might need them. [ZenZork: The Unofficial Manual](zenzork_manual_unofficial.md) isn't part of onboarding at all — it's there when you want it.
 
 ---
 

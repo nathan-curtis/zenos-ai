@@ -278,7 +278,7 @@ another setup pass.
    a bug in this system, and no AI assistant can do it for you either — a
    chat-based agent only has tool calls, not filesystem access, and this
    step genuinely requires writing a file. A person with access to the
-   configuration files needs to copy `room_deployment_template.md` (right
+   configuration files needs to copy [Room Deployment Template](room_deployment_template.md) (right
    next to this manual) into a new room package file, fill in the room
    name and trigger entities, and reload. It's a five-minute copy-paste-fill
    job, not a coding task — the template does the hard part for you.
