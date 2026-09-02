@@ -3668,6 +3668,58 @@ script:
                               rooms: "{{ _area_id }}"
                               caller_token: "{{ _caller_token }}"
                             continue_on_error: true
+                  # FORCE REFIRE. REFLEX's own event-driven fire only runs off
+                  # a REAL transition (room_state.yaml's emitter guard:
+                  # _prev_state != _resolved_state) -- re-setting a room to the
+                  # state it's already in, or clearing to Auto when nothing
+                  # was overridden, changes nothing, so no room_state_changed
+                  # event fires, so REFLEX never runs. That's the manual
+                  # escape hatch this mode is FOR -- it must not depend on a
+                  # real transition happening. Call reflex_sync directly,
+                  # synchronously, unconditionally (every room_control_state
+                  # value including Auto -- Auto means "resolve whatever the
+                  # live cascade says right now and fire that"), bypassing the
+                  # debounce/event pipeline entirely. Deliberately ungated
+                  # same as every other reflex_sync call site -- this only
+                  # replays a decision the room's own live state already
+                  # made, nothing here for an external caller to authorize.
+                  # Best-effort: a failure here doesn't undo the
+                  # already-successful room_control write, just gets folded
+                  # into a warning on the response instead of failing the
+                  # whole call.
+                  #
+                  # MUST be fired as an independent async run, never a
+                  # blocking nested `action: script.zen_dojotools_lights` call
+                  # -- reflex_sync internally calls BACK into
+                  # script.zen_dojotools_room_manager mode=reflex_wire -- the
+                  # exact script we're already mid-execution inside, right
+                  # now, in this very room_control_set run. This script's
+                  # mode is `queued` -- a queued-mode self-call while the
+                  # outer instance is still running queues behind that same
+                  # running instance and can never actually start, since the
+                  # outer instance is itself blocked waiting on it.
+                  # continue_on_error at both this call site AND lights.yaml's
+                  # own inner reflex_wire call swallows the resulting timeout
+                  # completely silently -- looks exactly like a genuine
+                  # room_state_unavailable failure with nothing in the log to
+                  # tell them apart. script.turn_on starts dojotools_lights as
+                  # a fully separate, independent script run instead of a
+                  # nested blocking call -- no shared call stack, no
+                  # recursion, no deadlock. Trade-off: fire-and-forget, so
+                  # this can no longer confirm success/failure synchronously
+                  # -- see the 'dispatched' (not 'ok') response field below.
+                  - delay:
+                      milliseconds: 500
+                  - action: script.turn_on
+                    target:
+                      entity_id: script.zen_dojotools_lights
+                    data:
+                      variables:
+                        mode: reflex_sync
+                        room: "{{ _area_id }}"
+                        transition: 1
+                        caller_token: "{{ _caller_token }}"
+                    continue_on_error: true
                   - variables:
                       _result:
                         status: ok
@@ -3684,6 +3736,8 @@ script:
                           {%- endif -%}
                         warning: >-
                           {{ 'Pausing this room means it stays Paused until explicitly cleared -- clearing it requires a live ack every call unless a room_control_override cert_scope naming this area_id is on file.' if _rcs_state_in == 'Paused' else none }}
+                        refire: >-
+                          {{ {'dispatched': true, 'detail': 'Scene refire started as an independent run (fire-and-forget -- room_control_set cannot wait on it without risking a self-recursion deadlock into this same script). If lights still look wrong a couple seconds after this call returns, check zen_dojotools_room_manager mode=reflex_wire area=' ~ _area_id ~ ' for a wiring gap.'} }}
                         caller_token: "{{ _caller_token }}"
           - stop: room_control_set done
             response_variable: _result
