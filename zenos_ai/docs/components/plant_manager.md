@@ -58,6 +58,23 @@ All sections return `available: false` when entities are missing or unavailable.
 
 ---
 
+## Telegraphing trouble into Room Manager
+
+Room Manager exposes a generic `trouble_active` attribute per room (see
+its own docs for the `trouble` label mechanism). Plant feeds one source
+into it natively, no tagging required: for any room whose circuits are
+covered by a current-exposing provider (see the Codex series above),
+Room Manager's own `room_state.yaml` computes each circuit's live draw
+against its real breaker rating and sets that room's `trouble_active`
+true if any circuit sustains over 80% of rated capacity (the NFPA/NEC
+continuous-load threshold). This mirrors `circuit_draw`'s own math but is
+computed independently, live, inside the room sensor itself — not read
+from a Plant call. A provider that exposes per-circuit current + breaker
+rating (matching the pattern in its Codex page) qualifies automatically;
+nothing needs to be built per-provider for this specific signal.
+
+---
+
 ## Discovery Waterfall
 
 Each slot resolves in priority order — first match wins. Apply `zen_plant_*` labels to pin any sensor directly.

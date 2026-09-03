@@ -449,6 +449,41 @@ Presence tracker block. Default `false` — opt in explicitly.
 
 Apply `hps` label to phone and wearable device trackers to enroll them in filtered mode.
 
+### `confident_presence{}` — always on, no flag needed
+
+High-confidence current-room lookup. Unlike `presence{}`
+above (a raw BPS device-discovery scan, opt-in because it's comparatively
+expensive), this only reads however many entities carry the
+`zen_presence_room` label — cheap enough to include on every
+`home_overview` call by default.
+
+Person-keyed dict, one entry per person who resolves to a real HA
+`person.*` entity **and** is currently `home`:
+
+```json
+"confident_presence": {
+  "person_a": {"room": "garage", "confidence": "medium", "source": "bayesian", "entity": "sensor.person_a_confident_room"},
+  "person_b": {"room": "unknown", "confidence": "low", "source": "last_confident_fallback", "entity": "sensor.person_b_confident_room"}
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `room` | Room slug (matches `room_topology` keys) or `unknown` |
+| `confidence` | `high` / `medium` / `low` |
+| `source` | `bayesian` (a live Bayesian sensor cleared threshold) or `last_confident_fallback` (no sensor currently confident — falling back to the last known room) |
+| `entity` | The underlying `zen_presence_room`-labeled sensor |
+
+Untracked people (no `person.*` entity) and tracked-but-away people are
+simply **absent** from the dict — not shown with a null/unknown entry.
+
+Implementation (a Bayesian presence grid + Markov/adjacency fusion layer,
+in a household-custom package outside `packages/zenos_ai/`) is deliberately opaque to this field
+— any install satisfying the `zen_presence_room` label contract populates
+it, no code change needed here. Same data is also available reverse
+(who's in room X) via the Lens Bus `presence` provider's `area_id` anchor
+— see `library/lenses.md`.
+
 ---
 
 ## zen_rm_ignore Label

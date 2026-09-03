@@ -53,16 +53,34 @@ Codex](emporia_vue_codex.md), this is the label-mapping guide, not a build.
 | `Consumed Energy` (Wh, cumulative) | `circuits`, `sort_by=energy` | `consumed_energy` — **exact unit match**, unlike Emporia's kWh (see Emporia Codex's unit caveat — doesn't apply here) |
 | `Current` (A, v2 only, per circuit) | `circuits`, `sort_by=current` | `sub_panel` — exact fit, this is precisely the "raw amp reading" Plant's current-mode circuits list expects |
 | `Power` (W, instantaneous) | *(no dedicated slot — see below)* | Not separately modeled by Plant Manager's `circuits` mode today; both `sort_by` options use accumulators (energy) or amps (current), not instantaneous watts per circuit. Available for direct query/dashboard use even if Plant Manager doesn't surface it in `circuits` output. |
-| `Breaker Rating` (A, diagnostic, v2) | *(informational)* | No dedicated slot — circuit-level breaker rating isn't currently read by any Plant Manager mode |
-| `tabs` attribute (breaker slot position) | *(informational)* | Not a separate entity, just an attribute on the Power/Energy sensors — useful context if manually cross-referencing a labeled circuit against the physical panel, no ZenOS label needed |
+| `Breaker Rating` (A, diagnostic, v2) | `circuits`/`circuit_draw` draw-vs-capacity math | `sub_panel` — same tag as `Current`; `circuit_draw` (v5.9.0+) pairs each circuit's current sensor with its breaker_rating sibling by naming convention automatically, no separate label needed once both carry `sub_panel` |
+| `tabs` attribute (breaker slot position) | `circuit_draw`'s pole-count (`poles: 1`/`2`) | Not a separate entity, just an attribute on the Power/Energy/Current sensors — `circuit_draw` reads it directly (two tab positions = 2-pole/240V), no ZenOS label needed |
+
+### Trouble-signal support (Room Manager `trouble_active`)
+
+SPAN qualifies. Room Manager's generic per-room `trouble_active` attribute (see [Plant Manager](../components/plant_manager.md#telegraphing-trouble-into-room-manager)) needs a provider that exposes real per-circuit current **and** a matching breaker rating — SPAN exposes both (`Current` + `Breaker Rating`, paired by naming convention), so any SPAN-covered room gets sustained->80%-of-rated-capacity trouble detection automatically, no tagging required. GFCI/AFCI protection type and special-purpose (surge suppression, EV charging, etc.) are separate, human-confirmed signals SPAN doesn't expose itself — tag the breaker's `switch` entity with `breaker_gfci`/`breaker_afci`/`surge_suppression` per [Plant Manager](../components/plant_manager.md).
 
 ### Not currently modeled (genuine gaps, not bugs)
 
 | SPAN sensor | Gap |
 |---|---|
 | `Battery Power`, `PV Power`, BESS sensors (`Battery Level`, `Stored Energy`, `Nameplate Capacity`) | Plant Manager has no solar/battery slots at all today. If this household has PV or a BESS commissioned on the panel, this is real future scope — not something to force onto an existing `zen_plant_*` label. Worth a ticket if/when PV or battery hardware exists here. |
+| `Binding Constraint`, `Import Limit`, `PCS Active` *(new, integration update — see below)* | Same PCS/BESS gap as the row above — these are Power Conversion System / inverter-side signals (grid-import limiting, active-constraint reporting) surfaced now that the integration exposes more of what the panel reports. No Plant Manager slot exists for PCS state today; same "worth a ticket if PV/battery hardware exists here" as `Battery Power`/`PV Power` above. Query-only via `zen_dojotools_inspect` for now. |
 | EVSE sensors (`Charger Status`, `Advertised Current`, `Lock State`) | No `zen_plant_ev_charger` slot exists. If a SPAN Drive or other EVSE is commissioned, these are currently query-only via `zen_dojotools_inspect`, not surfaced through Plant Manager. |
 | `Main Meter Consumed/Produced/Net Energy` (Wh, cumulative grid import/export, not periodic) | Doesn't cleanly fit `billing_daily`/`billing_weekly`/`billing_monthly` — those slots expect periodic-reset accumulators, and SPAN's meter energy sensors are lifetime-cumulative. If daily/monthly billing tracking is wanted, wrap these with HA's built-in `utility_meter` helper (creates a daily/monthly-reset derived sensor from any cumulative source) and label *that* derived sensor `zen_plant_billing_daily`/`_monthly`, not the raw SPAN sensor directly. |
+| `Status Postal Code`, `Status Time Zone` | Panel physical-location metadata (config diagnostics), not operational data. Not a Plant Manager fit — nothing to label, nothing to model. Ships switched-off by the integration by default; leave them off unless you have a specific diagnostic reason to enable them. |
+
+---
+
+## Integration Update — eBus Data Model (flat → 1.0)
+
+A firmware/integration update on this panel migrated its data model from the old flat format to eBus 1.0 (the integration reloads automatically when this happens — devices/entities realign to match what the panel now actually publishes). Two things worth knowing if you're re-checking labels after an update like this:
+
+- **`DSM State` → `DSM Grid State`.** Same entity ID and history are preserved across the rename, so the existing `main_panel` label mapping above still holds with no action needed — but the *meaning* upgraded: on the old flat model this was inferred (from the battery when one was fitted, otherwise from dominant power source + whether power crossed the grid connection); on 1.0 it reads the real islanding state a Microgrid Interconnect Device (MID) senses directly. More trustworthy than before, same label.
+- **`Grid Islandable`** also keeps working with no relabeling needed, but now reflects whether a MID is physically present (how backup capability is detected under 1.0) rather than a panel-level property the old model published directly.
+- **New: Microgrid Interconnect Device, with its own `Grid State` entity** — reports the health of the utility supply itself, which the old flat model never exposed at all. This is a genuinely new signal, not a rename. It's panel-adjacent grid-health data, not a circuit — tag it `main_panel` alongside the other panel-level sensors in the table above if you want it covered by `zen_dojotools_plant mode=validate`; no dedicated Plant Manager slot exists for it yet, same "query-only for now" status as the PCS/BESS entities above.
+
+If any of your existing SPAN entities show `unavailable` after an update like this, they were likely renamed/replaced rather than genuinely lost — per the integration's own advice, remove the stale unavailable ones manually rather than re-tagging them.
 
 ---
 
