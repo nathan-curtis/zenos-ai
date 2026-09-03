@@ -477,10 +477,11 @@ Person-keyed dict, one entry per person who resolves to a real HA
 Untracked people (no `person.*` entity) and tracked-but-away people are
 simply **absent** from the dict — not shown with a null/unknown entry.
 
-Implementation (a Bayesian presence grid + Markov/adjacency fusion layer,
-in a household-custom package outside `packages/zenos_ai/`) is deliberately opaque to this field
-— any install satisfying the `zen_presence_room` label contract populates
-it, no code change needed here. Same data is also available reverse
+This field is deliberately opaque to whatever implementation populates
+the `zen_presence_room`-labeled sensors it reads — any install
+satisfying the label contract (state = room slug, `attributes.confidence`,
+`attributes.source`) is picked up automatically, no code change needed
+here. Same data is also available reverse
 (who's in room X) via the Lens Bus `presence` provider's `area_id` anchor
 — see `library/lenses.md`.
 
