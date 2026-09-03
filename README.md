@@ -286,6 +286,7 @@ packages/zenos_ai/
     dojotools_print.yaml          — Print Shop — networked-printer job dispatch
     dojotools_taskmaster.yaml     — Taskmaster — task/conductor scheduling
     zen_stack_alarms.yaml         — Stack alarms provider (Lens Bus)
+    zen_stack_presence.yaml       — Stack presence provider (Lens Bus) — person/area_id anchors, zen_presence_room label contract
     zen_stack_timer.yaml          — Stack timer provider (Lens Bus)
 
     — Productivity —
