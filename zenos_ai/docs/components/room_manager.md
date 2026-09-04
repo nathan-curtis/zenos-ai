@@ -23,7 +23,7 @@ Key capabilities:
 * Physical room topology storage (portals, adjacency, transmission)
 * Egress and evacuation routing (exits[], emergency exits, drop heights)
 * Safety equipment inventory (fire extinguishers, AED, hazmat)
-* Live context slices (+light, +topo, +climate, +media, +inventory, +chores, +tasks, +calendar, +wiki, +tickets)
+* Live context slices (+light, +topo, +climate, +media, +appliances, +inventory, +chores, +tasks, +calendar, +wiki, +tickets)
 * Whole-house situational awareness via `home_overview`
 * Crisis snapshot via `mode=emergency` — scenario-aware guidance, shelter classification, hazards, rally point, dispatch address
 * Household profile store (address, zip_code, rally_point) via `mode=set`
@@ -124,6 +124,7 @@ Pass as comma-separated flags to `context_slices=` on `mode=get`. Any combinatio
 | `+climate` | First climate entity in area. `entity_id`, `hvac_mode`, `setpoint`, `current_temp` |
 | `+covers` | `covers[]`, `open[]`, `avg_position` (0–100) |
 | `+media` | Active media player. `entity_id`, `state`, `media_title`, `volume_level`. Returns `active_count: 0` when nothing playing. |
+| `+appliances` | Active appliance power/pulse sensors. `active_count`, `total_count`, `active[]{entity_id, name}`. Label-driven, not `area_entities()`-based — a sensor must carry both the `appliance` label and a second label matching the target `area_id` slug (e.g. `appliance` + `kitchen`), since these sensors often live on a device whose registry area is a panel's physical location, not the functional room. |
 | `+inventory` | Grocy `object_lens` place lens for the area — tagged products, chores, expanded operational objects. Full data in `domain_context.room_manager[area_id].context.inventory` only. Per-entity `room_context` carries a slim `inventory_summary: {tagged_products, chores, status}` + `room_area_id` pointer. Alias: `+grocy` |
 | `+chores` | Maintenance chores linked to products stocked in the area. `is_due`, `next_execution`, `cadence`, `assignee`. `context.chores.chore_actions{execute, edit, add}` — pre-built call shapes; pass `item=<chore name>`. `add` also takes `period_days=N`. Chores with a `product_id` also include `replace_action{step_1: chores_execute, step_2: stock_open_item}` — two-step replacement sequence. |
 | `+tasks` | Todo entities whose labels intersect the area's HA labels. Each list entry includes `items[]` and `task_actions{complete, edit, add}` — pass `items=[<summary>]`. See Label-Intersection below. |
