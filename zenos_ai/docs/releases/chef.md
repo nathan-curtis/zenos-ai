@@ -1,7 +1,7 @@
-# Release Notes — 2026.8.0 'Chef'
+# Release Notes — 2026.8.1 'Chef'
 
 **Status:** Released
-**Branch:** `main`
+**Branch:** `feat/2026.8.1`
 **Base:** 2026.7.1 (patch on 2026.7.0 'Neo')
 
 ---
@@ -135,12 +135,18 @@ None of this changes behavior on an already-healthy, already-provisioned system 
 
 ---
 
-## 2026.8.1 — Patch
+## 2026.8.1 — The Last Release Before Identity Gates
 
 **Status:** Released
 **Branch:** `feat/2026.8.1` (off `main`/2026.8.0)
 
-A small, deliberately narrow patch for households not yet ready to move onto Steel Magnolia's new identity-gate/cert-scope security architecture. Every fix below is a genuine bug that predates Steel Magnolia entirely — nothing here depends on, or drags in, any of that new machinery. If you're already running (or planning to run) 2026.9.0 'Steel Magnolia', this patch has nothing for you that isn't already there; it exists purely as a safe, known-good parking spot on the Chef line.
+A small, deliberately narrow patch — but an important line in the sand. **This is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** Every fix below is a genuine bug that predates Steel Magnolia entirely; nothing here depends on, or drags in, any of that new machinery. Everything reasonably backportable from 2026.9.0 to this line already has been, as of Steel Magnolia's own release — this patch is not a snapshot frozen mid-effort, it's the deliberate end state of that backport pass.
+
+**Going forward, this is a hard fork, not a soft one.** Any ZenOS-AI feature built after this point that relies on the identity-gate/cert-scope system for safe operation will not be backported here, on principle, not oversight. Staying on the 2026.8.x line means staying without those safeguards, indefinitely. Moving to 2026.9.0 'Steel Magnolia' or later is the only path to anything past this release that needs them.
+
+**Why this line exists, stated plainly:** the agents this system now supports are simply too powerful to be given unfettered access to everything they can reach, and several planned features can only be built safely with the identity-gate/cert-scope machinery underneath them, not without it. A household running an agent capable of real actuation — locks, containers, security, infrastructure — is one ambiguous instruction away from an outcome nobody wanted: an offhand remark misread as a command to remove something that was never meant to be deleted. That is not a hypothetical this project is willing to leave unguarded going forward. If you're staying on 2026.8.1 deliberately, this is the trade-off you're accepting; it's a legitimate choice, but it is a choice, not a default.
+
+If you're already running (or planning to run) 2026.9.0 'Steel Magnolia', this patch has nothing for you that isn't already there; it exists purely as a safe, known-good parking spot on the Chef line for households not yet ready to move.
 
 | File | Fix |
 |---|---|
@@ -160,4 +166,4 @@ No new features, no schema changes, no behavior changes to anything not listed a
 
 ---
 
-*ZenOS-AI 2026.8.0 'Chef' — service.*
+*ZenOS-AI 2026.8.1 'Chef' — service.*

@@ -10,9 +10,9 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Stable: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo')
+**Current Stable: 2026.9.0 'Steel Magnolia'.** | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo')
 
-> **2026.8.1** is a small, deliberately narrow bugfix patch for households not yet ready to adopt Steel Magnolia's new identity-gate/cert-scope security architecture — a safe, known-good parking spot on the Chef line. No new features, nothing depends on or drags in the new security machinery. See the "2026.8.1 — Patch" section of the [Chef release notes](zenos_ai/docs/releases/chef.md) for the fix list.
+> **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely, nothing depends on or drags in the new security machinery — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#20261--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
