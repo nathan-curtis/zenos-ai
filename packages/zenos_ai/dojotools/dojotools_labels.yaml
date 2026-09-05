@@ -1,6 +1,27 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Labels
-# Version: 5.1.0
+# Version: 5.3.0
+#
+# 5.3.0 (2026-09-04) -- area_assign/area_remove: entity registry area_id
+#   assignment via Spook's homeassistant.add_entity_to_area /
+#   homeassistant.remove_entity_from_area (confirmed real services --
+#   checked custom_components/spook/services.yaml directly). Same
+#   has_service positive-runtime-probe gate as update's spook_clean_update
+#   path below. No fallback path -- unlike update_label, there's no
+#   pre-Spook equivalent, so this errors cleanly if the probe fails
+#   rather than degrading. Scope note: this tool now covers entity/area
+#   registry management generally, not just labels narrowly -- reused
+#   this file's existing target_entities/target_areas fields and
+#   has_service infra rather than duplicating them in a new tool. A
+#   future clean split (labels vs. registry-meta) may make sense if this
+#   keeps growing -- not warranted yet.
+#
+# 5.2.0 (2026-09-04) -- 'update' mode gained a Spook >=5.3 clean-update
+#   path (homeassistant.update_label), gated behind a positive has_service
+#   runtime probe (never a version-number guess) -- eliminates the delete+
+#   recreate+retag dance for installs where it's actually available. Old
+#   path kept unconditionally as fallback; scheduled for removal once this
+#   house's minimum supported Spook version is N-2 or newer.
 #
 # Scripts:
 #   zen_dojotools_labels — Label CRUD. Read/modify the HA label index.
@@ -38,7 +59,7 @@ script:
           in user_labels %}\n    \"{{ lbl }}\": {\n      \"description\": \"{{ label_description(
           lbl ) | default('') }}\"\n    }{{ \",\" if not loop.last else \"\" }}\n  {%-
           endfor %}\n  }\n{% else %}\n  {}\n{% endif %}"
-        minihelp: 'Minihelp: actions = create, read, delete, tag, untag, update, reset, install. tag/untag accept target_entities and/or target_areas.'
+        minihelp: 'Minihelp: actions = create, read, delete, tag, untag, update, reset, install, area_assign, area_remove. tag/untag accept target_entities and/or target_areas. area_assign requires target_entities + exactly one target_areas entry (Spook homeassistant.add_entity_to_area). area_remove requires target_entities only, clears the entity-level area override (Spook homeassistant.remove_entity_from_area) -- device area, if any, still applies afterward.'
         results_list: []
         failures_list: []
     # --- tool_manifest ---
@@ -76,7 +97,7 @@ script:
     - choose:
       - conditions:
         - condition: template
-          value_template: '{{ action not in [''tag'',''untag'',''create'',''delete'',''update'',''read'',''reset'',''install'']
+          value_template: '{{ action not in [''tag'',''untag'',''create'',''delete'',''update'',''read'',''reset'',''install'',''area_assign'',''area_remove'']
             }}'
           alias: Error - invalid Action
         sequence:
@@ -646,6 +667,31 @@ script:
             _has_change: '{{ new_description | default('''', true) != '''' or new_icon
               | default('''', true) != '''' or new_color | default('''', true) != '''' }}'
             _force_rewrite: '{{ force_rewrite | default(false) | bool }}'
+        # ── Existence guard -- shared by BOTH the clean-update
+        # and delete+recreate paths below. This check never
+        # existed before -- 'update' on a typo'd/nonexistent label name fell
+        # through to the old path's delete_label (silent no-op on a
+        # nonexistent id) + create_label (which doesn't care whether one
+        # existed -- just creates a NEW label under that name). That's worse
+        # than an error: a silent, wrong write. label_name() is a real
+        # Jinja-only HA template global (no REST) -- resolves a label_id to
+        # its display name, or None if it doesn't exist.
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ label_name(_upd_id) is none }}'
+              alias: Label does not exist
+            sequence:
+            - variables:
+                response:
+                  status: error
+                  error: >-
+                    Label '{{ _upd_name }}' (id: {{ _upd_id }}) does not exist --
+                    update refuses to silently create it. Use 'create' if you
+                    meant to add a new label.
+                  caller_token: '{{ caller_token }}'
+            - stop: pass var scope
+              response_variable: response
         - choose:
           - conditions:
             - condition: template
@@ -702,6 +748,87 @@ script:
                 caller_token: '{{ caller_token }}'
           - stop: confirm required
             response_variable: response
+        # ── Spook >=5.3 clean-update probe ──────────────────────────────────
+        # Spook v5.3.0 added a real update-label action, eliminating the
+        # delete+recreate+retag dance below. POSITIVE runtime detection only,
+        # never a version-number guess. Same has_service probe pattern
+        # dojotools_lights.yaml already uses for its Spook v5.2.0 gates
+        # (never assume, always confirm the real service exists before
+        # calling it). If found, use the one-call path and stop -- the old
+        # delete+recreate path below is UNTOUCHED as the fallback for any
+        # install where the probe comes back negative (Spook not installed,
+        # older version, service renamed, etc.).
+        # RETIREMENT NOTE: once this house's minimum supported Spook version
+        # guarantees the new service (N-2 versions back), delete the old
+        # delete+recreate branch below entirely and always take this path
+        # unconditionally.
+        - action: script.zen_sutra_ha_api
+          continue_on_error: true
+          data:
+            mode: services
+            has_service: homeassistant.update_label
+          response_variable: _lbl_svc_check
+        - variables:
+            _lbl_clean_update_available: >-
+              {{ _lbl_svc_check is mapping and _lbl_svc_check.get('found', false) == true }}
+        - if:
+          - condition: template
+            value_template: '{{ _lbl_clean_update_available }}'
+          then:
+          - if:
+            - condition: template
+              value_template: "{{ _upd_icon != '' }}"
+            then:
+            - action: homeassistant.update_label
+              continue_on_error: true
+              data:
+                label_id: '{{ _upd_id }}'
+                name: '{{ _upd_name }}'
+                description: '{{ _upd_desc }}'
+                icon: '{{ _upd_icon }}'
+                color: '{{ _upd_color }}'
+            else:
+            # icon field rejects empty string ("not a valid value at 'icon'")
+            # -- must be omitted entirely, not passed blank, same as the old
+            # delete+recreate path below already does for
+            # homeassistant.create_label.
+            - action: homeassistant.update_label
+              continue_on_error: true
+              data:
+                label_id: '{{ _upd_id }}'
+                name: '{{ _upd_name }}'
+                description: '{{ _upd_desc }}'
+                color: '{{ _upd_color }}'
+            # No response_variable: homeassistant.update_label is a
+            # fire-and-forget service with no response data ("Script does
+            # not support 'response_variable' for service ... which does
+            # not support response data").
+            #
+            # No REST re-read verification -- /api/labels is NOT a real HA
+            # REST API endpoint (404, not an auth failure -- label registry
+            # is WebSocket-only in HA core).
+            # This was a PRE-EXISTING latent bug: the old delete+recreate
+            # path's own pre-read below has always hit this same 404 and
+            # silently degraded to "REST pre-read unavailable," just never
+            # traced to root cause before now. Trusting update_label the
+            # same way this file already trusts create_label/delete_label
+            # elsewhere (continue_on_error, no deep verification) --
+            # consistent risk level with the rest of this tool, not a new
+            # gap introduced here.
+          - variables:
+              response:
+                status: ok
+                action: update
+                label: '{{ _upd_name }}'
+                label_id: '{{ _upd_id }}'
+                method: spook_clean_update
+                message: >-
+                  Update complete via Spook's native update-label action --
+                  no delete/recreate, no entity retagging needed, label
+                  never briefly stopped existing.
+                caller_token: '{{ caller_token }}'
+          - stop: clean update path done
+            response_variable: response
         - variables:
             _upd_entities: '{{ label_entities(_upd_id) | list }}'
         - action: homeassistant.delete_label
@@ -753,6 +880,154 @@ script:
           response_variable: response
         alias: UPDATE
 
+    # ── area_assign / area_remove (2026-09-04) -- entity registry
+    # area_id assignment via Spook's homeassistant.add_entity_to_area /
+    # homeassistant.remove_entity_from_area. Confirmed real, already-
+    # installed Spook services (checked custom_components/spook/
+    # services.yaml directly). Same has_service positive-runtime-probe
+    # gate as update's spook_clean_update path -- never a version-number
+    # guess. Distinct from labels (a many-to-many tag), area assignment
+    # is the single-value entity_registry.area_id field -- a different HA
+    # concept this tool didn't cover until now. No fallback path: unlike
+    # update_label (which has an older delete+recreate equivalent),
+    # there's no pre-Spook way to do this at all -- if the probe fails,
+    # this errors cleanly rather than degrading. ──
+    - if:
+      - condition: template
+        value_template: "{{- action == 'area_assign' -}}"
+      then:
+        - if:
+          - condition: template
+            value_template: '{{ not confirm }}'
+          then:
+          - variables:
+              response:
+                status: error
+                error: confirm_required
+                message: "area_assign requires confirm=true."
+                caller_token: '{{ caller_token }}'
+          - stop: area_assign confirm required
+            response_variable: response
+        - if:
+          - condition: template
+            value_template: '{{ target_area_list | length != 1 or not have_target_ents }}'
+          then:
+          - variables:
+              response:
+                status: error
+                error: bad_targets
+                message: "area_assign requires exactly one target_areas entry and at least one target_entities entry (an entity can only be in one area)."
+                caller_token: '{{ caller_token }}'
+          - stop: area_assign bad targets
+            response_variable: response
+        - if:
+          - condition: template
+            value_template: '{{ response is not defined }}'
+          then:
+          - action: script.zen_sutra_ha_api
+            continue_on_error: true
+            data:
+              mode: services
+              has_service: homeassistant.add_entity_to_area
+            response_variable: _aa_svc_check
+          - if:
+            - condition: template
+              value_template: '{{ not (_aa_svc_check is mapping and _aa_svc_check.get(''found'', false) == true) }}'
+            then:
+            - variables:
+                response:
+                  status: error
+                  error: service_unavailable
+                  message: "homeassistant.add_entity_to_area not found -- requires Spook. Check the Spook integration is installed and current."
+                  caller_token: '{{ caller_token }}'
+            else:
+            - action: homeassistant.add_entity_to_area
+              data:
+                area_id: '{{ target_area_list[0] }}'
+                entity_id: '{{ target_ent_list }}'
+            - variables:
+                response:
+                  status: ok
+                  action: area_assign
+                  area_id: '{{ target_area_list[0] }}'
+                  entity_id: '{{ target_ent_list }}'
+                  message: "{{ target_ent_list | length }} entit{{ 'y' if target_ent_list | length == 1 else 'ies' }} assigned to area {{ target_area_list[0] }}."
+                  caller_token: '{{ caller_token }}'
+            - event: zen_event
+              event_data:
+                event:
+                  kind: entity_area_mutation
+                  action: area_assign
+            - stop: area_assign done
+              response_variable: response
+
+    - if:
+      - condition: template
+        value_template: "{{- action == 'area_remove' -}}"
+      then:
+        - if:
+          - condition: template
+            value_template: '{{ not confirm }}'
+          then:
+          - variables:
+              response:
+                status: error
+                error: confirm_required
+                message: "area_remove requires confirm=true."
+                caller_token: '{{ caller_token }}'
+          - stop: area_remove confirm required
+            response_variable: response
+        - if:
+          - condition: template
+            value_template: '{{ not have_target_ents }}'
+          then:
+          - variables:
+              response:
+                status: error
+                error: bad_targets
+                message: "area_remove requires at least one target_entities entry. Note: this only clears an entity-level area override -- the entity will still show its DEVICE's area afterward, if the device has one (Spook's own documented behavior)."
+                caller_token: '{{ caller_token }}'
+          - stop: area_remove bad targets
+            response_variable: response
+        - if:
+          - condition: template
+            value_template: '{{ response is not defined }}'
+          then:
+          - action: script.zen_sutra_ha_api
+            continue_on_error: true
+            data:
+              mode: services
+              has_service: homeassistant.remove_entity_from_area
+            response_variable: _ar_svc_check
+          - if:
+            - condition: template
+              value_template: '{{ not (_ar_svc_check is mapping and _ar_svc_check.get(''found'', false) == true) }}'
+            then:
+            - variables:
+                response:
+                  status: error
+                  error: service_unavailable
+                  message: "homeassistant.remove_entity_from_area not found -- requires Spook. Check the Spook integration is installed and current."
+                  caller_token: '{{ caller_token }}'
+            else:
+            - action: homeassistant.remove_entity_from_area
+              data:
+                entity_id: '{{ target_ent_list }}'
+            - variables:
+                response:
+                  status: ok
+                  action: area_remove
+                  entity_id: '{{ target_ent_list }}'
+                  message: "{{ target_ent_list | length }} entit{{ 'y' if target_ent_list | length == 1 else 'ies' }} cleared of entity-level area override. Device area (if any) still applies."
+                  caller_token: '{{ caller_token }}'
+            - event: zen_event
+              event_data:
+                event:
+                  kind: entity_area_mutation
+                  action: area_remove
+            - stop: area_remove done
+              response_variable: response
+
     - choose:
       - conditions:
         - alias: No response defined yet
@@ -768,8 +1043,11 @@ script:
           response_variable: response
     alias: Zen DojoTools Labels
     description: >-
-      GENERAL-PURPOSE HA label tool. tag/untag assigns or removes any HA label
-      on any entity_id or area_id via MCP — no HA UI needed. Also the ZenOS scope
+      GENERAL-PURPOSE HA label + entity/area registry management tool.
+      tag/untag assigns or removes any HA label on any entity_id or
+      area_id via MCP — no HA UI needed. area_assign/area_remove set or
+      clear an entity's registry area_id (a different axis than labels —
+      single-value, not many-to-many; via Spook). Also the ZenOS scope
       primitive: labels drive KFC scan scope, alert rules, heartbeat policy, room
       topology, and bootstrap discovery (zen_kfc_provider = how KFC bootstrap
       finds provider scripts).
@@ -792,7 +1070,7 @@ script:
     fields:
       mode:
         description: '''create'', ''read'', ''delete'', ''tag'', ''untag'', ''update'',
-          ''reset'', ''install'''
+          ''reset'', ''install'', ''area_assign'', ''area_remove'''
         required: false
         selector:
           select:
@@ -805,6 +1083,8 @@ script:
             - update
             - reset
             - install
+            - area_assign
+            - area_remove
             - tool_manifest
         default: read
       action_type:
@@ -813,13 +1093,21 @@ script:
         selector:
           text:
       target_entities:
-        description: List of entity_ids to tag or untag. Optional if target_areas provided.
+        description: >-
+          List of entity_ids to tag or untag. Optional if target_areas
+          provided for tag/untag. Required for area_assign/area_remove
+          (the entities being moved).
         required: false
         selector:
           entity:
             multiple: true
       target_areas:
-        description: List of area_ids to tag or untag. Optional if target_entities provided.
+        description: >-
+          List of area_ids to tag or untag. Optional if target_entities
+          provided for tag/untag. For area_assign: required, exactly ONE
+          entry — an entity can only be in one area at a time (Spook's
+          own service constraint). Not used by area_remove (clearing
+          needs no destination area).
         required: false
         selector:
           text:
