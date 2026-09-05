@@ -1,6 +1,6 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.9.0 'Steel Magnolia' (beta, ETA Sat 2026-09-05) | Stable: 2026.8.0 'Chef' | **Last Updated:** Aug 2026 | **License:** MIT
+> **Version:** 2026.9.0 'Steel Magnolia' | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 
@@ -8,7 +8,7 @@
 
 ---
 
-> ### 2026.9.0 'Steel Magnolia' — Beta, ETA 2026-09-05
+> ### 2026.9.0 'Steel Magnolia' — Stable
 >
 > Room Manager v3's live state engine and REFLEX (autonomous scene-firing) reach their fullest form yet, plus the hospitality lifecycle (guest arrival/checkout) and cert-gated permission tightening. See root **[README](../../README.md)** (the "What's in Steel Magnolia" section near the top) and the **[Room Manager v3 & REFLEX operator's manual](getting_started/room_manager_operators_manual.md)** for the full picture — this hub's own body below this banner had drifted behind the top-line version; treat the root README and the getting_started docs as the current source of truth for anything not yet reflected here.
 >
@@ -16,7 +16,7 @@
 
 ---
 
-> ### 2026.8.0 'Chef' — Stable
+> ### 2026.8.1 'Chef'
 >
 > Taskmaster, the SP1 identity gate, Portainer container control, Kitchen's fulfillment/costing layer, Twenty CRM, Room Manager's guest/occupant-prefs lookup, full Reset Test hardening pass.
 >

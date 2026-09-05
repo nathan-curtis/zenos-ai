@@ -10,8 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Stable: 2026.8.0 'Chef'** | Previous: 2026.7.1 (patch on 2026.7.0 'Neo')
-**RC1: 2026.9.0 'Steel Magnolia'** — ETA Saturday, 2026-09-05. See [release notes](zenos_ai/docs/releases/steel_magnolia.md).
+**Stable: 2026.9.0 'Steel Magnolia'** | Previous: 2026.8.1 'Chef'. See [release notes](zenos_ai/docs/releases/steel_magnolia.md).
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -19,7 +18,7 @@ And a few things that are.
 
 > **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way).
 
-**What's in 2026.9.0 'Steel Magnolia' (RC1):** *The duck looks calm, and the fence is exactly where it's supposed to be.*
+**What's in 2026.9.0 'Steel Magnolia':** *The duck looks calm, and the fence is exactly where it's supposed to be.*
 
 **Room Manager v3** reads a room by what's actually happening in the space right now, not a clock — a real wasp-in-a-box occupancy model, opt-in `entertaining_hold`/`guest_hold`/`presence_hold`, a nighttime-gated asleep window, hold-release timer restart, a generic `trouble` attribute with native SPAN breaker confirmation, and unconditional Paused/Emergency cascade through nested rooms.
 
@@ -41,9 +40,9 @@ And a few things that are.
 
 ---
 
-**2026.8.0 'Chef'** — *Yes, chef.* Taskmaster becomes a real cross-backend expediter. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch. SP1 identity gate backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager share one guest/occupant-prefs lookup.
+**2026.8.1 'Chef'** — *Yes, chef.* Taskmaster becomes a real cross-backend expediter. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch. SP1 identity gate backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager share one guest/occupant-prefs lookup.
 
-Release notes: [Chef](zenos_ai/docs/releases/chef.md)
+Release notes: [Chef](zenos_ai/docs/releases/chef.md) | [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md) | [Clue](zenos_ai/docs/releases/clue.md)
 
 ---
 

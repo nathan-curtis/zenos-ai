@@ -1,8 +1,8 @@
 # Release Notes — 2026.9.0 'Steel Magnolia'
 
-**Status:** RC1 — ETA Saturday, 2026-09-05
+**Status:** Released
 **Branch:** `feat/2026.9.0`
-**Base:** 2026.8.0 'Chef'
+**Base:** 2026.8.1 'Chef'
 
 ---
 
@@ -26,7 +26,7 @@ A fresh install gets walked through this automatically (Install Guide [Step 3.5]
 
 ---
 
-## Inherited from 2026.8.0 'Chef'
+## Inherited from 2026.8.1 'Chef'
 
 Everything shipped in Chef — Taskmaster, the SP1 identity gate, Portainer container control, Kitchen's fulfillment/costing layer, Twenty CRM, Room Manager's guest/occupant-prefs lookup, and the full Reset Test hardening pass — is present here as a baseline. See [chef.md](chef.md) for the full writeup; this document covers what's new on top of it.
 

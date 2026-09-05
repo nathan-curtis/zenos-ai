@@ -10,7 +10,7 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.9.0 'Steel Magnolia' — Beta, ETA 2026-09-05**
+**2026.9.0 'Steel Magnolia' — Shipped, current Stable**
 
 Room Manager v3's state cascade and REFLEX (autonomous scene-firing on state change) reach their fullest form, plus the hospitality lifecycle (guest arrival through checkout) and cert-gated permission tightening across the board.
 
@@ -18,7 +18,7 @@ See: [Release Notes — Steel Magnolia](releases/steel_magnolia.md)
 
 ---
 
-**2026.8.0 'Chef' — Shipped, current Stable**
+**2026.8.1 'Chef' — Shipped**
 
 Taskmaster becomes a real cross-backend expediter. Kitchen gains a full fulfillment/costing layer plus an executive-chef batch (cost rollups, waste logging, event menus, prep briefing). A platform-wide identity gate (SP1's `resolve_caller_identity`) backs its first real gated capability, Portainer container control.
 

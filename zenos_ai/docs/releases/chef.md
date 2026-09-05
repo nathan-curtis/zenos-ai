@@ -1,4 +1,4 @@
-# Release Notes — 2026.8.0 'Chef'
+# Release Notes — 2026.8.1 'Chef'
 
 **Status:** Released
 **Branch:** `main`
@@ -135,4 +135,4 @@ None of this changes behavior on an already-healthy, already-provisioned system 
 
 ---
 
-*ZenOS-AI 2026.8.0 'Chef' — service.*
+*ZenOS-AI 2026.8.1 'Chef' — service.*
