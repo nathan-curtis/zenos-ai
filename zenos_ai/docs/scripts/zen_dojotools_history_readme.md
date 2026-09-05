@@ -84,6 +84,8 @@ The sensor must have:
 
 Check a sensor's statistics eligibility in Developer Tools → States → look for `state_class` in attributes, or use `zen_dojotools_inspect`.
 
+**No state_class, no native LTS.** HA core never computes Long-Term Statistics for `binary_sensor`/enum domains — there's no `state_class` field there at all, so this isn't a filter this tool applies, the underlying data genuinely doesn't exist. Some households run a custom component (e.g. a discrete-statistics-style integration) that writes **external** statistics for discrete/binary/enum entities under a non-entity `statistic_id` prefix (e.g. `discrete_statistics:binary_sensor_foo_on_duration`) — `statistic_ids` here is passed straight through with no domain/prefix validation, so those work too if such a component is installed. Check the specific component's own docs for its exact `statistic_id` naming pattern.
+
 ---
 
 ## Period Guidance

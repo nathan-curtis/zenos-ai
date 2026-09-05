@@ -194,6 +194,12 @@ Returns a rendered copy of the System cabinet (Cortex, Directives, Purpose) in p
 
 ---
 
+#### `envelope_check` (2026-08-14, pilot)
+
+Diagnostic for the canonical `envelope()` macro (Zammad #10297) — calls `envelope()` directly and returns both its output and live diagnostics on the priority-inject drawer (`priority_inject_drawer_entry_count`, `priority_inject_entries_with_display_field`). Note this tool dispatches on a `tool=` field, not `mode=`, unlike the rest of this script. Read-only, no state written. See `zen_os1_jinja.md`'s `envelope()` section for the macro itself.
+
+---
+
 #### `prompt_health`
 
 Returns a prompt health report: token counts per major prompt section (Cortex, identity, active components, zen_summary, home_overview), total estimated context size, and a `budget_ok` flag. Use to diagnose context stuffiness before it degrades agent quality.
@@ -316,6 +322,17 @@ All API calls go to `127.0.0.1:8123` (localhost only). Auth token is read from `
 
 ---
 
+## Supervisor API Probe Infrastructure
+
+Internal, not conversation-agent-exposed. Backs `zen_log_enable` and any future mode that needs Supervisor-level access (container log level, add-on control) rather than Core's own REST API.
+
+- **`zen_ha_cli_probe`** (`shell_command`) — read-only check of whether the Supervisor `ha` CLI binary is reachable from Core's container. Confirmed **not reachable, on every install checked so far** — this is why Supervisor access goes through the REST API instead of shelling out to the CLI.
+- **`zen_supervisor_token`** (`shell_command`) — reads `SUPERVISOR_TOKEN` per-call from the container environment. Never stored; passed straight into the following request.
+- **`zen_supervisor_get`** / **`zen_supervisor_post`** (`rest_command`) — authenticated Supervisor REST API calls using the token above.
+- **`mode=zen_supervisor_probe`** — read-only diagnostic. Confirms the Supervisor REST API auth path is actually working via `GET core/info`. Use this to tell "Supervisor access is broken" apart from "the real command I'm trying to run is broken" before assuming the latter.
+
+---
+
 ## Home Mode
 
 Home mode is the system's contextual heartbeat. Friday reads `sensor.zen_home_mode` to understand what phase of the day it is, and the Scheduler uses home mode changes as a trigger for summarization.
@@ -387,6 +404,8 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 | `secrets.yaml` → `ha_bearer` | HA API auth token |
 | `rest_command.ha_api_get` / `ha_api_post` | HA REST API calls |
 | `shell_command.zen_log_*` | Log file access |
+| `shell_command.zen_ha_cli_probe` / `zen_supervisor_token` | Supervisor CLI reachability check + per-call token read |
+| `rest_command.zen_supervisor_get` / `zen_supervisor_post` | Authenticated Supervisor REST API calls |
 | `zone.home` | Presence detection for Away mode |
 | `input_datetime.zen_*` | Schedule anchors and time windows |
 | `update.*` entities | Update install/skip targets |
@@ -397,6 +416,7 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| (2026-08-14) | New `envelope_check` pilot diagnostic — see above. Dispatches on `tool=`, not `mode=`; tool_manifest version wasn't bumped for this addition, flagging per the known version-source normalization gap. |
 | v5.2.3 (2026-08-02 patch) | `zen_health_report`'s flat `health_sensors`/`reasons` dict pair replaced with a nested `flynn_ready.dependencies` cascade mirroring the real dependency chain (`labels`, `cabinet`, `monastery` → `ninja_summarizer`/`supersummary`, `agents`, `capsule`) instead of reading as unrelated same-level siblings — `ninja_summarizer`/`supersummary` genuinely feed `monastery_health`'s own rollup, and `flynn_system_ready` itself derives from labels + cabinet + monastery together. No other top-level key (`resolvers`, `kill_switches`, `schema_ok`, the Spook/API `dependencies` block, `known_issues`, `diagnosis`, etc.) changed. Also added capsule visibility (`flynn_ready.dependencies.capsule`: `state`/`schema`/`signature_status`/`reason`) — previously `zen_health_report` had zero signal for essence schema at all, forcing a separate `mode=prompt_health` call. Companion fix in `zen_os_1.jinja`'s `prompt_health_check()`: `error` used to fire for any non-`three_layer` essence, conflating a genuinely missing essence with the universal, fully-functional `legacy` schema every real install (including production) actually runs on. `error` is now reserved for a missing essence; `legacy` reads as `warn`. |
 | v5.2.3 (2026-08-01 patch) | The `has_service` check behind `spook_installed` never verified HTTP status — a 401 (bad/missing `ha_bearer` secret) returns a JSON error body that parses fine as "service not found," making `spook_installed: false` indistinguishable from Spook genuinely being absent even though it's installed and running. Now checks the response status is 2xx first; surfaces `api_ok`/`api_status` on the raw check and `internal_api_ok`/`internal_api_status` on `zen_health_report` — diagnostic-only, Gate 0's real label-creation path never reads `spook_installed`. Also added `ai_task_entity_valid`/`ai_task_entity_hint`: the old check only verified the helper was non-empty, not that it was a real `ai_task.*` entity — a malformed value (missing domain prefix) sailed through silently until something downstream crashed calling it. The hint matches by object_id to suggest the likely-intended real entity. |
 | v5.2.3 | `check_config`'s response parser handles a raw-string HA response (Content-Type detection miss) instead of silently collapsing to `{}` and always reading as invalid regardless of real config validity. `notice_dashboard` gains `verbose` (default `false`) — see above. |

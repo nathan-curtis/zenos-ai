@@ -2,6 +2,12 @@
 
 *The cognitive machinery that transforms raw state into structured understanding*
 
+*(Updated 2026-08-04: §7.2/§7.6 corrected — "Monk Summaries" as a distinct Tier
+2 was never built; `trapper_keeper` is the real, evolved realization of that
+integration need, and "Monk" in current code is the inference-execution step
+inside every tier, not a separate layer. Removed a leftover editorial aside at
+the end of the file that wasn't meant to ship.)*
+
 Friday’s intelligence does not emerge from a single monolithic model or a single context window. It arises from **a layered summarization pipeline** that progressively refines raw environmental data into structured Katas, culminating in Friday’s unified understanding of the current state of the House.
 
 The summarizer pipeline is the cognitive engine of the Monastery. It transforms sprawling environmental chaos into stable, analyzable packets of meaning.
@@ -32,11 +38,16 @@ They are engineers of meaning.
 
 # 7.2 Three-Tier Architecture
 
+*(Updated 2026-08-04: "Monk Summaries" as a distinct Tier 2 producing named
+cross-domain packets was never built. Corrected below to describe what shipped —
+`trapper_keeper`, an evolved and leaner realization of the same integration
+need — and to correct what "Monk" actually means in current code.)*
+
 The summarization system operates in three layers:
 
 ### Tier 1: **Component Summarizers (“Ninjas”)**
 
-These summarizers examine **one domain** (security, water, hot tub, energy, room-state, identity).
+These summarizers examine **one domain** (security, water, spa, energy, room-state, identity).
 They output structured, domain-specific Katas such as:
 
 * `security_attention`
@@ -48,16 +59,25 @@ They output structured, domain-specific Katas such as:
 
 They are optimized for tight focus, short context windows, and domain-specific precision.
 
-### Tier 2: **Integrative Summaries (“Monk Summaries”)**
+### Tier 2: **`trapper_keeper` — Ambient Pre-Digest / Navigation Index**
 
-These unify multiple Tier 1 domain Katas into cross-domain packets:
+The originally-speced "Monk Summaries" tier — unifying multiple Tier 1 domain
+Katas into cross-domain packets — was never built in that form. What actually
+shipped is leaner and does the same job better: `trapper_keeper`
+(`dojotools_summarizers.yaml:207-246`), an ambient pre-digest layer that runs
+**before** SuperSummary. It reads every ambient-tier KFC's raw Kata and
+compresses each into a one-line breadcrumb (`{breadcrumb, kata_key, urgency,
+detail_available}`) — the most actionable signal per component, with a pointer
+back to the full Kata for on-demand drill-down. SuperSummary reads this compact
+digest instead of the raw ambient Katas, keeping its own prompt tight.
 
-* `home_safety_unified`
-* `environmental_stability`
-* `operational_health`
-* `occupancy_grid`
+The pipeline, in the codebase's own words: *"ninja runs (leaves) → katas
+(branches) → Trapper Keeper (index) → SuperSummary (alert root)."* Trapper
+Keeper is the navigation layer — SuperSummary reads the index and traverses
+down on demand rather than needing the full tree at once.
 
-These operate with higher-level context but still avoid global interpretation.
+Note this is distinct from "Monk," which is *not* a tier at all in current
+code — see the correction below.
 
 ### Tier 3: **The SuperSummary (“High Priestess”)**
 
@@ -68,7 +88,20 @@ This is the *single* reflective layer that produces:
 * the basis for Friday’s awareness and interaction
 * the unified cognitive grounding for conversations and tasks
 
-The SuperSummary is generated rarely, guarded by the Abbot, and always validated against structural and identity invariants.
+The SuperSummary is generated rarely, guarded by the Abbot (see ch06/ch14's
+current-implementation-status notes for what "Abbot" actually maps to), and
+always validated against structural and identity invariants.
+
+### What "Monk" actually means in current code
+
+"Monk" is not Tier 2 — it's the literal inference-execution step used *inside
+every tier*, matching ch01's own "Worker Monks: inference execution and Kata
+production" description. Both Ninja and SuperSummary invoke a "Monk Runner"
+(`dojotools_summarizers.yaml:613-618` for SuperSummary's `ai_task.generate_data`
+call, task_name `SuperSummary Monk`; `:1486-1491` for Ninja's, task_name
+`"{component} Monk"`) — the same mechanism, one per component and one for the
+whole-home consolidation, not a separate integrative layer reading multiple
+Tier 1 outputs.
 
 ---
 
@@ -264,45 +297,22 @@ Each of these feeds into the integrative layer.
 
 ---
 
-# 7.6 Integrative Summaries (Tier 2)
+# 7.6 `trapper_keeper` (Tier 2)
 
-These operate over multiple component Katas.
+*(Updated 2026-08-04: the named cross-domain packets below —
+Environmental Stability, Safety and Attention, Presence Grid — were never
+built as distinct integration outputs. What actually operates over multiple
+component Katas is `trapper_keeper`'s breadcrumb digest, described in §7.2.)*
 
-Examples:
-
-### 7.6.1 Environmental Stability Summary
-
-Integrates:
-
-* humidity
-* temperature gradients
-* HVAC loads
-* window/door states
-* occupancy
-
-Used for energy modeling and anomaly detection.
-
-### 7.6.2 Safety and Attention Summary
-
-Integrates:
-
-* water leaks
-* security attention candidates
-* power anomalies
-* spa alerts
-
-Used for user notifications and automated escalations.
-
-### 7.6.3 Presence Grid Summary
-
-Integrates:
-
-* room-by-room occupancy
-* motion patterns
-* BLE or UWB presence data
-* noise or light transitions
-
-Used for Friday’s contextual awareness (“Alex is probably in the den”).
+`trapper_keeper` doesn't produce named topical summaries — it processes
+**every** ambient-tier KFC's Kata uniformly into the same compact shape
+(`breadcrumb`, `kata_key`, `urgency`, `detail_available`), regardless of
+domain. There's no separate "Environmental Stability" or "Presence Grid"
+packet; a water-leak breadcrumb and an occupancy breadcrumb are structurally
+identical entries in the same digest, differentiated only by which
+component's Kata they point back to. SuperSummary reads the whole digest and
+does its own domain-level synthesis from there — the domain-specific framing
+happens at Tier 3, not Tier 2.
 
 ---
 
@@ -383,7 +393,3 @@ Future versions will include:
 * session-token qualified tool interaction
 
 Version 1 builds the safest possible foundation for these future developments.
-
-Note: Monk Tier 2 Summarization is planned for v.Next
-
-Let me know when you want **08_Kata_Cabinet.md** and we’ll keep the directory moving.

@@ -1,12 +1,14 @@
 # OOBE — Out-of-Box Experience
 
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+
 *First-boot onboarding protocol for ZenOS-AI*
 
 ---
 
 ## Overview
 
-OOBE is the guided first-run workflow that configures your ZenOS-AI install through conversation. Your AI assistant leads you through six steps — naming the household, mapping rooms, adding people, optionally seeding the AI persona, linking integrations, activating components, and sealing the install.
+OOBE is the guided first-run workflow that configures your ZenOS-AI install through conversation — you talk, your AI listens and writes the setup as you go. Your AI assistant leads you through six steps — naming the household, mapping rooms, adding people (with an optional sub-step to name your AI along the way), linking integrations, activating components, and sealing the install. (If you'd rather see this from the "what do I actually say" side first, [First Run](first_run.md#naming-your-ai--the-oobe-conversation) covers the same conversation at a lighter level of detail.)
 
 OOBE runs once. When complete, it stamps `_oobe_complete` in the AI user cabinet and the flag is never set again unless explicitly reset. The OOBE detection check (`_oobe_done`) accepts both `_oobe_complete` (current) and the legacy `oobe_complete` key (no leading underscore) for backward compatibility with pre-v1.0 installs.
 
@@ -85,6 +87,8 @@ Suite or zone groupings are modeled as a cluster of linked rooms — no separate
 
 Why this matters: later tools use this map to avoid guessing. A camera alert can be tied to the correct exterior boundary, ZenLux can account for light bleed through an archway, Security Manager can group cameras by area, and AutoVac can reason about which rooms are due or blocked.
 
+**This step only builds the map — not the part that runs day to day.** Once your rooms exist here, Room Manager v3 starts tracking each one's live state (Vacant/Occupied/Engaged/Asleep/Hold) from real signals, and REFLEX can act on those state changes automatically without your AI needing to think about it each time. That layer isn't something OOBE walks you through conversationally — read the **[Room Manager v3 & REFLEX manual](room_manager_operators_manual.md)** right after finishing OOBE.
+
 ---
 
 ### Step 3 — People
@@ -148,6 +152,8 @@ Options offered (if applicable):
 | Spa manager | User mentions a hot tub or spa | `zen_dojotools_spa_manager` |
 | Trash reminders | Always offered | `zen_dojotools_todo` — creates recurring reminder items |
 | Energy monitoring | `sensor` with `device_class: energy` found | No dedicated tool — surfaced via `zen_dojotools_index` or `zen_dojotools_history` |
+
+If you have locks or an alarm panel, see the **[Security Manager reference](../components/security_manager.md)** for what activating this component actually gives you: arm/disarm, zone inventory, camera cross-reference by area, and the security lens pattern other tools read from.
 
 Activation preferences are written to the system cabinet.
 
@@ -231,7 +237,9 @@ Or call `zen_flynn_oobe` with `mode: complete` to re-stamp the flag after manual
 
 ## Related
 
+- **[Room Manager v3 & REFLEX manual](room_manager_operators_manual.md) — read this next.** The live state engine and autonomous scene layer that OOBE's room-mapping step doesn't cover.
 - [Flynn Stepgate Sentinel](../scripts/zen_flynn_readme.md) — Gate 3.5 OOBE detection
 - [Room Manager](../components/room_manager.md) — spatial topology store, modes, setup reference
+- [Security Manager](../components/security_manager.md) — alarm panel, zones, camera cross-reference
 - [Profile Editor](../scripts/zen_dojotools_profile_readme.md) — household/user profile writes
 - [Install Guide](install.md) — prerequisites before first boot

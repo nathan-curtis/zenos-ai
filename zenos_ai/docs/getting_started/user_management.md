@@ -1,12 +1,14 @@
-# User and AI User Management — ZenOS-AI 2026.6.0 'Clue'
+# User and AI User Management — ZenOS-AI 2026.9.0 'Steel Magnolia'
 
 *Provisioning, deprovisioning, moving, and repairing identity cabinets for people and AI constructs*
+
+This is a reference doc, not a walkthrough — most first-time users won't need it at all, since OOBE (see [First Run](first_run.md)) sets up your first household, family, and AI user for you conversationally. Come here later when you need to add a second person, move an identity to a different cabinet, or something's broken and needs a targeted fix.
 
 ---
 
 ## Concepts
 
-ZenOS-AI manages human and AI identities through **cabinets** — HA template sensor entities that hold identity and memory data as drawers.
+ZenOS-AI manages human and AI identities through **cabinets** (see [Concepts](concepts.md#cabinets-and-drawers)) — HA template sensor entities that hold identity and memory data as drawers.
 
 Every identity is backed by a cabinet. The system knows which cabinet plays which role via **labels**. Changing which cabinet is "the user cabinet" is a label operation, not a data migration.
 

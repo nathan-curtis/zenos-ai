@@ -335,7 +335,7 @@ At that point, the Indexer will serve as the unified resolver across **entities,
 
 | Field            | Value                                                                                                      |
 | ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| **Author**       | Veronica (assistant to Nathan Curtis)                                                                      |
+| **Author**       | Veronica (assistant to the household)                                                                      |
 | **Project**      | ZenOS-AI                                                                                                   |
 | **Version**      | 1.4 (Recursive Core Spec)                                                                                  |
 | **License**      | MIT                                                                                                        |

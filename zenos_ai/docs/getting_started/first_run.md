@@ -1,6 +1,8 @@
 # ZenOS-AI: First Run Guide
 
-> **Version:** 2026.8.1 (patch on 'Chef') | **Last Updated:** Aug 2026
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+
+*What this covers: what happens automatically the first time Home Assistant starts with ZenOS-AI installed, and the one conversation (OOBE) where your AI learns your home. By the end, your AI will know your rooms, your household, and be ready to actually do things.*
 
 ---
 
@@ -54,7 +56,7 @@ OOBE is not just a profile wizard. It builds the first version of the graph ZenO
 rooms -> areas -> labels -> devices -> people -> tools -> alerts -> acknowledgement
 ```
 
-Room Manager gives the system a physical map. Labels attach devices to that map. Cameras become perception, vacuums become room-aware actors, locks and presence become security context, AlertManager decides what needs attention, and Postman asks the right human when the system needs judgment.
+Room Manager gives the system a physical map, and then keeps a live read on what's actually happening in each room — this is Room Manager v3, and it matters more day-to-day than the map itself (more on this after OOBE, in the [Room Manager v3 & REFLEX manual](room_manager_operators_manual.md)). Labels attach devices to that map. Cameras become perception, vacuums become room-aware actors, locks and presence become security context, AlertManager decides what needs attention, and Postman asks the right human when the system needs judgment.
 
 You can skip parts of OOBE and fill them in later. The important thing is that every answer should either place something in the home, attach meaning to an entity, or define who should be asked when ZenOS is not sure.
 
@@ -121,7 +123,9 @@ It also collects a household rally point — where people meet outside in an eme
 
 Room connections are stored as a navigable spatial map: adjacency, portal types, and exit priority. This is what powers room-aware lighting, climate, emergency guidance, and the Security Manager.
 
-It writes as it goes — not at the end.
+OOBE writes each room as it goes — not at the end.
+
+That map is only half the picture, though. Once it's in place, each room also gets its own live status — Vacant, Occupied, Engaged, Asleep, or Hold — that updates continuously from real signals (motion, doors, media playing), not a fixed schedule. This is what lets you ask "what's going on in the kitchen right now?" and get a real answer, and it's also what a separate system called REFLEX watches to fire the right lighting scene automatically, without your AI having to actively decide anything each time. OOBE doesn't walk you through this part conversationally — it's covered in full, right after this doc, in the [Room Manager v3 & REFLEX manual](room_manager_operators_manual.md).
 
 **3. People**
 Who lives in the home, with their name and role. It checks HA for matching person entities. It'll also ask about family who matter but don't live there (parents, siblings) and keep those separately.
@@ -186,9 +190,9 @@ Fields you can update any time:
 ## If Something Goes Wrong
 
 **"cabinet online, unmounted — cannot reinitialize dirty state"**
-You may see this message in HA logs or in a Flynn notification during startup, especially in 2026.7.0. It is **not catastrophic** and does not mean data loss.
+You may see this message in HA logs or in a Flynn notification during startup. It is **not catastrophic** and does not mean data loss.
 
-What it means: Flynn is testing a core CabCeption feature — activating history cabinets that were previously put in the `online_unmounted` (stacks) state. A cabinet in this state has uncommitted mount activation in progress. Flynn sees it as dirty and blocks re-initialization to protect it.
+What it means: Flynn is testing a core **CabCeption** feature (a cabinet nested inside another cabinet — see [Concepts](concepts.md#cabception)) — activating history cabinets that were previously put in the `online_unmounted` (stacks) state. A cabinet in this state has uncommitted mount activation in progress. Flynn sees it as dirty and blocks re-initialization to protect it.
 
 What to do: nothing, immediately. Wait for the next Flynn health cycle (a minute or two) and it will either resolve the mount activation or surface a more specific advisory. If the message persists beyond 5 minutes, ask your AI: `"Flynn, show me cabinet health"` — it will tell you which cabinet is involved and what state it's in.
 
@@ -212,4 +216,4 @@ Ask your AI: "Run OOBE again" or "Re-do first-time setup." It will walk through 
 
 Once your home is set up, your AI has full context to be useful. The fastest next step is **[Your First Alert](first_alert.md)** — it walks you through firing, listing, and clearing a real AlertManager notification, which is the quickest way to prove the attention pipeline is working.
 
-After that, work through entity exposure and cabinet placement to finish configuring what your AI can see directly, what it should discover through labels, and where operational memory belongs. If you want the first full end-to-end component setup, use **[AutoVac First Setup](autovac_first_setup.md)** next; it commissions rooms, labels, schedules, Postman policies, Grocy inventory, wear checks, and AlertManager tests as one chain.
+After that, work through [entity exposure](entity_exposure.md) to finish configuring what your AI can see directly and what it should discover through labels. Then read [OOBE](oobe.md) for the full step-by-step detail on what you just did conversationally, followed by the **[Room Manager v3 & REFLEX manual](room_manager_operators_manual.md)** — the room map OOBE just built is only half the system; that doc covers the live state engine and the autonomous scene-firing layer that actually runs your house day to day. If you want the first full end-to-end component setup after that, use **[AutoVac First Setup](autovac_first_setup.md)**; it commissions rooms, labels, schedules, Postman policies, Grocy inventory, wear checks, and AlertManager tests as one chain.

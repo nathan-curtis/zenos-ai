@@ -1,10 +1,17 @@
-# ZenOS-AI Troubleshooting Guide — 2026.6.0 'Clue'
+# ZenOS-AI Troubleshooting Guide — 2026.9.0 'Steel Magnolia'
 
 *SystemTools → Gauges → Kill Switches → Repair Tools. Start at the top, work down.*
 
 ---
 
 ## How to Use This Guide
+
+This is a reference, not a walkthrough — you're not meant to read it top to bottom, just jump to the section that matches your symptom (the table near the bottom, **Common Symptoms → Where to Start**, is the fastest way in). The four words in the subtitle above are the four stops in order of "how much this could disrupt your running system," from safest to most invasive:
+
+1. **SystemTools** — ask a built-in tool to diagnose the problem. Read-only, changes nothing.
+2. **Gauges** — the health sensors you'd check by hand if you wanted to look yourself, instead of asking the tool.
+3. **Kill Switches** — toggles that pause a background process without touching any data. Fully reversible.
+4. **Repair Tools** — actions that actually fix something, ordered from "resets a cache" up to "wipes everything and rebuilds from scratch." The further down this list you go, the harder it is to undo.
 
 ZenOS-AI is self-healing. Most problems resolve on their own once the right condition is fixed. This guide is for when they don't.
 
@@ -147,7 +154,7 @@ flowchart LR
 | `sensor.zen_summarizer_health` | Ninja Summarizer heartbeat | → `ai_task_entity`, `last_timestamp` attrs |
 | `sensor.zen_supersummary_health` | SuperSummary freshness | → `monk_status`, `last_timestamp` attrs |
 | `sensor.zen_flynn_health` | Infrastructure rollup | → `current_gate`, `next_step` attrs |
-| `sensor.zen_agent_health` | Is Friday bootable | → `roster` attr (per-gate status per agent) |
+| `sensor.zen_agent_health` | Is your AI bootable | → `roster` attr (per-gate status per agent) |
 
 **Start with `script.zen_dojotools_systemtools tool: zen_health_report`.** If you are in Developer Tools and reading manually, start with `sensor.zen_agent_health` → `roster`. It tells you exactly which gate is blocking each agent and what's missing. If you see `friday won't wake up`, this sensor explains why in one attribute read.
 
@@ -334,7 +341,7 @@ script.zen_admintools_prompt_loader
   cortex_version: latest
 ```
 
-Reloads Cortex, Directives, and Purpose into the system cabinet. Use after an upgrade or if Friday's behavior has drifted from expected.
+Reloads Cortex, Directives, and Purpose into the system cabinet. Use after an upgrade or if your AI's behavior has drifted from expected.
 
 **Use when:** `sensor.zen_agent_health` shows `system_purpose` or `system_directives` gate failing.
 
@@ -406,8 +413,8 @@ Flynn handles the full rebuild sequence automatically.
 | Symptom | Start Here |
 |---|---|
 | Not sure what's wrong | `script.zen_dojotools_systemtools tool: zen_health_report` |
-| Friday won't wake up | `sensor.zen_agent_health` → `roster` attr |
-| `zen_agent_health: warn` on fresh install | Expected — OOBE pending and/or summarizers disabled. Continue to `first_run.md`. |
+| Your AI won't wake up | `sensor.zen_agent_health` → `roster` attr |
+| `zen_agent_health: warn` on fresh install | Expected — OOBE pending and/or summarizers disabled. Continue to [First Run](first_run.md). |
 | `monastery: disabled` on fresh install | Kill switches ship off. Enable in Settings → Helpers: `zen_summarizers_enabled` (master), `zen_ninja_summarizer_enabled`, `zen_supersummarizer_enabled`. |
 | Summaries stopped | Run `script.zen_dojotools_systemtools tool: pipeline`, then check kill switches |
 | Summarizer health shows `disabled` | Kill switch is off — intentional state. Enable the relevant switch; autofire restarts it. |
@@ -419,6 +426,7 @@ Flynn handles the full rebuild sequence automatically.
 | Labels not assigning | `sensor.zen_label_health` → `missing_label_ids`, `unassigned_label_ids` |
 | Cabinet missing or corrupt | `sensor.zen_cabinet_health` → `missing_cabinets` → Step 6 |
 | Reload did nothing | Run `ha_config_check`; if clean, use `ha_reload_all`, then `zen_resolver_refresh` |
+| `Action script.<x> not found` / `ServiceNotFound` from a dynamically-templated action, but `states.script` shows the entity is fine | Static reference: `script.zen_dojotools_help tool: zen_dojotools_help mode: troubleshooting` — documents the `script:` platform's entity_id/unique_id drift class. Zero live calls, so it still works even when the thing it's diagnosing is broken. |
 | HA log file missing | Use `script.zen_dojotools_ha_log_viewer`; HA 2025.11+ journal mode is expected and returns guidance |
 | New install stuck — cabinets all in `init`, nothing initializing | Flynn Gate 2.1 handles this post-warmup. Wait ~5 min after HA start. If still stuck → Step 6 (single cabinet reset). |
 | Schema missing / Gate 3 keeps firing | Step 2 (`reset_template`) |
@@ -439,6 +447,7 @@ Flynn handles the full rebuild sequence automatically.
 
 ## Cross-References
 
+- [Zen DojoTools Help — `mode=troubleshooting`](../scripts/zen_dojotools_utilities_readme.md) — static, zero-live-call reference for system-level platform quirks (e.g. `script:` platform entity_id/unique_id drift) plus pointers to every other diagnostic surface. Safe to check even when whatever you were doing just broke.
 - [SystemTools](../scripts/zen_dojotools_systemtools_readme.md) — health report, reload/restart wrappers, log viewer, pipeline monitor
 - [Entity Exposure](entity_exposure.md) — expose SystemTools and Log Viewer to Assist; keep HA API internal
 - [Script Modules](../scripts/readme.md) — internal tool map and module index

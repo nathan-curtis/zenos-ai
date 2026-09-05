@@ -1,5 +1,25 @@
 ###############################################################################
 # ZenOS-AI Plugin: Twenty CRM
+# Version: 1.13.3 — hospitality lifecycle scans + local/UTC datetime fix (2026-08-19)
+#   New stay_prep_check (arrival, mirrors stay_release's shape) and its
+#   departure counterpart stay_checkout_check + a read-only checkout_status
+#   query -- both idempotent via new prepSpawned/checkoutNudgeSpawned
+#   boolean fields (same shape as turnoverSpawned), wired into the shared
+#   15-minute scheduler dispatch (dojotools_scheduler.yaml). Closes the
+#   "does the agent already know a stay lifecycle event is approaching" gap
+#   identified in the pre-2026.9 hospitality walkthrough.
+#   Also fixed: every naive local-time input to start_date/end_date was
+#   being stored with a literal UTC 'Z' suffix with no conversion -- a
+#   caller typing "18:08" lands 5 hours off. Fixed at the single shared
+#   normalization point (start_date_norm/end_date_norm) plus the downstream
+#   status/overlap comparisons that read it, which need a matching
+#   UTC-semantic reinterpretation (as_timestamp on a bare naive datetime
+#   assumes local, which silently re-breaks RESERVED/ACTIVE status
+#   computation unless utcnow().tzinfo is reattached before computing any
+#   timestamp). Also fixed: contact_get's guestPrefs returns as a native
+#   mapping, not a JSON string -- stay_release's allergen-aware deep-clean
+#   upgrade depends on reading it correctly.
+#
 # Version: 1.10.0 — appointment_create/appointments_list gain real area_id room
 #   tagging (same ha_area: convention stays_create already used — description
 #   assembly here was previously either/or between note_body and crm_link,
@@ -34,7 +54,7 @@
 # Note: /rest/core/ prefix is WRONG — use /rest/{entity} for both list and single record
 # OpenAPI spec: GET /open-api/core (response too large for HA template engine)
 #
-# REST response shapes (confirmed live):
+# REST response shapes:
 #   list:   { "data": { "companies": [...] }, "pageInfo": {...}, "totalCount": N }
 #   single: { "data": { ... } }
 #   create: { "data": { ... } }
@@ -379,14 +399,83 @@ script:
         - condition: template
           value_template: "{{ _stack_mode == 'tool_manifest' }}"
         sequence:
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _crm_tm_ic_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            volume_entity_id: "{{ label_entities('zen_default_household_cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+            path: integrations_config
         - variables:
-            _manifest:
-              status: success
+            _crm_tm_base_url: >-
+              {%- set _ic = _crm_tm_ic_raw.get('value', {}) if _crm_tm_ic_raw is mapping and _crm_tm_ic_raw.get('status') == 'success' else {} -%}
+              {%- set _ic = _ic if _ic is mapping else {} -%}
+              {%- set url = (_ic.get('twenty', {}).get('url', '') | string | trim) if _ic.get('twenty', {}) is mapping else '' -%}
+              {%- if not url -%}{%- set url = states('input_text.twenty_url') | default('', true) | trim -%}{%- endif -%}
+              {{ url }}
+        - variables:
+            _manifest: >-
+              {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+              {%- set _configured = _crm_tm_base_url != '' -%}
+              {%- set _health = {'configured': _configured, 'status': 'ok' if _configured else 'warn', 'notes': [] if _configured else ['Twenty CRM URL not configured — set integrations_config.twenty.url in the household cabinet']} -%}
+              {{- MF.tool_manifest(
+                tool='zen_stack_crm',
+                display_name='CRM / Twenty',
+                tier='stacks',
+                version='1.0.0',
+                health=_health,
+                required_labels=['crm'],
+                optional_labels=['twenty'],
+                consumes=['company', 'person'],
+                returns=['company_evidence', 'contact_evidence'],
+                failure_policy='soft',
+                content_policy='redacted_by_default',
+                risk_class='read_redacted',
+                security_act={'model': 'rwxda', 'required': 'r', 'allowed': ['r'], 'denied': ['w', 'x', 'd', 'a'], 'note': 'Lens provider returns redacted read evidence only; CRUD/write operations require zen_dojotools_rolodex directly.'},
+                modes={'lookup': 'stacks_by_anchor', 'manifest': 'tool_manifest'},
+                limitations=['Lookup requires stable Twenty company/person UUID anchors.', 'Lens output is redacted and does not include raw note bodies.'],
+                evidence_shape={'company': {'id': 'Twenty company UUID.', 'name_redacted': 'true — raw name not exposed.'}, 'contact': {'id': 'Twenty person UUID.', 'name_redacted': 'true — raw name not exposed.'}},
+                icon='mdi:account-tie',
+                color='blue',
+                stripe=2,
+                impact='soft',
+                mcp_exposed=false,
+                lens_provider=true,
+                caller_token=caller_token | default('')
+              ) | from_json | combine({'register_mode': 'register', 'provider_key': 'crm'}) -}}
+        - stop: crm lens manifest complete
+          response_variable: _manifest
+      # ── register — declared register_mode='register' above but this had no
+      # actual handler until now: bootstrap_stacks was calling mode=register
+      # on a script with no matching branch, silently no-op'ing while still
+      # reporting "registered" (nothing to fall into, no error to surface).
+      - conditions:
+        - condition: template
+          value_template: "{{ _stack_mode == 'register' }}"
+        sequence:
+        - variables:
+            _crm_hh: "{{ label_entities('zen_default_household_cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _crm_reg_read
+          data:
+            action_type: get
+            volume_entity_id: "{{ _crm_hh }}"
+            key: lens_registry
+        - variables:
+            _crm_existing_reg: >-
+              {%- set raw = _crm_reg_read if _crm_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+            _crm_provider_decl:
               provider: crm
-              display_name: CRM / Twenty
-              schema_version: "1.0.0"
+              configured_by: zen_stack_crm
+              department: stacks
+              enabled: true
+              status: available
               tool: zen_stack_crm
-              lookup_mode: stacks_by_anchor
+              mode: stacks_by_anchor
               consumes: [company, person]
               returns: [company_evidence, contact_evidence]
               failure_policy: soft
@@ -397,18 +486,65 @@ script:
                 required: r
                 allowed: [r]
                 denied: [w, x, d, a]
-              modes:
-                lookup: stacks_by_anchor
-                manifest: tool_manifest
-              limitations:
-                - Lookup requires stable Twenty company/person UUID anchors.
-                - Lens output is redacted and does not include raw note bodies.
-              preferred_state:
-                stripe: 2
-                impact: soft
-              caller_token: "{{ caller_token | default('') }}"
-        - stop: crm lens manifest complete
-          response_variable: _manifest
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _crm_reg_write
+          data:
+            action_type: update
+            volume_entity_id: "{{ _crm_hh }}"
+            key: lens_registry
+            value: "{{ _crm_existing_reg | combine({'crm': _crm_provider_decl}) | tojson }}"
+        - variables:
+            _crm_reg_response:
+              status: "{{ 'success' if _crm_reg_write is mapping and _crm_reg_write.get('status', '') == 'success' else 'error' }}"
+              provider: crm
+              mode: register
+              message: >-
+                {{ 'Provider crm registered in lens_registry.' if _crm_reg_write is mapping
+                   and _crm_reg_write.get('status', '') == 'success' else
+                   'Registration failed: ' ~ (_crm_reg_write.get('error', 'unknown') if _crm_reg_write is mapping else 'no response') }}
+        - stop: crm register complete
+          response_variable: _crm_reg_response
+      # ── unregister ──────────────────────────────────────────────────────
+      - conditions:
+        - condition: template
+          value_template: "{{ _stack_mode == 'unregister' }}"
+        sequence:
+        - variables:
+            _crm_hh: "{{ label_entities('zen_default_household_cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _crm_unreg_read
+          data:
+            action_type: get
+            volume_entity_id: "{{ _crm_hh }}"
+            key: lens_registry
+        - variables:
+            _crm_unreg_existing: >-
+              {%- set raw = _crm_unreg_read if _crm_unreg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {%- set d = parsed if parsed is mapping else {} -%}
+              {%- set ns = namespace(result={}) -%}
+              {%- for k, v in d.items() if k != 'crm' -%}
+                {%- set ns.result = ns.result | combine({k: v}) -%}
+              {%- endfor -%}
+              {{ ns.result }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _crm_unreg_write
+          data:
+            action_type: update
+            volume_entity_id: "{{ _crm_hh }}"
+            key: lens_registry
+            value: "{{ _crm_unreg_existing | tojson }}"
+        - variables:
+            _crm_unreg_response:
+              status: "{{ 'success' if _crm_unreg_write is mapping and _crm_unreg_write.get('status', '') == 'success' else 'error' }}"
+              provider: crm
+              mode: unregister
+        - stop: crm unregister complete
+          response_variable: _crm_unreg_response
       - conditions:
         - condition: template
           value_template: "{{ _stack_mode == 'stacks_by_anchor' }}"
@@ -516,7 +652,13 @@ script:
       object, not just a calendar entry — area-validated, overlap-warned, auto-dispatches
       a turnover chore + hot-tub recheck on checkout) and stay_amenity_add for mid-stay
       housekeeping (towel refresh, welcome basket — a dated, location-tied task, distinct
-      from the checkout turnover). Vendor appointments: appt_create/_start/_complete/
+      from the checkout turnover). Multi-room bookings: reservation_create/_get/
+      reservations_active_list/_checkout/_cancel — one reservation-level record spanning
+      several rooms, each becoming its own member stay; checkout/cancel operate on the
+      whole booking at once. Lifecycle scans (periodic-automation-driven, but also
+      directly agent-queryable): stay_prep_check/checkout_status/stay_checkout_check —
+      arrival-prep and checkout-approaching signals, closing the "does the agent already
+      know a departure/arrival is coming" gap on both ends of a stay. Vendor appointments: appt_create/_start/_complete/
       _no_show/_cancel, with completion auto-writing to vendor_history. Guest requests:
       service_request_create/_get/_resolve, routed by shape (HOUSEKEEPING->Grocy chore,
       MAINTENANCE->Radar ticket). guest_prefs_set stores allergens/prefs on a contact;
@@ -553,6 +695,14 @@ script:
             - stay_release
             - stay_delete
             - stay_amenity_add
+            - stay_prep_check
+            - checkout_status
+            - stay_checkout_check
+            - reservation_create
+            - reservation_get
+            - reservations_active_list
+            - reservation_checkout
+            - reservation_cancel
             - appt_create
             - appt_get
             - appts_active_list
@@ -678,6 +828,14 @@ script:
             max: 100
             mode: box
         default: 20
+      lookahead_hours:
+        description: "For stay_prep_check -- only RESERVED stays whose check-in falls within this many hours from now are prepped. Default 3."
+        selector:
+          number:
+            min: 1
+            max: 72
+            mode: box
+        default: 3
       start_date:
         description: ISO date or datetime — event start or range filter start
         selector:
@@ -703,6 +861,22 @@ script:
         description: HA area ID — area_vendors source, or tags a stay to a room
         selector:
           text:
+      occupant_names:
+        description: For stay_create — freeform comma-separated names of all occupants in the room for this stay (household is family/friends, not every occupant needs a Twenty Person contact).
+        selector:
+          text:
+      party_label:
+        description: For reservation_create — freeform label for the whole booking/party, e.g. 'Smith family — July'.
+        selector:
+          text:
+      rooms_json:
+        description: >-
+          For reservation_create — JSON array of room bookings, one entry per room:
+          [{"area_id":"guest_room","item_id":"<guest contact UUID>","start_date":"2026-08-01","end_date":"2026-08-03","occupant_names":"Jane, John","note":"..."}].
+          item_id defaults to the reservation's primary item_id (item_id field) if omitted per-room.
+        selector:
+          text:
+            multiline: true
       zone:
         description: HA zone name filter for people_home (default=home)
         selector:
@@ -747,8 +921,8 @@ script:
     sequence:
     - variables:
         tool_name: Zen DojoTools Rolodex
-        tool_version: 1.10.0
-        crm_schema_version: '1.5.0'
+        tool_version: 1.13.3
+        crm_schema_version: '1.6.0'
         case_norm: '{{ mode | default("help") | string | trim | lower }}'
         item_norm: '{{ item | default("") | string | trim }}'
         item_id_norm: '{{ item_id | default("") | string | trim }}'
@@ -764,10 +938,56 @@ script:
         note_title_norm: '{{ note_title | default("") | string | trim }}'
         note_body_norm: '{{ note_body | default("") | string | trim }}'
         limit_norm: '{{ limit | default(20) | int(20) }}'
-        start_date_norm: '{{ start_date | default("") | string | trim }}'
-        end_date_norm: '{{ end_date | default("") | string | trim }}'
+        # local->UTC conversion. Every downstream write (checkIn/checkOut
+        # on stay/appointment/reservation) takes whatever string the caller
+        # sends and Twenty stores it with a literal 'Z' (UTC) suffix appended
+        # -- no conversion. A caller-intended local wall-clock time (which is
+        # what "5pm" or "17:54" means to a human, and matches every existing
+        # example in this file's own docstrings) would land hours off from
+        # the intended real-world moment without this. Only applies when the string has a
+        # TIME component (length > 10 or contains 'T') -- a bare date
+        # ('2026-08-01') has no time-of-day to shift and is left untouched.
+        # Only applies when the caller did NOT already supply an explicit
+        # offset ('Z' suffix, or +/-HH:MM after the date portion) -- an
+        # unambiguous input is never second-guessed. now().utcoffset() is the
+        # CURRENT local<->UTC offset, not necessarily the offset at the
+        # target date if it crosses a DST boundary relative to today -- a
+        # known, accepted imprecision (at most ~1h), not a full timezone
+        # library reimplementation in Jinja. This is the single normalization
+        # point every downstream case (create/list/active_stay_prefs' own
+        # lookahead override) already reads from, so the fix propagates
+        # everywhere at once rather than needing five separate patches.
+        start_date_norm: >-
+          {%- set _raw = start_date | default("") | string | trim -%}
+          {%- set _has_time = 'T' in _raw or _raw | length > 10 -%}
+          {%- set _has_explicit_tz = _raw.endswith('Z') or ('+' in _raw[10:]) or ('-' in _raw[10:]) -%}
+          {%- if _raw == "" or not _has_time or _has_explicit_tz -%}
+            {{ _raw }}
+          {%- else -%}
+            {%- set _naive = as_datetime(_raw) -%}
+            {{ (_naive - now().utcoffset()).isoformat() if _naive is not none else _raw }}
+          {%- endif -%}
+        end_date_norm: >-
+          {%- set _raw = end_date | default("") | string | trim -%}
+          {%- set _has_time = 'T' in _raw or _raw | length > 10 -%}
+          {%- set _has_explicit_tz = _raw.endswith('Z') or ('+' in _raw[10:]) or ('-' in _raw[10:]) -%}
+          {%- if _raw == "" or not _has_time or _has_explicit_tz -%}
+            {{ _raw }}
+          {%- else -%}
+            {%- set _naive = as_datetime(_raw) -%}
+            {{ (_naive - now().utcoffset()).isoformat() if _naive is not none else _raw }}
+          {%- endif -%}
         summary_norm: '{{ summary | default("") | string | trim }}'
         tags_norm: '{{ tags | default("") | string | trim }}'
+        occupant_names_norm: '{{ occupant_names | default("") | string | trim }}'
+        party_label_norm: '{{ party_label | default("") | string | trim }}'
+        rooms_json_norm: >-
+          {%- set _rj = rooms_json | default('') -%}
+          {%- if _rj is mapping or (_rj is sequence and _rj is not string) -%}{{ _rj }}
+          {%- else -%}
+            {%- set _rjs = _rj | string | trim -%}
+            {{ (_rjs | from_json) if _rjs != '' and _rjs[:1] in ['[', '{'] else [] }}
+          {%- endif -%}
         config_json_norm: >-
           {%- set _cjv = config_json | default('') -%}
           {%- if _cjv is mapping -%}{{ _cjv | tojson }}{%- else -%}{{ _cjv | string | trim }}{%- endif -%}
@@ -872,7 +1092,7 @@ script:
             optional: [end_date, note_body]
             example: "{'mode':'stay_create','item_id':'contact-uuid','area_id':'guest_room','start_date':'2026-08-01'}"
           stay_get:
-            intent: Full stay record by id (guest, room, dates, lifecycle status, turnover_spawned flag).
+            intent: Full stay record by id (guest, room, dates, lifecycle status, turnover_spawned + prep_spawned flags).
             needs: [item_id (stay UUID)]
             optional: []
             example: "{'mode':'stay_get','item_id':'stay-uuid'}"
@@ -896,6 +1116,46 @@ script:
             needs: [item_id (stay UUID), amenity (task title)]
             optional: [day_offset (default 0), note_body]
             example: "{'mode':'stay_amenity_add','item_id':'stay-uuid','amenity':'Fresh towels','day_offset':3}"
+          reservation_create:
+            intent: "Book multiple rooms as one reservation-level record, each becoming its own member stay. Every room's area_id is validated against real HA areas up front — fails before creating anything if any room is bad, rather than partway through."
+            needs: ["rooms_json (JSON array of {area_id, item_id, start_date, end_date, occupant_names, note} objects)"]
+            optional: []
+            example: "{'mode':'reservation_create','rooms_json':'[{\"area_id\":\"guest_room\",\"item_id\":\"contact-uuid\",\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-03\"}]'}"
+          reservation_get:
+            intent: Full reservation-level record — the booking, not an individual member stay.
+            needs: [item_id (reservation UUID)]
+            optional: []
+            example: "{'mode':'reservation_get','item_id':'uuid-here'}"
+          reservations_active_list:
+            intent: "Who's here or arriving, at the reservation level (date-scoped — a reservation with a past checkout that was never explicitly released does not count as active)."
+            needs: []
+            optional: []
+            example: "{'mode':'reservations_active_list'}"
+          reservation_checkout:
+            intent: "Reservation-level checkout — releases every member stay not yet RELEASED (each gets the same turnover-chore-dispatch + hot-tub-recheck logic stay_release runs, one room at a time), then marks the reservation itself checked out. Idempotent."
+            needs: [item_id (reservation UUID)]
+            optional: []
+            example: "{'mode':'reservation_checkout','item_id':'uuid-here'}"
+          reservation_cancel:
+            intent: "Cancels the booking-level record only — does NOT touch child stays' own status or any chores already spawned. Cannot cancel a reservation already CHECKED_OUT; release/manage the individual stays instead."
+            needs: [item_id (reservation UUID)]
+            optional: []
+            example: "{'mode':'reservation_cancel','item_id':'uuid-here'}"
+          stay_prep_check:
+            intent: "Arrival counterpart to stay_release — scans RESERVED stays and spawns a Taskmaster prep chore (guest name, check-in time, allergen/music/spa summary) plus a Postman notice for any check-in within lookahead_hours that hasn't been prepped yet. Idempotent via prepSpawned, same shape as turnoverSpawned. Scan operation, not single-stay — no item_id. Intended caller: a periodic automation, not a live agent request."
+            needs: []
+            optional: [lookahead_hours (default 3)]
+            example: "{'mode':'stay_prep_check','lookahead_hours':3}"
+          checkout_status:
+            intent: "Read-only — 'is a departure approaching' as an agent-queryable fact, not just a background push. Lists ACTIVE stays with checkOut inside lookahead_hours (default 24 — a wide browsing window; call with a smaller value for 'leaving in the next hour' style questions). No side effects, no idempotency tracking — safe to call any time. Optional area_id scopes to one room."
+            needs: []
+            optional: [area_id, lookahead_hours (default 24)]
+            example: "{'mode':'checkout_status','lookahead_hours':6}"
+          stay_checkout_check:
+            intent: "Departure counterpart to stay_prep_check — scans ACTIVE stays and spawns a one-off Taskmaster reminder task (chore=false, not a recurring chore) plus a Postman notice for any checkout within lookahead_hours that hasn't been nudged yet. Idempotent via checkoutNudgeSpawned. Does not replace stay_release — that still owns the actual turnover dispatch once checkout happens; this only nudges that it's approaching. Scan operation, not single-stay — no item_id. Intended caller: a periodic automation, not a live agent request."
+            needs: []
+            optional: [lookahead_hours (default 3)]
+            example: "{'mode':'stay_checkout_check','lookahead_hours':3}"
           appt_create:
             intent: "Schedule a vendor appointment on the structured 'appointment' object (SCHEDULED lifecycle state). area_id hard-validated against real HA areas. Overlapping appointments in the same room warn (not block) by default — set block_on_overlap=true to hard-block instead."
             needs: [item_id (vendor contact/company UUID — use contact_find/company_find first), area_id, start_date]
@@ -1115,7 +1375,7 @@ script:
                 tool='zen_dojotools_rolodex',
                 display_name='Rolodex — Contact & Company CRM',
                 tier='dojotools',
-                version='1.10.0',
+                version='1.13.3',
                 health=_health,
                 required_labels=['crm', 'zen_kfc_provider'],
                 optional_labels=['crm', 'contacts', 'companies', 'vendors'],
@@ -1226,7 +1486,7 @@ script:
             result:
               status: ok
               tool: zen_dojotools_rolodex
-              version: "1.8.0"
+              version: "1.13.3"
               mode: kfc_manifest
               kfc: '{{ _kfc_out }}'
               count: '{{ _kfc_out | length }}'
@@ -2536,9 +2796,16 @@ script:
             - stop: return
               response_variable: final_response
 
+        # 2026-08-19: start_date_norm is naive but UTC-semantic (see its own
+        # normalization comment above) -- as_timestamp() on a bare naive
+        # datetime assumes LOCAL time, which would silently re-introduce the
+        # exact UTC/local bug just fixed at the write side. Reattaching
+        # utcnow().tzinfo before computing the timestamp makes the epoch
+        # correct regardless of how as_timestamp treats naive input.
         - variables:
             _stc_status: >-
-              {%- set _start_ts = start_date_norm | as_datetime | as_timestamp -%}
+              {%- set _utc_tz = utcnow().tzinfo -%}
+              {%- set _start_ts = (start_date_norm | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp if start_date_norm != '' else none -%}
               {{ 'RESERVED' if _start_ts is not none and _start_ts > now().timestamp() else 'ACTIVE' }}
 
         # ── soft check: overlapping stay in the same room — warn, don't block.
@@ -2574,8 +2841,9 @@ script:
               {{ ns.out }}
         - variables:
             _stc_overlaps: >-
-              {%- set _new_start = start_date_norm | as_datetime | as_timestamp -%}
-              {%- set _new_end_raw = (end_date_norm | as_datetime | as_timestamp) if end_date_norm != "" else none -%}
+              {%- set _utc_tz = utcnow().tzinfo -%}
+              {%- set _new_start = (start_date_norm | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp -%}
+              {%- set _new_end_raw = ((end_date_norm | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp) if end_date_norm != "" else none -%}
               {%- set _new_end_eff = _new_end_raw if _new_end_raw is not none else _new_start -%}
               {%- set ns = namespace(out=[]) -%}
               {%- for s in _stc_overlap_candidates if s is mapping -%}
@@ -2607,7 +2875,7 @@ script:
 
         - variables:
             _stc_payload: >-
-              {{ {'guestContactId': item_id_norm, 'roomAreaId': area_id_norm, 'checkIn': start_date_norm, 'checkOut': (end_date_norm if end_date_norm != '' else none), 'status': _stc_status, 'notes': note_body_norm, 'turnoverSpawned': false} | tojson }}
+              {{ {'guestContactId': item_id_norm, 'roomAreaId': area_id_norm, 'checkIn': start_date_norm, 'checkOut': (end_date_norm if end_date_norm != '' else none), 'status': _stc_status, 'notes': note_body_norm, 'turnoverSpawned': false, 'prepSpawned': false, 'checkoutNudgeSpawned': false, 'occupantNames': occupant_names_norm} | tojson }}
         - action: script.zen_sutra_twenty
           response_variable: _stc_adv
           continue_on_error: true
@@ -2635,6 +2903,7 @@ script:
                 area_id: '{{ area_id_norm }}'
                 check_in: '{{ start_date_norm }}'
                 check_out: '{{ end_date_norm if end_date_norm != "" else none }}'
+                occupant_names: '{{ occupant_names_norm }}'
               warning: '{{ ("Room already has " ~ (_stc_overlaps | length) ~ " overlapping stay(s) in this window — sharing? confirm this is intentional.") if _stc_overlaps | length > 0 else none }}'
               overlapping_stays: '{{ _stc_overlaps if _stc_overlaps | length > 0 else [] }}'
               error: '{{ none if (_stc_ok and _stc_result is mapping and _stc_result.get("id","") != "") else ("create failed — HTTP " ~ _stc_adv.get("http_status","?") if _stc_adv is mapping else "broker error") }}'
@@ -2687,7 +2956,11 @@ script:
                 check_out: '{{ _stg_s.get("checkOut","") if _stg_s is mapping else "" }}'
                 status: '{{ _stg_s.get("status","") if _stg_s is mapping else "" }}'
                 turnover_spawned: '{{ _stg_s.get("turnoverSpawned", false) if _stg_s is mapping else false }}'
+                prep_spawned: '{{ _stg_s.get("prepSpawned", false) if _stg_s is mapping else false }}'
+                checkout_nudge_spawned: '{{ _stg_s.get("checkoutNudgeSpawned", false) if _stg_s is mapping else false }}'
                 notes: '{{ _stg_s.get("notes","") if _stg_s is mapping else "" }}'
+                occupant_names: '{{ _stg_s.get("occupantNames","") if _stg_s is mapping else "" }}'
+                reservation_id: '{{ _stg_s.get("reservationId","") if _stg_s is mapping else "" }}'
               error: '{{ none if (_stg_ok and _stg_s) else ("not found — HTTP " ~ _stg_adv.get("http_status","?") if _stg_adv is mapping else "broker error") }}'
         - stop: return
           response_variable: final_response
@@ -2718,11 +2991,26 @@ script:
               {%- set _d = _d if _d is mapping else {} -%}
               {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
         - variables:
+            # stays_active_list must not treat any unreleased RESERVED
+            # record as active without checking whether today falls between
+            # check-in and checkout -- a stale reservation whose checkout
+            # already passed can otherwise keep reporting as an active stay
+            # indefinitely. status != 'RELEASED' alone matches the
+            # documented "who's here or arriving" intent for a genuine
+            # future/current stay, but doesn't distinguish that from a
+            # RESERVED record whose checkout already passed without ever
+            # being explicitly released -- that's not "arriving," it's
+            # abandoned. Added: drop any record whose check_out is
+            # already in the past, regardless of status. A blank
+            # check_out is treated as not-expired (never assume expiry
+            # from missing data).
             _sal_filtered: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for s in _sal_all if s is mapping -%}
-                {%- if s.get('status','') != 'RELEASED' and (area_id_norm == '' or s.get('roomAreaId','') == area_id_norm) -%}
-                  {%- set ns.out = ns.out + [{'id': s.get('id',''), 'guest_contact_id': s.get('guestContactId',''), 'area_id': s.get('roomAreaId',''), 'check_in': s.get('checkIn',''), 'check_out': s.get('checkOut',''), 'status': s.get('status','')}] -%}
+                {%- set _co = s.get('checkOut','') -%}
+                {%- set _not_expired = (_co == '') or (as_datetime(_co) is not none and as_datetime(_co) >= now()) -%}
+                {%- if s.get('status','') != 'RELEASED' and _not_expired and (area_id_norm == '' or s.get('roomAreaId','') == area_id_norm) -%}
+                  {%- set ns.out = ns.out + [{'id': s.get('id',''), 'guest_contact_id': s.get('guestContactId',''), 'area_id': s.get('roomAreaId',''), 'check_in': s.get('checkIn',''), 'check_out': s.get('checkOut',''), 'status': s.get('status',''), 'occupant_names': s.get('occupantNames',''), 'reservation_id': s.get('reservationId','')}] -%}
                 {%- endif -%}
               {%- endfor -%}
               {{ ns.out }}
@@ -2817,6 +3105,9 @@ script:
               _sr_guest_id: '{{ _sr_stay.get("guestContactId","") }}'
               _sr_check_in: '{{ _sr_stay.get("checkIn","") }}'
               _sr_check_out: '{{ _sr_stay.get("checkOut","") }}'
+              _sr_reservation_id: '{{ _sr_stay.get("reservationId","") }}'
+              _sr_correlation_tag: >-
+                {{ "stay:" ~ item_id_norm ~ (" reservation:" ~ _sr_stay.get("reservationId","") if _sr_stay.get("reservationId","") not in ["", none] else "") }}
               _sr_nights: >-
                 {%- set _ci = _sr_stay.get('checkIn','') | as_datetime -%}
                 {%- set _co_raw = _sr_stay.get('checkOut','') -%}
@@ -2840,7 +3131,8 @@ script:
               _sr_guest_prefs_raw: '{{ _sr_guest_p.get("guestPrefs", "") if _sr_guest_p is mapping else "" }}'
               _sr_guest_prefs: >-
                 {%- set _gp = _sr_guest_prefs_raw -%}
-                {%- if _gp is string and _gp | trim not in ['', 'none', 'null'] -%}
+                {%- if _gp is mapping -%}{{ _gp }}
+                {%- elif _gp is string and _gp | trim not in ['', 'none', 'null'] -%}
                   {{ (_gp | from_json) if (_gp | trim)[:1] in ['{', '['] else {} }}
                 {%- else -%}{{ {} }}{%- endif -%}
               _sr_has_allergens: '{{ _sr_guest_prefs is mapping and (_sr_guest_prefs.get("allergens", []) | list | length) > 0 }}'
@@ -2868,7 +3160,18 @@ script:
               item: '{{ _sr_chore_item }}'
               chore: true
               area: '{{ _sr_area }}'
-              note: "Guest stay released. Check-in: {{ _sr_check_in }}. {{ 'Allergen prefs on file — sanitize thoroughly.' if _sr_has_allergens else '' }}"
+              note: "Guest stay released. Check-in: {{ _sr_check_in }}. {{ 'Allergen prefs on file — sanitize thoroughly.' if _sr_has_allergens else '' }} {{ _sr_correlation_tag }}"
+
+          # ── mark room dirty — decoupled housekeeping status, independent
+          # of the chore dispatch above; a failure here must not block release ──
+          - action: script.zen_dojotools_room_manager
+            continue_on_error: true
+            data:
+              mode: room_status_set
+              area: '{{ _sr_area }}'
+              room_status: dirty
+              room_status_source: turnover
+              room_status_note: "Turnover chore dispatched: {{ _sr_chore_item }}"
 
           # ── hot tub recheck if the amenity was active during this stay ───
           - action: script.zen_dojotools_filecabinet
@@ -2896,7 +3199,7 @@ script:
                   item: "Hot tub recheck after guest stay"
                   chore: true
                   area: '{{ _sr_area }}'
-                  note: "Spa/hot tub activity detected during this stay window — verify chemistry and reset for next guest."
+                  note: "Spa/hot tub activity detected during this stay window — verify chemistry and reset for next guest. {{ _sr_correlation_tag }}"
 
           - variables:
               final_response:
@@ -2912,6 +3215,988 @@ script:
                   hot_tub_recheck_spawned: '{{ _sr_hottub_active_during_stay }}'
                   turnover_chore: '{{ _sr_chore_item }}'
                 error: none
+          - stop: return
+            response_variable: final_response
+
+    # ── case: stay_prep_check ────────────────────────────────────────────────────
+    # Arrival counterpart to stay_release above -- closes the "the home already
+    # knows but doesn't act until someone's already here" gap (2026-08-19
+    # pre-release audit, Gap 1). Scans RESERVED stays whose check-in falls
+    # within lookahead_hours of now and haven't been prepped yet, and for each
+    # spawns a Taskmaster prep chore carrying the guest's stored prefs
+    # (allergens/music/spa) plus a Postman notice to the owner -- same "bell
+    # rings for housekeeping" idiom stay_release already uses, on the other
+    # side of the stay. Deliberately NOT direct climate/light actuation this
+    # pass -- no entity-level room->device resolution exists here yet and
+    # guestPrefs has no temperature field to act on; a human-in-the-loop
+    # chore is the safe, real slice of "acts ahead of time" buildable without
+    # inventing either. Idempotent via prepSpawned (same shape as
+    # turnoverSpawned). No caller-supplied item_id -- this scans, not a
+    # single-stay operation. Intended caller: a periodic automation (see
+    # automations.yaml zen_guest_prep_scan), not a live agent request --
+    # there's nothing for a human to confirm here.
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "stay_prep_check" }}'
+        sequence:
+        - variables:
+            _spc_lookahead_h: "{{ lookahead_hours | default(3) | int(3) }}"
+        - action: script.zen_sutra_twenty
+          response_variable: _spc_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'stays?limit={{ limit_norm }}'
+        - variables:
+            _spc_ok: '{{ _spc_adv is mapping and _spc_adv.get("status") == "success" }}'
+            _spc_body: >-
+              {%- if _spc_adv is mapping and "result" in _spc_adv and "content" in _spc_adv["result"] -%}
+                {{ _spc_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _spc_all: >-
+              {%- set _d = _spc_body.get('data', {}) if _spc_body is mapping else {} -%}
+              {%- set _d = _d if _d is mapping else {} -%}
+              {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
+        - variables:
+            _spc_due: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- set _now = now() -%}
+              {%- set _horizon = _now + timedelta(hours=_spc_lookahead_h) -%}
+              {%- for s in _spc_all if s is mapping -%}
+                {%- set _ci = s.get('checkIn','') | as_datetime -%}
+                {%- if s.get('status','') == 'RESERVED'
+                    and not (s.get('prepSpawned', false) | bool(false))
+                    and _ci is not none and _now <= _ci <= _horizon -%}
+                  {%- set ns.out = ns.out + [s] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            _spc_results: []
+        - repeat:
+            for_each: "{{ _spc_due }}"
+            sequence:
+            - variables:
+                _spci_id: "{{ repeat.item.get('id','') }}"
+                _spci_area: "{{ repeat.item.get('roomAreaId','') }}"
+                _spci_guest_id: "{{ repeat.item.get('guestContactId','') }}"
+                _spci_check_in: "{{ repeat.item.get('checkIn','') }}"
+                _spci_check_in_local: >-
+                  {%- set _ci_dt = repeat.item.get('checkIn','') | as_datetime -%}
+                  {{ as_local(_ci_dt).strftime('%a %b %d, %I:%M %p') if _ci_dt is not none else repeat.item.get('checkIn','') }}
+                _spci_correlation_tag: "{{ 'stay:' ~ repeat.item.get('id','') }}"
+
+            - action: script.zen_sutra_twenty
+              response_variable: _spci_guest_adv
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'people/{{ _spci_guest_id }}'
+            - variables:
+                _spci_guest_body: >-
+                  {%- if _spci_guest_adv is mapping and "result" in _spci_guest_adv and "content" in _spci_guest_adv["result"] -%}
+                    {{ _spci_guest_adv["result"]["content"] }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                _spci_guest_p: '{{ _spci_guest_body.get("data", {}).get("person", _spci_guest_body.get("data", {})) if _spci_guest_body is mapping else {} }}'
+            - variables:
+                _spci_guest_name: >-
+                  {{ ((_spci_guest_p.get('name', {}).get('firstName', '') if _spci_guest_p is mapping else '')
+                      ~ ' ' ~
+                      (_spci_guest_p.get('name', {}).get('lastName', '') if _spci_guest_p is mapping else '')) | trim }}
+                _spci_prefs_raw: '{{ _spci_guest_p.get("guestPrefs", "") if _spci_guest_p is mapping else "" }}'
+                _spci_prefs: >-
+                  {%- set _gp = _spci_prefs_raw -%}
+                  {%- if _gp is mapping -%}{{ _gp }}
+                  {%- elif _gp is string and _gp | trim not in ['', 'none', 'null'] -%}
+                    {{ (_gp | from_json) if (_gp | trim)[:1] in ['{', '['] else {} }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                _spci_allergens: "{{ _spci_prefs.get('allergens', []) if _spci_prefs is mapping else [] }}"
+
+            - variables:
+                _spci_prefs_summary: >-
+                  {%- set ns = namespace(parts=[]) -%}
+                  {%- if _spci_allergens | length > 0 -%}
+                    {%- set ns.parts = ns.parts + ['Allergens: ' ~ (_spci_allergens | join(', '))] -%}
+                  {%- endif -%}
+                  {%- if _spci_prefs is mapping and _spci_prefs.get('music') -%}
+                    {%- set ns.parts = ns.parts + ['Music prefs on file'] -%}
+                  {%- endif -%}
+                  {%- if _spci_prefs is mapping and _spci_prefs.get('spa') -%}
+                    {%- set ns.parts = ns.parts + ['Spa prefs on file'] -%}
+                  {%- endif -%}
+                  {{ (ns.parts | join('. ')) if ns.parts | length > 0 else 'No prefs on file.' }}
+
+            - action: script.zen_dojotools_taskmaster
+              response_variable: _spci_chore_dispatch
+              continue_on_error: true
+              data:
+                mode: task_create
+                item: "Guest arrival prep{{ ' — ' ~ _spci_guest_name if _spci_guest_name != '' else '' }}"
+                chore: true
+                area: '{{ _spci_area }}'
+                note: "Guest arriving {{ _spci_check_in_local }}. {{ _spci_prefs_summary }} {{ _spci_correlation_tag }}"
+
+            - action: script.zen_sutra_twenty
+              continue_on_error: true
+              data:
+                action_type: patch
+                endpoint: 'stays/{{ _spci_id }}'
+                payload: '{{ {"prepSpawned": true} | tojson }}'
+
+            - action: script.zen_dojotools_postman
+              continue_on_error: true
+              data:
+                mode: resolve_and_dispatch
+                tag: "guest_prep_{{ _spci_id }}"
+                title: "Guest prep — {{ _spci_area }}"
+                message: "{{ _spci_guest_name if _spci_guest_name != '' else 'Guest' }} arriving {{ _spci_check_in_local }} in {{ _spci_area }}. {{ _spci_prefs_summary }}"
+                urgency: 3
+                channel_hint: push
+
+            - variables:
+                _spc_results: >-
+                  {{ _spc_results + [{'stay_id': _spci_id, 'area_id': _spci_area, 'guest_name': _spci_guest_name, 'check_in': _spci_check_in, 'chore_dispatched': (_spci_chore_dispatch is mapping and _spci_chore_dispatch.get('status','') in ['ok','success'])}] }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _spc_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: stay_prep_check
+              result:
+                lookahead_hours: '{{ _spc_lookahead_h }}'
+                prepped: '{{ _spc_results }}'
+                count: '{{ _spc_results | length }}'
+              error: '{{ none if _spc_ok else "broker error" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: checkout_status ────────────────────────────────────────────────────
+    # Read-only, no side effects, safe to call any time -- this is the "does
+    # the agent already know a departure is approaching" answer (2026-08-19,
+    # household: result should be an agent-queryable fact, not just a background
+    # push). Scans ACTIVE stays with a set checkOut inside lookahead_hours
+    # (default 24 -- a broader natural window than the nudge dispatch below,
+    # since "who's leaving today" is a wider ask than "fire the reminder
+    # now"). Shares no state with stay_checkout_check -- call this as often
+    # as you like, it never marks anything done.
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "checkout_status" }}'
+        sequence:
+        - variables:
+            _cos_lookahead_h: "{{ lookahead_hours | default(24) | int(24) }}"
+        - action: script.zen_sutra_twenty
+          response_variable: _cos_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'stays?limit={{ limit_norm }}'
+        - variables:
+            _cos_ok: '{{ _cos_adv is mapping and _cos_adv.get("status") == "success" }}'
+            _cos_body: >-
+              {%- if _cos_adv is mapping and "result" in _cos_adv and "content" in _cos_adv["result"] -%}
+                {{ _cos_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _cos_all: >-
+              {%- set _d = _cos_body.get('data', {}) if _cos_body is mapping else {} -%}
+              {%- set _d = _d if _d is mapping else {} -%}
+              {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
+        - variables:
+            _cos_departing: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- set _now = now() -%}
+              {%- set _horizon = _now + timedelta(hours=_cos_lookahead_h) -%}
+              {%- for s in _cos_all if s is mapping -%}
+                {%- set _co = s.get('checkOut','') | as_datetime -%}
+                {%- if s.get('status','') == 'ACTIVE'
+                    and (area_id_norm == '' or s.get('roomAreaId','') == area_id_norm)
+                    and _co is not none and _now <= _co <= _horizon -%}
+                  {%- set _hrs_left = ((_co - _now).total_seconds() / 3600) | round(1) -%}
+                  {%- set ns.out = ns.out + [{'stay_id': s.get('id',''), 'area_id': s.get('roomAreaId',''), 'guest_contact_id': s.get('guestContactId',''), 'check_out': s.get('checkOut',''), 'hours_remaining': _hrs_left}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out | sort(attribute='hours_remaining') }}
+        - variables:
+            final_response:
+              status: '{{ "success" if _cos_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: checkout_status
+              result:
+                lookahead_hours: '{{ _cos_lookahead_h }}'
+                departing: '{{ _cos_departing }}'
+                count: '{{ _cos_departing | length }}'
+              error: '{{ none if _cos_ok else "broker error" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: stay_checkout_check ────────────────────────────────────────────────
+    # Departure counterpart to stay_prep_check above -- fires once per stay
+    # (idempotent via checkoutNudgeSpawned, same shape as prepSpawned/
+    # turnoverSpawned) when an ACTIVE stay's checkOut falls within
+    # lookahead_hours (default 3 -- tight, this is the actual reminder
+    # trigger, not the wider browsing window checkout_status uses).
+    # chore=false (unlike stay_prep_check's chore=true) -- a checkout
+    # reminder is a one-off task, not a recurring cleaning chore; routes
+    # through Taskmaster's non-chore-shaped branch (Radar if configured,
+    # else a plain Grocy task). Does not replace stay_release -- that still
+    # owns the actual turnover dispatch once checkout happens; this only
+    # nudges that it's approaching. Deliberately does NOT fetch/surface
+    # guestPrefs (unlike stay_prep_check) -- allergen/music/spa context is
+    # useful for prepping a room, not for a departure reminder. Not an
+    # oversight, don't add it without a real use case driving it.
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "stay_checkout_check" }}'
+        sequence:
+        - variables:
+            _scc_lookahead_h: "{{ lookahead_hours | default(3) | int(3) }}"
+        - action: script.zen_sutra_twenty
+          response_variable: _scc_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'stays?limit={{ limit_norm }}'
+        - variables:
+            _scc_ok: '{{ _scc_adv is mapping and _scc_adv.get("status") == "success" }}'
+            _scc_body: >-
+              {%- if _scc_adv is mapping and "result" in _scc_adv and "content" in _scc_adv["result"] -%}
+                {{ _scc_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _scc_all: >-
+              {%- set _d = _scc_body.get('data', {}) if _scc_body is mapping else {} -%}
+              {%- set _d = _d if _d is mapping else {} -%}
+              {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
+        - variables:
+            _scc_due: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- set _now = now() -%}
+              {%- set _horizon = _now + timedelta(hours=_scc_lookahead_h) -%}
+              {%- for s in _scc_all if s is mapping -%}
+                {%- set _co = s.get('checkOut','') | as_datetime -%}
+                {%- if s.get('status','') == 'ACTIVE'
+                    and not (s.get('checkoutNudgeSpawned', false) | bool(false))
+                    and _co is not none and _now <= _co <= _horizon -%}
+                  {%- set ns.out = ns.out + [s] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            _scc_results: []
+        - repeat:
+            for_each: "{{ _scc_due }}"
+            sequence:
+            - variables:
+                _scci_id: "{{ repeat.item.get('id','') }}"
+                _scci_area: "{{ repeat.item.get('roomAreaId','') }}"
+                _scci_guest_id: "{{ repeat.item.get('guestContactId','') }}"
+                _scci_check_out: "{{ repeat.item.get('checkOut','') }}"
+                _scci_check_out_local: >-
+                  {%- set _co_dt = repeat.item.get('checkOut','') | as_datetime -%}
+                  {{ as_local(_co_dt).strftime('%a %b %d, %I:%M %p') if _co_dt is not none else repeat.item.get('checkOut','') }}
+                _scci_correlation_tag: "{{ 'stay:' ~ repeat.item.get('id','') }}"
+
+            - action: script.zen_sutra_twenty
+              response_variable: _scci_guest_adv
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'people/{{ _scci_guest_id }}'
+            - variables:
+                _scci_guest_body: >-
+                  {%- if _scci_guest_adv is mapping and "result" in _scci_guest_adv and "content" in _scci_guest_adv["result"] -%}
+                    {{ _scci_guest_adv["result"]["content"] }}
+                  {%- else -%}{{ {} }}{%- endif -%}
+                _scci_guest_p: '{{ _scci_guest_body.get("data", {}).get("person", _scci_guest_body.get("data", {})) if _scci_guest_body is mapping else {} }}'
+            - variables:
+                _scci_guest_name: >-
+                  {{ ((_scci_guest_p.get('name', {}).get('firstName', '') if _scci_guest_p is mapping else '')
+                      ~ ' ' ~
+                      (_scci_guest_p.get('name', {}).get('lastName', '') if _scci_guest_p is mapping else '')) | trim }}
+
+            - action: script.zen_dojotools_taskmaster
+              response_variable: _scci_task_dispatch
+              continue_on_error: true
+              data:
+                mode: task_create
+                item: "Checkout approaching{{ ' — ' ~ _scci_guest_name if _scci_guest_name != '' else '' }}"
+                chore: false
+                area: '{{ _scci_area }}'
+                note: "Checkout {{ _scci_check_out_local }}. {{ _scci_correlation_tag }}"
+
+            - action: script.zen_sutra_twenty
+              continue_on_error: true
+              data:
+                action_type: patch
+                endpoint: 'stays/{{ _scci_id }}'
+                payload: '{{ {"checkoutNudgeSpawned": true} | tojson }}'
+
+            - action: script.zen_dojotools_postman
+              continue_on_error: true
+              data:
+                mode: resolve_and_dispatch
+                tag: "guest_checkout_{{ _scci_id }}"
+                title: "Checkout approaching — {{ _scci_area }}"
+                message: "{{ _scci_guest_name if _scci_guest_name != '' else 'Guest' }} in {{ _scci_area }} checking out {{ _scci_check_out_local }}."
+                urgency: 3
+                channel_hint: push
+
+            - variables:
+                _scc_results: >-
+                  {{ _scc_results + [{'stay_id': _scci_id, 'area_id': _scci_area, 'guest_name': _scci_guest_name, 'check_out': _scci_check_out, 'task_dispatched': (_scci_task_dispatch is mapping and _scci_task_dispatch.get('status','') in ['ok','success'])}] }}
+
+        - variables:
+            final_response:
+              status: '{{ "success" if _scc_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: stay_checkout_check
+              result:
+                lookahead_hours: '{{ _scc_lookahead_h }}'
+                nudged: '{{ _scc_results }}'
+                count: '{{ _scc_results | length }}'
+              error: '{{ none if _scc_ok else "broker error" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: reservation_create ─────────────────────────────────────────────────
+    # Thin booking-level grouping over one or more "stay" records — NOT a
+    # duplicate of stay's own room/date/turnover-state data. Each room gets
+    # its own real stay record (same validation/overlap-check as stay_create),
+    # tagged with reservationId. No fake atomicity: Twenty has no multi-object
+    # transactions, so a failure on room 3 of 5 does not roll back rooms 1-2 —
+    # per-room results are reported honestly so the caller can retry just the
+    # failed room(s) via plain stay_create with the harvested reservation_id.
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "reservation_create" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ rooms_json_norm | length == 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_create
+                  error: "rooms_json required — JSON array of {area_id, item_id, start_date, end_date, occupant_names, note} objects."
+            - stop: return
+              response_variable: final_response
+
+        # ── hard gate: every room's area_id must be a real HA area, checked
+        # up front — fail before creating anything rather than partway through.
+        - variables:
+            _rc_bad_areas: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- set _areas = areas() | list -%}
+              {%- for r in rooms_json_norm if r is mapping -%}
+                {%- set _a = r.get('area_id', '') | string | trim -%}
+                {%- if _a == '' or _a not in _areas -%}
+                  {%- set ns.out = ns.out + [_a] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rc_bad_areas | length > 0 }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_create
+                  error: "Unknown/missing area_id(s) in rooms_json: {{ _rc_bad_areas | join(', ') }}"
+                  known_areas_sample: '{{ (areas() | list)[:20] }}'
+            - stop: return
+              response_variable: final_response
+
+        # ── create the Reservation row first ─────────────────────────────
+        - variables:
+            _rc_status: >-
+              {%- set _first_start = (rooms_json_norm | first).get('start_date', '') -%}
+              {%- set _start_ts = _first_start | as_datetime | as_timestamp if _first_start != '' else none -%}
+              {{ 'CHECKED_IN' if _start_ts is not none and _start_ts <= now().timestamp() else 'RESERVED' }}
+            _rc_payload: >-
+              {{ {'primaryGuestContactId': item_id_norm, 'partyLabel': party_label_norm, 'status': _rc_status, 'notes': note_body_norm} | tojson }}
+        - action: script.zen_sutra_twenty
+          response_variable: _rc_resv_adv
+          continue_on_error: true
+          data:
+            action_type: post
+            endpoint: reservations
+            payload: '{{ _rc_payload }}'
+        - variables:
+            _rc_resv_body: >-
+              {%- if _rc_resv_adv is mapping and "result" in _rc_resv_adv and "content" in _rc_resv_adv["result"] -%}
+                {{ _rc_resv_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rc_resv_result: '{{ _rc_resv_body.get("data", {}).get("createReservation", _rc_resv_body.get("data", {})) if _rc_resv_body is mapping else {} }}'
+            _rc_reservation_id: '{{ _rc_resv_result.get("id","") if _rc_resv_result is mapping else "" }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rc_reservation_id == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_create
+                  error: "Reservation create failed — HTTP {{ _rc_resv_adv.get('http_status','?') if _rc_resv_adv is mapping else '?' }}. No rooms were created."
+            - stop: return
+              response_variable: final_response
+
+        # ── one upfront overlap-check read, reused per room (not one GET per room) ──
+        - action: script.zen_sutra_twenty
+          response_variable: _rc_overlap_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'stays?limit=200'
+        - variables:
+            _rc_overlap_body: >-
+              {%- if _rc_overlap_adv is mapping and "result" in _rc_overlap_adv and "content" in _rc_overlap_adv["result"] -%}
+                {{ _rc_overlap_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rc_overlap_all: >-
+              {%- set _d = _rc_overlap_body.get('data', {}) if _rc_overlap_body is mapping else {} -%}
+              {%- set _d = _d if _d is mapping else {} -%}
+              {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
+
+        # ── per-room create loop ──────────────────────────────────────────
+        - variables:
+            _rc_results: []
+        - repeat:
+            for_each: '{{ rooms_json_norm }}'
+            sequence:
+            - variables:
+                _rcr_area: "{{ repeat.item.get('area_id', '') | string | trim }}"
+                _rcr_item_id: "{{ repeat.item.get('item_id', '') | string | trim if repeat.item.get('item_id', '') else item_id_norm }}"
+                _rcr_start: >-
+                  {%- set _raw = repeat.item.get('start_date', '') | string | trim -%}
+                  {%- set _has_time = 'T' in _raw or _raw | length > 10 -%}
+                  {%- set _has_explicit_tz = _raw.endswith('Z') or ('+' in _raw[10:]) or ('-' in _raw[10:]) -%}
+                  {%- if _raw == "" or not _has_time or _has_explicit_tz -%}
+                    {{ _raw }}
+                  {%- else -%}
+                    {%- set _naive = as_datetime(_raw) -%}
+                    {{ (_naive - now().utcoffset()).isoformat() if _naive is not none else _raw }}
+                  {%- endif -%}
+                _rcr_end: >-
+                  {%- set _raw = repeat.item.get('end_date', '') | string | trim -%}
+                  {%- set _has_time = 'T' in _raw or _raw | length > 10 -%}
+                  {%- set _has_explicit_tz = _raw.endswith('Z') or ('+' in _raw[10:]) or ('-' in _raw[10:]) -%}
+                  {%- if _raw == "" or not _has_time or _has_explicit_tz -%}
+                    {{ _raw }}
+                  {%- else -%}
+                    {%- set _naive = as_datetime(_raw) -%}
+                    {{ (_naive - now().utcoffset()).isoformat() if _naive is not none else _raw }}
+                  {%- endif -%}
+                _rcr_occupants: "{{ repeat.item.get('occupant_names', '') | string | trim }}"
+                _rcr_note: "{{ repeat.item.get('note', '') | string | trim }}"
+            - variables:
+                _rcr_status: >-
+                  {%- set _utc_tz = utcnow().tzinfo -%}
+                  {%- set _rts = (_rcr_start | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp if _rcr_start != '' else none -%}
+                  {{ 'RESERVED' if _rts is not none and _rts > now().timestamp() else 'ACTIVE' }}
+                _rcr_overlaps: >-
+                  {%- set _utc_tz = utcnow().tzinfo -%}
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- set _new_start = (_rcr_start | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp if _rcr_start != '' else none -%}
+                  {%- set _new_end_raw = ((_rcr_end | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp) if _rcr_end != '' else none -%}
+                  {%- set _new_end_eff = _new_end_raw if _new_end_raw is not none else _new_start -%}
+                  {%- for s in _rc_overlap_all if s is mapping and s.get('status','') != 'RELEASED' and s.get('roomAreaId','') == _rcr_area -%}
+                    {%- set _os = s.get('checkIn','') | as_datetime | as_timestamp if s.get('checkIn','') else none -%}
+                    {%- set _oe_raw = s.get('checkOut','') -%}
+                    {%- set _oe = (_oe_raw | as_datetime | as_timestamp) if _oe_raw else none -%}
+                    {%- set _o_end_eff = _oe if _oe is not none else _os -%}
+                    {%- if _os is not none and _new_start is not none and _os <= _new_end_eff and _o_end_eff >= _new_start -%}
+                      {%- set ns.out = ns.out + [{'id': s.get('id',''), 'check_in': s.get('checkIn',''), 'check_out': s.get('checkOut','')}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ block_on_overlap_norm and _rcr_overlaps | length > 0 }}'
+                sequence:
+                - variables:
+                    _rc_results: "{{ _rc_results + [{'area_id': _rcr_area, 'status': 'skipped_overlap', 'overlapping_stays': _rcr_overlaps}] }}"
+              default:
+              - variables:
+                  _rcr_payload: >-
+                    {{ {'guestContactId': _rcr_item_id, 'roomAreaId': _rcr_area, 'checkIn': _rcr_start, 'checkOut': (_rcr_end if _rcr_end != '' else none), 'status': _rcr_status, 'notes': _rcr_note, 'turnoverSpawned': false, 'prepSpawned': false, 'checkoutNudgeSpawned': false, 'occupantNames': _rcr_occupants, 'reservationId': _rc_reservation_id} | tojson }}
+              - action: script.zen_sutra_twenty
+                response_variable: _rcr_adv
+                continue_on_error: true
+                data:
+                  action_type: post
+                  endpoint: stays
+                  payload: '{{ _rcr_payload }}'
+              - variables:
+                  _rcr_body: >-
+                    {%- if _rcr_adv is mapping and "result" in _rcr_adv and "content" in _rcr_adv["result"] -%}
+                      {{ _rcr_adv["result"]["content"] }}
+                    {%- else -%}{{ {} }}{%- endif -%}
+                  _rcr_result: '{{ _rcr_body.get("data", {}).get("createStay", _rcr_body.get("data", {})) if _rcr_body is mapping else {} }}'
+                  _rcr_stay_id: '{{ _rcr_result.get("id","") if _rcr_result is mapping else "" }}'
+              - variables:
+                  _rc_results: >-
+                    {{ _rc_results + [{'area_id': _rcr_area, 'status': ('created' if _rcr_stay_id != '' else 'error'), 'stay_id': _rcr_stay_id,
+                       'warning': (('Room already has ' ~ (_rcr_overlaps | length) ~ ' overlapping stay(s) in this window.') if _rcr_overlaps | length > 0 else none)} ] }}
+
+        - variables:
+            final_response:
+              status: "{{ 'success' if (_rc_results | selectattr('status', 'equalto', 'created') | list | length) > 0 else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: reservation_create
+              result:
+                reservation_id: '{{ _rc_reservation_id }}'
+                party_label: '{{ party_label_norm }}'
+                status: '{{ _rc_status }}'
+                rooms: '{{ _rc_results }}'
+                count_created: '{{ _rc_results | selectattr("status", "equalto", "created") | list | length }}'
+                count_skipped: '{{ _rc_results | rejectattr("status", "equalto", "created") | list | length }}'
+              error: none
+        - stop: return
+          response_variable: final_response
+
+    # ── case: reservation_get ────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "reservation_get" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_get
+                  error: item_id required (the reservation UUID).
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_twenty
+          response_variable: _rg_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'reservations/{{ item_id_norm }}'
+        - variables:
+            _rg_ok: '{{ _rg_adv is mapping and _rg_adv.get("status") == "success" }}'
+            _rg_body: >-
+              {%- if _rg_adv is mapping and "result" in _rg_adv and "content" in _rg_adv["result"] -%}
+                {{ _rg_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rg_r: '{{ _rg_body.get("data", {}).get("reservation", _rg_body.get("data", {})) if _rg_body is mapping else {} }}'
+        - action: script.zen_sutra_twenty
+          response_variable: _rg_stays_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'stays?limit=200'
+        - variables:
+            _rg_stays_body: >-
+              {%- if _rg_stays_adv is mapping and "result" in _rg_stays_adv and "content" in _rg_stays_adv["result"] -%}
+                {{ _rg_stays_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rg_stays_all: >-
+              {%- set _d = _rg_stays_body.get('data', {}) if _rg_stays_body is mapping else {} -%}
+              {%- set _d = _d if _d is mapping else {} -%}
+              {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
+            _rg_member_stays: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for s in _rg_stays_all if s is mapping and s.get('reservationId','') == item_id_norm -%}
+                {%- set ns.out = ns.out + [{'id': s.get('id',''), 'area_id': s.get('roomAreaId',''), 'check_in': s.get('checkIn',''), 'check_out': s.get('checkOut',''), 'status': s.get('status','')}] -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            final_response:
+              status: '{{ "success" if _rg_ok and _rg_r else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: reservation_get
+              result:
+                id: '{{ _rg_r.get("id","") if _rg_r is mapping else "" }}'
+                primary_guest_contact_id: '{{ _rg_r.get("primaryGuestContactId","") if _rg_r is mapping else "" }}'
+                party_label: '{{ _rg_r.get("partyLabel","") if _rg_r is mapping else "" }}'
+                status: '{{ _rg_r.get("status","") if _rg_r is mapping else "" }}'
+                notes: '{{ _rg_r.get("notes","") if _rg_r is mapping else "" }}'
+                rooms: '{{ _rg_member_stays }}'
+              error: '{{ none if (_rg_ok and _rg_r) else ("not found — HTTP " ~ _rg_adv.get("http_status","?") if _rg_adv is mapping else "broker error") }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: reservations_active_list ───────────────────────────────────────────
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "reservations_active_list" }}'
+        sequence:
+        - action: script.zen_sutra_twenty
+          response_variable: _ral_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'reservations?limit={{ limit_norm }}'
+        - variables:
+            _ral_ok: '{{ _ral_adv is mapping and _ral_adv.get("status") == "success" }}'
+            _ral_body: >-
+              {%- if _ral_adv is mapping and "result" in _ral_adv and "content" in _ral_adv["result"] -%}
+                {{ _ral_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _ral_all: >-
+              {%- set _d = _ral_body.get('data', {}) if _ral_body is mapping else {} -%}
+              {%- set _d = _d if _d is mapping else {} -%}
+              {{ _d.get('reservations', []) if _d.get('reservations') is sequence else [] }}
+            _ral_filtered: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for r in _ral_all if r is mapping and r.get('status','') not in ['CHECKED_OUT', 'CANCELLED', 'NO_SHOW'] -%}
+                {%- set ns.out = ns.out + [{'id': r.get('id',''), 'primary_guest_contact_id': r.get('primaryGuestContactId',''), 'party_label': r.get('partyLabel',''), 'status': r.get('status','')}] -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            final_response:
+              status: '{{ "success" if _ral_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: reservations_active_list
+              result:
+                reservations: '{{ _ral_filtered }}'
+                count: '{{ _ral_filtered | length }}'
+              error: '{{ none if _ral_ok else "broker error" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: reservation_checkout ───────────────────────────────────────────────
+    # Reservation-level checkout — releases every member stay not yet RELEASED
+    # (each gets the exact same PATCH + turnover-chore-dispatch + hot-tub-
+    # recheck logic stay_release runs, one room at a time), then marks the
+    # reservation CHECKED_OUT. Calls script.zen_sutra_twenty directly per the
+    # non-recursion rule (never script.zen_dojotools_rolodex).
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "reservation_checkout" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_checkout
+                  error: item_id required (the reservation UUID).
+            - stop: return
+              response_variable: final_response
+
+        - action: script.zen_sutra_twenty
+          response_variable: _rco_get_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'reservations/{{ item_id_norm }}'
+        - variables:
+            _rco_body: >-
+              {%- if _rco_get_adv is mapping and "result" in _rco_get_adv and "content" in _rco_get_adv["result"] -%}
+                {{ _rco_get_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rco_resv: '{{ _rco_body.get("data", {}).get("reservation", _rco_body.get("data", {})) if _rco_body is mapping else {} }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rco_resv is not mapping or _rco_resv.get("id","") == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_checkout
+                  error: "reservation not found: {{ item_id_norm }}"
+            - stop: return
+              response_variable: final_response
+
+          # idempotency guard — mirrors stay_release's own already-released short-circuit
+          - conditions:
+            - condition: template
+              value_template: '{{ _rco_resv.get("status","") == "CHECKED_OUT" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: success
+                  tool: '{{ tool_name }}'
+                  case: reservation_checkout
+                  result:
+                    id: '{{ item_id_norm }}'
+                    already_checked_out: true
+                    rooms_checked_out: []
+                  error: none
+            - stop: return
+              response_variable: final_response
+
+          default:
+          - action: script.zen_sutra_twenty
+            response_variable: _rco_stays_adv
+            continue_on_error: true
+            data:
+              action_type: get
+              endpoint: 'stays?limit=200'
+          - variables:
+              _rco_stays_body: >-
+                {%- if _rco_stays_adv is mapping and "result" in _rco_stays_adv and "content" in _rco_stays_adv["result"] -%}
+                  {{ _rco_stays_adv["result"]["content"] }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              _rco_stays_all: >-
+                {%- set _d = _rco_stays_body.get('data', {}) if _rco_stays_body is mapping else {} -%}
+                {%- set _d = _d if _d is mapping else {} -%}
+                {{ _d.get('stays', []) if _d.get('stays') is sequence else [] }}
+              _rco_member_stays: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for s in _rco_stays_all if s is mapping and s.get('reservationId','') == item_id_norm and s.get('status','') != 'RELEASED' -%}
+                  {%- set ns.out = ns.out + [s] -%}
+                {%- endfor -%}
+                {{ ns.out }}
+
+          - variables:
+              _rco_results: []
+          - repeat:
+              for_each: '{{ _rco_member_stays }}'
+              sequence:
+              - variables:
+                  _rcs_id: "{{ repeat.item.get('id', '') }}"
+                  _rcs_area: "{{ repeat.item.get('roomAreaId','') }}"
+                  _rcs_guest_id: "{{ repeat.item.get('guestContactId','') }}"
+                  _rcs_check_in: "{{ repeat.item.get('checkIn','') }}"
+                  _rcs_check_out: "{{ repeat.item.get('checkOut','') }}"
+              - variables:
+                  _rcs_nights: >-
+                    {%- set _ci = _rcs_check_in | as_datetime -%}
+                    {%- set _co = (_rcs_check_out | as_datetime) if _rcs_check_out else now() -%}
+                    {{ ((_co - _ci).total_seconds() / 86400) | round(1, 'floor') if _ci is not none and _co is not none else 0 }}
+                  _rcs_correlation_tag: "{{ 'stay:' ~ _rcs_id ~ ' reservation:' ~ item_id_norm }}"
+
+              # ── allergen prefs ──────────────────────────────────────────
+              - action: script.zen_sutra_twenty
+                response_variable: _rcs_guest_adv
+                continue_on_error: true
+                data:
+                  action_type: get
+                  endpoint: 'people/{{ _rcs_guest_id }}'
+              - variables:
+                  _rcs_guest_body: >-
+                    {%- if _rcs_guest_adv is mapping and "result" in _rcs_guest_adv and "content" in _rcs_guest_adv["result"] -%}
+                      {{ _rcs_guest_adv["result"]["content"] }}
+                    {%- else -%}{{ {} }}{%- endif -%}
+                  _rcs_guest_p: '{{ _rcs_guest_body.get("data", {}).get("person", _rcs_guest_body.get("data", {})) if _rcs_guest_body is mapping else {} }}'
+              - variables:
+                  _rcs_guest_prefs_raw: '{{ _rcs_guest_p.get("guestPrefs", "") if _rcs_guest_p is mapping else "" }}'
+                  _rcs_guest_prefs: >-
+                    {%- set _gp = _rcs_guest_prefs_raw -%}
+                    {%- if _gp is mapping -%}{{ _gp }}
+                    {%- elif _gp is string and _gp | trim not in ['', 'none', 'null'] -%}
+                      {{ (_gp | from_json) if (_gp | trim)[:1] in ['{', '['] else {} }}
+                    {%- else -%}{{ {} }}{%- endif -%}
+                  _rcs_has_allergens: '{{ _rcs_guest_prefs is mapping and (_rcs_guest_prefs.get("allergens", []) | list | length) > 0 }}'
+
+              # ── mark released ────────────────────────────────────────────
+              - action: script.zen_sutra_twenty
+                continue_on_error: true
+                data:
+                  action_type: patch
+                  endpoint: 'stays/{{ _rcs_id }}'
+                  payload: '{{ {"status": "RELEASED", "turnoverSpawned": true} | tojson }}'
+
+              # ── turnover chore ────────────────────────────────────────────
+              - variables:
+                  _rcs_chore_item: >-
+                    {{ 'Deep clean (allergen stay) — turnover' if _rcs_has_allergens
+                       else ('Deep clean (extended stay, ' ~ (_rcs_nights | int) ~ ' nights) — turnover' if _rcs_nights | float >= 3
+                       else 'Standard turnover clean') }}
+              - action: script.zen_dojotools_taskmaster
+                continue_on_error: true
+                data:
+                  mode: task_create
+                  item: '{{ _rcs_chore_item }}'
+                  chore: true
+                  area: '{{ _rcs_area }}'
+                  note: "Guest stay released (reservation checkout). Check-in: {{ _rcs_check_in }}. {{ 'Allergen prefs on file — sanitize thoroughly.' if _rcs_has_allergens else '' }} {{ _rcs_correlation_tag }}"
+
+              # ── mark room dirty — decoupled housekeeping status ──────────
+              - action: script.zen_dojotools_room_manager
+                continue_on_error: true
+                data:
+                  mode: room_status_set
+                  area: '{{ _rcs_area }}'
+                  room_status: dirty
+                  room_status_source: turnover
+                  room_status_note: "Turnover chore dispatched (reservation checkout): {{ _rcs_chore_item }}"
+
+              # ── hot tub recheck if active during this room's stay window ──
+              - action: script.zen_dojotools_filecabinet
+                response_variable: _rcs_hottub_kata_raw
+                continue_on_error: true
+                data:
+                  action_type: get
+                  volume_entity_id: sensor.zenos_kata_cabinet
+                  key: hot_tub_manager
+              - variables:
+                  _rcs_hottub_updated_at: '{{ _rcs_hottub_kata_raw.get("value", {}).get("updated_at", "") if _rcs_hottub_kata_raw is mapping and _rcs_hottub_kata_raw.get("status") == "success" else "" }}'
+                  _rcs_hottub_active: >-
+                    {%- set _u = _rcs_hottub_updated_at | as_datetime if _rcs_hottub_updated_at != '' else none -%}
+                    {%- set _ci = _rcs_check_in | as_datetime if _rcs_check_in != '' else none -%}
+                    {{ _u is not none and _ci is not none and _u >= _ci }}
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: '{{ _rcs_hottub_active }}'
+                  sequence:
+                  - action: script.zen_dojotools_taskmaster
+                    continue_on_error: true
+                    data:
+                      mode: task_create
+                      item: "Hot tub recheck after guest stay"
+                      chore: true
+                      area: '{{ _rcs_area }}'
+                      note: "Spa/hot tub activity detected during this stay window — verify chemistry and reset for next guest. {{ _rcs_correlation_tag }}"
+
+              - variables:
+                  _rco_results: "{{ _rco_results + [{'stay_id': _rcs_id, 'area_id': _rcs_area, 'nights': _rcs_nights, 'turnover_chore': _rcs_chore_item, 'hot_tub_recheck_spawned': _rcs_hottub_active}] }}"
+
+          # ── mark reservation checked out ───────────────────────────────
+          - action: script.zen_sutra_twenty
+            continue_on_error: true
+            data:
+              action_type: patch
+              endpoint: 'reservations/{{ item_id_norm }}'
+              payload: '{{ {"status": "CHECKED_OUT"} | tojson }}'
+
+          - variables:
+              final_response:
+                status: success
+                tool: '{{ tool_name }}'
+                version: '{{ tool_version }}'
+                case: reservation_checkout
+                result:
+                  id: '{{ item_id_norm }}'
+                  rooms_checked_out: '{{ _rco_results }}'
+                  count: '{{ _rco_results | length }}'
+                error: none
+          - stop: return
+            response_variable: final_response
+
+    # ── case: reservation_cancel ──────────────────────────────────────────────────
+    # Cancels the booking-level record only — does NOT touch child stays'
+    # own status (documented gap, matches stay_delete's own accepted
+    # not-touching-spawned-chores precedent; the new stay:/reservation:
+    # correlation tags land in Taskmaster's free-text note field, not a
+    # queryable structured field, so automated chore cleanup here would need
+    # new full-text-scan infrastructure disproportionate to the ask).
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "reservation_cancel" }}'
+        sequence:
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ item_id_norm == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_cancel
+                  error: item_id required (the reservation UUID).
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_sutra_twenty
+          response_variable: _rcn_get_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'reservations/{{ item_id_norm }}'
+        - variables:
+            _rcn_body: >-
+              {%- if _rcn_get_adv is mapping and "result" in _rcn_get_adv and "content" in _rcn_get_adv["result"] -%}
+                {{ _rcn_get_adv["result"]["content"] }}
+              {%- else -%}{{ {} }}{%- endif -%}
+            _rcn_resv: '{{ _rcn_body.get("data", {}).get("reservation", _rcn_body.get("data", {})) if _rcn_body is mapping else {} }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _rcn_resv is not mapping or _rcn_resv.get("id","") == "" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_cancel
+                  error: "reservation not found: {{ item_id_norm }}"
+            - stop: return
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ _rcn_resv.get("status","") == "CHECKED_OUT" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  case: reservation_cancel
+                  error: "cannot cancel a reservation that is already CHECKED_OUT — release/manage the individual stays instead."
+            - stop: return
+              response_variable: final_response
+          - conditions:
+            - condition: template
+              value_template: '{{ _rcn_resv.get("status","") == "CANCELLED" }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: success
+                  tool: '{{ tool_name }}'
+                  case: reservation_cancel
+                  result:
+                    id: '{{ item_id_norm }}'
+                    already_cancelled: true
+                  error: none
+            - stop: return
+              response_variable: final_response
+          default:
+          - action: script.zen_sutra_twenty
+            response_variable: _rcn_patch_adv
+            continue_on_error: true
+            data:
+              action_type: patch
+              endpoint: 'reservations/{{ item_id_norm }}'
+              payload: '{{ {"status": "CANCELLED"} | tojson }}'
+          - variables:
+              _rcn_ok: '{{ _rcn_patch_adv is mapping and _rcn_patch_adv.get("status") == "success" }}'
+              final_response:
+                status: '{{ "success" if _rcn_ok else "error" }}'
+                tool: '{{ tool_name }}'
+                case: reservation_cancel
+                result:
+                  id: '{{ item_id_norm }}'
+                  note: "Reservation cancelled. Member stay records were NOT touched — release/delete them individually if needed."
+                error: '{{ none if _rcn_ok else "cancel failed — HTTP " ~ _rcn_patch_adv.get("http_status","?") if _rcn_patch_adv is mapping else "broker error" }}'
           - stop: return
             response_variable: final_response
 
@@ -3132,8 +4417,9 @@ script:
               {{ ns.out }}
         - variables:
             _apc_overlaps: >-
-              {%- set _new_start = start_date_norm | as_datetime | as_timestamp -%}
-              {%- set _new_end_raw = (end_date_norm | as_datetime | as_timestamp) if end_date_norm != "" else none -%}
+              {%- set _utc_tz = utcnow().tzinfo -%}
+              {%- set _new_start = (start_date_norm | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp -%}
+              {%- set _new_end_raw = ((end_date_norm | as_datetime).replace(tzinfo=_utc_tz) | as_timestamp) if end_date_norm != "" else none -%}
               {%- set _new_end_eff = _new_end_raw if _new_end_raw is not none else _new_start -%}
               {%- set ns = namespace(out=[]) -%}
               {%- for a in _apc_overlap_candidates if a is mapping -%}
@@ -3923,14 +5209,14 @@ script:
         sequence:
         # NOTE: this case cannot self-call `action: script.zen_dojotools_rolodex` for
         # stays_list/contact_get — a script calling itself recursively does not reliably
-        # return a response_variable here (confirmed live: came back {} every time, no error
-        # surfaced despite continue_on_error). Both lookups are inlined below instead, reusing
+        # return a response_variable (comes back {} every time, no error surfaced despite
+        # continue_on_error). Both lookups are inlined below instead, reusing
         # the same underlying scripts (zen_dojotools_calendar, zen_sutra_twenty) that
         # stays_list/contact_get themselves call — those are separate script entities, calling
-        # them directly is not recursive and works fine (proven throughout this file).
+        # them directly is not recursive and works fine.
         # _asp_now is NOT precomputed via a `variables:` step — a raw datetime object gets
-        # stringified when it round-trips through one (confirmed live, same mechanism as the
-        # guestPrefs write bug earlier this session). Recomputed inline at the comparison site
+        # stringified when it round-trips through one, same mechanism as the guestPrefs write
+        # bug above. Recomputed inline at the comparison site
         # below instead, staying within one Jinja template's native evaluation throughout.
         - variables:
             _asp_window_start: "{{ (now() - timedelta(days=1)).strftime('%Y-%m-%d') if start_date_norm == '' else (as_datetime(start_date_norm) - timedelta(days=1)).strftime('%Y-%m-%d') }}"
@@ -5306,6 +6592,11 @@ script:
               {%- set _v = _v.get('value', _v) if _v is mapping else {} -%}
               {%- set _v = (_v | from_json) if _v is string and _v | trim != '' else _v -%}
               {{ _v.get('servicerequest_object_id', '') if _v is mapping else '' }}
+            _ps_reservation_id_cached: >-
+              {%- set _v = _ps_crm_schema_cached -%}
+              {%- set _v = _v.get('value', _v) if _v is mapping else {} -%}
+              {%- set _v = (_v | from_json) if _v is string and _v | trim != '' else _v -%}
+              {{ _v.get('reservation_object_id', '') if _v is mapping else '' }}
 
         # Step 1: query metadata objects (filtered to person + company)
         - action: script.zen_sutra_twenty
@@ -5511,6 +6802,74 @@ script:
         - variables:
             _ps_appt_id: "{{ _ps_appt_id_existing if _ps_appt_id_existing != '' else _ps_appt_id_created }}"
 
+        # Step 2c.5: existence check + create for the "reservation" custom
+        # object — thin booking-level grouping/lifecycle wrapper over "stay".
+        # Deliberately NOT the source of truth for room/dates/turnover-state —
+        # stay keeps that role. Membership is stay.reservationId pointing up
+        # (soft TEXT reference, same convention as everywhere else), queried
+        # via client-side filter, not a reverse-lookup array field.
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_reservation_id_cached == "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_resv_obj_raw
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'query { fields(filter: {isCustom: {is: true}}) { edges { node { id name objectMetadataId } } } }' -%}
+                  {{ {'query': q} | tojson }}
+            - variables:
+                _ps_resv_id_existing: >-
+                  {%- set _r = _ps_resv_obj_raw if _ps_resv_obj_raw is mapping else {} -%}
+                  {%- set _c = _r.get('result', {}).get('content', {}) if _r.get('status') == 'success' else {} -%}
+                  {%- set _c = _c if _c is mapping else {} -%}
+                  {%- set _d = _c.get('data') -%}
+                  {%- set _d = _d if _d is mapping else {} -%}
+                  {%- set _edges = _d.get('fields', {}).get('edges', []) if _d.get('fields') is mapping else [] -%}
+                  {%- set _ns = namespace(id='') -%}
+                  {%- for e in _edges -%}
+                    {%- if e is mapping and e.get('node', {}).get('name','') == 'partyLabel' -%}
+                      {%- set _ns.id = e.get('node', {}).get('objectMetadataId', '') -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ _ns.id }}
+          default:
+          - variables:
+              _ps_resv_id_existing: "{{ _ps_reservation_id_cached }}"
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_resv_id_existing == "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_resv_obj
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneObject($input: CreateOneObjectInput!) { createOneObject(input: $input) { id nameSingular namePlural } }' -%}
+                  {%- set v = {'input': {'object': {'nameSingular': 'reservation', 'namePlural': 'reservations', 'labelSingular': 'Reservation', 'labelPlural': 'Reservations', 'icon': 'IconCalendarStats', 'description': 'Multi-room booking lifecycle wrapper (RESERVED/CHECKED_IN/CHECKED_OUT/CANCELLED/NO_SHOW) grouping one or more stay records — ZenOS.'}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_resv_id_created: >-
+                  {%- set _r = _ps_create_resv_obj if _ps_create_resv_obj is mapping else {} -%}
+                  {%- set _c = _r.get('result', {}).get('content', {}) if _r.get('status') == 'success' else {} -%}
+                  {%- set _c = _c if _c is mapping else {} -%}
+                  {%- set _d = _c.get('data') -%}
+                  {%- set _d = _d if _d is mapping else {} -%}
+                  {%- set _o = _d.get('createOneObject') -%}
+                  {%- set _o = _o if _o is mapping else {} -%}
+                  {{ _o.get('id', '') }}
+          default:
+          - variables:
+              _ps_resv_id_created: ''
+        - variables:
+            _ps_resv_id: "{{ _ps_resv_id_existing if _ps_resv_id_existing != '' else _ps_resv_id_created }}"
+
         # Step 2d: existence check + create for the "serviceRequest" custom
         # object. roomAreaId is nullable here (unlike stay/appointment) — a
         # guest service request isn't always tied to one room (WiFi, front
@@ -5637,6 +6996,21 @@ script:
                   {%- set q = 'query { fields(filter: {objectMetadataId: {eq: "' ~ _ps_svc_id ~ '"}, isCustom: {is: true}}) { edges { node { id name type isCustom } } } }' -%}
                   {{ {'query': q} | tojson }}
 
+        # Step 3e: check existing fields on reservation
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_resv_id != "" }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_rf_raw
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'query { fields(filter: {objectMetadataId: {eq: "' ~ _ps_resv_id ~ '"}, isCustom: {is: true}}) { edges { node { id name type isCustom } } } }' -%}
+                  {{ {'query': q} | tojson }}
+
         # Step 4: check existing fields on company
         - choose:
           - conditions:
@@ -5662,6 +7036,11 @@ script:
             _ps_svc_fields: >-
               {%- if _ps_svcf_raw is defined and _ps_svcf_raw is mapping -%}
                 {%- set body = _ps_svcf_raw.get('result', {}).get('content', {}) -%}
+                {{ body.get('data', {}).get('fields', {}).get('edges', []) if body is mapping else [] }}
+              {%- else -%}{{ [] }}{%- endif -%}
+            _ps_reservation_fields: >-
+              {%- if _ps_rf_raw is defined and _ps_rf_raw is mapping -%}
+                {%- set body = _ps_rf_raw.get('result', {}).get('content', {}) -%}
                 {{ body.get('data', {}).get('fields', {}).get('edges', []) if body is mapping else [] }}
               {%- else -%}{{ [] }}{%- endif -%}
             _ps_stay_fields: >-
@@ -5728,6 +7107,12 @@ script:
             _ps_svc_has: >-
               {%- set _ns = namespace(names=[]) -%}
               {%- for e in _ps_svc_fields -%}
+                {%- if e is mapping -%}{%- set _ns.names = _ns.names + [e.get('node', {}).get('name','')] -%}{%- endif -%}
+              {%- endfor -%}
+              {{ _ns.names }}
+            _ps_reservation_has: >-
+              {%- set _ns = namespace(names=[]) -%}
+              {%- for e in _ps_reservation_fields -%}
                 {%- if e is mapping -%}{%- set _ns.names = _ns.names + [e.get('node', {}).get('name','')] -%}{%- endif -%}
               {%- endfor -%}
               {{ _ns.names }}
@@ -6026,6 +7411,58 @@ script:
         - choose:
           - conditions:
             - condition: template
+              value_template: '{{ _ps_stay_id != "" and "prepSpawned" not in _ps_stay_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_s6b
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_stay_id, 'type': 'BOOLEAN', 'name': 'prepSpawned', 'label': 'Prep Spawned', 'description': 'Idempotency flag — has the pre-arrival prep chore dispatch already fired for this stay.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_s6b_raw: "{{ _ps_create_s6b | string }}"
+                _ps_s6b_ok: "{{ _ps_create_s6b is mapping and _ps_create_s6b.get('status') == 'success' and 'errors' not in _ps_s6b_raw }}"
+                _ps_s6b_conflict: "{{ 'already used by another field' in _ps_s6b_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['stay.prepSpawned'] if _ps_s6b_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['stay.prepSpawned'] if (not _ps_s6b_ok and not _ps_s6b_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['stay.prepSpawned'] if _ps_s6b_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["stay.prepSpawned"] if _ps_stay_id != "" else []) }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_stay_id != "" and "checkoutNudgeSpawned" not in _ps_stay_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_s6c
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_stay_id, 'type': 'BOOLEAN', 'name': 'checkoutNudgeSpawned', 'label': 'Checkout Nudge Spawned', 'description': 'Idempotency flag — has the checkout-approaching reminder already fired for this stay.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_s6c_raw: "{{ _ps_create_s6c | string }}"
+                _ps_s6c_ok: "{{ _ps_create_s6c is mapping and _ps_create_s6c.get('status') == 'success' and 'errors' not in _ps_s6c_raw }}"
+                _ps_s6c_conflict: "{{ 'already used by another field' in _ps_s6c_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['stay.checkoutNudgeSpawned'] if _ps_s6c_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['stay.checkoutNudgeSpawned'] if (not _ps_s6c_ok and not _ps_s6c_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['stay.checkoutNudgeSpawned'] if _ps_s6c_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["stay.checkoutNudgeSpawned"] if _ps_stay_id != "" else []) }}'
+
+        - choose:
+          - conditions:
+            - condition: template
               value_template: '{{ _ps_stay_id != "" and "notes" not in _ps_stay_has }}'
             sequence:
             - action: script.zen_sutra_twenty
@@ -6048,6 +7485,58 @@ script:
           default:
           - variables:
               _ps_skipped: '{{ _ps_skipped + (["stay.notes"] if _ps_stay_id != "" else []) }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_stay_id != "" and "reservationId" not in _ps_stay_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_s8
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_stay_id, 'type': 'TEXT', 'name': 'reservationId', 'label': 'Reservation ID', 'description': 'Reservation UUID this stay belongs to — soft reference; null for solo-room stays created directly via stay_create.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_s8_raw: "{{ _ps_create_s8 | string }}"
+                _ps_s8_ok: "{{ _ps_create_s8 is mapping and _ps_create_s8.get('status') == 'success' and 'errors' not in _ps_s8_raw }}"
+                _ps_s8_conflict: "{{ 'already used by another field' in _ps_s8_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['stay.reservationId'] if _ps_s8_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['stay.reservationId'] if (not _ps_s8_ok and not _ps_s8_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['stay.reservationId'] if _ps_s8_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["stay.reservationId"] if _ps_stay_id != "" else []) }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_stay_id != "" and "occupantNames" not in _ps_stay_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_s9
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_stay_id, 'type': 'TEXT', 'name': 'occupantNames', 'label': 'Occupant Names', 'description': 'Freeform comma-separated names of all occupants in this room for this stay — household is family/friends, not every occupant needs a Twenty Person contact.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_s9_raw: "{{ _ps_create_s9 | string }}"
+                _ps_s9_ok: "{{ _ps_create_s9 is mapping and _ps_create_s9.get('status') == 'success' and 'errors' not in _ps_s9_raw }}"
+                _ps_s9_conflict: "{{ 'already used by another field' in _ps_s9_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['stay.occupantNames'] if _ps_s9_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['stay.occupantNames'] if (not _ps_s9_ok and not _ps_s9_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['stay.occupantNames'] if _ps_s9_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["stay.occupantNames"] if _ps_stay_id != "" else []) }}'
 
         # Step 6l-6s: create appointment object fields if missing. Same
         # conflict-aware success detection as the stay fields above — a real
@@ -6470,6 +7959,112 @@ script:
           - variables:
               _ps_skipped: '{{ _ps_skipped + (["serviceRequest.resolutionNotes"] if _ps_svc_id != "" else []) }}'
 
+        # Step 6t-6w: create reservation object fields if missing. Same
+        # conflict-aware success detection as everywhere else above.
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_resv_id != "" and "primaryGuestContactId" not in _ps_reservation_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_r1
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_resv_id, 'type': 'TEXT', 'name': 'primaryGuestContactId', 'label': 'Primary Guest Contact ID', 'description': 'Twenty Person UUID for the primary/booking contact — soft reference.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_r1_raw: "{{ _ps_create_r1 | string }}"
+                _ps_r1_ok: "{{ _ps_create_r1 is mapping and _ps_create_r1.get('status') == 'success' and 'errors' not in _ps_r1_raw }}"
+                _ps_r1_conflict: "{{ 'already used by another field' in _ps_r1_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['reservation.primaryGuestContactId'] if _ps_r1_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['reservation.primaryGuestContactId'] if (not _ps_r1_ok and not _ps_r1_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['reservation.primaryGuestContactId'] if _ps_r1_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["reservation.primaryGuestContactId"] if _ps_resv_id != "" else []) }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_resv_id != "" and "partyLabel" not in _ps_reservation_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_r2
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_resv_id, 'type': 'TEXT', 'name': 'partyLabel', 'label': 'Party Label', 'description': 'Freeform label for the party, e.g. \'Smith family — July\'.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_r2_raw: "{{ _ps_create_r2 | string }}"
+                _ps_r2_ok: "{{ _ps_create_r2 is mapping and _ps_create_r2.get('status') == 'success' and 'errors' not in _ps_r2_raw }}"
+                _ps_r2_conflict: "{{ 'already used by another field' in _ps_r2_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['reservation.partyLabel'] if _ps_r2_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['reservation.partyLabel'] if (not _ps_r2_ok and not _ps_r2_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['reservation.partyLabel'] if _ps_r2_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["reservation.partyLabel"] if _ps_resv_id != "" else []) }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_resv_id != "" and "status" not in _ps_reservation_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_r3
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_resv_id, 'type': 'SELECT', 'name': 'status', 'label': 'Status', 'description': 'Reservation lifecycle state.', 'options': [{'value': 'RESERVED', 'label': 'Reserved', 'color': 'blue', 'position': 0}, {'value': 'CHECKED_IN', 'label': 'Checked In', 'color': 'green', 'position': 1}, {'value': 'CHECKED_OUT', 'label': 'Checked Out', 'color': 'gray', 'position': 2}, {'value': 'CANCELLED', 'label': 'Cancelled', 'color': 'red', 'position': 3}, {'value': 'NO_SHOW', 'label': 'No Show', 'color': 'orange', 'position': 4}]}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_r3_raw: "{{ _ps_create_r3 | string }}"
+                _ps_r3_ok: "{{ _ps_create_r3 is mapping and _ps_create_r3.get('status') == 'success' and 'errors' not in _ps_r3_raw }}"
+                _ps_r3_conflict: "{{ 'already used by another field' in _ps_r3_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['reservation.status'] if _ps_r3_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['reservation.status'] if (not _ps_r3_ok and not _ps_r3_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['reservation.status'] if _ps_r3_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["reservation.status"] if _ps_resv_id != "" else []) }}'
+
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ps_resv_id != "" and "notes" not in _ps_reservation_has }}'
+            sequence:
+            - action: script.zen_sutra_twenty
+              response_variable: _ps_create_r4
+              continue_on_error: true
+              data:
+                action_type: meta
+                payload: >-
+                  {%- set q = 'mutation CreateOneField($input: CreateOneFieldMetadataInput!) { createOneField(input: $input) { id name label type } }' -%}
+                  {%- set v = {'input': {'field': {'objectMetadataId': _ps_resv_id, 'type': 'TEXT', 'name': 'notes', 'label': 'Notes', 'description': 'Free text notes on the reservation.', 'isNullable': true}}} -%}
+                  {{ {'query': q, 'variables': v} | tojson }}
+            - variables:
+                _ps_r4_raw: "{{ _ps_create_r4 | string }}"
+                _ps_r4_ok: "{{ _ps_create_r4 is mapping and _ps_create_r4.get('status') == 'success' and 'errors' not in _ps_r4_raw }}"
+                _ps_r4_conflict: "{{ 'already used by another field' in _ps_r4_raw }}"
+            - variables:
+                _ps_created: "{{ _ps_created + ['reservation.notes'] if _ps_r4_ok else _ps_created }}"
+                _ps_failed: "{{ _ps_failed + ['reservation.notes'] if (not _ps_r4_ok and not _ps_r4_conflict) else _ps_failed }}"
+                _ps_skipped: "{{ _ps_skipped + ['reservation.notes'] if _ps_r4_conflict else _ps_skipped }}"
+          default:
+          - variables:
+              _ps_skipped: '{{ _ps_skipped + (["reservation.notes"] if _ps_resv_id != "" else []) }}'
+
         # Step 7: stamp crm_schema to household cabinet
         - choose:
           - conditions:
@@ -6484,7 +8079,7 @@ script:
                 key: crm_schema
                 volume_entity_id:
                   - '{{ _hh_cab_ps }}'
-                value: "{{ {'schema_version': crm_schema_version, 'deployed_at': now().isoformat(), 'field_count': 4, 'stay_object_id': (_ps_stay_id if _ps_stay_id != '' else _ps_stay_id_cached), 'stay_field_count': 7, 'appointment_object_id': (_ps_appt_id if _ps_appt_id != '' else _ps_appt_id_cached), 'appointment_field_count': 8, 'servicerequest_object_id': (_ps_svc_id if _ps_svc_id != '' else _ps_svc_id_cached), 'servicerequest_field_count': 8} | tojson }}"
+                value: "{{ {'schema_version': crm_schema_version, 'deployed_at': now().isoformat(), 'field_count': 5, 'stay_object_id': (_ps_stay_id if _ps_stay_id != '' else _ps_stay_id_cached), 'stay_field_count': 9, 'appointment_object_id': (_ps_appt_id if _ps_appt_id != '' else _ps_appt_id_cached), 'appointment_field_count': 8, 'servicerequest_object_id': (_ps_svc_id if _ps_svc_id != '' else _ps_svc_id_cached), 'servicerequest_field_count': 8, 'reservation_object_id': (_ps_resv_id if _ps_resv_id != '' else _ps_reservation_id_cached), 'reservation_field_count': 4} | tojson }}"
 
         - variables:
             final_response:

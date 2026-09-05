@@ -261,7 +261,7 @@ Gets everything labeled `hot_tub_manager` OR `weather`, then strips the camera i
 
 ## 11. The Hint — What If History Fed Into Inspect?
 
-*Nathan's thinking out loud here. No promises. But the plumbing is interesting.*
+*Thinking out loud here. No promises. But the plumbing is interesting.*
 
 Inspect currently returns a snapshot — what IS, right now. HA's history API already speaks
 the same entity language. What if you could tack a history feed onto the index pipe, so

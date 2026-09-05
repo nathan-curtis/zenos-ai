@@ -1,0 +1,160 @@
+{#- zen_target_resolve.jinja — Version: 1.0.0 -#}
+
+{#- <editor-fold desc="Docs" defaultstate="collapsed"> -#}
+{#- <editor-fold desc="API" defaultstate="collapsed"> -#}
+
+{#
+-----------------------
+ZEN TARGET RESOLVE API
+-----------------------
+Common core for DojoTools setter/getter target resolution. Every entity/label/room resolution in this codebase was
+hand-rolled per tool before this file existed (zen_dojotools_covers,
+zen_dojotools_locks) -- this is the first shared implementation,
+extracted from those two and fixed along the way (see note on
+resolve_room_entities below). Import once per tool:
+  {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+All macros return JSON strings (Jinja macro convention already used by
+zenos_cabinets.jinja) -- callers do | from_json on the result.
+
+resolve_room_entities(room, domain_pattern)
+  Every entity in a room, RM-aware. Returns the UNION of native HA area
+  assignment (area_entities) AND Room Manager's own label-based room
+  tagging (label_entities) -- covers.yaml/locks.yaml (pre-this-file)
+  only checked area_entities(), which misses any entity that's been
+  manually labeled into a room's group without native area assignment
+  (common for helpers -- a timer or input_select has no physical area,
+  RM's own convention is to label it with the room name instead, see
+  the operators manual Section 6 Step 1: "the room's own label, which
+  should already match the room's Area name"). Fixed here, once, for
+  every tool that adopts this macro instead of re-hand-rolling it.
+  @param room: area name/slug OR a Room Manager room label -- both
+    resolve here, that's the whole point of the union.
+  @param domain_pattern: regex, e.g. 'lock\\.' -- '' means no filter.
+  @returns JSON array of entity_ids, deduped.
+
+resolve_targets(entity_id, room, label, domain_pattern)
+  Unified precedence resolver for the three addressing modes every
+  setter/getter should support: bare entity_id, label, or room.
+  Precedence: entity_id (explicit always wins) > label ∩ room (if BOTH
+  given, narrows to that room) > label alone > room alone (via
+  resolve_room_entities). domain_pattern filters whichever path is used.
+  @returns JSON array of entity_ids.
+
+entity_extended_notes(entity_id, exclude_labels)
+  "Extended instructions from tagging" -- any label on this entity that
+  carries a real, non-empty description (via the native label_description()
+  function) is surfaced as guidance, EXCLUDING purely structural labels
+  (room-name labels, domain-purpose labels like 'lock' or 'ext_lock' --
+  pass those in exclude_labels so they don't drown out genuinely special
+  notes with restating-the-obvious). This is how a household can leave
+  an agent a real instruction ON the entity itself -- e.g. label a lock
+  'requires_physical_confirm' with description "always confirm out loud
+  before unlocking, this is the exterior garage door" -- and have any
+  tool built on this macro surface it automatically, not just the tools
+  that happened to be written with that specific case in mind.
+  @returns JSON array of {label, description} objects, empty if none.
+#}
+{#- </editor-fold> -#}
+{#- </editor-fold> -#}
+
+
+{#-
+@macro: resolve_room_entities
+@desc: RM-aware room resolution -- union of area_entities() and
+  label_entities(), not area_entities() alone. See API doc above for why.
+@param: room (string) - area name/slug or RM room label.
+@param: domain_pattern (string) - regex filter, e.g. 'lock\\.'. '' = no filter.
+@returns: JSON Array - deduped entity_ids.
+@usage: {{ TARGET.resolve_room_entities('garage', 'lock\\.') | from_json }}
+-#}
+{%- macro resolve_room_entities(room, domain_pattern='') -%}
+  {%- set _by_area = area_entities(room) | list -%}
+  {%- set _by_label = label_entities(room) | list -%}
+  {%- set _all = (_by_area + _by_label) | unique | list -%}
+  {%- set _filtered = (_all | select('match', domain_pattern) | list) if domain_pattern != '' else _all -%}
+  {{- _filtered | to_json(pretty_print=true) -}}
+{%- endmacro -%}
+
+{#-
+@macro: resolve_targets
+@desc: Unified entity/label/room target resolver. Precedence: entity_id
+  > label(+room if both given) > room alone.
+@param: entity_id (string) - explicit single target, '' = not used.
+@param: room (string) - area name/slug or RM room label, '' = not used.
+@param: label (string) - HA label id, '' = not used.
+@param: domain_pattern (string) - regex filter applied to label/room paths.
+@returns: JSON Array - entity_ids matching the highest-precedence input given.
+@usage: {{ TARGET.resolve_targets('', 'garage', '', 'lock\\.') | from_json }}
+-#}
+{%- macro resolve_targets(entity_id='', room='', label='', domain_pattern='') -%}
+  {%- if entity_id != '' -%}
+    {{- [entity_id] | to_json(pretty_print=true) -}}
+  {%- elif label != '' and room != '' -%}
+    {%- set _room_ents = resolve_room_entities(room, domain_pattern) | from_json -%}
+    {%- set _label_ents = label_entities(label) | list -%}
+    {{- (_room_ents | select('in', _label_ents) | list) | to_json(pretty_print=true) -}}
+  {%- elif label != '' -%}
+    {%- set _label_ents = label_entities(label) | list -%}
+    {%- set _filtered = (_label_ents | select('match', domain_pattern) | list) if domain_pattern != '' else _label_ents -%}
+    {{- _filtered | to_json(pretty_print=true) -}}
+  {%- elif room != '' -%}
+    {{- resolve_room_entities(room, domain_pattern) -}}
+  {%- else -%}
+    {{- [] | to_json(pretty_print=true) -}}
+  {%- endif -%}
+{%- endmacro -%}
+
+{#-
+@macro: entity_extended_notes
+@desc: Surfaces non-empty label descriptions on an entity, excluding
+  structural labels the caller already knows about (room name, domain
+  purpose label) so genuinely special instructions aren't buried.
+@param: entity_id (string) - the entity to inspect.
+@param: exclude_labels (list) - label ids to skip even if they have a
+  description (pass the room label and the domain-purpose label(s) the
+  calling tool already understands).
+@returns: JSON Array of {label, description} objects, [] if none.
+@usage: {{ TARGET.entity_extended_notes('lock.garage_entry_door', ['garage', 'ext_lock']) | from_json }}
+-#}
+{%- macro entity_extended_notes(entity_id, exclude_labels=[]) -%}
+  {%- set ns = namespace(items=[]) -%}
+  {%- for l in labels(entity_id) if l not in exclude_labels -%}
+    {%- set _desc = label_description(l) | default('', true) | trim -%}
+    {%- if _desc != '' -%}
+      {%- set ns.items = ns.items + [{'label': l, 'description': _desc}] -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{- ns.items | to_json(pretty_print=true) -}}
+{%- endmacro -%}
+
+{#-
+@macro: discover_targets
+@desc: The full "guts" of a discover mode in one call -- resolve_targets
+  + per-entity state/name + entity_extended_notes, so a tool's discover
+  branch doesn't hand-roll the same for-loop every other setter/getter
+  would otherwise duplicate (every DojoTools tool adopting
+  this core should call THIS, not re-derive the loop). Callers still own
+  their own domain_pattern (their entity domain) and exclude_labels
+  (their own room label + domain-purpose label(s)).
+@param: entity_id, room, label, domain_pattern - same as resolve_targets.
+@param: exclude_labels (list) - passed straight through to
+  entity_extended_notes per entity (typically [room, <domain label>, 'dojotools']).
+@returns: JSON Array of {entity_id, friendly_name, state, extended_notes}.
+@usage: {{ TARGET.discover_targets('', room, label, 'lock\\.', [room, 'ext_lock', 'dojotools']) | from_json }}
+-#}
+{%- macro discover_targets(entity_id='', room='', label='', domain_pattern='', exclude_labels=[]) -%}
+  {%- set _raw = resolve_targets(entity_id, room, label, domain_pattern) -%}
+  {%- set _list = (_raw | from_json) if _raw is string else _raw -%}
+  {%- set ns = namespace(items=[]) -%}
+  {%- for e in _list -%}
+    {%- set _notes_raw = entity_extended_notes(e, exclude_labels) -%}
+    {%- set _notes = (_notes_raw | from_json) if _notes_raw is string else _notes_raw -%}
+    {%- set ns.items = ns.items + [{
+      'entity_id': e,
+      'friendly_name': state_attr(e, 'friendly_name') | default(e, true),
+      'state': states(e),
+      'extended_notes': _notes
+    }] -%}
+  {%- endfor -%}
+  {{- ns.items | to_json(pretty_print=true) -}}
+{%- endmacro -%}

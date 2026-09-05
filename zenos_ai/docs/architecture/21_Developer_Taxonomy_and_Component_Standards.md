@@ -1,7 +1,7 @@
 # ZenOS-AI Developer Taxonomy
 
 **Status:** Draft architecture standard
-**Source baseline:** ZenOS-AI `feat/2026.8.0` (`Chef`)
+**Source baseline:** ZenOS-AI `feat/2026.9.0`
 **Audience:** ZenOS-AI core developers, plugin authors, integration maintainers, and reviewers
 
 ## 1. Purpose

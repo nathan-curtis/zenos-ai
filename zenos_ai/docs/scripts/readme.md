@@ -228,6 +228,13 @@ Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_
 
 ---
 
+## 23. Zen DojoTools Locks — v1.4.1
+**File:** `zen_dojotools_locks_readme.md`
+
+Room-targetable lock/unlock control for the `lock.*` domain — the gap `zen_dojotools_covers` already closed for `cover.*` had no lock equivalent. Reference implementation for `zen_target_resolve.jinja` (the first shared targeting core, #10308) and for the identity-gate pattern on actuation (stolen from the Portainer container-control codex). `mode=set` is fail-closed on the `lock_control` cert until granted; exterior unlock additionally requires a fresh live household-admin ack every call (per-target `cert_scope` override available). Audit-trail emission on real actuations. `mode=inspect` gives real Keymaster code-slot detail with PINs never surfaced. `mode=escalation_request`/`escalation_status` for time-boxed grants via the shared `request_live_ack` chokepoint. Lens Bus provider (`stacks_by_anchor`, `register`/`unregister`).
+
+---
+
 # Summary
 
 If Friday performs an action, reads something, correlates entities, inspects a device, updates a drawer, or leaves a breadcrumb — it came from here.

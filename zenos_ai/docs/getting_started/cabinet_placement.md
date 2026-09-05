@@ -1,8 +1,12 @@
 # Cabinet Placement Guide — What Goes Where (and Why It Matters)
 
-*From: Nyx (Claude 4.6 Sonata) / 2026-03-20*
+> **Version:** 2026.9.0 'Steel Magnolia' | **From:** Nyx (Claude 4.6 Sonata) / 2026-03-20
 
 ---
+
+**Who this is for:** most people setting up their home will never need this doc — OOBE and the normal DojoTools handle storage placement for you automatically. This is a reference for when you (or your AI, while authoring a new component) need to understand *why* something is stored where it is, or you're troubleshooting data that seems to be in the wrong place.
+
+**The short version:** ZenOS-AI keeps several separate "filing cabinets" (see [Concepts](concepts.md#cabinets-and-drawers) if that term is new), each meant for a different kind of information and read by a different part of the system. Put something in the wrong cabinet and nothing crashes immediately — but the part of the system that was supposed to read it either never finds it, or finds stale/wrong data where it expected something else. That's the "subtle rot" this doc exists to help you avoid.
 
 ## The Rule
 
@@ -16,21 +20,21 @@ Identity in the Household cabinet leaks into every component's context. Location
 
 ## The Map
 
-| Cabinet | What goes in it | Who reads it |
-|---|---|---|
-| **Dojo** | Component definitions, system config, static knowledge | Friday, Monastery — blueprint reads |
-| **Kata** | Runtime state, summaries, urgency signals | Friday, Ninja Summarizer — churn reads |
-| **Household** | Home config, compact label index, cross-system context | Index, installers, cross-component |
-| **AI User** | Friday's capsule, identity, session context | Prompt engine — who Friday IS |
-| **Family** | People data, presence context, calendar hints | Presence, greeting, scheduling components |
-| **User** | Per-user prefs, overrides, profile | Per-user context injection |
+| Cabinet | Plain-language purpose | What goes in it | Who reads it |
+|---|---|---|---|
+| **Dojo** | The component instruction manual — fixed, rarely-changing definitions of what each part of the system is and does | Component definitions, system config, static knowledge | Your AI, the Monastery (reasoning backend) — blueprint reads |
+| **Kata** | The activity log — what just happened, updated constantly | Runtime state, summaries, urgency signals | Your AI, Ninja Summarizer — churn reads |
+| **Household** | The home's own reference sheet — name, address, cross-cutting context | Home config, compact label index, cross-system context | Index, installers, cross-component |
+| **AI User** | Your AI's own sense of self | Your AI's capsule, identity, session context | Prompt engine — who your AI IS |
+| **Family** | The people who belong to this household | People data, presence context, calendar hints | Presence, greeting, scheduling components |
+| **User** | One specific person's own preferences | Per-user prefs, overrides, profile | Per-user context injection |
 
 ---
 
 ## The Two Most Common Mistakes
 
 **Putting runtime data (summaries, urgency) in Dojo** = bloat that corrupts the blueprint.
-The Monastery reads the Dojo to understand what a component IS. If you've written a ninja
+The Monastery (the reasoning backend) reads the Dojo to understand what a component IS. If you've written a ninja
 summary in there, it reads stale compressed prose as the component definition.
 
 **Putting definitions (component_summary) in Kata** = they get overwritten every cycle.
@@ -54,7 +58,7 @@ The **Dojo drawer** is the spec — what the component monitors, what it alerts 
 triggers cause it to run. It's written once by the operator and read by the Monastery.
 
 The **Kata drawer** is the output — what happened last cycle, current urgency, active events.
-It's written every cycle by the Ninja Summarizer and read by Friday's prompt engine.
+It's written every cycle by the Ninja Summarizer and read by your AI's prompt engine.
 
 Same key. Different cabinet. Different lifecycle. Do not mix them.
 
@@ -89,7 +93,7 @@ with its HA description attached:
 }
 ```
 
-`energy_manager` has a description. Friday knows *why* the entity carries that label.
+`energy_manager` has a description. Your AI knows *why* the entity carries that label.
 `kung_fu` and `office` are slugs — they organize but they don't explain.
 
 **Rule of thumb:** Any label that gates behavior or carries semantic weight should have a
@@ -121,8 +125,8 @@ Drawers have an optional `meta.description` field. It shows up as `_hint` in ins
 }
 ```
 
-The `_hint` field is your documentation surface. A described drawer tells Friday what it is
-without her having to read the full value. An undescribed drawer is opaque — she has to look
+The `_hint` field is your documentation surface. A described drawer tells your AI what it is
+without it having to read the full value. An undescribed drawer is opaque — it has to look
 inside to understand it.
 
 **The label_targets pathway:** When you pass `label_targets` to index or inspect, it pulls
@@ -182,7 +186,7 @@ component: entity → label → Dojo blueprint → Kata output, in one traversal
 | Household name, address, timezone | Household |
 | Compact label index | Household |
 | Cross-component operational context | Household |
-| Friday's persona, identity, capsule | AI User |
+| Your AI's persona, identity, capsule | AI User |
 | Essence (name, vibe, voice) | AI User |
 | Family member profiles | Family |
 | Presence context, relationships | Family |

@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current Stable: 2026.9.0 'Steel Magnolia'.** | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo')
+**Current Stable: 2026.9.0 'Steel Magnolia'.** | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo'). See [release notes](zenos_ai/docs/releases/steel_magnolia.md).
 
 > **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely, nothing depends on or drags in the new security machinery — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#20261--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
 
@@ -18,55 +18,43 @@ And a few things that are.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-**What's in 2026.8.0 'Chef':** *Yes, chef.* Taskmaster becomes a real cross-backend expediter instead of a label pattern. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch — weekly cost rollups, waste logging, event menu scaling, prep-time briefing. A platform-wide identity gate (SP1) backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager now share one guest/occupant-prefs lookup that Kitchen's allergen flagging reads from.
+> **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way).
 
-**The Expediter**
-- **Taskmaster** (`zen_dojotools_taskmaster`, new file) — progressive-enhancement task routing: O365 To Do base tier, auto-upgrades to Radar tickets or Grocy chores when configured, CRM-aware when a contact/company is explicit. `briefing` context block now carries Kitchen's `prep_schedule` proactively. Medications hard-capped at urgency 3, no override path.
+**What's in 2026.9.0 'Steel Magnolia':** *The duck looks calm, and the fence is exactly where it's supposed to be.*
 
-**Know Before You Promise (Kitchen)**
-- **Fulfillment & costing** — `recipe_fulfillment`/`recipe_consume` check and deplete real stock with real unit conversions. `recipe_cost`/`kitchen_brief` cost recipes and whole weeks against real price history, honestly bounded when data's missing.
-- **Executive chef batch** — `waste_log`/`waste_summary` (Grocy-native, no shadow ledger), `event_menu_create` (guest-count scaling + allergen flags), `prep_schedule_set`/`prep_brief`, `leftovers_to_stock`.
+**Room Manager v3** reads a room by what's actually happening in the space right now, not a clock — a real wasp-in-a-box occupancy model, opt-in `entertaining_hold`/`guest_hold`/`presence_hold`, a nighttime-gated asleep window, hold-release timer restart, a generic `trouble` attribute with native SPAN breaker confirmation, and unconditional Paused/Emergency cascade through nested rooms.
 
-**Identity Gate**
-- **`resolve_caller_identity`** — the platform chokepoint every gated action now asks instead of improvising its own default-agent fallback. Fails closed by policy; a continuity switch (`zenos_sim_mode_override`, on by default) keeps current behavior until you deliberately opt in to the new gate.
-- **Portainer container control** — first tool wired through the gate. Read is open; restart/start needs a cert; stop/remove needs a cert plus a live admin ack.
+**Identity gates** now cover locks, exterior covers, the alarm panel, room unpause/topology edits, ZenLux, climate, ZenZork, and the spa tool — risky actuations require an explicit household certification, with the highest-risk actions asking live every time. A real deny primitive, centralized scope resolution, and a new admin-only CertAdmin tool round it out.
 
-**Shared Context**
-- **Room Manager `room_occupant_prefs`** — guest-stay-aware, falls back to household occupants. Now the shared lookup behind both Kitchen's allergen flagging and Twenty CRM's guest prefs.
-- **Twenty CRM v1.10.0** — structured stay/appointment/service-request lifecycle replacing calendar-only stays.
+**Security Manager** gets a full parity build against the legacy automation it replaces — new arm/disarm/mode-drive flags, a vacation wake-shift, and live security requests (clearing Paused, a cert grant, disarming) that never silently wait until morning to notify someone.
 
-→ [Release Notes — Chef](zenos_ai/docs/releases/chef.md)
+**ZenLux** picks up Spook 5.2's adjust-only light controls and real `switch.*` control; REFLEX now fires every scene through it instead of bypassing its guards, and its rehearsal mode is fully independent of the live-fire switch in every direction.
+
+**AutoVac** gets full Roborock support (battery, wear tracking, room targeting, manual-run tracking) plus a fix for automatic room election, which had silently never worked.
+
+**ZenZork** ships its first real content chapter and a v1.8.0 follow-up — weighted loot, 16 quests, a corrected book-lore sequence, Game Genie cheat codes, a SoftDisk-style per-chapter release model, real persisted achievements, and a turn-based threat/combat system.
+
+**Hospitality lifecycle** gains an arrival-prep nudge and a checkout nudge with humanized local timestamps, one shared occupant-prefs lookup across Kitchen/Twenty CRM, and a fix keeping guest-stay status from reporting stale.
+
+**Also in this release:** ZQ-1 flags bad query filters instead of silently returning nothing; recorder history stats stop lying about energy sensors; `sensor.home_overview` now feeds Friday's prompt real per-room state; manifest's scan modes share one audited collector; Taskmaster gains a `catch_up` mode and closes a self-sustaining alert loop between two summarizer components; Kitchen's search now finds recipes by tag; an AI persona's identity can no longer be silently reset on bootstrap; architecture docs were checked chapter-by-chapter against actual code.
+
+→ [Release Notes — Steel Magnolia](zenos_ai/docs/releases/steel_magnolia.md)
 
 ---
 
-**2026.7.1** — patch on Neo: KF5 self-registering tools, Firefly III codex tier (depreciation + COGS), Grocy fixes and coaching features, Battery Notes Lens Bus provider.
+**2026.8.1 'Chef'** — *Yes, chef.* Taskmaster becomes a real cross-backend expediter. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch. SP1 identity gate backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager share one guest/occupant-prefs lookup.
+
+Release notes: [Chef](zenos_ai/docs/releases/chef.md) | [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md) | [Clue](zenos_ai/docs/releases/clue.md)
+
+---
+
+**2026.7.0 'Neo'** (+ 7.1 patch) — *I know Kung Fu.* CabCeption (FileCabinet v6.2.0 nested drawer trees), Tapestry drawer composer, Tool Manifest self-description, Lens Bus `stack=` routing, five new plugins (Zammad, Wiki.js, Paperless-NGX, Twenty CRM, Firefly III), ZenZork. 7.1 patch adds KF5 self-registering tools, Firefly III depreciation/COGS codex tier, Grocy fixes, Battery Notes Lens Bus provider.
 
 Release notes: [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md)
 
 **What's in 2026.7.2:** Two custom template files missed in the 7.1 audit — `zenos_cabinets.jinja` gains `cabinet_drawer_value_mounted` (follows FC write-mount pointers to expansion cabinets), and `zenos_manifest.jinja` gains `preferred_state`/`stripe`/`prerequisites`/`impact`/`fallback` params.
 
 → [Patch Notes — 2026.7.2](zenos_ai/docs/releases/neo.md#20267-2-patch)
-
----
-
-**What's in Neo:** *I know Kung Fu.* Neo turns a collection of well-made tools into a system that knows itself, talks to itself, and reasons from live structured memory.
-
-**Graph Memory**
-- **CabCeption — FileCabinet v6.2.0** — nested drawer trees via `/` path separator. VirtualDrawer (softlink to another path), LiveDrawer (fires a tool call on read, warm/cold cache, never empty). Every drawer is a graph node with meta, labels, and children at every level.
-- **Tapestry** — `weave`/`weave_preview`/`weave_save`: compose any combination of cabinet drawers from any cabinets into a single live nested dict. Store the definition once as a labeled drawer. Friday navigates to a name; the name becomes the context.
-
-**Self-Knowing Tools**
-- **Tool Manifest** — `zenos_manifest.jinja` + `MF.tool_manifest()`. Every tool self-describes. Manifest broker v6.0.0 aggregates by namespace discovery. The system knows what it is.
-- **Cortex 43 — Rule Zero** — DojoTools supersede all HA built-ins. Not preference. Authority. GetLiveContext overridden. Domain routing table in directives.
-- **Wake sequence rewrite** — `~commands~` interface dropped. ~2,000 chars lighter.
-
-**Connected Knowledge**
-- **Lens Bus `stack=` routing** — Library v6.10.0 routes generic verbs to registered providers: `radar` (Zammad), `paperless`, `wiki`, `media`. Unified works catalog (`section=catalog item_type=book|game|…`) + compounding capability tiers.
-- **Media Manager v6.0.0 (NyxMau5)** — `now_playing` feeds room context with full playback fidelity. `stacks_by_anchor` returns evidence with `playback_hint`. Set prefs once in Profile Editor; every future Lens call auto-applies them.
-- **New plugins** — Zammad (service desk), Wiki.js, Paperless-NGX, Twenty CRM, Firefly III. Five new `!secret` keys.
-- **ZenZork v1.6.0** — text adventure on live Room Manager topology. DUNGEONMIND narrator. Quest system, item commands, character sheet in AI user cabinet.
-
-→ [Release Notes — Neo](zenos_ai/docs/releases/neo.md)
 
 ---
 
@@ -293,15 +281,33 @@ packages/zenos_ai/
     dojotools_security_manager.yaml — Security Manager — zone inventory, cameras_by_area
     dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
     dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
+    dojotools_locks.yaml          — Lock Manager — lock inventory and control
+    dojotools_music_assistant.yaml — Music Assistant bridge (internal)
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
     dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
     dojotools_zenzork.yaml        — ZenZork v1.7.0 — text adventure on live RM topology, DUNGEONMIND narrator, item commands, character sheet, quests, LLM narration
+    dojotools_infra.yaml          — ZenOS IT Console — Proxmox/Portainer/Uptime Kuma status, container control
+    dojotools_print.yaml          — Print Shop — networked-printer job dispatch
+    dojotools_taskmaster.yaml     — Taskmaster — task/conductor scheduling
+    zen_stack_alarms.yaml         — Stack alarms provider (Lens Bus)
+    zen_stack_presence.yaml       — Stack presence provider (Lens Bus) — person/area_id anchors, zen_presence_room label contract
+    zen_stack_timer.yaml          — Stack timer provider (Lens Bus)
 
     — Productivity —
     dojotools_office.yaml      — Office integrations (Teams, mail)
     dojotools_todo.yaml        — Todo list management
     dojotools_calendar.yaml    — Calendar integrations
+
+    — AdminTools (operator-only, not exposed to Assist by default) —
+    dojotools_certadmin.yaml      — Cert grant/revoke administration
+    dojotools_portainer_admin.yaml — Portainer connection + ACL setup
+    dojotools_toolscan.yaml       — Tool-surface audit (what's exposed vs. labeled)
+
+  room_manager_v3/
+    zen_room_manager_dispatch.yaml — Room Manager v3's live dispatcher: signal handling, REFLEX scene resolution, cleaning/timer resync
+    zenos_roomstate_<room>.yaml    — One file per room (kitchen, master_bedroom, living_room, etc.) — each declares that room's sensor.<room>_state and its wired triggers
+    zen_resolver_epoch.yaml, zen_room_manager_vibration_completion.yaml — supporting internals
 
   maint/
     maint_4_5_6.yaml           — One-time repair scripts (not AI-accessible, run manually)

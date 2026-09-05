@@ -162,7 +162,7 @@ All future expansions will remain JSON-structured and DojoTools-compliant.
 ---
 
 **Version:** 2.0.1
-**Author:** Veronica (assistant to Nathan Curtis)
+**Author:** Veronica (assistant to the household)
 **License:** MIT
 **Last Updated:** 2025-11-11
 **Related Docs:** [Index System](../library/index_system.md), [Cabinet Spec](../cabinets/cabinet_spec.md), [Zen Summarizer](../zen_summarizer/readme.md)

@@ -1,5 +1,22 @@
 # **14. The Abbot: Scheduling, Task Economy, and Cognitive Load Governance**
 
+**Current implementation status (2026-08-04):** the Abbot maps to two real,
+separate files today — `dojotools_scheduler.yaml` (trigger dispatch,
+`trigger_subscriptions`/`pipeline_tier` shed-at-queue-depth logic — see ch06
+§6.5-6.7 for the corrected, verified description) and `dojotools_dispatcher.yaml`
+(event-driven routing, `dojotool_call`/`dojotool_return`). Verified by grep: none
+of this chapter's task-class vocabulary (`Class A`-`Class F`, weight assignment,
+admission logic, cognitive cooldown/burst control as named here, identity-based
+ACL enforcement by the Abbot) exists anywhere in the scheduler, dispatcher, or
+summarizer code. This entire chapter is design-target/architecture-direction
+material — a real and coherent target, not a description of current behavior.
+Confirmed future direction (stated directly, not inferred from this doc): job
+tagging and evaluation so requests route to the correct inference core with the
+right metadata. Until the task-class/weight-assignment/admission-logic model
+below is actually implemented, treat every claim in this chapter as roadmap, not
+fact — do not cite specific mechanics from this chapter as current system
+behavior without verifying against code first.
+
 The Abbot is the executive scheduler for Friday’s cognitive engine.
 It is the sole authority that decides **when** reasoning occurs, **which reasoning steps execute**, and **how cognitive bandwidth is distributed across the home**.
 

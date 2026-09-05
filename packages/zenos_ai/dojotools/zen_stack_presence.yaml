@@ -1,0 +1,490 @@
+###############################################################################
+# zen_stack_presence v1.1.0
+# High-Confidence Presence Lens Provider — ZenOS Lens Bus integration.
+# Consume person anchors (→ presence_evidence: where is this person) OR
+# area_id anchors (→ presence_evidence: who's in this room, 0/1/many
+# entries per room), sourced entirely from the zen_presence_room label
+# contract: any sensor with that label, state=room slug,
+# attributes.confidence (high/medium/low), attributes.source. Internal
+# only: not MCP-exposed. Consumers call zen_dojotools_lens_dispatch.
+#
+# This provider is deliberately generic and portable -- it holds zero
+# hardcoded person names or household specifics, only the label contract:
+# any sensor carrying zen_presence_room, with state=room slug and
+# attributes.confidence/source, is picked up automatically. Any
+# implementation that satisfies that contract works -- a Bayesian grid, a
+# Markov/adjacency fusion layer, a plain device_tracker wrapper, whatever.
+#
+# v1.1.0: added area_id anchor support -- the "who's in the
+# living room" direction, previously only answerable by manually filtering
+# the person-keyed confident_presence dict. Same provider, same evidence
+# shape, second anchor path. Confirmed working live end-to-end through the
+# real Lens Bus dispatcher (not a direct call): a room-anchor query
+# correctly returned the tracked person actually in that room, while every
+# unoccupied room correctly returned zero evidence. Also added health,
+# inspect, and audit modes to meet the standard Lens Contract (see
+# zenos_ai/docs/plugins/lens_bus_autoreg.md) -- these were missing from
+# the initial build.
+#
+# Lens Bus — Auto-Registration:
+#   tool_manifest returns: tier=stacks, provider_key=presence, register_mode=register.
+#   mode=register:   writes 'presence' entry to lens_registry household cabinet key.
+#   mode=unregister: removes 'presence' entry from lens_registry.
+###############################################################################
+script:
+  zen_stack_presence:
+    alias: Zen Stack Presence
+    description: >-
+      High-Confidence Presence Lens Provider (v1.1.0). Internal stack
+      adapter for the ZenOS Lens Bus. Provides presence_evidence for
+      person anchors (where's X — current room, confidence, source) and
+      area_id anchors (who's in room X), sourced from the zen_presence_room
+      label contract. Not MCP-exposed — consumers call
+      zen_dojotools_lens_dispatch.
+    mode: parallel
+    fields:
+      mode:
+        description: Provider mode (stacks_by_anchor, register, unregister, health, inspect, audit, tool_manifest, help)
+        selector:
+          text:
+      action:
+        description: Alias for mode (lens dispatcher compat)
+        selector:
+          text:
+      anchor_type:
+        description: Anchor type — person or area_id
+        selector:
+          text:
+      anchor_ids:
+        description: JSON array of anchor ID strings (HA person entity_ids for anchor_type=person, area_id slugs for anchor_type=area_id)
+        selector:
+          text:
+      caller_token:
+        description: Caller token for audit trail
+        selector:
+          text:
+    sequence:
+    - variables:
+        _mode_norm: >-
+          {{ (mode | default('') if mode is defined and mode | string | trim != ''
+              else (action | default('help') if action is defined else 'help'))
+              | string | trim | lower }}
+        _anchor_type_norm: "{{ anchor_type | default('') | string | trim | lower }}"
+        _anchor_ids_raw: "{{ anchor_ids | default('[]') }}"
+        _anchor_ids: >-
+          {%- set _v = _anchor_ids_raw -%}
+          {%- if _v is sequence and _v is not string -%}{{ _v }}
+          {%- elif _v is string and _v | trim != '' -%}{{ _v | from_json(none) | default([]) }}
+          {%- else -%}[]{%- endif -%}
+        tool_name: zen_stack_presence
+        tool_version: 1.1.0
+
+    # ── tool_manifest ──────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "tool_manifest" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              tier: stacks
+              domain: presence
+              provider_key: presence
+              register_mode: register
+              consumes: [person, area_id]
+              returns: [presence_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              lens_provider: true
+              kfc_manifest: false
+              preferred_state:
+                stripe: 2
+                impact: soft
+        - stop: return
+          response_variable: final_response
+
+    # ── health ─────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "health" }}'
+        sequence:
+        - variables:
+            _sp_count: "{{ label_entities('zen_presence_room') | list | count }}"
+            _sp_ok: "{{ _sp_count | int(0) > 0 }}"
+        - variables:
+            final_response:
+              status: "{{ 'ok' if _sp_ok else 'warn' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: health
+              provider: presence
+              presence_entities: '{{ _sp_count | int(0) }}'
+              message: >-
+                {{ (_sp_count | string) ~ ' zen_presence_room-labeled sensor(s) found.'
+                   if _sp_ok else
+                   'No entities carry the zen_presence_room label. No presence
+                    implementation is currently installed/configured for this
+                    household.' }}
+        - stop: return
+          response_variable: final_response
+
+    # ── inspect ────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "inspect" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: inspect
+              provider: presence
+              consumes: [person, area_id]
+              returns: [presence_evidence]
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+              failure_policy: soft
+              content_policy: standard
+              description: >-
+                Maps person anchors (where is X) and area_id anchors (who's in room X)
+                to high-confidence current-room evidence, sourced entirely from
+                entities carrying the zen_presence_room label -- a generic contract
+                (state=room slug, attributes.confidence, attributes.source), not a
+                hardcoded person map. This provider is deliberately opaque to
+                whatever implementation satisfies the contract -- any sensor with
+                the right label and shape is picked up automatically, regardless of
+                whether it's backed by a Bayesian grid, a simple device_tracker
+                wrapper, or anything else.
+        - stop: return
+          response_variable: final_response
+
+    # ── audit ──────────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "audit" }}'
+        sequence:
+        - variables:
+            final_response:
+              status: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: audit
+              provider: presence
+              consumes: [person, area_id]
+              returns: [presence_evidence]
+              security_violations: []
+              notes: >-
+                Read-only lens path -- zen_presence_room-labeled sensor state and
+                attributes are read via states()/state_attr only, no writes to the
+                underlying implementation. register/unregister write only to the
+                lens_registry cabinet key. Strictly r-only per security_act.
+        - stop: return
+          response_variable: final_response
+
+    # ── register ───────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "register" }}'
+        sequence:
+        - variables:
+            _sp_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _sp_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: register
+                  provider: presence
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot register
+                    without a household cabinet to write into.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sp_reg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sp_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sp_existing_reg: >-
+              {%- set raw = _sp_reg_read if _sp_reg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sp_provider_decl:
+              provider: presence
+              configured_by: zen_stack_presence
+              department: stacks
+              enabled: true
+              status: available
+              tool: zen_stack_presence
+              mode: stacks_by_anchor
+              consumes: [person, area_id]
+              returns: [presence_evidence]
+              failure_policy: soft
+              content_policy: standard
+              risk_class: read_only
+              security_act:
+                model: rwxda
+                required: r
+                allowed: [r]
+                denied: [w, x, d, a]
+        - variables:
+            _sp_new_reg: "{{ _sp_existing_reg | combine({'presence': _sp_provider_decl}) }}"
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sp_reg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sp_household_entity }}"
+            key: lens_registry
+            value: "{{ _sp_new_reg | tojson }}"
+        - variables:
+            _sp_reg_ok: >-
+              {{ _sp_reg_write is mapping and _sp_reg_write.get('status', '') == 'success' }}
+            final_response:
+              status: "{{ 'success' if _sp_reg_ok else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: register
+              provider: presence
+              message: >-
+                {{ 'Provider presence registered in lens_registry.' if _sp_reg_ok else
+                   'Registration failed: ' ~ (_sp_reg_write.get('error', 'unknown')
+                   if _sp_reg_write is mapping else 'no response') }}
+        - stop: return
+          response_variable: final_response
+
+    # ── unregister ─────────────────────────────────────────────────────────
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "unregister" }}'
+        sequence:
+        - variables:
+            _sp_household_entity: >-
+              {{ label_entities('zen_household_cabinet')
+                 | select('match', 'sensor\\.') | list | first | default('') }}
+        - if: '{{ _sp_household_entity == "" }}'
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  mode: unregister
+                  provider: presence
+                  message: >-
+                    No entity labeled 'zen_household_cabinet' found — cannot unregister
+                    without a household cabinet to read/write.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sp_ureg_read
+          data:
+            action_type: read
+            volume_entity_id:
+              - "{{ _sp_household_entity }}"
+            key: lens_registry
+        - variables:
+            _sp_ureg_existing: >-
+              {%- set raw = _sp_ureg_read if _sp_ureg_read is mapping else {} -%}
+              {%- set val = raw.get('value', {}) -%}
+              {%- set parsed = val | from_json if val is string else val -%}
+              {{ parsed if parsed is mapping else {} }}
+        - variables:
+            _sp_ureg_new: >-
+              {%- set ns = namespace(result={}) -%}
+              {%- for k, v in _sp_ureg_existing.items() if k != 'presence' -%}
+                {%- set ns.result = ns.result | combine({k: v}) -%}
+              {%- endfor -%}
+              {{ ns.result }}
+        - action: script.zen_dojotools_filecabinet
+          continue_on_error: true
+          response_variable: _sp_ureg_write
+          data:
+            action_type: upsert
+            volume_entity_id:
+              - "{{ _sp_household_entity }}"
+            key: lens_registry
+            value: "{{ _sp_ureg_new | tojson }}"
+        - variables:
+            final_response:
+              status: "{{ 'success' if _sp_ureg_write is mapping and _sp_ureg_write.get('status', '') == 'success' else 'error' }}"
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: unregister
+              provider: presence
+              message: Provider presence removed from lens_registry.
+        - stop: return
+          response_variable: final_response
+
+    # ── stacks_by_anchor ───────────────────────────────────────────────────
+    # anchor_type=person: person anchor_ids arrive as HA person entity_ids
+    # (e.g. person.example_name) -- derive the display name (first token
+    # before the underscore, lowercased) and look up that person's
+    # zen_presence_room-labeled sensor by friendly-name string-stripping,
+    # not a hardcoded person map.
+    - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ _mode_norm == "stacks_by_anchor" }}'
+        sequence:
+        - variables:
+            _sp_all_presence_ents: "{{ label_entities('zen_presence_room') | list }}"
+        - repeat:
+            for_each: >-
+              {{ _anchor_ids if _anchor_ids is sequence and _anchor_ids is not string else [] }}
+            sequence:
+            - variables:
+                _sp_anchor_id: "{{ repeat.item | string | trim }}"
+            - choose:
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "person" and _sp_anchor_id != "" }}'
+                sequence:
+                - variables:
+                    _sp_person_slug: "{{ _sp_anchor_id.split('.')[-1].split('_')[0] | lower }}"
+                    _sp_match_ent: >-
+                      {%- set ns = namespace(found='') -%}
+                      {%- for e in _sp_all_presence_ents -%}
+                        {%- if e.split('.')[-1].startswith(_sp_person_slug ~ '_confident_room') -%}
+                          {%- set ns.found = e -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.found }}
+                - variables:
+                    _sp_evidence_prev: >-
+                      {%- set _v = _sp_evidence | default([], true) -%}
+                      {%- if _v is sequence and _v is not string -%}{{ _v }}
+                      {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+                      {%- else -%}[]{%- endif -%}
+                - if: "{{ _sp_match_ent != '' }}"
+                  then:
+                    - variables:
+                        _sp_evidence: >-
+                          {%- set ns = namespace(items=_sp_evidence_prev) -%}
+                          {%- set ns.items = ns.items + [{
+                            'id': 'presence_' ~ _sp_person_slug,
+                            'type': 'presence_evidence',
+                            'provider': 'presence',
+                            'person': _sp_person_slug,
+                            'anchor_id': _sp_anchor_id,
+                            'anchor_type': _anchor_type_norm,
+                            'entity_id': _sp_match_ent,
+                            'room': states(_sp_match_ent),
+                            'confidence': state_attr(_sp_match_ent, 'confidence') | default('low', true),
+                            'source': state_attr(_sp_match_ent, 'source') | default('unknown', true),
+                            'content_redacted': false
+                          }] -%}
+                          {{ ns.items | tojson }}
+                  else:
+                    - variables:
+                        _sp_evidence: "{{ _sp_evidence_prev | tojson }}"
+              # anchor_type=area_id -- the "who's in this room" direction.
+              # A room can hold more than one person, so every
+              # zen_presence_room entity whose state matches the anchor
+              # room slug becomes its own evidence entry (0, 1, or many).
+              - conditions:
+                  - condition: template
+                    value_template: '{{ _anchor_type_norm == "area_id" and _sp_anchor_id != "" }}'
+                sequence:
+                - variables:
+                    _sp_room_matches: >-
+                      {%- set ns = namespace(found=[]) -%}
+                      {%- for e in _sp_all_presence_ents -%}
+                        {%- if states(e) | lower == _sp_anchor_id | lower -%}
+                          {%- set ns.found = ns.found + [e] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.found }}
+                - variables:
+                    _sp_evidence_prev: >-
+                      {%- set _v = _sp_evidence | default([], true) -%}
+                      {%- if _v is sequence and _v is not string -%}{{ _v }}
+                      {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+                      {%- else -%}[]{%- endif -%}
+                - variables:
+                    _sp_evidence: >-
+                      {%- set ns = namespace(items=_sp_evidence_prev) -%}
+                      {%- for e in _sp_room_matches -%}
+                        {%- set _fn = state_attr(e, 'friendly_name') | default(e, true) -%}
+                        {%- set _who = (_fn | replace(' Confident Room', '')) | lower | replace(' ', '_') -%}
+                        {%- set ns.items = ns.items + [{
+                          'id': 'presence_' ~ _sp_anchor_id ~ '_' ~ _who,
+                          'type': 'presence_evidence',
+                          'provider': 'presence',
+                          'person': _who,
+                          'anchor_id': _sp_anchor_id,
+                          'anchor_type': _anchor_type_norm,
+                          'entity_id': e,
+                          'room': states(e),
+                          'confidence': state_attr(e, 'confidence') | default('low', true),
+                          'source': state_attr(e, 'source') | default('unknown', true),
+                          'content_redacted': false
+                        }] -%}
+                      {%- endfor -%}
+                      {{ ns.items | tojson }}
+
+        - variables:
+            _sp_evidence_final: >-
+              {%- set _v = _sp_evidence | default([], true) -%}
+              {%- if _v is sequence and _v is not string -%}{{ _v }}
+              {%- elif _v is string and _v | trim not in ['', '[]'] -%}{{ _v | from_json(none) | default([]) }}
+              {%- else -%}[]{%- endif -%}
+        - variables:
+            final_response:
+              status: success
+              result: ok
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              mode: stacks_by_anchor
+              provider: presence
+              anchor_type: '{{ _anchor_type_norm }}'
+              anchor_ids: '{{ _anchor_ids }}'
+              evidence: '{{ _sp_evidence_final }}'
+              count: '{{ _sp_evidence_final | length }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── help / unknown mode ────────────────────────────────────────────────
+    - variables:
+        final_response:
+          status: info
+          tool: '{{ tool_name }}'
+          version: '{{ tool_version }}'
+          mode: help
+          provider: presence
+          description: >-
+            High-confidence presence lens provider. Modes: tool_manifest,
+            register, unregister, health, inspect, audit,
+            stacks_by_anchor (anchor_type=person or area_id), help.
+    - stop: return
+      response_variable: final_response

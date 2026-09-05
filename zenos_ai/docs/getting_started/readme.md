@@ -1,4 +1,4 @@
-# Getting Started — ZenOS-AI 2026.6.0 'Clue'
+# Getting Started — ZenOS-AI 2026.9.0 'Steel Magnolia'
 
 *From fresh install to live agent*
 
@@ -6,37 +6,31 @@
 
 New to ZenOS-AI? This folder is your onboarding path. Read in order for a clean first-run experience.
 
-The path is intentionally human-scale. You should understand each layer before the next one comes alive:
+This is not just "install the scripts and talk to the AI." The path is intentionally human-scale — you should understand each layer before the next one comes alive, and it builds toward a real home operations graph:
 
 ```text
 installed but inert
   -> tools exposed to Assist
-  -> rooms and labels confirmed by you
-  -> devices gain meaning
-  -> components can notice useful events
-  -> AlertManager/Postman can ask for human judgment
-  -> full components like AutoVac can run end to end
+  -> rooms mapped, then Room Manager v3 tracks what each one is actually doing right now
+     (Vacant/Occupied/Engaged/Asleep/Hold, from real signals, not a fixed schedule)
+  -> labels give devices and people meaning
+  -> REFLEX reacts to state changes on its own — the right scene fires automatically,
+     without your AI having to actively decide anything each time
+  -> perception tools like Camera notice useful events
+  -> actors like AutoVac, ZenLux, ZenShade, SpaMaster do the physical work
+  -> AlertManager decides what's worth attention, Postman asks the right human
+  -> you clear, suppress, escalate, or remember
 ```
 
-The "wow, it noticed that" moment should arrive as a clear consent-based loop, not as a surprise. ZenOS-AI only has the tool access and labeled context you give it.
-
-2026.6.0 is not just "install the scripts and talk to the AI." The first-run path builds a home operations graph:
-
-```text
-Room Manager map
-  -> labeled entities and people
-  -> perception tools like Camera
-  -> actors like AutoVac, ZenLux, ZenShade, SpaMaster
-  -> AlertManager attention
-  -> Postman human acknowledgement
-  -> clear, suppress, escalate, or remember
-```
-
-That is the point of onboarding. OOBE teaches ZenOS where things are, labels teach it what things mean, DojoTools give it safe ways to act, and Postman/AlertManager provide the human-in-the-loop layer when the system needs judgment.
+The "wow, it noticed that" moment should arrive as a clear consent-based loop, not as a surprise — ZenOS-AI only has the tool access and labeled context you give it. OOBE teaches it where things are and gets the state engine running; labels teach it what things mean; DojoTools give it safe ways to act; REFLEX handles the moment-to-moment reactions on its own; Postman/AlertManager step in only when the system needs a human's judgment instead of a reflex.
 
 ---
 
 ## Documents in This Folder
+
+### 0. `concepts.md` — Plain-Language Glossary
+
+Read this first if any of the names in this folder (Flynn, Cabinets, Kata, DojoTools/AdminTools, AlertManager/Postman, Room Manager) are new to you. Short, plain-English entries — no procedure, just what things mean.
 
 ### 1. `install.md` — Installation
 
@@ -44,6 +38,7 @@ Start here. Covers:
 
 * File drop: `packages/zenos_ai/` and `custom_templates/zenos_ai/` into your HA config
 * `configuration.yaml` setup
+* **Connecting your phone (Companion App + notify service)** — new, required as of 2026.9.0: certifications need this working before you can grant your AI anything
 * Pasting the conversation agent system prompt
 * Setting your conversation agent with the friendly `select.zenos_conversation_agent` dropdown once the package has loaded
 * Restarting HA and verifying Flynn initializes cleanly
@@ -58,7 +53,7 @@ Start here. Covers:
 After installation. Covers:
 
 * What Flynn does on first boot (the stepgate sequence)
-* The OOBE conversation flow — naming your AI and building the Room Manager spatial map
+* The OOBE conversation flow — naming your AI, building the Room Manager spatial map, and what comes after it (the live state engine + REFLEX)
 * Mapping cameras, vacuums, locks, and presence into the label graph
 * Using dashboard selectors like `select.zenos_active_persona` instead of raw helper edits
 * Editing profiles after setup
@@ -75,8 +70,9 @@ After first boot. Covers:
 * Listing active alerts through `zen_dojotools_alertmanager`
 * Testing error-severity priority context
 * Clearing alerts safely
+* **Connecting the real device you set up in Install Step 3.5 to Postman** — required before certifications work, not just a nice-to-have
 
-**Do this next — it's the fastest way to prove ZenOS-AI can get your attention.**
+**Do this next — it's the fastest way to prove ZenOS-AI can get your attention, and it's the step that unblocks certifications later.**
 
 ---
 
@@ -94,9 +90,49 @@ After the first alert test, use this to clean up what the AI can see and touch. 
 
 ---
 
-### 5. `autovac_first_setup.md` — AutoVac First Setup
+### 5. `oobe.md` — OOBE Walkthrough
 
-The first big integrated component. Covers the whole chain:
+The six-step first-boot configuration protocol in detail. Covers:
+
+* What OOBE is and when it fires
+* The conversational path (chatting with your AI to configure it)
+* The Agent Builder path for invoking the same OOBE protocol
+* How Flynn detects OOBE completion
+* What to do if the OOBE notification won't dismiss
+* Where to go next for Security Manager and the Room Manager v3 state engine — OOBE sets both up but doesn't walk you through either conversationally
+
+---
+
+### 6. `room_manager_operators_manual.md` — Room Manager v3 & REFLEX
+
+**Read this right after OOBE, before anything else.** OOBE only registers your rooms' *spatial* layout (what connects to what). This is the doc that explains the part that actually runs your house day to day: Room Manager v3 is a live state engine — each room continuously reports Vacant/Occupied/Engaged/Asleep/Hold based on real signals (motion, doors, media), not a fixed schedule. REFLEX is a separate, autonomous layer riding on top of it that fires the right scene automatically whenever a room's state changes, so your AI doesn't have to actively decide "should I turn the lights on" every time someone walks into a room. Covers:
+
+* The full state cascade and what causes each state
+* Wasp-hold (motion with no confirmed door-open), entertaining/guest hold, the asleep window
+* How REFLEX picks a scene, dry-run/rehearsal mode, and wiring your own scenes
+* Manual overrides and troubleshooting a room that "won't clear"
+
+---
+
+### 7. `security_certification_manual.md` — Security & Certification System
+
+**Read this before you grant your AI its first certification** — locks, covers, alarm, infra, and room overrides are all gated behind this system. If you did Install Step 3.5 and First Alert Step 7, its Section 4 prerequisite is already satisfied — otherwise it will hard-block your first grant. Covers:
+
+* What a certification is (`cert_component`, `cert_level`, `cert_scope`) and how it differs from just having a tool exposed
+* The two gate types: cert-only vs. cert-plus-a-live-ack-every-call
+* Which actions require which tier
+
+---
+
+### 8. `autovac_quick_start.md` — AutoVac Quick Start
+
+The fast path to your first real component: 5 steps, ~15 minutes, gets the vacuum running on a schedule with briefings. See **[AutoVac First Setup](autovac_first_setup.md)** (next) when you want the full chain.
+
+---
+
+### 9. `autovac_first_setup.md` — AutoVac First Setup
+
+The full integrated build. Covers the whole chain:
 
 * DojoTools exposure and dashboard selectors
 * Room Manager room truth
@@ -109,9 +145,15 @@ Use this when you want to prove ZenOS-AI can move from first-run setup to a full
 
 ---
 
-### 6. `cabinet_placement.md` — Where Things Go and Why
+### 10. `notification_routing.md` — Notification Routing Guide
 
-After entity exposure. Covers:
+First Alert's Step 7 already seeded your own device. Read this for the rest: household-wide policy (life-safety bypass, quiet hours), routing to more than one person, and troubleshooting if something still isn't arriving.
+
+---
+
+### 11. `cabinet_placement.md` — Where Things Go and Why
+
+Reference doc, not part of the linear path — most people won't need it. Covers:
 
 * Dojo vs Kata vs System cabinet — what lives where
 * Drawer vs KFC — when to use each
@@ -120,19 +162,13 @@ After entity exposure. Covers:
 
 ---
 
-### 7. `oobe.md` — OOBE Walkthrough
+### 12. `room_deployment_template.md` — New Room Deployment Template
 
-The six-step first-boot configuration protocol in detail. Covers:
-
-* What OOBE is and when it fires
-* The conversational path (chatting with your AI to configure it)
-* The Agent Builder path for invoking the same OOBE protocol
-* How Flynn detects OOBE completion
-* What to do if the OOBE notification won't dismiss
+Reference doc for adding a brand-new room to Room Manager v3 by hand (copy-paste YAML template) — an operator task with file access, not something your AI does conversationally. Most rooms get created automatically through OOBE or `mode=area_create`; reach for this only when you're deploying a room's file directly.
 
 ---
 
-### 8. `troubleshooting.md` — Troubleshooting
+### 13. `troubleshooting.md` — Troubleshooting
 
 When something isn't right. Covers:
 
@@ -149,7 +185,7 @@ When something isn't right. Covers:
 
 ---
 
-### 9. `user_management.md` — User and AI User Management
+### 14. `user_management.md` — User and AI User Management
 
 For adding, removing, and moving identities after initial setup. Covers:
 
@@ -162,13 +198,21 @@ For adding, removing, and moving identities after initial setup. Covers:
 
 ---
 
+### 15. `zenzork_manual_unofficial.md` — ZenZork: The Unofficial Manual
+
+Not part of setup — this is the in-universe player's manual for ZenZork, the text-adventure game built on your own live Room Manager topology. Entirely optional, read it whenever you want to actually play.
+
+---
+
 ## Recommended Order
 
 ```
-install.md -> first_run.md -> first_alert.md -> entity_exposure.md -> autovac_first_setup.md -> cabinet_placement.md -> oobe.md
+concepts.md -> install.md -> first_run.md -> first_alert.md -> entity_exposure.md
+  -> oobe.md -> room_manager_operators_manual.md -> security_certification_manual.md
+  -> autovac_quick_start.md -> autovac_first_setup.md -> notification_routing.md
 ```
 
-Keep `troubleshooting.md` and `user_management.md` open in a tab. You might need them.
+[Cabinet Placement](cabinet_placement.md) and [Room Deployment Template](room_deployment_template.md) are references, not linear reading — jump to them when you need them. Keep [Troubleshooting](troubleshooting.md) and [User Management](user_management.md) open in a tab too. You might need them. [ZenZork: The Unofficial Manual](zenzork_manual_unofficial.md) isn't part of onboarding at all — it's there when you want it.
 
 ---
 

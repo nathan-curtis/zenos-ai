@@ -267,4 +267,10 @@ This architecture gives Friday:
 * a foundation for agentic cognition at household scale
 
 RoomState is not the “processed” world — it is the **semantic lens** that makes the raw world intelligible.
+
+> **See also:** [Chapter 22 — Room Manager v3 & REFLEX](22_Room_Manager_v3_REFLEX.md)
+> documents the concrete implementation of this chapter's theory — the
+> actual cascade logic, event bus, and per-room deployment built
+> 2026-08-05 through 2026-08-07.
+
 Your call, boss.

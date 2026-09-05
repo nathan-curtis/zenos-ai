@@ -184,10 +184,13 @@ This means the same condition can re-alert after it clears. The dedup window is 
     "urgency": "critical",
     "expires": "ISO timestamp (60 min from fire)",
     "since": "ISO timestamp",
-    "entities": ["up to 3 related entity IDs"]
+    "entities": ["up to 3 related entity IDs"],
+    "display": "prompt"
   }
 }
 ```
+
+**`display`** (2026-08-14, Zammad #10297): optional field on `mode=fire`, `error` severity only — `prompt` (default, unchanged legacy behavior), `tool_response`, `both`, or `none`. Routes whether this priority-inject entry surfaces in the prompt, in a tool's `envelope()` response `system_message` field, both, or neither. The GC sweep that rebuilds this drawer's entries got the same validation applied as the write path — a prior version of that sweep hardcoded a 5-field allowlist and would have silently dropped `display` on the next GC pass regardless of what the write handler set.
 
 Clearing an `error` alert removes it from this drawer.
 

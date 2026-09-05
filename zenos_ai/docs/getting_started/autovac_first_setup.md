@@ -1,5 +1,7 @@
 # AutoVac First Setup
 
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+
 *The big integrated example: rooms, labels, schedules, inventory, alerts, and human acknowledgement*
 
 ---
@@ -82,6 +84,8 @@ Complete the normal first-run path first:
 
 Your conversation agent should have the normal DojoTools exposed. Do not expose AdminTools for this.
 
+> **Just want scheduled runs working fast?** This doc is the deep path — the full commissioning chain including Postman, Grocy, wear checks, and AlertManager. If you only want the vacuum running on a schedule with briefings, see **[AutoVac Quick Start](autovac_quick_start.md)** instead — 5 steps, ~15 minutes. You can always come back here later for the rest.
+
 Recommended but optional:
 
 * [Grocy Inventory Component](../plugins/grocy.md), if you want consumables and shopping list automation.
@@ -96,7 +100,7 @@ In your conversation agent exposure list, include:
 
 | Expose | Why |
 |--------|-----|
-| `script.zen_dojotools_*` | The governed tool surface Friday uses to configure labels, rooms, alerts, Postman, Grocy, and AutoVac |
+| `script.zen_dojotools_*` | The governed tool surface your AI uses to configure labels, rooms, alerts, Postman, Grocy, and AutoVac |
 | `input_text.zenos_conversation_agent` | Conversation self-reference |
 | `input_select.zen_home_mode` | Sleep/work/home mode context for Postman gates |
 
@@ -119,10 +123,10 @@ Recommended dashboard controls:
 Acceptance check:
 
 ```text
-Ask Friday: "What AutoVac tools and Postman tools can you use?"
+Ask your AI: "What AutoVac tools and Postman tools can you use?"
 ```
 
-She should be able to identify `zen_dojotools_autovac`, `zen_dojotools_postman`, `zen_dojotools_inventory`, `zen_dojotools_labels`, and Room Manager access.
+It should be able to identify `zen_dojotools_autovac`, `zen_dojotools_postman`, `zen_dojotools_inventory`, `zen_dojotools_labels`, and Room Manager access.
 
 ---
 
@@ -130,7 +134,7 @@ She should be able to identify `zen_dojotools_autovac`, `zen_dojotools_postman`,
 
 AutoVac room names should line up with your HA areas and Room Manager room topology.
 
-Run or ask Friday to run:
+Run or ask your AI to run:
 
 ```yaml
 zen_dojotools_room_manager:
@@ -293,7 +297,7 @@ Apply these labels in Home Assistant:
 | `autovac_wear` | Wear or remaining-life sensors | Optional, recommended for inventory loop |
 | `autovac_current_room` | Current room sensor | Optional |
 
-You can ask Friday to help tag these once OOBE and label tools are working:
+You can ask your AI to help tag these once OOBE and label tools are working:
 
 ```text
 Tag my downstairs robot vacuum for AutoVac.

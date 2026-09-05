@@ -1,0 +1,568 @@
+###############################################################################
+# ZENOS-AI ADMINTOOL: CERTADMIN (v1.0.0)
+#
+# cert_grant/cert_revoke/cert_list moved out of
+# zen_dojotools_persona_editor (agent-facing, MCP-exposed) and into this new
+# admintools script (mcp_exposed: false — never reachable by an agent, even
+# indirectly through MCP). persona_editor's cert_grant/cert_revoke/cert_list
+# modes now DELEGATE here, forwarding only the fields they already declared
+# (target, cert_component, cert_level, cert_tool, cert_constraints,
+# cert_scope, stats_patch, caller_token) — persona_editor's own field schema
+# never declares waives_live_ack or ack_phrase, so there is nothing for an
+# agent calling persona_editor to pass through even if it tried. That
+# absence is the hard exclusion, not a permission check on top of it.
+#
+# NEW CAPABILITY: waives_live_ack (cert_grant only). Lets a household admin
+# issue a scoped exemption from a cert's live-ack requirement (e.g. "don't
+# ask me every time I open the garage door") WITHOUT softening the cert
+# system itself — nothing about the underlying gates, catalog, or default
+# live-ack behavior changes. It's purely additive: an operator can request
+# it, cert_scope still bounds it to specific entities/areas (never global),
+# and it costs three independent layers of friction to obtain:
+#   1. The existing live-ack gate cert_grant already required (a real human
+#      approves on their device, same as every other grant) — this alone
+#      proves a live operator is in the loop right now, not just "some
+#      caller reached this script."
+#   2. confirm_action: true
+#   3. ack_phrase must equal, verbatim: "I UNDERSTAND THIS CERT BYPASSES
+#      ACKNOWLEDGEMENT" — same shape as the run_repair/label-repair
+#      force_ack pattern elsewhere in this codebase, deliberately a full
+#      sentence rather than a boolean so it can't be set by accident or
+#      copy-pasted from an unrelated confirm.
+# All three are required together for waives_live_ack=true to actually land
+# in the cert entry. Missing any one silently drops the flag (grant still
+# proceeds as a normal, non-waiving cert_grant) rather than erroring — a
+# half-satisfied bypass request should degrade to the safe default, not
+# refuse the whole call.
+#
+# mode: cert_grant | cert_revoke | cert_list | tool_manifest | help
+###############################################################################
+
+script:
+  zen_admintools_certadmin:
+    alias: Zen AdminTools CertAdmin
+    description: >-
+      Admin-only cert issuance/revocation for AI persona (ai_user) cabinets.
+      Not exposed to conversational agents — persona_editor delegates here
+      for its cert_grant/cert_revoke/cert_list modes. Owns the
+      waives_live_ack capability (cert_grant only): a three-layer-gated,
+      cert_scope-bounded exemption from a cert's live-ack requirement.
+      mode=help for full reference.
+    mode: queued
+    max: 3
+    icon: mdi:certificate
+    fields:
+      mode:
+        name: Mode
+        description: "cert_grant | cert_revoke | cert_list | tool_manifest | help"
+        default: help
+        selector:
+          select:
+            options:
+              - help
+              - cert_grant
+              - cert_revoke
+              - cert_list
+              - tool_manifest
+
+      target:
+        name: Target ai_user Cabinet
+        description: "Explicit target ai_user cabinet entity_id. Omit to resolve the default AI user."
+        default: ""
+        selector:
+          text:
+
+      cert_component:
+        name: KFC Component
+        description: "kata_key of the KFC to certify. Required for cert_grant/revoke."
+        default: ""
+        selector:
+          text:
+
+      cert_level:
+        name: Certification Level
+        description: "1=Observer, 2=Advisor, 3=Operator, 4=Autonomous. Default: 2."
+        default: 2
+        selector:
+          number:
+            min: 1
+            max: 4
+            mode: box
+
+      cert_tool:
+        name: Cert Tool
+        description: "Script or tool used by this persona for the KFC. Optional."
+        default: ""
+        selector:
+          text:
+
+      cert_constraints:
+        name: Cert Constraints (JSON array)
+        description: "Actions requiring explicit per-action confirmation. JSON array."
+        default: ""
+        selector:
+          text:
+            multiline: true
+
+      cert_scope:
+        name: Cert Scope (JSON array)
+        description: >-
+          Per-target exemptions from a cert's live-ack requirement. JSON
+          array, each item either a bare entity_id string (shorthand for
+          allow) or a {"entity": "...", "acl": "allow"|"deny"|"remove"}
+          object. MERGES into any existing scope for this cert_component —
+          does NOT replace it. acl="remove" deletes that one entity from
+          the merged scope without a full cert_revoke.
+        default: ""
+        selector:
+          text:
+            multiline: true
+
+      waives_live_ack:
+        name: "Waives Live-Ack (cert_grant only)"
+        description: >-
+          Requests that this grant's cert_scope entries also waive the
+          cert's live-ack requirement, not just its cert-only gate. Bounded
+          to cert_scope — never global. Requires confirm_action: true AND
+          ack_phrase set verbatim, IN ADDITION TO the normal live-ack
+          approval every cert_grant already requires. Any of the three
+          missing silently drops this flag rather than refusing the call.
+        default: false
+        selector:
+          boolean:
+
+      confirm_action:
+        name: "Confirm (waives_live_ack only)"
+        description: "Required alongside waives_live_ack: true and the exact ack_phrase."
+        default: false
+        selector:
+          boolean:
+
+      ack_phrase:
+        name: "Acknowledgement Phrase (waives_live_ack only)"
+        description: >-
+          Required verbatim alongside waives_live_ack: true and
+          confirm_action: true: "I UNDERSTAND THIS CERT BYPASSES
+          ACKNOWLEDGEMENT"
+        default: ""
+        selector:
+          text:
+
+      stats_patch:
+        name: Stats Patch (JSON)
+        description: "Optional deep-merge patch into this cert's stats block."
+        default: ""
+        selector:
+          text:
+            multiline: true
+
+      caller_token:
+        name: Caller Token
+        description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
+        required: false
+        selector:
+          text:
+
+    sequence:
+      - variables:
+          caller_token: "{{- caller_token | default('') -}}"
+          _mode: "{{- mode | default('help') -}}"
+
+      ###########################################################################
+      # 0 — TOOL_MANIFEST
+      ###########################################################################
+      - if: "{{- _mode == 'tool_manifest' -}}"
+        then:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{- MF.tool_manifest(
+                  tool='zen_admintools_certadmin',
+                  display_name='CertAdmin — KFC Cert Issuance',
+                  tier='admintools',
+                  version='1.1.0',
+                  health={'configured': true, 'status': 'ok', 'notes': []},
+                  required_labels=['admintools'],
+                  optional_labels=[],
+                  consumes=['ai_user_cabinet', 'cert_catalog'],
+                  returns=['cert_grant_result', 'cert_revoke_result', 'cert_list'],
+                  failure_policy='hard',
+                  modes={'cert_grant': 'issue', 'cert_revoke': 'revoke', 'cert_list': 'read', 'manifest': 'tool_manifest'},
+                  icon='mdi:certificate',
+                  color='deep-orange',
+                  dependencies=[
+                    {'tool': 'zen_dojotools_manifest', 'required': true, 'uses': 'cert_audit catalog lookup for cert_grant validation'},
+                    {'tool': 'zen_dojotools_identity', 'required': true, 'uses': 'request_live_ack for grant/revoke approval'},
+                    {'tool': 'zen_dojotools_filecabinet', 'required': true, 'uses': 'zen_ai_certs drawer read/write'}
+                  ],
+                  caller_token=caller_token | default('')
+                ) | from_json -}}
+          - stop: certadmin tool manifest
+            response_variable: result
+
+      ###########################################################################
+      # 0b — HELP
+      ###########################################################################
+      - if: "{{- _mode == 'help' -}}"
+        then:
+          - variables:
+              result:
+                status: ok
+                mode: help
+                tool: zen_admintools_certadmin
+                modes:
+                  cert_grant: "Grant/update a KFC certification on target= (default AI user cabinet if omitted). Requires cert_component + live-ack approval. waives_live_ack=true additionally requires confirm_action=true + exact ack_phrase."
+                  cert_revoke: "Revoke a certification. Requires cert_component + live-ack approval."
+                  cert_list: "List all certifications + stats on target=."
+                  tool_manifest: "UMP self-description."
+                waives_live_ack_phrase: "I UNDERSTAND THIS CERT BYPASSES ACKNOWLEDGEMENT"
+                caller_token: "{{ caller_token }}"
+          - stop: help complete
+            response_variable: result
+
+      ###########################################################################
+      # 1 — RESOLVE TARGET CABINET
+      ###########################################################################
+      - variables:
+          _explicit_raw: "{{- target | default('') | trim -}}"
+          _explicit: >-
+            {{ '' if _explicit_raw | lower in ['null', 'none', 'undefined', 'unknown', 'unavailable'] else _explicit_raw }}
+          _target: >-
+            {%- if _explicit_raw | lower in ['null', 'none', 'undefined', 'unknown', 'unavailable'] -%}{{ '' }}
+            {%- elif _explicit_raw != '' -%}{{ _explicit_raw }}
+            {%- else -%}{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}
+            {%- endif -%}
+      - variables:
+          _target_exists: >-
+            {{ _target != '' and _target in (states.sensor | map(attribute='entity_id') | list) }}
+          _cab_vars: >-
+            {{ state_attr(_target, 'variables') | default({}, true)
+               if _target != '' else {} }}
+      - if: "{{- _target == '' or not _target_exists -}}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                message: >-
+                  {{ "target '" ~ _explicit_raw ~ "' was passed but does not resolve to a real entity — refusing to write to a nonexistent cabinet." if _explicit_raw != '' else "No default AI user cabinet resolved — nothing to target." }}
+                caller_token: "{{ caller_token }}"
+          - stop: Target does not resolve
+            response_variable: final_response
+
+      ###########################################################################
+      # 2 — CERT_LIST
+      ###########################################################################
+      - choose:
+          - conditions: "{{ _mode == 'cert_list' }}"
+            sequence:
+              - variables:
+                  _craw: "{{ _cab_vars.get('zen_ai_certs', {}) }}"
+                  _cev:  "{{ _craw.get('value', _craw) if _craw is mapping else {} }}"
+                  final_response:
+                    status: ok
+                    mode: cert_list
+                    target: "{{ _target }}"
+                    jacket_id: "{{ _cev.get('jacket_id', '') if _cev is mapping else '' }}"
+                    cert_count: "{{ (_cev.get('kfc_certifications', {}) if _cev is mapping else {}) | length }}"
+                    certifications: "{{ _cev.get('kfc_certifications', {}) if _cev is mapping else {} }}"
+                    stats: "{{ _cev.get('stats', {}) if _cev is mapping else {} }}"
+                    caller_token: "{{ caller_token }}"
+              - stop: cert_list complete
+                response_variable: final_response
+
+      ###########################################################################
+      # 3 — CERT_GRANT
+      ###########################################################################
+      - choose:
+          - conditions: "{{ _mode == 'cert_grant' }}"
+            sequence:
+              - variables:
+                  _comp:       "{{ cert_component | default('') | trim | lower }}"
+                  _lvl:        "{{ cert_level | default(2) | int }}"
+                  _ctool:      "{{ cert_tool | default('') | trim }}"
+                  _ccons_raw:  "{{ cert_constraints if cert_constraints is defined and cert_constraints is sequence and cert_constraints is not string else (cert_constraints | default('', true) | string | trim) }}"
+                  _cscope_raw: "{{ cert_scope if cert_scope is defined and cert_scope is sequence and cert_scope is not string else (cert_scope | default('', true) | string | trim) }}"
+                  _spatch_raw: "{{ stats_patch | default('') | trim }}"
+                  _wla_requested: "{{ waives_live_ack | default(false) | bool }}"
+                  _wla_confirm:   "{{ confirm_action | default(false) | bool }}"
+                  _wla_phrase_ok: "{{ (ack_phrase | default('') ) == 'I UNDERSTAND THIS CERT BYPASSES ACKNOWLEDGEMENT' }}"
+              - choose:
+                  - conditions: "{{ _comp == '' }}"
+                    sequence:
+                      - variables:
+                          final_response:
+                            status: error
+                            message: "cert_grant requires cert_component (kata_key)."
+                            caller_token: "{{ caller_token }}"
+                      - stop: Missing cert_component
+                        response_variable: final_response
+              # ── waives_live_ack gate: all three layers required together
+              # (existing live-ack below, confirm_action, exact ack_phrase).
+              # A partial request silently degrades to a normal grant rather
+              # than erroring -- see file header note. ──
+              - variables:
+                  _wla_granted: "{{ _wla_requested and _wla_confirm and _wla_phrase_ok }}"
+              # ── Catalog check (moved verbatim from persona_editor
+              # cert_grant, 2026-08-15 origin note preserved) — cert_component
+              # must be declared by some tool's own tool_manifest
+              # certs_required, no separate hand-maintained catalog. ──
+              - action: script.zen_dojotools_manifest
+                response_variable: _cg_catalog_raw
+                continue_on_error: true
+                data:
+                  mode: cert_audit
+                  caller_token: "{{ caller_token }}"
+              - variables:
+                  _cert_catalog: "{{ (_cg_catalog_raw.get('result', _cg_catalog_raw) if _cg_catalog_raw is mapping else {}).get('catalog', {}) }}"
+              - choose:
+                  - conditions: "{{ _comp not in _cert_catalog }}"
+                    sequence:
+                      - variables:
+                          final_response:
+                            status: error
+                            message: "cert_grant refused: '{{ _comp }}' is not declared by any tool's tool_manifest certs_required. Available: {{ _cert_catalog.keys() | list }}."
+                            caller_token: "{{ caller_token }}"
+                      - stop: cert_grant — unknown cert
+                        response_variable: final_response
+              - variables:
+                  _ccons: >-
+                    {{ _ccons_raw if _ccons_raw is sequence and _ccons_raw is not string
+                       else ((_ccons_raw | from_json(default=[])) if (_ccons_raw is string and _ccons_raw != '' and _ccons_raw[:1] == '[') else []) }}
+                  _cscope: >-
+                    {{ _cscope_raw if _cscope_raw is sequence and _cscope_raw is not string
+                       else ((_cscope_raw | from_json(default=[])) if (_cscope_raw is string and _cscope_raw != '' and _cscope_raw[:1] == '[') else []) }}
+                  _cg_catalog_entry: "{{ _cert_catalog.get(_comp, {}) }}"
+              - variables:
+                  _cg_persona_name: >-
+                    {%- set raw = _cab_vars.get('zenai_essence', {}) -%}
+                    {%- set ev_raw = raw.get('value', {}) if raw is mapping else {} -%}
+                    {%- set ev = ev_raw if ev_raw is mapping else (ev_raw | from_json if ev_raw is string else {}) -%}
+                    {%- set _j = ev.get('jacket', {}) if ev.get('jacket') is mapping else {} -%}
+                    {{ _j.get('name', '') }}
+              # ── Live-ack -- unconditional, same as before. Requesting
+              # waives_live_ack does NOT skip this: it's the proof a human
+              # is actually in the loop right now, layer 1 of 3. ──
+              - action: script.zen_dojotools_identity
+                response_variable: _cg_ack_result_raw
+                continue_on_error: true
+                data:
+                  mode: request_live_ack
+                  ack_message: >-
+                    Agent requests cert_grant: '{{ _cg_catalog_entry.get('display_name', _comp) }}'
+                    level {{ _lvl }} for {{ _cg_persona_name if _cg_persona_name != '' else 'default agent' }}.
+                    This cert gates: {{ _cg_catalog_entry.get('description', 'no description on file') }}
+                    {%- if _cscope | length > 0 %} Requested SCOPE (limits the standing-override
+                    exemption to only these -- everything else still asks live every time):
+                    {{ _cscope | join(', ') }}.{% endif -%}
+                    {%- if _ccons | length > 0 %} Requested CONSTRAINTS (still require confirmation
+                    even with this cert): {{ _ccons | join(', ') }}.{% endif -%}
+                    {%- if _wla_granted %} ⚠ ALSO REQUESTS: waiving the live-ack requirement
+                    itself for the scoped entries above -- future calls in that scope will NOT
+                    ask again.{% endif %} Approve?
+                  caller_token: "{{ caller_token }}"
+              - variables:
+                  _cg_approved: "{{ _cg_ack_result_raw.get('approved', false) if _cg_ack_result_raw is mapping else false }}"
+                  _cg_ack_reason: "{{ _cg_ack_result_raw.get('reason', 'dispatch_failed') if _cg_ack_result_raw is mapping else 'dispatch_failed' }}"
+              - choose:
+                  - conditions: "{{ not _cg_approved }}"
+                    sequence:
+                      - variables:
+                          final_response:
+                            status: denied
+                            mode: cert_grant
+                            component: "{{ _comp }}"
+                            reason: "{{ _cg_ack_reason }}"
+                            caller_token: "{{ caller_token }}"
+                      - stop: cert_grant — not approved
+                        response_variable: final_response
+              - variables:
+                  _spatch: >-
+                    {{ _spatch_raw | from_json(default={}) if (_spatch_raw != '' and _spatch_raw[:1] == '{') else {} }}
+                  _craw: "{{ _cab_vars.get('zen_ai_certs', {}) }}"
+                  _cev:  "{{ _craw.get('value', _craw) if _craw is mapping else {} }}"
+                  _jacket_id: >-
+                    {%- if _cev is mapping and _cev.get('jacket_id', '') != '' -%}
+                      {{ _cev.get('jacket_id') }}
+                    {%- else -%}
+                      {%- set _ess = _cab_vars.get('zenai_essence', {}) -%}
+                      {%- set _ev  = _ess.get('value', _ess) if _ess is mapping else {} -%}
+                      {{ (_ev.get('jacket', {}) if _ev is mapping else {}).get('id', '') }}
+                    {%- endif -%}
+                  _existing_certs: "{{ _cev.get('kfc_certifications', {}) if _cev is mapping else {} }}"
+                  _existing_stats: "{{ _cev.get('stats', {}) if _cev is mapping else {} }}"
+              # ── Scope MERGE, not replace (ported verbatim from
+              # persona_editor 2026-08-16 note). waives_live_ack is stamped
+              # onto each merged scope entry that was part of THIS request's
+              # _cscope when _wla_granted -- existing entries from prior
+              # grants keep whatever waiver state they already had unless
+              # re-listed here. ──
+              - variables:
+                  _cg_existing_scope: "{{ _existing_certs.get(_comp, {}).get('scope', []) if _comp in _existing_certs else [] }}"
+                  _cg_requested_entities: "{{ _cscope | map(attribute='entity') | list if (_cscope | length > 0 and _cscope[0] is mapping) else (_cscope | list) }}"
+                  _cg_merged_scope: >-
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for raw in _cg_existing_scope -%}
+                      {%- if raw is mapping -%}
+                        {%- set n = {'entity': raw.get('entity', ''), 'acl': raw.get('acl', 'allow') | lower, 'waives_live_ack': raw.get('waives_live_ack', false)} -%}
+                      {%- else -%}
+                        {%- set n = {'entity': raw | string, 'acl': 'allow', 'waives_live_ack': false} -%}
+                      {%- endif -%}
+                      {%- set ns.out = ns.out + [n] -%}
+                    {%- endfor -%}
+                    {%- for raw in _cscope -%}
+                      {%- if raw is mapping -%}
+                        {%- set n = {'entity': raw.get('entity', ''), 'acl': raw.get('acl', 'allow') | lower, 'waives_live_ack': _wla_granted} -%}
+                      {%- else -%}
+                        {%- set n = {'entity': raw | string, 'acl': 'allow', 'waives_live_ack': _wla_granted} -%}
+                      {%- endif -%}
+                      {%- set ns.out = (ns.out | rejectattr('entity', 'equalto', n.entity) | list) -%}
+                      {%- if n.acl != 'remove' -%}
+                        {%- set ns.out = ns.out + [n] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.out }}
+              - variables:
+                  _new_cert_entry: >-
+                    {%- set e = {'level': _lvl, 'certified': now().strftime('%Y-%m-%d'), 'tool': _ctool} -%}
+                    {%- if _ccons is sequence and _ccons | length > 0 -%}
+                      {%- set e = e | combine({'constraints': _ccons}) -%}
+                    {%- endif -%}
+                    {%- if _cg_merged_scope is sequence and _cg_merged_scope | length > 0 -%}
+                      {%- set e = e | combine({'scope': _cg_merged_scope}) -%}
+                    {%- endif -%}
+                    {{ e }}
+                  _updated_certs: "{{ _existing_certs | combine({_comp: _new_cert_entry}) }}"
+                  _updated_stats: >-
+                    {{ _existing_stats | combine(_spatch, recursive=true)
+                       if (_spatch is mapping and _spatch | length > 0)
+                       else _existing_stats }}
+                  _new_doc: >-
+                    {{
+                      (_cev if _cev is mapping else {})
+                      | combine({
+                          'jacket_id': _jacket_id,
+                          'kfc_certifications': _updated_certs,
+                          'stats': _updated_stats
+                        })
+                      | tojson
+                    }}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ _target }}"
+                  key: zen_ai_certs
+                  value: "{{ _new_doc }}"
+              - variables:
+                  final_response:
+                    status: ok
+                    mode: cert_grant
+                    target: "{{ _target }}"
+                    component: "{{ _comp }}"
+                    level: "{{ _lvl }}"
+                    jacket_id: "{{ _jacket_id }}"
+                    waives_live_ack_granted: "{{ _wla_granted }}"
+                    waives_live_ack_note: >-
+                      {{ '' if not _wla_requested else ('Granted -- ' ~ (_cscope | length) ~ ' scoped entit(y/ies) now skip live-ack.' if _wla_granted else 'Requested but NOT granted -- confirm_action and/or exact ack_phrase missing. Grant proceeded as a normal (non-waiving) cert_grant.') }}
+                    message: "Cert granted: {{ _comp }} level {{ _lvl }}."
+                    cert: "{{ _new_cert_entry }}"
+                    caller_token: "{{ caller_token }}"
+              - stop: cert_grant complete
+                response_variable: final_response
+
+      ###########################################################################
+      # 4 — CERT_REVOKE
+      ###########################################################################
+      - choose:
+          - conditions: "{{ _mode == 'cert_revoke' }}"
+            sequence:
+              - variables:
+                  _comp: "{{ cert_component | default('') | trim | lower }}"
+              - choose:
+                  - conditions: "{{ _comp == '' }}"
+                    sequence:
+                      - variables:
+                          final_response:
+                            status: error
+                            message: "cert_revoke requires cert_component (kata_key)."
+                            caller_token: "{{ caller_token }}"
+                      - stop: Missing cert_component
+                        response_variable: final_response
+              - variables:
+                  _craw:           "{{ _cab_vars.get('zen_ai_certs', {}) }}"
+                  _cev:            "{{ _craw.get('value', _craw) if _craw is mapping else {} }}"
+                  _existing_certs: "{{ _cev.get('kfc_certifications', {}) if _cev is mapping else {} }}"
+              - choose:
+                  - conditions: "{{ _comp not in _existing_certs }}"
+                    sequence:
+                      - variables:
+                          final_response:
+                            status: warning
+                            message: "cert_revoke: '{{ _comp }}' not found in certifications. No change."
+                            caller_token: "{{ caller_token }}"
+                      - stop: Cert not found
+                        response_variable: final_response
+              - action: script.zen_dojotools_identity
+                response_variable: _cr_ack_result_raw
+                continue_on_error: true
+                data:
+                  mode: request_live_ack
+                  ack_message: "Agent requests cert_revoke: '{{ _comp }}' from {{ _target }}. Approve?"
+                  caller_token: "{{ caller_token }}"
+              - variables:
+                  _cr_approved: "{{ _cr_ack_result_raw.get('approved', false) if _cr_ack_result_raw is mapping else false }}"
+                  _cr_ack_reason: "{{ _cr_ack_result_raw.get('reason', 'dispatch_failed') if _cr_ack_result_raw is mapping else 'dispatch_failed' }}"
+              - choose:
+                  - conditions: "{{ not _cr_approved }}"
+                    sequence:
+                      - variables:
+                          final_response:
+                            status: denied
+                            mode: cert_revoke
+                            component: "{{ _comp }}"
+                            reason: "{{ _cr_ack_reason }}"
+                            caller_token: "{{ caller_token }}"
+                      - stop: cert_revoke — not approved
+                        response_variable: final_response
+              - variables:
+                  _pruned_certs: >-
+                    {%- set ns = namespace(d={}) -%}
+                    {%- for k, v in _existing_certs.items() if k != _comp -%}
+                      {%- set ns.d = ns.d | combine({k: v}) -%}
+                    {%- endfor -%}
+                    {{ ns.d }}
+                  _updated_doc: >-
+                    {{ (_cev if _cev is mapping else {})
+                       | combine({'kfc_certifications': _pruned_certs})
+                       | tojson }}
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: create
+                  force_action: true
+                  set_timestamp: true
+                  show_hidden_volumes: false
+                  volume_entity_id:
+                    - "{{ _target }}"
+                  key: zen_ai_certs
+                  value: "{{ _updated_doc }}"
+              - variables:
+                  final_response:
+                    status: ok
+                    mode: cert_revoke
+                    target: "{{ _target }}"
+                    component: "{{ _comp }}"
+                    message: "Cert revoked: {{ _comp }} removed from {{ _target }}."
+                    caller_token: "{{ caller_token }}"
+              - stop: cert_revoke complete
+                response_variable: final_response
+
+      - variables:
+          final_response:
+            status: error
+            message: "Unrecognized mode '{{ _mode }}'. Valid: cert_grant, cert_revoke, cert_list, tool_manifest, help."
+            caller_token: "{{ caller_token }}"
+      - stop: unrecognized mode
+        response_variable: final_response

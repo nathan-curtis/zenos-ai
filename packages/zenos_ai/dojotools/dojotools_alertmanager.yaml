@@ -262,8 +262,17 @@ automation:
                   _severity:      "{{ _ev.severity | default('warn') | trim }}"
                   _notify_target: "{{ _ev.notify_target | default('persistent') | trim }}"
                   _channel_hint:  "{{ _ev.channel_hint | default('', true) | string | trim }}"
+                  _display:       "{{ _ev.display | default('prompt', true) | string | trim | lower }}"
                   _image_entity:  "{{ _ev.image_entity | default('', true) | string | trim }}"
                   _response_type: "{{ _ev.response_type | default('', true) | string | trim }}"
+                  # A live-ack bypass can be security or life related --
+                  # optional passthrough, defaults false so every other alert still respects
+                  # quiet/sleep hours exactly as before. request_live_ack
+                  # is the one caller that always sets this true, since
+                  # it gates a human-requested security-relevant action
+                  # (e.g. clearing Paused) rather than a passive FYI that
+                  # should legitimately wait until morning.
+                  _breakthrough: "{{ _ev.breakthrough | default(false, true) }}"
                   _kata_cab:      "{{ states('sensor.zen_kata_cabinet_resolved') }}"
                   _title:         >-
                     {{ _ev.title | default('ZenOS — ' ~
@@ -299,6 +308,7 @@ automation:
                           channel_hint: "{{ _channel_hint }}"
                           image_entity: "{{ _image_entity }}"
                           response_type: "{{ _response_type }}"
+                          breakthrough: "{{ _breakthrough }}"
                           caller_token: "zen_alert_manager/{{ _key }}"
                         response_variable: _pm_res
 
@@ -396,6 +406,7 @@ automation:
                         summary: "{{ _message }}"
                         urgency: critical
                         expires_minutes: 60
+                        display: "{{ _display }}"
 
           # ── alert_clear ─────────────────────────────────────────────────────
           - conditions: "{{ _kind == 'alert_clear' }}"
@@ -456,7 +467,7 @@ automation:
                 continue_on_error: true
 
   ###############################################################################
-  # Zen Priority Inject Handler 1.0.0
+  # Zen Priority Inject Handler 1.1.0
   #
   # Processes priority_inject_write / priority_inject_clear events.
   # Writes to household_cabinet._zen_priority_inject — dict keyed by provider_id.
@@ -466,6 +477,14 @@ automation:
   #   - summary truncated to 255 chars (+ …)
   #   - expires_minutes converted to ISO, capped at 1440 (24hr)
   #   - entities truncated to 3
+  #   - display (1.1.0, optional): prompt | tool_response | both | none —
+  #     invalid/omitted value silently coerces to 'prompt' (unchanged legacy
+  #     behavior — every existing provider omits this field). 'prompt' =
+  #     rendered by priority_inject() in the system prompt only (as before).
+  #     'tool_response' = surfaced via envelope()'s system_message field on
+  #     the next tool call, any tool, instead. 'both' = both channels.
+  #     'none' = written for some other consumer, hits neither agent-facing
+  #     surface.
   #   - combine() semantics — providers never overwrite each other
   ###############################################################################
 
@@ -557,12 +576,15 @@ automation:
                     {%- set expires = (now() + timedelta(minutes=exp_min)).isoformat() -%}
                     {%- set ents_raw = _ev.entities | default([]) -%}
                     {%- set ents = ents_raw[:3] if ents_raw is sequence else [] -%}
+                    {%- set disp_raw = _ev.display | default('prompt') | string | trim | lower -%}
+                    {%- set disp = disp_raw if disp_raw in ['prompt', 'tool_response', 'both', 'none'] else 'prompt' -%}
                     {%- set new_entry = {
                       'summary': summary,
                       'urgency': _ev.urgency,
                       'since': now().isoformat(),
                       'expires': expires,
-                      'entities': ents
+                      'entities': ents,
+                      'display': disp
                     } -%}
                     {%- set ns = namespace(d={}) -%}
                     {%- for k, v in entries.items() -%}
@@ -697,6 +719,11 @@ script:
         selector:
           select:
             options: [info, warn, error]
+      display:
+        description: "prompt | tool_response | both | none (fire, error severity only — routes the priority-inject entry this alert writes). Default prompt (unchanged legacy behavior)."
+        selector:
+          select:
+            options: [prompt, tool_response, both, none]
       notify_target:
         description: "Notification target — persistent | mobile | postman (fire)"
         selector:
@@ -715,6 +742,10 @@ script:
         selector:
           select:
             options: [none, yes_no, yes_no_ignore, ok_cancel, acknowledge]
+      breakthrough:
+        description: "fire, postman only. Bypasses the house sleep/quiet-hours gate regardless of urgency. Default false — reserve for security/life-relevant human-requested actions (e.g. request_live_ack), not routine alerts."
+        selector:
+          boolean:
       clear_after_minutes:
         description: "TTL in minutes; 0=permanent, omit=24h auto-GC (fire)"
         selector:
@@ -1028,6 +1059,18 @@ script:
                   _img:   "{{ image_entity | default('', true) | string | trim }}"
                   _rtype: "{{ response_type | default('', true) | string | trim }}"
                   _cam:   "{{ clear_after_minutes | default(none, true) }}"
+                  _disp:  "{{ display | default('prompt', true) | string | trim | lower }}"
+                  # This `fire` action must read `breakthrough` from its own
+                  # caller input and include it in the
+                  # event it emits below, matching
+                  # the listener automation's `_ev.breakthrough` read and
+                  # the outbound postman call -- otherwise the field never
+                  # survives the round trip.
+                  # HA scripts silently ignore unrecognized input data
+                  # fields rather than erroring, so this failed
+                  # completely silently. request_live_ack's
+                  # `breakthrough: true` went nowhere.
+                  _brk:   "{{ breakthrough | default(false, true) }}"
 
               - if:
                   - condition: template
@@ -1053,11 +1096,13 @@ script:
                     image_entity:        "{{ _img }}"
                     response_type:       "{{ _rtype }}"
                     clear_after_minutes: "{{ _cam }}"
+                    display:             "{{ _disp }}"
+                    breakthrough:        "{{ _brk }}"
 
               - variables:
                   _response: >-
                     {{ {'mode': 'fire', 'alert_key': _key, 'severity': _sev,
-                        'notify_target': _ntgt, 'queued': true,
+                        'notify_target': _ntgt, 'display': _disp, 'queued': true,
                         'caller_token': _caller_token} | tojson }}
 
           # ── clear ─────────────────────────────────────────────────────────────
@@ -1332,7 +1377,7 @@ script:
                           'fire': {
                             'desc': 'Emit alert_fire zen_event. zen_alert_manager handles dedup — already-active key is silent no-op.',
                             'required': 'alert_key (unique slug), message',
-                            'optional': 'severity(info|warn|error, default:warn), notify_target(persistent|postman|notify.<service suffix>, default:persistent), channel_hint(push|tts|teams), clear_after_minutes(0=permanent, omit=1440 auto-GC)'
+                            'optional': 'severity(info|warn|error, default:warn), notify_target(persistent|postman|notify.<service suffix>, default:persistent), channel_hint(push|tts|teams), clear_after_minutes(0=permanent, omit=1440 auto-GC), breakthrough(bool, default:false — bypasses the quiet/sleep-hours gate for security or life-relevant human-requested actions)'
                           },
                           'clear': {
                             'desc': 'Emit alert_clear. Dismisses persistent notification + clears priority inject entry. Inactive key = silent no-op.',

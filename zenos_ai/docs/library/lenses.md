@@ -304,6 +304,19 @@ Provider rules:
 
 ## Provider Evidence Output
 
+> **Known drift, not yet reconciled:** the nested
+> shape below (`stack{}` + `anchor_contexts[]`) is what this doc has
+> always specified, and is what `paperless_ngx`/`library_catalog` actually
+> emit. But most other real providers — `battery_notes`, `autovac`, and
+> `presence` at minimum — emit a **flat** dict instead
+> (`{"id": ..., "type": ..., "provider": ..., ...}` at the top level, no
+> `stack{}` wrapper, no `anchor_contexts[]`). Both shapes are live in
+> production today under the same dispatcher. Treat the nested shape as
+> aspirational/Paperless-specific rather than universally enforced until
+> someone decides which one is actually canonical and reconciles the
+> rest — don't assume every provider's evidence follows this exact
+> structure without checking that provider's own output first.
+
 Evidence MUST include stable provenance and anchor context.
 
 ```json
@@ -542,7 +555,7 @@ Consumers MUST NOT fail the primary user workflow just because lens enrichment f
 
 ## Current Implementation
 
-### Inspect
+### Consumers
 
 `zen_dojotools_inspect` supports `+lenses`.
 
@@ -557,6 +570,41 @@ It injects:
 
 * `domain_context.lenses`
 * per-result `lens_context`
+
+`zen_dojotools_room_manager mode=home_overview` is a second real consumer
+— it builds `person` anchors from `states.person | selectattr('state','
+eq','home')` and `area_id` anchors from rooms with open sensors, and
+injects the merged result as `lenses.evidence[]`.
+
+### Registered providers
+
+This list is **read off the live `lens_registry` cabinet key at the time
+of writing** — verify against `zen_dojotools_manifest mode=labels` or a
+direct `lens_registry` read rather than trusting this table blindly if
+it's been a while, since providers get added faster than this doc gets
+updated (that gap is exactly what prompted this rewrite).
+
+| Provider key | Tool | Consumes | Returns |
+|---|---|---|---|
+| `alarms` | `zen_stack_alarms` | `area_id` | `alarm_evidence` |
+| `autovac` | `zen_dojotools_autovac` | `area_id` | `cleaning_evidence` |
+| `battery_notes` | `zen_stack_battery` | `area_id` | `battery_evidence` |
+| `crm` | `zen_stack_crm` | `company`, `person` | `company_evidence`, `contact_evidence` |
+| `depreciation_assets` | `zen_stack_depreciation` | `label`, `area_id`, `product` | `asset_depreciation_evidence` |
+| `firefly_iii` | `zen_stack_firefly` | `label`, `person`, `transaction` | `transaction_evidence` |
+| `inventory` | `zen_dojotools_inventory` | `area_id` | `player_hint` |
+| `library_catalog` | `zen_dojotools_library` | `person`, `label`, `area_id` | `item_evidence` |
+| `locks` | `zen_dojotools_locks` | `area_id` | `lock_evidence` |
+| `media` | `zen_dojotools_media_manager` | `label`, `person`, `area_id`, `zone`, `concept`, `mood`, `activity` | `track_evidence` and 8 other media evidence classes |
+| `paperless_ngx` | `zen_stack_paperless` | `label`, `person`, `area_id`, `zone` | `document_evidence` |
+| `presence` | `zen_stack_presence` | `person`, `area_id` | `presence_evidence` |
+| `taskmaster` | `zen_dojotools_taskmaster` | `area_id`, `label`, `person`, `company` | `task_evidence` |
+| `timer` | `zen_stack_timer` | `label` | `timer_evidence` |
+| `webdav` | (registered directly, no `zen_stack_*` wrapper) | `label`, `concept`, `person`, `document`, `area_id` | — |
+| `wiki_js` | `zen_sutra_wikijs` | `label`, `concept`, `area_id`, `zone`, `person` | `article_evidence` |
+
+Paperless-NGX remains the canonical worked example below since its lens
+output sanitization (raw-content stripping) is the most instructive case.
 
 ### Stacks / Paperless-NGX
 

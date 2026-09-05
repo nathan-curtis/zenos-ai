@@ -17,7 +17,7 @@
 #}
 {#
   ZenOS-AI Prompt Engine — Core Runtime Template
-  Version: 2026.8.1
+  Version: 2026.9.0
 
   dev_notes:
     Single canonical file. ~COMMANDS~/command_interpreter interface fully retired —
@@ -95,7 +95,7 @@
    tool_manifest() (imports this file), zen_dojotools_help mode=about.
    =============================================================== #}
 {%- macro os_version() -%}
-  {{ {'version': '2026.8.1', 'tag': '', 'tag_number': none} | tojson }}
+  {{ {'version': '2026.9.0', 'tag': '', 'tag_number': none} | tojson }}
 {%- endmacro -%}
 
 {# ===============================================================
@@ -925,6 +925,111 @@
     {% endif %}
 
 {% endmacro %}
+
+{# ====== envelope — canonical OS-level response shape ======
+   PILOT / NOT YET ADOPTED BROADLY. Lives here (not a standalone macro file)
+   deliberately -- zen_os_1.jinja is already a hard dependency for the prompt
+   itself (imported by conversation_agent_prompt_template.yaml) and for Flynn
+   (flynn.yaml), so R0/debug tools importing THIS file for the envelope shape
+   take on zero NEW failure edge -- they already depend on it existing.
+   Import failures in HA Jinja are NOT soft: a missing/broken {% import %}
+   target raises a raw exception that kills the entire MCP call outright
+   (verified live 2026-08-14 -- TemplateNotFound surfaced as a tool-call
+   error, not a JSON status:error response). That's the whole reason this
+   lives in the one file every load-bearing tool already can't live without,
+   instead of a new standalone file that would BE a new failure edge.
+
+   system_message is the universal sideband channel -- reads the SAME
+   _zen_priority_inject drawer/GC/expiry the priority_inject() prompt macro
+   above already uses, filtered to entries whose 'display' field is
+   'tool_response' or 'both' (prompt-only entries, the default, never
+   surface here). Usually none -- returns null, not padded onto every call.
+   'display' is a new per-entry field, not yet written by any real provider
+   as of this pilot; existing entries default to 'prompt' (unchanged
+   behavior) via .get('display','prompt').
+#}
+{%- macro envelope(status='success', mode='', result=none, tool='', caller_token='') -%}
+  {%- set _sys_msg = none -%}
+  {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+  {%- if _hh not in ['', 'unknown', 'unavailable'] -%}
+    {%- set _vars = state_attr(_hh, 'variables') | default({}, true) -%}
+    {%- set _vars = _vars if _vars is mapping else {} -%}
+    {%- set _raw  = _vars.get('_zen_priority_inject', {}) -%}
+    {%- set _slot = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
+    {%- set _slot = _slot.get('value', _slot) if _slot is mapping else {} -%}
+    {%- if _slot is mapping -%}
+      {%- set _now = now() -%}
+      {%- set _ns  = namespace(candidates=[]) -%}
+      {%- for _pid, _entry in _slot.items() if _entry is mapping -%}
+        {%- set _disp = _entry.get('display', 'prompt') -%}
+        {%- if _disp in ['tool_response', 'both'] -%}
+          {%- set _exp_s  = _entry.get('expires', '') | string | trim -%}
+          {%- set _exp_dt = (_exp_s | as_datetime) if _exp_s != '' else none -%}
+          {#- Defensive: a naive (no tzinfo) or otherwise malformed expires
+              value must never crash this comparison -- one bad entry from
+              any provider would otherwise take down envelope() for EVERY
+              tool call, not just this one (verified live 2026-08-14: a
+              naive timestamp raised TypeError: can't compare offset-naive
+              and offset-aware datetimes, uncaught, killing the whole call).
+              Skip the entry (treat as not-current) instead of crashing. #}
+          {%- set _exp_valid = _exp_dt is not none and _exp_dt.tzinfo is not none -%}
+          {%- if _exp_valid and _now < _exp_dt -%}
+            {%- set _ns.candidates = _ns.candidates + [{'urg': _entry.get('urgency','urgent'), 'pid': _pid, 'entry': _entry}] -%}
+          {%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if _ns.candidates | length > 0 -%}
+        {%- set _pick = (_ns.candidates | sort(attribute='urg'))[0] -%}
+        {%- set _sys_msg = {
+              'class': _pick.entry.get('class', _pick.pid),
+              'message': _pick.entry.get('summary', ''),
+              'urgency': _pick.entry.get('urgency', 'urgent')
+            } -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endif -%}
+  {{ {
+    'status': status,
+    'mode': mode,
+    'tool': tool,
+    'result': result if result is not none else {},
+    'system_message': _sys_msg,
+    'caller_token': caller_token
+  } | tojson }}
+{%- endmacro -%}
+
+
+{# ================== CERT SCOPE ================== #}
+{#- Single shared ACL resolver, called from INSIDE resolve_caller_identity
+    (zen_dojotools_identity), not duplicated per consumer tool -- identity is
+    the one broker every SASE-shaped tool already calls, so scope resolution
+    belongs there, not re-walked in locks/covers/security_manager/room_manager/
+    lights individually. Normalizes BOTH the current bare-array format
+    (["entity.id", ...], legacy semantic: presence = allow exemption from
+    live-ack) AND the future structured ACL-entry format ([{'entity':
+    'entity.id', 'acl': 'allow'|'deny'}, ...]) into one answer. Returns
+    'allow', 'deny', or 'default' (entity not special-cased -- caller's own
+    fallback rule applies, e.g. locks/covers today treat 'default' as
+    ack-required, not blocked). A deny on a group/scene member still needs
+    the CALLER to walk real components (mode=inspect's device_entities/
+    contains_members logic) and call resolve_caller_identity per leaf entity
+    -- this macro only ever answers for the one entity_id it's given. #}
+{%- macro cert_scope_check(cert_scope, entity_id) -%}
+  {%- set _scope = cert_scope if cert_scope is iterable and cert_scope is not string else [] -%}
+  {%- set ns = namespace(answer='default') -%}
+  {%- for _entry in _scope -%}
+    {%- if _entry is mapping -%}
+      {%- if _entry.get('entity', '') == entity_id -%}
+        {%- set ns.answer = _entry.get('acl', 'allow') | lower -%}
+      {%- endif -%}
+    {%- elif _entry is string -%}
+      {%- if _entry == entity_id and ns.answer == 'default' -%}
+        {%- set ns.answer = 'allow' -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{ ns.answer }}
+{%- endmacro -%}
 
 
 {# ================== AGENT CONTEXT ================== #}
@@ -1822,7 +1927,7 @@ identity_format() must run before ai_wake_sequence().
 
 {{logon_prompt(ai_entity)}}
 
-Executing: ~WAKE~ <{{ now().isoformat() }}>
+Executing: ~WAKE~ <<timestamp>>
 
     {# ----------------------------------------------------
        2. Pull AutoContext from AI Cabinet
@@ -1958,13 +2063,14 @@ AutoContext:
      health_signals     — {schema_ok, sig_ok, manifest_ok, familiar_ok}
    ============================== #}
 {%- macro compact_overview() -%}
-  {%- set _rooms_raw = state_attr('sensor.home_overview', 'rooms') | default({}, true) -%}
-  {%- set _ns = namespace(rooms={}) -%}
-  {%- for rname, rdata in _rooms_raw.items() -%}
-    {%- if rdata is mapping and '_timer' in rdata.get('room_timer_entity_id', '') -%}
-      {%- set _ns.rooms = _ns.rooms | combine({rname: rdata.get('room_state', 'unknown')}) -%}
-    {%- endif -%}
-  {%- endfor -%}
+  {#- 2026-08-18: rooms was always empty (sensor.home_overview never had a
+     'rooms' attribute; also this loop's own '_timer' string-match filter
+     was dead logic even if it had). Now that sensor.home_overview computes
+     a real, deliberately lean {room: state} rooms attribute (see
+     sensor_helpers.yaml), this just passes it straight through -- no
+     re-filtering needed, the sensor already only includes real v3
+     room-state sensors. Kept lean on purpose: room_manager mode=
+     home_overview/get is where full per-room depth lives, not the prompt. -#}
   {{- {
     'home_mode':          states('input_select.zen_home_mode'),
     'security_mode':      state_attr('sensor.home_overview', 'security_mode') | default(''),
@@ -1973,7 +2079,7 @@ AutoContext:
     'vacation_mode':      state_attr('sensor.home_overview', 'vacation_mode') | default(''),
     'quiet_hours':        state_attr('sensor.home_overview', 'quiet_hours') | default(''),
     'work_hours':         state_attr('sensor.home_overview', 'work_hours') | default(''),
-    'rooms':              _ns.rooms
+    'rooms':              state_attr('sensor.home_overview', 'rooms') | default({}, true)
   } | tojson -}}
 {%- endmacro -%}
 

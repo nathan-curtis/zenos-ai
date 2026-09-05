@@ -1,6 +1,6 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Security Manager
-# Version: 5.2.0
+# Version: 5.3.0
 #
 # Scripts:
 #   zen_dojotools_security_manager — Alarm panel query + control + policy
@@ -17,13 +17,43 @@
 #   read_state  — Full panel snapshot (default): state, zones, system health,
 #                 cameras_by_area (security_camera label grouped by area_id)
 #   query       — List all alarm_control_panel entities tagged alarm_panel
+#   get_policy  — Read _alert_policy
 #   arm         — Arm with mode: away / home / night / vacation
+#   set_alert_policy — Merge policy_patch into _alert_policy
 #   disarm      — Disarm
 #
 # Lens pattern (v5.1.0):
 #   Security Manager = zone/panel lens. Camera = visual analysis lens.
 #   RM +security slice = per-room spatial bridge.
 #   read_state.lens field describes handoff to the other tools.
+#
+# v5.3.0 — full SESE + envelope() migration + gated actuation ("does lock management need to contribute anything to
+# security manager" -> the reverse question: security_manager was found
+# with ZERO gating on arm/disarm while zen_dojotools_locks got a full
+# identity gate the same session -- the move is unlock
+# and disarm, or arm and lock, so these two tools are the same risk
+# class and get the same treatment.
+#   - Tier R (read): read_state, query, get_policy -- unchanged, open.
+#   - Tier X (act): arm, set_alert_policy -- require the security_control
+#     cert (same zen_dojotools_identity resolve_caller_identity chokepoint
+#     locks uses for lock_control), fail-closed. Arming only increases
+#     security (parallel to lock); set_alert_policy governs what the
+#     household even gets notified about, a real risk if silently
+#     weakened, so it's gated at the same tier as arm, not left open like
+#     get_policy.
+#   - Tier D (disarm): disarm -- cert AND a FRESH live household-admin ack
+#     every single call via zen_dojotools_identity mode=request_live_ack,
+#     never reusable across calls, same as locks' exterior-unlock gate
+#     (disarming is the direct security analog of unlocking an exterior
+#     door -- reduces security, must be asked for every time).
+#   - Every action now builds a domain `result` and falls through to ONE
+#     shared stop wrapping it in OS.envelope() (zen_os_1.jinja, #10297).
+#     tool_manifest/kfc_manifest keep their own early exits -- self-
+#     description/registry, not domain results, same precedent as every
+#     other DojoTools tool.
+#   - All zone/system-health/camera device-tree-walk logic (read_state) is
+#     UNCHANGED byte-for-byte in substance -- only the response envelope
+#     and control-flow shape moved, not the classification rules.
 ###############################################################################
 
 script:
@@ -32,7 +62,7 @@ script:
     mode: parallel
     max: 10
     description: >-
-      zen_dojotools_security_manager (v5.2.0)
+      zen_dojotools_security_manager (v5.3.0)
       CANONICAL alarm_control_panel domain tool. Security Manager lens — zone/panel
       state. Discovers panel via label:alarm_panel. Device tree walk (device_entities)
       finds all zones, system sensors, bypasses, chime — no hardcoded entity IDs.
@@ -44,14 +74,18 @@ script:
       context use zen_dojotools_room_manager mode=get context_slices=+security.
 
       ACTIONS:
-        read_state   (default) — Full snapshot: panel state, zones (open/fault/bypass),
+        read_state   (default, r) — Full snapshot: panel state, zones (open/fault/bypass),
           system health (AC, battery, fire, alarm, bell), keypad, chime, panic buttons,
           cameras_by_area (security_camera entities grouped by area_id), lens handoff note.
-        query        — List all labeled panels with state.
-        arm          — Arm the panel. arm_mode: away/home/night/vacation required.
-        disarm       — Disarm the panel.
-        get_policy   — Read _alert_policy from household cabinet security_manager drawer.
-        set_alert_policy — Merge policy_patch (JSON) into _alert_policy. Partial update OK.
+        query        (r) — List all labeled panels with state.
+        get_policy   (r) — Read _alert_policy from household cabinet security_manager drawer.
+        arm          (x) — Arm the panel. arm_mode: away/home/night/vacation required.
+          Requires the security_control cert (identity-gated, fail-closed).
+        set_alert_policy (x) — Merge policy_patch (JSON) into _alert_policy. Partial
+          update OK. Same security_control cert as arm.
+        disarm       (d) — Disarm the panel. Requires security_control cert PLUS a
+          FRESH live household-admin ack every single call — never reusable, same
+          gate shape as zen_dojotools_locks' exterior-unlock ack.
 
       Examples:
         Read:           {}
@@ -65,12 +99,59 @@ script:
     fields:
       action:
         name: Action
-        description: read_state (default) | query | arm | disarm | get_policy | set_alert_policy
+        description: read_state (default) | query | arm | disarm | get_policy | set_alert_policy | auto_arm_check | auto_arm_config
         required: false
         selector:
           select:
-            options: [read_state, query, arm, disarm, get_policy, set_alert_policy]
+            options: [read_state, query, arm, disarm, get_policy, set_alert_policy, auto_arm_check, auto_arm_config]
         default: read_state
+
+      auto_arm_trigger:
+        name: Auto-Arm Trigger Source
+        description: >-
+          Internal — which event fired auto_arm_check: occupancy (default,
+          zone.home changed) | vac_started | vac_docked. Set by the companion
+          automation, not intended for direct agent calls.
+        required: false
+        selector:
+          text:
+
+      auto_arm_patch:
+        name: Auto-Arm Config Patch
+        description: >-
+          JSON string for auto_arm_config. Partial update — only provided keys
+          are merged. Keys: auto_arm_enabled (bool, default false),
+          vac_arm_override_enabled (bool, default false),
+          vac_downgrade_dock_wait_min (int, default 5 — minutes to wait after
+          a dock event, then recheck the vacuum is truly done (not mid-run
+          mop-wash), before re-arming Away), night_arm_enabled (bool, default
+          false — arm to Home when zen_home_mode enters Night-Late, only if
+          currently disarmed; deliberately no matching auto-disarm, that's
+          wired to a door-unlock event elsewhere), mode_away_arm_enabled
+          (bool, default false — arm Away when zen_home_mode enters Away,
+          only if currently disarmed; distinct from and independent of the
+          existing occupancy-based zone.home==0 arm-away path),
+          entertaining_blocks_night_arm (bool, default false — when true,
+          Night-Late auto-arm is skipped entirely while
+          input_boolean.zen_entertaining is on; optional, off means
+          entertaining mode has no effect on night_arm_enabled),
+          alarm_drives_home_mode_enabled (bool, default false — reverse
+          sync: panel armed_away sets zen_home_mode to Away, panel disarmed
+          while home_mode was Away calls zen_home_mode_release; parity-
+          matched against legacy NR's Main Mode Sync group),
+          disarm_occupies_arrival_area_enabled (bool, default false — any
+          real disarm fires a synthetic occupied signal for every area
+          tagged label:arrival_area via room_signal_fire, independent of
+          alarm_drives_home_mode_enabled; tag any entity in the room(s) you
+          want treated as an arrival point, no hardcoded room),
+          lock_disarm_enabled (bool, default false — an exterior lock
+          unlocking while armed_home auto-disarms; never auto-disarms from
+          armed_away, see the lock_unlocked branch's own comment for why).
+          All default off/unset — auto_arm_enabled stays off until
+          Node-RED's equivalent flows are decommissioned.
+        required: false
+        selector:
+          text:
 
       policy_patch:
         name: Policy Patch
@@ -134,7 +215,7 @@ script:
                     tool='zen_dojotools_security_manager',
                     display_name='Security Manager',
                     tier='dojotools',
-                    version='1.0.0',
+                    version='5.4.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['security_manager', 'alarm'],
@@ -147,7 +228,19 @@ script:
                     mcp_exposed=true,
 
                     caller_token=caller_token | default('')
-                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['security_manager', 'security_perimeter', 'security_panel', 'security_cameras']}) }}
+                ) | from_json | combine({
+                    'kfc_manifest': true,
+                    'kfc_components': ['security_manager', 'security_perimeter', 'security_panel', 'security_cameras'],
+                    'certs_required': [{
+                      'cert': 'security_control',
+                      'display_name': 'Security Control',
+                      'description': 'Alarm panel arm/disarm and alert-policy changes via zen_dojotools_security_manager.',
+                      'max_level': 4,
+                      'gates': ['action=arm (cert only)', 'action=set_alert_policy (cert only)'],
+                      'live_ack_required_for': ['action=disarm -- every call, cert alone is never sufficient'],
+                      'grant_via': "persona_editor mode=cert_grant cert_component=security_control (or zen_dojotools_identity mode=cert_list to see current status)"
+                    }]
+                  }) }}
           - stop: tool_manifest
             response_variable: result
         - conditions: "{{ _tm_check == 'kfc_manifest' }}"
@@ -165,6 +258,13 @@ script:
                     Spatial foundation: who is home, which rooms are occupied, which entry/exit
                     points (portals, doors, garage) are open or secured. Read this before
                     interpreting any event stream.
+                    Each entry in signal.active_rooms[] also carries v3_occupancy — Room Manager
+                    v3's live per-room state (emergency/paused/automation/cleaning/asleep/engaged/
+                    hold/occupied/vacant, or null if that room has no v3 sensor deployed).
+                    This is a SHARPER signal than the coarse "lights on or motion recently"
+                    heuristic that drives active_rooms[] membership itself — prefer v3_occupancy
+                    over inferring occupancy from lights/media when a room has it. See SPATIAL
+                    COMPOUND INFERENCE below for how to weight it.
 
                   INPUT (supplemental context from coalescer — read these fields from event data):
                     panel_cache      — security_panel kata: panel_state, arming_mode, zones, system_health, urgency
@@ -196,6 +296,28 @@ script:
                     Door opened + occupant in adjacent room: likely known; door opened + vacant house: suspicious.
                     Alarm triggered + RM shows occupant in that zone + known time of day: likely false trigger.
                     Alarm triggered + zone vacant + camera_analysis confirms presence: high-confidence real event.
+
+                  ROOM MANAGER v3 STATE WEIGHTING (v3_occupancy per room, when present — see SEED
+                  OUTPUT above; a room with v3_occupancy=null has no v3 sensor, fall back to the
+                  coarse rules above for that room only):
+                    v3_occupancy=emergency in the triggered zone: near-certain real event — REFLEX's
+                      own emergency latch (smoke/CO/moisture/siren) already independently confirmed
+                      something is wrong there. Corroborating signal, do not re-derive from scratch.
+                    v3_occupancy=asleep in the triggered zone: an alarm/motion trip here is LESS
+                      likely a false trigger than in a merely "occupied" room — asleep occupants
+                      don't casually wander and re-trigger sensors the way someone actively occupied
+                      does; treat asleep-zone triggers with the same weight as vacant-zone triggers,
+                      not as automatic "probably just the occupant."
+                    v3_occupancy=engaged in the triggered zone: near-certain false trigger if the
+                      engagement predates the alarm event (someone is actively using the room, e.g.
+                      media playing) — cross-check timing, not just presence.
+                    v3_occupancy=paused or automation: room control is overridden by a human or
+                      agent for an unrelated reason — do not let this suppress or inflate urgency by
+                      itself, it says nothing about physical presence.
+                    v3_occupancy=vacant is a STRONGER "nobody should be here" signal than RoomReg's
+                      generic "no lights, no motion recently" — REFLEX already resolved the full
+                      cascade (including any decay-timer grace period), so trust it over re-deriving
+                      vacancy from raw lights/media state.
 
                   CAMERA ABSENT MODE:
                     If camera_cache and camera_analysis are both empty or missing: proceed with RM + panel + perimeter.
@@ -477,13 +599,14 @@ script:
               result:
                 status: ok
                 tool: zen_dojotools_security_manager
-                version: "5.2.0"
+                version: "5.3.0"
                 mode: kfc_manifest
                 kfc: "{{ _kfc_out }}"
                 count: "{{ _kfc_out | length }}"
                 caller_token: "{{ caller_token | default('') }}"
           - stop: kfc_manifest
             response_variable: result
+
       # ── Normalize inputs ──────────────────────────────────────────────────
       - variables:
           _action: "{{ action | default('read_state', true) | lower | trim }}"
@@ -491,404 +614,1218 @@ script:
           _panel_input: "{{ panel | default('', true) | trim }}"
           _arm_mode: "{{ arm_mode | default('', true) | lower | trim }}"
           _policy_patch: "{{ policy_patch | default('', true) | trim }}"
+          _auto_arm_trigger: "{{ auto_arm_trigger | default('occupancy', true) | lower | trim }}"
+          _auto_arm_patch: "{{ auto_arm_patch | default('', true) | trim }}"
 
-      # ── QUERY — list all labeled panels ──────────────────────────────────
-      - if:
-          - condition: template
-            value_template: "{{ _action == 'query' }}"
-        then:
-          - variables:
-              _panels: >-
-                {%- set ns = namespace(panels=[]) -%}
-                {%- for eid in label_entities('alarm_panel') -%}
-                  {%- if eid.startswith('alarm_control_panel.') -%}
-                    {%- set ns.panels = ns.panels + [{
-                      "entity_id": eid,
-                      "name": state_attr(eid, 'friendly_name') | default(eid, true),
-                      "state": states(eid)
-                    }] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {{ ns.panels }}
-          - variables:
-              result:
-                ok: true
-                tool: zen_dojotools_security_manager
-                caller_token: "{{ _token }}"
-                action: query
-                panels: "{{ _panels }}"
-                count: "{{ _panels | length }}"
-          - stop: query
-            response_variable: result
-
-      # ── GET_POLICY — read _alert_policy from household cabinet ────────────
-      - if:
-          - condition: template
-            value_template: "{{ _action == 'get_policy' }}"
-        then:
-          - variables:
-              _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
-              _hh_vars: >-
-                {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
-              _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
-              _policy_val: >-
-                {%- set d = _sm_drawer -%}
-                {%- set d = d.get('value', d) if d is mapping else {} -%}
-                {{ d.get('_alert_policy', {}) }}
-          - variables:
-              result:
-                ok: true
-                tool: zen_dojotools_security_manager
-                caller_token: "{{ _token }}"
-                action: get_policy
-                policy: "{{ _policy_val }}"
-                source: household_cabinet/security_manager/_alert_policy
-          - stop: get_policy
-            response_variable: result
-
-      # ── SET_ALERT_POLICY — merge patch into _alert_policy ─────────────────
-      - if:
-          - condition: template
-            value_template: "{{ _action == 'set_alert_policy' }}"
-        then:
-          - if:
-              - condition: template
-                value_template: "{{ _policy_patch == '' }}"
-            then:
+      # ═══════════════════════════════════════════════════════════════════════
+      # Single-entry/single-exit: every branch below builds `result` and falls
+      # through. ONE stop point at the bottom wraps it in OS.envelope().
+      # ═══════════════════════════════════════════════════════════════════════
+      - choose:
+          # ── QUERY (r) — list all labeled panels ──────────────────────────────
+          - conditions: "{{ _action == 'query' }}"
+            sequence:
+              - variables:
+                  _panels: >-
+                    {%- set ns = namespace(panels=[]) -%}
+                    {%- for eid in label_entities('alarm_panel') -%}
+                      {%- if eid.startswith('alarm_control_panel.') -%}
+                        {%- set ns.panels = ns.panels + [{
+                          "entity_id": eid,
+                          "name": state_attr(eid, 'friendly_name') | default(eid, true),
+                          "state": states(eid)
+                        }] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.panels }}
               - variables:
                   result:
-                    ok: false
-                    tool: zen_dojotools_security_manager
-                    caller_token: "{{ _token }}"
-                    error: missing_policy_patch
-                    message: policy_patch (JSON string) is required for set_alert_policy.
-              - stop: error
-                response_variable: result
-          - variables:
-              _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
-              _hh_vars: >-
-                {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
-              _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
-          - variables:
-              _sm_val: >-
-                {%- set d = _sm_drawer -%}
-                {{ d.get('value', d) if d is mapping else {} }}
-              _current_policy: "{{ _sm_val.get('_alert_policy', {}) }}"
-              _patch: "{{ _policy_patch | from_json }}"
-          - variables:
-              _new_policy: "{{ _current_policy | combine(_patch, recursive=true) }}"
-              _new_val: "{{ _sm_val | combine({'_alert_policy': _new_policy}) }}"
-          - action: script.zen_dojotools_filecabinet
-            data:
-              action_type: update
-              volume_entity_id: ["{{ _hh_cab }}"]
-              key: security_manager
-              value: "{{ _new_val | tojson }}"
-              caller_token: "{{ _token }}/security_manager_set_policy"
-            response_variable: _fc_result
-          - variables:
-              result:
-                ok: true
-                tool: zen_dojotools_security_manager
-                caller_token: "{{ _token }}"
-                action: set_alert_policy
-                policy: "{{ _new_policy }}"
-                event_types_patched: "{{ _patch | list }}"
-          - stop: set_alert_policy
-            response_variable: result
+                    status: ok
+                    action: query
+                    panels: "{{ _panels }}"
+                    count: "{{ _panels | length }}"
 
-      # ── Discover panel entity ─────────────────────────────────────────────
-      - variables:
-          _panel_entity: >-
-            {%- if _panel_input != '' -%}
-              {{ _panel_input }}
-            {%- else -%}
-              {%- set ns = namespace(found='') -%}
-              {%- for eid in label_entities('alarm_panel') -%}
-                {%- if ns.found == '' and eid.startswith('alarm_control_panel.') -%}
-                  {%- set ns.found = eid -%}
+          # ── GET_POLICY (r) — read _alert_policy from household cabinet ──────
+          - conditions: "{{ _action == 'get_policy' }}"
+            sequence:
+              - variables:
+                  _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  _hh_vars: >-
+                    {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                  _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+                  _policy_val: >-
+                    {%- set d = _sm_drawer -%}
+                    {%- set d = d.get('value', d) if d is mapping else {} -%}
+                    {{ d.get('_alert_policy', {}) }}
+              - variables:
+                  result:
+                    status: ok
+                    action: get_policy
+                    policy: "{{ _policy_val }}"
+                    source: household_cabinet/security_manager/_alert_policy
+
+          # ── SET_ALERT_POLICY (x) — merge patch into _alert_policy ───────────
+          # Tier X: same security_control cert as arm. Governs what the
+          # household even gets notified about -- silently weakening it
+          # (e.g. dropping alarm_triggered urgency) is a real risk, not left
+          # open like get_policy. ──
+          - conditions: "{{ _action == 'set_alert_policy' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _policy_patch == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: missing_policy_patch
+                            detail: "policy_patch (JSON string) is required for set_alert_policy."
+                default:
+                  - action: script.zen_dojotools_identity
+                    response_variable: _sap_id_raw
+                    continue_on_error: true
+                    data:
+                      mode: resolve_caller_identity
+                      required_cert: security_control
+                      required_cert_level: 1
+                      caller_token: "{{ _token }}"
+                  - variables:
+                      _sap_policy_status: "{{ _sap_id_raw.get('policy_status', 'blocked') if _sap_id_raw is mapping else 'blocked' }}"
+                      _sap_authorized: "{{ _sap_id_raw.get('authorized', false) if _sap_id_raw is mapping else false }}"
+                      _sap_cert_level: "{{ _sap_id_raw.get('cert_level', 0) if _sap_id_raw is mapping else 0 }}"
+                  - choose:
+                      - conditions: "{{ _sap_policy_status != 'allowed' or not _sap_authorized }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: "{{ 'identity_policy_blocked' if _sap_policy_status != 'allowed' else 'cert_insufficient' }}"
+                                detail: >-
+                                  {%- if _sap_policy_status != 'allowed' -%}
+                                    resolve_caller_identity did not return an allowed identity -- action denied.
+                                  {%- else -%}
+                                    security_control cert level {{ _sap_cert_level }} is below the required minimum (1). Certify the default agent via persona_editor to enable alert-policy changes.
+                                  {%- endif -%}
+                    default:
+                      - variables:
+                          _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                          _hh_vars: >-
+                            {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                          _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+                      - variables:
+                          _sm_val: >-
+                            {%- set d = _sm_drawer -%}
+                            {{ d.get('value', d) if d is mapping else {} }}
+                          _current_policy: "{{ _sm_val.get('_alert_policy', {}) }}"
+                          _patch: "{{ _policy_patch | from_json }}"
+                      - variables:
+                          _new_policy: "{{ _current_policy | combine(_patch, recursive=true) }}"
+                          _new_val: "{{ _sm_val | combine({'_alert_policy': _new_policy}) }}"
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: update
+                          force_action: true
+                          volume_entity_id: ["{{ _hh_cab }}"]
+                          key: security_manager
+                          value: "{{ _new_val | tojson }}"
+                          caller_token: "{{ _token }}/security_manager_set_policy"
+                        response_variable: _fc_result
+                      - variables:
+                          result:
+                            status: ok
+                            action: set_alert_policy
+                            policy: "{{ _new_policy }}"
+                            event_types_patched: "{{ _patch | list }}"
+
+          # ── AUTO_ARM_CONFIG (x) — write auto_arm_enabled/vac_arm_override_enabled.
+          # Same security_control cert as arm/set_alert_policy -- this toggle IS
+          # the human-authorized gate; auto_arm_check itself (below) does not
+          # re-ask per fire, same as Room Manager's wasp/reflex automations don't
+          # re-cert on every trigger once their master switch is on. ──
+          - conditions: "{{ _action == 'auto_arm_config' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _auto_arm_patch == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: missing_auto_arm_patch
+                            detail: "auto_arm_patch (JSON string) is required for auto_arm_config."
+                default:
+                  - action: script.zen_dojotools_identity
+                    response_variable: _aac_id_raw
+                    continue_on_error: true
+                    data:
+                      mode: resolve_caller_identity
+                      required_cert: security_control
+                      required_cert_level: 1
+                      caller_token: "{{ _token }}"
+                  - variables:
+                      _aac_policy_status: "{{ _aac_id_raw.get('policy_status', 'blocked') if _aac_id_raw is mapping else 'blocked' }}"
+                      _aac_authorized: "{{ _aac_id_raw.get('authorized', false) if _aac_id_raw is mapping else false }}"
+                      _aac_cert_level: "{{ _aac_id_raw.get('cert_level', 0) if _aac_id_raw is mapping else 0 }}"
+                  - choose:
+                      - conditions: "{{ _aac_policy_status != 'allowed' or not _aac_authorized }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: "{{ 'identity_policy_blocked' if _aac_policy_status != 'allowed' else 'cert_insufficient' }}"
+                                detail: >-
+                                  {%- if _aac_policy_status != 'allowed' -%}
+                                    resolve_caller_identity did not return an allowed identity -- action denied.
+                                  {%- else -%}
+                                    security_control cert level {{ _aac_cert_level }} is below the required minimum (1). Certify the default agent via persona_editor to enable auto-arm config changes.
+                                  {%- endif -%}
+                    default:
+                      - variables:
+                          _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                          _hh_vars: >-
+                            {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                          _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+                      - variables:
+                          _sm_val: >-
+                            {%- set d = _sm_drawer -%}
+                            {{ d.get('value', d) if d is mapping else {} }}
+                          _current_aa_cfg: "{{ _sm_val.get('_auto_arm_config', {}) }}"
+                          _aac_patch: "{{ _auto_arm_patch | from_json }}"
+                      - variables:
+                          _new_aa_cfg: "{{ _current_aa_cfg | combine(_aac_patch, recursive=true) }}"
+                          _new_sm_val: "{{ _sm_val | combine({'_auto_arm_config': _new_aa_cfg}) }}"
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: update
+                          force_action: true
+                          volume_entity_id: ["{{ _hh_cab }}"]
+                          key: security_manager
+                          value: "{{ _new_sm_val | tojson }}"
+                          caller_token: "{{ _token }}/security_manager_auto_arm_config"
+                        response_variable: _aac_fc_result
+                      - variables:
+                          result:
+                            status: ok
+                            action: auto_arm_config
+                            config: "{{ _new_aa_cfg }}"
+
+          # ── AUTO_ARM_CHECK — fired by the companion automation below on
+          # zone.home changes / vacuum start / vacuum dock. Ungated (system-
+          # invoked, not a human action) -- auto_arm_enabled itself is the
+          # human-authorized gate, set via the cert-gated auto_arm_config
+          # action above. Derives occupancy purely from zone.home's own person
+          # count (no bespoke per-person AND/OR/XOR logic). Both master gates
+          # (auto_arm_enabled, vac_arm_override_enabled) default OFF. ──
+          - conditions: "{{ _action == 'auto_arm_check' }}"
+            sequence:
+              - variables:
+                  _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  _hh_vars: >-
+                    {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                  _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+              - variables:
+                  _sm_val: >-
+                    {%- set d = _sm_drawer -%}
+                    {{ d.get('value', d) if d is mapping else {} }}
+                  _aa_cfg: "{{ _sm_val.get('_auto_arm_config', {}) }}"
+                  _aa_enabled: "{{ _aa_cfg.get('auto_arm_enabled', false) | bool(false) }}"
+                  _aa_vac_override: "{{ _aa_cfg.get('vac_arm_override_enabled', false) | bool(false) }}"
+                  _aa_vac_flag: "{{ _aa_cfg.get('vacuum_alarm_mode_active', false) | bool(false) }}"
+                  _aa_trigger: "{{ _auto_arm_trigger | default('occupancy', true) | lower | trim }}"
+              - choose:
+                  - conditions: "{{ not _aa_enabled }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: ok
+                            action: auto_arm_check
+                            result: disabled
+                            note: "auto_arm_enabled is off — no-op. Enable via action=auto_arm_config once Node-RED's equivalent flows are decommissioned."
+                default:
+                  - variables:
+                      _aa_panel_entity: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for eid in label_entities('alarm_panel') -%}
+                          {%- if ns.found == '' and eid.startswith('alarm_control_panel.') -%}
+                            {%- set ns.found = eid -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                      _aa_vac_ent: "{{ label_entities('autovac') | select('match', 'vacuum\\.') | list | first | default('') }}"
+                      _aa_home_count: "{{ states('zone.home') | int(0) }}"
+                  - choose:
+                      # -- vacuum docked: don't trust it -- Roborock ejects/washes the
+                      # mop and re-docks mid-run before the real run continues, so an
+                      # immediate revert here would flip Away back on under a still-
+                      # active cleaning session. Wait vac_downgrade_dock_wait_min
+                      # (cabinet-configurable, default 5) then recheck live state;
+                      # if she's cleaning again, do nothing and let the next genuine
+                      # dock event re-arm this same wait -- self-healing, no separate
+                      # mop-wash-specific handling needed. --
+                      - conditions: "{{ _aa_trigger == 'vac_docked' }}"
+                        sequence:
+                          - if: "{{ _aa_vac_flag }}"
+                            then:
+                              - delay:
+                                  minutes: "{{ _aa_cfg.get('vac_downgrade_dock_wait_min', 5) | int(5) }}"
+                              - variables:
+                                  _aa_vac_state_recheck: "{{ states(_aa_vac_ent) if _aa_vac_ent != '' else '' }}"
+                                  _aa_home_recheck: "{{ states('zone.home') | int(0) }}"
+                              - if: "{{ _aa_vac_state_recheck not in ['cleaning', 'returning'] }}"
+                                then:
+                                  - if: "{{ _aa_home_recheck == 0 and _aa_panel_entity != '' }}"
+                                    then:
+                                      - action: alarm_control_panel.alarm_arm_away
+                                        target: { entity_id: "{{ _aa_panel_entity }}" }
+                                      # FYI only, no cancel option -- the downgrade-side
+                                      # notice already gave the human a say (cancel there
+                                      # now sends the vac home instead); by the time we're
+                                      # back here re-arming, that decision is done.
+                                      - action: script.zen_dojotools_postman
+                                        data:
+                                          mode: resolve_and_dispatch
+                                          title: "Vacuum done — re-arming Away"
+                                          message: >-
+                                            Rosie's cleaning run finished. Re-arming Away
+                                            now that the house is clear.
+                                          response_type: ok
+                                          tag: "pm_auto_arm_vac_rearmed_{{ now().timestamp() | int }}"
+                                          ack_owner: security_manager
+                                        continue_on_error: true
+                                  - action: script.zen_dojotools_filecabinet
+                                    data:
+                                      action_type: update
+                                      force_action: true
+                                      volume_entity_id: ["{{ _hh_cab }}"]
+                                      key: security_manager
+                                      value: "{{ (_sm_val | combine({'_auto_arm_config': _aa_cfg | combine({'vacuum_alarm_mode_active': false})})) | tojson }}"
+                          - variables:
+                              result:
+                                status: ok
+                                action: auto_arm_check
+                                result: vac_docked_handled
+                                re_armed_away: "{{ _aa_vac_flag and (_aa_vac_state_recheck | default('', true)) not in ['cleaning', 'returning'] and (_aa_home_recheck | default(-1, true)) == 0 }}"
+
+                      # -- vacuum starts while already Armed Away: notify with a
+                      # cancel option, downgrade to Stay unless cancelled or someone
+                      # taps within the timeout. Timeout with no answer proceeds
+                      # (same as timeout=deny only applies to agent_auth, not this) --
+                      # a false alarm from a roving vac while genuinely away is the
+                      # risk being managed here, silence shouldn't block the fix. --
+                      - conditions: "{{ _aa_trigger == 'vac_started' }}"
+                        sequence:
+                          - if: "{{ _aa_vac_override and _aa_panel_entity != '' and states(_aa_panel_entity) == 'armed_away' }}"
+                            then:
+                              - action: script.zen_dojotools_postman
+                                data:
+                                  mode: resolve_and_dispatch
+                                  title: "Vacuum starting — downgrading Away"
+                                  message: >-
+                                    Rosie is starting a cleaning run while armed Away.
+                                    Downgrading to Home for the run to avoid a false
+                                    motion alarm. Cancel to keep Away armed and skip
+                                    the downgrade.
+                                  response_type: ok_cancel
+                                  response_timeout_s: 60
+                                  tag: "pm_vac_downgrade_{{ now().timestamp() | int }}"
+                                  ack_owner: security_manager
+                                response_variable: _aa_vac_notify
+                                continue_on_error: true
+                              - if: "{{ not (_aa_vac_notify is mapping and _aa_vac_notify.get('ack_action', '') == 'cancel') }}"
+                                then:
+                                  - action: alarm_control_panel.alarm_arm_home
+                                    target: { entity_id: "{{ _aa_panel_entity }}" }
+                                  - action: script.zen_dojotools_filecabinet
+                                    data:
+                                      action_type: update
+                                      force_action: true
+                                      volume_entity_id: ["{{ _hh_cab }}"]
+                                      key: security_manager
+                                      value: "{{ (_sm_val | combine({'_auto_arm_config': _aa_cfg | combine({'vacuum_alarm_mode_active': true})})) | tojson }}"
+                                else:
+                                  # Keeping Away armed means the vac itself has to stop
+                                  # roaming, not just skip the downgrade -- otherwise it
+                                  # keeps triggering the exact false motion alarm this
+                                  # whole handler exists to prevent. Send her home.
+                                  - if: "{{ _aa_vac_ent != '' }}"
+                                    then:
+                                      - action: vacuum.return_to_base
+                                        target: { entity_id: "{{ _aa_vac_ent }}" }
+                                        continue_on_error: true
+                          - variables:
+                              result:
+                                status: ok
+                                action: auto_arm_check
+                                result: vac_started_handled
+                                cancelled: "{{ _aa_vac_notify is defined and _aa_vac_notify is mapping and _aa_vac_notify.get('ack_action', '') == 'cancel' }}"
+
+                      # -- Night-Late: arm to Home (stay), only if currently disarmed --
+                      # Auto-arm only, no auto-disarm (that's handled separately
+                      # via a door unlock event). Own sub-flag
+                      # (night_arm_enabled), default off, independent of the
+                      # vac override flag -- gated the same off-by-default
+                      # pattern as everything else in this action. Never
+                      # touches an already-armed panel (Away/Night/Vacation
+                      # left alone), only arms from a genuine disarmed state.
+                      - conditions: "{{ _aa_trigger == 'night_late' }}"
+                        sequence:
+                          - variables:
+                              _aa_night_entertaining_blocked: "{{ _aa_cfg.get('entertaining_blocks_night_arm', false) | bool(false) and states('input_boolean.zen_entertaining') == 'on' }}"
+                          - variables:
+                              _aa_night_will_arm: "{{ _aa_cfg.get('night_arm_enabled', false) | bool(false) and not _aa_night_entertaining_blocked and _aa_panel_entity != '' and states(_aa_panel_entity) == 'disarmed' }}"
+                          - if: "{{ _aa_night_will_arm }}"
+                            then:
+                              - action: alarm_control_panel.alarm_arm_home
+                                target: { entity_id: "{{ _aa_panel_entity }}" }
+                          - variables:
+                              result:
+                                status: ok
+                                action: auto_arm_check
+                                result: night_late_handled
+                                armed: "{{ _aa_night_will_arm }}"
+                                entertaining_blocked: "{{ _aa_night_entertaining_blocked }}"
+
+                      # -- Away home_mode: arm Away, only if currently disarmed --
+                      # Distinct from the occupancy path below (which already
+                      # arms Away off zone.home==0 after its own 5-min
+                      # recheck) -- this fires off zen_home_mode itself
+                      # entering Away, a real if rarer path (mode set
+                      # directly/by schedule without zone.home necessarily
+                      # having settled to 0 yet). Own sub-flag
+                      # (mode_away_arm_enabled), default off, same
+                      # never-touch-an-already-armed-panel guard as Night-Late.
+                      - conditions: "{{ _aa_trigger == 'mode_away' }}"
+                        sequence:
+                          - variables:
+                              _aa_mode_away_will_arm: "{{ _aa_cfg.get('mode_away_arm_enabled', false) | bool(false) and _aa_panel_entity != '' and states(_aa_panel_entity) in ['disarmed', 'armed_home'] }}"
+                          - if: "{{ _aa_mode_away_will_arm }}"
+                            then:
+                              - action: alarm_control_panel.alarm_arm_away
+                                target: { entity_id: "{{ _aa_panel_entity }}" }
+                          - variables:
+                              result:
+                                status: ok
+                                action: auto_arm_check
+                                result: mode_away_handled
+                                armed: "{{ _aa_mode_away_will_arm }}"
+
+                      # -- Alarm drives home_mode (reverse of the above -- panel
+                      # changed directly, e.g. via keypad/app, not through our
+                      # own automation). Parity-matched against legacy NR's
+                      # "Security:Main Mode Sync" group, traced via flows.json
+                      # 2026-08-30: armed_away -> set home_mode Away (only that
+                      # one state; armed_home/pending/other do nothing to
+                      # home_mode in the real legacy flow either). Own
+                      # sub-flag, default off. --
+                      - conditions: "{{ _aa_trigger == 'alarm_armed_away' }}"
+                        sequence:
+                          - variables:
+                              _aa_a2hm_will_set: "{{ _aa_cfg.get('alarm_drives_home_mode_enabled', false) | bool(false) and states('sensor.zen_home_mode') != 'Away' }}"
+                          - if: "{{ _aa_a2hm_will_set }}"
+                            then:
+                              - action: input_select.select_option
+                                target: { entity_id: input_select.zen_home_mode }
+                                data: { option: Away }
+                          - variables:
+                              result:
+                                status: ok
+                                action: auto_arm_check
+                                result: alarm_armed_away_handled
+                                home_mode_set: "{{ _aa_a2hm_will_set }}"
+
+                      # -- Alarm disarmed: release home_mode from Away back to
+                      # the normal schedule (only if it WAS Away -- matches
+                      # legacy exactly, a routine disarm while already Home
+                      # does nothing here). Same sub-flag as armed_away above.
+                      # Also: disarm_occupies_arrival_area_enabled (separate
+                      # flag, fires unconditionally on ANY real disarm
+                      # regardless of cause) -- fires a synthetic occupied
+                      # signal for every area tagged label:arrival_area via
+                      # room_signal_fire, the v3-idiomatic equivalent of
+                      # legacy's blunt input_select override (v3 state is
+                      # derived from presence signals, never force-set
+                      # directly; lets whatever that room already does on
+                      # occupancy -- REFLEX scene, timers, etc. -- happen
+                      # naturally, no separate lighting mechanism needed).
+                      # Not hardcoded to any specific room -- installs vary
+                      # in which room serves as their arrival point. Tag any entity in the room you want
+                      # treated as an arrival point (e.g. that room's own
+                      # zen_room_state sensor) with label arrival_area;
+                      # area_id(entity) resolves the area, same entity-
+                      # label-driven convention as everywhere else in this
+                      # codebase (deliberately not label_areas() --
+                      # unverified on this HA version, entity labels are the
+                      # proven pattern here). Supports multiple arrival
+                      # areas, fires for each. --
+                      - conditions: "{{ _aa_trigger == 'alarm_disarmed' }}"
+                        sequence:
+                          - variables:
+                              _aa_a2hm_release: "{{ _aa_cfg.get('alarm_drives_home_mode_enabled', false) | bool(false) and states('sensor.zen_home_mode') == 'Away' }}"
+                              _aa_arrival_occupy: "{{ _aa_cfg.get('disarm_occupies_arrival_area_enabled', false) | bool(false) }}"
+                          - if: "{{ _aa_a2hm_release }}"
+                            then:
+                              - action: script.zen_home_mode_release
+                          - if: "{{ _aa_arrival_occupy }}"
+                            then:
+                              - variables:
+                                  _aa_arrival_areas: >-
+                                    {{ label_entities('arrival_area') | map('area_id') | reject('none') | unique | list }}
+                              - repeat:
+                                  for_each: "{{ _aa_arrival_areas }}"
+                                  sequence:
+                                    - action: script.zen_dojotools_room_manager
+                                      continue_on_error: true
+                                      data:
+                                        mode: room_signal_fire
+                                        area: "{{ repeat.item }}"
+                                        signal_class: occupied
+                          - variables:
+                              result:
+                                status: ok
+                                action: auto_arm_check
+                                result: alarm_disarmed_handled
+                                home_mode_released: "{{ _aa_a2hm_release }}"
+                                arrival_areas_occupied: "{{ _aa_arrival_areas | default([], true) if _aa_arrival_occupy else [] }}"
+
+                      # -- Lock unlock -> auto-disarm. Parity-matched against
+                      # legacy NR's "Security: Disarm on Unlock Action":
+                      # real distinction there was keypad-unlock (a valid
+                      # code IS the credential, always trusted to disarm,
+                      # even from Away) vs manual/physical unlock (not
+                      # itself a credential, only trusted from armed_home,
+                      # never armed_away). This build covers the SAFE core
+                      # only -- any real unlock while armed_home disarms;
+                      # never auto-disarms from armed_away regardless of
+                      # unlock method, since reliably distinguishing keypad
+                      # vs manual needs raw zwave_js event data / a
+                      # changed_by attribute this install's lock integration
+                      # may not expose the same way. Own sub-flag, default
+                      # off. --
+                      - conditions: "{{ _aa_trigger == 'lock_unlocked' }}"
+                        sequence:
+                          - variables:
+                              _aa_lock_will_disarm: "{{ _aa_cfg.get('lock_disarm_enabled', false) | bool(false) and _aa_panel_entity != '' and states(_aa_panel_entity) == 'armed_home' }}"
+                          - if: "{{ _aa_lock_will_disarm }}"
+                            then:
+                              - action: alarm_control_panel.alarm_disarm
+                                target: { entity_id: "{{ _aa_panel_entity }}" }
+                          - variables:
+                              result:
+                                status: ok
+                                action: auto_arm_check
+                                result: lock_unlocked_handled
+                                disarmed: "{{ _aa_lock_will_disarm }}"
+
+                      # -- occupancy path (zone.home changed) --
+                      # Departure sequence: 1min after zone.home hits 0, notify
+                      # admin with a waive-off window covering the remaining time
+                      # to the 5min mark (ok_cancel, response_timeout_s=240 --
+                      # same postman pattern as vac_started below). If not waived
+                      # and still empty, a second short-window notice (30s) fires
+                      # right before the actual arm, giving one more chance to
+                      # cancel. Either cancel aborts the whole cycle -- a later
+                      # genuine departure re-triggers this path fresh.
+                      - conditions: "{{ _aa_trigger == 'occupancy' }}"
+                        sequence:
+                          - choose:
+                              - conditions: "{{ _aa_home_count == 0 }}"
+                                sequence:
+                                  - delay:
+                                      minutes: 1
+                                  - variables:
+                                      _aa_recheck1: "{{ states('zone.home') | int(0) }}"
+                                  - if: "{{ _aa_recheck1 == 0 and _aa_panel_entity != '' }}"
+                                    then:
+                                      - action: script.zen_dojotools_postman
+                                        data:
+                                          mode: resolve_and_dispatch
+                                          title: "House is empty — auto-arm in ~4 min"
+                                          message: >-
+                                            Looks like everyone's left.
+                                            Arming Away in about 4 minutes
+                                            unless you cancel.
+                                          response_type: ok_cancel
+                                          response_timeout_s: 240
+                                          tag: "pm_auto_arm_departure_{{ now().timestamp() | int }}"
+                                          ack_owner: security_manager
+                                        response_variable: _aa_departure_notify
+                                        continue_on_error: true
+                                  - variables:
+                                      _aa_departure_cancelled: >-
+                                        {{ _aa_departure_notify is defined and _aa_departure_notify is mapping
+                                           and _aa_departure_notify.get('ack_action', '') == 'cancel' }}
+                                      _aa_recheck2: "{{ states('zone.home') | int(0) }}"
+                                  - if: "{{ not _aa_departure_cancelled and _aa_recheck1 == 0 and _aa_recheck2 == 0 and _aa_panel_entity != '' }}"
+                                    then:
+                                      - action: script.zen_dojotools_postman
+                                        data:
+                                          mode: resolve_and_dispatch
+                                          title: "Auto-arming Away now"
+                                          message: >-
+                                            Arming Away in 30 seconds. Tap
+                                            Cancel to stop it.
+                                          response_type: ok_cancel
+                                          response_timeout_s: 30
+                                          tag: "pm_auto_arm_final_{{ now().timestamp() | int }}"
+                                          ack_owner: security_manager
+                                        response_variable: _aa_final_notify
+                                        continue_on_error: true
+                                      - variables:
+                                          _aa_final_cancelled: >-
+                                            {{ _aa_final_notify is defined and _aa_final_notify is mapping
+                                               and _aa_final_notify.get('ack_action', '') == 'cancel' }}
+                                          _aa_recheck3: "{{ states('zone.home') | int(0) }}"
+                                      # LOCAL PRESENCE OVERRIDE: the whole
+                                      # departure/arm cancellation path above
+                                      # depends entirely on zone.home --
+                                      # GPS/geofence presence, which lags real
+                                      # arrival by 30-90+ seconds walking
+                                      # straight indoors. Room Manager's own
+                                      # live per-room state is local and
+                                      # instant (motion, no GPS involved) --
+                                      # check it as a second, independent gate
+                                      # right here, immediately before the
+                                      # actual arm, not just at the two
+                                      # earlier notification rechecks (which
+                                      # share the same zone.home blind spot).
+                                      # Anything other than
+                                      # vacant/automation/cleaning counts as
+                                      # "someone might actually be here" --
+                                      # deliberately conservative, false
+                                      # negatives here mean an unwanted
+                                      # Away-arm around a person; false
+                                      # positives just mean one skipped arm
+                                      # cycle, corrected next real departure.
+                                      - variables:
+                                          _aa_local_presence_hi: >-
+                                            {{ (label_entities('zen_room_state') | map('states')
+                                               | reject('in', ['vacant', 'automation', 'cleaning', 'unknown', 'unavailable'])
+                                               | list | count) > 0 }}
+                                      - if: "{{ not _aa_final_cancelled and _aa_recheck3 == 0 and not _aa_local_presence_hi }}"
+                                        then:
+                                          - if: "{{ _aa_vac_override and _aa_vac_ent != '' and states(_aa_vac_ent) in ['cleaning', 'returning'] }}"
+                                            then:
+                                              - action: alarm_control_panel.alarm_arm_home
+                                                target: { entity_id: "{{ _aa_panel_entity }}" }
+                                              - action: script.zen_dojotools_filecabinet
+                                                data:
+                                                  action_type: update
+                                                  force_action: true
+                                                  volume_entity_id: ["{{ _hh_cab }}"]
+                                                  key: security_manager
+                                                  value: "{{ (_sm_val | combine({'_auto_arm_config': _aa_cfg | combine({'vacuum_alarm_mode_active': true})})) | tojson }}"
+                                            else:
+                                              - action: alarm_control_panel.alarm_arm_away
+                                                target: { entity_id: "{{ _aa_panel_entity }}" }
+                                          # Lock-it-up (best-effort, skipped while entertaining) — ports
+                                          # Node-RED's Security: Secure Home closure list via labels
+                                          # rather than hardcoded per-room entities.
+                                          - if: "{{ states('input_boolean.zen_entertaining') != 'on' }}"
+                                            then:
+                                              - action: lock.lock
+                                                target: { entity_id: "{{ label_entities('lock') | select('match', 'lock\\.') | list }}" }
+                                                continue_on_error: true
+                                              - action: cover.close_cover
+                                                target: { entity_id: "{{ label_entities('secure_on_arm') | select('match', 'cover\\.') | list }}" }
+                                                continue_on_error: true
+                                  - variables:
+                                      _aa_armed_final: >-
+                                        {{ not (_aa_departure_cancelled | default(false)) and not (_aa_final_cancelled | default(false))
+                                           and _aa_recheck1 == 0 and _aa_recheck2 == 0 and (_aa_recheck3 | default(0)) == 0
+                                           and not (_aa_local_presence_hi | default(false))
+                                           and _aa_panel_entity != '' }}
+                                      result:
+                                        status: ok
+                                        action: auto_arm_check
+                                        result: >-
+                                          {{ 'waived_off_departure' if (_aa_departure_cancelled | default(false))
+                                             else 'waived_off_final' if (_aa_final_cancelled | default(false))
+                                             else 'armed_away' if _aa_armed_final
+                                             else 'aborted_local_presence_detected' if (_aa_local_presence_hi | default(false))
+                                             else 'aborted_recheck_failed' }}
+                                        home_count_at_recheck: "{{ _aa_recheck3 | default(_aa_recheck2) }}"
+                                        local_presence_detected: "{{ _aa_local_presence_hi | default(false) }}"
+                              - conditions: "{{ _aa_home_count > 0 }}"
+                                sequence:
+                                  - if: "{{ _aa_panel_entity != '' and states(_aa_panel_entity) == 'armed_away' }}"
+                                    then:
+                                      - action: alarm_control_panel.alarm_disarm
+                                        target: { entity_id: "{{ _aa_panel_entity }}" }
+                                  - variables:
+                                      result:
+                                        status: ok
+                                        action: auto_arm_check
+                                        result: return_sync
+                                        home_count: "{{ _aa_home_count }}"
+
+          # ── ARM (x) — requires security_control cert ─────────────────────────
+          - conditions: "{{ _action == 'arm' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _arm_mode not in ['away','home','night','vacation'] }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: invalid_arm_mode
+                            detail: "arm_mode must be away, home, night, or vacation."
+                            received: "{{ _arm_mode }}"
+                default:
+                  - variables:
+                      _arm_panel_entity: >-
+                        {%- if _panel_input != '' -%}
+                          {{ _panel_input }}
+                        {%- else -%}
+                          {%- set ns = namespace(found='') -%}
+                          {%- for eid in label_entities('alarm_panel') -%}
+                            {%- if ns.found == '' and eid.startswith('alarm_control_panel.') -%}
+                              {%- set ns.found = eid -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ ns.found }}
+                        {%- endif -%}
+                  - choose:
+                      - conditions: "{{ _arm_panel_entity == '' }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: no_panel_found
+                                detail: "No alarm_control_panel entity found with label:alarm_panel. Apply the label or pass a panel entity_id directly."
+                      - conditions: "{{ states(_arm_panel_entity) in ['unknown', 'unavailable'] }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: panel_unavailable
+                                entity_id: "{{ _arm_panel_entity }}"
+                                state: "{{ states(_arm_panel_entity) }}"
+                    default:
+                      - action: script.zen_dojotools_identity
+                        response_variable: _arm_id_raw
+                        continue_on_error: true
+                        data:
+                          mode: resolve_caller_identity
+                          required_cert: security_control
+                          required_cert_level: 1
+                          caller_token: "{{ _token }}"
+                      - variables:
+                          _arm_policy_status: "{{ _arm_id_raw.get('policy_status', 'blocked') if _arm_id_raw is mapping else 'blocked' }}"
+                          _arm_authorized: "{{ _arm_id_raw.get('authorized', false) if _arm_id_raw is mapping else false }}"
+                          _arm_cert_level: "{{ _arm_id_raw.get('cert_level', 0) if _arm_id_raw is mapping else 0 }}"
+                      - choose:
+                          - conditions: "{{ _arm_policy_status != 'allowed' or not _arm_authorized }}"
+                            sequence:
+                              - variables:
+                                  result:
+                                    status: error
+                                    error: "{{ 'identity_policy_blocked' if _arm_policy_status != 'allowed' else 'cert_insufficient' }}"
+                                    detail: >-
+                                      {%- if _arm_policy_status != 'allowed' -%}
+                                        resolve_caller_identity did not return an allowed identity -- action denied.
+                                      {%- else -%}
+                                        security_control cert level {{ _arm_cert_level }} is below the required minimum (1). Certify the default agent via persona_editor to enable arm/disarm.
+                                      {%- endif -%}
+                        default:
+                          - choose:
+                              - conditions: "{{ _arm_mode == 'away' }}"
+                                sequence:
+                                  - action: alarm_control_panel.alarm_arm_away
+                                    target: { entity_id: "{{ _arm_panel_entity }}" }
+                              - conditions: "{{ _arm_mode == 'home' }}"
+                                sequence:
+                                  - action: alarm_control_panel.alarm_arm_home
+                                    target: { entity_id: "{{ _arm_panel_entity }}" }
+                              - conditions: "{{ _arm_mode == 'night' }}"
+                                sequence:
+                                  - action: alarm_control_panel.alarm_arm_night
+                                    target: { entity_id: "{{ _arm_panel_entity }}" }
+                              - conditions: "{{ _arm_mode == 'vacation' }}"
+                                sequence:
+                                  - action: alarm_control_panel.alarm_arm_vacation
+                                    target: { entity_id: "{{ _arm_panel_entity }}" }
+                          - action: script.zen_dojotools_event_emitter
+                            continue_on_error: true
+                            data:
+                              mode: emit
+                              component: security_manager
+                              kind: panel_armed
+                              severity: info
+                              summary: "Panel armed ({{ _arm_mode }}) via zen_dojotools_security_manager."
+                              metadata:
+                                arm_mode: "{{ _arm_mode }}"
+                                entity_id: "{{ _arm_panel_entity }}"
+                                caller_token: "{{ _token }}"
+                          - variables:
+                              result:
+                                status: ok
+                                action: arm
+                                arm_mode: "{{ _arm_mode }}"
+                                entity_id: "{{ _arm_panel_entity }}"
+                                state: "{{ states(_arm_panel_entity) }}"
+
+          # ── DISARM (d) — security_control cert AND a fresh live ack, ALWAYS ──
+          # Direct security analog of locks' exterior-unlock gate: disarming
+          # reduces security, so cert alone is never enough, no matter how
+          # recently it was granted -- every disarm call asks the household
+          # admin live, same zen_dojotools_identity mode=request_live_ack
+          # chokepoint, same non-reusable one-shot semantics. ──
+          - conditions: "{{ _action == 'disarm' }}"
+            sequence:
+              - variables:
+                  _disarm_panel_entity: >-
+                    {%- if _panel_input != '' -%}
+                      {{ _panel_input }}
+                    {%- else -%}
+                      {%- set ns = namespace(found='') -%}
+                      {%- for eid in label_entities('alarm_panel') -%}
+                        {%- if ns.found == '' and eid.startswith('alarm_control_panel.') -%}
+                          {%- set ns.found = eid -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.found }}
+                    {%- endif -%}
+              - choose:
+                  - conditions: "{{ _disarm_panel_entity == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: no_panel_found
+                            detail: "No alarm_control_panel entity found with label:alarm_panel. Apply the label or pass a panel entity_id directly."
+                  - conditions: "{{ states(_disarm_panel_entity) in ['unknown', 'unavailable'] }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: panel_unavailable
+                            entity_id: "{{ _disarm_panel_entity }}"
+                            state: "{{ states(_disarm_panel_entity) }}"
+                default:
+                  # target_entity='disarm' resolves scope_decision inside
+                  # identity itself via the shared cert_scope_check macro --
+                  # single chokepoint (2026-08-16, "anything touching acls
+                  # goes through ID"). Panel is singular so the scope token is
+                  # the literal action name, not an entity_id.
+                  - action: script.zen_dojotools_identity
+                    response_variable: _disarm_id_raw
+                    continue_on_error: true
+                    data:
+                      mode: resolve_caller_identity
+                      required_cert: security_control
+                      required_cert_level: 1
+                      target_entity: disarm
+                      caller_token: "{{ _token }}"
+                  - variables:
+                      _disarm_policy_status: "{{ _disarm_id_raw.get('policy_status', 'blocked') if _disarm_id_raw is mapping else 'blocked' }}"
+                      _disarm_authorized: "{{ _disarm_id_raw.get('authorized', false) if _disarm_id_raw is mapping else false }}"
+                      _disarm_cert_level: "{{ _disarm_id_raw.get('cert_level', 0) if _disarm_id_raw is mapping else 0 }}"
+                      _disarm_cert_scope: "{{ _disarm_id_raw.get('cert_scope', []) if _disarm_id_raw is mapping else [] }}"
+                      _disarm_scope_decision: "{{ _disarm_id_raw.get('scope_decision', 'default') if _disarm_id_raw is mapping else 'default' }}"
+                  - choose:
+                      - conditions: "{{ _disarm_policy_status != 'allowed' or not _disarm_authorized }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: "{{ 'identity_policy_blocked' if _disarm_policy_status != 'allowed' else 'cert_insufficient' }}"
+                                detail: >-
+                                  {%- if _disarm_policy_status != 'allowed' -%}
+                                    resolve_caller_identity did not return an allowed identity -- action denied.
+                                  {%- else -%}
+                                    security_control cert level {{ _disarm_cert_level }} is below the required minimum (1) to disarm the panel.
+                                  {%- endif -%}
+                                can_request: "{{ _disarm_policy_status == 'allowed' }}"
+                                request_via:
+                                  tool: zen_dojotools_persona_editor
+                                  mode: cert_grant
+                                  cert_component: security_control
+                                  cert_level: 1
+                                  note: "Fires a live household-admin approval push -- see zen_dojotools_identity mode=cert_list for current status."
+                    default:
+                      # ── Scoped override: admin can grant security_control
+                      # with cert_scope=["disarm"] to stop the every-call ask
+                      # entirely (same "begrudging override" mechanism as
+                      # locks' per-door scope, 2026-08-15). Panel is singular
+                      # so the scope token is the literal action name, not an
+                      # entity_id. scope_decision comes straight from identity's
+                      # own resolution (target_entity='disarm' above), not a
+                      # local containment check (2026-08-16). 'deny' is a hard
+                      # block, never offered the ack path -- distinct from
+                      # 'default' (still asks every time). ──
+                      - if: "{{ _disarm_scope_decision == 'deny' }}"
+                        then:
+                          - variables:
+                              result:
+                                status: denied
+                                action: disarm
+                                error: cert_scope_denied
+                                detail: >-
+                                  security_control cert_scope explicitly denies disarm --
+                                  an admin has scoped this action out via cert_grant. No ack
+                                  is offered; removing the denial requires cert_grant
+                                  cert_scope=[{"entity":"disarm","acl":"remove"}].
+                      - if: "{{ result is not defined and _disarm_scope_decision != 'allow' }}"
+                        then:
+                          - action: script.zen_dojotools_identity
+                            response_variable: _disarm_ack_raw
+                            continue_on_error: true
+                            data:
+                              mode: request_live_ack
+                              ack_message: >-
+                                Disarm request: {{ state_attr(_disarm_panel_entity, 'friendly_name') | default(_disarm_panel_entity, true) }}
+                                (panel currently {{ states(_disarm_panel_entity) }}). Disarming reduces home
+                                security. No standing override on file, so asking every time
+                                as designed. Approve this one disarm? (Tip: grant cert_grant
+                                cert_component=security_control cert_scope=["disarm"] via
+                                persona_editor if you want disarm to stop asking.)
+                              caller_token: "{{ _token }}"
+                          - variables:
+                              _disarm_ack_approved: "{{ _disarm_ack_raw.get('approved', false) if _disarm_ack_raw is mapping else false }}"
+                              _disarm_ack_reason: "{{ _disarm_ack_raw.get('reason', 'dispatch_failed') if _disarm_ack_raw is mapping else 'dispatch_failed' }}"
+                          - if: "{{ not _disarm_ack_approved }}"
+                            then:
+                              - variables:
+                                  result:
+                                    status: denied
+                                    action: disarm
+                                    reason: "{{ _disarm_ack_reason }}"
+                                    detail: "Disarm requires a fresh live household-admin ack every time -- not granted."
+                      - if: "{{ result is not defined and _disarm_scope_decision == 'allow' }}"
+                        then:
+                          - action: script.zen_dojotools_event_emitter
+                            continue_on_error: true
+                            data:
+                              mode: emit
+                              component: security_manager
+                              kind: disarm_ack_skipped_scoped_override
+                              severity: info
+                              summary: "Disarm ack skipped -- admin-granted scope override covers disarm."
+                              metadata:
+                                entity_id: "{{ _disarm_panel_entity }}"
+                                caller_token: "{{ _token }}"
+                      - if: "{{ result is not defined }}"
+                        then:
+                          - action: alarm_control_panel.alarm_disarm
+                            target: { entity_id: "{{ _disarm_panel_entity }}" }
+                          - action: script.zen_dojotools_event_emitter
+                            continue_on_error: true
+                            data:
+                              mode: emit
+                              component: security_manager
+                              kind: panel_disarmed
+                              severity: warn
+                              summary: >-
+                                Panel disarmed via zen_dojotools_security_manager
+                                ({{ 'scoped override, no ack asked' if _disarm_scope_decision == 'allow' else 'live ack approved' }}).
+                              metadata:
+                                entity_id: "{{ _disarm_panel_entity }}"
+                                caller_token: "{{ _token }}"
+                          - variables:
+                              result:
+                                status: ok
+                                action: disarm
+                                entity_id: "{{ _disarm_panel_entity }}"
+                                state: "{{ states(_disarm_panel_entity) }}"
+
+        default:
+          # ── READ_STATE (r, default) — device tree walk ───────────────────────
+          # Byte-for-byte the same classification logic as before this pass --
+          # only the exit shape changed (falls through to result, doesn't
+          # stop: directly). ──
+          - variables:
+              _rs_panel_entity: >-
+                {%- if _panel_input != '' -%}
+                  {{ _panel_input }}
+                {%- else -%}
+                  {%- set ns = namespace(found='') -%}
+                  {%- for eid in label_entities('alarm_panel') -%}
+                    {%- if ns.found == '' and eid.startswith('alarm_control_panel.') -%}
+                      {%- set ns.found = eid -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.found }}
                 {%- endif -%}
-              {%- endfor -%}
-              {{ ns.found }}
-            {%- endif -%}
-
-      # ── Validate panel ────────────────────────────────────────────────────
-      - if:
-          - condition: template
-            value_template: "{{ _panel_entity == '' }}"
-        then:
-          - variables:
-              result:
-                ok: false
-                tool: zen_dojotools_security_manager
-                caller_token: "{{ _token }}"
-                error: no_panel_found
-                message: >-
-                  No alarm_control_panel entity found with label:alarm_panel.
-                  Apply the label or pass a panel entity_id directly.
-          - stop: error
-            response_variable: result
-
-      - if:
-          - condition: template
-            value_template: "{{ states(_panel_entity) in ['unknown', 'unavailable'] }}"
-        then:
-          - variables:
-              result:
-                ok: false
-                tool: zen_dojotools_security_manager
-                caller_token: "{{ _token }}"
-                error: panel_unavailable
-                entity_id: "{{ _panel_entity }}"
-                state: "{{ states(_panel_entity) }}"
-          - stop: error
-            response_variable: result
-
-      # ── ARM ───────────────────────────────────────────────────────────────
-      - if:
-          - condition: template
-            value_template: "{{ _action == 'arm' }}"
-        then:
-          - if:
-              - condition: template
-                value_template: "{{ _arm_mode not in ['away','home','night','vacation'] }}"
-            then:
-              - variables:
-                  result:
-                    ok: false
-                    tool: zen_dojotools_security_manager
-                    caller_token: "{{ _token }}"
-                    error: invalid_arm_mode
-                    message: arm_mode must be away, home, night, or vacation.
-                    received: "{{ _arm_mode }}"
-              - stop: error
-                response_variable: result
           - choose:
-              - conditions: "{{ _arm_mode == 'away' }}"
+              - conditions: "{{ _rs_panel_entity == '' }}"
                 sequence:
-                  - action: alarm_control_panel.alarm_arm_away
-                    target: { entity_id: "{{ _panel_entity }}" }
-              - conditions: "{{ _arm_mode == 'home' }}"
+                  - variables:
+                      result:
+                        status: error
+                        error: no_panel_found
+                        detail: "No alarm_control_panel entity found with label:alarm_panel. Apply the label or pass a panel entity_id directly."
+              - conditions: "{{ states(_rs_panel_entity) in ['unknown', 'unavailable'] }}"
                 sequence:
-                  - action: alarm_control_panel.alarm_arm_home
-                    target: { entity_id: "{{ _panel_entity }}" }
-              - conditions: "{{ _arm_mode == 'night' }}"
-                sequence:
-                  - action: alarm_control_panel.alarm_arm_night
-                    target: { entity_id: "{{ _panel_entity }}" }
-              - conditions: "{{ _arm_mode == 'vacation' }}"
-                sequence:
-                  - action: alarm_control_panel.alarm_arm_vacation
-                    target: { entity_id: "{{ _panel_entity }}" }
-          - variables:
-              result:
-                ok: true
-                tool: zen_dojotools_security_manager
-                caller_token: "{{ _token }}"
-                action: arm
-                arm_mode: "{{ _arm_mode }}"
-                entity_id: "{{ _panel_entity }}"
-                state: "{{ states(_panel_entity) }}"
-          - stop: armed
-            response_variable: result
+                  - variables:
+                      result:
+                        status: error
+                        error: panel_unavailable
+                        entity_id: "{{ _rs_panel_entity }}"
+                        state: "{{ states(_rs_panel_entity) }}"
+            default:
+              - variables:
+                  _panel_state: "{{ states(_rs_panel_entity) }}"
+                  _panel_name: "{{ state_attr(_rs_panel_entity, 'friendly_name') | default(_rs_panel_entity, true) }}"
+                  _device_id: "{{ device_id(_rs_panel_entity) }}"
 
-      # ── DISARM ────────────────────────────────────────────────────────────
-      - if:
-          - condition: template
-            value_template: "{{ _action == 'disarm' }}"
-        then:
-          - action: alarm_control_panel.alarm_disarm
-            target: { entity_id: "{{ _panel_entity }}" }
-          - variables:
-              result:
-                ok: true
-                tool: zen_dojotools_security_manager
-                caller_token: "{{ _token }}"
-                action: disarm
-                entity_id: "{{ _panel_entity }}"
-                state: "{{ states(_panel_entity) }}"
-          - stop: disarmed
-            response_variable: result
+              - variables:
+                  _all: "{{ device_entities(_device_id) | list }}"
 
-      # ── READ_STATE — device tree walk ─────────────────────────────────────
+              # ── Zone contacts — classified by device_class, fault suffix excluded ─
+              - variables:
+                  _zones: >-
+                    {%- set _zdc = ['door','window','motion','opening','vibration','gas','heat','smoke','moisture','presence'] -%}
+                    {%- set ns = namespace(zones=[]) -%}
+                    {%- for eid in _all -%}
+                      {%- if eid.startswith('binary_sensor.') and not eid.endswith('_fault') -%}
+                        {%- set _dc = state_attr(eid, 'device_class') | default('', true) -%}
+                        {%- if _dc in _zdc -%}
+                          {%- set _base = eid.split('.')[1] -%}
+                          {%- set _f = 'binary_sensor.' ~ _base ~ '_fault' -%}
+                          {%- set _b = 'switch.' ~ _base ~ '_bypass' -%}
+                          {%- set _s = states(eid) -%}
+                          {%- set ns.zones = ns.zones + [{
+                            "entity_id": eid,
+                            "name": state_attr(eid, 'friendly_name') | default(_base | replace('_',' ') | title, true),
+                            "type": _dc,
+                            "state": _s,
+                            "open": _s == 'on',
+                            "fault": states(_f) == 'on' if _f in _all else false,
+                            "bypassed": states(_b) == 'on' if _b in _all else false,
+                            "fault_entity": _f if _f in _all else none,
+                            "bypass_entity": _b if _b in _all else none
+                          }] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.zones }}
+
+              # ── System health binary sensors (not zone contacts, not fault suffix) ─
+              - variables:
+                  _sys: >-
+                    {%- set _zdc = ['door','window','motion','opening','vibration','gas','heat','smoke','moisture','presence'] -%}
+                    {%- set ns = namespace(sys=[]) -%}
+                    {%- for eid in _all -%}
+                      {%- if eid.startswith('binary_sensor.') and not eid.endswith('_fault') -%}
+                        {%- set _dc = state_attr(eid, 'device_class') | default('', true) -%}
+                        {%- if _dc not in _zdc -%}
+                          {%- set _st = states(eid) -%}
+                          {%- set _nm = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+                          {%- if _dc == 'power' -%}
+                            {%- set _ok = _st == 'on' -%}
+                            {%- set _interp = 'AC power present' if _ok else 'AC power lost' -%}
+                          {%- elif _dc == 'battery' -%}
+                            {%- set _ok = _st == 'off' -%}
+                            {%- set _interp = 'battery OK' if _ok else 'battery low' -%}
+                          {%- elif _dc == 'problem' -%}
+                            {%- set _ok = _st == 'off' -%}
+                            {%- set _interp = 'no problem' if _ok else 'problem detected' -%}
+                          {%- elif 'ready' in eid -%}
+                            {%- set _ok = _st == 'on' -%}
+                            {%- set _interp = 'panel ready' if _ok else 'panel not ready' -%}
+                          {%- elif 'alarm' in eid and 'panel' not in eid -%}
+                            {%- set _ok = _st == 'off' -%}
+                            {%- set _interp = 'no alarm active' if _ok else 'alarm active' -%}
+                          {%- else -%}
+                            {%- set _ok = true -%}
+                            {%- set _interp = _st -%}
+                          {%- endif -%}
+                          {%- set ns.sys = ns.sys + [{
+                            "entity_id": eid,
+                            "name": _nm,
+                            "state": _st,
+                            "device_class": _dc,
+                            "ok": _ok,
+                            "interpretation": _interp
+                          }] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.sys }}
+
+              # ── Chime, keypad, panic buttons ──────────────────────────────────
+              - variables:
+                  _chime: >-
+                    {%- set ns = namespace(v='') -%}
+                    {%- for eid in _all -%}
+                      {%- if ns.v == '' and eid.startswith('switch.') and '_chime' in eid -%}
+                        {%- set ns.v = eid -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.v }}
+                  _keypad: >-
+                    {%- set ns = namespace(v='') -%}
+                    {%- for eid in _all -%}
+                      {%- if ns.v == '' and eid.startswith('sensor.') -%}
+                        {%- set ns.v = eid -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.v }}
+                  _panic: >-
+                    {%- set ns = namespace(b=[]) -%}
+                    {%- for eid in _all -%}
+                      {%- if eid.startswith('button.') -%}
+                        {%- set ns.b = ns.b + [eid] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.b }}
+
+              # ── Derive open / fault / bypass summaries ────────────────────────
+              - variables:
+                  _open: >-
+                    {%- set ns = namespace(r=[]) -%}
+                    {%- for z in _zones -%}
+                      {%- if z.open -%}{%- set ns.r = ns.r + [z.name] -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.r }}
+                  _faulted: >-
+                    {%- set ns = namespace(r=[]) -%}
+                    {%- for z in _zones -%}
+                      {%- if z.fault -%}{%- set ns.r = ns.r + [z.name] -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.r }}
+                  _bypassed: >-
+                    {%- set ns = namespace(r=[]) -%}
+                    {%- for z in _zones -%}
+                      {%- if z.bypassed -%}{%- set ns.r = ns.r + [z.name] -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.r }}
+
+              # ── Camera discovery (by area) ────────────────────────────────────
+              - variables:
+                  _cameras_by_area: >-
+                    {%- set _all_cams = label_entities('security_camera') -%}
+                    {%- set ns = namespace(r={}) -%}
+                    {%- for eid in _all_cams -%}
+                      {%- set _aid = area_id(eid) | default('', true) -%}
+                      {%- if _aid != '' -%}
+                        {%- set _existing = ns.r.get(_aid, []) -%}
+                        {%- set ns.r = ns.r | combine({_aid: _existing + [eid]}) -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.r }}
+
+              # ── Assemble result ───────────────────────────────────────────────
+              - variables:
+                  result:
+                    status: ok
+                    action: read_state
+                    panel:
+                      entity_id: "{{ _rs_panel_entity }}"
+                      name: "{{ _panel_name }}"
+                      state: "{{ _panel_state }}"
+                    summary:
+                      zone_count: "{{ _zones | length }}"
+                      open_zones: "{{ _open }}"
+                      faulted_zones: "{{ _faulted }}"
+                      bypassed_zones: "{{ _bypassed }}"
+                      system_ok: "{{ (_sys | selectattr('ok', 'eq', false) | list | length) == 0 }}"
+                      system_issues: "{{ _sys | selectattr('ok', 'eq', false) | map(attribute='name') | list }}"
+                    zones: "{{ _zones }}"
+                    system: "{{ _sys }}"
+                    chime:
+                      entity_id: "{{ _chime if _chime != '' else none }}"
+                      state: "{{ states(_chime) if _chime != '' else 'n/a' }}"
+                    keypad:
+                      entity_id: "{{ _keypad if _keypad != '' else none }}"
+                      state: "{{ states(_keypad) if _keypad != '' else 'n/a' }}"
+                    panic_buttons: "{{ _panic }}"
+                    cameras_by_area: "{{ _cameras_by_area }}"
+                    lens: "Security Manager lens — zone/panel state. zen_dojotools_camera for visual analysis per camera entity (camera lens). zen_dojotools_room_manager +security slice for per-room spatial context."
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # SINGLE EXIT — envelope() wrap
+      # ═══════════════════════════════════════════════════════════════════════
       - variables:
-          _panel_state: "{{ states(_panel_entity) }}"
-          _panel_name: "{{ state_attr(_panel_entity, 'friendly_name') | default(_panel_entity, true) }}"
-          _device_id: "{{ device_id(_panel_entity) }}"
-
+          _envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='success',
+              mode=_action,
+              result=result,
+              tool='zen_dojotools_security_manager',
+              caller_token=_token
+            ) -}}
       - variables:
-          _all: "{{ device_entities(_device_id) | list }}"
+          _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+      - stop: security_manager response
+        response_variable: _envelope
 
-      # ── Zone contacts — classified by device_class, fault suffix excluded ─
-      - variables:
-          _zones: >-
-            {%- set _zdc = ['door','window','motion','opening','vibration','gas','heat','smoke','moisture','presence'] -%}
-            {%- set ns = namespace(zones=[]) -%}
-            {%- for eid in _all -%}
-              {%- if eid.startswith('binary_sensor.') and not eid.endswith('_fault') -%}
-                {%- set _dc = state_attr(eid, 'device_class') | default('', true) -%}
-                {%- if _dc in _zdc -%}
-                  {%- set _base = eid.split('.')[1] -%}
-                  {%- set _f = 'binary_sensor.' ~ _base ~ '_fault' -%}
-                  {%- set _b = 'switch.' ~ _base ~ '_bypass' -%}
-                  {%- set _s = states(eid) -%}
-                  {%- set ns.zones = ns.zones + [{
-                    "entity_id": eid,
-                    "name": state_attr(eid, 'friendly_name') | default(_base | replace('_',' ') | title, true),
-                    "type": _dc,
-                    "state": _s,
-                    "open": _s == 'on',
-                    "fault": states(_f) == 'on' if _f in _all else false,
-                    "bypassed": states(_b) == 'on' if _b in _all else false,
-                    "fault_entity": _f if _f in _all else none,
-                    "bypass_entity": _b if _b in _all else none
-                  }] -%}
-                {%- endif -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.zones }}
-
-      # ── System health binary sensors (not zone contacts, not fault suffix) ─
-      - variables:
-          _sys: >-
-            {%- set _zdc = ['door','window','motion','opening','vibration','gas','heat','smoke','moisture','presence'] -%}
-            {%- set ns = namespace(sys=[]) -%}
-            {%- for eid in _all -%}
-              {%- if eid.startswith('binary_sensor.') and not eid.endswith('_fault') -%}
-                {%- set _dc = state_attr(eid, 'device_class') | default('', true) -%}
-                {%- if _dc not in _zdc -%}
-                  {%- set _st = states(eid) -%}
-                  {%- set _nm = state_attr(eid, 'friendly_name') | default(eid, true) -%}
-                  {%- if _dc == 'power' -%}
-                    {%- set _ok = _st == 'on' -%}
-                    {%- set _interp = 'AC power present' if _ok else 'AC power lost' -%}
-                  {%- elif _dc == 'battery' -%}
-                    {%- set _ok = _st == 'off' -%}
-                    {%- set _interp = 'battery OK' if _ok else 'battery low' -%}
-                  {%- elif _dc == 'problem' -%}
-                    {%- set _ok = _st == 'off' -%}
-                    {%- set _interp = 'no problem' if _ok else 'problem detected' -%}
-                  {%- elif 'ready' in eid -%}
-                    {%- set _ok = _st == 'on' -%}
-                    {%- set _interp = 'panel ready' if _ok else 'panel not ready' -%}
-                  {%- elif 'alarm' in eid and 'panel' not in eid -%}
-                    {%- set _ok = _st == 'off' -%}
-                    {%- set _interp = 'no alarm active' if _ok else 'alarm active' -%}
-                  {%- else -%}
-                    {%- set _ok = true -%}
-                    {%- set _interp = _st -%}
-                  {%- endif -%}
-                  {%- set ns.sys = ns.sys + [{
-                    "entity_id": eid,
-                    "name": _nm,
-                    "state": _st,
-                    "device_class": _dc,
-                    "ok": _ok,
-                    "interpretation": _interp
-                  }] -%}
-                {%- endif -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.sys }}
-
-      # ── Chime, keypad, panic buttons ──────────────────────────────────────
-      - variables:
-          _chime: >-
-            {%- set ns = namespace(v='') -%}
-            {%- for eid in _all -%}
-              {%- if ns.v == '' and eid.startswith('switch.') and '_chime' in eid -%}
-                {%- set ns.v = eid -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.v }}
-          _keypad: >-
-            {%- set ns = namespace(v='') -%}
-            {%- for eid in _all -%}
-              {%- if ns.v == '' and eid.startswith('sensor.') -%}
-                {%- set ns.v = eid -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.v }}
-          _panic: >-
-            {%- set ns = namespace(b=[]) -%}
-            {%- for eid in _all -%}
-              {%- if eid.startswith('button.') -%}
-                {%- set ns.b = ns.b + [eid] -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.b }}
-
-      # ── Derive open / fault / bypass summaries ────────────────────────────
-      - variables:
-          _open: >-
-            {%- set ns = namespace(r=[]) -%}
-            {%- for z in _zones -%}
-              {%- if z.open -%}{%- set ns.r = ns.r + [z.name] -%}{%- endif -%}
-            {%- endfor -%}
-            {{ ns.r }}
-          _faulted: >-
-            {%- set ns = namespace(r=[]) -%}
-            {%- for z in _zones -%}
-              {%- if z.fault -%}{%- set ns.r = ns.r + [z.name] -%}{%- endif -%}
-            {%- endfor -%}
-            {{ ns.r }}
-          _bypassed: >-
-            {%- set ns = namespace(r=[]) -%}
-            {%- for z in _zones -%}
-              {%- if z.bypassed -%}{%- set ns.r = ns.r + [z.name] -%}{%- endif -%}
-            {%- endfor -%}
-            {{ ns.r }}
-
-      # ── Camera discovery (by area) ────────────────────────────────────────
-      - variables:
-          _cameras_by_area: >-
-            {%- set _all_cams = label_entities('security_camera') -%}
-            {%- set ns = namespace(r={}) -%}
-            {%- for eid in _all_cams -%}
-              {%- set _aid = area_id(eid) | default('', true) -%}
-              {%- if _aid != '' -%}
-                {%- set _existing = ns.r.get(_aid, []) -%}
-                {%- set ns.r = ns.r | combine({_aid: _existing + [eid]}) -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.r }}
-
-      # ── Assemble result ───────────────────────────────────────────────────
-      - variables:
-          result: >-
-            {{
-              {
-                "ok": true,
-                "tool": "zen_dojotools_security_manager",
-                "caller_token": _token,
-                "action": "read_state",
-                "panel": {
-                  "entity_id": _panel_entity,
-                  "name": _panel_name,
-                  "state": _panel_state
-                },
-                "summary": {
-                  "zone_count": _zones | length,
-                  "open_zones": _open,
-                  "faulted_zones": _faulted,
-                  "bypassed_zones": _bypassed,
-                  "system_ok": (_sys | selectattr('ok', 'eq', false) | list | length) == 0,
-                  "system_issues": _sys | selectattr('ok', 'eq', false) | map(attribute='name') | list
-                },
-                "zones": _zones,
-                "system": _sys,
-                "chime": {
-                  "entity_id": _chime if _chime != '' else none,
-                  "state": states(_chime) if _chime != '' else 'n/a'
-                },
-                "keypad": {
-                  "entity_id": _keypad if _keypad != '' else none,
-                  "state": states(_keypad) if _keypad != '' else 'n/a'
-                },
-                "panic_buttons": _panic,
-                "cameras_by_area": _cameras_by_area,
-                "lens": "Security Manager lens — zone/panel state. zen_dojotools_camera for visual analysis per camera entity (camera lens). zen_dojotools_room_manager +security slice for per-room spatial context."
-              }
-            }}
-      - stop: read_state
-        response_variable: result
+###############################################################################
+# Companion automation — fires the script's auto_arm_check action directly.
+# NOT the Dojo/KFC trigger_subscriptions dispatch loop (that pipeline routes
+# to the Ninja Summarizer for AI-narrated context, not a deterministic
+# arm/disarm call) -- this needs its own real triggers. Dormant by default:
+# the script's own auto_arm_check reads auto_arm_enabled (off by default,
+# written via action=auto_arm_config, security_control cert) and no-ops
+# immediately if it's off, so this automation firing costs nothing until
+# an admin explicitly turns the feature on post-Node-RED.
+###############################################################################
+automation:
+  - id: '1755840000001'
+    alias: Zen Security Auto-Arm Watcher
+    description: >-
+      Fires zen_dojotools_security_manager action=auto_arm_check on zone.home
+      occupancy changes, vacuum start/dock events, home_mode Night-Late/Away
+      transitions, alarm panel arm-away/disarm events, and exterior lock
+      unlocks. No-ops unless auto_arm_enabled is on (security_manager
+      cabinet drawer, cert-gated) -- each sub-behavior also has its own
+      off-by-default sub-flag under _auto_arm_config.
+    triggers:
+      - trigger: state
+        entity_id:
+        - zone.home
+        not_from:
+        - unknown
+        - unavailable
+        id: occupancy
+      # target is REQUIRED by this trigger platform (real error hit
+      # 2026-08-22: "required key not provided @ data['target']. Got None."
+      # -- docs implied otherwise). Hardcoded to the one real vacuum entity
+      # in the house today; extend entity_id to a list if a second vacuum
+      # is ever added.
+      - trigger: vacuum.started_cleaning
+        target:
+          entity_id: vacuum.roborock_rosie
+        id: vac_started
+      - trigger: vacuum.returned_to_dock
+        target:
+          entity_id: vacuum.roborock_rosie
+        id: vac_docked
+      # zen_home_mode is a singleton global sensor (no label to intersect
+      # against, same category as zone.home above) -- literal entity_id here
+      # matches that existing precedent, not a new hardcoding pattern.
+      - trigger: state
+        entity_id: sensor.zen_home_mode
+        to: "Night-Late"
+        id: night_late
+      - trigger: state
+        entity_id: sensor.zen_home_mode
+        to: "Away"
+        id: mode_away
+      # alarm_control_panel.home_alarm is the one real panel in this house
+      # (matches the vacuum/zen_home_mode literal-entity_id precedent above).
+      - trigger: state
+        entity_id: alarm_control_panel.home_alarm
+        to: "armed_away"
+        id: alarm_armed_away
+      - trigger: state
+        entity_id: alarm_control_panel.home_alarm
+        to: "disarmed"
+        id: alarm_disarmed
+      # Exterior locks only (label:ext_lock) -- extend this list if more
+      # exterior locks are ever added. Interior locks deliberately excluded,
+      # matching legacy's own scope (front/back/garage-entry only).
+      - trigger: state
+        entity_id:
+          - lock.front_door
+          - lock.back_door
+          - lock.garage_entry_door
+        to: "unlocked"
+        id: lock_unlocked
+    conditions: []
+    actions:
+      - action: script.zen_dojotools_security_manager
+        data:
+          action: auto_arm_check
+          auto_arm_trigger: "{{ trigger.id }}"
+    mode: queued
+    max: 10

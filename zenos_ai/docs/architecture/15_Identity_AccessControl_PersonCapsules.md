@@ -46,7 +46,7 @@ The Identity system is the first line of defense against misalignment.
 Every person, family, household, and construct is represented by a Cabinet volume with the following invariants:
 
 * **Globally Unique Identifier (GUID)** stored in VolumeInfo
-* **validation signature** (“ALLYOURBASEBELONGTOUS”)
+* **validation signature** (“ALLYOURBASEAREBELONGTOUS”)
 * **versioned schema** for repeatable parsing
 * **flags** describing cabinet type (user, family, household, system, dojo, kata)
 * **zenai_essence drawer** containing identity metadata
@@ -63,26 +63,27 @@ The Cabinet is Friday’s ground truth.
 
 ---
 
-# **15.3 The Identity Hash: Integrity Anchor**
+# **15.3 The Identity Hash: A Stored Anchor, Not Yet an Enforced One**
 
-Each identity cabinet includes an **identity_hash** field derived through a deterministic hashing pipeline applied to:
+Each identity cabinet includes an **identity_hash** field — a signature value read
+straight through from the essence (`persona.core.signature` on the three-layer
+schema, or a `hashstamp.hash` on the flat legacy schema most installs actually run
+today, see §15.2/GA note) and surfaced on the identity card returned to callers.
 
-* GUID
-* registered entity_id
-* allowed ACLs
-* declared relationships
-* core essence metadata
+As implemented today, `identity_hash` is a passthrough field only: it's stored and
+exposed, but nothing in the codebase compares it against an expected value,
+detects a mismatch, or raises a flag anywhere. Verified: zero references to
+`identity_hash` exist in `dojotools_identity.yaml`, and every occurrence in
+`zen_os_1.jinja` reads or forwards the value without ever comparing it to
+anything.
 
-This allows Friday to detect:
-
-* foreign cabinet injections
-* unauthorized modifications
-* drift between HA entity and Cabinet representation
-* replay or stale identity data
-
-Identity hash mismatches do not silently resolve — the system raises flags that propagate into the Abbot and Summarizer layers.
-
-This enforces identity integrity across updates.
+The integrity-anchor use case this section originally described — detecting
+foreign cabinet injections, unauthorized modifications, drift between the HA
+entity and its Cabinet representation, or replay/stale identity data, with
+mismatches propagating as flags into the Abbot and Summarizer layers — is a real
+and worthwhile design target, but it is **not implemented yet**. Treat this as a
+roadmap item, not current behavior, until that comparison/flag-propagation logic
+actually exists.
 
 ---
 
@@ -205,12 +206,20 @@ Examples:
 
 ACLs are immutable outside owner modification.
 
-ACL enforcement occurs at two levels:
+ACL enforcement is designed to occur at two levels:
 
-1. **Abbot** — prevents execution of unauthorized reasoning tasks.
+1. **Abbot** (the Scheduler + Dispatcher acting together — see §6/§14) — would prevent execution of unauthorized reasoning tasks.
 2. **Summarizer** — ensures summaries do not write in unauthorized volumes.
 
-This dual enforcement prevents accidental permission escalation.
+The Abbot side of this is not enforced today: `dojotools_dispatcher.yaml` already
+carries an `acl` field through its event payload (a real, wired hook — the same
+plumbing pattern used for the Portainer container-control ACL gate), but nothing
+currently reads that field to permit or deny a reasoning task. Treat Abbot-level
+ACL enforcement as designed and hooked, not yet active — same status as §15.3's
+identity_hash.
+
+Dual enforcement, once the Abbot side lands, prevents accidental permission
+escalation.
 
 ---
 

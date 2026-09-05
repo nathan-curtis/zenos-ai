@@ -1,5 +1,10 @@
 # **10. Event Substrate and Home Assistant Implementation**
 
+*(Updated 2026-08-04: Redirector and Abbot sections corrected to describe the
+shipped implementation — Redirector as the Cabinet package, Abbot as the
+Scheduler+Dispatcher working jointly — and fabricated dotted event-type names
+replaced with the real `event_type: zen_event` + `kind:` pattern throughout.)*
+
 Version 1 of Friday’s House rests on a deterministic, observable event substrate constructed entirely within Home Assistant (HA). The substrate is not decorative. It forms the cognitive “nervous system” that binds perception, state mutation, summarization, and reasoning into a coherent loop.
 
 This section describes:
@@ -87,17 +92,16 @@ Friday listens to many but acts on few. Most perception is routed through **Room
 
 ### **10.3.2 Zen Events**
 
-Custom structured events emitted by Friday’s DojoTools:
-
-* `zen_event.summary_request`
-* `zen_event.summary_complete`
-* `zen_event.inspect`
-* `zen_event.identity_lookup`
-* `zen_event.abbot.scheduled`
-* `zen_event.abbot.completed`
-* `zen_event.error`
-* `zen_event.cabinet_write`
-* `zen_event.debug`
+Custom structured events emitted by Friday’s DojoTools do not use per-purpose
+dotted event types. Every one shares a single flat `event_type: zen_event`; the
+specific occurrence is carried in a `kind` field nested inside
+`event.data.event.kind`. Real `kind` values in current use include
+`summary_force`, `ninja_force`, `supersummary_force`, `ninja_failure`,
+`ninja_context_overflow`, `monk_failure`, `kata_emit`, `emission_suppressed`,
+`cabinet_mounted`, `cabinet_dismounted`, and others — see
+`zen_dojotools_event_emitter` (`mode=help`) for the canonical, current lexicon.
+A consumer filters on `event_type: zen_event` and switches on
+`event.data.event.kind`, not on distinct top-level event names.
 
 These deliver structured telemetry for debugging and high-level reasoning.
 
@@ -112,7 +116,15 @@ Therefore, Friday supports “legacy FES-style” global variables using:
 * `remove_variable_legacy`
 * `clear_variable_legacy`
 
-These are captured and sanitized by the **Redirector**, which translates them into Cabinet-safe operations.
+These are captured and sanitized by the **Redirector — realized in the shipped
+system as the Cabinet package** (`zen_dojotools_filecabinet`, the MCP-facing
+surface, backed by `zen_sutra_filecabinet` as the internal terminus). Verified:
+`dojotools_filecabinet.yaml` is exactly where `set_variable_legacy`/
+`remove_variable_legacy` are emitted and handled (14+ call sites), and it carries
+real reject/repair mechanics matching the Redirector's original design
+responsibilities (`raw_key` repair mode gated behind explicit `force_action`
+confirmation, drawer-list reject filters, mount-traversal validation). §10.5
+below covers this mapping in full.
 
 ---
 
@@ -130,26 +142,34 @@ Each step maps directly onto a concrete HA mechanism.
 
 ## **10.5 Routing Layer: Zen DojoTools Redirector**
 
-The Redirector is the heart of Friday’s sanity layer.
+*(Updated 2026-08-04: the Redirector, as originally speced in this chapter, shipped
+— but as the Cabinet package, not a standalone automation. This section now
+describes the shipped implementation.)*
 
-Its responsibilities:
+The Redirector is the heart of Friday’s sanity layer. It shipped as the **Cabinet
+package**: `zen_dojotools_filecabinet` (the MCP-facing surface) backed by
+`zen_sutra_filecabinet` (the internal terminus that does the actual work), both
+in `packages/zenos_ai/dojotools/dojotools_filecabinet.yaml`.
 
-1. Validate all legacy events
-2. Map event prefixes to Cabinets
-3. Enforce ACL boundaries
-4. Reject malformed data
-5. Offer repairs for unknown volumes
-6. Emit debug events
-7. Avoid double-writes or recursive triggers
+Of the originally-speced responsibilities, verified present in the shipped Cabinet package:
 
-The Redirector is implemented as a single HA automation using:
+1. **Validate legacy events** — `set_variable_legacy`/`remove_variable_legacy` are emitted and handled directly in `dojotools_filecabinet.yaml` (14+ call sites).
+2. **Reject malformed data** — confirmed reject/guard mechanics: `raw_key` repair mode gated behind explicit `force_action` confirmation (a deliberate "I hope you knew what you were doing" warning path), drawer-list `reject()` filters removing bad entries, mount-traversal validation on write.
+3. **Offer repairs for unknown volumes** — the `raw_key=true` repair path exists specifically for this: recovering keys written outside normal FileCabinet flow (e.g. raw events with characters that break slugification) that would otherwise be unreachable.
 
-* multiple event triggers
-* constrained choose blocks
-* strict templating to produce JSON-safe routing payloads
-* explicit conditions blocking unauthorized writes
+Two of the originally-speced responsibilities I could not independently confirm
+as implemented in the Cabinet package and did not want to assert without
+verification — flagging rather than guessing:
 
-Without the Redirector, Friday would have no way to prevent corrupted drawers or malformed packets.
+* **"Map event prefixes to Cabinets"** and **"Enforce ACL boundaries"** as
+  distinct routing/enforcement mechanisms (ACL enforcement generally is a
+  design target not yet active anywhere in the codebase today — see §15.6).
+* **"Emit debug events"** and **"avoid double-writes or recursive triggers"** as
+  dedicated Cabinet-package mechanisms — no distinct implementation found for
+  either under this name; if these exist under different terminology, that's a
+  gap in this doc's mapping worth closing, not a claim to make blind.
+
+Without the Cabinet package, Friday would have no way to prevent corrupted drawers or malformed packets.
 
 ---
 
@@ -181,39 +201,48 @@ Inspect is therefore the “safe read” layer on which higher-level cognition r
 
 ## **10.7 Write Layer: Zen DojoTools Cabinet (Drawers)**
 
-All memory mutation occurs via:
+*(Updated 2026-08-04: corrected script name — see §10.5 for the Redirector/Cabinet-package mapping.)*
+
+All memory mutation occurs via the Cabinet package:
 
 ```
-script.zen_dojotools_write_drawer
+script.zen_dojotools_filecabinet   (MCP-facing surface)
+script.zen_sutra_filecabinet        (internal terminus)
 ```
 
-This script enforces:
+`script.zen_dojotools_write_drawer` (the name previously documented here) does
+not exist in the codebase.
 
-* GUID validation
-* ACL checks
-* drawer existence
-* schema conformity
-* type safety
-* safe JSON encoding
+Verified enforcement present in the shipped Cabinet package:
 
-Cabinet writes:
+* drawer existence / mount-traversal validation on write
+* reject/repair mechanics for malformed or unreachable keys (`raw_key` repair path, gated behind explicit `force_action` confirmation)
 
-* always generate a `zen_event.cabinet_write`
-* are always mediated by the Redirector
-* rely on Abbot authorization (v1)
-* will require session tokens (v1.5)
+**Not verified as currently active** (flagging rather than asserting): GUID
+validation, ACL checks, schema conformity, and type safety as dedicated
+per-write enforcement steps — I did not find code confirming these run on every
+write. ACL enforcement specifically is a known design target, not yet active
+anywhere in the codebase today (see §15.6).
 
-Writes never occur directly from automation logic.
-Every mutation flows through this strict pipeline.
+Cabinet writes are not tagged with a dedicated `cabinet_write` event kind today —
+see §10.3.2 for the actual event vocabulary in use (`kata_emit`,
+`cabinet_mounted`/`cabinet_dismounted`, etc.).
+
+"Rely on Abbot authorization (v1)" and "will require session tokens (v1.5)" are
+both roadmap statements, not current behavior — Abbot-level ACL enforcement is
+not implemented yet (see §15.6, §10.8).
+
+Writes never occur directly from automation logic — every real mutation flows
+through the Cabinet package's own script, which remains true regardless of which
+of the above enforcement steps are or aren't active yet.
 
 ---
 
 ## **10.8 Scheduling: The Abbot**
 
-"The Abbot" is the deterministic cognitive scheduler.
+"The Abbot" is the deterministic cognitive scheduler — realized today as the Scheduler and Dispatcher working together (see §10.8.3).
 
-Note: This section describes a future version of the Zen Scheduler for architecture direction purposes... (I've had a couple ok how are you gonna?)
-Future versions of tools will ALL include event consumption and emission mechanisms, combined with session token validaiton so tools and security context can be tied to a single conversation context. It also will provide the single target for inference job requests.  You want inference - ok this is how you get it.  Ultimately the goal is to have a single, structured intellegent queue for all incoming inference/cognitive job types and filter based on users preferences, costs, permisison models, power, availability, etc. I'll be working to have all tool communications event driven so if a tool exposes an event pipeline, prefer it. The main event relay - The Abbot will be the listener for the OS core and responsible for driving the inference pipeline.
+**Note:** this section describes a future version of the Zen Scheduler, for architecture direction purposes, not current behavior. Future versions of tools will all include event consumption and emission mechanisms, combined with session token validation, so tools and security context can be tied to a single conversation context. The Abbot will also become the single target for inference job requests: a structured, intelligent queue for all incoming inference/cognitive job types, filtering by user preferences, cost, permission model, power, and availability. Tool communication is moving toward fully event-driven — where a tool exposes an event pipeline, prefer it. The Abbot becomes the main event relay: the listener for the OS core, responsible for driving the inference pipeline.
 
 So basically,
   Abbot:
@@ -247,15 +276,25 @@ The Abbot takes advantage of the event bus’s ordering guarantees:
 
 ### **10.8.3 Implementation**
 
+*(Updated 2026-08-04: "the Abbot" is not one script — it's a name for the
+scheduling+dispatch function realized jointly by two real, separate components.)*
+
 The Abbot is implemented as:
 
-* a single HA script
-* triggered by `zen_event.summary_request`
-* containing a state machine encoded in Jinja templating
-* using debounced triggers
+* **`dojotools_scheduler.yaml`** (`zen_dojotools_scheduler`) — trigger dispatch, debounce/shed logic via `pipeline_tier` and queue-depth thresholds (`shed_ambient_at`/`shed_keeper_at` from `zen_scheduler_config`), serialization guarantees.
+* **`dojotools_dispatcher.yaml`** (`zen_dojotool_dispatcher`) — event-driven routing: listens for `zen_event(kind: dojotool_call)`, routes to the registered script, fires a correlated `zen_event(kind: dojotool_return)`. Decouples callers from direct script calls (an unknown tool returns a structured error on the bus instead of hard-faulting the calling sequence) and carries an `acl` field through its payload — plumbed, not yet enforced (see §15.6).
+* triggered by real event kinds — `summary_force`, `ninja_force`, `supersummary_force`, etc. (not `zen_event.summary_request`, which doesn't exist — see §10.3.2)
 * returning structured status back to Cabinet drawers
 
 The Abbot creates *deterministic cognition* atop HA’s synchronous event model.
+
+Stated future direction (not yet built): job tagging and evaluation so a
+request can be routed to the correct inference core based on its content —
+e.g. keeping sensitive content on a local model, routing code review to a
+different provider — with the Abbot as the single listener/dispatch point for
+all inference job requests platform-wide. §10.8's introductory note already
+describes this target; this subsection just corrects which real files
+implement the *current* (non-routing) scheduling/dispatch behavior.
 
 ---
 
@@ -265,8 +304,8 @@ Each summarizer is a functional module that:
 
 1. reads from RoomState, cabinet state, or sensors
 2. constructs a structured JSON object
-3. emits `zen_event.summary_complete`
-4. returns a packet that the Redirector writes into a drawer
+3. emits a `zen_event` with `kind: kata_emit` (see §10.3.2 for the real event vocabulary)
+4. returns a packet that the Cabinet package writes into a drawer
 
 Summarizers must be:
 
@@ -316,7 +355,7 @@ The substrate emits rich error telemetry:
 * decode failure
 * summary timeout
 
-Each emits a `zen_event.error` containing:
+Each emits a `zen_event` with a failure-specific `kind` (e.g. `ninja_failure`, `monk_failure` — see §10.3.2), containing:
 
 * event type
 * entity
@@ -365,7 +404,7 @@ The HA substrate satisfies these requirements.
 
 The full substrate is introspectable through:
 
-* `zen_event.*` searches
+* `event_type: zen_event` searches, filtered on `event.data.event.kind`
 * HA Log Viewer
 * Zen DojoTools Inspect
 * Home Assistant’s Developer Events panel

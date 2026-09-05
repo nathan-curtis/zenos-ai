@@ -199,7 +199,7 @@ From the perspective of data flow, Index performs the following steps:
 
 3. **Optionally expand.**
 
-   * if `expand_entities` is true, call `script.dojotools_zen_inspect` on the resulting entity set
+   * if `expand_entities` is true, call `script.zen_dojotools_inspect` on the resulting entity set
    * otherwise, treat the base entity list as final
 
 4. **Compute adjacency and drawer mappings.**
@@ -394,11 +394,11 @@ For a given Kung Fu component, Ninja Summarizer:
    * `review_data`: raw contextual data, strongly typed
    * `supplemental_instructions`: trigger-specific notes and last Kata snapshots
 
-5. Invokes an `ai_task.generate_data` entity (e.g., `ai_task.gpt_oss_20b_local_ai_task`) with that prompt.
+5. Invokes an `ai_task.generate_data` entity with that prompt. The target entity is never hardcoded — it's resolved dynamically at call time from `input_text.zenos_ai_task_entity` (an install-specific helper pointing at whichever local or cloud `ai_task` integration the operator has configured, e.g. `ai_task.gpt_oss_20b_local_ai_task` on one install, something else entirely on another).
 
 6. Receives a strictly JSON result in `monk_response.data`.
 
-7. Optionally writes the result as a new drawer under `sensor.zen_kata_storage_cabinet`, keyed by the component slug.
+7. Optionally writes the result as a new drawer under `sensor.zenos_kata_cabinet (resolved via sensor.zen_kata_cabinet_resolved)`, keyed by the component slug.
 
 8. Emits a telemetry event via `script.zen_dojotools_event_emitter` summarizing success/failure and excerpting relevant Kata fields.
 
@@ -449,7 +449,7 @@ The Scheduler:
 
 * attaches to time-based triggers (`hourly_trigger`, `quarter_hour`, `daily_midnight`, `daily_noon`)
 * listens to key state changes (home mode, alarm state, occupancy, Withings bed sensors, doors, windows, locks, garage doors, water flow, electrical panel doors)
-* runs `zen_dojotools_zen_inspect` on `sensor.home_overview` to build high-level context
+* runs `zen_dojotools_inspect` on `sensor.home_overview` to build high-level context
 * for each trigger condition, reads the last Kata for a component and crafts a `supplemental_prompt` that annotates:
 
   * source trigger metadata
@@ -458,7 +458,7 @@ The Scheduler:
 
 It then calls Ninja Summarizer or SuperSummary with:
 
-* `kung_fu_component_id` set to a specific manager (Security, Alert Manager, Room Manager, TaskMaster, Media Manager, Energy Manager, Water Manager, Hot Tub Manager)
+* `kung_fu_component_id` set to a specific manager (Security, Alert Manager, Room Manager, TaskMaster, Media Manager, Energy Manager, Water Manager, Spa Manager)
 * `post_to_kata_cabinet: true` for scheduled updates
 
 Finally, it updates a `zen_scheduler` drawer with a JSON record of:

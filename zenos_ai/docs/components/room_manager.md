@@ -1,8 +1,14 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.6.0
+**Version:** 5.6.5
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
+
+> **Not the same system as Room Manager v3 / REFLEX.** RoomReg (this doc)
+> answers "what is this room, physically" — topology, egress, emergency
+> snapshots. Room Manager v3/REFLEX answers "what is this room doing right
+> now" — live occupancy/activity state, reactive scenes. See
+> [Room Manager v3 & REFLEX](room_manager_v3_reflex.md).
 
 ---
 
@@ -17,7 +23,7 @@ Key capabilities:
 * Physical room topology storage (portals, adjacency, transmission)
 * Egress and evacuation routing (exits[], emergency exits, drop heights)
 * Safety equipment inventory (fire extinguishers, AED, hazmat)
-* Live context slices (+light, +topo, +climate, +media, +inventory, +chores, +tasks, +calendar, +wiki, +tickets)
+* Live context slices (+light, +topo, +climate, +media, +appliances, +inventory, +chores, +tasks, +calendar, +wiki, +tickets)
 * Whole-house situational awareness via `home_overview`
 * Crisis snapshot via `mode=emergency` — scenario-aware guidance, shelter classification, hazards, rally point, dispatch address
 * Household profile store (address, zip_code, rally_point) via `mode=set`
@@ -100,6 +106,8 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | `utility` | Manage utility_index in household cabinet. `utility_action=list\|get\|set\|delete`. `utility_type=electric\|gas\|water\|...` required for get/set/delete. |
 | `pathfind` | BFS shortest path between two areas or persons. Fields: `start` (area_id or person entity), `destination` (area_id or person entity), `max_hops` (default 20). Returns path as ordered list of area_ids, hop count, and portal sequence. Returns `no_path` if destination is unreachable within `max_hops`. |
 | `room_occupant_prefs` | Guest-or-household-member prefs for a room, plus an independent `vendor_activity` caution flag. `area=` required. See below. |
+| `room_status_set` | Write housekeeping status for a room: `clean`/`dirty`/`in_service`/`occupied`. `area=` and `room_status=` required. Decoupled from any guest-stay lifecycle — HA-local operational state only. See below. |
+| `room_status_get` | Read housekeeping status. `area=` optional — omit for all rooms, pass for one. Areas never set return `status: unknown`, not a default of `clean`. See below. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
 | `help` | Full reference: purpose, when_to_call, seed_steps, domain_routing, schema, context_slices, concepts, modes. |
 
@@ -116,6 +124,7 @@ Pass as comma-separated flags to `context_slices=` on `mode=get`. Any combinatio
 | `+climate` | First climate entity in area. `entity_id`, `hvac_mode`, `setpoint`, `current_temp` |
 | `+covers` | `covers[]`, `open[]`, `avg_position` (0–100) |
 | `+media` | Active media player. `entity_id`, `state`, `media_title`, `volume_level`. Returns `active_count: 0` when nothing playing. |
+| `+appliances` | Active appliance power/pulse sensors. `active_count`, `total_count`, `active[]{entity_id, name}`. Label-driven, not `area_entities()`-based — a sensor must carry both the `appliance` label and a second label matching the target `area_id` slug (e.g. `appliance` + `kitchen`), since these sensors often live on a device whose registry area is a panel's physical location, not the functional room. |
 | `+inventory` | Grocy `object_lens` place lens for the area — tagged products, chores, expanded operational objects. Full data in `domain_context.room_manager[area_id].context.inventory` only. Per-entity `room_context` carries a slim `inventory_summary: {tagged_products, chores, status}` + `room_area_id` pointer. Alias: `+grocy` |
 | `+chores` | Maintenance chores linked to products stocked in the area. `is_due`, `next_execution`, `cadence`, `assignee`. `context.chores.chore_actions{execute, edit, add}` — pre-built call shapes; pass `item=<chore name>`. `add` also takes `period_days=N`. Chores with a `product_id` also include `replace_action{step_1: chores_execute, step_2: stock_open_item}` — two-step replacement sequence. |
 | `+tasks` | Todo entities whose labels intersect the area's HA labels. Each list entry includes `items[]` and `task_actions{complete, edit, add}` — pass `items=[<summary>]`. See Label-Intersection below. |
@@ -300,6 +309,31 @@ mode=room_occupant_prefs  area=kitchen
 
 ---
 
+## mode=room_status_set / room_status_get — Housekeeping Status
+
+Room-level housekeeping state — `clean`/`dirty`/`in_service`/`occupied`. **Deliberately decoupled from any guest-stay/reservation lifecycle** — this is HA-local operational state, not a Twenty object, and not part of the Steel Magnolia PMS reservation model. Storage mirrors `room_topology`'s own shape: a dict keyed by `area_id` on the household cabinet, merge-only writes (matches this file's existing non-destructive-merge convention).
+
+```
+mode=room_status_set  area=guest_suite_1  room_status=dirty  room_status_source=turnover
+mode=room_status_get  area=guest_suite_1
+mode=room_status_get                        # all rooms
+```
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|--------------|
+| `area` | Yes (both modes*) | HA area. Must resolve to a real area. *`room_status_get` may omit `area` to return every room's status. |
+| `room_status` | `room_status_set` only | `clean` \| `dirty` \| `in_service` \| `occupied`. |
+| `room_status_source` | Optional | What triggered the change: `turnover` \| `manual` \| `autovac`. Default `manual`. |
+| `room_status_note` | Optional | Free-text note (e.g. which chore triggered a `dirty` mark). |
+
+### Response Shape
+
+An area that has never had status set reads back as `{status: 'unknown', updated_at: none, source: none, note: ''}` — **explicit absence beats a silent default**, so an unset room never reports falsely as `clean`. `home_overview`'s response also surfaces this per-room under `housekeeping_status`.
+
+---
+
 ## Tax / Real-Estate Fields (v5.4.1)
 
 Per-room fields for depreciation and business-use calculations, set via `mode=set`:
@@ -416,6 +450,42 @@ Presence tracker block. Default `false` — opt in explicitly.
 
 Apply `hps` label to phone and wearable device trackers to enroll them in filtered mode.
 
+### `confident_presence{}` — always on, no flag needed
+
+High-confidence current-room lookup. Unlike `presence{}`
+above (a raw BPS device-discovery scan, opt-in because it's comparatively
+expensive), this only reads however many entities carry the
+`zen_presence_room` label — cheap enough to include on every
+`home_overview` call by default.
+
+Person-keyed dict, one entry per person who resolves to a real HA
+`person.*` entity **and** is currently `home`:
+
+```json
+"confident_presence": {
+  "person_a": {"room": "garage", "confidence": "medium", "source": "bayesian", "entity": "sensor.person_a_confident_room"},
+  "person_b": {"room": "unknown", "confidence": "low", "source": "last_confident_fallback", "entity": "sensor.person_b_confident_room"}
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `room` | Room slug (matches `room_topology` keys) or `unknown` |
+| `confidence` | `high` / `medium` / `low` |
+| `source` | `bayesian` (a live Bayesian sensor cleared threshold) or `last_confident_fallback` (no sensor currently confident — falling back to the last known room) |
+| `entity` | The underlying `zen_presence_room`-labeled sensor |
+
+Untracked people (no `person.*` entity) and tracked-but-away people are
+simply **absent** from the dict — not shown with a null/unknown entry.
+
+This field is deliberately opaque to whatever implementation populates
+the `zen_presence_room`-labeled sensors it reads — any install
+satisfying the label contract (state = room slug, `attributes.confidence`,
+`attributes.source`) is picked up automatically, no code change needed
+here. Same data is also available reverse
+(who's in room X) via the Lens Bus `presence` provider's `area_id` anchor
+— see `library/lenses.md`.
+
 ---
 
 ## zen_rm_ignore Label
@@ -507,3 +577,16 @@ This enables the Index → Inspect → Room Manager pipeline: a single Index cal
 | Glass partition | 0.40 | 0.70 |
 
 These are reference values — set what matches your actual build.
+
+---
+
+## Identity Gate (2026-08-16)
+
+Room Manager joins the gated tools. All ~35 modes were surveyed; read stays fully open (matches the universal convention every other gated tool already follows — the cert boundary only ever sits at write/actuation, never read). Two certifications cover the entire write surface, both cert-only (no live-ack tier) and `cert_scope`-deny hard-blocked, same shared `cert_scope_check` mechanism as every other gated tool:
+
+- **`room_topology_edit`** — structural edits: `set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, `room_zone_set`, `room_zone_remove`, `landmark_set`, `landmark_remove` (level 1). `area_delete` requires level 2 — the existing per-cert graduated `max_level` mechanism, not a third cert class.
+- **`room_behavior_control`** — `room_status_set`, `roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `wasp_enable`, `reflex_wire` (area= write), and `room_control_set` writes **except** setting Paused itself (stays open — same "increasing safety never needs permission" asymmetry the pre-existing unpause gate already established) and the unpause path itself (untouched, its own separate gate — see the operator's manual, Section 5).
+
+`room_control_override` (the pre-existing unpause gate) is additive, not replaced by these two. `scene_stage` (a thin delegate to ZenLux) gates there instead — see `components/zenlux.md`. `room_occupant_prefs` is pure read despite the name and was deliberately excluded from both new certs.
+
+Grant either via `zen_dojotools_persona_editor mode=cert_grant cert_component=room_topology_edit` (or `room_behavior_control`). See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model.

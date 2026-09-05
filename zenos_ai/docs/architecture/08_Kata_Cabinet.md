@@ -239,18 +239,18 @@ If any check fails, the write is rejected with a structured error event.
 
 ## **8.5.5 Event Emission for Observability**
 
-After every successful write, the Cabinet emits events that form the observability pipeline:
-
-* `zen_drawer_updated`
-* `zen_cabinet_write_committed`
-* `zen_acl_resolution`
-* `zen_cognitive_checkpoint`
-
-Failures emit:
-
-* `zen_cabinet_write_denied`
-* `zen_acl_denied`
-* `zen_schema_validation_error`
+ZenOS-AI does not use per-outcome dotted event types. Every event on the bus shares
+one flat `event_type: zen_event`; the specific occurrence is carried in a `kind`
+field inside `event.data.event.kind` (see `zen_dojotools_event_emitter` — mode=help
+returns the canonical event-kind lexicon). FileCabinet itself directly emits
+lifecycle kinds like `cabinet_mounted`/`cabinet_dismounted` on mount-state changes;
+routine drawer writes don't get a dedicated Cabinet-level success/failure event of
+their own today — the response envelope returned to the caller (`status`,
+`write_verified`, error detail on rejection) is the authoritative signal, and
+callers that need write-level observability emit their own event around the call
+rather than relying on one from the Cabinet layer. A caller building offline
+audits or log correlation should filter `event_type: zen_event` and match on
+`event.data.event.kind`, not on distinct top-level event types.
 
 This allows offline audits, log correlation, and root-cause analysis.
 

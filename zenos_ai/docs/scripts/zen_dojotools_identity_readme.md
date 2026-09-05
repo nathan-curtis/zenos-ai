@@ -83,6 +83,8 @@ flowchart TD
 | `is_member` | Depth-2 boolean check — is entity A a member of container B? | No |
 | `provision_member` | Full orchestration — provision expansion slot, wire into family, rebuild manifest | Yes |
 | `resolve_caller_identity` | Platform-wide SP1 identity/cert-check chokepoint — delegates to `zen_root_authentik`, enforces the OS sim_mode policy, optionally runs a cert check on the caller's behalf | No |
+| `request_live_ack` (2026-08-15) | Single shared chokepoint for "get a live human yes/no" — fires an alert via AlertManager, polls for response, returns approved/declined/timeout | No |
+| `cert_list` (2026-08-15) | Combined static cert catalog + live-grant view — what could exist, and what's actually held right now | No |
 
 `resolve` is the default mode — existing callers are unaffected.
 
@@ -107,6 +109,7 @@ flowchart TD
 | `confirm_action` | boolean | `set_principal` only. Required when the target HoH/prime slot is already occupied by a **different** entity than `member_entity`. Not required to fill an empty slot or re-set the same entity already occupying it. Default `false` |
 | `required_cert` | text | `resolve_caller_identity` only. Cert name to check on the caller's behalf (e.g. `infra_container_control`). When set, the mode runs the `cert_list` lookup itself against the resolved identity and returns `authorized: true/false` — the caller never touches `persona_editor` directly |
 | `required_cert_level` | number | `resolve_caller_identity` only. Minimum cert level needed when `required_cert` is set. Default `1` |
+| `target_entity` (2026-08-16) | text | `resolve_caller_identity` only, optional, pairs with `required_cert`. The specific entity the caller wants to act on. When passed, this mode resolves `scope_decision` (`allow`/`deny`/`default`) internally via the shared `cert_scope_check` macro against the held cert's `cert_scope` — consumers stop walking `cert_scope` themselves. Omit it and `scope_decision` is always `default`, unaffected for any existing caller that doesn't pass it. |
 
 **Resolution priority** (resolve/prompt modes):
 ```
@@ -502,6 +505,8 @@ zen_dojotools_identity:
 
 **Optional cert check:** If `required_cert` is set (and the identity resolution was not blocked), this mode calls `zen_dojotools_persona_editor mode=cert_list` against the resolved identity itself and folds the result into the response as `authorized`. Consumers must call this mode for cert checks instead of calling `persona_editor` directly — checking your own cert against your own resolved identity defeats the point of a single chokepoint.
 
+**Optional scope resolution (2026-08-16):** if `target_entity` is also set, this mode additionally resolves `scope_decision` — `allow`/`deny`/`default` — via the shared `cert_scope_check` macro (`zen_os_1.jinja`) against the held cert's `cert_scope`. This happens once, here, not re-walked per consumer tool: locks/covers/security_manager/room_manager/infra/ZenLux all read `scope_decision` straight off this response instead of each independently testing `entity_id in cert_scope`. Identity's job is only to surface the decision, never to interpret what a tool should do with it — each consumer still owns deciding whether `scope_decision: allow` means "skip a live ack" for its own action.
+
 **Response shape:**
 
 ```json
@@ -518,13 +523,61 @@ zen_dojotools_identity:
   "cert_name": "",
   "cert_level": 0,
   "cert_required_level": 1,
+  "cert_scope": [],
+  "cert_constraints": [],
+  "target_entity": "",
+  "scope_decision": "default",
   "authorized": true,
   "caller_token_received": "",
   "timestamp": "..."
 }
 ```
 
-`block_reason` is populated only when `policy_status: blocked` (`"sim_mode result rejected: OS policy integrations_config.identity.sim_mode_allowed is false"`). `authorized` is `true` only when the identity was not blocked **and** any requested cert check passed — consumers should gate on `authorized`, not `policy_status` alone, when a cert was requested.
+`block_reason` is populated only when `policy_status: blocked` (`"sim_mode result rejected: OS policy integrations_config.identity.sim_mode_allowed is false"`). `authorized` is `true` only when the identity was not blocked **and** any requested cert check passed — consumers should gate on `authorized`, not `policy_status` alone, when a cert was requested. `scope_decision` is independent of `authorized` — a caller can be `authorized: true` (holds the cert at the required level) with `scope_decision: default` (no scope override for this specific target), which is the normal case for a live-ack-tier action with no admin exemption granted.
+
+### `request_live_ack` — Shared Live-Approval Chokepoint (2026-08-15)
+
+Extracted after the same ~40-line fire-and-poll block turned up hand-rolled four times (`zen_dojotools_infra`'s Portainer d-class ack, `zen_dojotools_locks`' `escalation_request`, `zen_dojotools_persona_editor`'s `cert_grant` and `cert_revoke`). Same "call identity, don't re-derive your own logic" principle as `resolve_caller_identity` — this is the ack-flow equivalent. One-shot per call: fires an alert, polls for a response, returns `approved`/`declined`/`timeout`. Callers that need a *time-boxed grant* (not just one action's approval) still own writing that grant to their own cabinet drawer after a true response here, same as `zen_dojotools_locks`' `escalation_request` does.
+
+```yaml
+zen_dojotools_identity:
+  mode: request_live_ack
+  ack_message: "Agent requests X. Approve?"     # required
+  # ack_key: my_custom_key                       # optional, default: live_ack_<timestamp>
+  # ack_max_wait_seconds: 90                      # optional, default 90, hard-capped at 150 regardless of input
+  # ack_poll_interval_seconds: 15                 # optional, default 15, floored at 5
+  # ack_notify_target: postman                    # optional, default 'postman' — see notify_target note below
+```
+
+**`ack_max_wait_seconds` is hard-capped at 150 in code, regardless of caller or cabinet input** — a longer approval window is a de-escalation attack surface, so this isn't tunable past that ceiling by design.
+
+**`notify_target` must be `postman`.** Only `'postman'` wires `response_type`/yes-no capture through `zen_dojotools_postman` (cached in the kata cabinet as `alert_response_<key>`, which `get_response` reads). `'mobile'` was the long-standing default across all four original hand-rolled call sites and silently falls through to a literal `notify.mobile` service call that doesn't exist — **every ack request on every one of those four call sites had been failing closed by accident, not by design, since the first one was built.** Fixed at this single default; not yet verified end-to-end with a real live approval (avoid firing an unnecessary real push before you need to).
+
+**Response shape:**
+
+```json
+{
+  "status": "ok",
+  "mode": "request_live_ack",
+  "approved": true,
+  "reason": "approved",
+  "waited_seconds": 15,
+  "caller_token": "..."
+}
+```
+
+`reason` is one of `approved`, `declined`, `timeout`, or `dispatch_failed` (alert never fired — `approved: false`, `waited_seconds: 0`, no polling attempted).
+
+### `cert_list` — Combined Cert Catalog + Live-Grant View (2026-08-15)
+
+"What could exist, and what do I actually hold right now." Combines the static catalog (`.persona_certs/cert_catalog.json` — every cert that *could* exist, its description, what it gates) with the live grant roster from `zen_dojotools_persona_editor`'s own `cert_list`, so a caller gets one answer instead of cross-referencing two tools.
+
+Gated on `resolve_caller_identity` returning `policy_status: allowed` — no specific cert required, no live ack. Reading your own current permission state isn't dangerous the way granting/revoking is (that's why `cert_grant`/`cert_revoke` get the full catalog-plus-live-ack treatment and this doesn't), but it isn't wide open to a caller whose identity resolution is itself blocked either.
+
+```yaml
+zen_dojotools_identity:
+  mode: cert_list
+```
 
 ---
 

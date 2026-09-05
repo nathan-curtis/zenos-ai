@@ -25,9 +25,11 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `dojotools_volume_auditor` | Cabinet volume accessibility scanner |
 | `zen_dojotools_notification_router` | **Deprecated** — legacy push notification router |
 | `zen_dojotools_select_control` | CANONICAL: `select` / `input_select` GET+SET |
+| `zen_dojotools_boolean` | CANONICAL: `input_boolean` / `switch` GET+SET |
 | `zen_dojotools_number` | CANONICAL: `number` / `input_number` GET+SET+arithmetic |
+| `zen_dojotools_timekeeper` | CANONICAL: `timer` GET+SET, plus dashboard/worldclock/alarms read-only modes |
 | `zen_dojotools_text` | CANONICAL: `text` / `input_text` GET+SET+string ops |
-| `zen_dojotools_climate` | CANONICAL: `climate` GET+SET with topology context |
+| `zen_dojotools_climate` | CANONICAL: `climate` **and `fan`** GET+SET with topology context, `climate_control` identity gate |
 | `zen_dojotools_water_heater` | CANONICAL: `water_heater` GET+SET |
 | `zen_dojotools_datetime` | CANONICAL: `input_datetime` GET+SET |
 | `zen_dojotools_zones` | CANONICAL: zone CRUD + haversine bearing |
@@ -135,13 +137,14 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 
 ## zen_dojotools_help — Global Help Front Door (v3.0.0)
 
-`zen_dojotools_help` is now more than the system-overview tool — it's the front door for discovering and proxying to any tool's own help. Four modes:
+`zen_dojotools_help` is now more than the system-overview tool — it's the front door for discovering and proxying to any tool's own help. Five modes:
 
 | Mode | Does |
 |------|------|
 | `about` (default) | System overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA. |
 | `help` | Proxy to a specific tool's own `mode=help` — pass `tool=<script_name>`. Returns that tool's canonical help schema directly. Requires `tool`; without it, returns an error naming `mode=directory` as the discovery path. |
 | `directory` | Auto-discover every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) and check each one's `tool_manifest` for `help` in its supported modes — no static list to maintain, new tools appear automatically as long as they implement `mode=help`. |
+| `troubleshooting` | **Static** — zero live calls, zero fan-out (deliberately: a fan-out-based troubleshooting mode would hit the exact failure class it documents). System-level known platform quirks — currently the `script:` platform's entity_id/unique_id drift class (symptom `ServiceNotFound` from a dynamically-templated action even though the entity looks healthy in `states.script`; cause, fix, and diagnostic path all included) — plus pointers to every other diagnostic surface (`zen_dojotools_systemtools` health report, `zen_dojotools_manifest` audit modes, this tool's own `mode=about`/`mode=directory`, the entity registry, repo/community links). Wired bidirectionally with this tool's own `mode=about` Diagnostics section. Start-here reference for an agent in a vacuum with an unexplained error and no other context. |
 | `tool_manifest` | Self-description (UMP contract). |
 
 ```yaml
@@ -157,6 +160,10 @@ zen_dojotools_help:
 # Discover every help-capable tool currently loaded
 zen_dojotools_help:
   mode: directory
+
+# Static system-level gotchas + where else to look (no live calls)
+zen_dojotools_help:
+  mode: troubleshooting
 ```
 
 `action=` remains as a backward-compatible alias for `about`/`tool_manifest` only — use `mode=` for the full mode set, including `help` and `directory`.
@@ -214,7 +221,7 @@ Use this when a script can't find a cabinet it expects — it shows which volume
 
 ## Canonical HA Domain Tools
 
-These seven scripts are the preferred interface for their respective HA domains. They resolve shorthand names (e.g., `"office_occupancy"` → `input_select.office_occupancy`), validate inputs against entity constraints before writing, and return structured responses with `ok: true/false`. Fall back to HA built-ins only if a tool is confirmed non-functional.
+These nine scripts are the preferred interface for their respective HA domains. They resolve shorthand names (e.g., `"office_occupancy"` → `input_select.office_occupancy`), validate inputs against entity constraints before writing, and return structured responses with `ok: true/false`. Fall back to HA built-ins only if a tool is confirmed non-functional.
 
 All support `mode: tool_manifest` for self-description. All accept `caller_token` echoed in the response.
 
@@ -232,6 +239,42 @@ GET+SET for `select` and `input_select` entities.
 | `mode` | `read` forces a read-only reply regardless of other fields. `set` requires `option` — returns `missing_option` if omitted instead of silently falling back to a read. `tool_manifest` for self-description. Omitting `mode` and using `option`/`get` directly still works identically. |
 
 Validates `option` against `state_attr(entity_id, 'options')` before applying. Returns `error: invalid_option` with `supported` list if the option is not in the entity's option list. Entity existence is checked against domain membership, not state — a real entity that happens to be `unknown`/`unavailable` is not treated as nonexistent. Write responses re-read the entity after the call and report `ok: false` + a `warning` if the post-write state doesn't match what was requested, rather than echoing back the requested value as if it landed.
+
+---
+
+### zen_dojotools_boolean
+
+GET+SET for `input_boolean` and `switch` entities. Closes a long-standing gap — every other simple domain (select, number, text, covers, lights) had a canonical GET+SET tool; `input_boolean`/`switch` never did, forcing an API end-run through `HassTurnOn`/`HassTurnOff`, which require conversation-exposure that most helpers (especially test/sim entities) don't have.
+
+| Field | Description |
+|---|---|
+| `name` | Entity ID or shorthand name |
+| `state` | `on`/`off`/`true`/`false`/`1`/`0`, or `toggle`. Omit to read. |
+| `get` | Any truthy value forces read-only mode. |
+| `mode` | `read` forces a read-only reply. `set` requires `state` — returns `missing_state` if omitted. `tool_manifest` for self-description. Omitting `mode` and using `state`/`get` directly still works identically. |
+
+Verb naming (`turn_on`/`turn_off`/`toggle`) models HA's own intents; entity resolution and response shape mirror `zen_dojotools_select_control` exactly.
+
+---
+
+### zen_dojotools_timekeeper
+
+CANONICAL HA DOMAIN TOOL for `timer`, plus three read-only modes with no entity-domain equivalent before this: house-wide dashboard rollup, world clock, and a next-alarm sweep across every alarm-capable device.
+
+| Field | Description |
+|---|---|
+| `name` | Timer entity ID or shorthand name. Not used in `mode: dashboard`/`worldclock`/`alarms`/`tool_manifest`. |
+| `operation` | `start` (optional `duration`, resumes a paused timer if omitted), `pause`, `cancel`, `finish`. Omit to read. |
+| `duration` | `HH:MM:SS`, used with `operation: start` only. |
+| `get` | Any truthy value forces read-only mode. |
+| `include_idle` | `mode: dashboard` only — include idle timers (default omits them). |
+| `include_schedules` | `mode: dashboard` only — pass falsy to omit the `schedule.*` rollup section (default included). |
+| `utc_offsets` | `mode: worldclock` only — `Label:+/-N`, comma-separated (e.g. `"Tokyo:+9,London:+1"`). No built-in city table — HA's Jinja sandbox has no arbitrary IANA timezone filter, so you supply the current offset rather than risk a hardcoded table silently drifting across DST. |
+| `mode` | `read`, `set`, `dashboard` (house-wide active-timer + schedule rollup, no `name` needed), `worldclock`, `alarms` (every device's next-set alarm, soonest first), or `tool_manifest`. |
+
+- **`mode: dashboard`** — every non-idle `timer.*` entity, label-cross-referenced for room/purpose, plus every `schedule.*` helper and its `next_event`.
+- **`mode: alarms`** — scans every `sensor.*_next_alarm` entity (Alexa/Echo, phones, watches — anything HA assigns one to) for a parseable future datetime, sorted soonest-first, split into `alarms_set`/`no_alarm`.
+- Backed internally by two new Lens Bus stack providers, `zen_stack_timer` and `zen_stack_alarms` (both internal-only, not MCP-exposed — consumers go through `zen_dojotools_lens_dispatch`). `zen_stack_alarms` only surfaces devices with an assigned `area_id`; personal devices with no area (most phones/watches) only show up via this tool's own `mode: alarms`, not the Lens stack.
 
 ---
 
@@ -269,27 +312,35 @@ Entity existence is checked against domain membership, not state — an entity w
 
 ---
 
-### zen_dojotools_climate
+### zen_dojotools_climate (v2.0.0 — also owns `fan.*`)
 
-GET+SET for `climate` entities. Inspects `supported_features` before applying — fails closed on unsupported feature. Multiple setters may be sent in one call. Omit all to read state and capabilities.
+GET+SET for `climate` **and, as of 2026-08-16, `fan`** entities — domain auto-detected from `name` after resolution, no separate mode needed. Closes a real gap: before this, there was no general-purpose fan primitive anywhere in the codebase (only `spa_manager`'s hardcoded hot-tub jets/air-purifier fan calls, not usable generally). Inspects `supported_features` before applying — fails closed on unsupported feature, same philosophy for both domains (fan capability detection via the real `FanEntityFeature` bitmask). Multiple setters may be sent in one call. Omit all to read state and capabilities.
 
-GET response includes a `topology_context` block: open doors/windows, area temperature/humidity sensors, adjacent HVAC bleed portals (via Room Manager), and a natural vent advisory.
+GET response includes a `topology_context` block: open doors/windows, area temperature/humidity sensors, adjacent HVAC bleed portals (via Room Manager), and a natural vent advisory. A top-level `domain` field on both GET and SET responses reports which domain was actually resolved.
 
 | Field | Description |
 |---|---|
-| `name` | Entity ID or shorthand name |
+| `name` | Entity ID or shorthand name — `climate.*` or `fan.*` |
 | `room` | Area for topology context in GET mode (auto-detected if omitted) |
 | `temperature` | Target temperature (single setpoint) |
 | `target_low` / `target_high` | Auto/heat-cool range |
 | `hvac_mode` | HVAC operating mode — read first to see supported modes |
-| `fan_mode` | Fan mode |
+| `fan_mode` | Climate entity's own internal fan mode (e.g. thermostat fan setting) — **not** the same as `fan_percentage`/`fan_preset_mode` below, which target a real `fan.*` entity |
 | `swing_mode` | Swing mode |
 | `preset` | Preset mode (eco, sleep, away, etc.) |
 | `humidity` | Target humidity (if supported) |
 | `aux_heat` | ~~Auxiliary heat~~ — `not_implemented`. `climate.set_aux_heat` was removed from HA with no replacement (surfaced by Spook v6 sweep). |
-| `power` | Power control — `on`/`off` (via hvac_mode) |
+| `power` | Power control — `on`/`off`. Domain-routed: `hvac_mode` for climate, fan power for a `fan.*` target |
+| `fan_percentage` | Fan speed 0–100%. `fan.*` targets only |
+| `fan_preset_mode` | Fan preset (e.g. `low`/`medium`/`high`/`auto`). `fan.*` targets only |
+| `fan_oscillate` | Oscillation on/off. `fan.*` targets only |
+| `fan_direction` | Fan direction. `fan.*` targets only |
 | `get` | Any truthy value forces read-only |
-| `mode` | `read` forces a read-only reply. `set` requires at least one real setter field (`temperature`, `hvac_mode`, etc.) — returns `missing_setter` if none given. `tool_manifest` for self-description. Omitting `mode` still works identically. |
+| `mode` | `read` forces a read-only reply. `set` requires at least one real setter field — returns `missing_setter` if none given. `tool_manifest` for self-description. Omitting `mode` still works identically. |
+
+**Identity gate (2026-08-16):** GET stays open. Any real setter requires the `climate_control` certification — cert-only, no live-ack tier (same shape as ZenLux's `lighting_control`; nothing on a thermostat or fan is exterior-security-grade). `cert_scope` deny is enforced as a hard block via the shared `cert_scope_check` macro. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
+
+**SESE conversion note:** this tool doesn't fit the mode-dispatch `choose:` shape the other gated tools use — multiple setters can combine in one call, always could. Uses a flat-guard restructure instead: every stop point sets `result` and falls through, every later block gains `result is not defined and` on its own condition. GET keeps its own terminal exit, same read/write split every tool in this file uses.
 
 ---
 

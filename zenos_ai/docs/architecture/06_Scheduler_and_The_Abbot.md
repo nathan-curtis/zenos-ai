@@ -3,6 +3,21 @@
 *A deterministic cognitive governor for Friday’s House*
 "Hayyyy Abbot!" ( He really hates that...)
 
+**Current implementation status (2026-08-04):** "The Abbot" is not a single
+component — it's the name for the scheduling+dispatch function, realized today
+jointly by two real, separate files: `dojotools_scheduler.yaml`
+(`zen_dojotools_scheduler` — trigger dispatch, debounce/shed logic) and
+`dojotools_dispatcher.yaml` (`zen_dojotool_dispatcher` — event-driven routing,
+decouples callers from direct script calls). Most of this chapter — the
+per-component scoring/cooldown/quiet-hours policy model in particular — describes
+a design target, not current line-by-line behavior; §6.5-6.7 below have been
+corrected to describe what's actually implemented today. The rest of the chapter
+(§6.1-6.4, §6.8-6.11) remains architecture-direction material, same status as the
+chapter's own closing author's note already partially acknowledges. Future work
+(per direct confirmation, not inferred): tagging and evaluation of each job so it
+can be routed to the correct inference core with the right metadata — this is
+real stated direction, not yet built.
+
 The Scheduler—referred to internally as **The Abbot**—is the command and metronome of Friday’s cognitive architecture. It is not merely a cron-like time-based trigger but a **policy-driven orchestrator** of reasoning, summarization, and state transitions within the Monastery. Every Kata, every summarizer run, and every system-level reflection originates in the Abbot’s discretion.
 
 This chapter describes the design, operation, guarantees, and user-customizable behavior of the Abbot, with enough depth that an engineer can reconstruct the entire governance mechanism directly from first principles and Home Assistant primitives.
@@ -130,112 +145,114 @@ Temporal triggers serve as a catch-all to reaffirm Katas even when sensors remai
 
 ---
 
-# 6.5 Trigger Resolution Process
+# 6.5 Trigger Resolution Process — as actually implemented
 
-The Abbot runs a deterministic resolution algorithm:
+*(Updated 2026-08-04: this section previously described a scoring/cooldown/quiet-hours
+pipeline that doesn't exist in code. Rewritten to match `dojotools_scheduler.yaml`.)*
 
-1. **Collect relevant triggers** occurring within a small time window.
-2. **Score them** based on relevance to each cognitive component.
-3. **Filter** by component policy (ignore/noise thresholds/quiet hours).
-4. **Enforce cooldown** periods (no component may run twice too quickly).
-5. **Select components** eligible for summarization.
-6. **Run Ninja Summarizer** or SuperSummary in strict order.
-7. **Validate and commit** new Katas.
-8. **Emit telemetry** for both successful and failed runs.
+The real dispatch mechanism has no generic "score triggers" step. Each cognitive
+component declares its own `trigger_subscriptions` (a list of Scheduler event
+IDs it cares about — e.g. `daily_midnight`, `water_flow_stop`,
+`force_summary`) and a `pipeline_tier` in its own KFC (Kung Fu Component) drawer.
+When a trigger fires:
 
-This ensures that even in bursts (e.g., someone opening multiple doors rapidly), only the earliest meaningful event triggers reasoning.
+1. The Scheduler checks which components have that trigger's ID in their own `trigger_subscriptions`.
+2. Each matching component is dispatched or shed based on its `pipeline_tier` and the current queue depth — not a relevance score.
+3. **`pipeline_tier: keeper`** (the default) — dispatched on all standard triggers; deferred when queue depth ≥ `shed_keeper_at` (default 8, configurable in `zen_scheduler_config`).
+4. **`pipeline_tier: ambient`** — dispatched only on slower triggers (e.g. hourly); shed on fast triggers (`quarter_hour`, `every_10_minutes`) and when queue depth ≥ `shed_ambient_at` (default 4).
+5. **`pipeline_tier: super`** — reserved for SuperSummary; **`pipeline_tier: system`** — infrastructure components.
+6. Shed work isn't lost — a drain router recovers the most-stale shed-eligible component once queue depth falls back below `drain_below` (default 3), and a component whose Kata exceeds its own `staleness_minutes` ceiling fires regardless of queue depth (a starvation guard).
+7. Selected components run Ninja Summarizer or SuperSummary.
+8. Successful/failed runs emit real `zen_event` kinds — see §10.3.2 for the actual vocabulary (`summarizer_start`, `ninja_failure`, `kata_emit`, etc.) — not a generic "telemetry" event.
+
+There is no `cooldown_seconds` field or `quiet_hours` policy block anywhere in
+the current scheduler or summarizer code — the shed-at-queue-depth mechanism
+above is what actually prevents burst storms (e.g. rapid door events), not a
+per-component cooldown timer. `delay_seconds` (documented per-KFC) sets dispatch
+priority ordering, not a cooldown.
 
 ---
 
-# 6.6 Component Policies and Scheduling Logic
+# 6.6 Component Policies and Scheduling Logic — as actually implemented
 
-Each cognitive component (e.g., Security Manager, Water Manager) defines its **policy block** in its corresponding Dojo drawer.
+Each cognitive component defines its policy directly in its own KFC (Kung Fu
+Component) drawer in the Dojo Cabinet — not a separate "policy block."
 
-Policy blocks include:
+### 6.6.1 Trigger Subscriptions
 
-### 6.6.1 Triggers of Interest
+A declarative list of Scheduler event IDs that cause this component to dispatch:
 
-A declarative list of entity domains, labels, or attributes that should initiate summarization.
-
-Example (Security Manager):
-
-```
-triggers_of_interest:
-  - device_class: door
-  - device_class: window
-  - label: security_attention
+```yaml
+trigger_subscriptions:
+  - daily_midnight
+  - water_flow_stop
+  - force_summary
 ```
 
-### 6.6.2 Trigger Cooldowns
+### 6.6.2 Pipeline Tier and Delay
 
-A cooldown preventing repeated computation:
+Dispatch priority and shed-eligibility, not a cooldown timer:
 
+```yaml
+pipeline_tier: keeper   # keeper (default) | ambient | super | system
+delay_seconds: 120      # how long to wait after trigger before dispatching — lower = higher priority
 ```
-cooldown_seconds: 30
-```
 
-When combined with door sensors, this prevents summarization storms.
+### 6.6.3 Staleness Ceiling
 
-### 6.6.3 Quiet Hours
+The age at which a shed-eligible component's Kata gets a forced recovery dispatch regardless of queue depth:
 
-Policies that override or suppress summarization during defined intervals:
-
-```
-quiet_hours:
-  start: "22:00"
-  end: "06:00"
-  mode: evaluate_only
+```yaml
+staleness_minutes: 1440   # default 24h
 ```
 
 ### 6.6.4 Sensitivity Settings
 
-For example, for Water Manager:
+Domain-specific thresholds a component's own `component_summary` prose references — these aren't a distinct Scheduler mechanism, just data the component's prompt reads:
 
 ```
 flow_loss_threshold_seconds: 20
 stabilization_period_seconds: 120
 ```
 
-These allow domain experts to tune sensitivity.
+Custom hardware triggers (e.g. a specific sensor going critical) that need
+instant dispatch use a dedicated per-KFC trigger file firing a `zen_event` with
+`kind: summary_force` and a `component:` field — not a Scheduler-level policy
+block.
 
 ---
 
-# 6.7 Abbot’s Execution Pipeline
-
-The Abbot dispatches summarization through a strict pipeline:
+# 6.7 Abbot’s Execution Pipeline — as actually implemented
 
 ### Step 1: Trigger Ingestion
 
-HA events and state changes are ingested into an internal “trigger context” object.
+HA events and state changes fire the Scheduler's own trigger set.
 
-### Step 2: Policy Matching
+### Step 2: Subscription Matching
 
-Using DojoTools’ label and index functions, the Abbot resolves:
+For the fired trigger, the Scheduler resolves which components declared that
+trigger ID in their own `trigger_subscriptions` — no separate quiet-hours
+override step exists.
 
-* which components are impacted
-* which Katas require recalculation
-* which rules override triggers (e.g., quiet hours)
+### Step 3: Dispatch or Shed
 
-### Step 3: Reasoning Dispatch
+Matched components are dispatched or shed per §6.5's `pipeline_tier`/queue-depth
+logic — not a generic "reasoning dispatch" step:
 
-The Abbot fires one or more tasks:
+* Ninja Summarizer tasks for individual components
+* SuperSummary task for the whole-home consolidation
 
-* Ninja Summarizer tasks for components
-* SuperSummary task for the system
-
-The Abbot ensures:
-
-* no two tasks run for the same component concurrently
-* tasks honor minimum spacing
-* no task is run without a valid reason
+Concurrency is bounded (no two tasks for the same component run at once), and a
+component only dispatches when its subscription genuinely matched — but there is
+no separate "valid reason" check beyond the subscription match itself.
 
 ### Step 4: Validation and Write
 
-Summaries are validated and written into the Kata cabinet.
+Summaries are validated and written into the Kata cabinet via the Cabinet package (see §10.5/§10.7).
 
 ### Step 5: Telemetry
 
-The Abbot publishes a structured event for observability.
+Real `zen_event` kinds are emitted for success/failure — see §10.3.2, not a single generic "structured event."
 
 ---
 

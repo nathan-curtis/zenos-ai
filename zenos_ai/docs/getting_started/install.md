@@ -1,15 +1,20 @@
 # ZenOS-AI: Install Guide
 
-> **Version:** 2026.8.1 (patch on 'Chef') | **Last Updated:** Aug 2026
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+
+*What this covers: getting the ZenOS-AI files into your Home Assistant install, confirming it started up correctly, and making sure your phone can actually receive the notifications the system will depend on almost immediately. By the end, Flynn (the system's own startup checker — see [Concepts](concepts.md)) will confirm everything loaded, and you'll be ready to talk to your AI for the first time in [First Run](first_run.md).*
+
+**Time:** ~15 minutes on a clean install.
 
 ---
 
 ## Prerequisites
 
-- **Home Assistant** 2024.x or newer
+- **Home Assistant** 2025.x or newer
 - **Spook Integration** Installable through HACS. [Spook Install instructions](https://spook.boo/installation/)
   > **No Microsoft 365 Teams?** Spook will flag a ghost warning about `script.zen_dojotools_teams` referencing `sensor.homeassistant_chat` and `sensor.homeassistant_status`. These entities only exist with the M365 Teams integration. The warning is harmless — ignore it, or suppress it by assigning a `watchman_ignore` label to those entities.
 - **A conversation agent** configured in HA with a tool-calling capable model. Models smaller than ~8B parameters or with short context windows are not recommended — ZenOS-AI prompts are large and tool use is required.
+- **The Home Assistant Companion App**, installed on your phone and logged into this HA instance, with notification permission granted. Step 3.5 below walks through confirming this works — do it before you finish this guide, not after. As of 2026.9.0 this isn't optional infrastructure: every certification grant (locks, alarm, covers, infra, room overrides) requires a real push notification reaching a real device, with no fallback, every time.
 - SSH or filesystem access to your HA config directory
 
 ---
@@ -28,7 +33,12 @@ packages/zenos_ai/  →  <ha_config>/packages/zenos_ai/
 custom_templates/zenos_ai/  →  <ha_config>/custom_templates/zenos_ai/
 ```
 
-If `packages/` or `custom_templates/` directories don't exist in your HA config yet, create them.
+**Blueprints** (required for Room Manager v3):
+```
+blueprints/template/zenos/room_state.yaml  →  <ha_config>/blueprints/template/zenos/room_state.yaml
+```
+
+If `packages/`, `custom_templates/`, or `blueprints/template/zenos/` directories don't exist in your HA config yet, create them.
 
 ---
 
@@ -83,6 +93,27 @@ Generate a token at **Profile → Security → Long-Lived Access Tokens** in you
 > **Not using a plugin?** Add a dummy value anyway (`"unused"`) — HA will fail to load if the key is referenced but absent.
 >
 > *(Doc bug credit: [lucianoj](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/481) — caught `Secret mealie_bearer not defined` on a fresh install.)*
+
+---
+
+## Step 3.5 — Set Up Your Mobile Notification Path
+
+**Do this now, before you go further.** This used to be optional setup you could get to later. It isn't anymore: as of 2026.9.0, every certification your AI is granted — unlocking a door, disarming the alarm, stopping a container, anything gated — requires a real yes/no push notification to a real device, every single time, with no fallback path. If this isn't working, your AI will hit a hard wall the first time it (or you) tries to grant one, often within the first real conversation after OOBE. See the **[Security & Certification manual](security_certification_manual.md)** for why this exists.
+
+1. **Install the Home Assistant Companion App** on the phone that should receive these requests (usually yours, if you're the household admin). Log it into this HA instance.
+2. **Grant it notification permission** on the phone itself (iOS/Android will prompt on first install; if you skipped it, fix it in the phone's own notification settings for the Companion App).
+3. **Confirm the notify service exists:** open **Developer Tools → Actions**, search for `notify.mobile_app_` — you should see one entry per device that's logged in. Note the exact service name (e.g. `notify.mobile_app_johns_iphone`); you'll use it shortly.
+4. **Send yourself a test notification** right from that same Actions panel:
+   ```yaml
+   action: notify.mobile_app_<your_device>
+   data:
+     message: "ZenOS test — can you see this?"
+   ```
+   Confirm it actually arrives and is tappable (not just visible in a notification shade preview).
+
+You don't need to configure Postman's routing policy yet — that's covered in [Your First Alert](first_alert.md), right after OOBE. This step is just making sure the *device* is reachable at all before anything tries to depend on it.
+
+> **Companion App already installed from an earlier HA setup?** Skip straight to step 3 to confirm the notify service name.
 
 ---
 
@@ -243,12 +274,19 @@ Plugins compound. Tier 1 (Mealie + Grocy) gives food and inventory. Tier 2 (2026
 |---|---|---|---|
 | Mealie | `plugins/mealie/mealie.yaml` | Mealie instance + `input_text.mealie_url` | `mealie_bearer` |
 | Grocy | `plugins/grocy/grocy.yaml` | Grocy instance + `input_text.grocy_url` | `grocy_api_key` |
-| Kitchen Sync | `plugins/kitchen_sync/kitchen_sync.yaml` | Mealie + Grocy both installed | — |
+| Kitchen Sync | `plugins/mealie/kitchen_sync.yaml` | Mealie + Grocy both installed | — |
 | Zammad | `plugins/zammad/zammad.yaml` | Zammad instance + `input_text.zammad_url` | `zammad_token` |
-| Wiki.js | `plugins/wikijs/wikijs.yaml` | Wiki.js instance + `input_text.wikijs_url` | `wikijs_token_bearer` |
-| Paperless-NGX | `plugins/paperless/paperless.yaml` | Paperless-NGX instance + `input_text.paperless_url` | `paperless_ngx_token` |
+| Wiki.js | `plugins/wiki_js/dojotools_wikijs.yaml` | Wiki.js instance + `input_text.wikijs_url` | `wikijs_token_bearer` |
+| Paperless-NGX | `plugins/paperless_ngx/paperless_ngx.yaml` | Paperless-NGX instance + `input_text.paperless_url` | `paperless_ngx_token` |
 | Twenty CRM | `plugins/twenty/twenty.yaml` | Twenty instance + `input_text.twenty_url` | `twenty_bearer` |
 | Firefly III | `plugins/firefly_iii/firefly_iii.yaml` | Firefly III instance + `input_text.firefly_iii_url` | `firefly_iii_bearer` |
+
+Two more plugins exist but don't follow the `input_text.*_url` + secret pattern above — they're configured differently:
+
+| Plugin | File | Configured via | Secret Key(s) |
+|---|---|---|---|
+| Portainer | `plugins/portainer/portainer.yaml` | A tool call — `zen_dojotools_portainer mode=configure config_json='{"url":"https://your-portainer-host:9443"}'` (admin-only) | `portainer_token` |
+| Authentik | `plugins/authentik/authentik.yaml` | Nothing yet — this is an internal **placeholder/stub** with no real network call. It exists so identity checks have a stable call-site to swap in real OIDC login later. Nothing to install or configure today. |
 
 SpaMaster is no longer an optional plugin. It ships as the core DojoTool `dojotools/dojotools_spa_manager.yaml` and discovers ESPHome spa hardware through `spa_*` labels.
 

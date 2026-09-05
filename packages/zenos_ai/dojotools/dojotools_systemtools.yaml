@@ -185,7 +185,56 @@ shell_command:
   zen_log_summary: >
     sh -c "head -n {{ count }} /config/home-assistant.log | tail -n +{{ start }} | head -c 200000"
 
+  # PROBE ONLY (2026-08-08) — read-only feasibility check for whether the
+  # Supervisor CLI ('ha' binary) is reachable from Core's own container.
+  # CONFIRMED LIVE: not reachable ("not_found") — Core's container doesn't
+  # carry the Supervisor-side 'ha' binary. Kept as a permanent diagnostic,
+  # harmless either way.
+  zen_ha_cli_probe: >
+    sh -c "which ha 2>/dev/null || echo not_found"
+
+  # SUPERVISOR TOKEN — reads $SUPERVISOR_TOKEN (a real container env var,
+  # confirmed present even though the 'ha' CLI binary itself is not) and
+  # formats it as a ready-to-use Authorization header value. Deliberately
+  # NEVER persisted to any entity/sensor state (which would expose it in
+  # history/logbook) — captured fresh into a script-local variable at
+  # call time only, then discarded. This is what makes calling the
+  # Supervisor REST API (http://supervisor/...) possible from a script —
+  # !env_var in secrets.yaml can't be concatenated with a "Bearer "
+  # prefix (confirmed via docs: the tag must be the entire scalar value),
+  # so building the header this way is the actual working path.
+  zen_supervisor_token: >
+    sh -c "echo -n \"Bearer $SUPERVISOR_TOKEN\""
+
 rest_command:
+
+  # SUPERVISOR API (2026-08-08) — generic authenticated call to
+  # http://supervisor/<path>, e.g. path=core/info (read-only, safe),
+  # path=core/options (POST, sets duplicate_log_file — the fix for T's
+  # journal-mode log-access gap), path=core/rebuild / core/restart
+  # (POST, disruptive — same class as ha_restart, must be config-check-
+  # gated + human-confirmed, never self-confirmed). token is supplied
+  # per-call from shell_command.zen_supervisor_token's output, not stored.
+  # SPLIT get/post (2026-08-08, matches ha_api_get/ha_api_post below) —
+  # method: does not appear to support templating in rest_command
+  # (every working entry in this file hardcodes a literal GET/POST); a
+  # single templated-method entry silently failed to register at all.
+  zen_supervisor_get:
+    url: "http://supervisor/{{ path }}"
+    method: GET
+    headers:
+      authorization: "{{ token }}"
+      content-type: "application/json"
+    timeout: 60
+
+  zen_supervisor_post:
+    url: "http://supervisor/{{ path }}"
+    method: POST
+    headers:
+      authorization: "{{ token }}"
+      content-type: "application/json"
+    payload: "{{ payload | default('{}') }}"
+    timeout: 60
 
   ha_api_get:
     url: "http://127.0.0.1:8123/api/{{ path }}"
@@ -202,6 +251,13 @@ rest_command:
       content-type: 'application/json'
     payload: "{{ payload | default('{}') }}"
     timeout: 90
+
+input_datetime:
+  zen_last_reload_all_at:
+    name: "Zen: Last ha_reload_all Timestamp"
+    icon: mdi:clock-alert
+    has_date: true
+    has_time: true
 
 script:
 
@@ -711,6 +767,40 @@ script:
               ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['zen_system']}) -}}
         - stop: systemtools tool manifest
           response_variable: result
+      # --- envelope_check: pilot diagnostic for the canonical envelope() macro ---
+      - conditions:
+        - condition: template
+          value_template: "{{- tool == 'envelope_check' -}}"
+        sequence:
+        - variables:
+            _ec_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {{- OS.envelope(
+                status='success',
+                mode='envelope_check',
+                result={'diag': true, 'note': 'pilot call, exercises envelope() directly'},
+                tool='zen_dojotools_systemtools',
+                caller_token=caller_token | default('')
+              ) -}}
+        - variables:
+            _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+            _pi_raw: >-
+              {%- set _vars = state_attr(states('sensor.zen_default_household_cabinet_resolved'), 'variables') | default({}, true) -%}
+              {%- set _vars = _vars if _vars is mapping else {} -%}
+              {%- set _raw = _vars.get('_zen_priority_inject', {}) -%}
+              {%- set _slot = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
+              {{ (_slot.get('value', _slot) if _slot is mapping else {}) | tojson }}
+        - variables:
+            result:
+              envelope_output: "{{ _ec_raw | from_json(none) or {} }}"
+              diagnostics:
+                priority_inject_drawer_entry_count: "{{ (_pi_raw if _pi_raw is mapping else (_pi_raw | from_json(none) or {})) | count }}"
+                priority_inject_entries_with_display_field: >-
+                  {%- set _slot = _pi_raw if _pi_raw is mapping else (_pi_raw | from_json(none) or {}) -%}
+                  {{ (_slot.values() | selectattr('display', 'defined') | list | count) if _slot is mapping else 0 }}
+                note: "display field defaults to 'prompt' when absent — tool_response channel requires an existing provider to opt in explicitly, none do as of this pilot"
+        - stop: envelope check
+          response_variable: result
       - conditions:
         - condition: template
           value_template: "{{- tool == 'kfc_manifest' -}}"
@@ -800,12 +890,12 @@ script:
       - conditions:
         - alias: 'Error: Action Not Confirmed'
           condition: template
-          value_template: "{{ (tool in ['ha_restart', 'ha_reload_all', 'repair_fix']) and not confirm }}"
+          value_template: "{{ (tool in ['ha_restart', 'ha_reload_all', 'repair_fix', 'zen_log_enable']) and not confirm }}"
         sequence:
         - variables:
             response: "{{\n  {\n    \"tool\": tool | default('N/A'),\n    \"confirm\":
               confirm | default(false),\n    \"result\": \"error\",\n    \"message\":
-              \"CONFIRM REQUIRED. This operation takes HA offline — restart or reload_all both interrupt all automations, scripts, and agent responses for 2-5 minutes. Flynn warmup must complete before the system is viable again. If you meant to do this, retry with confirm_action=true. Prefer ha_reload_scripts, ha_reload_automations, or ha_reload_templates — they are surgical and do NOT interrupt service.\"\n  }\n}}"
+              \"CONFIRM REQUIRED. This operation takes HA offline — restart or reload_all both interrupt all automations, scripts, and agent responses for 2-5 minutes. Flynn warmup must complete before the system is viable again. If you meant to do this, retry with confirm_action=true. Prefer ha_reload_scripts, ha_reload_automations, ha_reload_templates, or ha_reload_template_entities — they are surgical and do NOT interrupt service. zen_log_enable specifically also triggers a Supervisor core rebuild + restart — same disruption class, plus it requires ha_config_check to be clean first.\"\n  }\n}}"
       - conditions:
         - alias: 'Error: Entity ID required for Action'
           condition: template
@@ -815,6 +905,172 @@ script:
             response: "{{\n  {\n    \"tool\": tool | default('N/A'),\n    \"confirm\":
               confirm | default(false),\n    \"result\": \"error\",\n    \"message\":
               \"entity_id is required for ha_update_install and ha_update_skip. Provide a valid entity_id and retry.\"\n  }\n}}"
+      - conditions:
+        - alias: Zen HA CLI Probe
+          condition: template
+          value_template: '{{ tool == ''zen_ha_cli_probe'' }}'
+        sequence:
+        - action: shell_command.zen_ha_cli_probe
+          response_variable: cli_probe
+        - variables:
+            response: "{{
+                {
+                  'tool': tool,
+                  'result': 'ok',
+                  'ha_cli_reachable': ('not_found' not in (cli_probe.stdout | default('not_found')) and (cli_probe.stdout | default('') | trim) != ''),
+                  'raw_stdout': (cli_probe.stdout | default('') | trim),
+                  'raw_returncode': cli_probe.returncode | default(none)
+                }
+              }}"
+      - conditions:
+        - alias: Zen Supervisor Probe
+          condition: template
+          value_template: '{{ tool == ''zen_supervisor_probe'' }}'
+        sequence:
+        # READ-ONLY (2026-08-08) — confirms the SUPERVISOR_TOKEN + Supervisor
+        # REST API auth path actually works, via GET core/info (a harmless
+        # read). Deliberately does NOT touch core/options, core/rebuild, or
+        # core/restart — this mode exists purely to validate the mechanism
+        # before any mutating command gets built on top of it.
+        - action: shell_command.zen_supervisor_token
+          response_variable: sup_token_raw
+        - variables:
+            _sup_bearer: "{{ sup_token_raw.stdout | default('') | trim }}"
+        - if: "{{ _sup_bearer == '' or _sup_bearer == 'Bearer' }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: error
+                  message: "SUPERVISOR_TOKEN env var is empty or unset — Supervisor API not reachable this way."
+          else:
+            - action: rest_command.zen_supervisor_get
+              data:
+                path: core/info
+                token: "{{ _sup_bearer }}"
+              response_variable: sup_probe
+              continue_on_error: true
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: "{{ 'ok' if (sup_probe.status | default(0)) == 200 else 'error' }}"
+                  status: "{{ sup_probe.status | default(none) }}"
+                  content: "{{ sup_probe.content | default(none) }}"
+      - conditions:
+        - alias: Zen Log Enable
+          condition: template
+          value_template: '{{ tool == ''zen_log_enable'' }}'
+        sequence:
+        # DISRUPTIVE, CONFIRM-GATED (2026-08-08). Ships OFF by default —
+        # this mode is the only way it ever turns on, never auto-fired by
+        # anything else. Sequence matches Petro's a-file-logger deprecation
+        # note exactly (ha core options --duplicate-log-file=true; ha core
+        # rebuild; ha core restart), translated to the Supervisor REST API
+        # since the 'ha' CLI binary itself isn't reachable from Core's
+        # container (confirmed via zen_ha_cli_probe). Reaching this branch
+        # already means confirm_action=true (gated above, same list as
+        # ha_restart/ha_reload_all/repair_fix) — additionally requires a
+        # CLEAN ha_config_check first: "must config check clean and if you
+        # cant human must do" — a rebuild on top of broken config is not
+        # something to risk, and unlike ha_restart/reload_all this has no
+        # cooldown-based undo path.
+        - action: script.zen_sutra_ha_api
+          data:
+            action_type: check_config
+          response_variable: log_enable_check
+        - if: "{{ not (log_enable_check.valid | default(false)) }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: error
+                  message: "ha_config_check is NOT clean — refusing to rebuild core on top of broken config. Fix the config error first (see errors below), then retry."
+                  config_check_errors: "{{ log_enable_check.errors | default(none) }}"
+            - stop: zen_log_enable blocked — config not clean
+              response_variable: response
+        - action: shell_command.zen_supervisor_token
+          response_variable: log_enable_token_raw
+        - variables:
+            _le_bearer: "{{ log_enable_token_raw.stdout | default('') | trim }}"
+        - if: "{{ _le_bearer == '' or _le_bearer == 'Bearer' }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: error
+                  message: "SUPERVISOR_TOKEN env var is empty or unset — cannot reach Supervisor API to enable logging."
+            - stop: zen_log_enable blocked — no supervisor token
+              response_variable: response
+        # DISK GUARD (2026-08-08, design note: "the risk a persistent log may
+        # exhaust disk on large install with many errors... low but real
+        # risk") — refuses under 10% free, same threshold zen_health_report
+        # flags as LOW DISK. Not a perfect guarantee (a runaway error loop
+        # can still fill disk fast at any starting %), but stops the
+        # obviously-bad case of turning this on when there's already
+        # barely any room.
+        - action: rest_command.zen_supervisor_get
+          data:
+            path: host/info
+            token: "{{ _le_bearer }}"
+          response_variable: log_enable_disk_check
+          continue_on_error: true
+        - variables:
+            _le_disk_total: "{{ (log_enable_disk_check.content | default({})).get('data', {}).get('disk_total', none) if (log_enable_disk_check.status | default(0)) == 200 else none }}"
+            _le_disk_free: "{{ (log_enable_disk_check.content | default({})).get('data', {}).get('disk_free', none) if (log_enable_disk_check.status | default(0)) == 200 else none }}"
+            _le_disk_free_pct: >-
+              {%- if _le_disk_total not in [none, 0] and _le_disk_free is not none -%}
+                {{ ((_le_disk_free / _le_disk_total) * 100) | round(1) }}
+              {%- else -%}
+                {{ none }}
+              {%- endif -%}
+        - if: "{{ _le_disk_free_pct is not none and _le_disk_free_pct < 10 }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: error
+                  message: "LOW DISK ({{ _le_disk_free_pct }}% free) — refusing to enable persistent logging. Free up space first, then retry."
+                  disk_free_gb: "{{ _le_disk_free }}"
+                  disk_total_gb: "{{ _le_disk_total }}"
+            - stop: zen_log_enable blocked — low disk
+              response_variable: response
+        - action: rest_command.zen_supervisor_post
+          data:
+            path: core/options
+            token: "{{ _le_bearer }}"
+            payload: '{"duplicate_log_file": true}'
+          response_variable: log_enable_options_result
+          continue_on_error: true
+        - if: "{{ (log_enable_options_result.status | default(0)) != 200 }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: error
+                  message: "core/options call failed — duplicate_log_file was NOT set. Rebuild/restart not attempted."
+                  status: "{{ log_enable_options_result.status | default(none) }}"
+                  content: "{{ log_enable_options_result.content | default(none) }}"
+            - stop: zen_log_enable blocked — options call failed
+              response_variable: response
+        - action: rest_command.zen_supervisor_post
+          data:
+            path: core/rebuild
+            token: "{{ _le_bearer }}"
+            payload: "{}"
+          response_variable: log_enable_rebuild_result
+          continue_on_error: true
+        - variables:
+            response:
+              tool: "{{ tool }}"
+              result: "{{ 'success' if (log_enable_rebuild_result.status | default(0)) == 200 else 'error' }}"
+              message: >-
+                {%- if (log_enable_rebuild_result.status | default(0)) == 200 -%}
+                  duplicate_log_file set to true and core rebuild queued. HA is non-viable until this completes — same as ha_restart/ha_reload_all, POLL for recovery rather than calling other tools immediately. Once back up, home-assistant.log will exist and zen_log_check's journal_mode fallback will stop triggering.
+                {%- else -%}
+                  core/options succeeded but core/rebuild call failed — duplicate_log_file IS set, but the rebuild that makes it take effect did not fire. Retry mode=zen_log_enable, or trigger a rebuild manually.
+                {%- endif -%}
+              options_status: "{{ log_enable_options_result.status | default(none) }}"
+              rebuild_status: "{{ log_enable_rebuild_result.status | default(none) }}"
       - conditions:
         - alias: Config Check
           condition: template
@@ -923,6 +1179,20 @@ script:
           data:
             action_type: check_config
           response_variable: check_result
+        - variables:
+            _last_reload_all_epoch: "{{ as_timestamp(states('input_datetime.zen_last_reload_all_at'), 0) }}"
+            _since_last_reload_all: "{{ now().timestamp() - _last_reload_all_epoch }}"
+            # COOLDOWN BLOCK (2026-08-04): two ha_reload_all calls fired back-to-back
+            # on T wiped 3 trigger-based cabinet sensors clean — HA's restore-state
+            # snapshot write is throttled/periodic, not synchronous per-reload, so a
+            # second full reload before the first one flushes has nothing to restore
+            # from. 180s is a conservative floor, not a measured exact interval.
+            # HARD BLOCK, no override field — explicit call: let the clock
+            # expire for system stability rather than exposing a bypass. Blocked here
+            # means the reload never fires at all, same as a failed config check.
+            # See: known_bugs #28 (expansion cabinet slot-registry gap + this incident).
+            _reload_cooldown_s: 180
+            _reload_too_soon: "{{ _last_reload_all_epoch > 0 and _since_last_reload_all < _reload_cooldown_s }}"
         - choose:
           - conditions:
             - alias: Config check failed — block reload
@@ -938,6 +1208,20 @@ script:
                     'message': 'Reload BLOCKED — config check failed. Fix errors before reloading. reload_all would have silently aborted anyway.'
                   }
                 }}"
+          - conditions:
+            - alias: Cooldown active — block reload
+              condition: template
+              value_template: "{{ _reload_too_soon }}"
+            sequence:
+            - variables:
+                response: "{{
+                  {
+                    'tool': tool,
+                    'result': 'blocked',
+                    'cooldown_remaining_s': ((_reload_cooldown_s - _since_last_reload_all) | round(0)),
+                    'message': 'Reload BLOCKED — cooldown active. Last ha_reload_all was ' ~ (_since_last_reload_all | round(0)) ~ 's ago; must wait ' ~ _reload_cooldown_s ~ 's between calls. Firing again this soon risks wiping trigger-based cabinet sensors that have not finished flushing their restore-state snapshot from the last reload — expansion cabinets have already been lost this way tonight. No override — wait for the cooldown to expire, or use ha_reload_scripts / ha_reload_automations / ha_reload_templates / ha_reload_template_entities instead, which are not restart-equivalent and are not subject to this cooldown.'
+                  }
+                }}"
           default:
           - variables:
               response: "{{
@@ -945,9 +1229,14 @@ script:
                   'tool': tool,
                   'result': 'success',
                   'config_check': 'passed',
-                  'message': 'Config check passed. Reload all queued. MANDATORY WAIT: reload_all is restart-equivalent — HA is non-viable until Flynn warmup fires. POLL zen_dojotools_ha_log_viewer mode=search pattern=flynn_boot_warmup and do NOT call any other tools until that entry appears. If flynn_boot_warmup is absent after 5 minutes, something is broken — stop and diagnose. Prefer ha_reload_scripts / ha_reload_automations / ha_reload_templates fired sequentially with a delay — they are always cheaper and do not interrupt service.'
+                  'message': 'Config check passed. Reload all queued. MANDATORY WAIT: reload_all is restart-equivalent — HA is non-viable until Flynn warmup fires. POLL zen_dojotools_ha_log_viewer mode=search pattern=flynn_boot_warmup and do NOT call any other tools until that entry appears. If flynn_boot_warmup is absent after 5 minutes, something is broken — stop and diagnose. Prefer ha_reload_scripts / ha_reload_automations / ha_reload_templates / ha_reload_template_entities fired sequentially with a delay — they are always cheaper and do not interrupt service.'
                 }
               }}"
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.zen_last_reload_all_at
+            data:
+              timestamp: "{{ now().timestamp() }}"
           - event: zen_event
             event_data:
               event:
@@ -1063,6 +1352,42 @@ script:
                 }
               }}"
       - conditions:
+        - alias: Reload Template Entities
+          condition: template
+          value_template: '{{ tool == ''ha_reload_template_entities'' }}'
+        sequence:
+        - action: script.zen_sutra_ha_api
+          data:
+            action_type: check_config
+          response_variable: check_result
+        - choose:
+          - conditions:
+            - alias: Config check failed — block reload
+              condition: template
+              value_template: '{{ check_result.result != ''go'' }}'
+            sequence:
+            - variables:
+                response: "{{
+                  {
+                    'tool': tool,
+                    'result': 'nogo',
+                    'errors': check_result.errors,
+                    'message': 'Reload BLOCKED — config check failed. Fix errors before reloading.'
+                  }
+                }}"
+          default:
+          - action: template.reload
+            data: {}
+          - variables:
+              response: "{{
+                {
+                  'tool': tool,
+                  'result': 'success',
+                  'config_check': 'passed',
+                  'message': 'Config check passed. YAML template: platform entities (sensor/binary_sensor/switch/etc defined under template:) reloaded — the actual surgical reload for what ha_reload_templates does NOT cover (that one is Jinja macro files under custom_templates/ only). New/changed template entities pick up immediately, no ~90s warmup.'
+                }
+              }}"
+      - conditions:
         - alias: Help
           condition: template
           value_template: '{{ tool == ''help'' }}'
@@ -1073,25 +1398,72 @@ script:
                 'tool': 'help',
                 'result': 'info',
                 'version': '2.1.0',
-                'reload_response_contract': 'ha_reload_all and ha_reload_scripts now return a response immediately — reload is deferred via zen_event to the scheduler, which fires it from automation context. No self-destruct. ha_reload_automations and ha_reload_templates also return responses (different domain). All reloads respond with result: success when queued/complete.',
+                'reload_response_contract': 'ha_reload_all and ha_reload_scripts now return a response immediately — reload is deferred via zen_event to the scheduler, which fires it from automation context. No self-destruct. ha_reload_automations, ha_reload_templates, and ha_reload_template_entities also return responses (different domain). All reloads respond with result: success when queued/complete.',
                 'reload_tools': {
-                  'ha_reload_all': 'LAST RESORT ONLY — use ha_reload_scripts, ha_reload_automations, or ha_reload_templates first. ha_reload_all takes ~2 minutes and disrupts all in-flight actions. Only use it when the domain you need is NOT covered by one of the targeted reload tools. Covers: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, homeassistant: core block. Config check runs first — blocked on nogo. Deferred via scheduler.',
+                  'ha_reload_all': 'LAST RESORT ONLY — use ha_reload_scripts, ha_reload_automations, ha_reload_templates, or ha_reload_template_entities first. ha_reload_all takes ~2 minutes and disrupts all in-flight actions. Only use it when the domain you need is NOT covered by one of the targeted reload tools. Covers: automations, scripts, scenes, groups, helpers, timers, counters, schedules, YAML template sensors, MQTT YAML entities, zones, rest/command_line, custom Jinja templates, themes, homeassistant: core block. Config check runs first — blocked on nogo. Deferred via scheduler.',
                   'ha_reload_scripts': 'Scripts only. Config check runs first — blocked on nogo. Deferred via scheduler. Use when automations are running and you do not want to stop them.',
                   'ha_reload_automations': 'Automations only. Config check runs first — blocked on nogo. WARNING: stops all currently in-flight automation action sequences.',
-                  'ha_reload_templates': 'config/custom_templates/ Jinja files only. Config check runs first — blocked on nogo. Changes take effect on next render.'
+                  'ha_reload_templates': 'config/custom_templates/ Jinja MACRO FILES only (e.g. zenos_cabinets.jinja). Does NOT reload template: platform entities — use ha_reload_template_entities for that. Config check runs first — blocked on nogo. Changes take effect on next render.',
+                  'ha_reload_template_entities': 'YAML template: platform entities (sensor/binary_sensor/switch/etc under a template: key in packages) — calls the core template.reload service. THIS is what you want for editing a template sensor/blueprint instantiation, not ha_reload_templates (common mix-up — confirmed live 2026-08-05 that ha_reload_templates silently does NOT cover these, forcing an unnecessary ha_reload_all). Config check runs first — blocked on nogo.'
                 },
                 'restart_required': 'auth_providers/auth_mfa_modules changes, http: block (port/SSL/CORS/trusted_proxies), recorder: block (db_url/include/exclude), adding net-new integrations never bootstrapped, logger: YAML block. Use logger.set_level service for runtime log level changes — no restart needed.',
                 'other_tools': {
                   'zen_resolver_refresh': 'Fire zen_resolver_refresh. Kicks cabinet resolvers, monastery health, and all resolver-subscribed sensors. Use after ha_reload_all to recover sensors from cold-start unavailable. On real HA restart, the scheduler fires this automatically via ha_start trigger.',
-                  'zen_health_report': 'Read all 5 health sensors + 7 resolver states. Returns overall ok/issues_found, resolver all_ok, timestamps, monk_status, schema_ok, kill switches, and plain-English diagnosis.',
+                  'zen_health_report': 'Read all 5 health sensors + 7 resolver states. Returns overall ok/issues_found, resolver all_ok, timestamps, monk_status, schema_ok, kill switches, plain-English diagnosis, PLUS (2026-08-08) logging.persistent_log_enabled and disk.free_pct/free_gb — check these before assuming log-based diagnosis is available or before enabling logging.',
                   'ha_config_check': 'YAML validation, go/nogo. No side effects. Safe to run anytime.',
                   'ha_restart': 'Full HA restart. Requires confirm=true. Config check runs automatically first — blocked if check fails.',
                   'ha_update_install': 'Install a pending update. Requires confirm=true + entity_id.',
                   'ha_update_skip': 'Skip a pending update. Requires confirm=true + entity_id.',
-                  'ha_update_clear_skipped': 'Un-skip a skipped update. Requires confirm=true + entity_id.'
+                  'ha_update_clear_skipped': 'Un-skip a skipped update. Requires confirm=true + entity_id.',
+                  'zen_log_enable': 'Enables persistent home-assistant.log (HA 2026.1+ ships journal-mode-only by default — no log file until this runs). Requires confirm=true. Also hard-requires a clean ha_config_check first (refuses on nogo) and refuses if disk is under 10% free — no override on either gate. DISRUPTIVE: triggers a real Supervisor core rebuild + restart, same class as ha_restart/ha_reload_all but with no cooldown-based undo. Confirmed live 2026-08-08 (T) — works end-to-end, log file exists and zen_log_check stops returning journal_mode after this runs.',
+                  'zen_supervisor_probe': 'Read-only. Confirms the Supervisor REST API auth path (SUPERVISOR_TOKEN via shell_command, not the ha CLI — that binary is NOT reachable from Core''s container, confirmed via zen_ha_cli_probe) is working, via GET core/info. Use to diagnose zen_log_enable failures before assuming the real command is broken.',
+                  'zen_ha_cli_probe': 'Read-only. Checks whether the Supervisor ''ha'' CLI binary is reachable from Core''s container (it is not, on every install checked so far — this is WHY zen_log_enable goes through the Supervisor REST API instead of shell_command).'
                 },
                 'when_in_doubt': 'Run zen_health_report first. If issues found, run ha_config_check then ha_reload_all. If reloads do not fix it, use ha_restart.',
-                'halmark_fgs': ['FG-35: automation.reload kills in-flight automations', 'FG-36: reload_all silent abort on config check failure (mitigated here by explicit preflight)', 'FG-37: partial reload state from incorrect surgical reload sequencing']
+                'halmark_fgs': ['FG-35: automation.reload kills in-flight automations', 'FG-36: reload_all silent abort on config check failure (mitigated here by explicit preflight)', 'FG-37: partial reload state from incorrect surgical reload sequencing'],
+                'health_and_pipeline': {
+                  'zen_health_report': 'Reads all 5 health sensors + 7 resolver states. Returns overall ok/issues_found, resolver all_ok, timestamps, monk_status, schema_ok, kill switches, plain-English diagnosis.',
+                  'pipeline': 'Ninja summarizer pipeline monitor — queue depth, per-component freshness, scheduler history, logbook invocations (period_hours param, paginated), dynamic flags, static KFC trigger pattern recommendations.'
+                },
+                'prompt_inspection': {
+                  'note': 'None of these take a target — they always inspect the currently active persona.',
+                  'render_dojo': 'Renders the live dojo/KFC section as the active agent receives it. Qualitative review.',
+                  'render_system': 'Renders the system cabinet section (purpose + directives + cortex).',
+                  'prompt_health': 'Health signals + per-section char counts. Points to Identity mode=render_prompt for the full rendered view.'
+                },
+                'notifications': {
+                  'pnotif_list': 'List all active persistent notifications.',
+                  'pnotif_raise': 'Create a notification. Fields: notif_id, notif_title, notif_message.',
+                  'pnotif_edit': 'Update an existing notification by id (re-raises with the same id).',
+                  'pnotif_dismiss': 'Dismiss a notification by id (notif_id required).'
+                },
+                'repairs_and_notice': {
+                  'repairs_list': 'List all HA repair issues (issue_id, domain, severity, is_fixable, description).',
+                  'repair_fix': 'Remove a repair issue via ectoplasm. Fields: repair_domain, issue_id, confirm required.',
+                  'notice_dashboard': 'ZenOS alerts + persistent notifications + repairs + pending updates + recent dispatches. Returns a pre-built action_queue[]{priority,item,tool,call} — iterate and fire directly. Start here for triage. verbose=true for the full untruncated dump.'
+                },
+                'restart_vs_reload': 'auth_providers/auth_mfa_modules changes, http: block (port/SSL/CORS/trusted_proxies), recorder: block (db_url/include/exclude), adding net-new integrations never bootstrapped, logger: YAML block all need ha_restart. Everything else (automations, scripts, scenes, groups, helpers, timers, counters, schedules, template entities, custom Jinja, themes) is covered by one of the reload_tools above — use logger.set_level for runtime log level changes, no restart needed for that specifically.',
+                'home_settings': {
+                  'preferred_for': 'ZenOS household config — home mode, quiet/work hours, scheduler anchors, guest/entertaining flags.',
+                  'home_status': 'Full snapshot: home mode, quiet/work hours, anchors, persons, weather, priority context.',
+                  'home_mode': 'Get or set (value=<mode>). Omit value to get current. HARD BLOCK: if current mode is Paused, set is REFUSED, no bypass — human must clear via HA UI.',
+                  'quiet_hours': 'Get or set window. value=HH:MM/HH:MM format. Midnight-wrap safe (e.g. 23:00/06:00).',
+                  'work_hours': 'Get or set window. value=HH:MM/HH:MM format. No midnight wrap.',
+                  'scheduler_anchors': 'Get all 6 cutover times, or set one: anchor=<name> value=HH:MM.',
+                  'guest_mode_and_entertaining': 'Get or set (value=on/off).'
+                },
+                'home_mode_stripes': {
+                  'note': '8 states, each a behavioral contract, not just a label.',
+                  'Home-Wake': 'wake→morning window. Sleep gate OFF. Morning routine fires.',
+                  'Home-Morning': 'morning→daytime. Sleep gate OFF. Transition to day.',
+                  'Home': 'daytime→evening. Sleep gate OFF. Normal operations.',
+                  'Home-Evening': 'evening→night. Sleep gate OFF. Evening routine fires.',
+                  'Night': 'night→late-night. SLEEP GATE ON — low-urgency notifications blocked.',
+                  'Night-Late': 'late-night→wake. SLEEP GATE ON — deep sleep, max suppression.',
+                  'Away': 'Presence-triggered (zone.home=0), auto-set. Suppresses scheduled transitions, auto-clears when presence returns, lights → away scene. ARMS SECURITY SYSTEM — setting Away manually requires confirm_action=true, and if persons_home > 0 the warning is explicit that you will set off the alarm.',
+                  'Paused': 'MANUAL ONLY. ALL STOP — no auto-transitions, no agent override ever. Only humans can exit, HA UI only.',
+                  'zenos_assumptions': 'Night/Night-Late = sleep (suppress comms, dim lights). Away = no one home (arm security posture, minimal energy). Paused = operator hold.'
+                }
               }
             }}"
       - conditions:
@@ -1162,6 +1534,76 @@ script:
                 {{ _hr_services_raw.get('found', false) }}
               {%- else -%}unknown
               {%- endif -%}
+        # ── Persistent log file status ────────────────────────────────────────
+        # HA 2026.1+ dropped the persistent home-assistant.log file by default
+        # (journal-mode logging) — this is the exact gap zen_log_check's
+        # journal_mode guard degrades around, and it silently blocks
+        # log-based diagnosis until someone notices and re-enables it via
+        # mode=zen_log_enable (see below). Surfaced here so it shows up in
+        # routine health checks instead of only being discovered mid-
+        # incident. continue_on_error — degrades to 'unknown' rather than
+        # failing the whole health report if the Supervisor API is
+        # unreachable for any reason.
+        - action: shell_command.zen_supervisor_token
+          continue_on_error: true
+          response_variable: _hr_sup_token_raw
+        - variables:
+            _hr_sup_bearer: "{{ (_hr_sup_token_raw.stdout | default('')) | trim if _hr_sup_token_raw is mapping else '' }}"
+        - if: "{{ _hr_sup_bearer not in ['', 'Bearer'] }}"
+          then:
+            - action: rest_command.zen_supervisor_get
+              continue_on_error: true
+              data:
+                path: core/info
+                token: "{{ _hr_sup_bearer }}"
+              response_variable: _hr_sup_info
+        - variables:
+            _persistent_log_enabled: >-
+              {%- if _hr_sup_info is defined and _hr_sup_info is mapping and (_hr_sup_info.status | default(0)) == 200 -%}
+                {{ (_hr_sup_info.content | default({})).get('data', {}).get('duplicate_log_file', none) }}
+              {%- else -%}
+                {{ none }}
+              {%- endif -%}
+        # ── Disk space — a persistent log risks exhausting disk on a large
+        # install with many errors, low but real risk. /host/info, not
+        # /core/info (different Supervisor endpoint). Surfaced alongside
+        # the logging status specifically so
+        # the two read together: "logging is on/off" next to "here's how
+        # much room you'd be filling if it's on." Same graceful-degrade
+        # pattern — reuses the token already fetched above, one extra call.
+        - if: "{{ _hr_sup_bearer not in ['', 'Bearer'] }}"
+          then:
+            - action: rest_command.zen_supervisor_get
+              continue_on_error: true
+              data:
+                path: host/info
+                token: "{{ _hr_sup_bearer }}"
+              response_variable: _hr_sup_host_info
+        - variables:
+            _disk_total_gb: >-
+              {%- if _hr_sup_host_info is defined and _hr_sup_host_info is mapping and (_hr_sup_host_info.status | default(0)) == 200 -%}
+                {{ (_hr_sup_host_info.content | default({})).get('data', {}).get('disk_total', none) }}
+              {%- else -%}
+                {{ none }}
+              {%- endif -%}
+            _disk_used_gb: >-
+              {%- if _hr_sup_host_info is defined and _hr_sup_host_info is mapping and (_hr_sup_host_info.status | default(0)) == 200 -%}
+                {{ (_hr_sup_host_info.content | default({})).get('data', {}).get('disk_used', none) }}
+              {%- else -%}
+                {{ none }}
+              {%- endif -%}
+            _disk_free_gb: >-
+              {%- if _hr_sup_host_info is defined and _hr_sup_host_info is mapping and (_hr_sup_host_info.status | default(0)) == 200 -%}
+                {{ (_hr_sup_host_info.content | default({})).get('data', {}).get('disk_free', none) }}
+              {%- else -%}
+                {{ none }}
+              {%- endif -%}
+            _disk_free_pct: >-
+              {%- if _disk_total_gb not in [none, 0] and _disk_free_gb is not none -%}
+                {{ ((_disk_free_gb / _disk_total_gb) * 100) | round(1) }}
+              {%- else -%}
+                {{ none }}
+              {%- endif -%}
         # ── Known-issue cross-reference ─────────────────────────────────────────
         # Every open HA repair issue (via issues(), the only way to reach the
         # Issue Registry from a template — there is no REST endpoint for it,
@@ -1213,33 +1655,54 @@ script:
               dependency: Xiaomi Miio integration
               install_hint: Install/configure the Xiaomi Miio integration for the vacuum entity.
               degrades: ['Autovac: segment-clean command']
+        # known_issues excludes anything with dismissed_version set
+        # (respecting the dismissal as the user's own decision, not
+        # something this report should second-guess) UNLESS is_persistent
+        # is true (a persistent issue is HA's own signal that dismissal
+        # doesn't make it go away -- it keeps re-asserting itself, so it
+        # stays worth surfacing regardless). known_issues_ignored_count
+        # keeps the fact that dismissed issues exist visible without
+        # dumping them back in as noise -- "there are N parked" is signal,
+        # re-listing all N every time is not. mode=repairs_list stays
+        # deliberately unfiltered (raw dump, including dismissed_version
+        # per-issue) -- that is the correct tool for someone who actually
+        # wants the full, un-curated list to act on.
         - variables:
             _known_issues: >-
-              {%- set ns = namespace(l=[]) -%}
+              {%- set ns = namespace(l=[], ignored=0) -%}
               {%- for k, v in issues().items() -%}
                 {%- set _domain = v.get('domain', k[0] if k is sequence and k | length > 0 else '') -%}
                 {%- set _iid = v.get('issue_id', k[1] if k is sequence and k | length > 1 else '') -%}
-                {%- set _cat = namespace(val='unclassified', dep='', hint='', deg=[]) -%}
-                {%- if 'unknown_label' in _iid -%}
-                  {%- set _cat.val = 'label_gap' -%}
-                  {%- set _cat.hint = 'Missing HA label reference — use zen_dojotools_manifest mode=repair confirm=true to create it (Spook self-clears this ghost once the label exists).' -%}
-                {%- elif _domain == 'hacs' and 'restart_required' in _iid -%}
-                  {%- set _cat.val = 'informational' -%}
-                  {%- set _cat.hint = 'HACS package updated — restart required to apply, not a functional gap.' -%}
+                {%- set _dismissed = v.get('dismissed_version', none) -%}
+                {%- set _persistent = v.get('is_persistent', false) -%}
+                {%- if _dismissed is not none and not _persistent -%}
+                  {%- set ns.ignored = ns.ignored + 1 -%}
                 {%- else -%}
-                  {%- for m in _dependency_map if m.match in _iid -%}
-                    {%- set _cat.val = 'missing_dependency' -%}
-                    {%- set _cat.dep = m.dependency -%}
-                    {%- set _cat.hint = m.install_hint -%}
-                    {%- set _cat.deg = m.degrades -%}
-                  {%- endfor -%}
+                  {%- set _cat = namespace(val='unclassified', dep='', hint='', deg=[]) -%}
+                  {%- if 'unknown_label' in _iid -%}
+                    {%- set _cat.val = 'label_gap' -%}
+                    {%- set _cat.hint = 'Missing HA label reference — use zen_dojotools_manifest mode=repair confirm=true to create it (Spook self-clears this ghost once the label exists).' -%}
+                  {%- elif _domain == 'hacs' and 'restart_required' in _iid -%}
+                    {%- set _cat.val = 'informational' -%}
+                    {%- set _cat.hint = 'HACS package updated — restart required to apply, not a functional gap.' -%}
+                  {%- else -%}
+                    {%- for m in _dependency_map if m.match in _iid -%}
+                      {%- set _cat.val = 'missing_dependency' -%}
+                      {%- set _cat.dep = m.dependency -%}
+                      {%- set _cat.hint = m.install_hint -%}
+                      {%- set _cat.deg = m.degrades -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {%- set ns.l = ns.l + [{
+                    'issue_id': _iid, 'domain': _domain, 'category': _cat.val,
+                    'dependency': _cat.dep, 'install_hint': _cat.hint, 'degrades': _cat.deg
+                  }] -%}
                 {%- endif -%}
-                {%- set ns.l = ns.l + [{
-                  'issue_id': _iid, 'domain': _domain, 'category': _cat.val,
-                  'dependency': _cat.dep, 'install_hint': _cat.hint, 'degrades': _cat.deg
-                }] -%}
               {%- endfor -%}
-              {{ ns.l }}
+              {{ {'active': ns.l, 'ignored_count': ns.ignored} }}
+        - variables:
+            _known_issues_active: "{{ _known_issues.active }}"
+            _known_issues_ignored_count: "{{ _known_issues.ignored_count }}"
         - variables:
             _kata_vars: >-
               {{ state_attr(_kata, 'variables') or {}
@@ -1575,8 +2038,57 @@ script:
               monk_status: "{{ _monk_status }}"
               active_components: "{{ _active_raw }}"
               component_freshness: "{{ _component_freshness }}"
-              known_issues: "{{ _known_issues }}"
+              known_issues: "{{ _known_issues_active }}"
+              known_issues_ignored_count: "{{ _known_issues_ignored_count }}"
               diagnosis: "{{ _diagnosis }}"
+              logging:
+                persistent_log_enabled: "{{ _persistent_log_enabled }}"
+                note: >-
+                  {%- if _persistent_log_enabled == true -%}
+                    home-assistant.log is being written — full log-based diagnosis available.
+                  {%- elif _persistent_log_enabled == false -%}
+                    Journal-mode only (HA 2026.1+ default) — no persistent log file, log-based diagnosis is blind. Ships off by default; enable via mode=zen_log_enable confirm_action=true (disruptive: triggers a core rebuild + restart).
+                  {%- else -%}
+                    Could not reach Supervisor API to check — status unknown.
+                  {%- endif -%}
+              disk:
+                total_gb: "{{ _disk_total_gb }}"
+                used_gb: "{{ _disk_used_gb }}"
+                free_gb: "{{ _disk_free_gb }}"
+                free_pct: "{{ _disk_free_pct }}"
+                note: >-
+                  {%- if _disk_free_pct is none -%}
+                    Could not reach Supervisor API to check — status unknown.
+                  {%- elif _disk_free_pct < 10 -%}
+                    LOW DISK — under 10% free. Do not enable persistent logging (mode=zen_log_enable) until this is addressed; a verbose install with many errors can genuinely fill remaining space.
+                  {%- elif _disk_free_pct < 20 -%}
+                    Getting tight — under 20% free. Fine to enable persistent logging, but worth keeping an eye on growth.
+                  {%- else -%}
+                    Healthy headroom.
+                  {%- endif -%}
+        # --- Pilot stage 2: first REAL consumer of envelope(). ---
+        # Own early stop point, scoped to health_report only -- NOT touching the
+        # shared terminal stop (line ~2921) every other mode still falls through
+        # to, since that would silently reshape every one of those modes at once.
+        # Real shape change, not a compat shim: the existing response dict
+        # (overall/resolvers/gates/etc, unchanged internally) moves under
+        # result -- execution status is always 'success' here (the call itself
+        # succeeded), 'overall' ok/issues_found is DOMAIN state, which is
+        # exactly the status-vs-domain-state conflation #10297 exists to fix.
+        - variables:
+            _hr_envelope_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {{- OS.envelope(
+                status='success',
+                mode='zen_health_report',
+                result=response,
+                tool='zen_dojotools_systemtools',
+                caller_token=caller_token | default('')
+              ) -}}
+        - variables:
+            _hr_envelope: "{{ _hr_envelope_raw | from_json(none) or {} }}"
+        - stop: health report envelope
+          response_variable: _hr_envelope
       - conditions:
         - alias: Cabinet Schema Upgrade
           condition: template
@@ -1782,13 +2294,17 @@ script:
                 {%- if s.entity_id == _active -%}
                   {%- set _entry = config_entry_id(s.entity_id) -%}
                   {%- set _model = device_attr(s.entity_id, 'model_id') or device_attr(s.entity_id, 'model') -%}
-                  {%- set _state_str = config_entry_attr(_entry, 'state') | string if _entry else '' -%}
+                  {# 2026-08-27: ConfigEntryState is a StrEnum in modern HA —
+                     stringifies lowercase ("loaded"), not "LOADED". The old
+                     uppercase substring check was always false regardless of
+                     actual load state. #}
+                  {%- set _state_str = (config_entry_attr(_entry, 'state') | string | lower) if _entry else '' -%}
                   {%- set ns.active = {
                     'entity_id': s.entity_id,
                     'model': _model if _model else 'unspecified',
                     'provider': device_attr(s.entity_id, 'manufacturer') or 'unspecified',
                     'integration': config_entry_attr(_entry, 'domain') if _entry else 'unspecified',
-                    'canon_ok': _active != '' and _active not in ['unknown', 'unavailable'] and 'LOADED' in _state_str
+                    'canon_ok': _active != '' and _active not in ['unknown', 'unavailable'] and _state_str == 'loaded'
                   } -%}
                 {%- endif -%}
               {%- endfor -%}
@@ -2385,6 +2901,10 @@ script:
                     time: "{{ value }}"
           else:
           - variables:
+              _sa_vacation_active: >-
+                {{ is_state('input_boolean.zen_vacation_wake_shift_enabled', 'on')
+                   and (label_entities('zen_vacation_mode') | select('match', 'calendar\\.') | map('states') | select('equalto', 'on') | list | count) > 0 }}
+          - variables:
               response:
                 tool: "{{ tool }}"
                 result: ok
@@ -2396,7 +2916,23 @@ script:
                   evening: "{{ states('input_datetime.zen_evening_start') }}"
                   night: "{{ states('input_datetime.zen_night_start') }}"
                   late_night: "{{ states('input_datetime.zen_late_night_start') }}"
-                note: "To set: anchor=<name> value=HH:MM. Names: wake, morning, daytime, evening, night, late_night"
+                vacation_mode_active: "{{ _sa_vacation_active }}"
+                effective_anchors_today:
+                  wake: "{{ (strptime(states('input_datetime.zen_am_start'), '%H:%M:%S') + timedelta(hours=1)).strftime('%H:%M:%S') if _sa_vacation_active else states('input_datetime.zen_am_start') }}"
+                  morning: "{{ (strptime(states('input_datetime.zen_morning_start'), '%H:%M:%S') + timedelta(hours=2)).strftime('%H:%M:%S') if _sa_vacation_active else states('input_datetime.zen_morning_start') }}"
+                  daytime: "{{ (strptime(states('input_datetime.zen_daytime_start'), '%H:%M:%S') + timedelta(hours=1)).strftime('%H:%M:%S') if _sa_vacation_active else states('input_datetime.zen_daytime_start') }}"
+                note: >-
+                  To set: anchor=<name> value=HH:MM. Names: wake, morning,
+                  daytime, evening, night, late_night. These stored values
+                  are what you write/read here — while
+                  input_boolean.zen_vacation_wake_shift_enabled is on (off by
+                  default) AND a zen_vacation_mode-labeled calendar is
+                  active, zen_hm_evaluate_window applies a live shift
+                  (wake +1h, morning +2h, daytime +1h — parity-matched
+                  against the real legacy NR vacation modifier, non-uniform
+                  by design) to those three anchors ONLY (see
+                  effective_anchors_today); the stored anchors themselves
+                  are never rewritten by that shift.
 
       - conditions:
         - alias: guest_mode toggle
@@ -2454,66 +2990,22 @@ script:
     - stop: return
       response_variable: response
     alias: Zen DojoTools SystemTools
-    description: "Zen DojoTools SystemTools (2.2.0)\n\
-      \nHEALTH: zen_health_report — reads all 5 health sensors + 7 resolver states.\n\
-      \nReturns overall ok/issues_found, resolver all_ok, timestamps, monk_status, schema_ok, kill switches, diagnosis.\n\
-      \nPIPELINE: pipeline — ninja summarizer pipeline monitor. Queue depth, per-component\n\
-      \nfreshness, scheduler history, logbook invocations (period_hours, paginated),\n\
-      \ndynamic flags, and static KFC trigger pattern recommendations.\n\
-      \nPROMPT INSPECTION (no target needed — uses active persona):\n\
-      \  render_dojo — renders live dojo/KFC section as the active agent receives it. Qualitative review.\n\
-      \  render_system — renders system cabinet section (purpose + directives + cortex).\n\
-      \  prompt_health — health signals + per-section char counts. Points to Identity render_prompt for full view.\n\
-      \nNOTIFICATIONS:\n\
-      \  pnotif_list — list all active persistent notifications.\n\
-      \  pnotif_raise — create a notification (notif_id, notif_title, notif_message).\n\
-      \  pnotif_edit — update an existing notification by id (re-raises with same id).\n\
-      \  pnotif_dismiss — dismiss a notification by id (notif_id required).\n\
-      \nREPAIRS & NOTICE:\n\
-      \  repairs_list — list all HA repair issues (issue_id, domain, severity, is_fixable, description).\n\
-      \  repair_fix — remove a repair issue via ectoplasm (repair_domain, issue_id, confirm required).\n\
-      \  notice_dashboard — ZenOS alerts + persistent notifications + repairs + pending updates + recent dispatches.\n\
-      \    Returns pre-built action_queue[]{priority,item,tool,call} — iterate and fire. Start here for triage.\n\
-      \nOPERATOR REQUIRED: ha_reload_all and ha_restart take HA offline.
-      \nNEVER self-confirm -- do NOT pass confirm_action=true without explicit
-      \nuser approval in this conversation. Ask first. Always.
-      \nRELOAD RESPONSE: ha_reload_all/ha_reload_scripts return immediately —\n\
-      \nreload fires deferred via scheduler. All reload modes are config-checked:\n\
-      \nnogo blocks the reload and returns errors. Silence = reload fired.\n\
-      \nRELOAD (no restart):\n\
-      \  ha_reload_all — all YAML domains, config-checked. Deferred. DEFAULT.\n\
-      \  ha_reload_scripts — scripts only. Config-checked. Deferred.\n\
-      \  ha_reload_automations — automations only. Config-checked. STOPS in-flight actions.\n\
-      \  ha_reload_templates — custom_templates/ Jinja only. Config-checked.\n\
-      \nRESTART REQUIRED:\n\
-      \  auth_providers, http:, recorder:, new unbootstrapped integrations,\n\
-      \  logger: YAML block. (Use logger.set_level for runtime log changes.)\n\
-      \nOTHER: ha_config_check, ha_restart, ha_update_install/skip/clear_skipped,\n\
-      \  cabinet_schema_upgrade — run if Flynn notified you of a pre-RC2 schema migration.\n\
-      \nHOME SETTINGS — preferred tool for ZenOS household config:\n\
-      \  home_status — full snapshot: home mode, quiet/work hours, anchors, persons, weather, priority context.\n\
-      \  home_mode — get or set (value=<mode>). Omit value to get current.\n\
-      \    HARD BLOCK: if current mode is Paused, set is REFUSED. No bypass. Human must clear via HA UI.\n\
-      \  quiet_hours — get or set window. value='HH:MM/HH:MM'. Midnight-wrap safe (e.g. 23:00/06:00).\n\
-      \  work_hours — get or set window. value='HH:MM/HH:MM'. No midnight wrap.\n\
-      \  scheduler_anchors — get all 6 cutover times, or set one: anchor=<name> value=HH:MM.\n\
-      \  guest_mode / entertaining — get or set (value=on/off).\n\
-      \nHOME MODE STRIPES — 8 states, behavioral contract:\n\
-      \  Home-Wake   : wake→morning window. Sleep gate OFF. Morning routine fires.\n\
-      \  Home-Morning: morning→daytime. Sleep gate OFF. Transition to day.\n\
-      \  Home        : daytime→evening. Sleep gate OFF. Normal operations.\n\
-      \  Home-Evening: evening→night. Sleep gate OFF. Evening routine fires.\n\
-      \  Night       : night→late-night. SLEEP GATE ON — low-urgency notifications blocked.\n\
-      \  Night-Late  : late-night→wake. SLEEP GATE ON — deep sleep, max suppression.\n\
-      \  Away        : presence-triggered (zone.home=0). Auto-set. Suppresses scheduled transitions.\n\
-      \               Auto-cleared when presence returns. Lights → away scene.\n\
-      \               ARMS SECURITY SYSTEM. Setting Away manually requires confirm_action=true.\n\
-      \               If persons_home > 0 the warning is explicit: you will set off the alarm.\n\
-      \  Paused      : MANUAL ONLY. ALL STOP — no auto-transitions, no agent override ever.\n\
-      \               Set to enter emergency hold. Only humans can exit. Human HA UI only.\n\
-      \nZenOS assumptions by mode: Night/Night-Late = sleep (suppress comms, dim lights).\n\
-      \  Away = no one home (arm security posture, minimal energy). Paused = operator hold.\n\
-      \nUse mode=help for full reference and FG notes."
+    description: >-
+      Zen DojoTools SystemTools (2.3.0) — ZenOS platform kernel: health, YAML
+      reload, notifications, repairs, home-mode/settings control. CALL
+      mode=help FIRST — it has the full mode list, the reload-tool decision
+      guide (ha_reload_all vs surgical scripts/automations/templates/
+      template_entities — a common mix-up), FG gotchas, and the
+      home-mode-stripe contract; this description only sketches the surface.
+      Quick map: zen_health_report (system health) | pipeline (summarizer
+      monitor) | render_dojo/render_system/prompt_health (prompt inspection)
+      | pnotif_list/raise/edit/dismiss (notifications) | repairs_list/
+      repair_fix/notice_dashboard (repairs+triage, start here) | ha_reload_*
+      + ha_restart + ha_config_check (YAML reload, config-checked;
+      ha_reload_all/ha_restart require confirm_action=true, NEVER
+      self-confirm) | home_status/home_mode/quiet_hours/work_hours/
+      scheduler_anchors/guest_mode/entertaining (household settings;
+      home_mode set REFUSED while Paused, no bypass).
     fields:
       mode:
         selector:
@@ -2526,6 +3018,7 @@ script:
             - ha_reload_scripts
             - ha_reload_automations
             - ha_reload_templates
+            - ha_reload_template_entities
             - ha_restart
             - ha_config_check
             - ha_update_install
@@ -2552,6 +3045,10 @@ script:
             - scheduler_anchors
             - guest_mode
             - entertaining
+            - zen_ha_cli_probe
+            - zen_supervisor_probe
+            - zen_log_enable
+            - envelope_check
       tool:
         selector:
           text:
@@ -2629,7 +3126,7 @@ script:
       anchor:
         selector:
           text:
-        description: "Anchor name for scheduler_anchors set. One of: wake, morning, daytime, evening, night, late_night."
+        description: "Anchor name for scheduler_anchors set. One of: wake, morning, daytime, evening, night, late_night. Note: while input_boolean.zen_vacation_wake_shift_enabled is on (off by default) and a zen_vacation_mode-labeled calendar is active, wake/morning/daytime apply live at +1h/+2h/+1h respectively (see effective_anchors_today on the get response) — the stored anchor value itself is unaffected."
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.

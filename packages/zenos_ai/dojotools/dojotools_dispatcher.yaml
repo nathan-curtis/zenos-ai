@@ -1,6 +1,30 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.3.0
+# Version: 5.4.1
+#
+# v5.4.1 (2026-08-20)
+#   + zen_dojotools_urgency_handler dedup fix. Friday's own diagnosis
+#     (filed same-day) caught the v1 cut spawning a fresh
+#     ticket on every firing -- a persistently-flagged component refires
+#     roughly hourly as its cooldown window resets, and each firing
+#     created a NEW ticket instead of touching the existing one. ~10
+#     duplicate tickets per component before caught. Fixed: every ticket
+#     this handler creates gets tagged with a stable per-component tag;
+#     before creating, search for an already-open ticket carrying that
+#     tag first. Found -> add a recurrence note to it. Not found ->
+#     create, then tag the result so the next occurrence finds it.
+#
+# v5.4.0 (2026-08-19)
+#   + zen_dojotools_urgency_handler v1 real implementation, replacing the
+#     stub. Traced its actual role: the catch-all triage lane for
+#     action_required=true events that fall through both summary_force
+#     (needs urgency >= drift_threshold, unrelated condition) and the
+#     four-layer autonomous-remediation gate (needs urgency >= push_floor
+#     AND a non-empty suggested_act_event) -- low-urgency, no-suggested-
+#     action "needs a human" signals were being silently dropped. Now
+#     routes to Taskmaster as a real task (priority scaled from urgency,
+#     no Postman push -- push-worthy events already went through the
+#     four-layer gate upstream).
 #
 # v5.3.0 (2026-07-04)
 #   + Removed zen_dojotools_notification_router v1 compat shim. Retired tool
@@ -288,15 +312,86 @@ automation:
                   caller_token:   "{{ _payload.get('caller_token', '') }}"
                 response_variable: _result
 
-          # ── zen_dojotools_urgency_handler v1 — stub (no backing script yet) ─
+          # ── zen_dojotools_urgency_handler v1 (2026-08-19, dedup fix 2026-08-20) ──
+          # Catch-all triage lane for action_required=true events that fall
+          # through the other two paths: summary_force needs urgency >=
+          # drift_threshold (unrelated condition), and the four-layer
+          # autonomous-remediation gate needs BOTH urgency >= push_floor AND
+          # a non-empty suggested_act_event. A component that says "this
+          # needs a human's judgment" at low urgency with no automatable
+          # suggested action was landing here and getting silently dropped
+          # -- this was a real stub, not dead scaffolding superseded by
+          # those two mechanisms. Routes to Taskmaster as a real (non-chore,
+          # non-Radar-forced) task so a human sees it -- no Postman push,
+          # since anything push-worthy already went through the four-layer
+          # gate's own urgency check upstream.
+          #
+          # 2026-08-20 BUG (Friday's own diagnosis): the v1
+          # cut spawned a brand-new ticket on EVERY firing with no
+          # deduplication -- a persistently-flagged component (one whose
+          # condition hasn't actually changed) refires roughly hourly as its
+          # cooldown window resets, and each firing created a fresh ticket
+          # instead of updating the existing one. ~10 duplicate tickets per
+          # component before caught. Fixed: tag every ticket this handler
+          # creates with a stable per-component tag; before creating,
+          # search for an already-open ticket carrying that tag. Found ->
+          # add a note to it instead (repeat occurrence, still visible,
+          # still timestamped, not a new ticket). Not found -> create, then
+          # tag the result so the NEXT occurrence finds it.
           - conditions: "{{ _tool == 'zen_dojotools_urgency_handler' and _ver | string == '1' }}"
             sequence:
               - variables:
-                  _result:
-                    status: stub
-                    message: zen_dojotools_urgency_handler v1 registered — handler not yet implemented. Payload received.
-                    payload: "{{ _payload }}"
-                    correlation_id: "{{ _cid }}"
+                  _uh_component: "{{ _payload.get('component_slug', '') | string | trim if _payload.get('component_slug', '') else _payload.get('kata_key', '') | string | trim }}"
+                  _uh_urgency: "{{ _payload.get('urgency', 1) | int(1) }}"
+                  _uh_suggested: "{{ _payload.get('suggested_act_event', '') | string | trim }}"
+                  _uh_priority: "{{ 3 if _uh_urgency >= 6 else (2 if _uh_urgency >= 3 else 1) }}"
+                  _uh_dedup_tag: >-
+                    {{ 'urgency_component_' ~ (_uh_component if _uh_component != '' else 'unknown') | lower | regex_replace('[^a-z0-9]+', '_') }}
+                  _uh_note: >-
+                    urgency={{ _uh_urgency }}{{ ' suggested_act_event=' ~ _uh_suggested if _uh_suggested != '' else ' (no suggested action -- human judgment needed)' }}
+                    kata_key={{ _payload.get('kata_key', '') }} correlation_id={{ _cid }}
+              - action: script.zen_dojotools_servicedesk
+                continue_on_error: true
+                data:
+                  mode: ticket_search
+                  input_json: >-
+                    {{ {'tags': [_uh_dedup_tag], 'states': ['new', 'open']} | tojson }}
+                response_variable: _uh_existing
+              - variables:
+                  _uh_existing_ids: "{{ _uh_existing.get('ticket_ids', []) if _uh_existing is mapping else [] }}"
+              - choose:
+                - conditions: "{{ _uh_existing_ids | length > 0 }}"
+                  sequence:
+                  - action: script.zen_dojotools_servicedesk
+                    continue_on_error: true
+                    data:
+                      mode: article_add
+                      input_json: >-
+                        {{ {'ticket_id': _uh_existing_ids[0], 'body': 'Recurred at ' ~ now().isoformat() ~ '. ' ~ _uh_note, 'subject': 'Recurrence', 'internal': true} | tojson }}
+                    response_variable: _uh_note_result
+                  - variables:
+                      _result:
+                        status: deduplicated
+                        ticket_id: "{{ _uh_existing_ids[0] }}"
+                        note_added: "{{ _uh_note_result is mapping and _uh_note_result.get('status', '') == 'success' }}"
+                default:
+                - action: script.zen_dojotools_taskmaster
+                  data:
+                    mode: task_create
+                    item: "Action required — {{ _uh_component if _uh_component != '' else 'unknown component' }}"
+                    chore: false
+                    priority: "{{ _uh_priority }}"
+                    note: "{{ _uh_note }}"
+                    caller_token: "{{ _payload.get('caller_token', '') }}"
+                  response_variable: _result
+                - if: "{{ _result is mapping and _result.get('backend', '') == 'radar' and _result.get('ticket_number', '') != '' }}"
+                  then:
+                  - action: script.zen_dojotools_servicedesk
+                    continue_on_error: true
+                    data:
+                      mode: ticket_tag
+                      input_json: >-
+                        {{ {'ticket_id': _result.get('ticket_number', ''), 'tag': _uh_dedup_tag} | tojson }}
 
           # ── zen_dojotools_todo v1 ────────────────────────────────────────
           - conditions: "{{ _tool == 'zen_dojotools_todo' and _ver | string == '1' }}"

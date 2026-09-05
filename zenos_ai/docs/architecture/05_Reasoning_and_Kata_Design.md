@@ -205,7 +205,7 @@ The AI worker is then instructed to **fill the `structure`** in a manner consist
 
 ### 5.4.3 AI Task Invocation and Validation
 
-An `ai_task` such as `ai_task.gpt_oss_20b_local_ai_task` is invoked with this prompt object. The Home Assistant AI Task integration ensures that:
+An `ai_task` entity — resolved dynamically per install from `input_text.zenos_ai_task_entity`, never hardcoded (e.g. `ai_task.gpt_oss_20b_local_ai_task` on one install, a different local or cloud provider on another) — is invoked with this prompt object. The Home Assistant AI Task integration ensures that:
 
 * the prompt is serialized as JSON,
 * the response is treated as JSON-first (data-only),
@@ -249,7 +249,7 @@ SuperSummary draws from:
   * Media Manager
   * Energy Manager
   * Water Manager
-  * Hot Tub Manager
+  * Spa Manager
     (plus others as they are added in future revisions)
 
 * **System drawers**, including:

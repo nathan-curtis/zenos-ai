@@ -308,6 +308,8 @@ Always call `source_get` before `source_set` to retrieve the exact strings.
 
 This is passive — no writes to Room Manager. Configure transmission values via `zen_dojotools_room_manager mode=link`.
 
+**Room Manager v3 PAUSED-awareness** (2026-08-07, corrected 2026-08-09): `play_media` and `activity_apply` refuse to start new media in a room whose `room_control_manager` select reads `Paused` — a human has told Room Manager v3 to leave that room alone (`error: room_locked`-style response naming the paused entity). Read-only/query modes and queue navigation on already-playing media are untouched; only the "begin something new" entry points check this. A room with no `room_control_manager` select deployed is a safe no-op — never blocks.
+
 ---
 
 ## Preferences Architecture

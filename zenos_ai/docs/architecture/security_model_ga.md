@@ -71,10 +71,15 @@ These are not configuration — they are hard constants in the resolution engine
 
 ### caller_token Plumbing
 
-All 15 AI-accessible DojoTools scripts accept and echo a `caller_token` field. The field
-is a noop at GA — it passes through and is reflected in the response. The plumbing path
-from MCP tool call through to response is complete. SP1 enforcement requires no changes
-to script internals.
+`caller_token` accept-and-echo plumbing has grown with the tool surface since GA —
+41 scripts under `packages/zenos_ai/dojotools/` carry it as of 2026-08-09 (verified via
+`grep -rl caller_token`; count includes `zen_stack_timer`/`zen_stack_alarms`, two
+internal-only Lens Bus stack providers, not just MCP-exposed tools), up from the 15
+present at the original 4.5.0 'Meridian' GA snapshot (see
+`20_tool_invocation_and_security.md` §GA Implementation Note for that historical
+figure). The field remains a noop — it passes through and is reflected in the
+response. The plumbing path from MCP tool call through to response is complete.
+SP1 enforcement requires no changes to script internals.
 
 ### Profile Snapshot and Restore
 
@@ -195,11 +200,15 @@ This hierarchy is the structural spec at GA. Enforcement at the tool layer activ
 **When SP1 ships**, you will populate `provider` and `token_endpoint`, set `secure: true`,
 and the system activates. No architectural changes required — the plumbing is already there.
 
+**KFC certification grants are gated independently of SP1** (2026-08-15). `zen_dojotools_persona_editor mode=cert_grant`/`cert_revoke` previously had zero gating — any MCP caller could self-certify itself for any capability, including one an identity gate was built the same day to protect. Now closed with two non-optional checks regardless of SP1 status: the target certification must appear in the live-calculated cert catalog (`zen_dojotools_manifest mode=cert_audit`, fanning out to every tool's own self-declared `certs_required` — briefly a hand-maintained JSON file the same day, replaced same-day once that proved to be an admin burden), and every grant/revoke requires a fresh live household-admin acknowledgment, which is the actual security boundary — catalog membership alone only catches typos. See `zen_dojotools_profile_readme.md`'s certification section for the mechanism.
+
 ---
 
 ## Related
 
 - `09_Identity_Architecture.md` — full identity data model, ACL rules, Squirrel Safe / Content Safe filters
 - `roadmap.md` — SP1 timeline and scope
-- `docs/scripts/zen_dojotools_identity_readme.md` — identity tool reference
+- `docs/scripts/zen_dojotools_identity_readme.md` — identity tool reference, `request_live_ack`/`cert_list`
+- `docs/scripts/zen_dojotools_profile_readme.md` — `cert_grant`/`cert_revoke` gating
+- `docs/scripts/zen_dojotools_locks_readme.md` — identity-gate pattern applied to lock actuation
 - `sensor.zen_prompt_health` — prompt integrity sensor

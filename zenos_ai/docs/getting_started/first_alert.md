@@ -1,6 +1,6 @@
 # Your First Alert
 
-> **Version:** 2026.6.0 'Clue' | **Last Updated:** May 2026
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
 
 *The fastest way to prove ZenOS-AI can get your attention.*
 
@@ -8,10 +8,12 @@
 
 You've finished first-run setup. Your AI knows the home, Flynn has brought the cabinets online, and now you want one simple thing: make ZenOS-AI raise an alert, show you where it lives, and clear it again.
 
-This walkthrough uses the current AlertManager path in 2026.6.0:
+In plain terms: something happens, ZenOS-AI decides it's worth telling you, and a notification shows up. That's it — this walkthrough just proves that loop works before you rely on it for anything real.
+
+Under the hood, that loop looks like this (only worth knowing if you're curious — you don't need to understand this to follow the steps below):
 
 ```
-alert_fire event -> Zen Alert Manager -> _zen_active_alerts -> notification
+alert_fire event -> AlertManager -> active alerts list -> notification
 ```
 
 No `notify.admin_devices` group is required. No Ninja summary is required for this first test. The AlertManager automation is always listening for `zen_event` events, and the MCP-facing tool `zen_dojotools_alertmanager` gives your AI a simple way to fire, list, and clear alerts.
@@ -81,7 +83,7 @@ By default, alerts expire after 24 hours. Use `clear_after_minutes: 0` only for 
 
 ## Step 1 — Confirm AlertManager Exists
 
-After installing or upgrading to 2026.6.0, AlertManager should be present as:
+After installing, AlertManager should be present as:
 
 - `automation.zen_alert_manager`
 - `script.zen_dojotools_alertmanager`
@@ -262,6 +264,60 @@ Use `clear_all` carefully on a live home, since it clears real alerts too.
 
 ---
 
+## Step 7 — Connect a Real Device (required before certifications work)
+
+Everything above used `notify_target: persistent` deliberately — it proves the pipeline with zero setup. But a persistent HA notification is not enough for what's coming next: **certifications** (locks, covers, alarm, infra, room overrides — see the [Security & Certification manual](security_certification_manual.md)) require a real push notification reaching a real phone, every single time, with no fallback. If you did [Install Step 3.5](install.md#step-35--set-up-your-mobile-notification-path), your phone can already receive a notification — this step connects that to Postman so ZenOS can actually route one to you.
+
+Seed the minimum needed — your own user profile, with `push_targets` pointing at the notify service from Install Step 3.5:
+
+```yaml
+action: script.zen_dojotools_postman
+data:
+  mode: author_policy
+  scope_id: sensor.zen_default_user_cabinet_resolved
+  policy_key: postman_profile
+  policy_type: update_existing
+  channel_definition:
+    push_targets:
+      - Admin Devices        # must match a notify.* target name you can reach —
+                              # see the table below for how this resolves
+    urgency_tiers:
+      low:      { channels: [push] }
+      medium:   { channels: [push] }
+      high:     { channels: [push, tts] }
+      critical: { channels: [push, tts] }
+    away_policy: { push: allow, tts: block }
+```
+
+**`push_targets` is the field that matters.** Postman turns the value into a `notify.*` service name:
+
+| `push_targets` value | Dispatches to |
+|---|---|
+| `Admin Devices` | `notify.admin_devices` |
+| `Default User Phone` | `notify.default_user` |
+| *(anything else)* | `notify.<slugified value>` |
+
+If your notify service from Step 3.5 was `notify.mobile_app_johns_iphone` and you don't already have an `admin_devices` group wrapping it, either create that group in HA (Settings → Devices & Services → Helpers → Notify Group), or set `push_targets` to whatever name resolves to your actual service.
+
+Now fire a real test through Postman instead of the persistent path:
+
+```yaml
+action: script.zen_dojotools_alertmanager
+data:
+  mode: fire
+  alert_key: first_postman_test
+  message: "Testing Postman alert routing to a real device."
+  severity: warn
+  notify_target: postman
+  channel_hint: push
+```
+
+**Expected:** a real push notification arrives on your phone. If it doesn't, run `zen_dojotools_postman mode=resolve target=person.<you> urgency=5 channel_hint=push` first — it tells you what *would* happen without dispatching, which is the fastest way to see whether the problem is the profile, the target name, or the device itself.
+
+This one seed is enough for certifications to work (they bypass quiet-hours/work-hour gates deliberately, so the fuller household/family policy isn't required just for this). For the complete picture — routing by person, quiet hours, TTS, multiple devices — see **[Notification Routing Guide](notification_routing.md)** next.
+
+---
+
 ## Notification Targets
 
 For a first test, use `notify_target: persistent`. It works without extra setup and proves the AlertManager pipeline.
@@ -271,21 +327,8 @@ Other targets:
 | Target | Use when |
 |---|---|
 | `persistent` | You want an HA persistent notification. Best first test. |
-| `postman` | You have Postman profiles configured and want push, TTS, or Teams routing. |
+| `postman` | You have Postman profiles configured and want push, TTS, or Teams routing — see Step 7 above. |
 | `mobile` | Legacy/simple mobile path if supported by your install. |
-
-For Postman routing, include `channel_hint`:
-
-```yaml
-action: script.zen_dojotools_alertmanager
-data:
-  mode: fire
-  alert_key: first_postman_test
-  message: "Testing Postman alert routing."
-  severity: warn
-  notify_target: postman
-  channel_hint: push
-```
 
 If the persistent test works but Postman does not, the problem is in Postman/profile routing, not AlertManager.
 
@@ -361,14 +404,15 @@ AlertManager is working. Check Postman routing, mobile app notify services, and 
 
 ## What's Next
 
-You've just seen the current 2026.6.0 alert path:
+You've just seen the current alert path:
 
 ```
 event or tool -> AlertManager -> active alert drawer -> notification -> optional AI priority context
 ```
 
-Next reads:
+If you completed Step 7 above, your household and user cabinets already have a working push path — certifications will work when you need them. Next reads:
 
+- **[Notification Routing Guide](notification_routing.md)** — the full household/family policy (quiet hours, work hours, multiple people) beyond the one-user seed from Step 7
 - **[AlertManager reference](../components/alertmanager.md)** — full current behavior, TTL, priority context, and tool modes
 - **[Understanding KF4](../kung_fu/understanding_kf4.md)** — how summarizer-driven components fit beside direct event alerts
 - **[Entity Exposure](entity_exposure.md)** — what to expose to your AI and what to keep behind tools

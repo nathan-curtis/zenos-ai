@@ -28,6 +28,17 @@ Auto-registration eliminates both steps for standard stack providers. Any `zen_s
    - Otherwise calls `mode={{ register_mode }}` on the script to self-register
 4. Returns: `registered`, `already_registered`, `skipped`, `no_register_mode`, `errors`
 
+> **Gotcha:** the idempotent skip in step 3 means **changing an
+> already-registered provider's `tool_manifest`** (e.g. adding a new
+> entry to `consumes`) does **not** auto-propagate on the next
+> `bootstrap_stacks` call — the provider key is already present, so it's
+> skipped, and `lens_registry` keeps the stale declaration. There is no
+> "force re-register" mode today. To pick up a manifest change, call
+> `zen_dojotools_filecabinet action_type=unregister` on the provider (or
+> have the provider's own `mode=unregister` write the removal) *before*
+> the next `bootstrap_stacks` call, or manually re-run the provider's own
+> `mode=register` directly. Worth a real `force_reregister` mode someday.
+
 ### When It Runs
 
 The `zen_manifest_bootstrap_stacks` automation fires `bootstrap_stacks` on:

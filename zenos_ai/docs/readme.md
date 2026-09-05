@@ -1,12 +1,28 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.8.1 (patch on 2026.8.0 'Chef') | **Current Stable:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026 | **License:** MIT
+> **Version:** 2026.9.0 'Steel Magnolia' | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 >
-> **This branch is the legacy pre-identity-gate line — 2026.8.1 is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Anything built past this point that needs those safeguards to run safely won't be backported here on principle. See [Chef's release notes](releases/chef.md#20261--the-last-release-before-identity-gates) for the full reasoning.
+> **2026.8.1 is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Anything built past this point that needs those safeguards to run safely won't be backported to that legacy line on principle. See [Chef's release notes](releases/chef.md#20261--the-last-release-before-identity-gates) for the full reasoning.
 
 → [Project Overview & Install](../../README.md)
+
+---
+
+> ### 2026.9.0 'Steel Magnolia' — Stable
+>
+> Room Manager v3's live state engine and REFLEX (autonomous scene-firing) reach their fullest form yet, plus the hospitality lifecycle (guest arrival/checkout) and cert-gated permission tightening. See root **[README](../../README.md)** (the "What's in Steel Magnolia" section near the top) and the **[Room Manager v3 & REFLEX operator's manual](getting_started/room_manager_operators_manual.md)** for the full picture — this hub's own body below this banner had drifted behind the top-line version; treat the root README and the getting_started docs as the current source of truth for anything not yet reflected here.
+>
+> → [Full Release Notes — Steel Magnolia](releases/steel_magnolia.md)
+
+---
+
+> ### 2026.8.1 'Chef'
+>
+> Taskmaster, the SP1 identity gate, Portainer container control, Kitchen's fulfillment/costing layer, Twenty CRM, Room Manager's guest/occupant-prefs lookup, full Reset Test hardening pass.
+>
+> → [Full Release Notes — Chef](releases/chef.md)
 
 ---
 
@@ -92,6 +108,10 @@ New to ZenOS-AI? Start here.
 * `oobe.md` — OOBE walkthrough: the six-step first-boot configuration protocol to your conversation agent: actionable vs contextable vs invisible, the three-tier model
 * `troubleshooting.md` — Gauges → Kill Switches → Repair Tools. Health sensor quick-reads, summarizer kill switches, and a seven-step graduated repair sequence (resolver refresh → reseed → label reset → nuclear cabinet reset)
 * `user_management.md` — Add/remove/move AI users and human users. Provision new identity cabinets, deprovision or swap existing ones, transfer default labels, and perform targeted identity-layer repairs or full nukes.
+* `room_manager_operators_manual.md` — Room Manager v3 in plain language: the state cascade, wasp-hold, entertaining/guest hold, asleep window, and manual override — written for the household operator, not the developer.
+* `security_certification_manual.md` — The certification system that gates locks, covers, alarm, infra, and room overrides: cert_component/cert_level/cert_scope, cert-only vs. cert-plus-live-ack, and the Section 4 prerequisite.
+* `notification_routing.md` — Seeding Postman's actual delivery policy so notifications reach the right device/person.
+* `zenzork_manual_unofficial.md` — Optional: the in-universe player's manual for ZenZork, the text adventure built on your live Room Manager topology.
 
 If you just installed ZenOS-AI and want to know what to do next, start here.
 
@@ -104,16 +124,21 @@ If you just installed ZenOS-AI and want to know what to do next, start here.
 Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, parameters, and response shape.
 
 * `components/room_manager.md` — Room Manager (RoomReg): spatial topology, context slices, emergency routing, home_overview, utility index
-* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate
+* `components/room_manager_v3_reflex.md` — Room Manager v3 & REFLEX: per-room state cascade, wasp-hold, entertaining/guest hold, asleep window, REFLEX event bus
+* `plugins/emporia_vue_codex.md` — Plant Codex: Emporia Vue circuit-level energy monitoring
+* `plugins/eg4_web_monitor_codex.md` — Plant Codex: EG4 Web Monitor solar/battery monitoring
+* `plugins/span_panel_codex.md` — Plant Codex: SPAN Panel circuit-level energy monitoring
+* `components/plant_manager.md` — Plant Manager: electric, water, gas, HVAC, mechanical, circuits, managed, validate, label_suggest (SPAN/Emporia circuit labeling)
 * `components/media_manager.md` — Media Manager (NyxMau5): whole-home discovery, source management, intent routing
 * `components/autovac.md` — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * `components/spamaster.md` — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * `components/alertmanager.md` — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
-* `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern
+* `components/security_manager.md` — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern, `security_control` identity gate (disarm requires a fresh live ack every call)
+* `components/infra.md` — Infrastructure Console: node/container/monitor/update/cert health, container-control codex gated on `infra_container_control`
 * `components/systemtools.md` — SystemTools: home mode, quiet/work hours, scheduler anchors, guest/entertaining toggles, home_status rollup
 * `plugins/grocy.md` — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
-* `components/zenlux.md` — ZenLux: lighting scenes, bleed-aware control, media awareness, sync_shades
-* `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync
+* `components/zenlux.md` — ZenLux: lighting *and switch* control, bleed-aware scenes, `scene_stage` (relocated in from Room Manager), media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync, `lighting_control` identity gate
+* `components/zenshade.md` — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync, `cover_control` identity gate (asymmetric barrier/non-barrier risk)
 
 ---
 
@@ -141,6 +166,7 @@ Highlighted chapters:
 * `18_Context_Frame_Operational_Cognitive_Surface.md` – Context assembly + prompt loader
 * `19_Resilience_and_Failure_Modes.md` – Highlander resolver, health sensor stack
 * `20_tool_invocation_and_security.md` – Tool ACLs, safety classes, caller_token
+* `22_Room_Manager_v3_REFLEX.md` – The state cascade and REFLEX's autonomous scene-firing, from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
 * `security_model_ga.md` – **Operator reference:** what's active at GA vs SP1
 
 If you want to know how the mind works, start here.
@@ -238,7 +264,7 @@ Includes:
 * `zen_dojotools_scheduler_readme.md` — Scheduler: trigger IDs, Dojo-driven dispatch, component subscription, force events, hardware trigger pattern
 * `zen_dojotools_summarizers_readme.md` — Ninja Summarizer + SuperSummary: kill switches, active component selection, monk pipeline
 * `zen_dojotools_library_readme.md` — Library v6.10.0: Lens Bus `stack=` routing, generic verbs, unified catalog (`section=catalog item_type=*`) with books/games/all works types, compounding capability tiers, hash_md5, slugify
-* `zen_dojotools_zenzork_readme.md` — ZenZork v1.6.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, quest system, setup commissioning
+* `zen_dojotools_zenzork_readme.md` — ZenZork v1.7.0: text adventure on live RM topology, narrator styles (zork/dungeon/straight), DUNGEONMIND, item/interaction commands, character sheet, landmark survey wizard, "Chapter 1" content (weighted loot table, 15 quest markers, Diwatta/Valtay/Mongo book-lore sequence, Carl's Left Sock, Game Genie cheat codes, per-release-chapter publishing with engine-version gating); see also [devkit](scripts/zenzork_devkit.md) and [unofficial manual](getting_started/zenzork_manual_unofficial.md)
 * `zen_home_mode_readme.md` — Home Mode: 8-state machine, schedule anchors, quiet/work hours, scheduler trigger IDs
 * `zen_dojotools_filecabinet_readme.md` — Cabinet read/write controller, clone action, Highlander mode
 * `zen_dojotools_manifest_readme.md`
@@ -250,6 +276,7 @@ Includes:
 * `zen_dojotools_postman_readme.md` — Postman: ack loop, clear_tag consumer pattern, open_dashboard companion URI, actionable notifications, image support
 * `zen_dojotools_todo_readme.md` — Todo: HA todo + MS365 tasks, bulk complete, discoverability
 * `zen_dojotools_calendar_readme.md` — Calendar: full CRUD, MS365 native APIs, label-targeted reads, wildcard discovery
+* `zen_dojotools_utilities_readme.md` — Utilities: calculator, dice roller, announce, wait, canonical HA domain tools (select/boolean/number/text/climate/water_heater/datetime/zones/timekeeper)
 * `zen_dojotools_office_readme.md`
 * `zen_dojotools_event_emitter_readme.md`
 * `readme.md` – Overview
@@ -322,6 +349,13 @@ Two documents cover this:
   what is stubbed for SP1, the `security_policy` syscab drawer, caller_token plumbing,
   prompt integrity sensor (`zen_prompt_health`), delegation and nesting hard rules, and
   the SP1 claims engine architecture. No jargon — written for someone deploying the system.
+
+* `getting_started/security_certification_manual.md` — **the certification/identity-gate system in
+  practice.** How locks, exterior covers, the alarm panel, container control, room unpause, and
+  lighting each gate their riskiest actions behind a certification; how a certification is granted
+  (two mandatory gates, the second of which requires a real live acknowledgment on a real device
+  every time); scoped admin overrides; a full per-tool table of what's cert-only vs. cert-plus-
+  live-ack. Operator-manual voice, not architecture-doc voice — read this one to actually run the system.
 
 This is Friday’s trust spine — the system that decides which parts of the world are even visible before reasoning begins.
 

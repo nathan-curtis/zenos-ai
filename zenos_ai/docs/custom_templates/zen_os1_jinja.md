@@ -127,6 +127,25 @@ Wraps `zen_cabinets(None)` and returns all valid cabinet-backed identities in th
 
 Reads the `zen_identity_manifest` drawer from the household cabinet. Returns the cached roster without re-resolving all cabinets. Used by the prompt pipeline and prompt health sensor.
 
+### envelope(status, mode, result, tool, caller_token) — Canonical Response Shape (Zammad #10297, pilot)
+
+**Pilot / not yet adopted broadly** — `zen_health_report` and `zen_dojotools_locks` are the first two real consumers as of this writing. Returns the canonical `{status, mode, tool, result, system_message, caller_token}` shape every tool call should eventually converge on, separating execution outcome (`status` — did the call itself succeed) from domain-level state (which lives inside `result`, unchanged from whatever the tool already returned).
+
+Lives in `zen_os_1.jinja` deliberately, not a standalone macro file — this file is already a hard dependency for the prompt itself and for Flynn, so importing it for the envelope shape adds zero *new* failure edge for R0/debug tools. This matters because a broken or missing `{% import %}` target in HA Jinja is **not soft** — it raises a raw exception that kills the entire MCP call outright (`TemplateNotFound`, not a JSON `status: error` response), confirmed live, and config-check does not catch this at deploy time.
+
+**`system_message`** is a universal sideband channel — reads the same `_zen_priority_inject` drawer/GC/expiry the `priority_inject()` prompt macro already uses, filtered to entries whose `display` field is `tool_response` or `both` (the default, `prompt`, never surfaces here — zero behavior change for anything written before this field existed). Usually `null`; not padded onto every call. Hardened against one bad entry crashing the whole macro — a naive (no-tzinfo) `expires` timestamp on any single priority-inject entry used to raise an uncaught `TypeError` that took down `envelope()` for *every* tool call using it, not just the one with the malformed entry (confirmed live 2026-08-14). Malformed entries are now skipped, not fatal.
+
+```json
+{
+  "status": "success",
+  "mode": "status",
+  "tool": "zen_health_report",
+  "result": { "...": "the tool's existing response, unchanged" },
+  "system_message": null,
+  "caller_token": ""
+}
+```
+
 The manifest is built by `zen_dojotools_identity` with `mode: build_identity_manifest` and rebuilt automatically on `ha_start` and `daily_midnight` by the scheduler.
 
 Identity fields by schema:
