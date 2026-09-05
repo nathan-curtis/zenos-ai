@@ -1,6 +1,6 @@
 # zenos_manifest.jinja — Shared Manifest Macro Library
 
-**Version:** 1.0.0 (ZenOS-AI 2026.8.0 'Chef')
+**Version:** 1.0.0 (ZenOS-AI 2026.8.1, patch on 'Chef')
 **File:** `custom_templates/zenos_ai/zenos_manifest.jinja`
 **Status:** New in 2026.7.0. Required for all Level 1+ manifest-compliant tools.
 

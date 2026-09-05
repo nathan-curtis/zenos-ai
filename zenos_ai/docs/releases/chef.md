@@ -1,7 +1,7 @@
-# Release Notes — 2026.8.0 'Chef'
+# Release Notes — 2026.8.1 'Chef'
 
 **Status:** Released
-**Branch:** `main`
+**Branch:** `feat/2026.8.1`
 **Base:** 2026.7.1 (patch on 2026.7.0 'Neo')
 
 ---
@@ -135,4 +135,35 @@ None of this changes behavior on an already-healthy, already-provisioned system 
 
 ---
 
-*ZenOS-AI 2026.8.0 'Chef' — service.*
+## 2026.8.1 — The Last Release Before Identity Gates
+
+**Status:** Released
+**Branch:** `feat/2026.8.1` (off `main`/2026.8.0)
+
+A small, deliberately narrow patch — but an important line in the sand. **This is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** Every fix below is a genuine bug that predates Steel Magnolia entirely; nothing here depends on, or drags in, any of that new machinery. Everything reasonably backportable from 2026.9.0 to this line already has been, as of Steel Magnolia's own release — this patch is not a snapshot frozen mid-effort, it's the deliberate end state of that backport pass.
+
+**Going forward, this is a hard fork, not a soft one.** Any ZenOS-AI feature built after this point that relies on the identity-gate/cert-scope system for safe operation will not be backported here, on principle, not oversight. Staying on the 2026.8.x line means staying without those safeguards, indefinitely. Moving to 2026.9.0 'Steel Magnolia' or later is the only path to anything past this release that needs them.
+
+**Why this line exists, stated plainly:** the agents this system now supports are simply too powerful to be given unfettered access to everything they can reach, and several planned features can only be built safely with the identity-gate/cert-scope machinery underneath them, not without it. A household running an agent capable of real actuation — locks, containers, security, infrastructure — is one ambiguous instruction away from an outcome nobody wanted: an offhand remark misread as a command to remove something that was never meant to be deleted. That is not a hypothetical this project is willing to leave unguarded going forward. If you're staying on 2026.8.1 deliberately, this is the trade-off you're accepting; it's a legitimate choice, but it is a choice, not a default.
+
+If you're already running (or planning to run) 2026.9.0 'Steel Magnolia', this patch has nothing for you that isn't already there; it exists purely as a safe, known-good parking spot on the Chef line for households not yet ready to move.
+
+| File | Fix |
+|---|---|
+| `custom_templates/zenos_ai/zen_os_1.jinja`, `zenos_manifest.jinja`, `dojotools_utilities.yaml` | New canonical `os_version()` macro replaces a stale, un-refreshed cabinet-based version read across 4 call sites. |
+| `dojotools_index.yaml` (ZQ-1) | `filter_json` keys that don't exist (a stray `domains` instead of `domain`) used to vanish silently, producing a confidently-empty result indistinguishable from a real zero-hit query. State-class-aware history stats — requesting stats against a `total`/`total_increasing` energy sensor used to silently return empty buckets. |
+| `plugins/mealie/mealie.yaml` | `recipe_consume`/`recipes_update` hardening — real 422s on food-object hydration, traced back through a real household-reported bug (Radar #289). |
+| `plugins/twenty/twenty.yaml` | `stays_list`'s `ha_area:`/`crm_link:` tag parsing rebuilt to handle a stay carrying multiple `ha_area:` tags (multi-room booking on one calendar event) correctly — the old raw-regex filter could never match these. |
+| `plugins/grocy/grocy.yaml` | The inventory lens's `by_anchor` path self-called its own wrapper script, which HA correctly blocks as disallowed recursion when reached via a call chain that loops back through itself (Room Manager → Lens Dispatch → Media Manager → Inventory → Inventory) — fixed to call the underlying primitive directly. Separately, the OpenAPI REST sensor has always pointed at a path Grocy has never served (`/openapi.json`, 404) instead of the real spec path, causing an hourly failure regardless of configuration — fixed, plus a longer timeout since the real spec generates slower than HA's default. |
+| `dojotools_manifest.yaml` | The same self-call recursion bug as the Grocy fix above, in `mode=all`'s force-refresh republish path — the sibling `bootstrap_stacks` instance of this bug was already fixed on `main`; this was the one remaining site using the same broken pattern. |
+| `dojotools_autovac.yaml` | `vacuum.clean_area` was called with the wrong service field (`areas` instead of the real `cleaning_area_id`) at all 4 call sites — confirmed against HA core's own service schema, not documentation summaries. Battery was read only via the vacuum entity's deprecated `battery_level` attribute, defaulting to 0% on missing data (which can falsely trip the low-battery gate) with no fallback for integrations that expose battery on their own sensor — new `autovac_battery` label + fallback chain, defaults to "unknown" (100%) rather than "empty" on missing data. `mode=consumables action=provision` computed the full parts/wear catalog and returned it in the response, but never actually wrote it to the household cabinet — `check_wear` always read `not_provisioned` regardless of whether Grocy itself had real provisioned products. |
+
+Two internal self-reported tool version fields had also drifted behind their own file's header changelog and never got corrected along the way — `zen_dojotools_inventory` (`grocy.yaml`) and `zen_dojotools_kitchen` (`mealie.yaml`, doc page bumped to match) both now report their real current version.
+
+**Known, deliberately not fixed here:** AutoVac's Roborock wear-sensor discovery was updated upstream to match Roborock's real sensor names (`main_brush_time_left` etc.), but the preset files' `wear_sensor_key` fields were never updated to match — this looks incomplete even upstream, so it was not ported here to avoid backporting a fix that may not actually work. Flagged upstream for a real fix; watch for a future 8.1.x patch if this needs to land here too.
+
+No new features, no schema changes, no behavior changes to anything not listed above.
+
+---
+
+*ZenOS-AI 2026.8.1 'Chef' — service.*

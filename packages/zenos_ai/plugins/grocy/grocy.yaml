@@ -1113,7 +1113,7 @@ script:
                 tool='zen_dojotools_inventory',
                 display_name='Inventory',
                 tier='dojotools',
-                version='5.3.0',
+                version='5.6.0',
                 health={
                   'configured': (states('input_text.grocy_url') | default('', true) | trim) != '',
                   'status': 'ok' if (states('input_text.grocy_url') | default('', true) | trim) != '' else 'not_configured',
@@ -7018,21 +7018,32 @@ script:
                 message: "Inventory lens supports anchor_type: area_id (physical media equipment in room)."
           - stop: by_anchor unsupported anchor
             response_variable: final_response
-        # Fetch all locations — build area_id → location_id set
-        - action: script.zen_dojotools_inventory
+        # Fetch all locations — build area_id → location_id set.
+        # 2026-08-06 fix: this used to self-call script.zen_dojotools_
+        # inventory (mode=locations_list) — a recursion anti-pattern that
+        # HA's script engine correctly blocked ("Disallowed recursion
+        # detected") whenever by_anchor was reached via a call chain that
+        # was already inside this same script (Room Manager -> Lens
+        # Dispatch -> Media Manager -> Inventory -> Inventory). Calling
+        # the underlying primitive (script.zen_sutra_grocy) directly
+        # instead — same pattern already used two blocks below for
+        # products — sidesteps the self-call entirely. Note the raw
+        # primitive nests results under result.content (paginated Grocy
+        # API shape), not result directly like the wrapper normalizes to.
+        - action: script.zen_sutra_grocy
           response_variable: _iba_locs_raw
           continue_on_error: true
           data:
-            mode: locations_list
-            per_page: 200
+            action_type: read
+            endpoint: "/objects/locations?limit=200&offset=0"
         - variables:
             _iba_locs: >-
-              {%- set r = _iba_locs_raw.get('result', []) if _iba_locs_raw is mapping else [] -%}
+              {%- set r = _iba_locs_raw['result']['content'] if _iba_locs_raw is mapping and 'result' in _iba_locs_raw and _iba_locs_raw['result']['content'] is sequence else [] -%}
               {{ r if r is sequence and r is not string else [] }}
             _iba_area_loc_ids: >-
               {%- set ba_ids_lower = _ba_ids | map('lower') | list -%}
               {%- set ns = namespace(ids=[]) -%}
-              {%- set locs = _iba_locs_raw.get('result', []) if _iba_locs_raw is mapping else [] -%}
+              {%- set locs = _iba_locs_raw['result']['content'] if _iba_locs_raw is mapping and 'result' in _iba_locs_raw and _iba_locs_raw['result']['content'] is sequence else [] -%}
               {%- for loc in locs if loc is mapping -%}
                 {%- set loc_area = loc.get('userfields', {}).get('homeassistant_area', '') | string | lower | trim -%}
                 {%- if loc_area != '' and loc_area in ba_ids_lower -%}
@@ -7042,7 +7053,7 @@ script:
               {{ ns.ids }}
             _iba_loc_name_map: >-
               {%- set ns = namespace(d={}) -%}
-              {%- set locs = _iba_locs_raw.get('result', []) if _iba_locs_raw is mapping else [] -%}
+              {%- set locs = _iba_locs_raw['result']['content'] if _iba_locs_raw is mapping and 'result' in _iba_locs_raw and _iba_locs_raw['result']['content'] is sequence else [] -%}
               {%- for loc in locs if loc is mapping -%}
                 {%- set ns.d = ns.d | combine({loc.get('id') | string: loc.get('name', '')}) -%}
               {%- endfor -%}
@@ -10510,17 +10521,30 @@ rest:
   # forever. HA's rest: platform has no native way to skip a scheduled
   # fetch entirely, so this at least fails against something legible
   # (an obviously-unconfigured hostname) instead of a confusing one.
+  # ENDPOINT PATH: Grocy has never served /openapi.json (404) — the real
+  # spec lives at /api/openapi/specification, same /api/ prefix every other
+  # Grocy call in this file uses. A prior fix here only handled the
+  # unconfigured-URL case and never corrected the actual endpoint path,
+  # so the hourly 404 + empty-attributes JSON-parse warning kept firing
+  # even when grocy_url was set correctly. /openapi.json -> 404,
+  # /api/openapi/specification -> 401 without auth (this sensor already
+  # sends GROCY-API-KEY, so it resolves with data).
+  # TIMEOUT: after fixing the path, real Grocy generates this spec slower
+  # than HA's default 10s REST timeout, timing out the fetch. Explicit
+  # timeout bumped since this only runs once/hr, cost of waiting longer
+  # is trivial.
   - resource_template: >-
       {%- set _u = states('input_text.grocy_url') -%}
       {%- if _u in ['unknown', 'unavailable', ''] -%}
-        http://grocy-not-configured.invalid/openapi.json
+        http://grocy-not-configured.invalid/api/openapi/specification
       {%- else -%}
-        {{ _u | trim('/') }}/openapi.json
+        {{ _u | trim('/') }}/api/openapi/specification
       {%- endif -%}
     method: GET
     headers:
       GROCY-API-KEY: !secret grocy_api_key
       accept: "application/json"
+    timeout: 30
     scan_interval: 3600 # seconds (once/hr)
     sensor:
       - name:  Grocy_RESTful_OpenAPI_docs

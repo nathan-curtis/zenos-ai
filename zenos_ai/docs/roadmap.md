@@ -10,9 +10,11 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.8.0 'Chef' — Shipped**
+**2026.8.1 'Chef' — Shipped, legacy pre-identity-gate line**
 
 Taskmaster becomes a real cross-backend expediter. Kitchen gains a full fulfillment/costing layer plus an executive-chef batch (cost rollups, waste logging, event menus, prep briefing). A platform-wide identity gate (SP1's `resolve_caller_identity`) backs its first real gated capability, Portainer container control.
+
+**This is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Current Stable is 2026.9.0 'Steel Magnolia' (not present on this branch) — see [Chef's own "Last Release Before Identity Gates" section](releases/chef.md#20261--the-last-release-before-identity-gates) for why the gate exists and what it costs to stay on this line instead.
 
 See: [Release Notes — Chef](releases/chef.md)
 

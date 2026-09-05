@@ -1,8 +1,10 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.8.0 'Chef' | **Last Updated:** Jul 2026 | **License:** MIT
+> **Version:** 2026.8.1 (patch on 2026.8.0 'Chef') | **Current Stable:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
+>
+> **This branch is the legacy pre-identity-gate line — 2026.8.1 is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Anything built past this point that needs those safeguards to run safely won't be backported here on principle. See [Chef's release notes](releases/chef.md#20261--the-last-release-before-identity-gates) for the full reasoning.
 
 → [Project Overview & Install](../../README.md)
 

@@ -1,6 +1,6 @@
 # Taskmaster — KFC Guide
 
-> **dojotools 0.3.0** | ZenOS-AI 2026.8.0 'Chef'
+> **dojotools 0.3.0** | ZenOS-AI 2026.8.1 (patch on 'Chef')
 
 Taskmaster is ZenOS-AI's cross-backend task orchestration layer: household chores, tickets, calendar, and medications, urgency-scored and surfaced through one briefing call. As of 2026.8.0 it's a full dojotools script (`zen_dojotools_taskmaster`) with real modes, self-registering via KF5 — not a label-driven Ninja Summarizer component like earlier KF4 versions. If you're looking for the old conductor-pattern / label-graph docs, that architecture no longer exists; this page describes the current tool.
 
@@ -92,4 +92,4 @@ Any todo entity tagged with `taskmaster` + a domain label (`daily`, `weekly`, `t
 
 ---
 
-*ZenOS-AI dojotools 0.3.0 — 2026.8.0 'Chef'*
+*ZenOS-AI dojotools 0.3.0 — 2026.8.1 (patch on 'Chef')*
