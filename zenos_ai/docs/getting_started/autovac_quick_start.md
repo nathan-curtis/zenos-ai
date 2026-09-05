@@ -1,5 +1,7 @@
 # AutoVac Quick Start
 
+> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+>
 > **Requires:** Basic install complete (see [Install Guide](install.md) and [First Run](first_run.md))
 > **Time:** ~15 minutes
 > **What you get:** Your AI tracking your robot vacuum's cleaning schedule, consumable wear, and room-by-room history — and alerting you before things become a problem.
@@ -8,7 +10,7 @@
 
 AutoVac is ZenOS-AI's vacuum management component. Once set up, your AI knows which rooms need cleaning, when the brushes are getting tired, and whether the robot is behaving or just hiding under the couch.
 
-Five steps. Start to finish.
+Five steps. Start to finish. This is the fast path — it gets scheduled runs and briefings working, nothing more. If you also want Postman policy seeding, Grocy consumables tracking, wear-sensor alerting, and the full AlertManager test suite, use **[AutoVac First Setup](autovac_first_setup.md)** instead (or come back to it later — nothing here conflicts with it).
 
 ---
 
