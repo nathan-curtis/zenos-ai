@@ -177,6 +177,8 @@ Do **not** expose by default:
 
 Rule of thumb: **DojoTools are the default Assist tool surface. AdminTools are not.**
 
+Before relying on any of the above curation, also check Home Assistant's own **global** default-expose toggle for Assist (Settings → Voice assistants → Expose, the "expose new entities by default" setting). This is a one-time HA-level setting outside anything a ZenOS-AI package can enforce or compensate for in code — see [Entity Exposure Step 0](entity_exposure.md#step-0--check-the-global-voice-exposure-default-first) for details.
+
 ---
 
 ## Step 5 — Point Flynn at Your Conversation Agent

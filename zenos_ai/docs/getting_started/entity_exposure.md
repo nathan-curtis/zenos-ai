@@ -181,6 +181,12 @@ If an entity isn't tagged and isn't exposed, your AI cannot see it. That's the c
 
 ## Practical Setup
 
+### Step 0 — Check the global voice-exposure default first
+
+Before doing any curation described below, check Home Assistant's own **global** default-expose toggle for Assist (Settings → Voice assistants → Expose, the "expose new entities by default" setting). This is a one-time, HA-level setting — no ZenOS-AI package can enforce or compensate for it in code.
+
+On a correctly set-up install, every helper — curated or not — ends up with `should_expose: false` simply because this global toggle is off, not because any per-entity protection kicked in. If the global toggle is left on, newly created helpers (including kill-switch-style `input_boolean`/`input_select`/`input_number`/`input_text` helpers) become voice-reachable by default regardless of any curation you do in Steps 1-3. Confirm this toggle is off before relying on the tiering below to keep anything out of Assist's reach.
+
 ### Step 1 — Build your exposed tool list
 
 In your conversation agent configuration, add:
