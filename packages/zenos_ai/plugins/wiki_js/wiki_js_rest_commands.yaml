@@ -59,6 +59,7 @@ script:
             options:
             - help
             - configure
+            - configure_containers
             - availability_probe
             - graphql_query
             - page_list
@@ -68,6 +69,15 @@ script:
       base_url:
         name: Base URL
         description: WikiJS base URL override. Configure stores this in integrations_config.wikijs.url.
+        selector:
+          text:
+      container_names:
+        name: Container Names
+        description: >-
+          For action_type=configure_containers. Comma-separated Docker/Portainer
+          container name(s) backing this stack on THIS install (e.g. "wikijs,wikijs-db").
+          Never assume these names elsewhere -- every household names containers
+          differently. Stored in integrations_config.service_containers.wikijs.
         selector:
           text:
       query:
@@ -127,6 +137,13 @@ script:
     - variables:
         _cfg: "{{ _integrations_config.get('wikijs', {}) if _integrations_config is mapping else {} }}"
         _cfg_url: "{{ _cfg.get('url', '') | string | trim if _cfg is mapping else '' }}"
+        # Household-configured Docker container names backing this stack (app + db,
+        # order doesn't matter). Symbolic key 'wikijs' never assumes a fixed name --
+        # every install names its containers differently. Unset = feature inert.
+        _svc_containers: >-
+          {%- set sc = _integrations_config.get('service_containers', {}) if _integrations_config is mapping else {} -%}
+          {%- set names = sc.get('wikijs', []) if sc is mapping else [] -%}
+          {{ names if names is sequence and names is not string else [] }}
         _fallback_url: ""
         _base: >-
           {%- set url = _input_base_url if _input_base_url != '' else _cfg_url -%}
@@ -141,6 +158,36 @@ script:
     # path unconditionally, logging a real client error every single time
     # (help/configure are exempt: help needs no network, configure is the
     # bootstrap step itself and is expected to be tried with a fresh URL).
+    - if: "{{ _action == 'configure_containers' }}"
+      then:
+        - variables:
+            _cn_list: >-
+              {{ (container_names | default('', true) | string).split(',') | map('trim') | reject('equalto', '') | list }}
+            _ic_existing: "{{ _integrations_config if _integrations_config is mapping else {} }}"
+            _ic_drawer_exists: "{{ state_attr(_hh, 'variables') is mapping and 'integrations_config' in state_attr(_hh, 'variables') }}"
+        - action: script.zen_dojotools_filecabinet
+          response_variable: _ic_write
+          continue_on_error: true
+          data:
+            action_type: "{{ 'update' if _ic_drawer_exists else 'create' }}"
+            force_action: true
+            set_timestamp: true
+            volume_entity_id:
+            - "{{ _hh }}"
+            key: integrations_config
+            value: "{{ _ic_existing | combine({'service_containers': {'wikijs': _cn_list}}, recursive=true) | tojson }}"
+        - variables:
+            _write_ok: "{{ _ic_write is mapping and _ic_write.get('status', '') in ['success', 'ok', 'warning'] }}"
+            final_response:
+              status: "{{ 'success' if _write_ok and (_cn_list | length) > 0 else 'error' }}"
+              tool: Zen DojoTools WikiJS Root
+              action_type: configure_containers
+              stored: "{{ _cn_list }}"
+              message: >-
+                {{ 'Stored container name(s) for wikijs infra auto-diagnosis: ' + (_cn_list | join(', ')) if (_write_ok and (_cn_list | length) > 0) else 'container_names is required (comma-separated), or the write did not confirm.' }}
+        - stop: wikijs containers configured
+          response_variable: final_response
+
     - if: "{{ _default_used and _action not in ['help', 'configure'] }}"
       then:
         - variables:
@@ -177,6 +224,14 @@ script:
                 configure:
                   intent: Probe WikiJS and store integrations_config.wikijs.url when reachable.
                   needs: [base_url]
+                configure_containers:
+                  intent: >-
+                    Map this stack's Docker/Portainer container name(s) on THIS
+                    install so a network/server_error/non_json/not_found failure
+                    can auto-diagnose (and, if the container is already on the
+                    controllable allow-list, auto-restart + retry once) instead of
+                    just surfacing an opaque failure. Never assumes a fixed name.
+                  needs: [container_names]
                 availability_probe:
                   intent: Safe read probe using pages.list.
                   needs: []
@@ -194,6 +249,16 @@ script:
                 url_configured: "{{ _url_configured }}"
                 default_used: "{{ _default_used }}"
                 base_url: "{{ _base }}"
+              infra_dependency:
+                service: wikijs
+                configured_containers: "{{ _svc_containers }}"
+                discovery_note: >-
+                  Symbolic-name -> container-name mapping, per-household. Set via
+                  action_type=configure_containers. When set, a backend-down-shaped
+                  failure (network_error/server_error/non_json_response/not_found)
+                  auto-checks live container state via zen_dojotools_infra and
+                  auto-restarts + retries once if the container is exited and
+                  already on the admin controllable allow-list.
               caller_token: ""
         - stop: wikijs root help
           response_variable: final_response
@@ -285,7 +350,7 @@ script:
           response_variable: final_response
       - conditions:
         - condition: template
-          value_template: "{{ _action not in ['configure', 'availability_probe', 'graphql_query', 'page_list', 'page_get', 'smoke_test'] }}"
+          value_template: "{{ _action not in ['configure', 'configure_containers', 'availability_probe', 'graphql_query', 'page_list', 'page_get', 'smoke_test'] }}"
         sequence:
         - variables:
             final_response:
@@ -386,6 +451,100 @@ script:
             {{ {'ok': false, 'class': 'unknown_error', 'human': 'WikiJS returned an unexpected HTTP status.', 'operator_hint': 'Check http_status, base URL, token, and WikiJS logs.'} }}
           {%- endif -%}
 
+    # ── Infra self-diagnosis + auto-remedy ───────────────────────────────────
+    # A "server not available"-shaped failure (network_error/server_error/
+    # non_json_response/not_found) is exactly the class an ops tool can usually
+    # explain on its own: check whether the household mapped a Docker container
+    # to this service (_svc_containers, above), see if it's exited, and if it's
+    # already on the admin-managed controllable allow-list, restart it and retry
+    # once before surfacing the failure. Auth/permission/request-shape errors are
+    # never infra issues, so they're excluded on purpose. General pattern, not
+    # wiki-specific -- any dojotools script with an external dependency can adopt
+    # the same integrations_config.service_containers.<symbolic_name> lookup.
+    - variables:
+        _backend_down_shaped: "{{ _availability is mapping and not _availability.get('ok', false) and _availability.get('class', '') in ['network_error', 'server_error', 'non_json_response', 'not_found'] }}"
+        _infra_diag: []
+        _remedy_attempted: false
+        _remedy_containers: []
+        _retried: false
+
+    - if: "{{ _backend_down_shaped and (_svc_containers | length) > 0 and _action not in ['configure'] }}"
+      then:
+        - repeat:
+            for_each: "{{ _svc_containers }}"
+            sequence:
+              - action: script.zen_dojotools_infra
+                response_variable: _cg_raw
+                continue_on_error: true
+                data:
+                  mode: container_get
+                  container: "{{ repeat.item }}"
+              - variables:
+                  _cg_match: >-
+                    {%- set ms = _cg_raw.get('matches', []) if _cg_raw is mapping else [] -%}
+                    {{ ms[0] if ms is sequence and ms | length > 0 else {} }}
+                  _infra_diag: >-
+                    {{ _infra_diag + [{'name': repeat.item, 'found': _cg_match | length > 0, 'state': _cg_match.get('state', 'unknown'), 'controllable': _cg_match.get('controllable', false)}] }}
+        - variables:
+            _remedy_containers: >-
+              {{ _infra_diag | selectattr('state', 'equalto', 'exited') | selectattr('controllable', 'equalto', true) | map(attribute='name') | list }}
+        - if: "{{ (_remedy_containers | length) > 0 }}"
+          then:
+            - repeat:
+                for_each: "{{ _remedy_containers }}"
+                sequence:
+                  - action: script.zen_dojotools_infra
+                    response_variable: _cr_raw
+                    continue_on_error: true
+                    data:
+                      mode: container_restart
+                      container: "{{ repeat.item }}"
+            - variables:
+                _remedy_attempted: true
+            - delay:
+                seconds: 5
+            - action: rest_command.wikijs_graphql
+              response_variable: _raw
+              continue_on_error: true
+              data:
+                base_url: "{{ _base }}"
+                payload: "{{ _graphql_payload }}"
+                request_timeout: "{{ _timeout }}"
+            - variables:
+                _retried: true
+                _http: "{{ _raw['status'] | int(0) if _raw is defined and _raw is mapping else 0 }}"
+                _content: >-
+                  {%- if _raw is defined and _raw is mapping -%}
+                    {%- set c = _raw['content'] | default(none) -%}
+                    {%- set cs = c | trim if c is string else '' -%}
+                    {%- if c is string and cs != '' and cs[:1] in ['{', '['] -%}
+                      {{ c | from_json | default({}) }}
+                    {%- elif c is mapping or (c is sequence and c is not string) -%}
+                      {{ c }}
+                    {%- else -%}{{ {} }}{%- endif -%}
+                  {%- else -%}{{ {} }}{%- endif -%}
+            - variables:
+                _graphql_errors: "{{ _content.get('errors', []) if _content is mapping else [] }}"
+                _has_graphql_errors: "{{ _graphql_errors is sequence and _graphql_errors is not string and (_graphql_errors | length) > 0 }}"
+            - variables:
+                _content_class: >-
+                  {%- set c = _raw['content'] | default(none) if _raw is mapping else none -%}
+                  {%- set cs = c | trim if c is string else '' -%}
+                  {%- if c is mapping or (c is sequence and c is not string) or (c is string and cs[:1] in ['{', '[']) -%}json
+                  {%- elif c is string and cs != '' -%}non_json
+                  {%- else -%}empty{%- endif -%}
+                _availability: >-
+                  {%- set h = _http | int(0) -%}
+                  {%- if h in [200, 201, 202, 204] and _content_class != 'non_json' and not (_has_graphql_errors | bool) -%}
+                    {{ {'ok': true, 'class': 'available', 'human': 'WikiJS GraphQL is reachable (recovered after auto-restart of ' + (_remedy_containers | join(', ')) + ').', 'operator_hint': 'No action needed.'} }}
+                  {%- elif h in [200, 201, 202, 204] and _content_class != 'non_json' and (_has_graphql_errors | bool) -%}
+                    {{ {'ok': false, 'class': 'graphql_error', 'human': 'WikiJS answered after restart, but GraphQL rejected the query or permissions.', 'operator_hint': 'Check query shape, API token scopes, and WikiJS GraphQL Playground for the documented schema.'} }}
+                  {%- elif h in [200, 201, 202, 204] and _content_class == 'non_json' -%}
+                    {{ {'ok': false, 'class': 'non_json_response', 'human': 'WikiJS answered after restart, but not with GraphQL JSON.', 'operator_hint': 'Check the base URL, /graphql path, reverse proxy auth bypass, and wikijs_token_bearer secret.'} }}
+                  {%- else -%}
+                    {{ {'ok': false, 'class': 'server_error', 'human': 'Auto-restart of ' + (_remedy_containers | join(', ')) + ' did not bring WikiJS back within 5s.', 'operator_hint': 'Check container logs directly -- it may need more startup time or has a real fault.'} }}
+                  {%- endif -%}
+
     - choose:
       - conditions:
         - condition: template
@@ -474,6 +633,10 @@ script:
           trace:
             transport: graphql
             timeout_seconds: "{{ _timeout }}"
+          infra_diagnosis: >-
+            {%- if _backend_down_shaped -%}
+              {{ {'checked': (_svc_containers | length) > 0, 'containers': _infra_diag, 'remedy_attempted': _remedy_attempted, 'remedy_containers': _remedy_containers, 'retried': _retried, 'configured_hint': 'Set integrations_config.service_containers.wikijs to your Docker container name(s) via action_type=configure_containers, then add them to the Portainer controllable allow-list (zen_admintools_portainer_acl) to enable auto-restart.' if (_svc_containers | length) == 0 else ''} }}
+            {%- else -%}{{ {'checked': false} }}{%- endif -%}
 
     - stop: wikijs root return
       response_variable: final_response
