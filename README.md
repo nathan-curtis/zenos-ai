@@ -10,7 +10,9 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current Stable: 2026.9.0 'Steel Magnolia'.** | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo'). See [release notes](zenos_ai/docs/releases/steel_magnolia.md).
+**Current Stable: 2026.9.1 'Steel Magnolia'** (patch on 2026.9.0) | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo'). See [release notes](zenos_ai/docs/releases/steel_magnolia.md#20261-patch).
+
+> **2026.9.1 is a bugfix-only patch** — backported from work done on 2026.10.0 'Tron', deliberately isolated to fixes that don't depend on any of Tron's still-in-development feature work (admission certification, the administrative plane, Activity Orchestration, Z-Wave diagnostics, Display Surface). See the [2026.9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#20261-patch) for the full fix list.
 
 > **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely, nothing depends on or drags in the new security machinery — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#20261--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
 

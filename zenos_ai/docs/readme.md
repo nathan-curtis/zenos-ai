@@ -1,6 +1,6 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.9.0 'Steel Magnolia' | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
+> **Version:** 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 >
@@ -10,7 +10,11 @@
 
 ---
 
-> ### 2026.9.0 'Steel Magnolia' — Stable
+> ### 2026.9.1 'Steel Magnolia' — Stable (patch)
+>
+> Bugfix-only patch backported from 2026.10.0 'Tron' — see the [2026.9.1 patch notes](releases/steel_magnolia.md#20261-patch) for the full fix list. No new features, no schema changes.
+>
+> ### 2026.9.0 'Steel Magnolia'
 >
 > Room Manager v3's live state engine and REFLEX (autonomous scene-firing) reach their fullest form yet, plus the hospitality lifecycle (guest arrival/checkout) and cert-gated permission tightening. See root **[README](../../README.md)** (the "What's in Steel Magnolia" section near the top) and the **[Room Manager v3 & REFLEX operator's manual](getting_started/room_manager_operators_manual.md)** for the full picture — this hub's own body below this banner had drifted behind the top-line version; treat the root README and the getting_started docs as the current source of truth for anything not yet reflected here.
 >
