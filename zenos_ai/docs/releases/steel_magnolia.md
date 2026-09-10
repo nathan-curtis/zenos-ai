@@ -183,7 +183,7 @@ This release is dedicated to Ms. Dolly Parton, January 19, 1946 – August 25, 2
 
 ## 2026.9.1 — Patch
 
-**Status:** Released
+**Status:** Ready for Release — pushed to origin, not yet promoted to `main` or tagged
 **Branch:** `feat/2026.9.1` (off `main`/2026.9.0)
 
 A bugfix patch, backported from work done on `feat/2026.10.0 'Tron'`. Every fix below is a genuine defect that predates Tron's own feature work (admission certification, the administrative plane, Activity Orchestration, Z-Wave diagnostics, Display Surface) — none of that machinery is included here, on principle, not oversight. This is not a snapshot of Tron frozen mid-effort; it's the deliberate, isolated subset of that branch's fixes that stand on their own.
