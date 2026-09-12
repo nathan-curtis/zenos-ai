@@ -2,7 +2,7 @@
 
 **File:** `packages/zenos_ai/dojotools/dojotools_display.yaml`
 **Script:** `zen_dojotools_display`
-**2026.10.0 "TRON" SECRET FEATURE — the agent-composable display surface**
+**2026.10.0 "Tron" — the agent-composable display surface, net-new this cycle**
 
 ---
 
@@ -19,6 +19,19 @@ Devices already running HA Companion (phones, tablets, sideloaded Fire tablets) 
 tool at all — they route through `zen_dojotools_postman`'s `dashboard_path_override` field
 instead, which is simpler and more reliable than reinventing per-platform casting once a native
 app exists. This tool exists specifically for TVs/displays that can't run Companion.
+
+**This is a brand-new tool this cycle, not a port of something that already existed.** Supported
+cast channels for now: Google Cast, Fire TV/Android TV (via ADB into Silk), and LG webOS. If
+your household has a display surface that isn't one of these three, let us know — additional
+channels are realistic to add if there's real demand, and Friday's Party's own thread is the
+place to ask.
+
+**The shared display view itself is still hand-built, not shipped as config.** `room-state/display`
+(the one Lovelace view every cast target renders) is currently a raw `.storage` UI-mode dashboard,
+built by hand per install — there's no YAML-mode version to drop in yet. That's coming: a
+YAML-mode dashboard for this view is planned as a follow-up, so installs can version and share it
+like any other config instead of hand-recreating it. Until then, expect to build this view
+yourself the first time you set Display Surface up.
 
 ---
 
