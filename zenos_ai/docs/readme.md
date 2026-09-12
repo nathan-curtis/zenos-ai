@@ -1,6 +1,6 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.9.0 'Steel Magnolia' | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
+> **Version:** 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
 >
@@ -10,9 +10,9 @@
 
 ---
 
-> ### 2026.9.1 'Steel Magnolia' — Ready for Release (patch, not yet promoted to `main`)
+> ### 2026.9.1 'Steel Magnolia' — Current Stable
 >
-> Bugfix-only patch backported from 2026.10.0 'Tron', pushed to origin as `feat/2026.9.1` — see the [2026.9.1 patch notes](releases/steel_magnolia.md#20261-patch) for the full fix list. No new features, no schema changes.
+> Bugfix-only patch backported from 2026.10.0 'Tron' — see the [2026.9.1 patch notes](releases/steel_magnolia.md#20261-patch) for the full fix list. No new features, no schema changes.
 >
 > ### 2026.9.0 'Steel Magnolia'
 >
