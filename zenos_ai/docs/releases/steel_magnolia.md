@@ -178,3 +178,39 @@ Certain actuations are risky enough that "the agent is allowed to call this tool
 This release is dedicated to Ms. Dolly Parton, January 19, 1946 – August 25, 2026.
 
 *"Yes, Truvy, it does take some effort to look like this."*
+
+---
+
+## 2026.9.1 — Patch
+
+**Status:** Ready for Release — pushed to origin, not yet promoted to `main` or tagged
+**Branch:** `feat/2026.9.1` (off `main`/2026.9.0)
+
+A bugfix patch, backported from work done on `feat/2026.10.0 'Tron'`. Every fix below is a genuine defect that predates Tron's own feature work (admission certification, the administrative plane, Activity Orchestration, Z-Wave diagnostics, Display Surface) — none of that machinery is included here, on principle, not oversight. This is not a snapshot of Tron frozen mid-effort; it's the deliberate, isolated subset of that branch's fixes that stand on their own.
+
+| File | Fix |
+|---|---|
+| `dojotools_library.yaml` | `by_anchor` was returning zero results for every area/person/label anchor in the house, for as long as the section-routing logic has existed. Two compounding defects: `section_norm` defaulted to `stacks` whenever the caller omitted `section` (the Lens Bus dispatcher never passes it on generic provider calls), and `section=catalog`'s own named-mode router shadowed the real `by_anchor` handler with an "unknown mode" default even after the first fix. Also corrects a 3-way version self-report drift (header/description/manifest all disagreed). |
+| `dojotools_filecabinet.yaml`, `dojotools_library.yaml` | `merge: true` was silently ignored. Library's wiki-availability check was a hardcoded assumption instead of a real probe. |
+| `dojotools_summarizers.yaml`, `dojotools_systemtools.yaml` | The `attention` field wasn't forwarded end-to-end from kata output. Trigger classification now distinguishes frequent from sparse cadence with sized freshness thresholds instead of one blanket staleness window, fixing false-positive alerts. |
+| `dojotools_dispatcher.yaml` | Content-signature dedup — a recurring ticket condition no longer reposts an identical article every cycle. |
+| `dojotools_kungfu_loader.yaml` | Removed a dead static registration path now that Trapper Keeper self-registers through KF5. |
+| `dojotools_postman.yaml`, `plugins/twenty/twenty.yaml`, `plugins/mealie/mealie.yaml`, `dojotools_toolscan.yaml`, `zenos_manifest.jinja`, `dojotools_admintools.yaml`, `dojotools_labels.yaml` | 9 confirmed defects from an external field report, verified against current code before applying. |
+| `dojotools_labels.yaml` | `tool_manifest()` reported a stale version and was missing `area_assign`/`area_remove` from its own modes list, despite both being fully functional. |
+| `plugins/grocy/grocy.yaml` | `update_product_meta`'s unit-resolution had a gating bug that could silently reset a product's stock unit; fixed at the root with an explicit "did the caller actually ask for a unit change" check. |
+| `zen_room_manager_dispatch.yaml` | `child_release` was outranking a parent's Asleep/Hold instead of respecting it — a room's asleep state could get silently knocked out by a child room going occupied. |
+| `dojotools_room_manager.yaml` | AutoVac's chore `due` flag never checked the room's own `enabled` state — a disabled room's cleaning schedule could still surface as due. |
+| `dojotools_plant.yaml` | SPAN's `label_suggest` mis-tagged two eBus 1.0 entity types: a boolean islanding-capability flag suggested as a numeric watts slot, and a whole-panel amperage-cap setpoint suggested as a per-circuit reading. Both now correctly report `no_slot`. |
+| `plugins/wiki_js/dojotools_wikijs.yaml`, `plugins/wiki_js/wiki_js_rest_commands.yaml` | New container-mapped infra self-heal: on a backend-down-shaped failure, checks the mapped Docker container's live state and auto-restarts + retries once, gated on the container already being admin-approved to control. Ships inert until that allow-list grant is made. |
+| `dojotools_calendar.yaml` | `label_targets` robustness refactor — the `default()`'d raw input was being recomputed three times instead of stored once. |
+| `dojotools_spa_manager.yaml` | pH chemistry history was hardcoded unavailable regardless of live sensor reality — un-stubbed to flow through the same path as chlorine/ORP/salt. Adds opt-in 7-day baseline, threshold provenance, freshness, and a bucket-resolution excursion estimate to chemistry history for all four metrics. |
+| `dojotools_zenzork.yaml` | Removed a dead, duplicate player-name resolution block that ran after the point where it could see the session's own game-state name — every post-start action fell through to the household default instead of resuming the actual session identity. |
+| `zen_os_1.jinja` | `os_version()`'s hardcoded literal bumped to `2026.9.1`. |
+
+**Explicitly not backported:** Display Surface (new feature, no existing behavior depended on it), Room Manager's `digest` field and Activity Orchestration (`role_audit`, `lock_room`/`light_context`/`media_id`), Z-Wave diagnostics codex, and anything gated behind Tron's admission-certification/administrative-plane work. None of this patch depends on any of it.
+
+No new features, no schema changes, no behavior changes to anything not listed above.
+
+---
+
+*ZenOS-AI 2026.9.1 'Steel Magnolia' — service.*

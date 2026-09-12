@@ -1,6 +1,6 @@
 # ZenOS-AI SpaMaster
 
-**Version:** 5.1.0
+**Version:** 5.2.0
 **Script:** `zen_dojotools_spamaster`
 
 ---
@@ -133,10 +133,31 @@ Verifies all readings are live. If no cabinet config exists, discover runs inlin
 | `audio` | `audio_state` (on/off), `audio_volume` (0–100), `audio_source`. Also: `treble`, `bass`, `balance`, `subwoofer` (0–100 each, device-dependent). |
 | `temperature` | `target_temperature` in °F (80–104). |
 | `cover` | `cover_action`: `open` | `close`. |
-| `chemistry` | Strip reading evaluation (`salt_ppm`, `free_chlorine_ppm`, `ph`, `alkalinity_ppm`, `hardness_ppm`) against stored targets. Returns guidance per parameter. |
+| `chemistry` | Strip reading evaluation (`salt_ppm`, `free_chlorine_ppm`, `ph`, `alkalinity_ppm`, `hardness_ppm`) against stored targets. Returns guidance per parameter. Pass `include_history=true` for a per-metric recorder-backed history object — see below. |
 | `log` | Post-soak wrap-up: chemistry eval, calendar entry, oxidizer dose calc, optional `close_cover=true`, `set_hold_temp`. Requires `soak_duration_hours` and `soak_persons`. |
 | `consumables` | ERP surface: provision catalog from preset, track stock, add to shopping list, log replacements and purchases. See Consumables below. |
 | `help` | `help_topic`: `index` | `entities` | `chemistry` | `actions` | `models` |
+
+---
+
+## Chemistry History (`mode=chemistry include_history=true`)
+
+Opt-in, compact-by-default: omitting `include_history` (or passing `false`) returns the exact pre-existing `chemistry` payload with no history object at all. When `true`, each of the four tracked metrics (`chlorine`, `orp_mv`, `salt`, `ph`) gets its own history object, keyed by metric name.
+
+Each metric requires the underlying sensor to be recorder-stats-eligible (a real `unit_of_measurement`, not just a live state) — if it isn't yet, that metric's object is `{"available": false, "reason": "..."}` and no further fields are computed. Once eligible, all four metrics return the same shape:
+
+| Field | Description |
+|-------|-------------|
+| `window_24h` | `mean`/`min`/`max`/`change` over the last 24h of hourly buckets. |
+| `trend_6h` | `slope_per_hour`/`direction` (`rising`/`falling`/`flat`, noise-floored)/`buckets_used` over the last 6 buckets. |
+| `coverage` | `buckets`/`expected` (24)/`coverage_pct` — how much of the expected 24h window actually has data. |
+| `status_vs_profile` | `below`/`within`/`above` the active chemistry profile's target range for this metric. |
+| `baseline_7d` | `mean`/`stdev`/`days_used` — a separate 7-day daily-mean lookup via `zen_dojotools_history` (the 24h-only `+history` inspect path can't reach this far back). |
+| `threshold_provenance` | `profile`/`authority` — which profile's targets `status_vs_profile` was evaluated against, and where that profile came from. Reused from earlier profile resolution in the same call, not recomputed. |
+| `freshness` | `latest_bucket_age_hours`/`live_reading_age_hours`/`resolution` — kept as two separate ages on purpose: a stats bucket can lag well behind the live reading. |
+| `excursion_24h` | `estimated_hours_outside`/`buckets_used`/`basis`/`qualified` — count of hourly buckets whose mean falls outside the active profile's range. Deliberately bucket-resolution, not inferred from the day mean alone; `basis` always reports `hourly_bucket_count` so a caller knows the precision it's working with. |
+
+All four fields (`baseline_7d`, `threshold_provenance`, `freshness`, `excursion_24h`) are additive — `window_24h`/`trend_6h`/`coverage`/`status_vs_profile` are unchanged from the original history shape.
 
 ---
 

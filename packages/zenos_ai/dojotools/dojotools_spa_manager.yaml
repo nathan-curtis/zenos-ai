@@ -1,10 +1,10 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Zen Spa
-# Version: 5.1.0
+# Version: 5.2.0
 #
 # NOTE — two version numbers appear in this file:
-#   Package version:   5.1.0 (ZenOS-AI release series, tracked in this header)
-#   Component version: 3.12.0 (internal SpaMaster iteration, in the script description/alias)
+#   Package version:   5.2.0 (ZenOS-AI release series, tracked in this header)
+#   Component version: 3.13.0 (internal SpaMaster iteration, in the script description/alias)
 # These track different things — do not conflate them.
 #
 # ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
@@ -54,12 +54,13 @@
 # v3.10.0 2026-05-22: fix none-guard footgun — HA renders Python None as string "none" in data templates so "is not none" is unreliable; guards now use | int(-1) > 0 (robust to None/string/zero)
 # v3.11.0 2026-05-22: fix chore creation — product_amount: 0 → 1 (Grocy rejects 0 with consume_product_on_execution: 1); load existing chore_ids from catalog on re-provision to skip already-created chores
 # v3.12.0 2026-05-22: idempotent chore provision — brand-scoped chores_find pre-load before loops; name→ID map used in _pp_cid/_pc_cid init (3rd tier after catalog+preset); add _pc_cid is none to chem guard
+# v3.13.0 2026-09-09: chemistry include_history — un-stubbed ph (was hardcoded unavailable regardless of live sensor eligibility, now flows through the same metric_hist path as the other three metrics); added baseline_7d/threshold_provenance/freshness/excursion_24h to all four metrics, additive only
 ###############################################################################
 
 script:
   zen_dojotools_spamaster:
     alias: Zen DojoTools SpaMaster
-    description: "Zen DojoTools SpaMaster (3.12.0) — Full-stack spa management.\n\
+    description: "Zen DojoTools SpaMaster (3.13.0) — Full-stack spa management.\n\
       \nCANONICAL: Use for ALL spa intents. Self-bootstrapping — status works\
       \ immediately with zero config. Discovers ESPHome device, resolves all\
       \ entity roles, and creates spa_* labels in one shot if needed.\n\
@@ -457,6 +458,12 @@ script:
             unit_of_measurement: ppm
             mode: box
         required: false
+      include_history:
+        name: Include History
+        description: "mode=chemistry only. true — adds 24h mean/min/max, 24h change, and a 6h trend/slope for chlorine, ORP, salt, and pH (real Recorder statistics now that the IQ pH sensor's unit_of_measurement is set in the ESPHome firmware). TDS%% still lacks a unit and isn't wired here. Default false keeps the payload compact."
+        selector:
+          boolean:
+        required: false
       hours_since_mps:
         name: Hours Since MPS Added
         description: "Hours since fairy dust was last added. Triggers post-MPS sensor distrust mode. Phase 2: auto-read from spa_ops cabinet."
@@ -482,7 +489,7 @@ script:
                 tool='zen_dojotools_spamaster',
                 display_name='Spa Master',
                 tier='dojotools',
-                version='1.1.0',
+                version='1.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['spa', 'hot_tub_manager'],
@@ -493,6 +500,10 @@ script:
                 stripe=3,
                 impact='soft',
                 mcp_exposed=true,
+                dependencies=[
+                    {'tool': 'zen_dojotools_hot_tub_manager', 'required': false,
+                     'uses': 'Ambient KF5 kata host (kata_key=hot_tub_manager), reads label:hot_tub_manager directly.'}
+                ],
 
                 caller_token=caller_token | default('')
             ) | from_json -%}
@@ -2158,6 +2169,111 @@ script:
                   "salt_output_note": "IQ running at low output — expected when salt is high." if (_m_salt_pwr is not none and _m_salt_pwr | float < 20) else
                                       "IQ output normal." if _m_salt_pwr is not none else "Salt system output unknown."
                 }} }}
+      # ── Optional 24h/6h history ─────────────────────────────────────────────
+      # Chlorine, ORP, salt, and pH all have real Recorder long-term
+      # statistics -- pH originally lacked unit_of_measurement (ESPHome
+      # device_class:ph has no native HA unit), so HA never bucketed stats
+      # for it; fixed at the source in esphome/calderaspas-utopia-
+      # florence-hot-tub.yaml (explicit unit_of_measurement:"pH" added).
+      # The redundant salt_content%% sensor still lacks a unit and isn't
+      # wired here -- true salt (_e_iq_salt) already covers this metric;
+      # salt_content%% is a separate, not-yet-decided signal, not a
+      # stand-in for it. Opt-in via include_history to keep the default
+      # chemistry payload compact.
+      - if: "{{ include_history | default(false) | bool }}"
+        then:
+          - action: script.zen_dojotools_inspect
+            response_variable: _hist_raw
+            continue_on_error: true
+            data:
+              entity_id: ["{{ _e_iq_chl }}", "{{ _e_iq_orp }}", "{{ _e_iq_salt }}", "{{ _e_iq_ph }}"]
+              output_fields: "+history,-device,-volume,-timestamps"
+          # 7-day baseline for the same four metrics. zen_dojotools_inspect's
+          # +history is hardcoded to 24h -- zen_dojotools_history is the
+          # established tool for any window beyond that (recorder.get_statistics,
+          # arbitrary start/end/period).
+          - action: script.zen_dojotools_history
+            response_variable: _hist7_raw
+            continue_on_error: true
+            data:
+              mode: read
+              statistic_ids: ["{{ _e_iq_chl }}", "{{ _e_iq_orp }}", "{{ _e_iq_salt }}", "{{ _e_iq_ph }}"]
+              period: day
+              start_time: "{{ (now() - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+              end_time: "{{ now().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+              types: ["mean"]
+          - variables:
+              _history: >-
+                {%- macro metric_hist(entity_id, lo, hi) -%}
+                  {%- set ns = namespace(hist={}) -%}
+                  {%- for r in (_hist_raw.get('results', []) if _hist_raw is mapping else []) -%}
+                    {%- if r.get('entity_id') == entity_id -%}{%- set ns.hist = r.get('history', {}) if r.get('history') is mapping else {} -%}{%- endif -%}
+                  {%- endfor -%}
+                  {%- set buckets = ns.hist.get('last_24h', []) if ns.hist is mapping else [] -%}
+                  {%- if not (ns.hist.get('eligible', false) if ns.hist is mapping else false) or buckets | length == 0 -%}
+                    {{ {'available': false, 'reason': (ns.hist.get('reason', 'no recorder data yet') if ns.hist is mapping else 'stats not eligible')} }}
+                  {%- else -%}
+                    {%- set means = buckets | map(attribute='mean') | list -%}
+                    {%- set mins = buckets | map(attribute='min') | list -%}
+                    {%- set maxs = buckets | map(attribute='max') | list -%}
+                    {%- set day_mean = (means | sum) / (means | length) -%}
+                    {%- set day_min = mins | min -%}
+                    {%- set day_max = maxs | max -%}
+                    {%- set change_24h = means[-1] - means[0] -%}
+                    {%- set win = buckets[-6:] if buckets | length >= 2 else buckets -%}
+                    {%- set win_means = win | map(attribute='mean') | list -%}
+                    {%- set win_hours = win | length - 1 -%}
+                    {%- set slope = ((win_means[-1] - win_means[0]) / win_hours) if win_hours > 0 else 0 -%}
+                    {%- set noise_floor = 0.02 * (day_max - day_min + 0.001) -%}
+                    {%- set direction = 'rising' if slope > noise_floor else ('falling' if slope < -noise_floor else 'flat') -%}
+                    {%- set status = 'below' if day_mean < lo else (('above' if (hi is not none and day_mean > hi) else 'within')) -%}
+                    {#- baseline_7d: separate zen_dojotools_history call, period=day. -#}
+                    {%- set _day_buckets = (_hist7_raw.get('statistics', {}).get(entity_id, []) if _hist7_raw is mapping else []) -%}
+                    {%- set _day_means = _day_buckets | map(attribute='mean') | list -%}
+                    {%- if _day_means | length > 0 -%}
+                      {%- set _b7_mean = (_day_means | sum) / (_day_means | length) -%}
+                      {%- set ns7 = namespace(sq=0) -%}
+                      {%- for _m in _day_means -%}{%- set ns7.sq = ns7.sq + (_m - _b7_mean) ** 2 -%}{%- endfor -%}
+                      {%- set _b7_var = ns7.sq / (_day_means | length) -%}
+                      {%- set baseline_7d = {'mean': _b7_mean | round(2), 'stdev': (_b7_var ** 0.5) | round(2), 'days_used': _day_means | length} -%}
+                    {%- else -%}
+                      {%- set baseline_7d = {'mean': none, 'stdev': none, 'days_used': 0} -%}
+                    {%- endif -%}
+                    {#- threshold_provenance: reuse _chem, already resolved earlier in this script. -#}
+                    {%- set threshold_provenance = {'profile': _chem.active_profile, 'authority': _chem.authority} -%}
+                    {#- freshness: latest recorded bucket age vs. live-reading age -- two different clocks. -#}
+                    {%- set _bucket_end = as_datetime(buckets[-1].end) -%}
+                    {%- set freshness = {
+                      'latest_bucket_age_hours': ((now() - _bucket_end).total_seconds() / 3600) | round(2),
+                      'live_reading_age_hours': ((now() - states[entity_id].last_changed).total_seconds() / 3600) | round(2),
+                      'resolution': 'hourly'
+                    } -%}
+                    {#- excursion_24h: conservative bucket-count estimate, never inferred from day_mean alone. -#}
+                    {%- set _outside = buckets | selectattr('mean', 'lt', lo) | list | length
+                                        + (buckets | selectattr('mean', 'gt', hi) | list | length if hi is not none else 0) -%}
+                    {%- set excursion_24h = {'estimated_hours_outside': _outside, 'buckets_used': buckets | length, 'basis': 'hourly_bucket_count', 'qualified': true} -%}
+                    {{ {
+                      'available': true,
+                      'window_24h': {'mean': day_mean | round(2), 'min': day_min, 'max': day_max, 'change': change_24h | round(2)},
+                      'trend_6h': {'slope_per_hour': slope | round(4), 'direction': direction, 'buckets_used': win | length},
+                      'coverage': {'buckets': buckets | length, 'expected': 24, 'coverage_pct': ((buckets | length) / 24 * 100) | round(0)},
+                      'status_vs_profile': status,
+                      'baseline_7d': baseline_7d,
+                      'threshold_provenance': threshold_provenance,
+                      'freshness': freshness,
+                      'excursion_24h': excursion_24h
+                    } }}
+                  {%- endif -%}
+                {%- endmacro -%}
+                {{ {
+                  'chlorine': metric_hist(_e_iq_chl, _c_cl_min, _c_cl_max),
+                  'orp_mv': metric_hist(_e_iq_orp, _c_orp, none),
+                  'salt': metric_hist(_e_iq_salt, _c_s_min, _c_s_max),
+                  'ph': metric_hist(_e_iq_ph, _c_ph_min, _c_ph_max)
+                } }}
+          - variables:
+              _result: "{{ _result | combine({'history': _history}) }}"
+
       - stop: chemistry complete
         response_variable: _result
 

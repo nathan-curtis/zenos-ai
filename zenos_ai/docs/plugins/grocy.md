@@ -439,6 +439,10 @@ Update fields on an existing product. Notable fields (v5.3.1):
 | `best_before_days` | Default shelf-life-after-purchase for this product, in days. `-1` disables. Feeds Perishable Storage Coaching's recommendation flow. |
 | `due_days_after_open` | Days until due once opened (distinct from `best_before_days`, which is unopened shelf life). |
 | `no_own_stock` | Grocy's "does not have its own stock" flag — for parent/grouping products that track child products' stock instead of their own. |
+| `quick_consume_amount` | Sets the product's quick-consume amount. Grocy auto-scales this on any unit switch in the same request — if you're also changing `unit`/`unit_id`, set the corrected `quick_consume_amount` in a separate follow-up call with no unit change. |
+| `quick_open_amount` | Sets the product's quick-open amount. Same Grocy auto-scaling-on-unit-switch caveat as `quick_consume_amount`. |
+
+`update_product_meta` now distinguishes "the caller explicitly asked to change the unit" from the tool's own internal unit auto-resolution (which runs for every stock-math mode regardless of caller intent). This gates the unit-write branches so a call that only touches, e.g., `quick_consume_amount` or `min_stock_amount` never silently resets `qu_id_stock` back to an auto-resolved default as a side effect.
 
 ---
 

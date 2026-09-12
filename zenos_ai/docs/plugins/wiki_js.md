@@ -128,6 +128,22 @@ Once tagged and published, Room Manager's `+wiki` context slice discovers the pa
 
 ---
 
+## Infra Self-Heal (Backend-Down Auto-Diagnosis)
+
+`zen_root_wikijs` (the internal GraphQL broker) can auto-diagnose and, if allowed, auto-remedy a "WikiJS server not available"-shaped failure instead of just surfacing an opaque error.
+
+**Setup:** map this install's Docker/Portainer container name(s) via `action_type=configure_containers container_names="wikijs,wikijs-db"` on the root tool. This stores the name(s) at `integrations_config.service_containers.wikijs` — a symbolic-name-to-container-name mapping, never a hardcoded name, since every household names its containers differently. Unset = feature entirely inert.
+
+**Trigger classes:** only a backend-down-shaped GraphQL failure — `network_error`, `server_error`, `non_json_response`, or `not_found`. Auth/permission/request-shape errors (`auth_failed`, `forbidden`, `bad_request`, `graphql_error`) are never treated as infra issues and never trigger this path.
+
+**Behavior:** on a qualifying failure, with container name(s) configured, the broker calls `zen_dojotools_infra mode=container_get` for each mapped name to check live state. If a container is `exited` **and** already on the admin-configured Portainer controllable allow-list, it calls `mode=container_restart`, waits 5 seconds, and retries the original GraphQL call once. The response's `infra_diagnosis` block reports what was checked, whether a remedy was attempted, which container(s), and whether a retry happened.
+
+**Ships inert:** this entire path stays dormant until an admin adds the mapped container(s) to the Portainer controllable allow-list (`zen_admintools_portainer_acl`, see [infra.md](../components/infra.md)) — configuring container names alone only enables diagnosis reporting, not the restart. `action_type=configure` itself is exempt from this path (it's the bootstrap step and is expected to be tried against a fresh/unreachable URL).
+
+This is documented as a general pattern, not wiki-specific — any dojotools script with an external dependency can adopt the same `integrations_config.service_containers.<symbolic_name>` lookup.
+
+---
+
 ## First-Time Setup
 
 1. Add the Wiki.js API token to `secrets.yaml`. The secret stores the full Authorization header value including the `Bearer ` prefix:

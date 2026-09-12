@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v6.12.0 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Library — v6.12.2 (ZenOS-AI 2026.7.0 'Neo')
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -253,9 +253,10 @@ The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this
 
 | Version | Change |
 |---------|--------|
+| v6.12.2 | Fixed `by_anchor` returning zero results house-wide for every area/person/label anchor. `section_norm` defaulted to `stacks` whenever the caller omitted `section` (the Lens Bus dispatcher never passes it on generic provider calls), so every real `by_anchor` call landed in the wrong section; special-cased bare `by_anchor` to default to `catalog` instead. A second, separate defect then shadowed the fix: `section=catalog`'s own named-mode router had no case for `by_anchor` and fell through to its "unknown mode" default before ever reaching the real handler further down the file — excluded `by_anchor` from that router's entry gate. Also corrected a 3-way version self-report drift (header/description/manifest disagreed). |
 | v6.12.0 | `section=catalog mode=update` (safe partial update via `combine()`, never a blind overwrite; `title` renames the Grocy product directly). Paperless correspondent management (`stacks_correspondents_list/get/create/update`), bulk document edit `split`/`reprocess` methods, and `stacks_flag_for_review`. `catalog move`/`update`'s location lookups use a targeted `locations_find` query instead of paginated `locations_list`, which was silently missing locations past Grocy's ~250-item page cap. |
 | v5.9.0 | `books_loan`, `books_return`, `books_configure` modes. KFC schema v1.4.0 loan fields: `on_loan_to`, `loan_date`, `loan_due`, `loan_notes`. Loan uses `inventory_root` from borrower's profile as destination location. |
 | v5.8.0 | `move` mode (relocate a book by title/ISBN to a new Grocy location). `stock_transfer_location` (bulk move). |
 | v5.7.0 | `add` mode with ISBN dedup guard (checks existing Grocy products before creating). |
 | v5.6.0 | `section=books` introduced. `browse`, `find`, `search` modes. Bookshelf discovery via `bookshelf` HA label on Grocy locations. |
-| v5.5.0 | Lens Bus architecture (`stack=` routing). `zen_stack_radar` registered as Radar provider. Generic verbs (`get/find/list/configure/by_anchor`). `zen_dojotools_wikijs` retired; wiki access via `stack=wiki`. |
+| v5.5.0 | Lens Bus architecture (`stack=` routing). `zen_stack_radar` registered as Radar provider. Generic verbs (`get/find/list/configure/by_anchor`). The standalone MCP-exposed wiki tool was retired; public wiki access moved to `zen_dojotools_filecabinet stack=wiki`. **This did not retire the `dojotools_wikijs.yaml` package file** — it still holds the active sutra layer (`zen_sutra_wikijs`) and internal GraphQL root broker (`zen_root_wikijs`, not MCP-exposed) that `stack=wiki` routes through underneath. That file remains live infrastructure and continues to receive updates (e.g. self-heal in 0.3.0+) — see [wiki_js.md](../plugins/wiki_js.md). |

@@ -20,10 +20,11 @@ This script is **MCP-exposed**. Friday can read the label index and create or up
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `mode` | select | `read` | `create`, `read`, `update`, `delete`, `tag`, `untag`, `reset`. Primary selector. |
+| `mode` | select | `read` | `create`, `read`, `update`, `delete`, `tag`, `untag`, `reset`, `area_assign`, `area_remove`. Primary selector. |
 | `action_type` | select | — | Deprecated alias for `mode`. Still accepted for backward compatibility. |
 | `label_list` | list of text | `[]` | Label names (case-insensitive). Required for create, update, delete, tag, untag |
-| `target_entities` | list of entity_ids | `[]` | Entities to tag/untag. Required for tag and untag |
+| `target_entities` | list of entity_ids | `[]` | Entities to tag/untag. Required for tag and untag. Also required for `area_assign` (at least one) and `area_remove` (at least one). |
+| `target_areas` | list of area_ids | `[]` | Areas to include in `tag`/`untag` (labels the area's member entities). `area_assign` requires exactly one entry (an entity can only be in one area); `area_remove` doesn't use this field. |
 | `new_description` | text | — | Description to set on the label (create and update) |
 | `new_icon` | text | — | MDI icon slug (e.g. `mdi:water`). Omit to leave unset (create and update) |
 | `new_color` | text | — | HA label color. Omit to use `primary` (create and update) |
@@ -182,6 +183,29 @@ confirm: true
 ```
 
 > **This is the soft reset.** For the nuclear option (delete labels entirely and trigger full Flynn rebuild), use `script.zen_admintools_reset_labels`.
+
+---
+
+### `area_assign`
+
+Assigns an entity's **entity-registry area override** (Spook's `homeassistant.add_entity_to_area`) — distinct from labels entirely. Requires `confirm: true`, at least one `target_entities` entry, and exactly one `target_areas` entry (an entity can only belong to one area). Rejects more than one area or zero entities.
+
+```yaml
+action_type: area_assign
+target_entities: [sensor.example]
+target_areas: [living_room]
+confirm: true
+```
+
+### `area_remove`
+
+Clears an entity's area-registry override (Spook's `homeassistant.remove_entity_from_area`), reverting it to whatever area its parent device carries, if any. Requires `confirm: true` and at least one `target_entities` entry; does not take `target_areas`.
+
+```yaml
+action_type: area_remove
+target_entities: [sensor.example]
+confirm: true
+```
 
 ---
 

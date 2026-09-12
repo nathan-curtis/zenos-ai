@@ -236,11 +236,26 @@ script:
         description: >-
           If true, tapping the push notification navigates to the dashboard
           path defined in the user's postman_profile assist_path field
-          (clickAction + url). No-op if assist_path is not set in the profile.
+          (clickAction + url), or to dashboard_path_override if provided.
+          No-op if neither is set.
         required: false
         default: false
         selector:
           boolean:
+
+      dashboard_path_override:
+        name: Dashboard Path Override
+        description: >-
+          Relative path (e.g. /zenos-cast/room?session=abc123) used as the
+          notification's clickAction/url instead of the user's fixed
+          postman_profile assist_path. Only applies when open_dashboard is
+          true. Use for dynamic per-call destinations (e.g. Zen Display
+          Surface sessions) where the target isn't the user's static
+          assist dashboard. Ignored if open_dashboard is false.
+        required: false
+        default: ""
+        selector:
+          text:
 
       notification_data:
         name: Notification Data
@@ -426,6 +441,7 @@ script:
           _ack_depth:           "{{ ack_depth | default(0) | int(0) }}"
           _ack_owner:           "{{ ack_owner | default('', true) | string | trim }}"
           _ack_context:         "{{ ack_context | default('', true) | string | trim }}"
+          _dash_override:       "{{ dashboard_path_override | default('', true) | string | trim }}"
           # Cabinet entity IDs resolved at runtime via label resolver sensors
           _hh_cab:        "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
           _user_cab:      "{{ states('sensor.zen_default_user_cabinet_resolved') }}"
@@ -600,7 +616,7 @@ script:
                 {%- if _img == '' and _image_url != '' -%}{%- set _img = _image_url -%}{%- endif -%}
                 {%- if _img != '' -%}{%- set d = d | combine({'image': _img}) -%}{%- endif -%}
                 {%- if _audio_url != '' -%}{%- set d = d | combine({'audio': _audio_url}) -%}{%- endif -%}
-                {%- set _ap = (_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim -%}
+                {%- set _ap = _dash_override if _dash_override != '' else ((_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim) -%}
                 {%- if _open_dashboard and _ap != '' and _response_type in ['', 'none'] -%}{%- set d = d | combine({'clickAction': _ap, 'url': _ap}) -%}{%- endif -%}
                 {%- if _pm_tag != '' -%}{%- set d = d | combine({'tag': _pm_tag}) -%}{%- endif -%}
                 {%- if _response_type not in ['', 'none'] -%}
@@ -858,7 +874,7 @@ script:
                 {%- if _img == '' and _image_url != '' -%}{%- set _img = _image_url -%}{%- endif -%}
                 {%- if _img != '' -%}{%- set d = d | combine({'image': _img}) -%}{%- endif -%}
                 {%- if _audio_url != '' -%}{%- set d = d | combine({'audio': _audio_url}) -%}{%- endif -%}
-                {%- set _ap = (_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim -%}
+                {%- set _ap = _dash_override if _dash_override != '' else ((_user_profile.get('assist_path', '') if _user_profile is mapping else '') | string | trim) -%}
                 {%- if _open_dashboard and _ap != '' and _response_type in ['', 'none'] -%}{%- set d = d | combine({'clickAction': _ap, 'url': _ap}) -%}{%- endif -%}
                 {%- if _pm_tag != '' -%}{%- set d = d | combine({'tag': _pm_tag}) -%}{%- endif -%}
                 {%- if _response_type not in ['', 'none'] -%}
@@ -1232,6 +1248,7 @@ script:
                     ack_owner:     "{{ _ack_owner }}"
                     ack_context:   "{{ _ack_context }}"
                     ack_depth:     "{{ _ack_depth }}"
+                    caller_token:  "{{ _caller_token }}"
 
           # ── 9c. on_ack chain ────────────────────────────────────────────
           # Resolves matching branch key and fires a recursive postman call.
@@ -1256,6 +1273,7 @@ script:
                       _chain_resp_t:   "{{ _ack_branch.get('response_type', 'none') | string }}"
                       _chain_resp_to:  "{{ _ack_branch.get('response_timeout_s', 60) | int }}"
                       _chain_open_d:   "{{ _ack_branch.get('open_dashboard', false) | bool }}"
+                      _chain_dash_ov:  "{{ _ack_branch.get('dashboard_path_override', '') | string }}"
                       _chain_tag:      "{{ _ack_branch.get('tag', _pm_tag) | string }}"
                       _chain_nested:   "{{ _ack_branch.get('on_ack', {}) | tojson }}"
                       _chain_bt:       "{{ _ack_branch.get('breakthrough', false) | bool }}"
@@ -1272,6 +1290,7 @@ script:
                       response_type:      "{{ _chain_resp_t }}"
                       response_timeout_s: "{{ _chain_resp_to }}"
                       open_dashboard:     "{{ _chain_open_d }}"
+                      dashboard_path_override: "{{ _chain_dash_ov }}"
                       tag:                "{{ _chain_tag }}"
                       on_ack:             "{{ _chain_nested }}"
                       ack_depth:          "{{ _ack_depth + 1 }}"
@@ -1782,22 +1801,31 @@ script:
                       "how_it_works": [
                         "1. Postman auto-generates pm_tag (pm_<epoch_s>) and injects it into the notification",
                         "2. After push dispatch, Postman waits for zen_event(kind: postman_response, tag: pm_tag)",
-                        "3. zen_postman_response_router converts mobile_app_notification_action → zen_event",
-                        "4. Postman resumes with ack_action set to the tapped button (YES/NO/etc)",
+                        "3. zen_postman_response_router converts mobile_app_notification_action → zen_event. postman_response.action is the raw tapped action name, uppercase (YES/NO/etc), by design",
+                        "4. Postman resumes with ack_action set to the normalized, lowercase canonical outcome (yes/no/ok/cancel/ignore/ack/approve/deny/flag) — see alias_table for caller-supplied aliases folded into this set",
                         "5. On timeout: ack_timed_out=true, ack_action=''",
-                        "6. zen_event(kind: postman_ack) always fires after ack resolves — carries pm_tag, ack_action, ack_timed_out, caller_token, ack_depth",
+                        "6. zen_event(kind: postman_ack) always fires after ack resolves — carries pm_tag, ack_action, ack_timed_out, ack_owner, ack_context, ack_depth, caller_token",
                         "7. If on_ack field was provided, the matching branch fires as a new postman call"
                       ],
+                      "casing_note": "postman_response.action (raw button tap) is uppercase by design; postman_ack.ack_action (normalized outcome) is lowercase by design — do not compare them directly.",
+                      "alias_table": {
+                        "proceed":  "ok", "confirm": "ok",     "release": "ok",
+                        "stop":     "cancel", "abort": "cancel",
+                        "nope":     "no",
+                        "later":    "ignore", "snooze": "ignore", "dismiss": "ignore", "delay": "ignore",
+                        "got_it":   "ack", "done": "ack", "received": "ack"
+                      },
                       "caller_response_fields": {
                         "pm_tag":       "Correlation tag stamped on the notification and postman log",
-                        "ack_action":   "Button tapped: YES | NO | IGNORE | OK | CANCEL | ACK | '' (timeout)",
-                        "ack_timed_out": "true if no tap received within response_timeout_s"
+                        "ack_action":   "Normalized outcome, lowercase: ok | no | yes | ignore | cancel | ack | deny | approve | flag | '' (timeout)",
+                        "ack_timed_out": "true if no tap received within response_timeout_s",
+                        "caller_token": "Echoed verbatim from the request, if provided"
                       },
                       "on_ack_chaining": {
                         "field": "on_ack",
                         "description": "JSON dict mapping ack outcome → partial postman call. Fired inline after parent ack resolves.",
                         "keys": "yes | no | ignore | ok | cancel | ack | timeout",
-                        "branch_fields": "Any resolve_and_dispatch field: message, title, urgency, open_dashboard, response_type, on_ack (nested), tag, breakthrough, channel_hint",
+                        "branch_fields": "Any resolve_and_dispatch field: message, title, urgency, open_dashboard, dashboard_path_override, response_type, on_ack (nested), tag, breakthrough, channel_hint",
                         "depth_limit": "Max 3 chain levels. Depth counter auto-managed — never pass ack_depth manually.",
                         "example": "{\"yes\": {\"message\": \"Opening Friday's dashboard.\", \"open_dashboard\": true, \"urgency\": 3}, \"timeout\": {\"message\": \"No response — ignoring.\"}}",
                         "postman_ack_event": "zen_event(kind: postman_ack) fires after EVERY response_type wait — subscribe independently without blocking caller. Carries: pm_tag, ack_action, ack_timed_out, caller_token, ack_depth."
@@ -1986,14 +2014,18 @@ script:
       - if: "{{ _mode == 'tool_manifest' }}"
         then:
         - variables:
+            _postman_health: >-
+              {%- set _configured = (state_attr(_hh_cab, 'variables') | default({}, true)).get('postman_profile', none) is not none -%}
+              {{ {'configured': _configured, 'status': 'ok' if _configured else 'degraded', 'notes': [] if _configured else ['postman_profile not set on household cabinet']} }}
+        - variables:
             result: >-
               {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
               {{- MF.tool_manifest(
                 tool='zen_dojotools_postman',
                 display_name='Postman',
                 tier='dojotools',
-                version='1.4.4',
-                health='',
+                version='5.1.0',
+                health=_postman_health,
                 required_labels=['dojotools'],
                 optional_labels=['zen_postman','zen_channel_push'],
                 consumes=['household_cabinet:postman_profile','user_cabinet:postman_profile','family_cabinet:postman_profile'],
