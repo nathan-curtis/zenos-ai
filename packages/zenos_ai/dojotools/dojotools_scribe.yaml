@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scribe
-# Version: 5.1.0
+# Version: 5.2.0
+#
+# v5.2.0 -- cadillac pass: full SESE + envelope() conversion (all 14
+#   modes), cert-gate added (scribe_kfc_publish, human-held only) on the
+#   ACT of writing into Friday's live procedural memory (published KFCs
+#   in Dojo) -- gates publish_kfc/republish_kfc always, plus patch/
+#   replace/clear_field/delete when artifact_class=kfc. Draft/scroll
+#   writes and all reads stay open. Resolver piece (zen_target_resolve)
+#   N/A -- no entity/room/label domain targeting in this tool.
 #
 # Purpose:
 #   Guided authoring and maintenance for KF4 artifacts.
@@ -644,6 +652,20 @@ script:
           writing. Set false to execute the repair and write back the normalized artifact.
         required: false
         default: true
+
+      publish_dry_run:
+        name: Publish Dry Run
+        description: >-
+          publish_kfc/republish_kfc only. If true, computes and returns the exact KFC
+          payload that would be written (same merge/trim logic as a real publish) plus
+          would_be_authorized (whether the caller currently holds scribe_kfc_publish),
+          without writing anything or requiring the cert -- a preview never mutates
+          live procedural memory so it stays open regardless of cert status, same
+          precedent as mode=set dry_run=true on dojotools_locks.yaml. Default false --
+          separate field from dry_run above so this can never accidentally inherit
+          repair's default-true safety behavior (or vice versa).
+        required: false
+        default: false
         selector:
           boolean:
 
@@ -995,6 +1017,53 @@ script:
               } | tojson
             }}
 
+      # -------------------------------------------------------------------
+      # STEP 2d — Cert-gate: writing into Friday's LIVE procedural memory
+      # (a published kfc drawer) is the sensitive act, not any particular
+      # mode -- publish_kfc/republish_kfc always write a live kfc by
+      # definition; patch/replace/clear_field/delete only do when the
+      # caller's own artifact_class=kfc. Computed once here regardless of
+      # which of those six modes fires, so all six share one identity call
+      # instead of re-deriving it per branch -- reads (help/list_triggers/
+      # dry_run/read/repair) never touch this at all. This is a domain-
+      # specific gate on ONE semantic act, not a substitute for the
+      # drawer/cabinet-level ACLs FileCabinet will eventually own itself.
+      # -------------------------------------------------------------------
+      - variables:
+          _scribe_touches_live_kfc: >-
+            {{ _mode in ['publish_kfc', 'republish_kfc']
+               or (_mode in ['patch', 'replace', 'clear_field', 'delete'] and _artifact_class == 'kfc') }}
+      - if:
+          - condition: template
+            value_template: "{{ _scribe_touches_live_kfc }}"
+        then:
+          - action: script.zen_dojotools_identity
+            data:
+              mode: resolve_caller_identity
+              required_cert: scribe_kfc_publish
+              required_cert_level: 1
+              caller_token: "{{ caller_token }}"
+            response_variable: _scribe_id_raw
+          - variables:
+              _scribe_cert_policy: "{{ _scribe_id_raw.get('policy_status', 'blocked') if _scribe_id_raw is mapping else 'blocked' }}"
+              _scribe_cert_authorized: "{{ _scribe_id_raw.get('authorized', false) if _scribe_id_raw is mapping else false }}"
+              _scribe_cert_level: "{{ _scribe_id_raw.get('cert_level', 0) if _scribe_id_raw is mapping else 0 }}"
+              _scribe_cert_block_reason: "{{ _scribe_id_raw.get('block_reason', '') if _scribe_id_raw is mapping else '' }}"
+        else:
+          - variables:
+              _scribe_cert_policy: allowed
+              _scribe_cert_authorized: true
+              _scribe_cert_level: 0
+              _scribe_cert_block_reason: ''
+      - variables:
+          _scribe_cert_denied: "{{ _scribe_touches_live_kfc and (_scribe_cert_policy != 'allowed' or not _scribe_cert_authorized) }}"
+          _scribe_cert_error_detail: >-
+            {%- if _scribe_cert_policy != 'allowed' -%}
+              {{ _scribe_cert_block_reason | trim if (_scribe_cert_block_reason | trim) != '' else 'resolve_caller_identity did not return an allowed identity -- action denied.' }}
+            {%- else -%}
+              scribe_kfc_publish cert level {{ _scribe_cert_level }} is below the required minimum (1) to write Friday's live procedural memory.
+            {%- endif -%}
+
       - choose:
           # ================================================================
           # HELP
@@ -1007,11 +1076,11 @@ script:
               - variables:
                   result: >-
                     {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
-                    {{- MF.tool_manifest(
+                    {%- set _tm = MF.tool_manifest(
                       tool='zen_dojotools_scribe',
                       display_name='Scribe',
                       tier='dojotools',
-                      version='5.1.0',
+                      version='5.2.0',
                       health={'configured': true, 'status': 'ok', 'notes': []},
                       required_labels=['dojotools'],
                       optional_labels=['scribe', 'kfc'],
@@ -1019,6 +1088,7 @@ script:
                       returns=['kfc_artifact', 'scroll', 'status'],
                       failure_policy='hard',
                       modes={
+                        'help': 'Return mode reference',
                         'new_thought': 'Create or overwrite a KFC dojo drawer',
                         'patch': 'Leaf-merge fields into an existing KFC drawer',
                         'replace': 'Replace a single field in a KFC drawer',
@@ -1030,6 +1100,9 @@ script:
                         'republish_kfc': 'Re-publish existing KFC to kata',
                         'list_triggers': 'List available trigger subscriptions',
                         'dry_run': 'Preview without writing',
+                        'repair': 'Repair a malformed KFC drawer',
+                        'enable': 'Shorthand for patch meta.enabled=true',
+                        'disable': 'Shorthand for patch meta.enabled=false',
                         'tool_manifest': 'Return tool identity'
                       },
                       icon='mdi:feather',
@@ -1039,7 +1112,18 @@ script:
                       mcp_exposed=true,
 
                       caller_token=caller_token | default('')
-                    ) | from_json -}}
+                    ) | from_json -%}
+                    {{- _tm | combine({
+                        'certs_required': [{
+                          'cert': 'scribe_kfc_publish',
+                          'display_name': 'Scribe KFC Publish',
+                          'description': "Writing into Friday's LIVE procedural memory (a published KFC drawer in the Dojo cabinet) -- the actual agent-consumed knowledge/routing component, not draft/scroll content. Gates the ACT regardless of which mode reaches it.",
+                          'max_level': 4,
+                          'gates': ['mode=publish_kfc (always -- every call writes a live kfc by definition)', 'mode=republish_kfc (always)', 'mode=patch/replace/clear_field/delete when artifact_class=kfc (editing an already-published component in place)'],
+                          'live_ack_required_for': [],
+                          'grant_via': "persona_editor mode=cert_grant cert_component=scribe_kfc_publish (or zen_dojotools_identity mode=cert_list to see current status). Intended for human-held grants only -- Friday drafting and iterating on thoughts/scrolls stays open; publishing a draft into its own live procedural memory should never be self-certified."
+                        }]
+                      }) -}}
               - stop: scribe tool manifest
                 response_variable: result
 
@@ -1093,8 +1177,6 @@ script:
                       - test_button
                     message: >-
                       Static trigger list returned. Legacy bed-change and hot-tub triggers omitted. Use custom_trigger_override for explicit per-artifact or per-run trigger control.
-              - stop: list_triggers
-                response_variable: result
 
           # ================================================================
           # READ
@@ -1104,87 +1186,83 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'read' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _storage_key == '' or _artifact_class not in ['thought', 'scroll', 'kfc'] }}"
-                then:
+              - choose:
+                  - conditions: "{{ _storage_key == '' or _artifact_class not in ['thought', 'scroll', 'kfc'] }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: read
+                            caller_token: "{{ caller_token }}"
+                            error: invalid_target
+                            message: Provide artifact_class and key.
+                default:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: read
+                      show_hidden_volumes: false
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _read_response
                   - variables:
+                      _r0: >-
+                        {%- set raw = _read_response.result | default({}, true) -%}
+                        {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+                  - variables:
+                      _r1: >-
+                        {%- set _keyed = _r0 if _r0 is mapping else {} -%}
+                        {%- if _storage_key in _keyed -%}
+                          {%- set _d = _keyed.get(_storage_key, {}) -%}
+                          {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                        {%- else -%}
+                          {{ _r0 }}
+                        {%- endif -%}
+                  - variables:
+                      _r2: >-
+                        {%- set _v = _r1.get('value', _r1) if _r1 is mapping else _r1 -%}
+                        {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+                  - variables:
+                      _r3: >-
+                        {%- set _a = _r2 if _r2 is mapping else {} -%}
+                        {%- set _keys = _a.keys() | list -%}
+                        {%- set _is_shell = (
+                          _keys | length <= 3
+                          and 'value' in _keys
+                          and not _a.get('artifact_class')
+                          and not _a.get('index_call')
+                          and not _a.get('component_summary')
+                        ) -%}
+                        {%- if _is_shell -%}
+                          {%- set _inner = _a.get('value', {}) -%}
+                          {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
+                        {%- else -%}
+                          {{ _a }}
+                        {%- endif -%}
+                      _r_is_wrapped: >-
+                        {%- set _a = _r2 if _r2 is mapping else {} -%}
+                        {{
+                          ('value' in (_a.keys() | list))
+                          and not _a.get('artifact_class')
+                          and not _a.get('index_call')
+                          and not _a.get('component_summary')
+                        }}
+                      _r_schedules_summary: >-
+                        {%- set _sched = (_r3.get('schedules', []) if _r3 is mapping else []) -%}
+                        {{ {'count': _sched | length, 'kata_keys': _sched | map(attribute='kata_key') | list} }}
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: read
                         caller_token: "{{ caller_token }}"
-                        error: invalid_target
-                        message: Provide artifact_class and key.
-                  - stop: read_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: read
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _read_response
-              - variables:
-                  _r0: >-
-                    {%- set raw = _read_response.result | default({}, true) -%}
-                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
-              - variables:
-                  _r1: >-
-                    {%- set _keyed = _r0 if _r0 is mapping else {} -%}
-                    {%- if _storage_key in _keyed -%}
-                      {%- set _d = _keyed.get(_storage_key, {}) -%}
-                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
-                    {%- else -%}
-                      {{ _r0 }}
-                    {%- endif -%}
-              - variables:
-                  _r2: >-
-                    {%- set _v = _r1.get('value', _r1) if _r1 is mapping else _r1 -%}
-                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
-              - variables:
-                  _r3: >-
-                    {%- set _a = _r2 if _r2 is mapping else {} -%}
-                    {%- set _keys = _a.keys() | list -%}
-                    {%- set _is_shell = (
-                      _keys | length <= 3
-                      and 'value' in _keys
-                      and not _a.get('artifact_class')
-                      and not _a.get('index_call')
-                      and not _a.get('component_summary')
-                    ) -%}
-                    {%- if _is_shell -%}
-                      {%- set _inner = _a.get('value', {}) -%}
-                      {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
-                    {%- else -%}
-                      {{ _a }}
-                    {%- endif -%}
-                  _r_is_wrapped: >-
-                    {%- set _a = _r2 if _r2 is mapping else {} -%}
-                    {{
-                      ('value' in (_a.keys() | list))
-                      and not _a.get('artifact_class')
-                      and not _a.get('index_call')
-                      and not _a.get('component_summary')
-                    }}
-                  _r_schedules_summary: >-
-                    {%- set _sched = (_r3.get('schedules', []) if _r3 is mapping else []) -%}
-                    {{ {'count': _sched | length, 'kata_keys': _sched | map(attribute='kata_key') | list} }}
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: read
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: "{{ _r3.get('artifact_class', _artifact_class) if _r3 is mapping else _artifact_class }}"
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    value: "{{ _r3 }}"
-                    wrapper_detected: "{{ _r_is_wrapped }}"
-                    schedules_summary: "{{ _r_schedules_summary }}"
-              - stop: read
-                response_variable: result
+                        artifact_class: "{{ _r3.get('artifact_class', _artifact_class) if _r3 is mapping else _artifact_class }}"
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        key: "{{ _storage_key }}"
+                        value: "{{ _r3 }}"
+                        wrapper_detected: "{{ _r_is_wrapped }}"
+                        schedules_summary: "{{ _r_schedules_summary }}"
 
           # ================================================================
           # NEW THOUGHT
@@ -1194,170 +1272,166 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'new_thought' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _slug == '' }}"
-                then:
+              - choose:
+                  - conditions: "{{ _slug == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: new_thought
+                            caller_token: "{{ caller_token }}"
+                            error: missing_required
+                            message: key or friendly_name is required.
+                default:
+                  - if:
+                      - condition: template
+                        value_template: "{{ auto_create_label | default(true) | bool and _base_label != '' }}"
+                    then:
+                      - action: script.zen_dojotools_labels
+                        data:
+                          action_type: create
+                          label_list:
+                            - "{{ _base_label }}"
+                          new_description: "{{ _label_desc }}"
+                          confirm: true
+                          caller_token: "{{ caller_token }}"
+                        response_variable: _label_create_response
+                  - if:
+                      - condition: template
+                        value_template: "{{ _label_1 != '' }}"
+                    then:
+                      - action: script.zen_dojotools_index
+                        data:
+                          mode: normal
+                          label_1: "{{ _label_1 }}"
+                          label_2: "{{ _label_2 }}"
+                          operator: "{{ _operator }}"
+                          filter_json: "{{ _filter_json }}"
+                          expand_entities: "{{ _expand_scope }}"
+                          output_fields: "{{ _output_fields }}"
+                          caller_token: "{{ caller_token }}"
+                        response_variable: _index_response
+                  - variables:
+                      _index_summary: >-
+                        {%- set _r = _index_response | default({}, true) -%}
+                        {%- set _simple = _r.get('result', {}).get('simple', []) -%}
+                        {%- set _op = _r.get('result', {}).get('operator', '') -%}
+                        {%- if _simple | length == 0 and _op == '*' -%}
+                          {{ {"status": "label_not_found", "label_1": _label_1, "operator": _op, "entity_count": 0} }}
+                        {%- else -%}
+                          {{ _r }}
+                        {%- endif -%}
+                  - variables:
+                      _thought_payload: >-
+                        {{
+                          {
+                            "artifact_class": "thought",
+                            "artifact_state": "draft",
+                            "schema_version": "1.0.0",
+                            "version": version_semantic | default('1.0.0'),
+                            "friendly_name": friendly_name | default(_slug),
+                            "key": _primary_index_key,
+                            "primary_index_key": _primary_index_key,
+                            "component_key": _component_key,
+                            "parent_component_key": _parent_component_key,
+                            "label": _base_label,
+                            "label_description": _label_desc,
+                            "index_call": {
+                              "label_1": _label_1,
+                              "label_2": _label_2,
+                              "operator": _operator,
+                              "filter_json": _filter_json,
+                              "expand_entities": _expand_scope,
+                              "output_fields": _output_fields,
+                              "domain_inspect_domains": _domain_inspect_domains,
+                              "domain_inspect_limit": _domain_inspect_limit
+                            },
+                            "seed": (seed | from_json) if (seed | default('', true) | trim) != '' else none,
+                            "area_seed": (area_seed | from_json) if (area_seed | default('', true) | trim) != '' else none,
+                            "scope_summary": _index_summary,
+                            "scope_safety": {
+                              "prevent_self_indexing": _prevent_self_indexing,
+                              "suppress_drawer_feedback": _suppress_drawer_feedback,
+                              "current_artifact_keys": [_slug]
+                            },
+                            "policy_overlays": {
+                              "home_policy": home_policy | default('', true),
+                              "home_policy_target": _household_guid,
+                              "family_customizations": family_customizations | default('', true),
+                              "family_customizations_target": _family_guid,
+                              "user_customizations": user_customizations | default('', true),
+                              "user_customizations_target": _person_guid,
+                              "user_customizations_name": _person_name,
+                              "user_customizations_cab_type": _person_cab_type
+                            },
+                            "interpretation": {
+                              "what_it_does": what_it_does | default('', true),
+                              "what_good_looks_like": what_good_looks_like | default('', true),
+                              "what_bad_looks_like": what_bad_looks_like | default('', true),
+                              "urgency_rules": urgency_rules | default('', true)
+                            },
+                            "component_summary": component_summary | default('', true),
+                            "component_instructions": component_instructions | default('', true),
+                            "more_info": more_info | default('', true),
+                            "trigger_subscriptions": _effective_trigger_list,
+                            "custom_trigger_override": _custom_trigger_list,
+                            "delay_seconds": delay_seconds | default(0) | int(0),
+                            "component_group": {
+                              "primary_index_key": _primary_index_key,
+                              "component_key": _component_key,
+                              "parent_component_key": _parent_component_key,
+                              "shared_schedule_group": _shared_schedule_group,
+                              "shared_trigger_subscriptions": _shared_trigger_list,
+                              "shared_delay_seconds": _shared_delay_seconds,
+                              "shared_labelset": _shared_labelset
+                            },
+                            "tool": tool | default('', true),
+                            "drift_threshold": drift_threshold | default(5) | int(5),
+                            "emission_cooldown_minutes": emission_cooldown_minutes | default(60) | int(60),
+                            "suggested_act_event": (suggested_act_event | default('') | trim) if (suggested_act_event | default('') | trim) != '' else none,
+                            "master_switch": master_switch | default('', true),
+                            "meta": {
+                              "enabled": enabled | default(true) | bool,
+                              "read_only": false,
+                              "formalized_from": "",
+                              "published_from": "",
+                              "description": "Mutable Scribe draft. Not live runtime truth.",
+                              "entity_labels": ["zen", "scribe", "thought"]
+                            }
+                          } | tojson
+                        }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      show_hidden_volumes: false
+                      force_action: true
+                      set_timestamp: true
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      value: "{{ _thought_payload }}"
+                      label_input: "zen, scribe, thought, {{ _base_label }}"
+                      no_autoexpire: true
+                      no_autorecycle: true
+                      description: Mutable Scribe draft. Not live runtime truth.
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _thought_write
                   - variables:
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: new_thought
                         caller_token: "{{ caller_token }}"
-                        error: missing_required
-                        message: key or friendly_name is required.
-                  - stop: thought_error
-                    response_variable: result
-              - if:
-                  - condition: template
-                    value_template: "{{ auto_create_label | default(true) | bool and _base_label != '' }}"
-                then:
-                  - action: script.zen_dojotools_labels
-                    data:
-                      action_type: create
-                      label_list:
-                        - "{{ _base_label }}"
-                      new_description: "{{ _label_desc }}"
-                      confirm: true
-                      caller_token: "{{ caller_token }}"
-                    response_variable: _label_create_response
-              - if:
-                  - condition: template
-                    value_template: "{{ _label_1 != '' }}"
-                then:
-                  - action: script.zen_dojotools_index
-                    data:
-                      mode: normal
-                      label_1: "{{ _label_1 }}"
-                      label_2: "{{ _label_2 }}"
-                      operator: "{{ _operator }}"
-                      filter_json: "{{ _filter_json }}"
-                      expand_entities: "{{ _expand_scope }}"
-                      output_fields: "{{ _output_fields }}"
-                      caller_token: "{{ caller_token }}"
-                    response_variable: _index_response
-              - variables:
-                  _index_summary: >-
-                    {%- set _r = _index_response | default({}, true) -%}
-                    {%- set _simple = _r.get('result', {}).get('simple', []) -%}
-                    {%- set _op = _r.get('operator', '') -%}
-                    {%- if _simple | length == 0 and _op == '*' -%}
-                      {{ {"status": "label_not_found", "label_1": _label_1, "operator": _op, "entity_count": 0} }}
-                    {%- else -%}
-                      {{ _r }}
-                    {%- endif -%}
-              - variables:
-                  _thought_payload: >-
-                    {{
-                      {
-                        "artifact_class": "thought",
-                        "artifact_state": "draft",
-                        "schema_version": "1.0.0",
-                        "version": version_semantic | default('1.0.0'),
-                        "friendly_name": friendly_name | default(_slug),
-                        "key": _primary_index_key,
-                        "primary_index_key": _primary_index_key,
-                        "component_key": _component_key,
-                        "parent_component_key": _parent_component_key,
-                        "label": _base_label,
-                        "label_description": _label_desc,
-                        "index_call": {
-                          "label_1": _label_1,
-                          "label_2": _label_2,
-                          "operator": _operator,
-                          "filter_json": _filter_json,
-                          "expand_entities": _expand_scope,
-                          "output_fields": _output_fields,
-                          "domain_inspect_domains": _domain_inspect_domains,
-                          "domain_inspect_limit": _domain_inspect_limit
-                        },
-                        "seed": (seed | from_json) if (seed | default('', true) | trim) != '' else none,
-                        "area_seed": (area_seed | from_json) if (area_seed | default('', true) | trim) != '' else none,
-                        "scope_summary": _index_summary,
-                        "scope_safety": {
-                          "prevent_self_indexing": _prevent_self_indexing,
-                          "suppress_drawer_feedback": _suppress_drawer_feedback,
-                          "current_artifact_keys": [_slug]
-                        },
-                        "policy_overlays": {
-                          "home_policy": home_policy | default('', true),
-                          "home_policy_target": _household_guid,
-                          "family_customizations": family_customizations | default('', true),
-                          "family_customizations_target": _family_guid,
-                          "user_customizations": user_customizations | default('', true),
-                          "user_customizations_target": _person_guid,
-                          "user_customizations_name": _person_name,
-                          "user_customizations_cab_type": _person_cab_type
-                        },
-                        "interpretation": {
-                          "what_it_does": what_it_does | default('', true),
-                          "what_good_looks_like": what_good_looks_like | default('', true),
-                          "what_bad_looks_like": what_bad_looks_like | default('', true),
-                          "urgency_rules": urgency_rules | default('', true)
-                        },
-                        "component_summary": component_summary | default('', true),
-                        "component_instructions": component_instructions | default('', true),
-                        "more_info": more_info | default('', true),
-                        "trigger_subscriptions": _effective_trigger_list,
-                        "custom_trigger_override": _custom_trigger_list,
-                        "delay_seconds": delay_seconds | default(0) | int(0),
-                        "component_group": {
-                          "primary_index_key": _primary_index_key,
-                          "component_key": _component_key,
-                          "parent_component_key": _parent_component_key,
-                          "shared_schedule_group": _shared_schedule_group,
-                          "shared_trigger_subscriptions": _shared_trigger_list,
-                          "shared_delay_seconds": _shared_delay_seconds,
-                          "shared_labelset": _shared_labelset
-                        },
-                        "tool": tool | default('', true),
-                        "drift_threshold": drift_threshold | default(5) | int(5),
-                        "emission_cooldown_minutes": emission_cooldown_minutes | default(60) | int(60),
-                        "suggested_act_event": (suggested_act_event | default('') | trim) if (suggested_act_event | default('') | trim) != '' else none,
-                        "master_switch": master_switch | default('', true),
-                        "meta": {
-                          "enabled": enabled | default(true) | bool,
-                          "read_only": false,
-                          "formalized_from": "",
-                          "published_from": "",
-                          "description": "Mutable Scribe draft. Not live runtime truth.",
-                          "entity_labels": ["zen", "scribe", "thought"]
-                        }
-                      } | tojson
-                    }}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  value: "{{ _thought_payload }}"
-                  label_input: "zen, scribe, thought, {{ _base_label }}"
-                  no_autoexpire: true
-                  no_autorecycle: true
-                  description: Mutable Scribe draft. Not live runtime truth.
-                  caller_token: "{{ caller_token }}"
-                response_variable: _thought_write
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: new_thought
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: thought
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    label: "{{ _base_label }}"
-                    write: >-
-                      {%- set _pw = _thought_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    message: Thought created.
-              - stop: new_thought
-                response_variable: result
+                        artifact_class: thought
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        key: "{{ _storage_key }}"
+                        label: "{{ _base_label }}"
+                        write: >-
+                          {%- set _pw = _thought_write | default({}, true) -%}
+                          {%- set _pw = _pw if _pw is mapping else {} -%}
+                          {{ _pw | tojson | from_json }}
+                        message: Thought created.
 
           # ================================================================
           # PATCH
@@ -1367,110 +1441,116 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'patch' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _storage_key == '' or _changes == {} }}"
-                then:
+              - choose:
+                  - conditions: "{{ _scribe_cert_denied }}"
+                    sequence:
+                      - variables:
+                          _scribe_cd_raw: >-
+                            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                            {{ OS.cert_denial(_scribe_cert_policy, _scribe_cert_authorized, _scribe_cert_level, 'scribe_kfc_publish', 1, 'patch', _scribe_cert_block_reason) -}}
+                      - variables:
+                          _scribe_cd: "{{ (_scribe_cd_raw | from_json) if _scribe_cd_raw is string else _scribe_cd_raw }}"
+                      - variables:
+                          result: "{{ {'ok': false, 'tool': 'zen_dojotools_scribe', 'mode': 'patch', 'caller_token': caller_token, 'error': _scribe_cd.error, 'detail': _scribe_cd.message, 'can_request': _scribe_cd.can_request, 'request_via': _scribe_cd.request_via} }}"
+                  - conditions: "{{ _storage_key == '' or _changes == {} }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: patch
+                            caller_token: "{{ caller_token }}"
+                            error: missing_required
+                            message: artifact_class, key, and changes are required.
+                default:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: read
+                      show_hidden_volumes: false
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _patch_read
+                  - variables:
+                      _p0: >-
+                        {%- set raw = _patch_read.result | default({}, true) -%}
+                        {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+                  - variables:
+                      _p1: >-
+                        {%- set _keyed = _p0 if _p0 is mapping else {} -%}
+                        {%- if _storage_key in _keyed -%}
+                          {%- set _d = _keyed.get(_storage_key, {}) -%}
+                          {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                        {%- else -%}
+                          {{ _p0 }}
+                        {%- endif -%}
+                  - variables:
+                      _p2: >-
+                        {%- set _v = _p1.get('value', _p1) if _p1 is mapping else _p1 -%}
+                        {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+                  - variables:
+                      _p3: >-
+                        {%- set _a = _p2 if _p2 is mapping else {} -%}
+                        {%- set _keys = _a.keys() | list -%}
+                        {%- set _is_shell = (
+                          _keys | length <= 3
+                          and 'value' in _keys
+                          and not _a.get('artifact_class')
+                          and not _a.get('index_call')
+                          and not _a.get('component_summary')
+                        ) -%}
+                        {%- if _is_shell -%}
+                          {%- set _inner = _a.get('value', {}) -%}
+                          {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
+                        {%- else -%}
+                          {{ _a }}
+                        {%- endif -%}
+                      _patch_merged: >-
+                        {%- set base = _p3 if _p3 is mapping else {} -%}
+                        {%- set _inc_sched = _changes.get('schedules', none) -%}
+                        {%- if _inc_sched is sequence and _inc_sched is not string and _inc_sched is not none -%}
+                          {%- set _exist = base.get('schedules', []) -%}
+                          {%- set _new_keys = _inc_sched | map(attribute='kata_key') | list -%}
+                          {%- set ns = namespace(merged=[]) -%}
+                          {%- for s in _exist -%}
+                            {%- if s.get('kata_key', '') not in _new_keys -%}
+                              {%- set ns.merged = ns.merged + [s] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {%- set ns.merged = ns.merged + _inc_sched -%}
+                          {%- set _no_sched = dict(_changes.items() | rejectattr('0', 'equalto', 'schedules')) -%}
+                          {{ base | combine(_no_sched, recursive=true) | combine({'schedules': ns.merged}) | tojson }}
+                        {%- else -%}
+                          {{ base | combine(_changes, recursive=true) | tojson }}
+                        {%- endif -%}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      show_hidden_volumes: false
+                      force_action: true
+                      set_timestamp: true
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      value: "{{ _patch_merged }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _patch_write
                   - variables:
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: patch
                         caller_token: "{{ caller_token }}"
-                        error: missing_required
-                        message: artifact_class, key, and changes are required.
-                  - stop: patch_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: read
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _patch_read
-              - variables:
-                  _p0: >-
-                    {%- set raw = _patch_read.result | default({}, true) -%}
-                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
-              - variables:
-                  _p1: >-
-                    {%- set _keyed = _p0 if _p0 is mapping else {} -%}
-                    {%- if _storage_key in _keyed -%}
-                      {%- set _d = _keyed.get(_storage_key, {}) -%}
-                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
-                    {%- else -%}
-                      {{ _p0 }}
-                    {%- endif -%}
-              - variables:
-                  _p2: >-
-                    {%- set _v = _p1.get('value', _p1) if _p1 is mapping else _p1 -%}
-                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
-              - variables:
-                  _p3: >-
-                    {%- set _a = _p2 if _p2 is mapping else {} -%}
-                    {%- set _keys = _a.keys() | list -%}
-                    {%- set _is_shell = (
-                      _keys | length <= 3
-                      and 'value' in _keys
-                      and not _a.get('artifact_class')
-                      and not _a.get('index_call')
-                      and not _a.get('component_summary')
-                    ) -%}
-                    {%- if _is_shell -%}
-                      {%- set _inner = _a.get('value', {}) -%}
-                      {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
-                    {%- else -%}
-                      {{ _a }}
-                    {%- endif -%}
-                  _patch_merged: >-
-                    {%- set base = _p3 if _p3 is mapping else {} -%}
-                    {%- set _inc_sched = _changes.get('schedules', none) -%}
-                    {%- if _inc_sched is sequence and _inc_sched is not string and _inc_sched is not none -%}
-                      {%- set _exist = base.get('schedules', []) -%}
-                      {%- set _new_keys = _inc_sched | map(attribute='kata_key') | list -%}
-                      {%- set ns = namespace(merged=[]) -%}
-                      {%- for s in _exist -%}
-                        {%- if s.get('kata_key', '') not in _new_keys -%}
-                          {%- set ns.merged = ns.merged + [s] -%}
-                        {%- endif -%}
-                      {%- endfor -%}
-                      {%- set ns.merged = ns.merged + _inc_sched -%}
-                      {%- set _no_sched = dict(_changes.items() | rejectattr('0', 'equalto', 'schedules')) -%}
-                      {{ base | combine(_no_sched, recursive=true) | combine({'schedules': ns.merged}) | tojson }}
-                    {%- else -%}
-                      {{ base | combine(_changes, recursive=true) | tojson }}
-                    {%- endif -%}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  value: "{{ _patch_merged }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _patch_write
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: patch
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: "{{ _artifact_class }}"
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    changes: "{{ _changes }}"
-                    write: >-
-                      {%- set _pw = _patch_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    message: Patched requested fields only. Existing content preserved.
-              - stop: patch
-                response_variable: result
+                        artifact_class: "{{ _artifact_class }}"
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        key: "{{ _storage_key }}"
+                        changes: "{{ _changes }}"
+                        write: >-
+                          {%- set _pw = _patch_write | default({}, true) -%}
+                          {%- set _pw = _pw if _pw is mapping else {} -%}
+                          {{ _pw | tojson | from_json }}
+                        message: Patched requested fields only. Existing content preserved.
 
           # ================================================================
           # REPLACE
@@ -1480,48 +1560,54 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'replace' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ not _replace_confirm or _storage_key == '' or _changes == {} }}"
-                then:
+              - choose:
+                  - conditions: "{{ _scribe_cert_denied }}"
+                    sequence:
+                      - variables:
+                          _scribe_cd_raw: >-
+                            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                            {{ OS.cert_denial(_scribe_cert_policy, _scribe_cert_authorized, _scribe_cert_level, 'scribe_kfc_publish', 1, 'replace', _scribe_cert_block_reason) -}}
+                      - variables:
+                          _scribe_cd: "{{ (_scribe_cd_raw | from_json) if _scribe_cd_raw is string else _scribe_cd_raw }}"
+                      - variables:
+                          result: "{{ {'ok': false, 'tool': 'zen_dojotools_scribe', 'mode': 'replace', 'caller_token': caller_token, 'error': _scribe_cd.error, 'detail': _scribe_cd.message, 'can_request': _scribe_cd.can_request, 'request_via': _scribe_cd.request_via} }}"
+                  - conditions: "{{ not _replace_confirm or _storage_key == '' or _changes == {} }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: replace
+                            caller_token: "{{ caller_token }}"
+                            error: explicit_replace_required
+                            message: replace requires artifact_class, key, changes, and replace_confirm=true.
+                default:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      show_hidden_volumes: false
+                      force_action: true
+                      set_timestamp: true
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      value: "{{ _changes }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _replace_write
                   - variables:
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: replace
                         caller_token: "{{ caller_token }}"
-                        error: explicit_replace_required
-                        message: replace requires artifact_class, key, changes, and replace_confirm=true.
-                  - stop: replace_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  value: "{{ _changes }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _replace_write
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: replace
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: "{{ _artifact_class }}"
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    write: >-
-                      {%- set _pw = _replace_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    message: Explicit replace completed.
-              - stop: replace
-                response_variable: result
+                        artifact_class: "{{ _artifact_class }}"
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        key: "{{ _storage_key }}"
+                        write: >-
+                          {%- set _pw = _replace_write | default({}, true) -%}
+                          {%- set _pw = _pw if _pw is mapping else {} -%}
+                          {{ _pw | tojson | from_json }}
+                        message: Explicit replace completed.
 
           # ================================================================
           # CLEAR FIELD
@@ -1531,103 +1617,109 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'clear_field' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _storage_key == '' or _clear_fields == [] }}"
-                then:
+              - choose:
+                  - conditions: "{{ _scribe_cert_denied }}"
+                    sequence:
+                      - variables:
+                          _scribe_cd_raw: >-
+                            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                            {{ OS.cert_denial(_scribe_cert_policy, _scribe_cert_authorized, _scribe_cert_level, 'scribe_kfc_publish', 1, 'clear_field', _scribe_cert_block_reason) -}}
+                      - variables:
+                          _scribe_cd: "{{ (_scribe_cd_raw | from_json) if _scribe_cd_raw is string else _scribe_cd_raw }}"
+                      - variables:
+                          result: "{{ {'ok': false, 'tool': 'zen_dojotools_scribe', 'mode': 'clear_field', 'caller_token': caller_token, 'error': _scribe_cd.error, 'detail': _scribe_cd.message, 'can_request': _scribe_cd.can_request, 'request_via': _scribe_cd.request_via} }}"
+                  - conditions: "{{ _storage_key == '' or _clear_fields == [] }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: clear_field
+                            caller_token: "{{ caller_token }}"
+                            error: missing_required
+                            message: artifact_class, key, and clear_fields are required.
+                default:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: read
+                      show_hidden_volumes: false
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _clear_read
+                  - variables:
+                      _c0: >-
+                        {%- set raw = _clear_read.result | default({}, true) -%}
+                        {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+                  - variables:
+                      _c1: >-
+                        {%- set _keyed = _c0 if _c0 is mapping else {} -%}
+                        {%- if _storage_key in _keyed -%}
+                          {%- set _d = _keyed.get(_storage_key, {}) -%}
+                          {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                        {%- else -%}
+                          {{ _c0 }}
+                        {%- endif -%}
+                  - variables:
+                      _c2: >-
+                        {%- set _v = _c1.get('value', _c1) if _c1 is mapping else _c1 -%}
+                        {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+                  - variables:
+                      _c3: >-
+                        {%- set _a = _c2 if _c2 is mapping else {} -%}
+                        {%- set _keys = _a.keys() | list -%}
+                        {%- set _is_shell = (
+                          _keys | length <= 3
+                          and 'value' in _keys
+                          and not _a.get('artifact_class')
+                          and not _a.get('index_call')
+                          and not _a.get('component_summary')
+                        ) -%}
+                        {%- if _is_shell -%}
+                          {%- set _inner = _a.get('value', {}) -%}
+                          {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
+                        {%- else -%}
+                          {{ _a }}
+                        {%- endif -%}
+                  - variables:
+                      _clear_payload: >-
+                        {% set ns = namespace(obj=_c3 if _c3 is mapping else {}) %}
+                        {% for f in _clear_fields %}
+                          {% set ns2 = namespace(out={}) %}
+                          {% for k, v in ns.obj.items() %}
+                            {% if k != f %}{% set ns2.out = ns2.out | combine({k: v}) %}{% endif %}
+                          {% endfor %}
+                          {% set ns.obj = ns2.out %}
+                        {% endfor %}
+                        {{ ns.obj | tojson }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      show_hidden_volumes: false
+                      force_action: true
+                      set_timestamp: true
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      value: "{{ _clear_payload }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _clear_write
                   - variables:
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: clear_field
                         caller_token: "{{ caller_token }}"
-                        error: missing_required
-                        message: artifact_class, key, and clear_fields are required.
-                  - stop: clear_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: read
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _clear_read
-              - variables:
-                  _c0: >-
-                    {%- set raw = _clear_read.result | default({}, true) -%}
-                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
-              - variables:
-                  _c1: >-
-                    {%- set _keyed = _c0 if _c0 is mapping else {} -%}
-                    {%- if _storage_key in _keyed -%}
-                      {%- set _d = _keyed.get(_storage_key, {}) -%}
-                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
-                    {%- else -%}
-                      {{ _c0 }}
-                    {%- endif -%}
-              - variables:
-                  _c2: >-
-                    {%- set _v = _c1.get('value', _c1) if _c1 is mapping else _c1 -%}
-                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
-              - variables:
-                  _c3: >-
-                    {%- set _a = _c2 if _c2 is mapping else {} -%}
-                    {%- set _keys = _a.keys() | list -%}
-                    {%- set _is_shell = (
-                      _keys | length <= 3
-                      and 'value' in _keys
-                      and not _a.get('artifact_class')
-                      and not _a.get('index_call')
-                      and not _a.get('component_summary')
-                    ) -%}
-                    {%- if _is_shell -%}
-                      {%- set _inner = _a.get('value', {}) -%}
-                      {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
-                    {%- else -%}
-                      {{ _a }}
-                    {%- endif -%}
-              - variables:
-                  _clear_payload: >-
-                    {% set ns = namespace(obj=_c3 if _c3 is mapping else {}) %}
-                    {% for f in _clear_fields %}
-                      {% set ns2 = namespace(out={}) %}
-                      {% for k, v in ns.obj.items() %}
-                        {% if k != f %}{% set ns2.out = ns2.out | combine({k: v}) %}{% endif %}
-                      {% endfor %}
-                      {% set ns.obj = ns2.out %}
-                    {% endfor %}
-                    {{ ns.obj | tojson }}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  value: "{{ _clear_payload }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _clear_write
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: clear_field
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: "{{ _artifact_class }}"
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    cleared: "{{ _clear_fields }}"
-                    write: >-
-                      {%- set _pw = _clear_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    message: Explicit fields cleared.
-              - stop: clear_field
-                response_variable: result
+                        artifact_class: "{{ _artifact_class }}"
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        key: "{{ _storage_key }}"
+                        cleared: "{{ _clear_fields }}"
+                        write: >-
+                          {%- set _pw = _clear_write | default({}, true) -%}
+                          {%- set _pw = _pw if _pw is mapping else {} -%}
+                          {{ _pw | tojson | from_json }}
+                        message: Explicit fields cleared.
 
           # ================================================================
           # DELETE
@@ -1637,46 +1729,52 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'delete' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ not _delete_confirm or _storage_key == '' }}"
-                then:
+              - choose:
+                  - conditions: "{{ _scribe_cert_denied }}"
+                    sequence:
+                      - variables:
+                          _scribe_cd_raw: >-
+                            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                            {{ OS.cert_denial(_scribe_cert_policy, _scribe_cert_authorized, _scribe_cert_level, 'scribe_kfc_publish', 1, 'delete', _scribe_cert_block_reason) -}}
+                      - variables:
+                          _scribe_cd: "{{ (_scribe_cd_raw | from_json) if _scribe_cd_raw is string else _scribe_cd_raw }}"
+                      - variables:
+                          result: "{{ {'ok': false, 'tool': 'zen_dojotools_scribe', 'mode': 'delete', 'caller_token': caller_token, 'error': _scribe_cd.error, 'detail': _scribe_cd.message, 'can_request': _scribe_cd.can_request, 'request_via': _scribe_cd.request_via} }}"
+                  - conditions: "{{ not _delete_confirm or _storage_key == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: delete
+                            caller_token: "{{ caller_token }}"
+                            error: explicit_delete_required
+                            message: delete requires artifact_class, key, and delete_confirm=true.
+                default:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: delete
+                      show_hidden_volumes: false
+                      force_action: true
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _delete_write
                   - variables:
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: delete
                         caller_token: "{{ caller_token }}"
-                        error: explicit_delete_required
-                        message: delete requires artifact_class, key, and delete_confirm=true.
-                  - stop: delete_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: delete
-                  show_hidden_volumes: false
-                  force_action: true
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _delete_write
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: delete
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: "{{ _artifact_class }}"
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    write: >-
-                      {%- set _pw = _delete_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    message: Explicit delete completed.
-              - stop: delete
-                response_variable: result
+                        artifact_class: "{{ _artifact_class }}"
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        key: "{{ _storage_key }}"
+                        write: >-
+                          {%- set _pw = _delete_write | default({}, true) -%}
+                          {%- set _pw = _pw if _pw is mapping else {} -%}
+                          {{ _pw | tojson | from_json }}
+                        message: Explicit delete completed.
 
           # ================================================================
           # FORMALIZE SCROLL
@@ -1686,108 +1784,104 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'formalize_scroll' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _slug == '' }}"
-                then:
+              - choose:
+                  - conditions: "{{ _slug == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: formalize_scroll
+                            caller_token: "{{ caller_token }}"
+                            error: missing_required
+                            message: key is required.
+                default:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: read
+                      show_hidden_volumes: false
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _formalize_read
+                  - variables:
+                      _f0: >-
+                        {%- set raw = _formalize_read.result | default({}, true) -%}
+                        {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+                  - variables:
+                      _f1: >-
+                        {%- set _keyed = _f0 if _f0 is mapping else {} -%}
+                        {%- if _storage_key in _keyed -%}
+                          {%- set _d = _keyed.get(_storage_key, {}) -%}
+                          {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                        {%- else -%}
+                          {{ _f0 }}
+                        {%- endif -%}
+                  - variables:
+                      _f2: >-
+                        {%- set _v = _f1.get('value', _f1) if _f1 is mapping else _f1 -%}
+                        {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+                  - variables:
+                      _f3: >-
+                        {%- set _a = _f2 if _f2 is mapping else {} -%}
+                        {%- set _keys = _a.keys() | list -%}
+                        {%- set _is_shell = (
+                          _keys | length <= 3
+                          and 'value' in _keys
+                          and not _a.get('artifact_class')
+                          and not _a.get('index_call')
+                          and not _a.get('component_summary')
+                        ) -%}
+                        {%- if _is_shell -%}
+                          {%- set _inner = _a.get('value', {}) -%}
+                          {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
+                        {%- else -%}
+                          {{ _a }}
+                        {%- endif -%}
+                      _scroll_payload: >-
+                        {%- set base = _f3 if _f3 is mapping else {} -%}
+                        {{
+                          base | combine({
+                            "artifact_class": "scroll",
+                            "artifact_state": "formal",
+                            "meta": (base.get('meta', {}) if base is mapping else {}) | combine({
+                              "read_only": true,
+                              "formalized_from": _storage_key,
+                              "description": "Formal read-only Scribe artifact. Reviewable and promotable."
+                            }, recursive=true)
+                          }, recursive=true) | tojson
+                        }}
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: update
+                      show_hidden_volumes: false
+                      force_action: true
+                      set_timestamp: true
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      value: "{{ _scroll_payload }}"
+                      label_input: "zen, scribe, scroll, zen_scroll"
+                      no_autoexpire: true
+                      no_autorecycle: true
+                      description: Formal read-only Scribe artifact. Reviewable and promotable.
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _formalize_write
                   - variables:
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: formalize_scroll
                         caller_token: "{{ caller_token }}"
-                        error: missing_required
-                        message: key is required.
-                  - stop: formalize_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: read
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _formalize_read
-              - variables:
-                  _f0: >-
-                    {%- set raw = _formalize_read.result | default({}, true) -%}
-                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
-              - variables:
-                  _f1: >-
-                    {%- set _keyed = _f0 if _f0 is mapping else {} -%}
-                    {%- if _storage_key in _keyed -%}
-                      {%- set _d = _keyed.get(_storage_key, {}) -%}
-                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
-                    {%- else -%}
-                      {{ _f0 }}
-                    {%- endif -%}
-              - variables:
-                  _f2: >-
-                    {%- set _v = _f1.get('value', _f1) if _f1 is mapping else _f1 -%}
-                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
-              - variables:
-                  _f3: >-
-                    {%- set _a = _f2 if _f2 is mapping else {} -%}
-                    {%- set _keys = _a.keys() | list -%}
-                    {%- set _is_shell = (
-                      _keys | length <= 3
-                      and 'value' in _keys
-                      and not _a.get('artifact_class')
-                      and not _a.get('index_call')
-                      and not _a.get('component_summary')
-                    ) -%}
-                    {%- if _is_shell -%}
-                      {%- set _inner = _a.get('value', {}) -%}
-                      {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
-                    {%- else -%}
-                      {{ _a }}
-                    {%- endif -%}
-                  _scroll_payload: >-
-                    {%- set base = _f3 if _f3 is mapping else {} -%}
-                    {{
-                      base | combine({
-                        "artifact_class": "scroll",
-                        "artifact_state": "formal",
-                        "meta": (base.get('meta', {}) if base is mapping else {}) | combine({
-                          "read_only": true,
-                          "formalized_from": _storage_key,
-                          "description": "Formal read-only Scribe artifact. Reviewable and promotable."
-                        }, recursive=true)
-                      }, recursive=true) | tojson
-                    }}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  value: "{{ _scroll_payload }}"
-                  label_input: "zen, scribe, scroll, zen_scroll"
-                  no_autoexpire: true
-                  no_autorecycle: true
-                  description: Formal read-only Scribe artifact. Reviewable and promotable.
-                  caller_token: "{{ caller_token }}"
-                response_variable: _formalize_write
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: formalize_scroll
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: scroll
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    write: >-
-                      {%- set _pw = _formalize_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    message: Thought formalized into scroll. Drawer is now read-only.
-              - stop: formalize_scroll
-                response_variable: result
+                        artifact_class: scroll
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        key: "{{ _storage_key }}"
+                        write: >-
+                          {%- set _pw = _formalize_write | default({}, true) -%}
+                          {%- set _pw = _pw if _pw is mapping else {} -%}
+                          {{ _pw | tojson | from_json }}
+                        message: Thought formalized into scroll. Drawer is now read-only.
 
           # ================================================================
           # PUBLISH KFC
@@ -1797,224 +1891,248 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'publish_kfc' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ not _publish_confirm or _slug == '' }}"
-                then:
-                  - variables:
-                      result:
-                        ok: false
-                        tool: zen_dojotools_scribe
-                        mode: publish_kfc
-                        caller_token: "{{ caller_token }}"
-                        error: explicit_publish_required
-                        message: publish_kfc requires key and publish_confirm=true.
-                  - stop: publish_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: read
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _publish_read
               - variables:
-                  _k0: >-
-                    {%- set raw = _publish_read.result | default({}, true) -%}
-                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
-              - variables:
-                  _k1: >-
-                    {%- set _keyed = _k0 if _k0 is mapping else {} -%}
-                    {%- if _storage_key in _keyed -%}
-                      {%- set _d = _keyed.get(_storage_key, {}) -%}
-                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
-                    {%- else -%}
-                      {{ _k0 }}
-                    {%- endif -%}
-              - variables:
-                  _k2: >-
-                    {%- set _v = _k1.get('value', _k1) if _k1 is mapping else _k1 -%}
-                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
-              - variables:
-                  _k3: >-
-                    {%- set _a = _k2 if _k2 is mapping else {} -%}
-                    {%- set _keys = _a.keys() | list -%}
-                    {%- set _is_shell = (
-                      _keys | length <= 3
-                      and 'value' in _keys
-                      and not _a.get('artifact_class')
-                      and not _a.get('index_call')
-                      and not _a.get('component_summary')
-                    ) -%}
-                    {%- if _is_shell -%}
-                      {%- set _inner = _a.get('value', {}) -%}
-                      {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
-                    {%- else -%}
-                      {{ _a }}
-                    {%- endif -%}
-              - if:
-                  - condition: template
-                    value_template: "{{ (_k3.get('artifact_state', '') if _k3 is mapping else '') != 'formal' }}"
-                then:
-                  - variables:
-                      result:
-                        ok: false
-                        tool: zen_dojotools_scribe
-                        mode: publish_kfc
-                        caller_token: "{{ caller_token }}"
-                        error: source_not_formalized
-                        artifact_state: "{{ _k3.get('artifact_state', 'unknown') if _k3 is mapping else 'unknown' }}"
-                        message: Source must be artifact_state=formal. Run formalize_scroll first.
-                  - stop: publish_not_formalized
-                    response_variable: result
-              - variables:
-                  _kfc_payload: >-
-                    {%- set base = _k3 if _k3 is mapping else {} -%}
-                    {{
-                      {
-                        "version": base.get('version', version_semantic | default('1.0.0')),
-                        "friendly_name": base.get('friendly_name', friendly_name | default(_slug)),
-                        "label": base.get('label', _base_label),
-                        "primary_index_key": base.get('primary_index_key', _primary_index_key),
-                        "component_key": base.get('component_key', _component_key),
-                        "parent_component_key": base.get('parent_component_key', _parent_component_key),
-                        "index_call": base.get('index_call', {
-                          "label_1": _label_1,
-                          "label_2": _label_2,
-                          "operator": _operator,
-                          "filter_json": _filter_json,
-                          "expand_entities": _expand_scope,
-                          "output_fields": _output_fields,
-                          "domain_inspect_domains": _domain_inspect_domains,
-                          "domain_inspect_limit": _domain_inspect_limit
-                        }),
-                        "seed": ((seed | from_json) if (seed | default('', true) | trim) != '' else none) if (seed | default('', true) | trim) != '' else base.get('seed', none),
-                        "area_seed": ((area_seed | from_json) if (area_seed | default('', true) | trim) != '' else none) if (area_seed | default('', true) | trim) != '' else base.get('area_seed', none),
-                        "component_summary": base.get('component_summary', component_summary | default('', true)),
-                        "icon": base.get('icon', icon | default('', true)),
-                        "component_instructions": base.get('component_instructions', component_instructions | default('', true)),
-                        "more_info": base.get('more_info', more_info | default('', true)),
-                        "tool": base.get('tool', tool | default('', true)),
-                        "trigger_subscriptions": base.get('trigger_subscriptions', _effective_trigger_list),
-                        "custom_trigger_override": base.get('custom_trigger_override', _custom_trigger_list),
-                        "delay_seconds": base.get('delay_seconds', delay_seconds | default(0) | int(0)),
-                        "drift_threshold": base.get('drift_threshold', drift_threshold | default(5) | int(5)),
-                        "emission_cooldown_minutes": base.get('emission_cooldown_minutes', emission_cooldown_minutes | default(60) | int(60)),
-                        "suggested_act_event": base.get('suggested_act_event', (suggested_act_event | default('') | trim) if (suggested_act_event | default('') | trim) != '' else none),
-                        "master_switch": base.get('master_switch', master_switch | default('', true)),
-                        "component_group": base.get('component_group', {
-                          "primary_index_key": _primary_index_key,
-                          "component_key": _component_key,
-                          "parent_component_key": _parent_component_key,
-                          "shared_schedule_group": _shared_schedule_group,
-                          "shared_trigger_subscriptions": _shared_trigger_list,
-                          "shared_delay_seconds": _shared_delay_seconds,
-                          "shared_labelset": _shared_labelset
-                        }),
-                        "schedules": base.get('schedules', []),
-                        "kata_key": _slug,
-                        "meta": {
-                          "enabled": (base.get('meta', {}) if base is mapping else {}).get('enabled', enabled | default(true) | bool),
-                          "published_from": _storage_key,
-                          "requires": (base.get('meta', {}) if base is mapping else {}).get('requires', {"cert": "", "level": 0})
-                        }
-                      } | tojson
-                    }}
-              - variables:
-                  _trim_summary: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {%- set _p = _p if _p is mapping else {} -%}
-                    {{ (_p.get('component_summary', '') | string | trim)[:255] }}
-                  _trim_label: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p if _p is mapping else {}).get('label', _base_label) | string | trim }}
-                  _trim_icon: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p if _p is mapping else {}).get('icon', '') | string | trim }}
-              - variables:
-                  _desc_chonky: "{{ (_trim_summary | trim | length) > 150 }}"
-              - if:
-                  - condition: template
-                    value_template: >-
-                      {{ _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' }}
-                then:
-                  # Create label if absent — sets icon on first publish, noop if already exists
-                  - action: script.zen_dojotools_labels
+                  _pub_dry_run: "{{ publish_dry_run | default(false) | bool }}"
+                  _pub_would_be_authorized: "{{ _scribe_cert_policy == 'allowed' and _scribe_cert_authorized }}"
+              - choose:
+                  - conditions: "{{ _scribe_cert_denied and not _pub_dry_run }}"
+                    sequence:
+                      - variables:
+                          _scribe_cd_raw: >-
+                            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                            {{ OS.cert_denial(_scribe_cert_policy, _scribe_cert_authorized, _scribe_cert_level, 'scribe_kfc_publish', 1, 'publish_kfc', _scribe_cert_block_reason) -}}
+                      - variables:
+                          _scribe_cd: "{{ (_scribe_cd_raw | from_json) if _scribe_cd_raw is string else _scribe_cd_raw }}"
+                      - variables:
+                          result: "{{ {'ok': false, 'tool': 'zen_dojotools_scribe', 'mode': 'publish_kfc', 'caller_token': caller_token, 'error': _scribe_cd.error, 'detail': _scribe_cd.message, 'can_request': _scribe_cd.can_request, 'request_via': _scribe_cd.request_via} }}"
+                  - conditions: "{{ not _publish_confirm and not _pub_dry_run or _slug == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: publish_kfc
+                            caller_token: "{{ caller_token }}"
+                            error: explicit_publish_required
+                            message: publish_kfc requires key and publish_confirm=true (or publish_dry_run=true to preview).
+                default:
+                  - action: script.zen_dojotools_filecabinet
                     data:
-                      action_type: create
-                      label_list:
-                        - "{{ _trim_label }}"
-                      new_description: "{{ _trim_summary }}"
-                      new_icon: "{{ _trim_icon }}"
-                      confirm: true
-                  # Always update description — Labels tool preserves existing icon if new_icon absent
-                  - action: script.zen_dojotools_labels
-                    data:
-                      action_type: update
-                      label_list:
-                        - "{{ _trim_label }}"
-                      new_description: "{{ _trim_summary }}"
-                      confirm: true
-              - variables:
-                  _kfc_payload: >-
-                    {%- if _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' -%}
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p | combine({'component_summary': ''})) | tojson }}
-                    {%- else -%}
-                    {{ _kfc_payload }}
-                    {%- endif -%}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _dojo_cab }}"
-                  key: "{{ _component_key if _component_key != '' else _slug }}"
-                  value: "{{ _kfc_payload }}"
-                  label_input: "kfc, zen, {{ _base_label }}"
-                  no_autoexpire: true
-                  no_autorecycle: true
-                  description: Published KF4 component definition.
-                  caller_token: "{{ caller_token }}"
-                response_variable: _publish_write
-              - variables:
-                  _ci_chars: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p if _p is mapping else {}).get('component_instructions', '') | string | length }}
-                  _payload_chars: "{{ _kfc_payload | string | length }}"
-              - variables:
-                  _ci_tokens_est: "{{ (_ci_chars | int / 4) | round | int }}"
-                  _payload_tokens_est: "{{ (_payload_chars | int / 4) | round | int }}"
-                  _ci_pct_drawer: "{{ (_ci_chars | int / 16384 * 100) | round(1) }}"
-                  _payload_pct_drawer: "{{ (_payload_chars | int / 16384 * 100) | round(1) }}"
-                  _size_tier: >-
-                    {%- set c = _ci_chars | int -%}
-                    {%- if c > 8192 -%}danger{%- elif c > 4096 -%}warning{%- elif c > 2048 -%}advisory{%- else -%}ok{%- endif -%}
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: publish_kfc
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: kfc
-                    source_cabinet: "{{ _target_cab }}"
-                    target_cabinet: "{{ _dojo_cab }}"
-                    key: "{{ _component_key if _component_key != '' else _slug }}"
-                    write: >-
-                      {%- set _pw = _publish_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    label_description_chars: "{{ _trim_summary | trim | length }}"
-                    label_description_warning: "{{ 'component_summary is ' ~ (_trim_summary | trim | length) ~ ' chars — aim for ~100, 255 max. Operational details belong in component_instructions.' if _desc_chonky else '' }}"
-                    message: "{{ 'Scroll published as KFC. ⚠ Description chonk: ' ~ (_trim_summary | trim | length) ~ ' chars.' if _desc_chonky else 'Scroll published as KFC.' }}"
-                    component_size: >-
-                      {{ {"instructions_chars": _ci_chars | int, "instructions_tokens_est": _ci_tokens_est | int, "instructions_pct_of_16kb": _ci_pct_drawer, "payload_chars": _payload_chars | int, "payload_tokens_est": _payload_tokens_est | int, "payload_pct_of_16kb": _payload_pct_drawer, "size_tier": _size_tier, "feedback": "component_instructions = " ~ _ci_chars ~ " chars (~" ~ _ci_tokens_est ~ " tokens, " ~ _ci_pct_drawer ~ "% of 16KB limit). Full payload " ~ _payload_chars ~ " chars (~" ~ _payload_tokens_est ~ " tokens). Heavier instructions = less room for domain data."} }}
-              - stop: publish_kfc
-                response_variable: result
+                      action_type: read
+                      show_hidden_volumes: false
+                      volume_entity_id:
+                        - "{{ _target_cab }}"
+                      key: "{{ _storage_key }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _publish_read
+                  - variables:
+                      _k0: >-
+                        {%- set raw = _publish_read.result | default({}, true) -%}
+                        {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+                  - variables:
+                      _k1: >-
+                        {%- set _keyed = _k0 if _k0 is mapping else {} -%}
+                        {%- if _storage_key in _keyed -%}
+                          {%- set _d = _keyed.get(_storage_key, {}) -%}
+                          {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                        {%- else -%}
+                          {{ _k0 }}
+                        {%- endif -%}
+                  - variables:
+                      _k2: >-
+                        {%- set _v = _k1.get('value', _k1) if _k1 is mapping else _k1 -%}
+                        {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+                  - variables:
+                      _k3: >-
+                        {%- set _a = _k2 if _k2 is mapping else {} -%}
+                        {%- set _keys = _a.keys() | list -%}
+                        {%- set _is_shell = (
+                          _keys | length <= 3
+                          and 'value' in _keys
+                          and not _a.get('artifact_class')
+                          and not _a.get('index_call')
+                          and not _a.get('component_summary')
+                        ) -%}
+                        {%- if _is_shell -%}
+                          {%- set _inner = _a.get('value', {}) -%}
+                          {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
+                        {%- else -%}
+                          {{ _a }}
+                        {%- endif -%}
+                  - choose:
+                      - conditions: "{{ (_k3.get('artifact_state', '') if _k3 is mapping else '') != 'formal' }}"
+                        sequence:
+                          - variables:
+                              result:
+                                ok: false
+                                tool: zen_dojotools_scribe
+                                mode: publish_kfc
+                                caller_token: "{{ caller_token }}"
+                                error: source_not_formalized
+                                artifact_state: "{{ _k3.get('artifact_state', 'unknown') if _k3 is mapping else 'unknown' }}"
+                                message: Source must be artifact_state=formal. Run formalize_scroll first.
+                    default:
+                      - variables:
+                          _kfc_payload: >-
+                            {%- set base = _k3 if _k3 is mapping else {} -%}
+                            {{
+                              {
+                                "version": base.get('version', version_semantic | default('1.0.0')),
+                                "friendly_name": base.get('friendly_name', friendly_name | default(_slug)),
+                                "label": base.get('label', _base_label),
+                                "primary_index_key": base.get('primary_index_key', _primary_index_key),
+                                "component_key": base.get('component_key', _component_key),
+                                "parent_component_key": base.get('parent_component_key', _parent_component_key),
+                                "index_call": base.get('index_call', {
+                                  "label_1": _label_1,
+                                  "label_2": _label_2,
+                                  "operator": _operator,
+                                  "filter_json": _filter_json,
+                                  "expand_entities": _expand_scope,
+                                  "output_fields": _output_fields,
+                                  "domain_inspect_domains": _domain_inspect_domains,
+                                  "domain_inspect_limit": _domain_inspect_limit
+                                }),
+                                "seed": ((seed | from_json) if (seed | default('', true) | trim) != '' else none) if (seed | default('', true) | trim) != '' else base.get('seed', none),
+                                "area_seed": ((area_seed | from_json) if (area_seed | default('', true) | trim) != '' else none) if (area_seed | default('', true) | trim) != '' else base.get('area_seed', none),
+                                "component_summary": base.get('component_summary', component_summary | default('', true)),
+                                "icon": base.get('icon', icon | default('', true)),
+                                "component_instructions": base.get('component_instructions', component_instructions | default('', true)),
+                                "more_info": base.get('more_info', more_info | default('', true)),
+                                "tool": base.get('tool', tool | default('', true)),
+                                "trigger_subscriptions": base.get('trigger_subscriptions', _effective_trigger_list),
+                                "custom_trigger_override": base.get('custom_trigger_override', _custom_trigger_list),
+                                "delay_seconds": base.get('delay_seconds', delay_seconds | default(0) | int(0)),
+                                "drift_threshold": base.get('drift_threshold', drift_threshold | default(5) | int(5)),
+                                "emission_cooldown_minutes": base.get('emission_cooldown_minutes', emission_cooldown_minutes | default(60) | int(60)),
+                                "suggested_act_event": base.get('suggested_act_event', (suggested_act_event | default('') | trim) if (suggested_act_event | default('') | trim) != '' else none),
+                                "master_switch": base.get('master_switch', master_switch | default('', true)),
+                                "component_group": base.get('component_group', {
+                                  "primary_index_key": _primary_index_key,
+                                  "component_key": _component_key,
+                                  "parent_component_key": _parent_component_key,
+                                  "shared_schedule_group": _shared_schedule_group,
+                                  "shared_trigger_subscriptions": _shared_trigger_list,
+                                  "shared_delay_seconds": _shared_delay_seconds,
+                                  "shared_labelset": _shared_labelset
+                                }),
+                                "schedules": base.get('schedules', []),
+                                "kata_key": _slug,
+                                "meta": {
+                                  "enabled": (base.get('meta', {}) if base is mapping else {}).get('enabled', enabled | default(true) | bool),
+                                  "published_from": _storage_key,
+                                  "requires": (base.get('meta', {}) if base is mapping else {}).get('requires', {"cert": "", "level": 0})
+                                }
+                              } | tojson
+                            }}
+                      - variables:
+                          _trim_summary: >-
+                            {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                            {%- set _p = _p if _p is mapping else {} -%}
+                            {{ (_p.get('component_summary', '') | string | trim)[:255] }}
+                          _trim_label: >-
+                            {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                            {{ (_p if _p is mapping else {}).get('label', _base_label) | string | trim }}
+                          _trim_icon: >-
+                            {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                            {{ (_p if _p is mapping else {}).get('icon', '') | string | trim }}
+                      - variables:
+                          _desc_chonky: "{{ (_trim_summary | trim | length) > 150 }}"
+                      - if:
+                          - condition: template
+                            value_template: >-
+                              {{ not _pub_dry_run and _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' }}
+                        then:
+                          # Create label if absent — sets icon on first publish, noop if already exists
+                          - action: script.zen_dojotools_labels
+                            data:
+                              action_type: create
+                              label_list:
+                                - "{{ _trim_label }}"
+                              new_description: "{{ _trim_summary }}"
+                              new_icon: "{{ _trim_icon }}"
+                              confirm: true
+                          # Always update description — Labels tool preserves existing icon if new_icon absent
+                          - action: script.zen_dojotools_labels
+                            data:
+                              action_type: update
+                              label_list:
+                                - "{{ _trim_label }}"
+                              new_description: "{{ _trim_summary }}"
+                              confirm: true
+                      - variables:
+                          _kfc_payload: >-
+                            {%- if _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' -%}
+                            {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                            {{ (_p | combine({'component_summary': ''})) | tojson }}
+                            {%- else -%}
+                            {{ _kfc_payload }}
+                            {%- endif -%}
+                      - if:
+                          - condition: template
+                            value_template: "{{ not _pub_dry_run }}"
+                        then:
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              action_type: update
+                              show_hidden_volumes: false
+                              force_action: true
+                              set_timestamp: true
+                              volume_entity_id:
+                                - "{{ _dojo_cab }}"
+                              key: "{{ _component_key if _component_key != '' else _slug }}"
+                              value: "{{ _kfc_payload }}"
+                              label_input: "kfc, zen, {{ _base_label }}"
+                              no_autoexpire: true
+                              no_autorecycle: true
+                              description: Published KF4 component definition.
+                              caller_token: "{{ caller_token }}"
+                            response_variable: _publish_write
+                        else:
+                          - variables:
+                              _publish_write:
+                                status: not_written
+                                note: publish_dry_run=true -- no write performed, no label touched.
+                      - variables:
+                          _ci_chars: >-
+                            {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                            {{ (_p if _p is mapping else {}).get('component_instructions', '') | string | length }}
+                          _payload_chars: "{{ _kfc_payload | string | length }}"
+                      - variables:
+                          _ci_tokens_est: "{{ (_ci_chars | int / 4) | round | int }}"
+                          _payload_tokens_est: "{{ (_payload_chars | int / 4) | round | int }}"
+                          _ci_pct_drawer: "{{ (_ci_chars | int / 16384 * 100) | round(1) }}"
+                          _payload_pct_drawer: "{{ (_payload_chars | int / 16384 * 100) | round(1) }}"
+                          _size_tier: >-
+                            {%- set c = _ci_chars | int -%}
+                            {%- if c > 8192 -%}danger{%- elif c > 4096 -%}warning{%- elif c > 2048 -%}advisory{%- else -%}ok{%- endif -%}
+                      - variables:
+                          result:
+                            ok: true
+                            tool: zen_dojotools_scribe
+                            mode: publish_kfc
+                            caller_token: "{{ caller_token }}"
+                            dry_run: "{{ _pub_dry_run }}"
+                            would_be_authorized: "{{ _pub_would_be_authorized }}"
+                            preview: >-
+                              {%- if _pub_dry_run -%}
+                              {{ _kfc_payload | from_json if _kfc_payload is string else _kfc_payload }}
+                              {%- else -%}
+                              {{ none }}
+                              {%- endif -%}
+                            artifact_class: kfc
+                            source_cabinet: "{{ _target_cab }}"
+                            target_cabinet: "{{ _dojo_cab }}"
+                            key: "{{ _component_key if _component_key != '' else _slug }}"
+                            write: >-
+                              {%- set _pw = _publish_write | default({}, true) -%}
+                              {%- set _pw = _pw if _pw is mapping else {} -%}
+                              {{ _pw | tojson | from_json }}
+                            label_description_chars: "{{ _trim_summary | trim | length }}"
+                            label_description_warning: "{{ 'component_summary is ' ~ (_trim_summary | trim | length) ~ ' chars — aim for ~100, 255 max. Operational details belong in component_instructions.' if _desc_chonky else '' }}"
+                            message: "{{ 'Scroll published as KFC. ⚠ Description chonk: ' ~ (_trim_summary | trim | length) ~ ' chars.' if _desc_chonky else 'Scroll published as KFC.' }}"
+                            component_size: >-
+                              {{ {"instructions_chars": _ci_chars | int, "instructions_tokens_est": _ci_tokens_est | int, "instructions_pct_of_16kb": _ci_pct_drawer, "payload_chars": _payload_chars | int, "payload_tokens_est": _payload_tokens_est | int, "payload_pct_of_16kb": _payload_pct_drawer, "size_tier": _size_tier, "feedback": "component_instructions = " ~ _ci_chars ~ " chars (~" ~ _ci_tokens_est ~ " tokens, " ~ _ci_pct_drawer ~ "% of 16KB limit). Full payload " ~ _payload_chars ~ " chars (~" ~ _payload_tokens_est ~ " tokens). Heavier instructions = less room for domain data."} }}
 
           # ================================================================
           # REPUBLISH KFC
@@ -2024,176 +2142,202 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'republish_kfc' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _storage_key == '' }}"
-                then:
+              - variables:
+                  _pub_dry_run: "{{ publish_dry_run | default(false) | bool }}"
+                  _pub_would_be_authorized: "{{ _scribe_cert_policy == 'allowed' and _scribe_cert_authorized }}"
+              - choose:
+                  - conditions: "{{ _scribe_cert_denied and not _pub_dry_run }}"
+                    sequence:
+                      - variables:
+                          _scribe_cd_raw: >-
+                            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                            {{ OS.cert_denial(_scribe_cert_policy, _scribe_cert_authorized, _scribe_cert_level, 'scribe_kfc_publish', 1, 'republish_kfc', _scribe_cert_block_reason) -}}
+                      - variables:
+                          _scribe_cd: "{{ (_scribe_cd_raw | from_json) if _scribe_cd_raw is string else _scribe_cd_raw }}"
+                      - variables:
+                          result: "{{ {'ok': false, 'tool': 'zen_dojotools_scribe', 'mode': 'republish_kfc', 'caller_token': caller_token, 'error': _scribe_cd.error, 'detail': _scribe_cd.message, 'can_request': _scribe_cd.can_request, 'request_via': _scribe_cd.request_via} }}"
+                  - conditions: "{{ _storage_key == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: republish_kfc
+                            caller_token: "{{ caller_token }}"
+                            error: missing_required
+                            message: key (and artifact_class=kfc) required for republish_kfc.
+                default:
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: read
+                      show_hidden_volumes: false
+                      volume_entity_id:
+                        - "{{ _dojo_cab }}"
+                      key: "{{ _storage_key }}"
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _repub_read
+                  - variables:
+                      _r0: >-
+                        {%- set raw = _repub_read.result | default({}, true) -%}
+                        {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+                  - variables:
+                      _r1: >-
+                        {%- set _keyed = _r0 if _r0 is mapping else {} -%}
+                        {%- if _storage_key in _keyed -%}
+                          {%- set _d = _keyed.get(_storage_key, {}) -%}
+                          {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                        {%- else -%}
+                          {{ _r0 }}
+                        {%- endif -%}
+                  - variables:
+                      _r2: >-
+                        {%- set _v = _r1.get('value', _r1) if _r1 is mapping else _r1 -%}
+                        {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+                  - variables:
+                      _r3: >-
+                        {%- set _a = _r2 if _r2 is mapping else {} -%}
+                        {%- set _keys = _a.keys() | list -%}
+                        {%- set _is_shell = (
+                          _keys | length <= 3
+                          and 'value' in _keys
+                          and not _a.get('artifact_class')
+                          and not _a.get('index_call')
+                          and not _a.get('component_summary')
+                        ) -%}
+                        {%- if _is_shell -%}
+                          {%- set _inner = _a.get('value', {}) -%}
+                          {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
+                        {%- else -%}
+                          {{ _a }}
+                        {%- endif -%}
+                  - variables:
+                      _kfc_payload: >-
+                        {%- set base = _r3 if _r3 is mapping else {} -%}
+                        {%- if _changes != {} -%}
+                          {%- set _inc_sched = _changes.get('schedules', none) -%}
+                          {%- if _inc_sched is sequence and _inc_sched is not string and _inc_sched is not none -%}
+                            {%- set _exist = base.get('schedules', []) -%}
+                            {%- set _new_keys = _inc_sched | map(attribute='kata_key') | list -%}
+                            {%- set ns = namespace(merged=[]) -%}
+                            {%- for s in _exist -%}
+                              {%- if s.get('kata_key', '') not in _new_keys -%}
+                                {%- set ns.merged = ns.merged + [s] -%}
+                              {%- endif -%}
+                            {%- endfor -%}
+                            {%- set ns.merged = ns.merged + _inc_sched -%}
+                            {%- set _no_sched = dict(_changes.items() | rejectattr('0', 'equalto', 'schedules')) -%}
+                            {{ base | combine(_no_sched, recursive=true) | combine({'schedules': ns.merged}) | tojson }}
+                          {%- else -%}
+                            {{ base | combine(_changes, recursive=true) | tojson }}
+                          {%- endif -%}
+                        {%- else -%}
+                          {{ base | tojson }}
+                        {%- endif -%}
+                  - variables:
+                      _trim_summary: >-
+                        {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                        {%- set _p = _p if _p is mapping else {} -%}
+                        {{ (_p.get('component_summary', '') | string | trim)[:255] }}
+                      _trim_label: >-
+                        {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                        {{ (_p if _p is mapping else {}).get('label', _base_label) | string | trim }}
+                      _trim_icon: >-
+                        {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                        {{ (_p if _p is mapping else {}).get('icon', '') | string | trim }}
+                  - variables:
+                      _desc_chonky: "{{ (_trim_summary | trim | length) > 150 }}"
+                  - if:
+                      - condition: template
+                        value_template: >-
+                          {{ not _pub_dry_run and _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' }}
+                    then:
+                      - action: script.zen_dojotools_labels
+                        data:
+                          action_type: create
+                          label_list:
+                            - "{{ _trim_label }}"
+                          new_description: "{{ _trim_summary }}"
+                          new_icon: "{{ _trim_icon }}"
+                          confirm: true
+                      - action: script.zen_dojotools_labels
+                        data:
+                          action_type: update
+                          label_list:
+                            - "{{ _trim_label }}"
+                          new_description: "{{ _trim_summary }}"
+                          confirm: true
+                  - variables:
+                      _kfc_payload: >-
+                        {%- if _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' -%}
+                        {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                        {{ (_p | combine({'component_summary': ''})) | tojson }}
+                        {%- else -%}
+                        {{ _kfc_payload }}
+                        {%- endif -%}
+                  - if:
+                      - condition: template
+                        value_template: "{{ not _pub_dry_run }}"
+                    then:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: update
+                          show_hidden_volumes: false
+                          force_action: true
+                          set_timestamp: true
+                          volume_entity_id:
+                            - "{{ _dojo_cab }}"
+                          key: "{{ _storage_key }}"
+                          value: "{{ _kfc_payload }}"
+                          label_input: "kfc, zen, {{ _trim_label }}"
+                          no_autoexpire: true
+                          no_autorecycle: true
+                          description: Published KF4 component definition.
+                          caller_token: "{{ caller_token }}"
+                        response_variable: _repub_write
+                    else:
+                      - variables:
+                          _repub_write:
+                            status: not_written
+                            note: publish_dry_run=true -- no write performed, no label touched.
+                  - variables:
+                      _ci_chars: >-
+                        {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
+                        {{ (_p if _p is mapping else {}).get('component_instructions', '') | string | length }}
+                      _payload_chars: "{{ _kfc_payload | string | length }}"
+                  - variables:
+                      _ci_tokens_est: "{{ (_ci_chars | int / 4) | round | int }}"
+                      _payload_tokens_est: "{{ (_payload_chars | int / 4) | round | int }}"
+                      _ci_pct_drawer: "{{ (_ci_chars | int / 16384 * 100) | round(1) }}"
+                      _payload_pct_drawer: "{{ (_payload_chars | int / 16384 * 100) | round(1) }}"
+                      _size_tier: >-
+                        {%- set c = _ci_chars | int -%}
+                        {%- if c > 8192 -%}danger{%- elif c > 4096 -%}warning{%- elif c > 2048 -%}advisory{%- else -%}ok{%- endif -%}
                   - variables:
                       result:
-                        ok: false
+                        ok: true
                         tool: zen_dojotools_scribe
                         mode: republish_kfc
                         caller_token: "{{ caller_token }}"
-                        error: missing_required
-                        message: key (and artifact_class=kfc) required for republish_kfc.
-                  - stop: republish_kfc_error
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: read
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _dojo_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _repub_read
-              - variables:
-                  _r0: >-
-                    {%- set raw = _repub_read.result | default({}, true) -%}
-                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
-              - variables:
-                  _r1: >-
-                    {%- set _keyed = _r0 if _r0 is mapping else {} -%}
-                    {%- if _storage_key in _keyed -%}
-                      {%- set _d = _keyed.get(_storage_key, {}) -%}
-                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
-                    {%- else -%}
-                      {{ _r0 }}
-                    {%- endif -%}
-              - variables:
-                  _r2: >-
-                    {%- set _v = _r1.get('value', _r1) if _r1 is mapping else _r1 -%}
-                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
-              - variables:
-                  _r3: >-
-                    {%- set _a = _r2 if _r2 is mapping else {} -%}
-                    {%- set _keys = _a.keys() | list -%}
-                    {%- set _is_shell = (
-                      _keys | length <= 3
-                      and 'value' in _keys
-                      and not _a.get('artifact_class')
-                      and not _a.get('index_call')
-                      and not _a.get('component_summary')
-                    ) -%}
-                    {%- if _is_shell -%}
-                      {%- set _inner = _a.get('value', {}) -%}
-                      {{ _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) }}
-                    {%- else -%}
-                      {{ _a }}
-                    {%- endif -%}
-              - variables:
-                  _kfc_payload: >-
-                    {%- set base = _r3 if _r3 is mapping else {} -%}
-                    {%- if _changes != {} -%}
-                      {%- set _inc_sched = _changes.get('schedules', none) -%}
-                      {%- if _inc_sched is sequence and _inc_sched is not string and _inc_sched is not none -%}
-                        {%- set _exist = base.get('schedules', []) -%}
-                        {%- set _new_keys = _inc_sched | map(attribute='kata_key') | list -%}
-                        {%- set ns = namespace(merged=[]) -%}
-                        {%- for s in _exist -%}
-                          {%- if s.get('kata_key', '') not in _new_keys -%}
-                            {%- set ns.merged = ns.merged + [s] -%}
+                        dry_run: "{{ _pub_dry_run }}"
+                        would_be_authorized: "{{ _pub_would_be_authorized }}"
+                        preview: >-
+                          {%- if _pub_dry_run -%}
+                          {{ _kfc_payload | from_json if _kfc_payload is string else _kfc_payload }}
+                          {%- else -%}
+                          {{ none }}
                           {%- endif -%}
-                        {%- endfor -%}
-                        {%- set ns.merged = ns.merged + _inc_sched -%}
-                        {%- set _no_sched = dict(_changes.items() | rejectattr('0', 'equalto', 'schedules')) -%}
-                        {{ base | combine(_no_sched, recursive=true) | combine({'schedules': ns.merged}) | tojson }}
-                      {%- else -%}
-                        {{ base | combine(_changes, recursive=true) | tojson }}
-                      {%- endif -%}
-                    {%- else -%}
-                      {{ base | tojson }}
-                    {%- endif -%}
-              - variables:
-                  _trim_summary: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {%- set _p = _p if _p is mapping else {} -%}
-                    {{ (_p.get('component_summary', '') | string | trim)[:255] }}
-                  _trim_label: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p if _p is mapping else {}).get('label', _base_label) | string | trim }}
-                  _trim_icon: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p if _p is mapping else {}).get('icon', '') | string | trim }}
-              - variables:
-                  _desc_chonky: "{{ (_trim_summary | trim | length) > 150 }}"
-              - if:
-                  - condition: template
-                    value_template: >-
-                      {{ _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' }}
-                then:
-                  - action: script.zen_dojotools_labels
-                    data:
-                      action_type: create
-                      label_list:
-                        - "{{ _trim_label }}"
-                      new_description: "{{ _trim_summary }}"
-                      new_icon: "{{ _trim_icon }}"
-                      confirm: true
-                  - action: script.zen_dojotools_labels
-                    data:
-                      action_type: update
-                      label_list:
-                        - "{{ _trim_label }}"
-                      new_description: "{{ _trim_summary }}"
-                      confirm: true
-              - variables:
-                  _kfc_payload: >-
-                    {%- if _trim_description and _trim_summary | trim != '' and _trim_label | trim != '' -%}
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p | combine({'component_summary': ''})) | tojson }}
-                    {%- else -%}
-                    {{ _kfc_payload }}
-                    {%- endif -%}
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _dojo_cab }}"
-                  key: "{{ _storage_key }}"
-                  value: "{{ _kfc_payload }}"
-                  label_input: "kfc, zen, {{ _trim_label }}"
-                  no_autoexpire: true
-                  no_autorecycle: true
-                  description: Published KF4 component definition.
-                  caller_token: "{{ caller_token }}"
-                response_variable: _repub_write
-              - variables:
-                  _ci_chars: >-
-                    {%- set _p = _kfc_payload | from_json if _kfc_payload is string else _kfc_payload -%}
-                    {{ (_p if _p is mapping else {}).get('component_instructions', '') | string | length }}
-                  _payload_chars: "{{ _kfc_payload | string | length }}"
-              - variables:
-                  _ci_tokens_est: "{{ (_ci_chars | int / 4) | round | int }}"
-                  _payload_tokens_est: "{{ (_payload_chars | int / 4) | round | int }}"
-                  _ci_pct_drawer: "{{ (_ci_chars | int / 16384 * 100) | round(1) }}"
-                  _payload_pct_drawer: "{{ (_payload_chars | int / 16384 * 100) | round(1) }}"
-                  _size_tier: >-
-                    {%- set c = _ci_chars | int -%}
-                    {%- if c > 8192 -%}danger{%- elif c > 4096 -%}warning{%- elif c > 2048 -%}advisory{%- else -%}ok{%- endif -%}
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: republish_kfc
-                    caller_token: "{{ caller_token }}"
-                    artifact_class: kfc
-                    cabinet_entity_id: "{{ _dojo_cab }}"
-                    key: "{{ _storage_key }}"
-                    write: >-
-                      {%- set _pw = _repub_write | default({}, true) -%}
-                      {%- set _pw = _pw if _pw is mapping else {} -%}
-                      {{ _pw | tojson | from_json }}
-                    label_description_chars: "{{ _trim_summary | trim | length }}"
-                    label_description_warning: "{{ 'component_summary is ' ~ (_trim_summary | trim | length) ~ ' chars — aim for ~100, 255 max. Operational details belong in component_instructions.' if _desc_chonky else '' }}"
-                    message: "{{ 'KFC republished. ⚠ Description chonk: ' ~ (_trim_summary | trim | length) ~ ' chars.' if _desc_chonky else 'KFC republished. Label description synced.' }}"
-                    component_size: >-
-                      {{ {"instructions_chars": _ci_chars | int, "instructions_tokens_est": _ci_tokens_est | int, "instructions_pct_of_16kb": _ci_pct_drawer, "payload_chars": _payload_chars | int, "payload_tokens_est": _payload_tokens_est | int, "payload_pct_of_16kb": _payload_pct_drawer, "size_tier": _size_tier, "feedback": "component_instructions = " ~ _ci_chars ~ " chars (~" ~ _ci_tokens_est ~ " tokens, " ~ _ci_pct_drawer ~ "% of 16KB limit). Full payload " ~ _payload_chars ~ " chars (~" ~ _payload_tokens_est ~ " tokens). Heavier instructions = less room for domain data."} }}
-              - stop: republish_kfc
-                response_variable: result
+                        artifact_class: kfc
+                        cabinet_entity_id: "{{ _dojo_cab }}"
+                        key: "{{ _storage_key }}"
+                        write: >-
+                          {%- set _pw = _repub_write | default({}, true) -%}
+                          {%- set _pw = _pw if _pw is mapping else {} -%}
+                          {{ _pw | tojson | from_json }}
+                        label_description_chars: "{{ _trim_summary | trim | length }}"
+                        label_description_warning: "{{ 'component_summary is ' ~ (_trim_summary | trim | length) ~ ' chars — aim for ~100, 255 max. Operational details belong in component_instructions.' if _desc_chonky else '' }}"
+                        message: "{{ 'KFC republished. ⚠ Description chonk: ' ~ (_trim_summary | trim | length) ~ ' chars.' if _desc_chonky else 'KFC republished. Label description synced.' }}"
+                        component_size: >-
+                          {{ {"instructions_chars": _ci_chars | int, "instructions_tokens_est": _ci_tokens_est | int, "instructions_pct_of_16kb": _ci_pct_drawer, "payload_chars": _payload_chars | int, "payload_tokens_est": _payload_tokens_est | int, "payload_pct_of_16kb": _payload_pct_drawer, "size_tier": _size_tier, "feedback": "component_instructions = " ~ _ci_chars ~ " chars (~" ~ _ci_tokens_est ~ " tokens, " ~ _ci_pct_drawer ~ "% of 16KB limit). Full payload " ~ _payload_chars ~ " chars (~" ~ _payload_tokens_est ~ " tokens). Heavier instructions = less room for domain data."} }}
 
           # ================================================================
           # DRY RUN
@@ -2203,67 +2347,63 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'dry_run' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _label_1 == '' and _base_label == '' }}"
-                then:
-                  - variables:
-                      result:
-                        ok: false
-                        tool: zen_dojotools_scribe
-                        mode: dry_run
-                        caller_token: "{{ caller_token }}"
-                        error: missing_required
-                        message: label, label_1, or friendly_name is required for dry_run.
-                  - stop: dry_run_error
-                    response_variable: result
-              - action: script.zen_dojotools_index
-                data:
-                  mode: normal
-                  label_1: "{{ _label_1 if _label_1 != '' else _base_label }}"
-                  label_2: "{{ _label_2 }}"
-                  operator: "{{ _operator }}"
-                  filter_json: "{{ _filter_json }}"
-                  expand_entities: "{{ _expand_scope }}"
-                  output_fields: "{{ _output_fields }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _dry_scope
-              - variables:
-                  _dry_guidance: >-
-                    {{
-                      {
-                        "what_it_does": what_it_does | default('', true),
-                        "what_good_looks_like": what_good_looks_like | default('', true),
-                        "what_bad_looks_like": what_bad_looks_like | default('', true),
-                        "urgency_rules": urgency_rules | default('', true),
-                        "home_policy": home_policy | default('', true),
-                        "family_customizations": family_customizations | default('', true),
-                        "user_customizations": user_customizations | default('', true)
-                      }
-                    }}
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: dry_run
-                    caller_token: "{{ caller_token }}"
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    label: "{{ _base_label }}"
-                    index_call:
+              - choose:
+                  - conditions: "{{ _label_1 == '' and _base_label == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: dry_run
+                            caller_token: "{{ caller_token }}"
+                            error: missing_required
+                            message: label, label_1, or friendly_name is required for dry_run.
+                default:
+                  - action: script.zen_dojotools_index
+                    data:
+                      mode: normal
                       label_1: "{{ _label_1 if _label_1 != '' else _base_label }}"
                       label_2: "{{ _label_2 }}"
                       operator: "{{ _operator }}"
                       filter_json: "{{ _filter_json }}"
                       expand_entities: "{{ _expand_scope }}"
                       output_fields: "{{ _output_fields }}"
-                    scope: "{{ _dry_scope | default({}, true) }}"
-                    trigger_subscriptions: "{{ _effective_trigger_list }}"
-                    custom_trigger_override: "{{ _custom_trigger_list }}"
-                    guidance: "{{ _dry_guidance }}"
-                    message: >-
-                      Dry run complete. Review scope, overlays, guidance, and recursion risk before formalizing or publishing.
-              - stop: dry_run
-                response_variable: result
+                      caller_token: "{{ caller_token }}"
+                    response_variable: _dry_scope
+                  - variables:
+                      _dry_guidance: >-
+                        {{
+                          {
+                            "what_it_does": what_it_does | default('', true),
+                            "what_good_looks_like": what_good_looks_like | default('', true),
+                            "what_bad_looks_like": what_bad_looks_like | default('', true),
+                            "urgency_rules": urgency_rules | default('', true),
+                            "home_policy": home_policy | default('', true),
+                            "family_customizations": family_customizations | default('', true),
+                            "user_customizations": user_customizations | default('', true)
+                          }
+                        }}
+                  - variables:
+                      result:
+                        ok: true
+                        tool: zen_dojotools_scribe
+                        mode: dry_run
+                        caller_token: "{{ caller_token }}"
+                        cabinet_entity_id: "{{ _target_cab }}"
+                        label: "{{ _base_label }}"
+                        index_call:
+                          label_1: "{{ _label_1 if _label_1 != '' else _base_label }}"
+                          label_2: "{{ _label_2 }}"
+                          operator: "{{ _operator }}"
+                          filter_json: "{{ _filter_json }}"
+                          expand_entities: "{{ _expand_scope }}"
+                          output_fields: "{{ _output_fields }}"
+                        scope: "{{ _dry_scope | default({}, true) }}"
+                        trigger_subscriptions: "{{ _effective_trigger_list }}"
+                        custom_trigger_override: "{{ _custom_trigger_list }}"
+                        guidance: "{{ _dry_guidance }}"
+                        message: >-
+                          Dry run complete. Review scope, overlays, guidance, and recursion risk before formalizing or publishing.
 
           # ================================================================
           # REPAIR
@@ -2273,160 +2413,150 @@ script:
               - condition: template
                 value_template: "{{ _mode == 'repair' }}"
             sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ _storage_key == '' }}"
-                then:
-                  - variables:
-                      result:
-                        ok: false
-                        tool: zen_dojotools_scribe
-                        mode: repair
-                        caller_token: "{{ caller_token }}"
-                        error: missing_key
-                        message: key or primary_index_key is required for repair.
-                  - stop: repair_error
-                    response_variable: result
-              - if:
-                  - condition: template
-                    value_template: "{{ _target_cab in ['', 'unknown', 'unavailable'] }}"
-                then:
-                  - variables:
-                      result:
-                        ok: false
-                        tool: zen_dojotools_scribe
-                        mode: repair
-                        caller_token: "{{ caller_token }}"
-                        error: no_cabinet
-                        message: Cabinet could not be resolved. Provide cabinet_entity_id explicitly.
-                  - stop: repair_no_cab
-                    response_variable: result
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: read
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _repair_read
-              - variables:
-                  _repair_raw: >-
-                    {%- set raw = _repair_read.result | default({}, true) -%}
-                    {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
-              - variables:
-                  _repair_d1: >-
-                    {%- set _keyed = _repair_raw if _repair_raw is mapping else {} -%}
-                    {%- if _storage_key in _keyed -%}
-                      {%- set _d = _keyed.get(_storage_key, {}) -%}
-                      {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
-                    {%- else -%}
-                      {{ _repair_raw }}
-                    {%- endif -%}
-              - variables:
-                  _repair_d2: >-
-                    {%- set _v = _repair_d1.get('value', _repair_d1) if _repair_d1 is mapping else _repair_d1 -%}
-                    {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
-              # Count wrapper depth and fully unwrap — up to 5 levels
-              - variables:
-                  _repair_depth_and_body: >-
-                    {%- set ns = namespace(d=0, obj=_repair_d2 if _repair_d2 is mapping else {}) -%}
-                    {%- for _ in range(0, 5) -%}
-                      {%- set _ks = ns.obj.keys() | list if ns.obj is mapping else [] -%}
-                      {%- if (
-                        _ks | length <= 3
-                        and 'value' in _ks
-                        and not ns.obj.get('artifact_class')
-                        and not ns.obj.get('index_call')
-                        and not ns.obj.get('component_summary')
-                      ) -%}
-                        {%- set _inner = ns.obj.get('value', {}) -%}
-                        {%- set ns.obj = _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) -%}
-                        {%- set ns.d = ns.d + 1 -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {{ {'depth': ns.d, 'body': ns.obj} | tojson }}
-              - variables:
-                  _repair_meta: >-
-                    {%- set _rm = _repair_depth_and_body if _repair_depth_and_body is mapping else (_repair_depth_and_body | from_json if _repair_depth_and_body is string else {}) -%}
-                    {{ _rm }}
-                  _repair_depth: >-
-                    {%- set _rm = _repair_depth_and_body if _repair_depth_and_body is mapping else (_repair_depth_and_body | from_json if _repair_depth_and_body is string else {}) -%}
-                    {{ _rm.get('depth', 0) | int(0) }}
-                  _repair_body: >-
-                    {%- set _rm = _repair_depth_and_body if _repair_depth_and_body is mapping else (_repair_depth_and_body | from_json if _repair_depth_and_body is string else {}) -%}
-                    {%- set _b = _rm.get('body', {}) -%}
-                    {{ _b if _b is mapping else (_b | from_json if _b is string else {}) }}
-              # Dry run — return depth + preview without writing
-              - if:
-                  - condition: template
-                    value_template: "{{ dry_run | default(true) | bool }}"
-                then:
-                  - variables:
-                      result:
-                        ok: true
-                        tool: zen_dojotools_scribe
-                        mode: repair
-                        caller_token: "{{ caller_token }}"
-                        dry_run: true
-                        depth_detected: "{{ _repair_depth }}"
-                        wrapper_found: "{{ _repair_depth | int(0) > 0 }}"
-                        cabinet_entity_id: "{{ _target_cab }}"
-                        key: "{{ _storage_key }}"
-                        preview: "{{ _repair_body }}"
-                        message: >-
-                          Dry run complete. depth_detected={{ _repair_depth }}.
-                          {% if _repair_depth | int(0) > 0 %}Wrapper accumulation found — run with dry_run: false to repair.{% else %}No wrapper accumulation detected. Drawer is clean.{% endif %}
-                  - stop: repair_dry_run
-                    response_variable: result
-              # Live run: nothing to repair
-              - if:
-                  - condition: template
-                    value_template: "{{ _repair_depth | int(0) == 0 }}"
-                then:
-                  - variables:
-                      result:
-                        ok: true
-                        tool: zen_dojotools_scribe
-                        mode: repair
-                        caller_token: "{{ caller_token }}"
-                        repaired: false
-                        depth_was: 0
-                        cabinet_entity_id: "{{ _target_cab }}"
-                        key: "{{ _storage_key }}"
-                        message: No wrapper accumulation detected. Drawer is already clean.
-                  - stop: repair_clean
-                    response_variable: result
-              # Live run: write normalized body back
-              - action: script.zen_dojotools_filecabinet
-                data:
-                  action_type: update
-                  show_hidden_volumes: false
-                  force_action: true
-                  set_timestamp: true
-                  volume_entity_id:
-                    - "{{ _target_cab }}"
-                  key: "{{ _storage_key }}"
-                  value: "{{ _repair_body }}"
-                  caller_token: "{{ caller_token }}"
-                response_variable: _repair_write
-              - variables:
-                  result:
-                    ok: true
-                    tool: zen_dojotools_scribe
-                    mode: repair
-                    caller_token: "{{ caller_token }}"
-                    repaired: true
-                    depth_was: "{{ _repair_depth }}"
-                    artifact_class: "{{ (_repair_body.get('artifact_class', 'unknown') if _repair_body is mapping else 'unknown') }}"
-                    cabinet_entity_id: "{{ _target_cab }}"
-                    key: "{{ _storage_key }}"
-                    write_result: "{{ _repair_write | default({}) }}"
-                    message: >-
-                      Wrapper accumulation repaired. depth_was={{ _repair_depth }}.
-                      Normalized artifact body written back to drawer.
-              - stop: repair_done
-                response_variable: result
+              - choose:
+                  - conditions: "{{ _storage_key == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            ok: false
+                            tool: zen_dojotools_scribe
+                            mode: repair
+                            caller_token: "{{ caller_token }}"
+                            error: missing_key
+                            message: key or primary_index_key is required for repair.
+                default:
+                  - choose:
+                      - conditions: "{{ _target_cab in ['', 'unknown', 'unavailable'] }}"
+                        sequence:
+                          - variables:
+                              result:
+                                ok: false
+                                tool: zen_dojotools_scribe
+                                mode: repair
+                                caller_token: "{{ caller_token }}"
+                                error: no_cabinet
+                                message: Cabinet could not be resolved. Provide cabinet_entity_id explicitly.
+                    default:
+                      - action: script.zen_dojotools_filecabinet
+                        data:
+                          action_type: read
+                          show_hidden_volumes: false
+                          volume_entity_id:
+                            - "{{ _target_cab }}"
+                          key: "{{ _storage_key }}"
+                          caller_token: "{{ caller_token }}"
+                        response_variable: _repair_read
+                      - variables:
+                          _repair_raw: >-
+                            {%- set raw = _repair_read.result | default({}, true) -%}
+                            {{ raw if raw is mapping else (raw | from_json if raw is string else {}) }}
+                      - variables:
+                          _repair_d1: >-
+                            {%- set _keyed = _repair_raw if _repair_raw is mapping else {} -%}
+                            {%- if _storage_key in _keyed -%}
+                              {%- set _d = _keyed.get(_storage_key, {}) -%}
+                              {{ _d if _d is mapping else (_d | from_json if _d is string else {}) }}
+                            {%- else -%}
+                              {{ _repair_raw }}
+                            {%- endif -%}
+                      - variables:
+                          _repair_d2: >-
+                            {%- set _v = _repair_d1.get('value', _repair_d1) if _repair_d1 is mapping else _repair_d1 -%}
+                            {{ _v if _v is mapping else (_v | from_json if _v is string else {}) }}
+                      # Count wrapper depth and fully unwrap — up to 5 levels
+                      - variables:
+                          _repair_depth_and_body: >-
+                            {%- set ns = namespace(d=0, obj=_repair_d2 if _repair_d2 is mapping else {}) -%}
+                            {%- for _ in range(0, 5) -%}
+                              {%- set _ks = ns.obj.keys() | list if ns.obj is mapping else [] -%}
+                              {%- if (
+                                _ks | length <= 3
+                                and 'value' in _ks
+                                and not ns.obj.get('artifact_class')
+                                and not ns.obj.get('index_call')
+                                and not ns.obj.get('component_summary')
+                              ) -%}
+                                {%- set _inner = ns.obj.get('value', {}) -%}
+                                {%- set ns.obj = _inner if _inner is mapping else (_inner | from_json if _inner is string else {}) -%}
+                                {%- set ns.d = ns.d + 1 -%}
+                              {%- endif -%}
+                            {%- endfor -%}
+                            {{ {'depth': ns.d, 'body': ns.obj} | tojson }}
+                      - variables:
+                          _repair_meta: >-
+                            {%- set _rm = _repair_depth_and_body if _repair_depth_and_body is mapping else (_repair_depth_and_body | from_json if _repair_depth_and_body is string else {}) -%}
+                            {{ _rm }}
+                          _repair_depth: >-
+                            {%- set _rm = _repair_depth_and_body if _repair_depth_and_body is mapping else (_repair_depth_and_body | from_json if _repair_depth_and_body is string else {}) -%}
+                            {{ _rm.get('depth', 0) | int(0) }}
+                          _repair_body: >-
+                            {%- set _rm = _repair_depth_and_body if _repair_depth_and_body is mapping else (_repair_depth_and_body | from_json if _repair_depth_and_body is string else {}) -%}
+                            {%- set _b = _rm.get('body', {}) -%}
+                            {{ _b if _b is mapping else (_b | from_json if _b is string else {}) }}
+                      # Dry run — return depth + preview without writing
+                      - choose:
+                          - conditions: "{{ dry_run | default(true) | bool }}"
+                            sequence:
+                              - variables:
+                                  result:
+                                    ok: true
+                                    tool: zen_dojotools_scribe
+                                    mode: repair
+                                    caller_token: "{{ caller_token }}"
+                                    dry_run: true
+                                    depth_detected: "{{ _repair_depth }}"
+                                    wrapper_found: "{{ _repair_depth | int(0) > 0 }}"
+                                    cabinet_entity_id: "{{ _target_cab }}"
+                                    key: "{{ _storage_key }}"
+                                    preview: "{{ _repair_body }}"
+                                    message: >-
+                                      Dry run complete. depth_detected={{ _repair_depth }}.
+                                      {% if _repair_depth | int(0) > 0 %}Wrapper accumulation found — run with dry_run: false to repair.{% else %}No wrapper accumulation detected. Drawer is clean.{% endif %}
+                        default:
+                          # Live run: nothing to repair
+                          - choose:
+                              - conditions: "{{ _repair_depth | int(0) == 0 }}"
+                                sequence:
+                                  - variables:
+                                      result:
+                                        ok: true
+                                        tool: zen_dojotools_scribe
+                                        mode: repair
+                                        caller_token: "{{ caller_token }}"
+                                        repaired: false
+                                        depth_was: 0
+                                        cabinet_entity_id: "{{ _target_cab }}"
+                                        key: "{{ _storage_key }}"
+                                        message: No wrapper accumulation detected. Drawer is already clean.
+                            default:
+                              # Live run: write normalized body back
+                              - action: script.zen_dojotools_filecabinet
+                                data:
+                                  action_type: update
+                                  show_hidden_volumes: false
+                                  force_action: true
+                                  set_timestamp: true
+                                  volume_entity_id:
+                                    - "{{ _target_cab }}"
+                                  key: "{{ _storage_key }}"
+                                  value: "{{ _repair_body }}"
+                                  caller_token: "{{ caller_token }}"
+                                response_variable: _repair_write
+                              - variables:
+                                  result:
+                                    ok: true
+                                    tool: zen_dojotools_scribe
+                                    mode: repair
+                                    caller_token: "{{ caller_token }}"
+                                    repaired: true
+                                    depth_was: "{{ _repair_depth }}"
+                                    artifact_class: "{{ (_repair_body.get('artifact_class', 'unknown') if _repair_body is mapping else 'unknown') }}"
+                                    cabinet_entity_id: "{{ _target_cab }}"
+                                    key: "{{ _storage_key }}"
+                                    write_result: "{{ _repair_write | default({}) }}"
+                                    message: >-
+                                      Wrapper accumulation repaired. depth_was={{ _repair_depth }}.
+                                      Normalized artifact body written back to drawer.
 
         default:
           - variables:
@@ -2437,5 +2567,25 @@ script:
                 caller_token: "{{ caller_token }}"
                 error: unsupported_mode
                 message: Unsupported mode. Call with no mode or mode=help for full contract.
-          - stop: unsupported_mode
-            response_variable: result
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # SINGLE EXIT — envelope() wrap. Cadillac-pattern piece 1/3 (SESE +
+      # envelope) migration in progress: only branches that no longer have
+      # their own `stop:` fall through to here. Unconverted branches still
+      # exit via their own stop, unaffected. Remaining: publish_kfc,
+      # republish_kfc, repair.
+      # ═══════════════════════════════════════════════════════════════════════
+      - variables:
+          _envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if not (result.get('ok', true) if result is mapping else true) else 'success',
+              mode=_mode,
+              result=result,
+              tool='zen_dojotools_scribe',
+              caller_token=caller_token | default('')
+            ) -}}
+      - variables:
+          _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+      - stop: scribe response
+        response_variable: _envelope

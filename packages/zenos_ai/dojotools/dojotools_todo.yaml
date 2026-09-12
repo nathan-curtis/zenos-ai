@@ -97,6 +97,42 @@ script:
             {%- if entity_ids is string -%}{{ entity_ids | from_json | default([]) }}{%- elif entity_ids is iterable -%}{{ entity_ids | list }}{%- else -%}[]{%- endif -%}
           {%- else -%}[]{%- endif -%}
         include_task_ids: "{{ include_task_ids | default(false) | bool }}"
+
+    # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390, user-
+    # flagged correction: create/update can write a caller-supplied item/
+    # description into an O365-synced (or other cloud) To Do list -- same
+    # PII-disclosure shape as mail/Teams sending, different destination.
+    # delete/read stay ungated -- deleting or reading doesn't create new
+    # external exposure. Sequential pre-check before the dispatch choose:
+    # below, not a competing branch (same class of bug already caught once
+    # in labels.yaml this session). ──
+    - if: "{{ action_type in ['create', 'update'] }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _td_pii_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: pii_disclosure_control
+          required_cert_level: 1
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _td_pii_cert_policy: "{{ _td_pii_id_raw.get('policy_status', 'blocked') if _td_pii_id_raw is mapping else 'blocked' }}"
+          _td_pii_cert_authorized: "{{ _td_pii_id_raw.get('authorized', false) if _td_pii_id_raw is mapping else false }}"
+          _td_pii_cert_level: "{{ _td_pii_id_raw.get('cert_level', 0) if _td_pii_id_raw is mapping else 0 }}"
+          _td_pii_cert_block_reason: "{{ _td_pii_id_raw.get('block_reason', '') if _td_pii_id_raw is mapping else '' }}"
+      - if: "{{ _td_pii_cert_policy != 'allowed' or not _td_pii_cert_authorized }}"
+        then:
+          - variables:
+              _td_pii_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_td_pii_cert_policy, _td_pii_cert_authorized, _td_pii_cert_level, 'pii_disclosure_control', 1, action_type, _td_pii_cert_block_reason) -}}
+          - variables:
+              final_response: >-
+                {{ ((_td_pii_cd_raw | from_json) if _td_pii_cd_raw is string else _td_pii_cd_raw) | combine({'tool': 'zen_dojotools_todo', 'caller_token': caller_token}) }}
+          - stop: cert_insufficient
+            response_variable: final_response
+
     - choose:
       - conditions:
         - condition: template
@@ -129,7 +165,7 @@ script:
                 tool='zen_dojotools_todo',
                 display_name='ToDo',
                 tier='dojotools',
-                version='5.1.0',
+                version='5.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['todo', 'tasks'],
@@ -150,7 +186,9 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-              ) | from_json -}}
+              ) | from_json | combine({'certs_required': [
+                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['create', 'update']}
+              ]}) -}}
         - stop: todo tool manifest
           response_variable: result
       - conditions:

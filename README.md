@@ -10,11 +10,13 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current Stable: 2026.9.1 'Steel Magnolia'** (patch on 2026.9.0) | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo'). See [release notes](zenos_ai/docs/releases/steel_magnolia.md#20261-patch).
+**Current Stable: 2026.9.1 'Steel Magnolia'** (patch on 2026.9.0) | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo'). See [release notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch).
 
-> **2026.9.1 is a bugfix-only patch** — backported from work done on 2026.10.0 'Tron', deliberately isolated to fixes that don't depend on any of Tron's still-in-development feature work (admission certification, the administrative plane, Activity Orchestration, Z-Wave diagnostics, Display Surface). See the [2026.9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#20261-patch) for the full fix list.
+> **2026.9.1 is a bugfix-only patch** — backported from work done on 2026.10.0 'Tron', deliberately isolated to fixes that don't depend on any of Tron's still-in-development feature work (admission certification, the administrative plane, Activity Orchestration, Z-Wave diagnostics, Display Surface). See the [2026.9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch) for the full fix list.
 
-> **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely, nothing depends on or drags in the new security machinery — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#20261--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
+> **Public beta: 2026.10.0 'Tron'** (`feat/2026.10.0`) — admission-gated ZenOS tool access, an administrative certification plane above normal participation, a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations system-wide, and Room Manager/Media/Lighting/Display convergence on one shared vocabulary. A few cert-gate audits (FileCabinet, Manifest/Scribe/Postman) are still open and tracked before this becomes a release candidate — see [Release Notes — Tron](zenos_ai/docs/releases/tron.md) for the full picture, including what's still in progress.
+
+> **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely, nothing depends on or drags in the new security machinery — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -56,7 +58,7 @@ Release notes: [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md)
 
 **What's in 2026.7.2:** Two custom template files missed in the 7.1 audit — `zenos_cabinets.jinja` gains `cabinet_drawer_value_mounted` (follows FC write-mount pointers to expansion cabinets), and `zenos_manifest.jinja` gains `preferred_state`/`stripe`/`prerequisites`/`impact`/`fallback` params.
 
-→ [Patch Notes — 2026.7.2](zenos_ai/docs/releases/neo.md#20267-2-patch)
+→ [Patch Notes — 2026.7.2](zenos_ai/docs/releases/neo.md#202672-patch)
 
 ---
 
@@ -84,7 +86,7 @@ ZenOS-AI is a modular AI and automation architecture built on:
 
 - **Home Assistant**
 - **Home Assistant Packages** (canonical configuration layer)
-- **Structured contextual memory** (“Cabinets” and “Drawers”)
+- **Structured contextual memory** ("Cabinets" and "Drawers")
 - **Event-driven Kata summaries**
 - **Local and distributed inference engines**
 - **A multi-persona AI team**
@@ -112,9 +114,7 @@ ZenOS-AI is structured around **Home Assistant Packages**, which form the canoni
 Everything lives under:
 
 ```
-
 packages/zenos_ai/
-
 ```
 
 Packages define the **spine of the system**.
@@ -133,8 +133,8 @@ ZenOS-AI operates in **concentric rings**, separating definition, runtime cognit
 | Ring | Name | What it does |
 |------|------|-------------|
 | Ring-0 | Core Kit | Defines the rules: labels, cabinet schema, identity contracts, event bus, health sensors. Does not run behavior. If Ring-0 breaks, Friday forgets who she is. |
-| Ring-1 | Cognitive Runtime | Binds behavior to Ring-0’s definitions: DojoTools scripts, KF4 pipeline, prompt compilation, persona capsules, conversation agent interface. This is where Friday thinks. |
-| Ring-2 | Admin & Recovery | Maintenance, repair, and recovery: cabinet repair, manifest writing, KFC loading, identity audit. The “don’t panic” layer. |
+| Ring-1 | Cognitive Runtime | Binds behavior to Ring-0's definitions: DojoTools scripts, KF4 pipeline, prompt compilation, persona capsules, conversation agent interface. This is where Friday thinks. |
+| Ring-2 | Admin & Recovery | Maintenance, repair, and recovery: cabinet repair, manifest writing, KFC loading, identity audit. The "don't panic" layer. |
 
 ---
 
@@ -176,7 +176,7 @@ The Monastery:
 • produces **Kata summaries**  
 • generates **Supersummaries**  
 • enforces the *Order of the Monastery* (no hallucination)  
-• acts as Friday’s extended cognition
+• acts as Friday's extended cognition
 
 Without the Monastery, Friday remains functional — but **reflexive and shallow**.
 
@@ -191,7 +191,7 @@ ZenOS-AI installs as a **Home Assistant package collection**.
 ## Requirements
 
 • Home Assistant 2025.x+
-• A conversation agent with tool-calling support (models under ~4B parameters released before Nov 2025 or ~8B parameters beforehand, or with short context windows are not recommended.  Your CTX must hold the HA live state data, Tools manifest AND the ZenosPrompt. The ZenOS goals is to target a ~64K or smaller context as to be able to run the system locally on a single 16G GPU)
+• A conversation agent with tool-calling support. Not recommended: models under ~4B parameters (or under ~8B if released before Nov 2025), or anything with a short context window — your context must hold live HA state, the tools manifest, and the ZenOS prompt in a single pass. The target is a ~64K-or-smaller context so the whole system can run locally on a single 16GB GPU.
 • Spook integration (installable via HACS)
 
 ---
@@ -284,6 +284,7 @@ packages/zenos_ai/
     dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
     dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
     dojotools_locks.yaml          — Lock Manager — lock inventory and control
+    dojotools_display.yaml        — Display Surface (v1 in progress) — cast a Lovelace view to Cast/Fire TV/webOS displays
     dojotools_music_assistant.yaml — Music Assistant bridge (internal)
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring

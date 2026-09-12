@@ -21,7 +21,7 @@ M365 Teams CRUD via the MS365 integration. Supports reading the latest incoming 
 | `action_type` | Description |
 |---|---|
 | `read` | Returns latest chat message, your current Teams status, and the partner's chat ID |
-| `send` | Sends a text message to an existing chat thread. Requires `chat_id` and `message` |
+| `send` | Sends a text message to an existing chat thread. Requires `chat_id` and `message`. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `set` | Updates your Teams presence (availability + activity + expiration). Requires `availability` |
 | `help` | Returns capability summary, field reference, and setup notes |
 
@@ -71,7 +71,7 @@ M365 Mail via the MS365 integration. Supports listing inbox messages, reading a 
 |---|---|
 | `list` | Lists messages from a folder (default: Inbox). Supports `from_filter` and `query` filters. Returns `uid` in each header row. |
 | `read` | Finds a message by `uid` OR `subject` substring (first match wins). Resolves via sensor attribute scan — `uid` is always empty string from the MS365 sensor, so **subject match is the practical path**. Returns full body. |
-| `create` | Sends a new email. Requires `to`, `subject`, `body`. |
+| `create` | Sends a new email. Requires `to`, `subject`, `body`. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390). |
 | `delete` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
 | `move` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
 | `help` | Returns capability summary, field reference, examples, and setup notes. |
@@ -95,7 +95,7 @@ M365 Mail via the MS365 integration. Supports listing inbox messages, reading a 
 
 ### Whitelist Gate
 
-Outbound sends are gated by `input_text.zen_mail_whitelist`. If the helper is missing or unavailable, sends are blocked and the AI surfaces setup instructions.
+Outbound sends are gated by the `mail_whitelist_config` household-cabinet drawer (2026-09-10, #10390 — moved off the self-editable `input_text.zen_mail_whitelist` helper). If the drawer is missing or unavailable, sends are blocked and the AI surfaces setup instructions.
 
 | Whitelist value | Behavior |
 |---|---|
@@ -103,13 +103,19 @@ Outbound sends are gated by `input_text.zen_mail_whitelist`. If the helper is mi
 | `*@yourdomain.com` | Domain wildcard — any address in that domain |
 | `user@domain.com` | Exact match only |
 
+Editing the whitelist is now its own gated mode:
+
+| `action_type` | Description |
+|---|---|
+| `whitelist_set` | Writes the `mail_whitelist_config` drawer. Requires the `pii_disclosure_control` certification at **level 2** (higher than the level-1 requirement on `create`/Teams `send` — changing the disclosure policy itself is a bigger blast radius than one disclosure). |
+
 ### Setup Helpers
 
 | Helper | Purpose |
 |---|---|
 | `input_text.zen_mail_sender` | HA send-from address (e.g. `homeassistant@yourdomain.com`) |
 | `input_text.zen_mail_domain` | Your email domain for wildcard matching |
-| `input_text.zen_mail_whitelist` | Whitelist mode. Required for sends to proceed |
+| Household cabinet drawer `mail_whitelist_config` | Whitelist mode. Required for sends to proceed. Set via `action_type: whitelist_set` (see above) — no longer a directly user-editable `input_text` helper. |
 
 ---
 

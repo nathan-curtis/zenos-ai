@@ -22,12 +22,13 @@
 4. [The Nine States of a Room](#4-the-nine-states-of-a-room)
 5. [The Control Panel (your room_control_manager switch)](#5-the-control-panel-your-room_control_manager-switch)
 6. [Special Moves (opt-in features)](#6-special-moves-opt-in-features)
-7. [REFLEX: Turning a State Into a Scene](#7-reflex-turning-a-state-into-a-scene)
-8. [Patterns & Practices (playing it well)](#8-patterns--practices-playing-it-well)
-9. [Hints, Tips & Tricks](#9-hints-tips--tricks)
-10. [Troubleshooting](#10-troubleshooting)
-11. [What's Next](#11-whats-next)
-12. [How to Request New Features](#12-how-to-request-new-features)
+7. [Activity Orchestration & Room Diagnostics](#7-activity-orchestration--room-diagnostics)
+8. [REFLEX: Turning a State Into a Scene](#8-reflex-turning-a-state-into-a-scene)
+9. [Patterns & Practices (playing it well)](#9-patterns--practices-playing-it-well)
+10. [Hints, Tips & Tricks](#10-hints-tips--tricks)
+11. [Troubleshooting](#11-troubleshooting)
+12. [What's Next](#12-whats-next)
+13. [How to Request New Features](#13-how-to-request-new-features)
 - [For the Technically Curious](#for-the-technically-curious)
 - [Addendum: For Agents Reading This Doc](#addendum-for-agents-reading-this-doc)
 
@@ -194,7 +195,7 @@ closet doesn't need a vent fan.
 > helpers, done through the normal HA UI," this is the tier it's in.
 > **What you get for doing nothing at all:** a room with zero labels
 > still exists, still reports a state (Vacant, forever, correctly — see
-> Section 9's tip on this), and breaks nothing. The floor here is high.
+> Section 10's tip on this), and breaks nothing. The floor here is high.
 >
 > **② DEPLOY THE TEMPLATE. ONCE PER ROOM, THEN NEVER AGAIN.** Before a
 > room can report a state at all, it needs its own status sensor — Step
@@ -208,7 +209,7 @@ closet doesn't need a vent fan.
 > Entertaining Hold turned on isn't three separate systems fighting each
 > other; it's three labels the SAME dispatcher already reads, all at
 > once, resolved by the priority ladder in Section 4. This is what
-> Section 8's worked examples actually are: recipes for which labels to
+> Section 9's worked examples actually are: recipes for which labels to
 > stack together for a given room type. Nothing new to learn per
 > combination — just more Tier ① tagging, aimed well.
 >
@@ -216,7 +217,7 @@ closet doesn't need a vent fan.
 > is the one place this system asks something real of you — a text file,
 > filled in from a template, once per room. We built it to be that small
 > on purpose; see Step 3 below for exactly what that five minutes looks
-> like, and Section 11 for why it isn't zero minutes yet.
+> like, and Section 12 for why it isn't zero minutes yet.
 >
 > **Footnote key for what follows:** † = this feature needs the room's
 > state sensor already deployed (Tier ②) before it does anything — true
@@ -242,20 +243,20 @@ closet doesn't need a vent fan.
 
 **🍸 Entertaining Hold / Guest Hold** † — "While entertaining mode or guest mode is on, opted-in rooms stay conservative instead of guessing." Prevents a busy house from flickering a room between Occupied and Vacant. Opt in per room; a room not opted in is unaffected.
 
-**📡 Presence Hold** † — "A continuous-presence sensor is trusted enough to hold the room outright, no guessing." Tag a continuous-presence (mmWave) sensor — not a PIR motion sensor — `presence` plus the room's own label, and while it reads on, the room reports Hold, no clock, no decay. Clears the instant the sensor goes false. This is one of five sources that can put a room in Hold (see Section 4 and the Power User Secrets in Section 9) — the others are the wasp flag, Entertaining Hold, Guest Hold, and the plain `hold` label on any entity tagged for the room.
+**📡 Presence Hold** † — "A continuous-presence sensor is trusted enough to hold the room outright, no guessing." Tag a continuous-presence (mmWave) sensor — not a PIR motion sensor — `presence` plus the room's own label, and while it reads on, the room reports Hold, no clock, no decay. Clears the instant the sensor goes false. This is one of five sources that can put a room in Hold (see Section 4 and the Power User Secrets in Section 10) — the others are the wasp flag, Entertaining Hold, Guest Hold, and the plain `hold` label on any entity tagged for the room.
 
-**🐝 Wasp (Hold from an unconfirmed entry)** † — "Motion with no door-open to explain it holds the room, instead of guessing." Requires TWO things before it does anything: at least one door tagged `wasp_door` for that room (Section 8's "the door, not the lock" tip), AND the room itself opted in with the `wasp_enabled` label — either on the room's Area directly, or on any entity in that room. Both, not just one. This is opt-in on purpose: a room with an always-open archway instead of a real door (a connected front hall, say) can't safely tell "someone's inside with the door shut" from "there is no door" — tagging `wasp_door` there without also enabling the room would just misfire. If a room's Hold never seems to trigger from motion alone, check both halves are actually set before assuming something's broken. (See Section 9's "the door, not the lock" tip for the other common wasp_door setup mistake.)
+**🐝 Wasp (Hold from an unconfirmed entry)** † — "Motion with no door-open to explain it holds the room, instead of guessing." Requires TWO things before it does anything: at least one door tagged `wasp_door` for that room (Section 9's "the door, not the lock" tip), AND the room itself opted in with the `wasp_enabled` label — either on the room's Area directly, or on any entity in that room. Both, not just one. This is opt-in on purpose: a room with an always-open archway instead of a real door (a connected front hall, say) can't safely tell "someone's inside with the door shut" from "there is no door" — tagging `wasp_door` there without also enabling the room would just misfire. If a room's Hold never seems to trigger from motion alone, check both halves are actually set before assuming something's broken. (See Section 10's "the door, not the lock" tip for the other common wasp_door setup mistake.)
 &nbsp;&nbsp;&nbsp;&nbsp;**Release has a cooldown, on purpose.** The instant the door opens, wasp Hold doesn't just vanish and re-arm on the next flicker — it holds off re-latching for a short blind period (5 seconds by default) so a door that swings shut and immediately reopens doesn't false-trigger a fresh Hold. Tune it per room by tagging a number helper `wasp_blind_seconds` plus the room's own label; untagged rooms just use the 5-second default.
 
 **🔓 Generic Hold** † — "Tag anything, and while it's on, this room is in Hold — full stop." The plainest of the five Hold sources: tag any entity `hold` plus the room's own label, and while that entity reads on/open, the room reports Hold, no clock, no decay, clears the instant it goes false. No opt-in flag needed beyond the tag itself — this is the general-purpose escape hatch for "I have some other condition that should hold this room" without waiting on a dedicated feature to be built for it.
 
 **🔐 Exterior Lock Awareness** † — "Know how many doors are actually unlocked right now, not just whether any are." Tag exterior lock entities `ext_lock` (plus the room's own label) and the room's state sensor reports three things: whether ANY are unlocked (`ext_unlocked_active`), exactly how many (`ext_unlocked_count`), and how many exterior locks this room even has (`ext_lock_count`). No timer, no decay — a live read of real lock state, same instant it changes.
 &nbsp;&nbsp;&nbsp;&nbsp;**Acting on a room's locks**, not just reading them, is a separate tool: `zen_dojotools_locks mode=set room=<room> action=lock` (or `unlock`) locks/unlocks every lock in a room at once, no need to name each one. `mode=discover room=<room>` lists them with live state first if you want to check before acting. `entity_id=` still works for a single explicit lock instead of a whole room.
-&nbsp;&nbsp;&nbsp;&nbsp;**Not the same as `privacy_door`** (a different, older label) — that one doesn't feed anything right now (see the note in Section 10). If a lock is currently tagged `privacy_door` and you want it counted in `ext_lock_count`, retag it `ext_lock`.
+&nbsp;&nbsp;&nbsp;&nbsp;**Not the same as `privacy_door`** (a different, older label) — that one doesn't feed anything right now (see the note in Section 11). If a lock is currently tagged `privacy_door` and you want it counted in `ext_lock_count`, retag it `ext_lock`.
 
 **📳 Vibration (occupancy, engagement, or "the load is done")** † (except `vibration_completion` — see below) — "A shaking washer means someone's using this room. A washer that stopped shaking twenty minutes ago means the load is done." Vibration is deliberately purpose-neutral: tagging a sensor `vibration` alone does nothing to the room's state by itself — it only makes the dispatcher notice the moment vibration starts and stops. To make it actually count toward Occupied or Engaged (your call, per room — a washer running is arguably "actively doing a thing," same tier as a media_player), tag that SAME sensor with `occupied` or `engaged` too, exactly like Section 4's other signals. Nothing new to learn here: it's Tier ① tagging, stacked.
 &nbsp;&nbsp;&nbsp;&nbsp;A separate, optional third label — `vibration_completion` — turns on "the load is done" detection on that same sensor. **This is the one feature in this entire manual that does NOT need † — no room state sensor required at all.** It's a standalone watcher, tracked in the household cabinet rather than the room sensor, so it works even on a room that's never had Step 3 done. This isn't just "vibration stopped": a half-second bump reads as noise, not a finished cycle, so it only fires after the vibration ran a genuine 20 minutes or longer before stopping, same anomaly-filter logic the household's real washing-machine automation already uses. When it fires for real, it's logged as an event (`vibration_load_complete`) — ask your AI "did the washer finish?" and it can check.
-&nbsp;&nbsp;&nbsp;&nbsp;**How to test it:** there's no dry-run mode for this one yet (unlike REFLEX, Section 7) — the honest way to check it's wired right is to trigger the sensor for real (run the appliance, or tap/shake it if that's enough to register) and then ask your AI whether the room went Occupied/Engaged, and separately whether a `vibration_load_complete` event showed up after a real, full-length run. A short test tap won't fire completion on purpose — that's the anomaly filter working, not a bug.
+&nbsp;&nbsp;&nbsp;&nbsp;**How to test it:** there's no dry-run mode for this one yet (unlike REFLEX, Section 8) — the honest way to check it's wired right is to trigger the sensor for real (run the appliance, or tap/shake it if that's enough to register) and then ask your AI whether the room went Occupied/Engaged, and separately whether a `vibration_load_complete` event showed up after a real, full-length run. A short test tap won't fire completion on purpose — that's the anomaly filter working, not a bug.
 
 None of it requires a code editor or a YAML file — every feature above
 turns on the same way: labels and helpers, done through the normal HA
@@ -300,7 +301,85 @@ you.
 
 ---
 
-## 7. REFLEX: TURNING A STATE INTO A SCENE
+## 7. ACTIVITY ORCHESTRATION & ROOM DIAGNOSTICS
+
+### "Movie Night" as one button, not five
+
+Everything so far in this manual is about a room reporting what's
+*actually* happening in it. Activities are the other direction: telling
+a room what you want it to do, as one saved preset instead of five
+separate taps every time.
+
+Teach an activity once — a name, a source to switch to, and optionally
+a lighting look and/or something to play — and applying it later does
+the whole scene in a single call: switch the input, start the media,
+set the lights, and (if you want) take the room out of Room Manager's
+live cascade for the duration so a stray motion event doesn't undo your
+choice thirty seconds later.
+
+**Teaching one:** `zen_dojotools_media_manager mode=activity_set
+room=<room> activity_name=<name> channel=<source>`, with three optional
+extras:
+
+* `light_context=<name>` — fires that room's already-taught lighting
+  look (see Section 6's Nightlight/Vent Fan pattern for how "teach it
+  once, tag it" works elsewhere in this system; lighting contexts are
+  taught separately, via ZenLux's own `prefs_set`).
+* `lock_room=true` — takes the room out of Room Manager's live cascade
+  for the duration, same control surface as Section 5's
+  `room_control_manager` switch, just set programmatically instead of
+  by hand. Without this, a real motion/media event can still move the
+  room to a different state mid-activity, same as normal.
+* `media_id=<id>` — starts a specific track/playlist/URI on the room's
+  media player as part of the same call, not just a source switch.
+
+**Running one:** `mode=activity_apply room=<room>
+activity_name=<name>` does the whole saved scene in one call.
+
+**Ending one:** `mode=activity_end room=<room>` is the generic "done" —
+hands the room back to Room Manager's live cascade (if `lock_room` was
+used) and stops whatever's playing. Works regardless of which activity
+(if any) is currently applied.
+
+**The safety net you don't have to think about:** if a room locked by
+`lock_room` ever leaves Automation by *any* path — you clear it by hand
+from the dashboard, another tool touches it, not just `activity_end` —
+Room Manager notices and pauses that room's media automatically. An
+activity's music is never left playing after its lock quietly
+disappeared.
+
+### `role_audit` — "why is this room's automation acting weird"
+
+Sometimes a room's automation misbehaves not because of anything in
+this manual's cascade logic, but because of how its entities are
+*tagged* — two TVs both claiming to be this room's television with no
+tiebreak, a speaker whose Home Assistant area disagrees with the room
+label it also carries, a sensor that quietly went unavailable months
+ago and nobody noticed. `mode=role_audit area=<room>` is a read-only,
+no-permission health check that catches exactly this class of problem
+in one call instead of several manual look-ups:
+
+* **Ambiguous role** — two or more entities claiming the same job in
+  this room (its TV, its light manager, its display target) with no
+  `primary` label to break the tie.
+* **Area mismatch** — an entity carries this room's label but Home
+  Assistant's own area assignment disagrees.
+* **Stale state** — a role-tagged entity is currently unavailable or
+  unknown.
+
+If the audit flags a stale entity you know is genuinely retired, not
+just glitching, `zen_dojotools_ectoplasm mode=entity_disable` on it
+does double duty: it disables the entity *and* tags it `zen_agent_disabled`,
+so "everything the agent has turned off" stays a simple label filter
+you can always find later — nothing disappears silently.
+
+Ask your AI "audit the office's roles" whenever something in a room
+feels like it's fighting itself, before assuming the cascade logic
+itself is broken.
+
+---
+
+## 8. REFLEX: TURNING A STATE INTO A SCENE
 
 <img src="images/reflex_match.png" alt="REFLEX scene match: Asleep state matched to Sleep Scene via a magnifying glass — match found" width="500">
 
@@ -381,7 +460,7 @@ of treating it as a magic button:
    nothing gets found, full stop** — REFLEX can't invent a scene, and
    "ask your AI" can't either. A brand-new or rarely-used room (a
    closet, a utility space) often genuinely has zero scenes, and that's
-   fine — see Section 8, not every room needs one.
+   fine — see Section 9, not every room needs one.
 2. **For every state, it reports one of four things:** already wired
    directly, covered by borrowing another state's scene (fine, see
    above), a genuine gap (a state with no scene and nothing to borrow
@@ -432,7 +511,7 @@ the engine itself isn't running, there's nothing to rehearse.
 
 ---
 
-## 8. PATTERNS & PRACTICES (playing it well)
+## 9. PATTERNS & PRACTICES (playing it well)
 
 **Trust the state, don't fight it.** If a room says Occupied and you
 think it's wrong, the fix is almost always "the sensor that should be
@@ -506,14 +585,14 @@ the equivalent shortcut if you're handing it to an AI instead.
 
 ---
 
-## 9. HINTS, TIPS & TRICKS
+## 10. HINTS, TIPS & TRICKS
 
 - **Tip:** Ask "what's the state of the [room]?" any time. It's a free, instant answer. No need to guess from raw sensors.
 - **Tip:** If you want to see WHY a room is in a state before you trust it, ask "why is the [room] [state] right now?"
 - **Tip:** Setting a room to PAUSED is completely safe and fully reversible. When in doubt, pause first, ask questions later.
 - **Tip:** A minimally configured room still works. With only basic occupancy signals tagged, it simply moves between Vacant and Occupied. There is no minimum setup required to get value.
 - **Tip:** Bathrooms attached to bedrooms usually want the ensuite cascade left ON (the default). It's the behavior most people actually want, even if it surprises you the first time.
-- **Secret:** REFLEX has a house-wide "dry run" mode that logs exactly what every room WOULD do without actually doing it — see Section 7. It's currently ON, house-wide, as shipped.
+- **Secret:** REFLEX has a house-wide "dry run" mode that logs exactly what every room WOULD do without actually doing it — see Section 8. It's currently ON, house-wide, as shipped.
 
 ---
 
@@ -614,14 +693,14 @@ the equivalent shortcut if you're handing it to an AI instead.
 
 ---
 
-## 10. TROUBLESHOOTING
+## 11. TROUBLESHOOTING
 
 | Symptom | Likely cause |
 |---|---|
 | Room never leaves Vacant even though someone's clearly in there | The sensor that should confirm this room isn't wired to that room yet |
 | Room control keeps snapping back to Auto after I set it to Automation | Control Burnout is on for that room. That's the safety net doing its job. |
 | Fan / TV sleep timer never fires | That feature isn't set up for this room yet. See Section 6, Step 2. |
-| Bedroom won't go fully quiet at night because of the attached bathroom | Working as intended. See Section 8. |
+| Bedroom won't go fully quiet at night because of the attached bathroom | Working as intended. See Section 9. |
 | A newly added room doesn't show up yet | Settings → System → Restart, or reload templates/automations. New rooms pick themselves up automatically once that happens. |
 | Vibration sensor triggers but the room's state never changes | `vibration` alone doesn't feed the room — it only makes the dispatcher notice the edge. That same sensor also needs `occupied` or `engaged` tagged on it (Section 6). |
 | Washer/dryer finished but no "load complete" event | Either `vibration_completion` isn't tagged on that sensor yet, or the run was genuinely shorter than 20 minutes — the anomaly filter treats short runs as noise on purpose, not a bug. |
@@ -635,7 +714,7 @@ good bug report, and it can check the same attribute for you.
 
 ---
 
-## 11. WHAT'S NEXT
+## 12. WHAT'S NEXT
 
 Room Manager is a living system. It grows with your house, not the other
 way around. A few directions already on the table:
@@ -660,7 +739,7 @@ way around. A few directions already on the table:
 
 ---
 
-## 12. HOW TO REQUEST NEW FEATURES
+## 13. HOW TO REQUEST NEW FEATURES
 
 Just... ask. Out loud, or in chat, to your AI. Say what room, what you
 want it to do, and when. There's no form. There's no queue number.
@@ -733,7 +812,7 @@ translation:
   (Section 6 Step 4) before the room's state sensor will react. Don't
   report a setup as complete without confirming that step happened.
 - **Cite `last_trigger`, not your own inference**, when explaining why
-  a room is in a given state — Section 3/10 both point at this attribute
+  a room is in a given state — Section 3/11 both point at this attribute
   as the authoritative answer. Guessing at a cause the attribute
   doesn't actually name is exactly the kind of confident-but-wrong
   answer this manual's plain-language framing is trying to prevent

@@ -189,7 +189,7 @@ Under KF4, a component's dojo drawer is authored via Scribe (`new_thought` → `
 
 **The pattern:**
 
-1. Add `mode=kfc_manifest` to your tool. It returns `{status: ok, kfc: {...}}` where the `kfc` block is shaped like a dojo drawer definition (`kata_key`, `component_summary`, `component_instructions`, `seed`, `trigger_subscriptions`, `drift_threshold`, `meta.enabled`).
+1. Add `mode=kfc_manifest` to your tool. It returns `{status: ok, kfc: {...}}` where the `kfc` block is shaped like a dojo drawer definition (`kata_key`, `component_summary`, `component_instructions`, `seed`, `trigger_subscriptions`, `drift_threshold`, `meta.enabled`). `meta` also accepts optional `notify_tag`/`notify_response_type` — set both to get an interactive Postman push (a tag plus a response type, e.g. a single "Got it" acknowledge button) on your component's `suggested_act_event` emissions instead of the default fire-and-forget notify every component gets when these are left unset.
 2. Inside that same `kfc_manifest` sequence, self-register your tool on the FC callout whitelist: `tool:kfc_manifest` — hardcoded to your own tool name and this mode only. No dynamic or open whitelist writes.
 3. Add `script.zen_dojotools_yourtool` to the `_bkfc_known` list in `dojotools_manifest.yaml`.
 4. Run `zen_dojotools_manifest mode=bootstrap_kfc` (or wait for its automatic firing on `homeassistant_start` + daily `00:01`).

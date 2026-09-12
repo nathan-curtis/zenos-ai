@@ -13,8 +13,8 @@ Wraps HA todo services with `continue_on_error` isolation so auth failures (401s
 | Action | Description |
 |--------|-------------|
 | `read` | Read items from one or all lists. Omit `list_name` or pass `*` for wildcard discovery. |
-| `create` | Create one or more items. Accepts strings or `{item, due_date, description, reminder}` objects. |
-| `update` | Single-item full edit (rename, due_date, description, status) or bulk status update for multiple items. |
+| `create` | Create one or more items. Accepts strings or `{item, due_date, description, reminder}` objects. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `update` | Single-item full edit (rename, due_date, description, status) or bulk status update for multiple items. Also requires `pii_disclosure_control` (level 1). |
 | `delete` | Delete item(s) by exact name. Uses `continue_on_error` — verify the list if auth is stale. |
 | `help` | Return full field docs and examples. |
 

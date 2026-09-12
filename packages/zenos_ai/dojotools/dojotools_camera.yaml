@@ -35,37 +35,13 @@ script:
   zen_dojotools_camera:
     alias: Zen DojoTools Camera
     description: >-
-      CANONICAL HA DOMAIN TOOL — camera domain. Preferred over all other camera
-      analysis tools. The ZenOS Agent's visual surface: analyze any camera with
-      LLM vision, retrieve cached scene descriptions without burning an LLM call,
-      or sweep an entire labeled camera set in one operation.
-
-      LENS PATTERN: You are in the camera lens. For zone/panel state use
-      zen_dojotools_security_manager (security lens). For per-room spatial context
-      including which cameras are in a given room use zen_dojotools_room_manager
-      mode=get context_slices=+security — returns cameras[] list alongside alarm zones.
-
-      MODES: look (analyze + cache single camera) | read (return cached
-      description — zero LLM cost) | scan (label-targeted multi-camera sweep,
-      analyze + cache all) | info (entity attributes + _default_ctx, no LLM) |
-      set_default_ctx (store per-camera default context index call, validated
-      before write) | help (schema + examples).
-
-      CACHING: Results land in the household cabinet keyed by camera entity_id.
-      read mode retrieves instantly with cache_age_minutes so the agent knows
-      how fresh the picture is. Cache is label-controlled: apply 'camera_cache'
-      label to opt specific cameras in; no labels on any camera = cache all.
-
-      LABEL CONVENTION: Multi-stream cameras (e.g. UniFi G5 exposing hi-res,
-      lo-res, sub-stream) — apply 'security_camera' to the preferred stream
-      only. scan sweeps whatever is labeled, so labeling IS the de-dupe.
-
-      USE read BEFORE look — if cache_age_minutes is acceptable, skip the LLM
-      call entirely. Use look to refresh. Use scan to warm the full camera set.
-
-      SENDTO: After look, optionally dispatch to image.zen_image_<slot> (writes
-      to zen slot so Friday can discuss it on the dashboard) or person.* (push
-      notification via postman with snapshot attached).
+      Camera lens — analyze a camera with LLM vision, read back a cached
+      scene description at zero LLM cost, or sweep a labeled camera set.
+      Use when the user wants to know what a camera currently sees. For
+      alarm/zone state use security_manager; for a room's camera roster use
+      room_manager mode=get context_slices=+security. Check read before
+      look — a fresh-enough cache skips the LLM call entirely. mode=help
+      for the full reference.
     icon: mdi:camera-iris
     sequence:
 
@@ -81,7 +57,7 @@ script:
                     tool='zen_dojotools_camera',
                     display_name='Camera',
                     tier='dojotools',
-                    version='1.4.0',
+                    version='1.5.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['camera', 'security_camera'],
@@ -96,7 +72,9 @@ script:
                                'requires_capabilities': ['image_understanding', 'structured_output'],
                                'est_tokens_in': 1500, 'est_tokens_out': 200},
                     caller_token=caller_token | default('')
-                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['camera_manager']}) }}
+                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['camera_manager'], 'certs_required': [
+                    {'cert': 'camera_alert_policy_edit', 'level': 1, 'modes': ['set_alert_policy']}
+                ]}) }}
           - stop: tool_manifest
             response_variable: result
         - conditions: "{{ _tm_check == 'kfc_manifest' }}"
@@ -968,7 +946,7 @@ script:
                   timeout: 5
                 response_variable: _sdc_index_result
           - variables:
-              _sdc_count: "{{ (_sdc_index_result | default({})).get('entity_count', 0) | int }}"
+              _sdc_count: "{{ (_sdc_index_result | default({})).get('result', {}).get('entity_count', 0) | int }}"
               _sdc_index_ok: "{{ (_sdc_index_result | default({})).get('status', '') == 'dry_run' }}"
           - variables:
               _sdc_ok: "{{ _sdc_index_ok and _sdc_count > 0 }}"
@@ -1051,6 +1029,39 @@ script:
                     caller_token: "{{ _caller_token }}"
               - stop: set_alert_policy_no_policy
                 response_variable: _sap_err
+
+          # ── Cert-gate — camera_alert_policy_edit (2026-09-10, #10390
+          # camera.yaml rollout). Silently redirecting/disabling a security
+          # camera's detection routing is a real security-bypass vector, so
+          # this write is gated even though camera.yaml's other modes
+          # (look/read/scan/info/set_default_ctx) are pure analysis/config
+          # with no security implication and stay ungated. ──
+          - action: script.zen_dojotools_identity
+            response_variable: _sap_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: camera_alert_policy_edit
+              required_cert_level: 1
+              target_entity: "{{ _camera_entity }}"
+              caller_token: "{{ _caller_token }}"
+          - variables:
+              _sap_cert_policy: "{{ _sap_id_raw.get('policy_status', 'blocked') if _sap_id_raw is mapping else 'blocked' }}"
+              _sap_cert_authorized: "{{ _sap_id_raw.get('authorized', false) if _sap_id_raw is mapping else false }}"
+              _sap_cert_level: "{{ _sap_id_raw.get('cert_level', 0) if _sap_id_raw is mapping else 0 }}"
+              _sap_cert_block_reason: "{{ _sap_id_raw.get('block_reason', '') if _sap_id_raw is mapping else '' }}"
+          - if: "{{ _sap_cert_policy != 'allowed' or not _sap_cert_authorized }}"
+            then:
+              - variables:
+                  _sap_cd_raw: >-
+                    {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                    {{ OS.cert_denial(_sap_cert_policy, _sap_cert_authorized, _sap_cert_level, 'camera_alert_policy_edit', 1, 'set_alert_policy', _sap_cert_block_reason) -}}
+              - variables:
+                  result: >-
+                    {{ ((_sap_cd_raw | from_json) if _sap_cd_raw is string else _sap_cd_raw) | combine({'tool': 'zen_dojotools_camera', 'caller_token': _caller_token}) }}
+              - stop: cert_insufficient
+                response_variable: result
+
           - variables:
               _sap_cache_key: "{{ _camera_entity | replace('.', '_') | replace('-', '_') }}"
               _sap_existing: >-

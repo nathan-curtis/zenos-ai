@@ -145,8 +145,19 @@ Only `error`-severity alerts are auto-wired to the Room Manager priority inject 
 | `persistent` (default) | Creates HA persistent notification |
 | `mobile` | Sends via HA mobile app notify service |
 | `postman` | Routes via `zen_dojotools_postman` with authority-stack routing. Household/family `postman_profile` policy applied. |
+| `zen_display` | Casts to a room's display surface instead of (or alongside) a push. Requires `display_room` — resolves to that room's `zen_display_target`. Silent by itself (no push); a status-board use case. |
 
 Use `persistent` for first tests and `postman` when profile-based routing is configured.
+
+### Multi-target composition (comma-separated)
+
+`notify_target` accepts a comma-separated list to fire to more than one channel at once, e.g. `notify_target: postman,zen_display`. Composing `postman` with `zen_display`:
+
+- The push becomes tap-to-open only — `response_type` is dropped from the Postman leg (buttons live on the display instead), and the push opens the dashboard (`open_dashboard: true`, routed to the cast room/view).
+- Pass `also_notify_buttons: true` to additionally fire a second, independent push carrying the real response buttons — for the case where you want both a tap-to-open push and a normal actionable one.
+- `display_room` is required whenever `zen_display` is present in the composed list; a `zen_display` fire with no `display_room` returns a warning field reminding you it's silent (nothing was cast).
+
+This is a rendering destination, not a response source — `zen_display`'s on-screen button row and Postman's push buttons render the same underlying `response_type` choice, whichever channel(s) were composed.
 
 ---
 
@@ -314,7 +325,7 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `clear_all` | Clear all active alerts. Returns count of keys cleared. |
 | `get_response` | Read the cached ack for a fired alert. Returns `{status: pending}` if the response hasn't arrived yet, or `{status: captured, ack_action, ack_timed_out, ack_device_id}` once captured. |
 | `get_policy` | Read the current notify policy from the household cabinet. |
-| `set_policy` | Write a new notify policy entry to the household cabinet. |
+| `set_policy` | Write a new notify policy entry to the household cabinet. Requires the `alert_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `help` | Return full tool contract and field reference. |
 
 **Default:** No input → `mode: help`.
@@ -327,11 +338,13 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `alert_key` | `fire`, `clear` | string | Alert dedup key — must match the key used at fire time. |
 | `message` | `fire` | string | Human-readable description of the alert condition. |
 | `severity` | `fire` | string | `info` \| `warn` \| `error`. Default: `warn`. |
-| `notify_target` | `fire` | string | `persistent` \| `mobile` \| `postman`. Default: `persistent`. |
+| `notify_target` | `fire` | string | `persistent` \| `mobile` \| `postman` \| `zen_display`, or a comma-separated combination (e.g. `postman,zen_display`). Default: `persistent`. |
 | `clear_after_minutes` | `fire` | number | TTL in minutes. Default: 1440 (24h). Pass `0` for no auto-expiry. |
 | `channel_hint` | `fire` (postman) | string | `push` \| `tts` \| `teams` — used when `notify_target: postman`. |
 | `image_entity` | `fire` (postman) | string | Camera or image entity to attach a snapshot. Used when `notify_target: postman`. |
 | `response_type` | `fire` (postman) | string | Actionable button preset: `none` \| `yes_no` \| `yes_no_ignore` \| `ok_cancel` \| `acknowledge`. Default: `none`. Used when `notify_target: postman`. Response cached to kata cabinet and emitted as `zen_event(kind: alert_response)`. |
+| `display_room` | `fire` (`zen_display` in `notify_target`) | string | Required when `zen_display` is composed. Room/area to cast the ask to — resolves to that room's `zen_display_target`. |
+| `also_notify_buttons` | `fire` (postman + `zen_display` composed) | boolean | Default `false`. When both `postman` and `zen_display` are composed, fires a second, independent push carrying real response buttons in addition to the tap-to-open push. |
 | `label` | `get_policy`, `set_policy` | string | HA label slug. Targets all entities returned by `label_entities()`. |
 | `target_entity` | `get_policy`, `set_policy` | string | Single entity ID. Overrides `label`. |
 | `policy_json` | `set_policy` | JSON string | Routing override shape: `{notify_target, channel_hint, suppress_minutes}`. |

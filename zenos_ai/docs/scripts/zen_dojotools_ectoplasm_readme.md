@@ -113,9 +113,11 @@ data:
 |---|---|---|
 | `entity_hide` | Hide an entity from the default UI view. | `entity_id` |
 | `entity_unhide` | Unhide a previously hidden entity. | `entity_id` |
-| `entity_disable` | Disable an entity (stops polling, removes from state machine). | `entity_id` |
-| `entity_enable` | Re-enable a disabled entity. | `entity_id` |
+| `entity_disable` | Disable an entity (stops polling, removes from state machine). Auto-tags the entity `zen_agent_disabled`. | `entity_id` |
+| `entity_enable` | Re-enable a disabled entity. Auto-untags `zen_agent_disabled`. | `entity_id` |
 | `entity_rename` | Set a new friendly name for an entity. | `entity_id`, `new_name` |
+
+**`zen_agent_disabled` label convention.** `disabled_by()` has no template global, so there was previously no way to answer "what has the agent disabled" without a raw registry read. `entity_disable`/`entity_enable` now tag/untag this label automatically — "everything the agent has disabled" is a label filter in the entity list UI, not a manual audit.
 
 ---
 

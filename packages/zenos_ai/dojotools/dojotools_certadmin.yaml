@@ -54,7 +54,7 @@ script:
     fields:
       mode:
         name: Mode
-        description: "cert_grant | cert_revoke | cert_list | tool_manifest | help"
+        description: "cert_grant | cert_revoke | cert_list | cert_bundle_set | cert_bundle_remove | tool_manifest | help"
         default: help
         selector:
           select:
@@ -63,7 +63,30 @@ script:
               - cert_grant
               - cert_revoke
               - cert_list
+              - cert_bundle_set
+              - cert_bundle_remove
               - tool_manifest
+
+      cert_bundle:
+        name: Cert Bundle Name
+        description: "cert_grant (alternative to cert_component -- grants every member cert in one shot; if the name is unknown, pass cert_bundle_members too to define-and-grant it in the same ask), cert_bundle_set (name to create/edit), cert_bundle_remove (name to delete)."
+        default: ""
+        selector:
+          text:
+
+      cert_bundle_members:
+        name: Cert Bundle Members
+        description: "cert_bundle_set: JSON array of cert names this bundle grants, e.g. [\"cover_control\",\"lock_control\"]. Replaces the bundle's whole member list -- not a merge. cert_grant: same JSON-array shape, but ONLY takes effect when cert_bundle names a bundle that doesn't exist yet. Define-only by default: registers the new bundle with these members, granted to nobody -- pass also_grant=true in the same call to also grant it to the target in one combined live-ack. Ignored if cert_bundle already exists -- this is the only agent-facing path to originate a new bundle at all; editing an existing one still requires an operator using cert_bundle_set directly."
+        default: ""
+        selector:
+          text:
+
+      also_grant:
+        name: Also Grant New Bundle
+        description: "cert_grant + cert_bundle_members only. When defining a brand-new bundle (cert_bundle doesn't exist yet), pass true to also grant it to the target in the same call/live-ack. Default false: defining a new bundle registers it for future use, granted to nobody, until a caller explicitly opts in with also_grant=true (or grants it normally afterward via cert_bundle= alone, now that it exists). No effect when cert_bundle already names an existing bundle -- that path always grants."
+        default: false
+        selector:
+          boolean:
 
       target:
         name: Target ai_user Cabinet
@@ -180,14 +203,14 @@ script:
                   tool='zen_admintools_certadmin',
                   display_name='CertAdmin — KFC Cert Issuance',
                   tier='admintools',
-                  version='1.1.0',
+                  version='1.2.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['admintools'],
                   optional_labels=[],
-                  consumes=['ai_user_cabinet', 'cert_catalog'],
-                  returns=['cert_grant_result', 'cert_revoke_result', 'cert_list'],
+                  consumes=['ai_user_cabinet', 'cert_catalog', 'household_cabinet'],
+                  returns=['cert_grant_result', 'cert_revoke_result', 'cert_list', 'cert_bundle_result'],
                   failure_policy='hard',
-                  modes={'cert_grant': 'issue', 'cert_revoke': 'revoke', 'cert_list': 'read', 'manifest': 'tool_manifest'},
+                  modes={'cert_grant': 'issue', 'cert_revoke': 'revoke', 'cert_list': 'read', 'cert_bundle_set': 'create/edit bundle (operator-only, not agent-exposed)', 'cert_bundle_remove': 'delete custom bundle', 'manifest': 'tool_manifest'},
                   icon='mdi:certificate',
                   color='deep-orange',
                   dependencies=[
@@ -238,6 +261,14 @@ script:
           _cab_vars: >-
             {{ state_attr(_target, 'variables') | default({}, true)
                if _target != '' else {} }}
+      # ── Household cabinet -- bundle definitions are platform/household
+      # taxonomy, not tied to any one AI-user persona, so they live here,
+      # not in _cab_vars (that's the per-target AI-user cabinet above). ──
+      - variables:
+          _hh_cabinet: "{{ states('sensor.zen_default_household_cabinet_resolved') | default('', true) | string | trim }}"
+          _hh_vars: >-
+            {{ state_attr(_hh_cabinet, 'variables') | default({}, true)
+               if _hh_cabinet not in ['', 'unavailable', 'unknown'] else {} }}
       - if: "{{- _target == '' or not _target_exists -}}"
         then:
           - variables:
@@ -271,6 +302,210 @@ script:
                 response_variable: final_response
 
       ###########################################################################
+      # 2b — CERT_BUNDLE_SET (2026-09-10, household: steel-mag pattern)
+      # Runtime-editable bundle membership -- stored on the household
+      # cabinet (cert_bundles_custom drawer: {bundle_name: [cert names]}),
+      # separate from and layered ON TOP of the code-tagged bundles every
+      # tool declares on its own certs (see zen_dojotools_manifest
+      # cert_audit, which merges both into one `bundles` view). Code-tagged
+      # bundles need a code change to edit; this doesn't -- exactly for
+      # cases like a "break glass" recovery set that should be editable
+      # without a redeploy. Upserts (create-or-replace the named bundle's
+      # member list); does NOT validate members are real certs at write
+      # time (cert_audit's aggregation already tolerates an unknown member
+      # name gracefully -- it just won't resolve to anything grantable
+      # until a real cert with that name exists), so this can't be used to
+      # accidentally lock out cert_grant on a typo.
+      ###########################################################################
+      - choose:
+          - conditions: "{{ _mode == 'cert_bundle_set' }}"
+            sequence:
+              - variables:
+                  _cbs_name: "{{ cert_bundle | default('') | trim | lower }}"
+                  _cbs_members_raw: "{{ cert_bundle_members | default('') }}"
+              - if: "{{ _cbs_name == '' }}"
+                then:
+                  - variables:
+                      final_response:
+                        status: error
+                        message: "cert_bundle_set requires cert_bundle (the bundle name to create/edit)."
+                        caller_token: "{{ caller_token }}"
+                  - stop: Missing cert_bundle name
+                    response_variable: final_response
+              - if: "{{ _cbs_name != '' }}"
+                then:
+                  - variables:
+                      _cbs_members: >-
+                        {{ _cbs_members_raw if _cbs_members_raw is sequence and _cbs_members_raw is not string
+                           else (_cbs_members_raw | from_json(default=[]) if (_cbs_members_raw is string and _cbs_members_raw | trim != '' and (_cbs_members_raw | trim)[:1] == '[') else []) }}
+                  - if: "{{ _cbs_members | length == 0 }}"
+                    then:
+                      - variables:
+                          final_response:
+                            status: error
+                            message: "cert_bundle_set requires cert_bundle_members as a non-empty JSON array of cert names, e.g. [\"cover_control\",\"lock_control\"]."
+                            caller_token: "{{ caller_token }}"
+                      - stop: Missing cert_bundle_members
+                        response_variable: final_response
+                  - if: "{{ _cbs_members | length > 0 }}"
+                    then:
+                      - variables:
+                          _cbs_existing: "{{ _hh_vars.get('cert_bundles_custom', {}) }}"
+                          _cbs_existing_val: "{{ _cbs_existing.get('value', _cbs_existing) if _cbs_existing is mapping else {} }}"
+                          _cbs_prior_members: "{{ (_cbs_existing_val if _cbs_existing_val is mapping else {}).get(_cbs_name, []) }}"
+                      # ── Editing bundle membership is a highly protected
+                      # act -- a bundle can be granted in one shot via
+                      # cert_grant, so widening one silently widens every
+                      # future grant of it. Fresh live-ack every call, same
+                      # as cert_grant itself, never waivable (no
+                      # waives_live_ack path exists here on purpose). ──
+                      - action: script.zen_dojotools_identity
+                        response_variable: _cbs_ack_result_raw
+                        continue_on_error: true
+                        data:
+                          mode: request_live_ack
+                          ack_message: >-
+                            Agent requests cert_bundle_set: '{{ _cbs_name }}'.
+                            {% if _cbs_prior_members | length > 0 -%}
+                            Current members ({{ _cbs_prior_members | length }}): {{ _cbs_prior_members | join(', ') }}.
+                            {% else -%}
+                            This bundle does not exist yet -- this call CREATES it.
+                            {% endif -%}
+                            New members ({{ _cbs_members | length }}): {{ (_cbs_members | unique | list) | join(', ') }}.
+                            Approve replacing this bundle's member list?
+                          caller_token: "{{ caller_token }}"
+                      - variables:
+                          _cbs_approved: "{{ _cbs_ack_result_raw.get('approved', false) if _cbs_ack_result_raw is mapping else false }}"
+                          _cbs_ack_reason: "{{ _cbs_ack_result_raw.get('reason', 'dispatch_failed') if _cbs_ack_result_raw is mapping else 'dispatch_failed' }}"
+                      - if: "{{ not _cbs_approved }}"
+                        then:
+                          - variables:
+                              final_response:
+                                status: denied
+                                mode: cert_bundle_set
+                                cert_bundle: "{{ _cbs_name }}"
+                                reason: "{{ _cbs_ack_reason }}"
+                                caller_token: "{{ caller_token }}"
+                          - stop: cert_bundle_set — not approved
+                            response_variable: final_response
+                      - if: "{{ _cbs_approved }}"
+                        then:
+                          - variables:
+                              _cbs_updated: "{{ (_cbs_existing_val if _cbs_existing_val is mapping else {}) | combine({_cbs_name: (_cbs_members | unique | list)}) }}"
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              action_type: create
+                              force_action: true
+                              set_timestamp: true
+                              show_hidden_volumes: false
+                              volume_entity_id:
+                                - "{{ _hh_cabinet }}"
+                              key: cert_bundles_custom
+                              value: "{{ _cbs_updated | tojson }}"
+                          - variables:
+                              final_response:
+                                status: ok
+                                mode: cert_bundle_set
+                                cert_bundle: "{{ _cbs_name }}"
+                                members: "{{ _cbs_members | unique | list }}"
+                                message: "Bundle '{{ _cbs_name }}' set with {{ _cbs_members | length }} member cert(s). Editable any time via cert_bundle_set again -- this replaces the member list, doesn't merge with a prior version."
+                                caller_token: "{{ caller_token }}"
+                          - stop: cert_bundle_set complete
+                            response_variable: final_response
+
+      ###########################################################################
+      # 2c — CERT_BUNDLE_REMOVE
+      ###########################################################################
+      - choose:
+          - conditions: "{{ _mode == 'cert_bundle_remove' }}"
+            sequence:
+              - variables:
+                  _cbr_name: "{{ cert_bundle | default('') | trim | lower }}"
+              - if: "{{ _cbr_name == '' }}"
+                then:
+                  - variables:
+                      final_response:
+                        status: error
+                        message: "cert_bundle_remove requires cert_bundle (the bundle name to remove)."
+                        caller_token: "{{ caller_token }}"
+                  - stop: Missing cert_bundle name
+                    response_variable: final_response
+              - if: "{{ _cbr_name != '' }}"
+                then:
+                  - variables:
+                      _cbr_existing: "{{ _hh_vars.get('cert_bundles_custom', {}) }}"
+                      _cbr_existing_val: "{{ _cbr_existing.get('value', _cbr_existing) if _cbr_existing is mapping else {} }}"
+                  - if: "{{ _cbr_name not in (_cbr_existing_val if _cbr_existing_val is mapping else {}) }}"
+                    then:
+                      - variables:
+                          final_response:
+                            status: error
+                            message: "No custom bundle named '{{ _cbr_name }}' found (nothing to remove -- note this only removes CUSTOM cabinet-stored bundles, not code-tagged ones declared on a cert)."
+                            caller_token: "{{ caller_token }}"
+                      - stop: cert_bundle_remove — not found
+                        response_variable: final_response
+                  - if: "{{ _cbr_name in (_cbr_existing_val if _cbr_existing_val is mapping else {}) }}"
+                    then:
+                      - variables:
+                          _cbr_prior_members: "{{ (_cbr_existing_val if _cbr_existing_val is mapping else {}).get(_cbr_name, []) }}"
+                      - action: script.zen_dojotools_identity
+                        response_variable: _cbr_ack_result_raw
+                        continue_on_error: true
+                        data:
+                          mode: request_live_ack
+                          ack_message: >-
+                            Agent requests cert_bundle_remove: '{{ _cbr_name }}'
+                            ({{ _cbr_prior_members | length }} member cert(s): {{ _cbr_prior_members | join(', ') }}).
+                            Deletes this bundle definition -- any cert already GRANTED
+                            through it stays held (this only removes the bundle
+                            shortcut, not existing grants). Approve?
+                          caller_token: "{{ caller_token }}"
+                      - variables:
+                          _cbr_approved: "{{ _cbr_ack_result_raw.get('approved', false) if _cbr_ack_result_raw is mapping else false }}"
+                          _cbr_ack_reason: "{{ _cbr_ack_result_raw.get('reason', 'dispatch_failed') if _cbr_ack_result_raw is mapping else 'dispatch_failed' }}"
+                      - if: "{{ not _cbr_approved }}"
+                        then:
+                          - variables:
+                              final_response:
+                                status: denied
+                                mode: cert_bundle_remove
+                                cert_bundle: "{{ _cbr_name }}"
+                                reason: "{{ _cbr_ack_reason }}"
+                                caller_token: "{{ caller_token }}"
+                          - stop: cert_bundle_remove — not approved
+                            response_variable: final_response
+                      - if: "{{ _cbr_approved }}"
+                        then:
+                          - variables:
+                              _cbr_updated: >-
+                                {%- set ns = namespace(out={}) -%}
+                                {%- for _k, _v in (_cbr_existing_val if _cbr_existing_val is mapping else {}).items() -%}
+                                  {%- if _k != _cbr_name -%}
+                                    {%- set ns.out = ns.out | combine({_k: _v}) -%}
+                                  {%- endif -%}
+                                {%- endfor -%}
+                                {{ ns.out }}
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              action_type: create
+                              force_action: true
+                              set_timestamp: true
+                              show_hidden_volumes: false
+                              volume_entity_id:
+                                - "{{ _hh_cabinet }}"
+                              key: cert_bundles_custom
+                              value: "{{ _cbr_updated | tojson }}"
+                          - variables:
+                              final_response:
+                                status: ok
+                                mode: cert_bundle_remove
+                                cert_bundle: "{{ _cbr_name }}"
+                                message: "Custom bundle '{{ _cbr_name }}' removed."
+                                caller_token: "{{ caller_token }}"
+                          - stop: cert_bundle_remove complete
+                            response_variable: final_response
+
+      ###########################################################################
       # 3 — CERT_GRANT
       ###########################################################################
       - choose:
@@ -278,7 +513,16 @@ script:
             sequence:
               - variables:
                   _comp:       "{{ cert_component | default('') | trim | lower }}"
+                  _bundle:     "{{ cert_bundle | default('') | trim | lower }}"
+                  _bndl_mem_raw: "{{ cert_bundle_members | default('') }}"
                   _lvl:        "{{ cert_level | default(2) | int }}"
+              - variables:
+                  # Same parse as cert_bundle_set's cert_bundle_members --
+                  # only meaningful here when _bundle names a bundle that
+                  # doesn't exist yet (see the define-and-grant branch below).
+                  _bndl_mem_requested: >-
+                    {{ _bndl_mem_raw if _bndl_mem_raw is sequence and _bndl_mem_raw is not string
+                       else (_bndl_mem_raw | from_json(default=[]) if (_bndl_mem_raw is string and _bndl_mem_raw | trim != '' and (_bndl_mem_raw | trim)[:1] == '[') else []) }}
                   _ctool:      "{{ cert_tool | default('') | trim }}"
                   _ccons_raw:  "{{ cert_constraints if cert_constraints is defined and cert_constraints is sequence and cert_constraints is not string else (cert_constraints | default('', true) | string | trim) }}"
                   _cscope_raw: "{{ cert_scope if cert_scope is defined and cert_scope is sequence and cert_scope is not string else (cert_scope | default('', true) | string | trim) }}"
@@ -286,13 +530,226 @@ script:
                   _wla_requested: "{{ waives_live_ack | default(false) | bool }}"
                   _wla_confirm:   "{{ confirm_action | default(false) | bool }}"
                   _wla_phrase_ok: "{{ (ack_phrase | default('') ) == 'I UNDERSTAND THIS CERT BYPASSES ACKNOWLEDGEMENT' }}"
+                  # ── Defining a brand-new bundle via cert_bundle_members is
+                  # define-only by default -- it
+                  # registers the bundle for future use, granted to nobody.
+                  # Actually granting it to the target in the same call
+                  # requires explicit also_grant=true. Safer default: a
+                  # caller asking "can this bundle exist" no longer
+                  # automatically also means "and give it to me right now."
+                  # Only meaningful when the bundle doesn't exist yet -- has
+                  # no effect on granting an EXISTING bundle, which always
+                  # grants (that's the whole point of cert_bundle=). ──
+                  _bg_also_grant: "{{ also_grant | default(false) | bool }}"
+              # ─────────────────────────────────────────────────────────────
+              # BUNDLE GRANT — cert_bundle given instead of cert_component.
+              # Grants every member cert at the SAME level in one shot, one
+              # combined live-ack (not one per member -- that would defeat
+              # the whole point of bundling). No per-member scope/
+              # constraints/waives_live_ack -- those are single-cert
+              # refinements; a bundle grant is deliberately the simple,
+              # uniform-level convenience path. Self-contained: does its own
+              # catalog/bundle lookup, live-ack, and single write, then
+              # stops -- never falls through to the single-cert logic below.
+              # (2026-09-10, household: steel-mag pattern, built ahead of
+              # utilities.yaml's cert-gate rollout so that file can ship
+              # referencing a bundle from day one.)
+              # ─────────────────────────────────────────────────────────────
+              - if: "{{ _comp == '' and _bundle != '' }}"
+                then:
+                  - action: script.zen_dojotools_manifest
+                    response_variable: _bg_catalog_raw
+                    continue_on_error: true
+                    data:
+                      mode: cert_audit
+                      caller_token: "{{ caller_token }}"
+                  - variables:
+                      _bg_audit: "{{ (_bg_catalog_raw.get('result', _bg_catalog_raw) if _bg_catalog_raw is mapping else {}) }}"
+                      _bg_catalog: "{{ _bg_audit.get('catalog', {}) }}"
+                      _bg_existing_members: "{{ _bg_audit.get('bundles', {}).get(_bundle, []) }}"
+                  # ── Unknown-bundle handling (2026-09-11, #10415): a bundle
+                  # name that resolves to nothing used to just error out here,
+                  # even though cert_bundle_set (the only way to define one)
+                  # is operator-only and never agent-reachable -- there was no
+                  # path at all for an agent to originate a brand-new bundle.
+                  # If the caller also passed cert_bundle_members, treat this
+                  # as "define this bundle, then grant it" in ONE combined
+                  # live-ack -- the human sees and approves both the new
+                  # bundle's membership and the grant together, same
+                  # human-in-the-loop bar as editing an existing bundle via
+                  # cert_bundle_set. Only fires when the bundle is genuinely
+                  # unknown -- an existing bundle's membership still can't be
+                  # edited from cert_grant, only cert_bundle_set (operator). ──
+                  - variables:
+                      _bg_is_new: "{{ _bg_existing_members | length == 0 and _bndl_mem_requested | length > 0 }}"
+                      _bg_members: "{{ (_bndl_mem_requested | unique | list) if (_bg_existing_members | length == 0 and _bndl_mem_requested | length > 0) else _bg_existing_members }}"
+                  - if: "{{ _bg_members | length == 0 }}"
+                    then:
+                      - variables:
+                          final_response:
+                            status: error
+                            mode: cert_grant
+                            message: "cert_bundle '{{ _bundle }}' has no member certs (unknown bundle name, or no cert tags itself with bundle: ['{{ _bundle }}']). Available bundles: {{ _bg_audit.get('bundles', {}).keys() | list }}. To define '{{ _bundle }}' as a new bundle and grant it in one ask, pass cert_bundle_members as a JSON array of cert names."
+                            caller_token: "{{ caller_token }}"
+                      - stop: cert_grant — unknown or empty bundle
+                        response_variable: final_response
+                  - if: "{{ _bg_members | length > 0 }}"
+                    then:
+                      - variables:
+                          _bg_persona_name: >-
+                            {%- set raw = _cab_vars.get('zenai_essence', {}) -%}
+                            {%- set ev_raw = raw.get('value', {}) if raw is mapping else {} -%}
+                            {%- set ev = ev_raw if ev_raw is mapping else (ev_raw | from_json if ev_raw is string else {}) -%}
+                            {%- set _j = ev.get('jacket', {}) if ev.get('jacket') is mapping else {} -%}
+                            {{ _j.get('name', '') }}
+                      - action: script.zen_dojotools_identity
+                        response_variable: _bg_ack_result_raw
+                        continue_on_error: true
+                        data:
+                          mode: request_live_ack
+                          ack_message: >-
+                            {%- if _bg_is_new and not _bg_also_grant -%}
+                            Agent requests DEFINING a new cert bundle: '{{ _bundle }}' does not exist
+                            yet -- this call registers it with {{ _bg_members | length }} member
+                            cert(s), granted to NOBODY yet. Pass also_grant=true on a future call to
+                            also grant it to a target.
+                            {%- elif _bg_is_new and _bg_also_grant -%}
+                            Agent requests a NEW cert bundle: '{{ _bundle }}' does not exist yet --
+                            this call CREATES it with {{ _bg_members | length }} member cert(s), then
+                            grants it in the same step: level {{ _lvl }} for
+                            {{ _bg_persona_name if _bg_persona_name != '' else 'default agent' }}.
+                            {%- else -%}
+                            Agent requests cert_bundle_grant: '{{ _bundle }}' level {{ _lvl }}
+                            for {{ _bg_persona_name if _bg_persona_name != '' else 'default agent' }}.
+                            This grants {{ _bg_members | length }} certs in one shot:
+                            {%- endif %}
+                            {%- for _m in _bg_members %} {{ _bg_catalog.get(_m, {}).get('display_name', _m) }}
+                            (gates: {{ _bg_catalog.get(_m, {}).get('gates', []) | join(', ') }});{% endfor %}
+                            Approve {{ 'defining this bundle (no grant)?' if (_bg_is_new and not _bg_also_grant) else ('creating this bundle and the whole grant?' if _bg_is_new else 'the whole grant?') }}
+                          caller_token: "{{ caller_token }}"
+                      - variables:
+                          _bg_approved: "{{ _bg_ack_result_raw.get('approved', false) if _bg_ack_result_raw is mapping else false }}"
+                          _bg_ack_reason: "{{ _bg_ack_result_raw.get('reason', 'dispatch_failed') if _bg_ack_result_raw is mapping else 'dispatch_failed' }}"
+                      - if: "{{ not _bg_approved }}"
+                        then:
+                          - variables:
+                              final_response:
+                                status: denied
+                                mode: cert_grant
+                                cert_bundle: "{{ _bundle }}"
+                                is_new_bundle: "{{ _bg_is_new }}"
+                                members: "{{ _bg_members }}"
+                                reason: "{{ _bg_ack_reason }}"
+                                caller_token: "{{ caller_token }}"
+                          - stop: cert_bundle_grant — not approved
+                            response_variable: final_response
+                      - if: "{{ _bg_approved }}"
+                        then:
+                          - if: "{{ _bg_is_new }}"
+                            then:
+                              - variables:
+                                  _bg_bundles_existing: "{{ _hh_vars.get('cert_bundles_custom', {}) }}"
+                                  _bg_bundles_existing_val: "{{ _bg_bundles_existing.get('value', _bg_bundles_existing) if _bg_bundles_existing is mapping else {} }}"
+                              - variables:
+                                  _bg_bundles_updated: "{{ (_bg_bundles_existing_val if _bg_bundles_existing_val is mapping else {}) | combine({_bundle: _bg_members}) }}"
+                              - action: script.zen_dojotools_filecabinet
+                                data:
+                                  action_type: create
+                                  force_action: true
+                                  set_timestamp: true
+                                  show_hidden_volumes: false
+                                  volume_entity_id:
+                                    - "{{ _hh_cabinet }}"
+                                  key: cert_bundles_custom
+                                  value: "{{ _bg_bundles_updated | tojson }}"
+                          # ── Define-only exit: new bundle, also_grant not set --
+                          # registered above, granted to nobody. Stop here,
+                          # never fall through to the grant-write below. ──
+                          - if: "{{ _bg_is_new and not _bg_also_grant }}"
+                            then:
+                              - variables:
+                                  final_response:
+                                    status: ok
+                                    mode: cert_grant
+                                    cert_bundle: "{{ _bundle }}"
+                                    bundle_created: true
+                                    granted: false
+                                    members: "{{ _bg_members }}"
+                                    message: "New cert bundle {{ _bundle }} defined ({{ _bg_members | length }} certs), granted to nobody. Pass also_grant=true (same cert_bundle_members) to also grant it to a target."
+                                    caller_token: "{{ caller_token }}"
+                              - stop: cert_bundle_define — no grant
+                                response_variable: final_response
+                          - variables:
+                              _bg_craw: "{{ _cab_vars.get('zen_ai_certs', {}) }}"
+                              _bg_cev:  "{{ _bg_craw.get('value', _bg_craw) if _bg_craw is mapping else {} }}"
+                          - variables:
+                              _bg_jacket_id: >-
+                                {%- if _bg_cev is mapping and _bg_cev.get('jacket_id', '') != '' -%}
+                                  {{ _bg_cev.get('jacket_id') }}
+                                {%- else -%}
+                                  {%- set _ess = _cab_vars.get('zenai_essence', {}) -%}
+                                  {%- set _ev  = _ess.get('value', _ess) if _ess is mapping else {} -%}
+                                  {{ (_ev.get('jacket', {}) if _ev is mapping else {}).get('id', '') }}
+                                {%- endif -%}
+                              _bg_existing_certs: "{{ _bg_cev.get('kfc_certifications', {}) if _bg_cev is mapping else {} }}"
+                              _bg_existing_stats: "{{ _bg_cev.get('stats', {}) if _bg_cev is mapping else {} }}"
+                          # ── One merged entry per member, same level, no
+                          # scope/constraints -- built in one pass so the
+                          # whole bundle lands in a SINGLE filecabinet write
+                          # (no partial-bundle state if something failed
+                          # mid-loop across multiple writes). ──
+                          - variables:
+                              _bg_updated_certs: >-
+                                {%- set ns = namespace(certs=_bg_existing_certs) -%}
+                                {%- for _m in _bg_members -%}
+                                  {%- set _entry = {'level': _lvl, 'certified': now().strftime('%Y-%m-%d'), 'tool': _ctool, 'granted_via_bundle': _bundle} -%}
+                                  {%- set ns.certs = ns.certs | combine({_m: _entry}) -%}
+                                {%- endfor -%}
+                                {{ ns.certs }}
+                              _bg_new_doc: >-
+                                {{
+                                  (_bg_cev if _bg_cev is mapping else {})
+                                  | combine({
+                                      'jacket_id': _bg_jacket_id,
+                                      'kfc_certifications': _bg_updated_certs,
+                                      'stats': _bg_existing_stats
+                                    })
+                                  | tojson
+                                }}
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              action_type: create
+                              force_action: true
+                              set_timestamp: true
+                              show_hidden_volumes: false
+                              volume_entity_id:
+                                - "{{ _target }}"
+                              key: zen_ai_certs
+                              value: "{{ _bg_new_doc }}"
+                          - variables:
+                              final_response:
+                                status: ok
+                                mode: cert_grant
+                                target: "{{ _target }}"
+                                cert_bundle: "{{ _bundle }}"
+                                bundle_created: "{{ _bg_is_new }}"
+                                level: "{{ _lvl }}"
+                                members_granted: "{{ _bg_members }}"
+                                jacket_id: "{{ _bg_jacket_id }}"
+                                message: >-
+                                  {{ ('New cert bundle ' ~ _bundle ~ ' created (' ~ (_bg_members | length | string) ~ ' certs) and granted level ' ~ (_lvl | string) ~ '.')
+                                     if _bg_is_new else
+                                     ('Cert bundle granted: ' ~ _bundle ~ ' (' ~ (_bg_members | length | string) ~ ' certs) level ' ~ (_lvl | string) ~ '.') }}
+                                caller_token: "{{ caller_token }}"
+                          - stop: cert_bundle_grant complete
+                            response_variable: final_response
               - choose:
                   - conditions: "{{ _comp == '' }}"
                     sequence:
                       - variables:
                           final_response:
                             status: error
-                            message: "cert_grant requires cert_component (kata_key)."
+                            message: "cert_grant requires cert_component (kata_key) or cert_bundle."
                             caller_token: "{{ caller_token }}"
                       - stop: Missing cert_component
                         response_variable: final_response
@@ -562,7 +1019,7 @@ script:
       - variables:
           final_response:
             status: error
-            message: "Unrecognized mode '{{ _mode }}'. Valid: cert_grant, cert_revoke, cert_list, tool_manifest, help."
+            message: "Unrecognized mode '{{ _mode }}'. Valid: cert_grant, cert_revoke, cert_list, cert_bundle_set, cert_bundle_remove, tool_manifest, help."
             caller_token: "{{ caller_token }}"
       - stop: unrecognized mode
         response_variable: final_response

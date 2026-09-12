@@ -22,7 +22,7 @@ See: [Release Notes — Steel Magnolia](releases/steel_magnolia.md)
 
 Taskmaster becomes a real cross-backend expediter. Kitchen gains a full fulfillment/costing layer plus an executive-chef batch (cost rollups, waste logging, event menus, prep briefing). A platform-wide identity gate (SP1's `resolve_caller_identity`) backs its first real gated capability, Portainer container control.
 
-**This is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Current Stable is 2026.9.0 'Steel Magnolia' — see [Chef's own "Last Release Before Identity Gates" section](releases/chef.md#20261--the-last-release-before-identity-gates) for why the gate exists and what it costs to stay on this line instead.
+**This is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Current Stable is 2026.9.0 'Steel Magnolia' — see [Chef's own "Last Release Before Identity Gates" section](releases/chef.md#202681--the-last-release-before-identity-gates) for why the gate exists and what it costs to stay on this line instead.
 
 See: [Release Notes — Chef](releases/chef.md)
 

@@ -108,6 +108,7 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 | `room_occupant_prefs` | Guest-or-household-member prefs for a room, plus an independent `vendor_activity` caution flag. `area=` required. See below. |
 | `room_status_set` | Write housekeeping status for a room: `clean`/`dirty`/`in_service`/`occupied`. `area=` and `room_status=` required. Decoupled from any guest-stay lifecycle — HA-local operational state only. See below. |
 | `room_status_get` | Read housekeeping status. `area=` optional — omit for all rooms, pass for one. Areas never set return `status: unknown`, not a default of `clean`. See below. |
+| `role_audit` | Read-only, no cert. `area=` required. Walks every `zen_mm_*`/`zen_lm_*`/`zen_display_target` role label on entities belonging to the room (by registry `area_id` OR by carrying the room's own slug label) and flags `ambiguous_role` (2+ holders, no `primary` tiebreak), `area_mismatch` (holder's registry area_id disagrees with the room label), and `stale_state` (holder currently unavailable/unknown). `zen_mm_shadow` is exempt — legitimate global/suppressed-by-design entities aren't a real ambiguous-role bug. The cross-domain tagging/registry health check for "why is this room's automation acting weird" without five separate `inspect`/`discover` calls. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
 | `help` | Full reference: purpose, when_to_call, seed_steps, domain_routing, schema, context_slices, concepts, modes. |
 
@@ -132,6 +133,12 @@ Pass as comma-separated flags to `context_slices=` on `mode=get`. Any combinatio
 | `+calendar` | Calendar entities whose labels intersect area labels. 7-day lookahead. |
 | `+wiki` | Wiki pages tagged with the area's ID via Lens Bus (`zen_dojotools_lens_dispatch` anchor_type=area_id). Returns `pages[]` with title/path/tags, `count`, `anchor`. Tag room wiki pages with the area slug to surface here. |
 | `+tickets` | Open Zammad service desk tickets anchored to the area's ID (via `zen_dojotools_servicedesk mode=tickets_by_anchor`). Returns `tickets[]`, `count`, `anchor`. Tag tickets with the area slug to link them to this room. |
+
+### Digest
+
+`mode=get` always includes a `digest{}` block in the base response, sibling to `context`/`occupancy` — count-only, no `context_slices=` flag needed. Possible keys: `chores_due`, `tickets_open`, `notifications_pending`. Each key is present only if its source has a real anchor for this room (a chore/ticket count was actually computed, or the alertmanager check ran) — a source with nothing to say for this room omits its key entirely rather than reporting a fabricated `0`. If no key qualifies, `digest` itself is `none`.
+
+`notifications_pending` comes from `zen_dojotools_alertmanager mode=list`, filtered to this room's `load_complete_<area_id>_` alert-key prefix.
 
 ### Label-Intersection Discovery
 

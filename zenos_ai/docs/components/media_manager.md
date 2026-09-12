@@ -239,7 +239,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 | Mode | Description |
 |------|-------------|
 | `source_get` | Current source + full `source_list` for a device. Call before `source_set` to see exact source strings. |
-| `source_set` | Switch input source. Exact string match required — copy from `source_list`. Use `target_role=zen_mm_television` for streaming apps, `target_role=zen_mm_av_tuner` for physical inputs. |
+| `source_set` | Switch input source. Exact string match required — copy from `source_list`. Use `target_role=zen_mm_television` for streaming apps, `target_role=zen_mm_av_tuner` for physical inputs. Consults `zen_dojotools_display mode=status` first (read-only, fails soft) — response's `display_surface_interrupted` flags whether a Display Surface session on that target got switched away, but the switch always proceeds regardless; this tool has no authority over display sessions and doesn't gain any by asking. |
 | `sound_mode_get` | Current `sound_mode` + full `sound_mode_list`. Call before `sound_mode_set`. |
 | `sound_mode_set` | Set AVR or TV sound mode. Use `target_role=zen_mm_av_tuner` for the receiver. |
 | `state_get` | Full device snapshot: source, sound mode, volume, mute, media title, group membership, adjacent room co-playing detection, acoustic zone context. |
@@ -309,6 +309,17 @@ Always call `source_get` before `source_set` to retrieve the exact strings.
 This is passive — no writes to Room Manager. Configure transmission values via `zen_dojotools_room_manager mode=link`.
 
 **Room Manager v3 PAUSED-awareness** (2026-08-07, corrected 2026-08-09): `play_media` and `activity_apply` refuse to start new media in a room whose `room_control_manager` select reads `Paused` — a human has told Room Manager v3 to leave that room alone (`error: room_locked`-style response naming the paused entity). Read-only/query modes and queue navigation on already-playing media are untouched; only the "begin something new" entry points check this. A room with no `room_control_manager` select deployed is a safe no-op — never blocks.
+
+### Activity Orchestration
+
+An activity is a named, per-room preset stored under household cabinet key `media_activities_<room>`. `activity_set` teaches one (`activity_name`, `channel`, and optionally `light_context`, `lock_room`, `media_id`); `activity_get`/`activity_snapshot` read them back; `activity_apply` runs the whole scene in one call instead of just switching a source:
+
+* **`channel`** — source string, passed to the room's `zen_mm_universal` `select_source`.
+* **`media_id`** — played via the room's `zen_mm_music_assistant`-labeled entity (falling back to the UMP) using `zen_sutra_music_assistant mode=play_media` directly — **not** a self-call back into `zen_dojotools_media_manager`, which deadlocks (a `mode: queued` script self-invoking from inside its own run returns an empty `{}` response, no error).
+* **`light_context`** — fires `zen_dojotools_lights mode=prefs_apply room=<room> home_context=<this>`, provided that context was already taught there via `mode=prefs_set`.
+* **`lock_room`** — calls `zen_dojotools_room_manager mode=room_control_set room_control_state=Automation` for the room before applying, taking it out of Room Manager's live occupancy cascade so the activity's choice isn't immediately overridden by the next occupancy event. Also writes a `media_activity_current_<room>` cabinet marker, read by `room_control_set`'s own courtesy-pause check: if the room leaves `Automation` by any path (`activity_end`, a human clearing it by hand, another tool), that check pauses the room's media and clears the marker — a room's music never silently keeps playing after its lock is gone.
+
+`activity_end` is the generic undo — clears `room_control_set` back to `Auto` (handing the room back to RM's live cascade) and stops playback. Not activity-specific: works regardless of which activity, if any, is currently applied, since Room Manager only ever holds one lock state per room at a time.
 
 ---
 

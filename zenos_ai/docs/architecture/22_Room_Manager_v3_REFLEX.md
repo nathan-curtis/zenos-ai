@@ -48,7 +48,18 @@ emergency > manual override (room_control_manager) > asleep > engaged >
 child-engaged > hold (wasp / entertaining / guest) > occupied (or hold) > vacant
 ```
 
-`checking`/`checking_timer` do not exist in this system — see the wasp-hold
+```mermaid
+flowchart TD
+    A["emergency"] --> B["manual override\n(room_control_manager)"]
+    B --> C["asleep"]
+    C --> D["engaged"]
+    D --> E["child-engaged"]
+    E --> F["hold\n(wasp / entertaining / guest)"]
+    F --> G["occupied (or hold)"]
+    G --> H["vacant"]
+```
+
+Highest tier with an active source wins; the sensor reads whichever class currently holds it, per the table below. `checking`/`checking_timer` do not exist in this system — see the wasp-hold
 section below (§22.9) for the live mechanism that replaces what a
 timer-based "checking" tier would otherwise do. A room either resolves
 cleanly or lands in `hold`.
@@ -397,6 +408,105 @@ instead of a real door has no way to distinguish "someone's inside with
 the door shut" from "there is no door to begin with," so wasp there would
 misfire on ordinary household traffic rather than staying a genuine
 resolved/unresolved signal. Read/write via `mode=wasp_enable area=<room>`.
+
+## **22.10 Cascade Correctness, Activity Orchestration, and Cross-Domain Diagnostics**
+
+### Asleep must actually outrank child-cascaded activity
+
+Section 22.2 documents the cascade's own design promise: a room's direct
+Asleep beats any child-cascaded activity, unconditionally. Two independent
+bugs in `zen_room_manager_dispatch.yaml` let that promise get violated in
+practice, both fixed together since either alone was sufficient to break
+it:
+
+* **`_room_currently_held`**, the guard the motion and door handlers check
+  before rearming a room's shared timer, only recognized the literal
+  state `hold` as "already held" — not plain resolved `asleep`. A motion
+  event elsewhere in the room (a bathroom trip, say) could rearm the
+  timer to `occupied` class while the room was legitimately still asleep,
+  killing the timer actually sustaining Asleep on the next render. Fixed:
+  the guard now checks `state in ['hold', 'asleep']`.
+* **`child_cascade_arm`**, the handler that reacts to a child room going
+  occupied, unconditionally cancelled the *parent* room's timer on every
+  such event, with no check on the parent's own resolved state. That's
+  only safe when child-cascade is what's actually sustaining the parent
+  as `occupied` — if the parent independently resolves `asleep` or
+  `hold` (a tier the cascade doesn't even contribute to), cancelling its
+  timer destroys the only thing sustaining that tier, and the room falls
+  through to `occupied` once the cascade itself clears. Fixed: the cancel
+  condition now also requires the parent's own state to be outside
+  `['asleep', 'hold']`.
+
+Neither fix changes what the cascade is supposed to do — Section 22.2's
+priority order was always the intended behavior. This closes two gaps
+between that design and what the dispatch code actually enforced.
+
+### Activity Orchestration — a cross-tool primitive built on `room_control_manager`
+
+`zen_dojotools_media_manager`'s activity system (`activity_set`/
+`activity_apply`/`activity_end`) uses this chapter's own control-isolation
+mechanism as a cooperating peer, not a bypass. `activity_apply`'s
+`lock_room` option calls `zen_dojotools_room_manager mode=room_control_set
+room_control_state=Automation` for the target room — the exact same write
+path Section 22.9's `room_control_manager` describes — taking the room out
+of the live cascade so the activity's media/lighting choice isn't
+immediately overridden by the next occupancy event. `activity_end` (or a
+human clearing the room by hand) hands control back the same way, via
+`room_control_state=Auto`.
+
+The coupling runs both directions. `room_control_set`'s own write path
+reads a `media_activity_current_<room>` household-cabinet marker
+(written by `activity_apply` when `lock_room` is set) — if the room
+leaves `Automation` by *any* path, not just `activity_end`, that check
+auto-pauses the room's media and clears the marker. This is deliberately
+built into `room_control_set` itself rather than the whole-house
+`zen_room_manager_dispatch.yaml` automation — lower blast radius, and
+that dispatcher already carries documented scar tissue (Section 22.9)
+from a past self-latching design that had to be torn out. The call back
+into Media Manager fires as an independent `script.turn_on` run, not a
+nested call — the same self-recursion-deadlock hazard `room_control_set`'s
+own force-refire mechanism (see the room_control_set write path) already
+routes around, since `zen_dojotools_media_manager` is itself a
+`mode: queued` script.
+
+### `role_audit` — read-only, cross-domain registry health check
+
+Real-world entity/role tagging drifts from Room Manager's assumptions in
+ways none of the label mechanisms above can see on their own: two
+`media_player`s both tagged the room's television role with no `primary`
+tiebreak, a role-tagged entity whose registry `area_id` disagrees with
+the room label it also carries, a role-tagged entity gone
+`unavailable`/`unknown` from integration churn. `mode=role_audit`
+(`area=` required, no cert, read-only) walks every `zen_mm_*`/`zen_lm_*`/
+`zen_display_target` label, correlating room membership by *either*
+registry `area_id` *or* the room's own slug label (the same
+either/or union Section 22.4's label reverse-lookup already relies on
+everywhere else), and reports:
+
+* `ambiguous_role` — 2+ holders of the same role in one room, no
+  `primary` label to break the tie.
+* `area_mismatch` — a holder carries the room's label but its registry
+  `area_id` disagrees.
+* `stale_state` — a holder is currently `unavailable`/`unknown`.
+
+`zen_mm_shadow`-labeled entities are exempt from the ambiguity/mismatch
+checks — legitimate global or suppressed-by-design entities (whole-house
+media groups, for instance) aren't a real tagging bug just because they
+appear in more than one room's scan. `role_audit` mechanizes what used to
+take several manual `inspect`/`discover` calls to untangle by hand into
+one.
+
+### `zen_agent_disabled` — closing a `disabled_by()` gap
+
+Unrelated to Room Manager directly, but load-bearing for `role_audit`'s
+own remediation advice: `zen_dojotools_ectoplasm`'s `entity_disable` and
+`entity_enable` now auto-tag/untag a `zen_agent_disabled` label. HA's
+`disabled_by()` has no template global, so there was previously no way
+to answer "what has the agent disabled" without a raw registry read —
+`role_audit`'s `stale_state`/`ambiguous_role` guidance can now point at
+`entity_disable` as a real remediation step (retiring a duplicate role
+holder, say) with the result actually staying findable afterward, instead
+of quietly disappearing from every label-based view.
 
 **Anti-pattern**: a lock and a door for the same physical opening must
 never both be candidates for the same signal — tag the *door*

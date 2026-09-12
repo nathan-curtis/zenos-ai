@@ -24,7 +24,7 @@ chat-callable, through `zen_dojotools_room_manager`'s v3-adjacent modes
 (`label_discover`, `trigger_audit`, `coverage_map`, `wasp_enable`,
 `roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `reflex_wire`,
 `room_signal_fire`, `entertaining_cascade_enable`, `entertaining_cascade_check`) —
-see [Coverage &amp; Diagnostics](#coverage--diagnostics) and
+see [Coverage & Diagnostics](#coverage--diagnostics) and
 [Wiring REFLEX Scenes](#wiring-reflex-scenes) below. Operators interact
 with the live engine through:
 
@@ -338,7 +338,7 @@ entertaining_cascade_enabled=true`.
 
 ---
 
-## Coverage &amp; Diagnostics
+## Coverage & Diagnostics
 
 Two `zen_dojotools_room_manager` modes audit a room's real wiring against
 what it's actually labeled to have, both `area=` optional (omit for a

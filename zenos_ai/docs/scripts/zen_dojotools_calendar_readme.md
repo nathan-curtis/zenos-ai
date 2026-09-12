@@ -20,8 +20,8 @@ Supports HA-native calendars (Google, Local, ICS), Microsoft 365, and any provid
 |--------|-------------|
 | `read` (default) | Read events from a calendar for a date range. Returns event list with summary, start, end, description, location, and event_id where available. |
 | `inspect` | Advanced read using the system inspect tool. Shows `event_id` if the provider exposes it. Use this to locate event_id before update/delete. |
-| `create` | Create a new event. Requires `calendar_name` and `summary`. |
-| `update` | Update an existing event by `event_id`. Requires `event_id`. Blocked if provider does not expose event_id. |
+| `create` | Create a new event. Requires `calendar_name` and `summary`. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `update` | Update an existing event by `event_id`. Requires `event_id`. Blocked if provider does not expose event_id. Also requires `pii_disclosure_control` (level 1). |
 | `delete` | Delete an event by `event_id`. Requires `event_id`. Blocked if provider does not expose event_id. |
 | `list` | List all available calendar entities (equivalent to `calendar_name: '*'`). |
 | `help` | Return full action reference, field list, and provider notes. |

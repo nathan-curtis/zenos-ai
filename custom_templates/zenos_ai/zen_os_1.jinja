@@ -17,7 +17,7 @@
 #}
 {#
   ZenOS-AI Prompt Engine — Core Runtime Template
-  Version: 2026.9.1
+  Version: 2026.9.0
 
   dev_notes:
     Single canonical file. ~COMMANDS~/command_interpreter interface fully retired —
@@ -95,7 +95,7 @@
    tool_manifest() (imports this file), zen_dojotools_help mode=about.
    =============================================================== #}
 {%- macro os_version() -%}
-  {{ {'version': '2026.9.1', 'tag': '', 'tag_number': none} | tojson }}
+  {{ {'version': '2026.10.0', 'tag': 'beta', 'tag_number': none} | tojson }}
 {%- endmacro -%}
 
 {# ===============================================================
@@ -948,7 +948,27 @@
    as of this pilot; existing entries default to 'prompt' (unchanged
    behavior) via .get('display','prompt').
 #}
-{%- macro envelope(status='success', mode='', result=none, tool='', caller_token='') -%}
+{#
+  priority_inject_message() -- same lookup logic as envelope()'s own
+  system_message computation below, duplicated deliberately (2026-09-11),
+  for a caller that needs to build a genuine-YAML-mapping response (each
+  field its own leaf template) instead of going through envelope()'s
+  | tojson round trip. Use as a bare leaf template, e.g.
+  `system_message: "{{ priority_inject_message() }}"` -- HA's own per-leaf
+  ast.literal_eval-based native-type coercion correctly turns that
+  rendered text back into real None or a real dict, since Jinja's default
+  stringification of a dict/None uses Python-repr syntax (None/True/False),
+  which literal_eval accepts -- unlike JSON's null/true/false, which it
+  does not. Do NOT capture this macro's return value via {% set %} and
+  reuse it inside another dict that then goes through | tojson -- a Jinja
+  macro call always renders to a STRING when assigned that way, and
+  tojson-ing a string just quotes it instead of serializing the real
+  data underneath (this exact mistake was caught and reverted while
+  building this macro; envelope() below intentionally does NOT call this
+  macro, keeping its own inline computation instead, so its existing
+  contract for its many current callers stays provably unchanged).
+#}
+{%- macro priority_inject_message() -%}
   {%- set _sys_msg = none -%}
   {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
   {%- if _hh not in ['', 'unknown', 'unavailable'] -%}
@@ -967,11 +987,57 @@
           {%- set _exp_dt = (_exp_s | as_datetime) if _exp_s != '' else none -%}
           {#- Defensive: a naive (no tzinfo) or otherwise malformed expires
               value must never crash this comparison -- one bad entry from
-              any provider would otherwise take down envelope() for EVERY
+              any provider would otherwise take down this macro for EVERY
               tool call, not just this one (verified live 2026-08-14: a
               naive timestamp raised TypeError: can't compare offset-naive
               and offset-aware datetimes, uncaught, killing the whole call).
               Skip the entry (treat as not-current) instead of crashing. #}
+          {%- set _exp_valid = _exp_dt is not none and _exp_dt.tzinfo is not none -%}
+          {%- if _exp_valid and _now < _exp_dt -%}
+            {%- set _ns.candidates = _ns.candidates + [{'urg': _entry.get('urgency','urgent'), 'pid': _pid, 'entry': _entry}] -%}
+          {%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if _ns.candidates | length > 0 -%}
+        {%- set _pick = (_ns.candidates | sort(attribute='urg'))[0] -%}
+        {%- set _sys_msg = {
+              'class': _pick.entry.get('class', _pick.pid),
+              'message': _pick.entry.get('summary', ''),
+              'urgency': _pick.entry.get('urgency', 'urgent')
+            } -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endif -%}
+  {{ _sys_msg }}
+{%- endmacro -%}
+
+{%- macro envelope(status='success', mode='', result=none, tool='', caller_token='') -%}
+  {#- NOTE: deliberately NOT calling priority_inject_message() here, even
+      though the logic is identical -- Jinja macro calls always render to
+      a STRING when assigned via {% set %}, which would silently corrupt
+      system_message's shape (a real None/dict would become the literal
+      text "None" or a Python-repr string once tojson'd). Kept as its own
+      inline computation, unchanged from before priority_inject_message()
+      existed, so this macro's existing behavior/contract for its many
+      current callers is provably untouched. The duplication with
+      priority_inject_message() below is intentional -- see that macro's
+      docstring for why it can't just delegate to this one. #}
+  {%- set _sys_msg = none -%}
+  {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+  {%- if _hh not in ['', 'unknown', 'unavailable'] -%}
+    {%- set _vars = state_attr(_hh, 'variables') | default({}, true) -%}
+    {%- set _vars = _vars if _vars is mapping else {} -%}
+    {%- set _raw  = _vars.get('_zen_priority_inject', {}) -%}
+    {%- set _slot = _raw if _raw is mapping else (_raw | from_json if _raw is string else {}) -%}
+    {%- set _slot = _slot.get('value', _slot) if _slot is mapping else {} -%}
+    {%- if _slot is mapping -%}
+      {%- set _now = now() -%}
+      {%- set _ns  = namespace(candidates=[]) -%}
+      {%- for _pid, _entry in _slot.items() if _entry is mapping -%}
+        {%- set _disp = _entry.get('display', 'prompt') -%}
+        {%- if _disp in ['tool_response', 'both'] -%}
+          {%- set _exp_s  = _entry.get('expires', '') | string | trim -%}
+          {%- set _exp_dt = (_exp_s | as_datetime) if _exp_s != '' else none -%}
           {%- set _exp_valid = _exp_dt is not none and _exp_dt.tzinfo is not none -%}
           {%- if _exp_valid and _now < _exp_dt -%}
             {%- set _ns.candidates = _ns.candidates + [{'urg': _entry.get('urgency','urgent'), 'pid': _pid, 'entry': _entry}] -%}
@@ -996,6 +1062,61 @@
     'system_message': _sys_msg,
     'caller_token': caller_token
   } | tojson }}
+{%- endmacro -%}
+
+
+{# ================== CERT DENIAL ================== #}
+{#- Shared shape for "this call needs a cert and doesn't have it" --
+    every cadillac tool with a cert-gate builds this same ~15-line
+    block by hand today (scribe, ectoplasm); as more tools cert-gate,
+    this gets reused heavily, so it belongs here once instead of
+    copy-pasted per tool. Enforces the real rule structurally, not by
+    convention: can_request is computed HERE, centrally, from
+    cert_policy alone (true unless the identity policy itself blocked
+    the caller) -- no calling tool ever judges eligibility itself, it
+    just gets the answer for free by calling this macro. "She requires
+    the cert, not the ability to request a cert; the tool that
+    requests certs will check" -- centralizing the computation here
+    means every tool automatically agrees on what that check even
+    means, instead of each one re-deriving (or mis-deriving) it.
+    request_via (where/how to ask) is the same idea taken further --
+    a pointer any tool can hand back without knowing anything about
+    cert mechanics itself.
+
+    Params:
+      cert_policy   -- 'allowed' or the identity policy_status value.
+      cert_authorized -- bool, from resolve_caller_identity's authorized field.
+      cert_level    -- int, the caller's current level for this cert.
+      required_cert -- str, the cert component name being checked.
+      required_level -- int, the minimum level needed for this action.
+      action_label  -- str, what was being attempted (mode/action_type),
+                       used only in the composed cert_insufficient message.
+      block_reason  -- str, identity's own real block_reason when
+                       cert_policy != 'allowed'. Passed through verbatim
+                       when non-empty; only falls back to a generic
+                       message if identity didn't provide one.
+    Returns a dict (not yet enveloped) with: status, error, message,
+    can_request, request_via. Caller still sets its own tool-specific
+    fields (action_type, mode, caller_token, etc) around this --
+    combine() this macro's output into the branch's own result dict. #}
+{%- macro cert_denial(cert_policy, cert_authorized, cert_level, required_cert, required_level, action_label='', block_reason='') -%}
+  {%- set _policy_blocked = cert_policy != 'allowed' -%}
+  {{- {
+    'status': 'error',
+    'error': 'identity_policy_blocked' if _policy_blocked else 'cert_insufficient',
+    'message': (
+        (block_reason | trim) if (_policy_blocked and (block_reason | trim) != '')
+        else 'resolve_caller_identity did not return an allowed identity -- action denied.' if _policy_blocked
+        else (required_cert | trim) ~ ' cert level ' ~ (cert_level | string) ~ ' is below the required minimum (' ~ (required_level | string) ~ ')' ~ (' for ' ~ action_label if action_label | trim != '' else '') ~ '.'
+      ),
+    'can_request': not _policy_blocked,
+    'request_via': {
+      'tool': 'zen_dojotools_persona_editor',
+      'mode': 'cert_grant',
+      'cert_component': required_cert | trim,
+      'cert_level': required_level
+    }
+  } | tojson -}}
 {%- endmacro -%}
 
 
@@ -1343,15 +1464,19 @@
   {%- else -%}
     {%- set ci_age_s = 9999 -%}
   {%- endif -%}
-  {%- set ci_stale = ci_age_s > 3600 -%}
+  {%- set ci_stale = ci_age_s > 600 -%}
   {%- set _excl_raw = CABS.cabinet_drawer(hcab, 'compact_index_exclude', []) | from_json() -%}
   {%- set _excl_val = _excl_raw.get('value', _excl_raw) if _excl_raw is mapping else _excl_raw -%}
   {%- set ci_exclude = _excl_val if _excl_val is sequence and _excl_val is not string and _excl_val is not mapping else [] -%}
   {%- if ci_labels | length > 0 -%}
+    {#- Field names match build_compact_index's actual persisted schema
+        (slug/name/count, see dojotools_index.yaml) -- 'label'/'group' were
+        never real keys here, so every entry silently rendered blank
+        regardless of freshness. Fixed 2026-09-10. -#}
     {%- set ns = namespace(filtered=[]) -%}
     {%- for entry in ci_labels -%}
-      {%- if entry.get('label', '') not in ci_exclude -%}
-        {%- set ns.filtered = ns.filtered + [{'label': entry.get('label',''), 'group': entry.get('group','')}] -%}
+      {%- if entry.get('slug', '') not in ci_exclude -%}
+        {%- set ns.filtered = ns.filtered + [{'label': entry.get('slug',''), 'name': entry.get('name','')}] -%}
       {%- endif -%}
     {%- endfor -%}
     {{ {'labels': ns.filtered, 'stale': ci_stale} | tojson }}

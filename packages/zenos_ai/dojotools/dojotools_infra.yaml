@@ -38,26 +38,11 @@ script:
   zen_dojotools_infra:
     alias: "ZenOS IT Console"
     description: >-
-      IT ops console — nodes, containers, service monitors, cert expiry, pending updates.
-      mode=status for MOM-style top-line summary across all systems.
-      mode=nodes for Proxmox VM inventory with role labels.
-      mode=containers for Docker/Portainer host detail and image inventory.
-      mode=monitors for Uptime Kuma service health + response times.
-      mode=updates for pending container image updates (WUD + HA platform).
-      mode=certs for SSL certificate expiry table.
-      mode=ha for HA supervisor health — versions, addon status, disk, resource %, pending updates.
-      mode=log for a quick log peek — last 30 lines + restart/reload/error events.
-        Hint: use zen_dojotools_ha_log_viewer directly for deep search, paging, or pattern work.
-      mode=discover to see raw label→entity bindings (debug/setup).
-      Container-control codex (active only if configured — see mode=help
-      container_control_codex): mode=containers_list / container_get to read
-      containers with a controllable flag per the admin-managed allow-list.
-      mode=container_restart / container_start / container_stop / container_remove
-      to actually act on one — gated by the default agent's own certification,
-      and mode=container_stop/container_remove additionally require a live
-      household-admin acknowledgment. caller_id is an audit label only, never a
-      trust input.
-      mode=help for full mode reference.
+      IT ops console — nodes, containers, service monitors, cert expiry,
+      pending updates, plus Z-Wave device diagnostics and (if Portainer is
+      configured) gated container control. Use for infrastructure/platform
+      health questions, not household device state. mode=status for a
+      top-line summary. mode=help for the full mode reference.
     fields:
       mode:
         description: "Operation mode"
@@ -81,6 +66,12 @@ script:
               - container_start
               - container_stop
               - container_remove
+              - zwave_diag_audit
+              - zwave_ping
+              - zwave_diag_enable
+              - zwave_capabilities_discover
+              - zwave_mapping_audit
+              - zwave_health_correlate
       filter:
         description: "Filter by name substring (monitors/updates/nodes modes)"
         selector:
@@ -157,7 +148,13 @@ script:
                     'container_restart': 'Container-control codex (x) — requires ACL grant + certification for the calling caller_id.',
                     'container_start':   'Container-control codex (x) — same gating as container_restart.',
                     'container_stop':    'Container-control codex (d) — requires ACL + cert + a live household-admin acknowledgment.',
-                    'container_remove':  'Container-control codex (d) — same gating as container_stop.'
+                    'container_remove':  'Container-control codex (d) — same gating as container_stop.',
+                    'zwave_diag_audit': 'Z-Wave diagnostics codex (r) — every zwave_js device, which diagnostic sensors (RTT/dropped-commands/node_status/last_seen) it has, and whether each is enabled. Always active, no config needed.',
+                    'zwave_ping': 'Z-Wave diagnostics codex (r) — fire a device'"'"'s button.*_ping (container= name substring to resolve it). Non-destructive.',
+                    'zwave_capabilities_discover': 'Z-Wave diagnostics codex (r) — generic per-device select/number config parameter enumeration + other entities. container= name substring.',
+                    'zwave_mapping_audit': 'Z-Wave diagnostics codex (r) — flags devices missing an area assignment or with zero registered entities. Not a full registry-consistency sweep.',
+                    'zwave_diag_enable': 'Z-Wave diagnostics codex (x) — enable a device'"'"'s disabled diagnostic entities via homeassistant.enable_entity. Cert-gated (infra_zwave_control). container= name substring, required.',
+                    'zwave_health_correlate': 'Z-Wave diagnostics codex (r) — snapshot scan for dropped commands / timeouts / high RTT / bad node_status, grouped by area to surface probable shared-cause clusters vs. isolated blips. caller_id=sync_tickets also files/updates/auto-resolves Radar tickets per anomalous device (inert if Radar isn'"'"'t configured). Add container=<device or area substring> to scope ticket filing to one device/area instead of all anomalies at once -- auto-resolve always considers the full scan regardless of scope.'
                   },
                   'fields': {
                     'filter': 'Optional name substring filter (monitors/updates/nodes modes)',
@@ -211,10 +208,434 @@ script:
                       'gates': ['mode=container_restart/container_start (x-class, cert only)'],
                       'live_ack_required_for': ['mode=container_stop/container_remove (d-class) -- every call, cert alone is never sufficient'],
                       'grant_via': "persona_editor mode=cert_grant cert_component=infra_container_control (or zen_dojotools_identity mode=cert_list to see current status)"
+                    }, {
+                      'cert': 'infra_zwave_control',
+                      'display_name': 'Infra Z-Wave Control',
+                      'description': "Enable a Z-Wave device's disabled diagnostic entities via zen_dojotools_infra mode=zwave_diag_enable.",
+                      'max_level': 2,
+                      'gates': ['mode=zwave_diag_enable (x-class, cert only)'],
+                      'live_ack_required_for': [],
+                      'grant_via': "persona_editor mode=cert_grant cert_component=infra_zwave_control (or zen_dojotools_identity mode=cert_list to see current status)"
                     }]
                   }) -}}
           - stop: zen_dojotools_infra tool_manifest
             response_variable: result
+
+      # ── Z-Wave diagnostics codex ─────────────────────────────────────────────────
+      # Read-only, always active (no config gate needed -- zwave_js is either
+      # installed or it isn't). zwave_js diagnostic sensors (RTT, dropped/
+      # successful commands, node status) ship DISABLED by default per device,
+      # so correlation across nodes is worthless until this audit shows what's
+      # actually on. "Enabled" is inferred by state-object existence (a
+      # disabled entity has none at all, vs. enabled-but-unavailable which
+      # still has a state object) -- avoids needing entity_registry access,
+      # which has no clean write path anyway (deferred: zwave_diag_enable).
+      - if: "{{ _mode in ['zwave_diag_audit', 'zwave_ping'] }}"
+        then:
+          - variables:
+              _zw_entities: "{{ integration_entities('zwave_js') }}"
+              _zw_device_ids: "{{ _zw_entities | map('device_id') | select('ne', none) | unique | list }}"
+              _zw_diag_suffixes:
+                - node_status
+                - round_trip_time
+                - successful_commands_rx
+                - successful_commands_tx
+                - commands_dropped_rx
+                - commands_dropped_tx
+                - timed_out_responses
+                - last_seen
+          - if: "{{ _mode == 'zwave_diag_audit' }}"
+            then:
+              - variables:
+                  response:
+                    mode: zwave_diag_audit
+                    result: ok
+                    caller_token: "{{ _caller_token }}"
+                    device_count: "{{ _zw_device_ids | length }}"
+                    devices: >-
+                      {%- set ns = namespace(out=[]) -%}
+                      {%- for did in _zw_device_ids -%}
+                        {%- set dname = device_attr(did, 'name') | default(did, true) -%}
+                        {%- set dents = _zw_entities | select('in', device_entities(did)) | list -%}
+                        {%- set diag = namespace(found={}) -%}
+                        {%- for suf in _zw_diag_suffixes -%}
+                          {%- set matches = dents | select('match', '.*_' ~ suf ~ '(_\d+)?$') | list -%}
+                          {%- if matches | length > 0 -%}
+                            {%- set _m = matches[0] | regex_findall('_(\d+)$') -%}
+                            {%- set diag.found = diag.found | combine({suf: {'entity_id': matches[0], 'enabled': matches[0] in (states.sensor | map(attribute='entity_id') | list) + (states.button | map(attribute='entity_id') | list), 'slug_suffix': (_m[0] if _m | length > 0 else none)}}) -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {%- set has_ping = (dents | select('match', '.*_ping(_\d+)?$') | list | length) > 0 -%}
+                        {%- set has_collision = diag.found.values() | selectattr('slug_suffix', 'ne', none) | list | length > 0 -%}
+                        {%- set ns.out = ns.out + [{'device_id': did, 'name': dname, 'diagnostics': diag.found, 'has_ping_button': has_ping, 'has_slug_collision': has_collision}] -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                    note: >-
+                      'enabled' is inferred from state-object existence (disabled
+                      entities have none), not a direct entity_registry read.
+                      diagnostics missing entirely from a device's map means that
+                      diagnostic sensor doesn't exist for this device at all --
+                      different from existing-but-disabled. slug_suffix
+                      non-null (and has_slug_collision: true on the device)
+                      means that entity's id collided with another and got
+                      a _2/_3/... tail -- worth a manual rename/regen if the
+                      base (unsuffixed) name is what you actually want.
+              - stop: "zwave diag audit"
+                response_variable: response
+          - if: "{{ _mode == 'zwave_ping' }}"
+            then:
+              - variables:
+                  _zw_target: "{{ container | default('') | string | trim | lower }}"
+                  _zw_ping_ent: >-
+                    {{ (_zw_entities | select('match', '.*_ping(_\d+)?$') | select('search', _zw_target) | list | first) if _zw_target != '' else '' }}
+              - if: "{{ _zw_ping_ent == '' }}"
+                then:
+                  - variables:
+                      response:
+                        mode: zwave_ping
+                        result: not_found
+                        caller_token: "{{ _caller_token }}"
+                        message: "No button.*_ping entity matched '{{ _zw_target }}'. Pass container=<device name substring>."
+                  - stop: "zwave ping not found"
+                    response_variable: response
+              - action: button.press
+                target:
+                  entity_id: "{{ _zw_ping_ent }}"
+              - variables:
+                  response:
+                    mode: zwave_ping
+                    result: ok
+                    caller_token: "{{ _caller_token }}"
+                    pinged: "{{ _zw_ping_ent }}"
+                    device_id: "{{ device_id(_zw_ping_ent) }}"
+                    message: "Ping sent. Check the device's *_round_trip_time / *_last_seen sensors (if enabled) for the result."
+              - stop: "zwave ping sent"
+                response_variable: response
+
+      # ── Z-Wave capabilities/mapping/enable/correlate ────────────────────────────
+      - if: "{{ _mode in ['zwave_capabilities_discover', 'zwave_mapping_audit', 'zwave_diag_enable', 'zwave_health_correlate'] }}"
+        then:
+          - variables:
+              _zw2_entities: "{{ integration_entities('zwave_js') }}"
+              _zw2_device_ids: "{{ _zw2_entities | map('device_id') | select('ne', none) | unique | list }}"
+
+          # -- capabilities_discover: generic per-device config surface --------------
+          - if: "{{ _mode == 'zwave_capabilities_discover' }}"
+            then:
+              - variables:
+                  _zw2_target: "{{ container | default('') | string | trim | lower }}"
+                  _zw2_did: >-
+                    {%- set ns = namespace(found=none) -%}
+                    {%- for did in _zw2_device_ids -%}
+                      {%- if _zw2_target != '' and _zw2_target in (device_attr(did, 'name') | default('', true) | lower) -%}{%- set ns.found = did -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.found }}
+              - if: "{{ _zw2_did in [none, ''] }}"
+                then:
+                  - variables:
+                      response:
+                        mode: zwave_capabilities_discover
+                        result: not_found
+                        caller_token: "{{ _caller_token }}"
+                        message: "No Z-Wave device matched '{{ _zw2_target }}'. Pass container=<device name substring>."
+                  - stop: "zwave capabilities not found"
+                    response_variable: response
+              - variables:
+                  response:
+                    mode: zwave_capabilities_discover
+                    result: ok
+                    caller_token: "{{ _caller_token }}"
+                    device: "{{ device_attr(_zw2_did, 'name') }}"
+                    config_parameters: >-
+                      {%- set dents = _zw2_entities | select('in', device_entities(_zw2_did)) | list -%}
+                      {%- set ns = namespace(out=[]) -%}
+                      {%- for e in (dents | select('match', '^(select|number)\.') | list) -%}
+                        {%- set ns.out = ns.out + [{'entity_id': e, 'name': state_attr(e, 'friendly_name'), 'current': states(e), 'options': state_attr(e, 'options'), 'min': state_attr(e, 'min'), 'max': state_attr(e, 'max')}] -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                    other_entities: >-
+                      {{ (_zw2_entities | select('in', device_entities(_zw2_did)) | reject('match', '^(select|number)\.') | list) }}
+              - stop: "zwave capabilities discover"
+                response_variable: response
+
+          # -- mapping_audit: device/area/entity cross-check -------------------------
+          - if: "{{ _mode == 'zwave_mapping_audit' }}"
+            then:
+              - variables:
+                  response:
+                    mode: zwave_mapping_audit
+                    result: ok
+                    caller_token: "{{ _caller_token }}"
+                    device_count: "{{ _zw2_device_ids | length }}"
+                    issues: >-
+                      {%- set ns = namespace(out=[]) -%}
+                      {%- for did in _zw2_device_ids -%}
+                        {%- set dname = device_attr(did, 'name') | default(did, true) -%}
+                        {%- set darea = device_attr(did, 'area_id') -%}
+                        {%- set dents = _zw2_entities | select('in', device_entities(did)) | list -%}
+                        {%- if darea in [none, ''] -%}
+                          {%- set ns.out = ns.out + [{'device': dname, 'device_id': did, 'issue': 'no_area_assigned'}] -%}
+                        {%- endif -%}
+                        {%- if dents | length == 0 -%}
+                          {%- set ns.out = ns.out + [{'device': dname, 'device_id': did, 'issue': 'no_entities_found'}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                    note: "Only checks area assignment and entity presence — not a full orphan/registry-consistency sweep."
+              - stop: "zwave mapping audit"
+                response_variable: response
+
+          # -- diag_enable: cert-gated write, homeassistant.enable_entity -----------
+          - if: "{{ _mode == 'zwave_diag_enable' }}"
+            then:
+              - variables:
+                  _zw2_target: "{{ container | default('') | string | trim | lower }}"
+              - if: "{{ _zw2_target == '' }}"
+                then:
+                  - variables:
+                      response:
+                        mode: zwave_diag_enable
+                        result: error
+                        caller_token: "{{ _caller_token }}"
+                        message: "container=<device name substring> is required."
+                  - stop: "zwave diag enable missing target"
+                    response_variable: response
+              - action: script.zen_dojotools_identity
+                response_variable: _zw2_auth
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: infra_zwave_control
+                  required_cert_level: 1
+                  target_entity: "{{ _zw2_target }}"
+                  caller_token: "{{ _caller_token }}"
+              - if: "{{ not (_zw2_auth is mapping and _zw2_auth.get('authorized', false)) }}"
+                then:
+                  - variables:
+                      response:
+                        mode: zwave_diag_enable
+                        result: denied
+                        caller_token: "{{ _caller_token }}"
+                        message: "infra_zwave_control cert required and not held (or ambiguous target). Fail-closed."
+                  - stop: "zwave diag enable denied"
+                    response_variable: response
+              - variables:
+                  _zw2_did: >-
+                    {%- set ns = namespace(found=none) -%}
+                    {%- for did in _zw2_device_ids -%}
+                      {%- if _zw2_target in (device_attr(did, 'name') | default('', true) | lower) -%}{%- set ns.found = did -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.found }}
+                  _zw2_dents: "{{ _zw2_entities | select('in', device_entities(_zw2_did)) | list if _zw2_did not in [none, ''] else [] }}"
+                  _zw2_to_enable: >-
+                    {{ (_zw2_dents | select('match', '^(sensor|button)\..*(node_status|round_trip_time|successful_commands|commands_dropped|timed_out_responses|last_seen|_ping)(_\d+)?$')) | reject('in', (states.sensor | map(attribute='entity_id') | list) + (states.button | map(attribute='entity_id') | list)) | list }}
+              - repeat:
+                  for_each: "{{ _zw2_to_enable }}"
+                  sequence:
+                    - action: homeassistant.enable_entity
+                      continue_on_error: true
+                      target:
+                        entity_id: "{{ repeat.item }}"
+              - variables:
+                  response:
+                    mode: zwave_diag_enable
+                    result: ok
+                    caller_token: "{{ _caller_token }}"
+                    device: "{{ device_attr(_zw2_did, 'name') if _zw2_did not in [none, ''] else _zw2_target }}"
+                    enabled: "{{ _zw2_to_enable }}"
+                    message: "{{ (_zw2_to_enable | length) ~ ' entities enabled. May need a restart to fully populate.' if (_zw2_to_enable | length) > 0 else 'Nothing to enable — diagnostics already live for this device.' }}"
+              - stop: "zwave diag enable"
+                response_variable: response
+
+          # -- health_correlate: live anomaly scan + area clustering -----------------
+          - if: "{{ _mode == 'zwave_health_correlate' }}"
+            then:
+              - variables:
+                  _zw2_scope: "{{ container | default('') | string | trim | lower }}"
+                  _zw2_anomalies_full: >-
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for did in _zw2_device_ids -%}
+                      {%- set dname = device_attr(did, 'name') | default(did, true) -%}
+                      {%- set darea = area_name(device_attr(did, 'area_id')) if device_attr(did, 'area_id') else 'unassigned' -%}
+                      {%- set dents = _zw2_entities | select('in', device_entities(did)) | list -%}
+                      {%- set flags = namespace(list=[]) -%}
+                      {%- for e in (dents | select('match', '.*commands_dropped_(rx|tx)(_\d+)?$') | list) -%}
+                        {%- if states(e) | float(0) > 0 -%}{%- set flags.list = flags.list + ['dropped_commands: ' ~ e ~ '=' ~ states(e)] -%}{%- endif -%}
+                      {%- endfor -%}
+                      {%- for e in (dents | select('match', '.*timed_out_responses(_\d+)?$') | list) -%}
+                        {%- if states(e) | float(0) > 0 -%}{%- set flags.list = flags.list + ['timed_out_responses: ' ~ e ~ '=' ~ states(e)] -%}{%- endif -%}
+                      {%- endfor -%}
+                      {%- for e in (dents | select('match', '.*round_trip_time(_\d+)?$') | list) -%}
+                        {%- if states(e) | float(0) > 1000 -%}{%- set flags.list = flags.list + ['high_rtt: ' ~ e ~ '=' ~ states(e) ~ 'ms'] -%}{%- endif -%}
+                      {%- endfor -%}
+                      {%- for e in (dents | select('match', '.*node_status(_\d+)?$') | list) -%}
+                        {%- if states(e) not in ['alive', 'awake', 'asleep', 'unknown', 'unavailable', ''] -%}{%- set flags.list = flags.list + ['node_status: ' ~ e ~ '=' ~ states(e)] -%}{%- endif -%}
+                      {%- endfor -%}
+                      {%- if flags.list | length > 0 -%}
+                        {%- set ns.out = ns.out + [{'device': dname, 'area': darea, 'flags': flags.list}] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.out }}
+              - variables:
+                  # container= scopes the WHOLE report (not just ticket-sync
+                  # filing, that was the bug Friday caught 2026-09-09) --
+                  # matches on device name or area substring. Auto-resolve
+                  # below always uses _zw2_anomalies_full regardless of
+                  # scope, so a scoped call never wrongly closes an
+                  # out-of-scope device's ticket just because this call
+                  # didn't look at it.
+                  _zw2_anomalies: >-
+                    {%- set ns = namespace(out=[]) -%}
+                    {%- for a in _zw2_anomalies_full -%}
+                      {%- if _zw2_scope == '' or _zw2_scope in (a.device | lower) or _zw2_scope in (a.area | lower) -%}
+                        {%- set ns.out = ns.out + [a] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.out }}
+                  _zw2_area_counts: >-
+                    {%- set ns = namespace(m={}) -%}
+                    {%- for a in (_zw2_anomalies | map(attribute='area') | list) -%}
+                      {%- set ns.m = ns.m | combine({a: ns.m.get(a, 0) + 1}) -%}
+                    {%- endfor -%}
+                    {{ ns.m }}
+              - variables:
+                  response:
+                    mode: zwave_health_correlate
+                    result: ok
+                    caller_token: "{{ _caller_token }}"
+                    scope: "{{ _zw2_scope if _zw2_scope != '' else 'all' }}"
+                    anomaly_count: "{{ _zw2_anomalies | length }}"
+                    anomalies: "{{ _zw2_anomalies }}"
+                    clustered_areas: >-
+                      {{ _zw2_area_counts | dictsort | selectattr('1', 'gt', 1) | list }}
+                    note: >-
+                      Snapshot correlation only (current values, not a time-series
+                      trend) -- 2+ anomalous devices sharing an area is the
+                      "probable shared cause, not coincidence" signal. RTT
+                      threshold (1000ms) is a rough default, not tuned per-mesh.
+                      Devices with no diagnostic sensors enabled are invisible
+                      here -- run zwave_diag_audit first, zwave_diag_enable
+                      (infra_zwave_control cert) if gaps are found.
+              - if: "{{ (caller_id | default('') | string | trim | lower) == 'sync_tickets' }}"
+                then:
+                  # Radar/Zammad ticket lifecycle, reusing the exact tag-dedup
+                  # shape already proven in dojotools_dispatcher.yaml's
+                  # urgency_handler (2026-09-08 fix): tag-search before
+                  # create, note only on a real change, never re-file. Here:
+                  # one open ticket per anomalous device (tag = zwave_issue_
+                  # <device slug>), a note added only if its flags changed
+                  # since the last note, and auto-resolve once a previously
+                  # ticketed device drops out of the current anomalies list.
+                  # Inert if Radar isn't configured -- degrade softly, same
+                  # as every other codex here.
+                  - action: script.zen_dojotools_servicedesk
+                    response_variable: _zw2_radar_check
+                    continue_on_error: true
+                    data:
+                      mode: tool_manifest
+                  - if: "{{ not (_zw2_radar_check is mapping and _zw2_radar_check.get('status', '') in ['ok', 'success']) }}"
+                    then:
+                      - variables:
+                          response: "{{ response | combine({'ticket_sync': {'status': 'not_available', 'message': 'Radar/Zammad not configured on this install -- run mode=zwave_health_correlate without caller_id=sync_tickets for scan-only.'}}) }}"
+                      - stop: "zwave health correlate — radar unavailable"
+                        response_variable: response
+                  - variables:
+                      # _zw2_anomalies is already scoped by container= above --
+                      # ticket filing operates on exactly what the report shows.
+                      _zw2_sync_targets: "{{ _zw2_anomalies }}"
+                  - variables:
+                      _zw2_sync_results: []
+                  - repeat:
+                      for_each: "{{ _zw2_sync_targets }}"
+                      sequence:
+                        - variables:
+                            _zw2_tag: "zwave_issue_{{ repeat.item.device | lower | regex_replace('[^a-z0-9]+', '_') }}"
+                            _zw2_sig: "{{ repeat.item.flags | join(' | ') }}"
+                        - action: script.zen_dojotools_servicedesk
+                          response_variable: _zw2_existing
+                          continue_on_error: true
+                          data:
+                            mode: ticket_search
+                            input_json: "{{ {'tags': [_zw2_tag], 'states': ['new', 'open']} | tojson }}"
+                        - variables:
+                            _zw2_existing_ids: "{{ _zw2_existing.get('ticket_ids', []) if _zw2_existing is mapping else [] }}"
+                        - if: "{{ _zw2_existing_ids | length > 0 }}"
+                          then:
+                            - action: script.zen_dojotools_servicedesk
+                              response_variable: _zw2_detail
+                              continue_on_error: true
+                              data:
+                                mode: ticket_get
+                                input_json: "{{ {'ticket_id': _zw2_existing_ids[0]} | tojson }}"
+                            - variables:
+                                _zw2_last_body: >-
+                                  {%- set arts = (_zw2_detail.get('articles', []) if _zw2_detail is mapping else []) | sort(attribute='created_at') -%}
+                                  {{ (arts[-1].get('body', '') if arts | length > 0 else '') }}
+                            - if: "{{ _zw2_sig not in _zw2_last_body }}"
+                              then:
+                                - action: script.zen_dojotools_servicedesk
+                                  continue_on_error: true
+                                  data:
+                                    mode: article_add
+                                    input_json: "{{ {'ticket_id': _zw2_existing_ids[0], 'body': 'Still anomalous: ' ~ _zw2_sig, 'subject': 'Recurrence', 'internal': true} | tojson }}"
+                          else:
+                            - action: script.zen_dojotools_servicedesk
+                              response_variable: _zw2_created
+                              continue_on_error: true
+                              data:
+                                mode: ticket_create
+                                input_json: >-
+                                  {{ {'title': 'Z-Wave mesh issue — ' ~ repeat.item.device ~ ' (' ~ repeat.item.area ~ ')', 'body': 'Detected by zwave_health_correlate: ' ~ _zw2_sig, 'type': 'Incident'} | tojson }}
+                            - if: "{{ _zw2_created is mapping and _zw2_created.get('ticket_id', '') }}"
+                              then:
+                                - repeat:
+                                    for_each: ["{{ _zw2_tag }}", "zwave_issue"]
+                                    sequence:
+                                      - action: script.zen_dojotools_servicedesk
+                                        continue_on_error: true
+                                        data:
+                                          mode: ticket_tag
+                                          input_json: "{{ {'ticket_id': _zw2_created.get('ticket_id'), 'tag': repeat.item} | tojson }}"
+                  # Auto-resolve: any zwave_issue_* tagged ticket still open whose
+                  # device no longer appears in this pass's anomalies.
+                  - variables:
+                      # Full unscoped list on purpose -- a scoped call must never
+                      # auto-resolve an out-of-scope device's ticket just because
+                      # this particular call didn't look at it.
+                      _zw2_current_tags: "{{ _zw2_anomalies_full | map(attribute='device') | map('lower') | map('regex_replace', '[^a-z0-9]+', '_') | map('regex_replace', '^', 'zwave_issue_') | list }}"
+                  - action: script.zen_dojotools_servicedesk
+                    response_variable: _zw2_open_issues
+                    continue_on_error: true
+                    data:
+                      mode: ticket_search
+                      input_json: "{{ {'tags': ['zwave_issue'], 'states': ['new', 'open']} | tojson }}"
+                  - variables:
+                      _zw2_resolved: []
+                  - repeat:
+                      for_each: "{{ _zw2_open_issues.get('tickets', []) if _zw2_open_issues is mapping else [] }}"
+                      sequence:
+                        - variables:
+                            _zw2_ticket_tags: "{{ repeat.item.get('tags', []) }}"
+                            _zw2_device_tag: >-
+                              {{ (_zw2_ticket_tags | reject('equalto', 'zwave_issue') | list | first) | default('', true) }}
+                        - if: "{{ _zw2_device_tag != '' and _zw2_device_tag not in _zw2_current_tags }}"
+                          then:
+                            - action: script.zen_dojotools_servicedesk
+                              continue_on_error: true
+                              data:
+                                mode: article_add
+                                input_json: "{{ {'ticket_id': repeat.item.get('id'), 'body': 'No longer anomalous as of this scan — auto-resolving.', 'subject': 'Resolved', 'internal': true} | tojson }}"
+                            - action: script.zen_dojotools_servicedesk
+                              continue_on_error: true
+                              data:
+                                mode: ticket_close
+                                input_json: "{{ {'ticket_id': repeat.item.get('id')} | tojson }}"
+                            - variables:
+                                _zw2_resolved: "{{ _zw2_resolved + [_zw2_device_tag] }}"
+                  - variables:
+                      response: "{{ response | combine({'ticket_sync': {'status': 'ok', 'scope': (_zw2_scope if _zw2_scope != '' else 'all'), 'devices_processed': _zw2_sync_targets | length, 'auto_resolved': _zw2_resolved}}) }}"
+              - stop: "zwave health correlate"
+                response_variable: response
 
       # ── container-control codex ─────────────────────────────────────────────────
       # Bolts on to this console only when integrations_config.portainer is set —

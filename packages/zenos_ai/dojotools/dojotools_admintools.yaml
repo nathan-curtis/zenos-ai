@@ -617,35 +617,12 @@ script:
   zen_admintools_cabinetadmin:
     alias: Zen AdminTools CabinetAdmin
     description: >-
-      Low-level cabinet lifecycle tool. Manages ZenOS cabinet sensors at the
-      hardware and provisioning layer. USE ONLY when a cabinet needs to be
-      provisioned for the first time, recovered from a broken state, or
-      diagnosed. Do NOT use for normal data operations — reading and writing
-      drawer content uses zen_dojotools_filecabinet instead.
-
-      Cabinet sensors have a state machine: init (no VolumeInfo yet) →
-      online_unmounted → online_mounted. Cabinets must be provisioned (init
-      mode) before any other system can use them. A cabinet in 'init' state
-      has no identity, no GUID, and cannot hold user data.
-
-      Key operations — call mode: help for full details:
-      inspect — read all drawers; always run this first before any destructive op.
-      init — stamp a virgin cabinet with VolumeInfo + GUID; safe, refuses if
-        already initialized; requires cab_type for non-default cabinet roles.
-      hammer — wipe all drawers and mark destroyed; use when init refuses due to
-        residue; set confirm_init: true to re-stamp immediately after wipe;
-        requires hammer_ok: true as explicit safety gate.
-      restore — recover a cabinet that lost VolumeInfo from HA recorder restart.
-      mount_status — list mounted/unmounted state across all zen_cabinet entities.
-      repair_mount / repair_dismount — force mount state on a stuck cabinet;
-        does not touch drawer content.
-      reset_all — NUCLEAR, wipes all ring-0 system cabinets and reboots Flynn;
-        requires confirm: true; user and expansion cabinets are untouched.
-
-      Safety gates that block destructive ops: hammer requires hammer_ok: true;
-      init on an unknown-state cabinet requires confirm_action: true; reset_all
-      requires confirm: true. An AI must not set these without explicit human
-      instruction — they exist to prevent accidental data loss.
+      Low-level cabinet lifecycle tool (provision/recover/diagnose a cabinet
+      sensor at the hardware layer). USE ONLY for that — normal drawer
+      read/write is zen_dojotools_filecabinet, not this. Destructive ops
+      (hammer, reset_all) are explicitly safety-gated and must never be
+      confirmed without direct human instruction. mode=help for the full
+      operation reference and state-machine details.
     mode: parallel
     max: 10
     fields:
@@ -773,19 +750,25 @@ script:
                 tool='zen_admintools_cabinetadmin',
                 display_name='CabinetAdmin — Cabinet Lifecycle Manager',
                 tier='admintools',
-                version='4.5.1',
+                version='4.6.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['admintools'],
                 optional_labels=['cabinet'],
                 consumes=['cabinet_entity_id'],
                 returns=['cabinet_state', 'cabinet_manifest'],
                 failure_policy='hard',
-                modes={'inspect': 'inspect', 'init': 'init', 'hammer': 'hammer',
-                       'restore': 'restore', 'reset_all': 'reset_all', 'manifest': 'tool_manifest'},
+                modes={'help': 'help', 'inspect': 'inspect', 'init': 'init', 'hammer': 'hammer',
+                       'restore': 'restore', 'reset': 'reset', 'reset_all': 'reset_all',
+                       'repair_volumeinfo': 'repair_volumeinfo', 'repair_mount': 'repair_mount',
+                       'repair_dismount': 'repair_dismount', 'mount_status': 'mount_status',
+                       'flip_schema_version': 'flip_schema_version', 'expand_drawer': 'expand_drawer',
+                       'manifest': 'tool_manifest'},
                 icon='mdi:database-cog',
                 color='deep-orange',
                 caller_token=caller_token | default('')
-              ) | from_json -}}
+              ) | from_json | combine({'certs_required': [
+                    {'cert': 'cabinet_lifecycle_control', 'level': 1, 'modes': ['restore', 'repair_volumeinfo', 'reset', 'hammer', 'init', 'repair_mount', 'repair_dismount', 'flip_schema_version', 'reset_all', 'expand_drawer']}
+              ]}) -}}
         - stop: cabinetadmin tool manifest
           response_variable: result
     # --------------------------------------------------------------
@@ -932,6 +915,45 @@ script:
               confirm: Required for reset_all. Explicit safety gate.
       - stop: help returned
         response_variable: _help
+
+      # ── Cert-gate — cabinet_lifecycle_control (2026-09-10, #10390
+      # admintools.yaml rollout). Covers every moderate-to-nuclear write op
+      # (restore, repair_volumeinfo, reset, hammer, init, repair_mount,
+      # repair_dismount, flip_schema_version, reset_all, expand_drawer).
+      # inspect/mount_status/help stay ungated (read-only). This runs before
+      # anything else, so a denial `stop`s the whole script -- no downstream
+      # branch (including the repeat loop below) can ever be reached on a
+      # denial, no fall-through guard needed. ──
+    - if:
+        - condition: template
+          value_template: "{{- op not in ['help', 'inspect', 'mount_status'] -}}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _ca_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: cabinet_lifecycle_control
+          required_cert_level: 1
+          target_entity: "{{ target_cabinet | default('') }}"
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _ca_cert_policy: "{{ _ca_id_raw.get('policy_status', 'blocked') if _ca_id_raw is mapping else 'blocked' }}"
+          _ca_cert_authorized: "{{ _ca_id_raw.get('authorized', false) if _ca_id_raw is mapping else false }}"
+          _ca_cert_level: "{{ _ca_id_raw.get('cert_level', 0) if _ca_id_raw is mapping else 0 }}"
+          _ca_cert_block_reason: "{{ _ca_id_raw.get('block_reason', '') if _ca_id_raw is mapping else '' }}"
+      - if: "{{ _ca_cert_policy != 'allowed' or not _ca_cert_authorized }}"
+        then:
+          - variables:
+              _ca_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_ca_cert_policy, _ca_cert_authorized, _ca_cert_level, 'cabinet_lifecycle_control', 1, op, _ca_cert_block_reason) -}}
+          - variables:
+              result: >-
+                {{ ((_ca_cd_raw | from_json) if _ca_cd_raw is string else _ca_cd_raw) | combine({'tool': 'zen_admintools_cabinetadmin', 'caller_token': caller_token}) }}
+          - stop: cert_insufficient
+            response_variable: result
+
     - choose:
       - conditions:
         - condition: template
@@ -944,6 +966,41 @@ script:
               caller_token: "{{- caller_token -}}"
         - stop: hammer blocked
           response_variable: result
+
+      # ── Mandatory live-ack — hammer (2026-09-10). On top of hammer_ok AND
+      # the cert above -- no waiver, no scope override, asks every single
+      # call. Same posture as locks' exterior-unlock / security_manager's
+      # disarm gate. ──
+      - conditions:
+        - condition: template
+          value_template: "{{- op == 'hammer' -}}"
+        sequence:
+        - action: script.zen_dojotools_identity
+          response_variable: _hammer_ack_raw
+          continue_on_error: true
+          data:
+            mode: request_live_ack
+            ack_message: >-
+              Hammer request: {{ target_cabinet | default('all ring-0 cabinets', true) }}.
+              This wipes all drawers and marks the cabinet destroyed
+              (_hammered marker). {{ 'Will also stamp a fresh VolumeInfo immediately after (confirm_init).' if confirm_init | default(false) | bool else '' }}
+              No undo. Approve this hammer? (No standing override exists for
+              this action -- it asks every time by design.)
+            caller_token: "{{ caller_token }}"
+        - variables:
+            _hammer_ack_approved: "{{ _hammer_ack_raw.get('approved', false) if _hammer_ack_raw is mapping else false }}"
+            _hammer_ack_reason: "{{ _hammer_ack_raw.get('reason', 'dispatch_failed') if _hammer_ack_raw is mapping else 'dispatch_failed' }}"
+        - if: "{{ not _hammer_ack_approved }}"
+          then:
+          - variables:
+              result:
+                status: denied
+                op: hammer
+                reason: "{{ _hammer_ack_reason }}"
+                message: "Hammer requires a fresh live household-admin ack every time -- not granted."
+                caller_token: "{{ caller_token }}"
+          - stop: hammer ack not granted
+            response_variable: result
     - variables:
         inspect_acc: {}
         result: {}
@@ -1425,6 +1482,35 @@ script:
                 No undo. Set confirm: true to proceed.
               caller_token: "{{- caller_token -}}"
         - stop: confirm required
+          response_variable: result
+      # ── Mandatory live-ack — reset_all (2026-09-10). On top of confirm AND
+      # the cert above -- no waiver, no scope override, asks every single
+      # call. Same posture as hammer's gate just above. ──
+      - action: script.zen_dojotools_identity
+        response_variable: _resetall_ack_raw
+        continue_on_error: true
+        data:
+          mode: request_live_ack
+          ack_message: >-
+            reset_all request: wipes ALL ring-0 canonical cabinets, reseeds
+            schemas, and triggers Flynn bootstrap. No undo. User and
+            expansion cabinets are NOT touched. Approve this reset_all? (No
+            standing override exists for this action -- it asks every time
+            by design.)
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _resetall_ack_approved: "{{ _resetall_ack_raw.get('approved', false) if _resetall_ack_raw is mapping else false }}"
+          _resetall_ack_reason: "{{ _resetall_ack_raw.get('reason', 'dispatch_failed') if _resetall_ack_raw is mapping else 'dispatch_failed' }}"
+      - if: "{{ not _resetall_ack_approved }}"
+        then:
+        - variables:
+            result:
+              status: denied
+              op: reset_all
+              reason: "{{ _resetall_ack_reason }}"
+              message: "reset_all requires a fresh live household-admin ack every time -- not granted."
+              caller_token: "{{ caller_token }}"
+        - stop: reset_all ack not granted
           response_variable: result
       # Step 1 — wipe all ring-0 cabinets
       - repeat:
@@ -2260,6 +2346,7 @@ script:
                 consumes=['system_cabinet', 'household_cabinet'],
                 returns=['prompt_primitives_status'],
                 failure_policy='hard',
+                dependencies=[{'tool': 'zen_dojotools_scribe', 'required': true, 'uses': 'new_thought + formalize_scroll + publish_kfc to ship the default zen_system and alert_manager KFC drawers'}],
                 modes={'load': 'load', 'whitelist': 'whitelist',
                        'lens_registry': 'lens_registry', 'manifest': 'tool_manifest'},
                 icon='mdi:brain',

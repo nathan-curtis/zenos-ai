@@ -261,10 +261,28 @@ automation:
                   _message:       "{{ _ev.message | default(_key) }}"
                   _severity:      "{{ _ev.severity | default('warn') | trim }}"
                   _notify_target: "{{ _ev.notify_target | default('persistent') | trim }}"
+                  _notify_targets: "{{ (_ev.notify_target | default('persistent') | trim).split(',') | map('trim') | reject('equalto', '') | list }}"
                   _channel_hint:  "{{ _ev.channel_hint | default('', true) | string | trim }}"
                   _display:       "{{ _ev.display | default('prompt', true) | string | trim | lower }}"
+                  # Configurable, not hardcoded -- the dashboard/view a
+                  # zen_display ask casts to is a household setting
+                  # (integrations_config.display, same cabinet drawer/pattern
+                  # zen_dojotools_display's own base_url already uses), not a
+                  # literal baked into this file. Learned that lesson once
+                  # already tonight moving off room-state -- not doing it
+                  # again with a different hardcoded string.
+                  _hh_ic_vars: "{{ state_attr('sensor.zenos_default_household_cabinet', 'variables') | default({}, true) }}"
+                  _hh_ic_entry: "{{ _hh_ic_vars.get('integrations_config', {}) if _hh_ic_vars is mapping else {} }}"
+                  _hh_ic_raw: "{{ _hh_ic_entry.get('value') if _hh_ic_entry is mapping else none }}"
                   _image_entity:  "{{ _ev.image_entity | default('', true) | string | trim }}"
                   _response_type: "{{ _ev.response_type | default('', true) | string | trim }}"
+                  _display_room:  "{{ _ev.display_room | default('', true) | string | trim }}"
+                  _also_btn:      "{{ _ev.also_notify_buttons | default(false, true) }}"
+                  _ic_cfg: >-
+                    {%- set v = (_hh_ic_raw | from_json) if (_hh_ic_raw is string and _hh_ic_raw not in ['', none]) else (_hh_ic_raw if _hh_ic_raw is mapping else {}) -%}
+                    {{ v.get('display', {}) if v is mapping else {} }}
+                  _zd_dashboard_path: "{{ _ic_cfg.get('dashboard_path', 'zenos-ai-monastery') if _ic_cfg is mapping else 'zenos-ai-monastery' }}"
+                  _zd_view_path: "{{ _ic_cfg.get('view_path', 'display') if _ic_cfg is mapping else 'display' }}"
                   # A live-ack bypass can be security or life related --
                   # optional passthrough, defaults false so every other alert still respects
                   # quiet/sleep hours exactly as before. request_live_ack
@@ -287,68 +305,175 @@ automation:
                       {{ (now() + timedelta(minutes=cam)).isoformat() }}
                     {%- else -%}{{ '' }}{%- endif -%}
 
-              # Fire notification
-              - choose:
-                  - conditions: "{{ _notify_target == 'persistent' }}"
-                    sequence:
-                      - action: persistent_notification.create
-                        data:
-                          notification_id: "zen_alert_{{ _key }}"
-                          title: "{{ _title }}"
-                          message: "{{ _message }}"
+              # Fire notification — one or more channels, comma-separated
+              # (e.g. "postman,zen_display"). Display Surface is a rendering
+              # channel, not an attention-getter on its own -- it has no
+              # chime/badge, so composing it WITH postman (or another real
+              # notify channel) is on the caller, not bundled automatically.
+              # Each channel dispatches independently in the loop below.
+              - repeat:
+                  for_each: "{{ _notify_targets }}"
+                  sequence:
+                    - variables:
+                        _nt: "{{ repeat.item }}"
+                    - choose:
+                        - conditions: "{{ _nt == 'persistent' }}"
+                          sequence:
+                            - action: persistent_notification.create
+                              data:
+                                notification_id: "zen_alert_{{ _key }}"
+                                title: "{{ _title }}"
+                                message: "{{ _message }}"
 
-                  - conditions: "{{ _notify_target == 'postman' }}"
-                    sequence:
-                      - action: script.zen_dojotools_postman
-                        data:
-                          mode: resolve_and_dispatch
-                          message: "{{ _message }}"
-                          title: "{{ _title }}"
-                          urgency: "{{ _urgency }}"
-                          channel_hint: "{{ _channel_hint }}"
-                          image_entity: "{{ _image_entity }}"
-                          response_type: "{{ _response_type }}"
-                          breakthrough: "{{ _breakthrough }}"
-                          caller_token: "zen_alert_manager/{{ _key }}"
-                        response_variable: _pm_res
+                        - conditions: "{{ _nt == 'postman' }}"
+                          sequence:
+                            # If this ask is ALSO going to a display, it's a dash
+                            # pull, full stop -- no button-on-phone bypass. Postman's
+                            # own dashboard-link override only applies when there's
+                            # no response_type (dojotools_postman.yaml's own guard,
+                            # existing behavior, not something to fight) -- so when
+                            # composed with zen_display, response_type is dropped
+                            # from the push entirely and it becomes a plain "go look"
+                            # pointer. Buttons live ONLY on the display in that case.
+                            # zen_display absent -> unchanged, full buttoned push.
+                            - variables:
+                                _pm_response_type: "{{ '' if 'zen_display' in _notify_targets else _response_type }}"
+                            - action: script.zen_dojotools_postman
+                              data:
+                                mode: resolve_and_dispatch
+                                message: "{{ _message }}"
+                                title: "{{ _title }}"
+                                urgency: "{{ _urgency }}"
+                                channel_hint: "{{ _channel_hint }}"
+                                image_entity: "{{ _image_entity }}"
+                                response_type: "{{ _pm_response_type }}"
+                                breakthrough: "{{ _breakthrough }}"
+                                open_dashboard: "{{ 'zen_display' in _notify_targets }}"
+                                dashboard_path_override: "{{ ('/' ~ _zd_dashboard_path ~ '/' ~ _zd_view_path) if 'zen_display' in _notify_targets else '' }}"
+                                caller_token: "zen_alert_manager/{{ _key }}"
+                              response_variable: _pm_res
 
-                      # Cache response + re-emit for downstream subscribers
-                      - if:
-                          - condition: template
-                            value_template: >-
-                              {{ _response_type not in ['', 'none']
-                                 and _kata_cab not in ['', 'unavailable', 'unknown'] }}
-                        then:
-                          - action: script.zen_dojotools_filecabinet
-                            data:
-                              action_type: create
-                              volume_entity_id: "{{ _kata_cab }}"
-                              key: "alert_response_{{ _key }}"
-                              set_timestamp: true
-                              value: >-
-                                {{
-                                  {
-                                    'alert_key':     _key,
-                                    'ack_action':    (_pm_res.get('ack_action', '') if _pm_res is mapping else ''),
-                                    'ack_timed_out': (_pm_res.get('ack_timed_out', true) if _pm_res is mapping else true),
-                                    'ack_device_id': (_pm_res.get('ack_device_id', '') if _pm_res is mapping else '')
-                                  } | tojson
-                                }}
-                              caller_token: "zen_alert_manager/{{ _key }}"
-                          - event: zen_event
-                            event_data:
-                              event:
-                                kind:          alert_response
-                                alert_key:     "{{ _key }}"
-                                ack_action:    "{{ _pm_res.get('ack_action', '') if _pm_res is mapping else '' }}"
-                                ack_timed_out: "{{ _pm_res.get('ack_timed_out', true) if _pm_res is mapping else true }}"
-                                ack_device_id: "{{ _pm_res.get('ack_device_id', '') if _pm_res is mapping else '' }}"
+                            # Cache response + re-emit for downstream subscribers
+                            - if:
+                                - condition: template
+                                  value_template: >-
+                                    {{ _pm_response_type not in ['', 'none']
+                                       and _kata_cab not in ['', 'unavailable', 'unknown'] }}
+                              then:
+                                - action: script.zen_dojotools_filecabinet
+                                  data:
+                                    action_type: create
+                                    volume_entity_id: "{{ _kata_cab }}"
+                                    key: "alert_response_{{ _key }}"
+                                    set_timestamp: true
+                                    value: >-
+                                      {{
+                                        {
+                                          'alert_key':     _key,
+                                          'ack_action':    (_pm_res.get('ack_action', '') if _pm_res is mapping else ''),
+                                          'ack_timed_out': (_pm_res.get('ack_timed_out', true) if _pm_res is mapping else true),
+                                          'ack_device_id': (_pm_res.get('ack_device_id', '') if _pm_res is mapping else '')
+                                        } | tojson
+                                      }}
+                                    caller_token: "zen_alert_manager/{{ _key }}"
+                                - event: zen_event
+                                  event_data:
+                                    event:
+                                      kind:          alert_response
+                                      alert_key:     "{{ _key }}"
+                                      ack_action:    "{{ _pm_res.get('ack_action', '') if _pm_res is mapping else '' }}"
+                                      ack_timed_out: "{{ _pm_res.get('ack_timed_out', true) if _pm_res is mapping else true }}"
+                                      ack_device_id: "{{ _pm_res.get('ack_device_id', '') if _pm_res is mapping else '' }}"
 
-                default:
-                  - action: "notify.{{ _notify_target }}"
-                    data:
-                      title: "{{ _title }}"
-                      message: "{{ _message }}"
+                            # also_notify_buttons=true fires a SECOND, independent push -- real response_type
+                            # buttons, no dashboard link -- alongside the plain dash-pull
+                            # pointer above. Not a workaround for postman's single-
+                            # notification constraint: two real, separate notifications,
+                            # each satisfying that constraint on its own terms. Same
+                            # alert_response_<key> cache, same create-not-upsert
+                            # first-answer-wins rule as every other channel -- whichever
+                            # the person actually taps (display, or either push) wins.
+                            - if: "{{ _also_btn and 'zen_display' in _notify_targets and _response_type not in ['', 'none'] }}"
+                              then:
+                                - action: script.zen_dojotools_postman
+                                  data:
+                                    mode: resolve_and_dispatch
+                                    message: "{{ _message }}"
+                                    title: "{{ _title }}"
+                                    urgency: "{{ _urgency }}"
+                                    channel_hint: "{{ _channel_hint }}"
+                                    response_type: "{{ _response_type }}"
+                                    breakthrough: "{{ _breakthrough }}"
+                                    tag: "zen_alert_{{ _key }}_buttons"
+                                    caller_token: "zen_alert_manager/{{ _key }}/buttons"
+                                  response_variable: _pm_res2
+                                - if:
+                                    - condition: template
+                                      value_template: "{{ _kata_cab not in ['', 'unavailable', 'unknown'] }}"
+                                  then:
+                                    - action: script.zen_dojotools_filecabinet
+                                      data:
+                                        action_type: create
+                                        volume_entity_id: "{{ _kata_cab }}"
+                                        key: "alert_response_{{ _key }}"
+                                        set_timestamp: true
+                                        value: >-
+                                          {{
+                                            {
+                                              'alert_key':     _key,
+                                              'ack_action':    (_pm_res2.get('ack_action', '') if _pm_res2 is mapping else ''),
+                                              'ack_timed_out': (_pm_res2.get('ack_timed_out', true) if _pm_res2 is mapping else true),
+                                              'ack_device_id': (_pm_res2.get('ack_device_id', '') if _pm_res2 is mapping else '')
+                                            } | tojson
+                                          }}
+                                        caller_token: "zen_alert_manager/{{ _key }}/buttons"
+                                    - event: zen_event
+                                      event_data:
+                                        event:
+                                          kind:          alert_response
+                                          alert_key:     "{{ _key }}"
+                                          ack_action:    "{{ _pm_res2.get('ack_action', '') if _pm_res2 is mapping else '' }}"
+                                          ack_timed_out: "{{ _pm_res2.get('ack_timed_out', true) if _pm_res2 is mapping else true }}"
+                                          ack_device_id: "{{ _pm_res2.get('ack_device_id', '') if _pm_res2 is mapping else '' }}"
+
+                        # notify_target=zen_display (namespaced, NOT bare "display" --
+                        # a bare keyword here would silently hijack any real
+                        # notify.display service the household creates, since this
+                        # branch is checked before the generic notify.{{ _nt }}
+                        # fallback below): same "fire and let get_response poll
+                        # later" shape as postman above, but the response side never
+                        # comes back synchronously here -- a Lovelace tap is
+                        # asynchronous by nature. zenos_display_respond_internal (the
+                        # ONLY thing that can write a tap's answer -- no AI tool
+                        # wrapper, see its own header) writes directly into this same
+                        # alert_response_<key> cache when tapped, using ack_context
+                        # (set to _key below) to know which alert it's answering.
+                        # request_live_ack's poll loop then sees it identically to a
+                        # phone-push ack, zero extra code either place. Display Surface
+                        # is a rendering channel, not an attention-getter on its own --
+                        # compose with postman (notify_target=postman,zen_display) if
+                        # you need the human to actually notice.
+                        - conditions: "{{ _nt == 'zen_display' }}"
+                          sequence:
+                            - action: script.zen_dojotools_display
+                              continue_on_error: true
+                              data:
+                                mode: show
+                                room: "{{ _display_room }}"
+                                dashboard_path: "{{ _zd_dashboard_path }}"
+                                view_path: "{{ _zd_view_path }}"
+                                title: "{{ _title }}"
+                                body_markdown: "{{ _message }}"
+                                response_type: "{{ _response_type }}"
+                                ack_owner: "zen_dojotools_alertmanager"
+                                ack_context: "{{ _key }}"
+                              response_variable: _disp_res
+
+                      default:
+                        - action: "notify.{{ _nt }}"
+                          data:
+                            title: "{{ _title }}"
+                            message: "{{ _message }}"
 
               # Write updated _zen_active_alerts
               - variables:
@@ -674,31 +799,12 @@ script:
     alias: Zen DojoTools Alert Manager
     icon: mdi:bell-alert
     description: >-
-      Zen Alert Manager v1.0.2 — Use this when the user asks about active
-      alerts, wants to see what's currently alerting, dismiss a notification,
-      fire a new alert, or manage alert routing. Also use when the user asks
-      why the AI agent is in priority/urgent mode (error-severity alerts
-      write to sensor.zen_priority_context, which the active agent sees).
-
-      FOR FULL TRIAGE (alerts + persistent notifications + repairs + pending
-      updates + recent dispatches with pre-built action_queue): call
-      systemtools tool=notice_dashboard first — it aggregates everything and
-      returns action_queue[]{priority,item,tool,call} ready to fire.
-
-      LIST: read live alert roster + priority inject slot — alerts only.
-      FIRE: raise a new alert by key; dedup means already-active key is a
-      no-op; error-severity also activates sensor.zen_priority_context.
-      Pass image_entity + response_type to attach a snapshot and actionable
-      buttons (postman only). Response cached to kata cabinet + emitted as
-      zen_event(kind=alert_response) for downstream subscribers.
-      GET_RESPONSE: read cached ack for a fired alert — returns ack_action,
-      ack_timed_out, ack_device_id or status:pending if not yet captured.
-      CLEAR: dismiss one alert + its persistent notification + priority slot.
-      CLEAR_ALL: dismiss every active alert at once.
-      POLICY: get/set per-entity or per-label routing overrides
-      (notify_target, channel_hint, suppress_minutes).
-
-      Use mode=help for full field reference, severity pipeline, and GC notes.
+      Use when the user asks about active alerts, wants to fire/dismiss one,
+      manage alert routing, or asks why the agent is in priority/urgent mode
+      (error-severity alerts drive sensor.zen_priority_context). For full
+      triage across alerts + notifications + repairs + updates, call
+      systemtools tool=notice_dashboard first instead. mode=help for the
+      full field reference, severity pipeline, and notify_target guide.
     fields:
       mode:
         description: "list | fire | clear | clear_all | get_response | get_policy | set_policy | help"
@@ -725,10 +831,48 @@ script:
           select:
             options: [prompt, tool_response, both, none]
       notify_target:
-        description: "Notification target — persistent | mobile | postman (fire)"
+        description: >-
+          Notification channel(s) for fire — comma-separate to compose more than one, each
+          dispatches independently. Pick your scenario, use it verbatim:
+          Just tell a person, no screen involved -> "postman".
+          Show something on a display, nobody needs alerting (status board) -> "zen_display"
+          + display_room= (returns a warning field reminding you it's silent).
+          Alert a person AND show them something richer than fits in a push (the common
+          case) -> "postman,zen_display" + display_room= (push becomes tap-to-open only,
+          answering happens on the display).
+          Same as above but also let them answer straight from the push -> add
+          also_notify_buttons=true (fires a second, independent push with real buttons).
+          Plain persistent_notification card, no phone/display -> "persistent".
+          Raw notify.<service> passthrough -> the literal service name suffix (e.g.
+          "mobile_app_my_phone"), not "mobile" -- that string alone silently
+          calls notify.mobile, which does not exist.
         selector:
-          select:
-            options: [persistent, mobile, postman]
+          text:
+      display_room:
+        description: >-
+          Required when notify_target=zen_display (fire). Room/area to cast the ask to — passed
+          straight through to zen_dojotools_display's own room= resolution (must resolve to
+          exactly one zen_display_target in that room). Not sure which rooms are
+          display-equipped? Call zen_dojotools_display mode=discover (no room= for a
+          whole-house list, or room=X to check one) -- target_count 0 means not equipped.
+          fire validates this for you and blocks with guidance rather than silently
+          dispatching nothing, but checking ahead of time avoids the round trip.
+        selector:
+          text:
+      also_notify_buttons:
+        description: >-
+          Optional, default false (fire, only meaningful when postman AND zen_display are
+          both composed in notify_target). Composing the two makes the push a plain
+          tap-to-open pointer with no response buttons -- the display is the only place to
+          answer. Set true to ALSO fire a second, independent push carrying the response_type
+          buttons and no dashboard link, so the person gets two notifications: one to view
+          full context on the display, one to answer without opening anything. Each
+          notification satisfies Postman's own single-notification constraint on its own
+          terms -- not a workaround, two real notifications. Both write to the SAME
+          alert_response_<key> cache as the display tap -- same create-not-upsert,
+          first-answer-wins rule already governing every other channel here.
+        selector:
+          boolean:
       channel_hint:
         description: "Postman dispatch channel — push | tts | teams (fire)"
         selector:
@@ -738,7 +882,12 @@ script:
         selector:
           text:
       response_type:
-        description: "Actionable buttons — none | yes_no | yes_no_ignore | ok_cancel | acknowledge (fire, postman only)"
+        description: >-
+          Actionable buttons — none | yes_no | yes_no_ignore | ok_cancel | acknowledge (fire).
+          Renders on postman's push AND/OR zen_display's on-screen button row, whichever
+          channel(s) you composed in notify_target -- but when BOTH postman and zen_display
+          are composed together, postman drops its own buttons (dash-pull-only default,
+          see notify_target) unless also_notify_buttons=true.
         selector:
           select:
             options: [none, yes_no, yes_no_ignore, ok_cancel, acknowledge]
@@ -788,7 +937,7 @@ script:
                     tool='zen_dojotools_alertmanager',
                     display_name='Alert Manager',
                     tier='dojotools',
-                    version='5.1.0',
+                    version='5.2.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['alert_manager', 'alerts'],
@@ -801,7 +950,9 @@ script:
                     mcp_exposed=true,
 
                     caller_token=caller_token | default('')
-                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['alert_manager']}) }}
+                ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['alert_manager'], 'certs_required': [
+                    {'cert': 'alert_policy_edit', 'level': 1, 'modes': ['set_policy']}
+                ]}) }}
           - stop: tool_manifest
             response_variable: result
 
@@ -1071,6 +1222,8 @@ script:
                   # completely silently. request_live_ack's
                   # `breakthrough: true` went nowhere.
                   _brk:   "{{ breakthrough | default(false, true) }}"
+                  _droom: "{{ display_room | default('', true) | string | trim }}"
+                  _also_btn: "{{ also_notify_buttons | default(false, true) }}"
 
               - if:
                   - condition: template
@@ -1082,6 +1235,81 @@ script:
                         error: alert_key and message required
                         caller_token: "{{ _caller_token }}"
                   - stop: fire_validation_error
+                    response_variable: result
+
+              - variables:
+                  _fire_ntgt_list: "{{ _ntgt.split(',') | map('trim') | reject('equalto', '') | list }}"
+
+              # Guardrail: zen_display composed with no display_room silently
+              # no-ops (zen_dojotools_display's room= resolves to zero
+              # targets, continue_on_error swallows it, nothing ever
+              # dispatches, no error anywhere). Caught here instead, before
+              # the event even fires, with a direct fix.
+              - if: "{{ 'zen_display' in _fire_ntgt_list and _droom == '' }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        error: display_room_required
+                        detail: >-
+                          notify_target includes zen_display but display_room is empty --
+                          this would silently dispatch nothing. Add display_room=<room>
+                          (the happy path: notify_target=postman,zen_display
+                          display_room=<room>).
+                        caller_token: "{{ _caller_token }}"
+                  - stop: fire_validation_error — display_room required
+                    response_variable: result
+
+              # Guardrail: display_room given, but does that room actually
+              # HAVE a zen_display_target? "Is this room display-equipped"
+              # is exactly what zen_dojotools_display mode=discover room=X
+              # already answers (target_count 0 = not equipped) -- checked
+              # here synchronously, same guardrail shape as the empty-room
+              # case above, instead of silently dispatching to nothing.
+              - if: "{{ 'zen_display' in _fire_ntgt_list and _droom != '' }}"
+                then:
+                  - action: script.zen_dojotools_display
+                    continue_on_error: true
+                    data:
+                      mode: discover
+                      room: "{{ _droom }}"
+                    response_variable: _fire_disc_raw
+                  - variables:
+                      _fire_disc_count: >-
+                        {{ _fire_disc_raw.get('result', {}).get('target_count', 0) if _fire_disc_raw is mapping else 0 }}
+                  - if: "{{ _fire_disc_count == 0 }}"
+                    then:
+                      - variables:
+                          result:
+                            success: false
+                            error: room_not_display_equipped
+                            detail: >-
+                              display_room={{ _droom }} has no zen_display_target entity --
+                              this would silently dispatch nothing. Check
+                              zen_dojotools_display mode=discover (no room= for a
+                              whole-house list) to find a room that actually has one, or
+                              label a media_player zen_display_target in this room first.
+                            caller_token: "{{ _caller_token }}"
+                      - stop: fire_validation_error — room not display equipped
+                        response_variable: result
+
+              # Guardrail: also_notify_buttons only does anything when BOTH
+              # postman and zen_display are composed -- alone it's a silent
+              # no-op (the code path it triggers lives entirely inside the
+              # zen_display-composed branch).
+              - if: "{{ _also_btn and not ('postman' in _fire_ntgt_list and 'zen_display' in _fire_ntgt_list) }}"
+                then:
+                  - variables:
+                      result:
+                        success: false
+                        error: also_notify_buttons_needs_both_channels
+                        detail: >-
+                          also_notify_buttons=true only does anything when notify_target
+                          composes BOTH postman and zen_display -- this call is missing one
+                          (the happy path: notify_target=postman,zen_display
+                          display_room=<room> also_notify_buttons=true).
+                        caller_token: "{{ _caller_token }}"
+                  - stop: fire_validation_error — also_notify_buttons needs both channels
                     response_variable: result
 
               - event: zen_event
@@ -1098,11 +1326,27 @@ script:
                     clear_after_minutes: "{{ _cam }}"
                     display:             "{{ _disp }}"
                     breakthrough:        "{{ _brk }}"
+                    display_room:        "{{ _droom }}"
+                    also_notify_buttons: "{{ _also_btn }}"
 
+              - variables:
+                  _ntgt_list: "{{ _ntgt.split(',') | map('trim') | reject('equalto', '') | list }}"
+                  # Display Surface has no chime/badge -- if it's the ONLY
+                  # channel requested, nothing actually pulls a human's
+                  # attention. Not an error, just a heads-up computed here
+                  # synchronously (fire's own dispatch is async, but this
+                  # check needs nothing the async side produces).
+                  _notify_warning: >-
+                    {%- if _ntgt_list == ['zen_display'] -%}
+                      zen_display alone is silent -- no chime/badge/push. Add another
+                      channel too (e.g. notify_target=postman,zen_display) if this needs to
+                      actually get someone's attention.
+                    {%- else -%}{{ none }}{%- endif -%}
               - variables:
                   _response: >-
                     {{ {'mode': 'fire', 'alert_key': _key, 'severity': _sev,
                         'notify_target': _ntgt, 'display': _disp, 'queued': true,
+                        'warning': (_notify_warning if _notify_warning not in ['', none] else none),
                         'caller_token': _caller_token} | tojson }}
 
           # ── clear ─────────────────────────────────────────────────────────────
@@ -1245,6 +1489,39 @@ script:
                   - stop: set_policy_validation_error
                     response_variable: result
 
+              # ── Cert-gate — alert_policy_edit (2026-09-10, #10390
+              # alertmanager.yaml rollout). set_policy can set suppress_
+              # minutes for any entity/label household-wide -- a high enough
+              # value silently mutes future alerts for that class, a real
+              # security-bypass vector. fire/clear/clear_all/list/get_policy/
+              # get_response are transient one-off actions, not a standing
+              # bypass, and stay ungated. ──
+              - action: script.zen_dojotools_identity
+                response_variable: _ap_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: alert_policy_edit
+                  required_cert_level: 1
+                  target_entity: "{{ _tgt_entity }}"
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _ap_cert_policy: "{{ _ap_id_raw.get('policy_status', 'blocked') if _ap_id_raw is mapping else 'blocked' }}"
+                  _ap_cert_authorized: "{{ _ap_id_raw.get('authorized', false) if _ap_id_raw is mapping else false }}"
+                  _ap_cert_level: "{{ _ap_id_raw.get('cert_level', 0) if _ap_id_raw is mapping else 0 }}"
+                  _ap_cert_block_reason: "{{ _ap_id_raw.get('block_reason', '') if _ap_id_raw is mapping else '' }}"
+              - if: "{{ _ap_cert_policy != 'allowed' or not _ap_cert_authorized }}"
+                then:
+                  - variables:
+                      _ap_cd_raw: >-
+                        {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                        {{ OS.cert_denial(_ap_cert_policy, _ap_cert_authorized, _ap_cert_level, 'alert_policy_edit', 1, 'set_policy', _ap_cert_block_reason) -}}
+                  - variables:
+                      result: >-
+                        {{ ((_ap_cd_raw | from_json) if _ap_cd_raw is string else _ap_cd_raw) | combine({'tool': 'zen_dojotools_alertmanager', 'caller_token': _caller_token}) }}
+                  - stop: cert_insufficient
+                    response_variable: result
+
               - action: script.zen_dojotools_filecabinet
                 data:
                   action_type: read
@@ -1367,6 +1644,15 @@ script:
               - variables:
                   _response: >-
                     {{ {'tool': 'zen_dojotools_alertmanager', 'version': '1.0.0',
+                        'notify_target_decision_guide': {
+                          '_read_this_first': 'Pick your scenario below, use that exact notify_target verbatim. Do not reason from scratch.',
+                          'phone_only_no_display': 'notify_target=postman. Zero display involvement -- no session, no cast, no takeover of any screen.',
+                          'display_only_silent': 'notify_target=zen_display + display_room=<room>. No chime/badge -- only use this if nobody needs to be alerted (e.g. an always-on status board). Returns a warning field to tell you so.',
+                          'phone_alert_plus_display_content': 'notify_target=postman,zen_display + display_room=<room>. THE DEFAULT for "notify someone AND show something richer than fits in a push." Push becomes a plain tap-to-open pointer -- no push buttons, answering happens on the display only.',
+                          'phone_alert_plus_display_with_phone_buttons_too': 'Same as above + also_notify_buttons=true. Fires a SECOND push carrying real response buttons, so the person can answer from the push OR the display -- two independent notifications, not a compromise between them.',
+                          'phone_viewing_the_display_session_itself': 'No new call needed. Any device (including the phone Companion app) that opens dashboard_path_override=/zenos-ai-monastery/display sees the IDENTICAL live session data as the physical display -- it is one shared sensor, not per-device state. A postman push with open_dashboard=true already does this.',
+                          'waiting_for_the_human_answer': 'Never poll this tool directly. Use zen_dojotools_identity mode=request_live_ack (ack_notify_target= same values as notify_target above, comma-composable) -- it fires AND polls for you.'
+                        },
                         'modes': {
                           'list': {
                             'desc': 'Read active alert roster and priority inject slot.',
@@ -1377,7 +1663,7 @@ script:
                           'fire': {
                             'desc': 'Emit alert_fire zen_event. zen_alert_manager handles dedup — already-active key is silent no-op.',
                             'required': 'alert_key (unique slug), message',
-                            'optional': 'severity(info|warn|error, default:warn), notify_target(persistent|postman|notify.<service suffix>, default:persistent), channel_hint(push|tts|teams), clear_after_minutes(0=permanent, omit=1440 auto-GC), breakthrough(bool, default:false — bypasses the quiet/sleep-hours gate for security or life-relevant human-requested actions)'
+                            'optional': 'severity(info|warn|error, default:warn), notify_target(persistent|postman|zen_display|notify.<service suffix>, default:persistent — comma-separate to compose more than one channel, e.g. postman,zen_display; zen_display alone returns a warning field since it has no chime/badge on its own, compose it with another channel to actually get someone\'s attention), display_room(required when zen_display is one of the targets — room/area zen_dojotools_display resolves its own zen_display_target in), channel_hint(push|tts|teams), clear_after_minutes(0=permanent, omit=1440 auto-GC), breakthrough(bool, default:false — bypasses the quiet/sleep-hours gate for security or life-relevant human-requested actions), response_type(none|yes_no|yes_no_ignore|ok_cancel|acknowledge — when postman AND zen_display are both composed, it\'s a dash pull, full stop: the push drops its own response buttons entirely and becomes a plain tap-to-open pointer to the display, answering happens on the display only), also_notify_buttons(bool, default false, only meaningful when postman+zen_display composed — fires a SECOND independent push with real response_type buttons and no dashboard link, so you get one dash-pull pointer AND one answerable push, two real notifications each satisfying postman\'s own single-notification constraint on its own terms). DESIGN, not accidental: postman\'s own ack-capture and a display tap both write the SAME alert_response_<key> via action_type=create (never update/upsert) — whichever channel is answered FIRST wins, the second write is a harmless no-op. get_response reads back whichever landed first. Want last-answer-wins instead? That needs an explicit switch to upsert+force_action, not the default.'
                           },
                           'clear': {
                             'desc': 'Emit alert_clear. Dismisses persistent notification + clears priority inject entry. Inactive key = silent no-op.',
@@ -1398,7 +1684,7 @@ script:
                           }
                         },
                         'policy_shape': {
-                          'notify_target': 'persistent | postman | notify.<service suffix>',
+                          'notify_target': 'persistent | postman | zen_display | notify.<service suffix> (comma-separate to compose)',
                           'channel_hint': 'push | tts | teams (postman only)',
                           'suppress_minutes': 'routing policy hint — stored in _alert_policy, not yet enforced by zen_alert_manager'
                         },

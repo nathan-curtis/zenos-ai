@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.7.0
+**Version:** 5.8.0 — adds `leak_auto_shutoff_enable` mode + `zen_plant_leak_watch` automation (see below); `label_suggest` gained real water/leak/shutoff classification (was electrical-only)
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
@@ -51,10 +51,50 @@ All sections return `available: false` when entities are missing or unavailable.
 | `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`) |
 | `managed` | All Grocy-provisioned machines — chores due, stock summary, products grouped by `ha_labels` root. Any machine bootstrapped via `provision_bom` appears automatically. `managed_labels` scopes to specific machines (CSV). |
 | `validate` | Slot resolution report — entity_id, pinned, raw_state, ok |
-| `label_suggest` | Scans a named integration's entities (`integration=span_panel` or `integration=emporia_vue`) and suggests `zen_plant_*`/`main_panel`/`sub_panel`/`consumed_energy` labels by device_class + name pattern. Preview-by-default; pass `confirm_action=true` to apply. Scoped to one integration at a time — Plant's domain is house-wide, so a blind device_class scan across every smart plug/appliance would flood with noise. Fills the gap between Room Manager's `label_discover` (area-scoped) and Media Manager's `label_suggest` (room-scoped). See [Plant Codex — Emporia Vue](../plugins/emporia_vue_codex.md) / [Plant Codex — SPAN Panel](../plugins/span_panel_codex.md). |
+| `label_suggest` | Scans a named integration's entities (`integration=span_panel`, `emporia_vue`, or `zwave_js`) and suggests `zen_plant_*`/`main_panel`/`sub_panel`/`consumed_energy`/`leak_sensor`/`auto_shutoff` labels by device_class + name pattern. Preview-by-default; pass `confirm_action=true` to apply. Scoped to one integration at a time — Plant's domain is house-wide, so a blind device_class scan across every smart plug/appliance would flood with noise. Fills the gap between Room Manager's `label_discover` (area-scoped) and Media Manager's `label_suggest` (room-scoped). `moisture` device_class → `zen_plant_leak_sensor` (high confidence); `valve.*` domain → `zen_plant_auto_shutoff` (high confidence); `switch.*` name-pattern match → `zen_plant_auto_shutoff` (medium confidence — **verify by hand**, a plausibly-named monitoring entity is not the same as a real controllable valve). See [Plant Codex — Emporia Vue](../plugins/emporia_vue_codex.md) / [Plant Codex — SPAN Panel](../plugins/span_panel_codex.md). |
 | `ignore` | Tag entity with `zen_plant_ignore` (creates label if missing). Param: `target_entity`. |
 | `unignore` | Remove `zen_plant_ignore` from entity. Param: `target_entity`. |
+| `leak_auto_shutoff_enable` | House-wide gate (`leak_auto_shutoff_enabled=bool`) for the companion `zen_plant_leak_watch` automation — closes every `zen_plant_auto_shutoff`-labeled switch/valve on a real leak. Omit the field to read the current on/off state + which entities are currently tagged (`shutoff_entities`, `leak_sensor_entities`). Default **off** (opt-in): while off, a real leak asks live instead of acting silently — two independent yes/no questions (close now? auto-close future leaks?). Requires the `plant_auto_shutoff_config_edit` certification (level 1) as of 2026-09-10 (#10390) — see below. |
 | `help` | Full discovery reference (returned inline, no docs needed) |
+
+---
+
+## Leak Auto-Shutoff (`zen_plant_leak_watch`)
+
+New 2026-08-24. House-wide automation, no per-room wiring required — it
+resolves both sides purely off labels. Triggers on a real `moisture.detected`
+event from any `zen_plant_leak_sensor`-labeled entity.
+
+Setting the gate (either direction) requires the `plant_auto_shutoff_config_edit`
+certification at level 1 (2026-09-10, #10390) — cert-only, no live-ack tier.
+See the [Security Certification Manual](../getting_started/security_certification_manual.md).
+
+- **Gate on** (`mode=leak_auto_shutoff_enable leak_auto_shutoff_enabled=true`):
+  closes every `zen_plant_auto_shutoff`-labeled switch/valve immediately, no
+  asking, then fires an FYI alert.
+- **Gate off** (default): asks live instead, via `zen_dojotools_identity
+  mode=request_live_ack` — two independent yes/no questions, asked
+  sequentially: close the valve(s) now?, and separately, auto-close future
+  leaks without asking? Both answers are real and independent — e.g. "handle
+  this one myself, but yes, automate it going forward" is a valid outcome.
+
+**Tagging requirements, and why the domain check matters:** `zen_plant_leak_sensor`
+belongs on `binary_sensor.*` entities with `device_class: moisture` — real
+leak pucks or an aux leak-detect feature on another device. `zen_plant_auto_shutoff`
+must go on an actually-actuatable `switch.*` or `valve.*` entity — a
+monitoring-only sensor with a plausible name (a flow-rate sensor, a
+valve-position readout) does **not** belong here even though it may look
+related, and the automation only ever targets `switch.*` domain entities
+carrying the label (`_shutoff_eid` and the automation's own entity
+resolution both filter by domain, so a stray mislabel now fails safe —
+resolves to nothing actionable — instead of silently reporting an
+uncontrollable entity as the real shutoff). `label_suggest`'s `switch.*`
+name-pattern match is deliberately only medium-confidence for exactly this
+reason.
+
+Not yet verified against a real moisture-trigger event end-to-end (no safe
+way to simulate a real leak) — the discovery/labeling/config-check side is
+fully verified live, the automation firing itself is not.
 
 ---
 
@@ -127,7 +167,7 @@ Pin a sensor to any slot by applying the matching label. Overrides always take f
 | `zen_plant_thermal` | Thermal: generic thermal-managed load | Any — surfaced as `thermal_load` nodes |
 | `zen_plant_motor` | Mechanical: motor entity (cover, fan, binary_sensor, etc.) — surfaces in `motors[]` list | Any domain |
 | `zen_plant_water_softener` | Water management: softener/conditioner sensors | `sensor.*`, `binary_sensor.*` |
-| `zen_plant_auto_shutoff` | Water management: auto shutoff valve | `binary_sensor.*` or `switch.*` |
+| `zen_plant_auto_shutoff` | Water management: auto shutoff valve. Must be actuatable — `switch.*`/`valve.*` only, not a monitoring-only entity (see Leak Auto-Shutoff below) | `switch.*` or `valve.*` |
 | `zen_plant_leak_sensor` | Water management: leak detection probes | `binary_sensor.*` |
 
 ---

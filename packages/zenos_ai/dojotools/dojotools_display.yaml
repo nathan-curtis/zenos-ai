@@ -1,0 +1,1667 @@
+###############################################################################
+# DojoTools — Zen Display Surface
+# zen_dojotools_display (v0.5.1, in progress)
+#
+# Agent-composable, policy-bound casting of a Lovelace dashboard/view to any
+# display in the house. Descoped from the full 2026.10 spec per the
+# operator's call: dashboard access authorization is HA's own problem (if a
+# user has the dash they're allowed) — this tool's job is only (1) delivery
+# routing and (2) letting the agent set what's on the display. No
+# interaction layer, no signed intents. Info boards, not control surfaces.
+#
+# v0.2.0 — DojoTools cadillac pass:
+#   - Adopted the canonical envelope() shape (zen_os_1.jinja) and single-
+#     entry/single-exit structure, same as zen_dojotools_locks v1.2.0+.
+#   - Built on the shared zen_target_resolve.jinja core: entity_id, room=,
+#     and label= addressing all resolve through TARGET.resolve_targets,
+#     narrowed to whichever family (cast/androidtv/webostv) the resolved
+#     entity actually belongs to. mode=discover surfaces
+#     entity_extended_notes the same way locks does.
+#   - Minted a real cert: display_control, gating mode=show only. Read
+#     (discover/help) stays open. Scaled to actual risk — this tool shows
+#     an info board, it doesn't touch physical security, so no live-ack-
+#     per-call tier the way exterior lock unlock gets. Cert alone is
+#     sufficient once granted.
+#   - mode=set audit trail via zen_dojotools_event_emitter, same precedent
+#     as locks' lock_actuation event.
+#   - tool_manifest: certs_required declared, risk_class=actuator,
+#     impact=soft (nothing life-safety-relevant here).
+#
+# Three delivery families, resolved automatically from mode=discover's
+# output — caller never needs to know which family a target belongs to
+# beyond picking its entity_id:
+#   cast     — cast.show_lovelace_view direct (no auth wall; Cast's own
+#              session handles it).
+#   adb      — Fire TV/Android TV. Wake + ADB VIEW intent into Silk
+#              (com.amazon.cloud9). Normal HA login screen, no bypass.
+#   webos    — LG TVs. Wake + webostv.command system.launcher/open into
+#              the TV's native browser. Same auth story as adb.
+# Both adb and webos require a caller-supplied base_url (no reliable
+# template access to hass.config.internal_url, and it's unset on this
+# instance anyway — see mode=help).
+#
+# Exercised live against real targets covering all three delivery
+# families: cast, adb/Silk, and webos.
+#
+# Explicitly NOT this tool's job: any device already running the HA
+# Companion app (phones, iOS tablets, sideloaded Android/Fire tablets)
+# routes through zen_dojotools_postman's dashboard_path_override instead —
+# that's a simpler, more reliable path than reinventing per-platform
+# casting once a native app exists. This tool exists for TVs/displays that
+# can't run Companion at all.
+#
+# Never add trusted_networks/segment auth bypass for adb/webos targets —
+# explicit, hard house rule. Whoever's in front of the screen logs in like
+# any other browser.
+#
+# v0.3.0 — status/update/dismiss + Media Manager coordination contract:
+#   - mode=status (read-only, no cert): active-session lookup from a
+#     lightweight household-cabinet session drawer
+#     (display_session_<entity_slug>), same read-combine-write pattern
+#     zen_dojotools_filecabinet uses everywhere else. This is the
+#     mechanism other tools (Media Manager) consult before taking over a
+#     screen -- read-only peer awareness, never ownership.
+#   - mode=update: patches an active session's content without the
+#     wake+3s-delay step adb/webos targets need on a cold show -- real
+#     efficiency win, not just a mode-list checkbox. Errors cleanly
+#     (no_active_session) rather than silently creating one.
+#   - mode=dismiss: idempotent session clear, cert-gated same as
+#     show/update -- still actuation on someone else's screen.
+#   - with_audio (show/update): delegates to
+#     zen_dojotools_media_manager mode=prefs_apply for the target's
+#     resolved room -- Display Surface never guesses a source itself.
+#     prefs_apply only applies what's already been taught via prefs_set
+#     for that room/home-mode; fails soft (no_pref/no_room/error) rather
+#     than blocking the cast. Default false: zero Media Manager calls,
+#     fully silent, matches the explicit design call that a display
+#     session implies no audio expectation unless asked for.
+#   - Reverse direction (dojotools_media_manager.yaml mode=source_set only
+#     so far): consults THIS tool's mode=status
+#     before switching a target's source, surfaces
+#     display_surface_interrupted in its own response -- read-only,
+#     never blocks the source switch, decision policy stays Media
+#     Manager's. Not yet wired into play_media/activity_apply, Media
+#     Manager's other watch-intent paths.
+#
+# v0.5.1 — session auto-expiry: mode=expire_sessions clears any
+#   display_session_* drawer (per-entity or the shared
+#   display_session_current) idle 5+ minutes (created_at, or updated_at
+#   if ever patched via mode=update) -- same clearing mechanism as
+#   mode=dismiss, just automatic. Directly closes the staleness class of
+#   bug the active-use guard below was built to catch: a forgotten
+#   session shouldn't be able to sit around long enough to mislead
+#   anything that reads it later. Consolidated into
+#   dojotools_scheduler.yaml's existing quarter_hour trigger (reuse the
+#   existing periodic dispatcher rather than add yet another standalone
+#   automation) instead of its own time_pattern automation -- same cadence
+#   FileCabinet GC already uses there.
+#
+# v0.5.0 — active-use guard on mode=show:
+#   A cast can interrupt real, in-progress media on the target -- the
+#   fix belongs in the tool itself, not agent discipline. show now
+#   checks the target's LIVE foreground app/source against known "this
+#   is our own display" signatures (app_name=='Home Assistant Lovelace'
+#   for cast, app_id=='com.amazon.cloud9' for adb, source=='Web Browser'
+#   for webos) before dispatching -- if it's playing something AND the
+#   foreground isn't already our own display, show is blocked (error:
+#   target_active_use) unless override_active_use=true is explicitly
+#   passed. An earlier version of this guard checked the session DRAWER
+#   instead of live foreground state and missed exactly the case it was
+#   built for -- a stale, never-dismissed drawer record from a prior
+#   interruption can trust itself right through a second one. Live
+#   foreground state can't go stale the way a self-written record can.
+#   Also gained a
+#   reverse-seam wiring: dojotools_media_manager.yaml's mode=source_set
+#   now consults THIS tool's mode=status and surfaces
+#   display_surface_interrupted in its own response (read-only, never
+#   blocks the source switch) -- not yet extended to Media Manager's
+#   other watch-intent paths (play_media, activity_apply).
+#
+# v0.4.0 — projection layer + zen_display_target label:
+#   - show/update gained content fields: view_type, title, body_markdown,
+#     image_entity, alert_severity/alert_text, progress. Patch semantics
+#     on update (only supplied fields override; combine into the existing
+#     drawer, never wholesale replace).
+#   - Image correlation: image_generated events now carry a correlation_id
+#     (added to zen_dojotools_generate_image); a new automation in this
+#     file matches it against every display_session_* drawer's session_id
+#     and flips image_bound only on a match, discarding stale/superseded
+#     requests silently.
+#   - zen_display_target label: household-designated (not just
+#     technically-capable) display targets. discover's existing label=
+#     targeting already covers filtering to it — no code change needed.
+#   - ONE SHARED PROJECTION SENSOR, not one per target (explicit design
+#     call: one view, don't solve concurrency, assume one display).
+#     show/update write a SECOND, fixed cabinet key
+#     (display_session_current) alongside the real per-entity one (which
+#     stays — status/dismiss still need per-target correctness). One
+#     plain template sensor (not a blueprint — no point templating
+#     something with exactly one instance) reads only that fixed key.
+#     The Lovelace view side (one shared view in the existing room-state
+#     dashboard) is still being built.
+#
+# Still not yet built: the one shared Lovelace view itself, Lens Bus
+# registration (register/unregister/stacks_by_anchor, same shape as
+# zen_dojotools_locks), and room→display resolution off RM v3 beyond
+# plain area lookup.
+###############################################################################
+
+script:
+  zen_dojotools_display:
+    alias: "Zen DojoTools Display"
+    description: >-
+      Cast a Lovelace dashboard/view to any display in the house — Cast,
+      Fire TV/Android TV (Silk), or LG webOS, auto-routed per target.
+      mode=discover: list castable targets by family, with any extended
+      label guidance. mode=show/update: dispatch or patch a session
+      (entity_id, room=, or label= targeting; dry_run=true previews;
+      with_audio=true optionally preps the room's taught audio pref via
+      Media Manager). mode=status: is there an active session on a
+      target. mode=dismiss: clear one. mode=help for full field/gating
+      reference. Devices already running HA Companion (phones, tablets)
+      don't need this tool — see zen_dojotools_postman instead.
+    icon: mdi:cast
+    mode: queued
+    max: 5
+    fields:
+      mode:
+        name: Mode
+        description: "discover | show | update | dismiss | status | register | unregister | stacks_by_anchor | expire_sessions | help | tool_manifest"
+        required: true
+        default: discover
+        selector:
+          select:
+            options:
+              - discover
+              - show
+              - update
+              - dismiss
+              - status
+              - register
+              - unregister
+              - stacks_by_anchor
+              - expire_sessions
+              - help
+              - tool_manifest
+      entity_id:
+        name: Entity ID
+        description: >-
+          Explicit media_player entity override. Beats label/room if
+          given. Must be on the cast, androidtv, or webostv integration —
+          run mode=discover to see valid targets.
+        required: false
+        selector:
+          entity:
+            domain: media_player
+      room:
+        name: Room
+        description: >-
+          Area name/slug OR a Room Manager room label — both resolve.
+          Combined with label narrows to that room; alone, resolves any
+          castable display in it (must resolve to exactly one for
+          mode=show).
+        required: false
+        selector:
+          text:
+      label:
+        name: Label
+        description: >-
+          HA label id. Combined with room narrows to that room; alone,
+          targets every castable display carrying it anywhere in the
+          house (must resolve to exactly one for mode=show).
+        required: false
+        selector:
+          text:
+      dashboard_path:
+        name: Dashboard url_path
+        description: Required for mode=show. Lovelace dashboard url_path (e.g. room-state).
+        required: false
+        selector:
+          text:
+      view_path:
+        name: View path
+        description: Required for mode=show. View path within the dashboard (e.g. room-master-bedroom).
+        required: false
+        selector:
+          text:
+      override_active_use:
+        name: Override Active Use
+        description: >-
+          mode=show only. If the target has no existing Display Surface
+          session AND is currently playing something (real content, not
+          just idle/on), show is blocked by default -- this is likely
+          interrupting someone actually using the screen. Pass true to
+          proceed anyway. Never required to re-show/refresh an
+          already-active Display Surface session.
+        required: false
+        default: false
+        selector:
+          boolean:
+      base_url:
+        name: Base URL
+        description: >-
+          Optional override for mode=show/update against an adb or webos
+          target. Falls back to integrations_config.display.base_url
+          (household cabinet, a one-time setting) when omitted — only pass
+          this to point a specific call at a different HA instance (e.g. a
+          guest network). Full scheme+host HA is reachable at from that
+          device (e.g. https://ha.example.com). No account/session for it
+          is assumed — the device's own browser will show the normal login
+          screen.
+        required: false
+        selector:
+          text:
+      dry_run:
+        name: Dry Run
+        description: >-
+          mode=show/update only. If true, validates the target and cert
+          and returns what would happen without actually dispatching.
+        required: false
+        default: false
+        selector:
+          boolean:
+      with_audio:
+        name: With Audio
+        description: >-
+          mode=show/update only. If true, calls zen_dojotools_media_manager
+          mode=prefs_apply for the target's room BEFORE dispatching the
+          cast — applies whatever source/volume the household already
+          taught for that room's current home mode (prefs_set). Fails
+          soft: if nothing's been taught yet (no_pref), the cast still
+          proceeds; audio_status in the response says so. Default false —
+          fully silent, zero media_manager calls, no assumption the
+          target has (or should have) any audio.
+        required: false
+        default: false
+        selector:
+          boolean:
+      view_type:
+        name: View Type
+        description: >-
+          mode=show/update only. message | room | status | media | camera
+          | choices. Informs which conditional cards the target's own
+          Lovelace view renders. choices renders read-only -- no
+          interaction layer in v1.
+        required: false
+        selector:
+          select:
+            options:
+              - message
+              - room
+              - status
+              - media
+              - camera
+              - choices
+      title:
+        name: Title
+        description: "mode=show/update only. Header text for the target's view."
+        required: false
+        selector:
+          text:
+      body_markdown:
+        name: Body Markdown
+        description: "mode=show/update only. Markdown body text for the target's view."
+        required: false
+        selector:
+          text:
+            multiline: true
+      image_entity:
+        name: Image Entity
+        description: >-
+          mode=show/update only. A zen_dojotools_generate_image slot
+          (e.g. image.zen_dashboard_snap) to display -- a reference, not
+          a trigger. This tool never calls generate_image itself. Two-
+          step flow for a freshly-generated image: (1) show/update with
+          image_entity=<slot> (starts image_bound=false, view renders a
+          placeholder), (2) separately call zen_dojotools_generate_image
+          with correlation_id=<this call's session_id, from the show/
+          update response> and the same slot. When that image_generated
+          event fires, it's matched back to this session by session_id
+          and image_bound flips true -- a late event whose correlation_id
+          doesn't match the session's CURRENT session_id (superseded by a
+          later show/update) is silently dropped, never applied.
+        required: false
+        selector:
+          entity:
+            domain: image
+      alert_severity:
+        name: Alert Severity
+        description: "mode=show/update only. info | warn | error. Paired with alert_text."
+        required: false
+        selector:
+          select:
+            options:
+              - info
+              - warn
+              - error
+      alert_text:
+        name: Alert Text
+        description: "mode=show/update only. Alert card text. Omit to show no alert card."
+        required: false
+        selector:
+          text:
+      progress:
+        name: Progress
+        description: "mode=show/update only. 0-100. Omit to show no progress card."
+        required: false
+        selector:
+          number:
+            min: 0
+            max: 100
+      response_type:
+        name: Response Type
+        description: >-
+          mode=show/update only. Same vocabulary as zen_dojotools_postman's response_type:
+          yes_no | yes_no_ignore | ok_cancel | acknowledge. Omit for no button row (read-only,
+          today's default). Don't call this directly for a "wait for a human's call" flow --
+          use zen_dojotools_identity mode=request_live_ack with ack_notify_target=display
+          instead (it calls this tool for you and polls the same alertmanager response cache
+          a phone-push ack uses). A tap fires a separate, non-AI-exposed internal script
+          (never a mode on this tool -- an agent must never be able to supply its own answer),
+          which writes the answer into that cache and clears the session.
+        required: false
+        selector:
+          select:
+            options:
+              - yes_no
+              - yes_no_ignore
+              - ok_cancel
+              - acknowledge
+      ack_owner:
+        name: Ack Owner
+        description: >-
+          Required alongside response_type. Same field as postman's ack_owner -- who should
+          receive the postman_ack event (e.g. autovac, taskmaster, your own script name).
+        required: false
+        selector:
+          text:
+      ack_context:
+        name: Ack Context
+        description: >-
+          Required alongside response_type. Same field as postman's ack_context -- disambiguates
+          which question this is when a caller might have more than one outstanding.
+        required: false
+        selector:
+          text:
+      anchor_type:
+        name: Anchor Type
+        description: "For mode=stacks_by_anchor. Only area_id supported currently."
+        required: false
+        selector:
+          text:
+      anchor_ids:
+        name: Anchor IDs
+        description: "For mode=stacks_by_anchor. JSON array string of area_ids, e.g. [\"master_bedroom\"]."
+        required: false
+        selector:
+          text:
+      caller_token:
+        name: Caller Token
+        description: "Opaque audit token echoed in response."
+        required: false
+        selector:
+          text:
+    sequence:
+      - variables:
+          _mode: "{{ mode | default('discover', true) | lower | trim }}"
+          _entity_id: "{{ entity_id | default('', true) | string | trim }}"
+          _room: "{{ room | default('', true) | string | trim | slugify }}"
+          _label: "{{ label | default('', true) | string | trim }}"
+          _dash: "{{ dashboard_path | default('', true) | string | trim }}"
+          _view: "{{ view_path | default('', true) | string | trim }}"
+          # base_url is a one-time household setting, not a per-call chore --
+          # falls back to integrations_config.display.base_url (household
+          # cabinet) when the caller omits it. base_url= stays available as
+          # an explicit per-call override (e.g. a guest network / secondary
+          # HA instance), it just isn't mandatory anymore.
+          _base_url_override: "{{ base_url | default('', true) | string | trim | regex_replace('/$', '') }}"
+          _base_url_stored: >-
+            {%- set _bu_ic = state_attr('sensor.zenos_default_household_cabinet', 'variables') | default({}, true) -%}
+            {%- set _bu_entry = _bu_ic.get('integrations_config', {}) if _bu_ic is mapping else {} -%}
+            {%- set _bu_raw = _bu_entry.get('value') if _bu_entry is mapping else none -%}
+            {%- set _bu_cfg = (_bu_raw | from_json) if (_bu_raw is string and _bu_raw not in ['', none]) else (_bu_raw if _bu_raw is mapping else {}) -%}
+            {{ (_bu_cfg.get('display', {}).get('base_url', '') if _bu_cfg is mapping else '') | string | trim | regex_replace('/$', '') }}
+          # No auto-interpolation available -- HA's template engine exposes
+          # no internal_url/external_url global (confirmed: this install
+          # doesn't even set those in configuration.yaml), so there's no
+          # reliable live hook to read it from. homeassistant.local is the
+          # universal ship-default instead -- mDNS-resolvable on virtually
+          # every home network with zero config, same "never make a fresh
+          # install do extra work" spirit as every other net-new tool here.
+          _base_url_pre: "{{ _base_url_override if _base_url_override != '' else _base_url_stored }}"
+          _dry_run: "{{ dry_run | default(false) | bool(false) }}"
+          _with_audio: "{{ with_audio | default(false) | bool(false) }}"
+          _view_type: "{{ view_type | default('', true) | string | trim }}"
+          _title: "{{ title | default('', true) | string | trim }}"
+          _body_markdown: "{{ body_markdown | default('', true) | string | trim }}"
+          _image_entity: "{{ image_entity | default('', true) | string | trim }}"
+          _alert_severity: "{{ alert_severity | default('', true) | string | trim }}"
+          _alert_text: "{{ alert_text | default('', true) | string | trim }}"
+          _progress: "{{ progress | default(none, true) }}"
+          _response_type: "{{ response_type | default('', true) | string | trim }}"
+          _ack_owner: "{{ ack_owner | default('', true) | string | trim }}"
+          _ack_context: "{{ ack_context | default('', true) | string | trim }}"
+          _caller_token: "{{ caller_token | default('', true) | string }}"
+          _hh_cabinet: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _cast_entities: "{{ integration_entities('cast') | select('match', '^media_player\\.') | list }}"
+          _adb_entities: "{{ integration_entities('androidtv') | select('match', '^media_player\\.') | list }}"
+          _webos_entities: "{{ integration_entities('webostv') | select('match', '^media_player\\.') | list }}"
+          _all_targets: "{{ (_cast_entities + _adb_entities + _webos_entities) | list }}"
+
+      # base_url, last leg: nothing overridden and nothing stored yet (first
+      # real use on a fresh install). Probe the Supervisor API for the
+      # REAL scheme+port this instance actually runs on (ssl/port fields)
+      # instead of guessing http vs https -- only for show/update, only
+      # when actually needed, so this never runs on a configured household
+      # or on any other mode. Supervisor unreachable (non-Supervised/Core
+      # install) means no way to ask locally at all -- https, no assumed
+      # port, is the safer blind guess of the two schemes for that case.
+      - if: "{{ _base_url_pre == '' and _mode in ['show', 'update'] }}"
+        then:
+          - action: script.zen_dojotools_systemtools
+            data:
+              mode: zen_supervisor_probe
+            response_variable: _bu_probe_raw
+            continue_on_error: true
+      - variables:
+          _bu_probe: "{{ _bu_probe_raw.get('result', {}) if (_bu_probe_raw is defined and _bu_probe_raw is mapping) else {} }}"
+          _bu_probe_ok: "{{ _bu_probe.get('result') == 'ok' and _bu_probe.get('status') == 200 }}"
+          _bu_probe_data: "{{ _bu_probe.get('content', {}).get('data', {}) if _bu_probe_ok else {} }}"
+          _base_url_probed: >-
+            {%- if _bu_probe_ok and _bu_probe_data -%}
+              {{ ('https://' if _bu_probe_data.get('ssl', false) else 'http://') ~ 'homeassistant.local:' ~ (_bu_probe_data.get('port', 8123) | int(8123)) }}
+            {%- else -%}
+              https://homeassistant.local
+            {%- endif -%}
+          _base_url: "{{ _base_url_pre if _base_url_pre != '' else _base_url_probed }}"
+
+      # ═══════════════════════════════════════════════════════════════════
+      # Utility/meta modes keep their own early exits — same precedent as
+      # locks/systemtools/autovac.
+      # ═══════════════════════════════════════════════════════════════════
+      - if: "{{ _mode == 'tool_manifest' }}"
+        then:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {%- set _tm = MF.tool_manifest(
+                    tool='zen_dojotools_display',
+                    display_name='Display Surface',
+                    tier='dojotools',
+                    version='0.5.1',
+                    health={'configured': true, 'status': 'ok', 'notes': ['v1 in progress -- see file header for what is not yet built']},
+                    required_labels=['dojotools'],
+                    consumes=['entity_or_label_or_room'],
+                    returns=['dispatch_result'],
+                    icon='mdi:cast',
+                    color='indigo',
+                    stripe=3,
+                    impact='soft',
+                    mcp_exposed=true,
+                    lens_provider=true,
+                    caller_token=_caller_token
+                ) | from_json -%}
+                {{- _tm | combine({
+                    'provider_key': 'display',
+                    'register_mode': 'register',
+                    'certs_required': [{
+                      'cert': 'display_control',
+                      'display_name': 'Display Control',
+                      'description': 'Cast a Lovelace view to a house display via zen_dojotools_display mode=show.',
+                      'max_level': 1,
+                      'gates': ['mode=show (cert only)', 'mode=update (cert only)', 'mode=dismiss (cert only)'],
+                      'live_ack_required_for': [],
+                      'grant_via': "persona_editor mode=cert_grant cert_component=display_control (or zen_dojotools_identity mode=cert_list to see current status)"
+                    }]
+                  }) -}}
+          - stop: tool_manifest
+            response_variable: result
+
+      # ── Lens Bus registration -- same shape as zen_dojotools_locks'
+      # register/unregister/stacks_by_anchor. Registry entry points other
+      # tools (Room Manager, Media Manager) at THIS tool's discover output
+      # rather than duplicating cast/adb/webos capability detection. ──
+      - if: "{{ _mode == 'register' }}"
+        then:
+          - variables:
+              _reg_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+              _reg_entry:
+                display:
+                  provider: display
+                  tool: zen_dojotools_display
+                  configured_by: zen_dojotools_display
+                  department: dojotools
+                  consumes: ["area_id"]
+                  returns: ["display_evidence"]
+                  failure_policy: soft
+                  content_policy: standard
+                  risk_class: actuator
+                  enabled: true
+                  status: available
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _reg_hh }}"
+              key: lens_registry
+            response_variable: _reg_read_raw
+          - variables:
+              _reg_current: >-
+                {%- set raw = _reg_read_raw if _reg_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: write
+              volume_entity_id: "{{ _reg_hh }}"
+              key: lens_registry
+              value: "{{ (_reg_current | combine(_reg_entry)) | tojson }}"
+          - variables:
+              result:
+                mode: register
+                status: ok
+                caller_token: "{{ _caller_token }}"
+                provider: display
+                registered: true
+          - stop: display lens register
+            response_variable: result
+
+      - if: "{{ _mode == 'unregister' }}"
+        then:
+          - variables:
+              _unreg_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: get
+              volume_entity_id: "{{ _unreg_hh }}"
+              key: lens_registry
+            response_variable: _unreg_read_raw
+          - variables:
+              _unreg_current: >-
+                {%- set raw = _unreg_read_raw if _unreg_read_raw is mapping else {} -%}
+                {%- set val = raw.get('value', {}) -%}
+                {%- set parsed = val | from_json if val is string else val -%}
+                {{ parsed if parsed is mapping else {} }}
+              _unreg_removed: "{{ 'display' in _unreg_current }}"
+          - variables:
+              _unreg_new: >-
+                {%- set ns = namespace(d={}) -%}
+                {%- for k, v in _unreg_current.items() -%}
+                  {%- if k != 'display' -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.d }}
+          - action: script.zen_dojotools_filecabinet
+            data:
+              action_type: write
+              volume_entity_id: "{{ _unreg_hh }}"
+              key: lens_registry
+              value: "{{ _unreg_new | tojson }}"
+          - variables:
+              result:
+                mode: unregister
+                status: ok
+                caller_token: "{{ _caller_token }}"
+                provider: display
+                removed: "{{ _unreg_removed }}"
+          - stop: display lens unregister
+            response_variable: result
+
+      - if: "{{ _mode == 'stacks_by_anchor' }}"
+        then:
+          - variables:
+              _sba_anchor_type: "{{ anchor_type | default('') | lower | trim }}"
+              _sba_anchor_ids: "{{ anchor_ids if anchor_ids is sequence and anchor_ids is not string else (anchor_ids | from_json(none) if anchor_ids is string and anchor_ids | trim != '' else []) }}"
+          - if: "{{ _sba_anchor_type != 'area_id' }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    provider: display
+                    evidence: []
+                    note: "display only handles area_id anchors"
+              - stop: display stacks_by_anchor unsupported anchor
+                response_variable: result
+          - variables:
+              _sba_evidence: >-
+                {%- set ns = namespace(rooms=[]) -%}
+                {%- for aid in _sba_anchor_ids -%}
+                  {%- set _room_ents = area_entities(aid) | select('in', _all_targets) | list -%}
+                  {%- set ns.rooms = ns.rooms + [{
+                    'area_id': aid,
+                    'display_count': _room_ents | length,
+                    'displays': _room_ents
+                  }] -%}
+                {%- endfor -%}
+                {{ ns.rooms }}
+          - variables:
+              result:
+                status: ok
+                provider: display
+                evidence: "{{ _sba_evidence }}"
+          - stop: display stacks_by_anchor
+            response_variable: result
+
+      # ── expire_sessions: periodic housekeeping, called by
+      # zen_dojotools_scheduler's shared quarter_hour trigger (consolidated
+      # into the existing scheduler rather than adding yet another
+      # standalone automation for this). Clears any
+      # display_session_* drawer (per-entity or the shared
+      # display_session_current) idle 5+ minutes. Same clearing mechanism
+      # as mode=dismiss, just automatic -- directly closes the staleness
+      # class of bug the active-use guard above exists to catch: a
+      # forgotten session record shouldn't be able to sit around
+      # indefinitely. No cert -- this is cleanup, not actuation on a
+      # display. ──
+      - if: "{{ _mode == 'expire_sessions' }}"
+        then:
+          - variables:
+              _exp_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+          - action: script.zen_dojotools_filecabinet
+            continue_on_error: true
+            data:
+              action_type: list
+              path_prefix: display_session_
+              volume_entity_id: "{{ _exp_hh }}"
+            response_variable: _exp_list_raw
+          - variables:
+              # list's real response has items at the top level directly --
+              # no wrapping 'result' key (that shape is specific to read/get's
+              # response, not list's). status/update/read calls elsewhere in
+              # this file are unaffected: they use action_type: read/get,
+              # where the result wrapper genuinely is correct.
+              _exp_keys: >-
+                {%- set items = _exp_list_raw.get('items', []) if _exp_list_raw is mapping else [] -%}
+                {{ items | map(attribute='key') | list }}
+              _exp_cleared: []
+          - repeat:
+              for_each: "{{ _exp_keys }}"
+              sequence:
+                - action: script.zen_dojotools_filecabinet
+                  continue_on_error: true
+                  data:
+                    action_type: read
+                    key: "{{ repeat.item }}"
+                    volume_entity_id: "{{ _exp_hh }}"
+                  response_variable: _exp_read_raw
+                - variables:
+                    _exp_session: >-
+                      {%- set r = _exp_read_raw.get('result', {}) if _exp_read_raw is mapping else {} -%}
+                      {%- set r = r if r is mapping else (r | from_json({}) if r is string else {}) -%}
+                      {%- set d = r.get(repeat.item, {}) -%}
+                      {%- set d = d if d is mapping else (d | from_json({}) if d is string else {}) -%}
+                      {%- set v = d.get('value', d) if d is mapping else {} -%}
+                      {{ v if v is mapping else {} }}
+                - if: "{{ _exp_session | length > 0 }}"
+                  then:
+                    - variables:
+                        _exp_age_minutes: >-
+                          {%- set _lt = _exp_session.get('updated_at') or _exp_session.get('created_at') -%}
+                          {%- if _lt -%}
+                            {{ ((now() - as_datetime(_lt)).total_seconds() / 60) | round(1) }}
+                          {%- else -%}
+                            999
+                          {%- endif -%}
+                    - if: "{{ (_exp_age_minutes | float(999)) >= 5 }}"
+                      then:
+                        - action: script.zen_dojotools_filecabinet
+                          continue_on_error: true
+                          data:
+                            action_type: update
+                            force_action: true
+                            key: "{{ repeat.item }}"
+                            volume_entity_id: "{{ _exp_hh }}"
+                            value: "{}"
+                        - variables:
+                            _exp_cleared: "{{ _exp_cleared + [{'key': repeat.item, 'age_minutes': _exp_age_minutes}] }}"
+          - variables:
+              result:
+                status: ok
+                mode: expire_sessions
+                caller_token: "{{ _caller_token }}"
+                checked: "{{ _exp_keys | length }}"
+                cleared: "{{ _exp_cleared }}"
+          - stop: display expire_sessions
+            response_variable: result
+
+      # ── Normalize room/label resolution against the union of all three
+      # families up front — every branch below reads _resolved. ──
+      - variables:
+          _resolved_raw: >-
+            {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+            {{ TARGET.resolve_targets(_entity_id, _room, _label, 'media_player\\.') }}
+      - variables:
+          _resolved: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for e in ((_resolved_raw | from_json) if _resolved_raw is string else _resolved_raw) if e in _all_targets -%}
+              {%- set ns.items = ns.items + [e] -%}
+            {%- endfor -%}
+            {{ ns.items }}
+
+      # ═══════════════════════════════════════════════════════════════════
+      # Single-entry/single-exit: every branch below builds `result` and
+      # falls through. ONE stop point at the bottom wraps it in
+      # OS.envelope().
+      # ═══════════════════════════════════════════════════════════════════
+      - choose:
+          # ── HELP ──────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'help' }}"
+            sequence:
+              - variables:
+                  result:
+                    status: help
+                    message: >-
+                      mode=discover [entity_id=X | room=X | label=X] —
+                      list castable displays by family (cast/adb/webos)
+                      with live state and any extended label guidance.
+                      Omit all three for a whole-house overview.
+                      mode=show entity_id=X (or room=/label= resolving to
+                      exactly one) dashboard_path=X view_path=X
+                      [base_url=X] [with_audio=true] — cast that view,
+                      starts a new session. mode=update — same fields,
+                      requires an ALREADY-active session (error otherwise);
+                      skips the wake+delay step on adb/webos since the
+                      target's presumably already up. mode=status
+                      entity_id=X (or room=/label=) — read-only, no cert,
+                      reports whether a session is active and its
+                      details. mode=dismiss entity_id=X (or room=/label=)
+                      — clears a session; idempotent, succeeds even if
+                      none exists or the receiver's offline. base_url
+                      (show/update, adb/webos targets only) is now
+                      optional — falls back to integrations_config.
+                      display.base_url (household cabinet, one-time
+                      setting) then a live Supervisor-API probe for the
+                      real scheme+port, only erroring if truly nothing
+                      resolves. response_type (show/update) renders a
+                      button row on the shared view (none|yes_no|
+                      yes_no_ignore|ok_cancel|acknowledge) — pair with
+                      ack_owner/ack_context, but don't call this tool
+                      directly for a "wait for the human's answer" flow;
+                      use zen_dojotools_identity mode=request_live_ack
+                      with ack_notify_target=zen_display instead (it
+                      calls this tool for you and polls the same
+                      alertmanager response cache a phone-push ack
+                      uses — compose ack_notify_target=postman,zen_display
+                      to get both a display cast and a real phone push;
+                      composing zen_display makes it a dash-pull, full
+                      stop, so the push drops its own response buttons
+                      entirely and becomes a plain "go look" pointer that
+                      opens the display when tapped — answering happens
+                      on the display only, never on the phone in that
+                      case). A tap fires
+                      a separate, non-AI-exposed internal script — never
+                      a mode on this tool, an agent must never be able to
+                      supply its own answer. dry_run=true (show/update) previews
+                      without dispatching. with_audio=true (show/update)
+                      calls zen_dojotools_media_manager mode=prefs_apply
+                      for the target's room — applies the room's already-
+                      taught source/volume for the current home mode;
+                      fails soft (audio_status: no_pref/no_room/error)
+                      without blocking the cast. show blocks by default
+                      (error: target_active_use) if the target has no
+                      existing Display Surface session AND is currently
+                      playing something real — pass
+                      override_active_use=true to interrupt it anyway.
+                      Tool-enforced, not left to caller discipline — a
+                      cast can interrupt real, in-progress media on the
+                      target, which is why this guard exists.
+                      show/update/dismiss all require the
+                      display_control cert (level 1) — see tool_manifest
+                      for the grant path. cast targets have no login
+                      wall; adb (Fire TV/Android TV, via Silk)
+                      and webos (LG, via native browser) both show the
+                      normal HA login screen by design — never bypassed.
+                      Devices running HA Companion don't need this tool
+                      at all — use zen_dojotools_postman
+                      dashboard_path_override instead.
+
+          # ── DISCOVER ──────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'discover' }}"
+            sequence:
+              - variables:
+                  _disc_pool: "{{ _resolved if (_entity_id != '' or _room != '' or _label != '') else _all_targets }}"
+              - variables:
+                  _disc_targets: >-
+                    {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                    {%- set ns = namespace(items=[]) -%}
+                    {%- for e in _disc_pool -%}
+                      {%- set _fam = 'cast' if e in _cast_entities else ('adb' if e in _adb_entities else 'webos') -%}
+                      {%- set _notes_raw = TARGET.entity_extended_notes(e, ['dojotools']) -%}
+                      {%- set _notes = (_notes_raw | from_json) if _notes_raw is string else _notes_raw -%}
+                      {%- set ns.items = ns.items + [{
+                        'entity_id': e,
+                        'friendly_name': state_attr(e, 'friendly_name') | default(e, true),
+                        'family': _fam,
+                        'state': states(e),
+                        'extended_notes': _notes
+                      }] -%}
+                    {%- endfor -%}
+                    {{ ns.items }}
+              # Two separate gates, not one: the TOOL existing (trivially true
+              # if this call is running at all) says nothing about whether the
+              # INTERACTION LAYER -- shared sensor, Lovelace view, internal
+              # respond script -- is actually deployed on this install. That's
+              # a real, separate deploy step (a package file + a raw .storage
+              # Lovelace edit), not guaranteed just because this tool exists.
+              # states.<domain>.<object_id> returns a real State object only
+              # if the entity is genuinely registered, None otherwise --
+              # unlike states()/state_attr(), which return 'unknown'/None for
+              # BOTH "doesn't exist" and "exists but has no value," this is
+              # existence, not state.
+              - variables:
+                  _interaction_sensor_exists: "{{ states.sensor.zen_display_surface_state is not none }}"
+                  _interaction_script_exists: "{{ states.script.zenos_display_respond_internal is not none }}"
+              - variables:
+                  result:
+                    status: ok
+                    mode: discover
+                    scope: "{{ 'scoped' if (_entity_id != '' or _room != '' or _label != '') else 'whole_house' }}"
+                    target_count: "{{ _disc_targets | length }}"
+                    targets: "{{ _disc_targets }}"
+                    interaction_layer:
+                      deployed: "{{ _interaction_sensor_exists and _interaction_script_exists }}"
+                      shared_sensor: "{{ 'sensor.zen_display_surface_state' if _interaction_sensor_exists else none }}"
+                      respond_script: "{{ 'script.zenos_display_respond_internal' if _interaction_script_exists else none }}"
+                      note: >-
+                        false means the display_room/response_type/also_notify_buttons
+                        features on zen_dojotools_alertmanager's fire mode won't work on
+                        this install even though target_count above may be > 0 (a real
+                        castable display exists, but the shared session sensor + Lovelace
+                        view + internal respond script aren't set up). Not something an
+                        agent can self-deploy -- the Lovelace view is a raw .storage edit
+                        (same caution bar as a restart). Tell the household: here's the
+                        setup, you'll need to authorize it once.
+                    note: >-
+                      cast targets take cast.show_lovelace_view directly,
+                      no login wall. adb (Fire TV/Android TV) and webos
+                      (LG) targets both open base_url in their own
+                      browser via a wake + VIEW intent / system.launcher
+                      open — normal HA login screen, no bypass. Devices
+                      with HA Companion already installed don't belong on
+                      this list at all — route those through
+                      zen_dojotools_postman dashboard_path_override.
+
+          # ── STATUS (read-only, no cert) ──────────────────────────────
+          - conditions: "{{ _mode == 'status' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _resolved | length != 1 }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: "{{ 'no_match' if _resolved | length == 0 else 'ambiguous' }}"
+                            detail: >-
+                              entity_id=, room=, and/or label= must resolve to
+                              exactly one display for mode=status.
+                            candidates: "{{ _resolved }}"
+                default:
+                  - variables:
+                      _status_entity: "{{ _resolved[0] }}"
+                      _status_key: "display_session_{{ _resolved[0] | replace('.', '_') }}"
+                  - action: script.zen_dojotools_filecabinet
+                    continue_on_error: true
+                    data:
+                      action_type: read
+                      key: "{{ _status_key }}"
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                    response_variable: _status_read_raw
+                  - variables:
+                      _status_session: >-
+                        {%- set r = _status_read_raw.get('result', {}) if _status_read_raw is mapping else {} -%}
+                        {%- set r = r if r is mapping else (r | from_json({}) if r is string else {}) -%}
+                        {%- set d = r.get(_status_key, {}) -%}
+                        {%- set d = d if d is mapping else (d | from_json({}) if d is string else {}) -%}
+                        {%- set v = d.get('value', d) if d is mapping else {} -%}
+                        {{ v if v is mapping else {} }}
+                  - variables:
+                      result:
+                        status: ok
+                        mode: status
+                        entity_id: "{{ _status_entity }}"
+                        active: "{{ _status_session | length > 0 }}"
+                        session: "{{ _status_session if _status_session | length > 0 else none }}"
+
+          # ── SHOW ──────────────────────────────────────────────────────
+          - conditions: "{{ _mode == 'show' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _resolved | length == 0 }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: no_match
+                            detail: >-
+                              entity_id=, room=, and/or label= resolved to
+                              zero castable displays. Run mode=discover.
+                  - conditions: "{{ _resolved | length > 1 }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: ambiguous
+                            detail: "Resolved to more than one display — narrow with entity_id= for mode=show."
+                            candidates: "{{ _resolved }}"
+                  - conditions: "{{ _dash == '' or _view == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: missing_fields
+                            detail: "dashboard_path and view_path are both required."
+                default:
+                  - variables:
+                      _show_entity: "{{ _resolved[0] }}"
+                      _show_family: >-
+                        {{ 'cast' if _resolved[0] in _cast_entities else
+                           ('adb' if _resolved[0] in _adb_entities else 'webos') }}
+                  # ── Active-use guard -- a cast can interrupt real,
+                  # in-progress media on the target, so this is
+                  # tool-enforced rather than left to caller discipline.
+                  # An earlier version checked the session DRAWER for a
+                  # pre-existing record and skipped the guard if one
+                  # existed -- wrong: a stale record from an earlier show
+                  # (never dismissed, superseded by someone manually
+                  # switching the display back) can trust itself right
+                  # through a second real interruption later. Checks the
+                  # LIVE foreground app/source against known "this is our
+                  # own display" signatures instead of trusting anything
+                  # written earlier -- reflects reality at the moment of
+                  # the call, not possibly-stale bookkeeping. Pass
+                  # override_active_use=true to interrupt real content
+                  # anyway. ──
+                  - variables:
+                      _show_override_active: "{{ override_active_use | default(false) | bool(false) }}"
+                      _show_target_state: "{{ states(_resolved[0]) }}"
+                      _show_is_own_app: >-
+                        {%- if _show_family == 'cast' -%}
+                          {{ state_attr(_resolved[0], 'app_name') == 'Home Assistant Lovelace' }}
+                        {%- elif _show_family == 'adb' -%}
+                          {{ state_attr(_resolved[0], 'app_id') == 'com.amazon.cloud9' }}
+                        {%- else -%}
+                          {{ state_attr(_resolved[0], 'source') == 'Web Browser' }}
+                        {%- endif -%}
+                  - choose:
+                      - conditions: >-
+                          {{ _show_target_state == 'playing'
+                             and not (_show_is_own_app | bool(false))
+                             and not _show_override_active }}
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: target_active_use
+                                detail: >-
+                                  {{ _show_entity }} is currently playing
+                                  something, and its foreground app/source
+                                  isn't already this tool's own display --
+                                  likely someone's actually using it. Pass
+                                  override_active_use=true to interrupt it
+                                  anyway.
+                                entity_id: "{{ _show_entity }}"
+                                current_state: "{{ _show_target_state }}"
+                                current_app_id: "{{ state_attr(_show_entity, 'app_id') }}"
+                                current_source: "{{ state_attr(_show_entity, 'source') }}"
+                      - conditions: "{{ _show_family in ['adb', 'webos'] and _base_url == '' }}"
+                        sequence:
+                          - variables:
+                              result:
+                                status: error
+                                error: missing_fields
+                                detail: "base_url is required for {{ _show_family }} targets."
+                                entity_id: "{{ _show_entity }}"
+                    default:
+                      # ── Identity/cert gate, resolved before dry_run so
+                      # both paths see the same real cert_level — same
+                      # precedent as locks' mode=set. Read (discover/help)
+                      # stays open; only actuation gates here. ──
+                      - action: script.zen_dojotools_identity
+                        response_variable: _show_id_raw
+                        continue_on_error: true
+                        data:
+                          mode: resolve_caller_identity
+                          required_cert: display_control
+                          required_cert_level: 1
+                          caller_token: "{{ _caller_token }}"
+                      - variables:
+                          _show_policy_status: "{{ _show_id_raw.get('policy_status', 'blocked') if _show_id_raw is mapping else 'blocked' }}"
+                          _show_authorized: "{{ _show_id_raw.get('authorized', false) if _show_id_raw is mapping else false }}"
+                          _show_cert_level: "{{ _show_id_raw.get('cert_level', 0) if _show_id_raw is mapping else 0 }}"
+                          _show_intent_url: "{{ _base_url }}/{{ _dash }}/{{ _view }}"
+                      - choose:
+                          - conditions: "{{ _dry_run }}"
+                            sequence:
+                              - variables:
+                                  result:
+                                    status: ok
+                                    mode: show
+                                    dry_run: true
+                                    dispatched: false
+                                    family: "{{ _show_family }}"
+                                    would_dispatch: >-
+                                      {{ {'entity_id': _show_entity, 'dashboard_path': _dash, 'view_path': _view}
+                                         if _show_family == 'cast' else
+                                         {'entity_id': _show_entity, 'intent_url': _show_intent_url} }}
+                                    would_be_authorized: "{{ _show_policy_status == 'allowed' and _show_authorized }}"
+                          - conditions: "{{ _show_policy_status != 'allowed' or not _show_authorized }}"
+                            sequence:
+                              - variables:
+                                  result:
+                                    status: error
+                                    error: "{{ 'identity_policy_blocked' if _show_policy_status != 'allowed' else 'cert_insufficient' }}"
+                                    mode: show
+                                    detail: >-
+                                      {%- if _show_policy_status != 'allowed' -%}
+                                        resolve_caller_identity did not return an allowed identity -- action denied.
+                                      {%- else -%}
+                                        display_control cert level {{ _show_cert_level }} is below the required minimum (1) to cast to {{ _show_entity }}.
+                                      {%- endif -%}
+                                    can_request: "{{ _show_policy_status == 'allowed' }}"
+                                    request_via:
+                                      tool: zen_dojotools_persona_editor
+                                      mode: cert_grant
+                                      cert_component: display_control
+                                      cert_level: 1
+                                      note: "Fires a live household-admin approval push -- see zen_dojotools_identity mode=cert_list for current status."
+                        default:
+                          - variables:
+                              _show_session_id: >-
+                                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                                {{- CABS.cabinet_guid_new() -}}
+                              _show_area_id: "{{ area_id(_show_entity) | default('', true) }}"
+                          - variables:
+                              _show_room: "{{ area_name(_show_area_id) if _show_area_id != '' else '' }}"
+                              _show_audio_status: none
+                          # ── with_audio: delegate to Media Manager's OWN
+                          # prefs_apply, never guess a source here. Fails
+                          # soft -- no_pref (or no resolvable room) still
+                          # lets the cast proceed. ──
+                          - if: "{{ _with_audio and _show_room != '' }}"
+                            then:
+                              - action: script.zen_dojotools_media_manager
+                                continue_on_error: true
+                                response_variable: _show_audio_raw
+                                data:
+                                  mode: prefs_apply
+                                  room: "{{ _show_room }}"
+                                  caller_token: "{{ _caller_token }}"
+                              - variables:
+                                  _show_audio_status: >-
+                                    {%- set _sa = _show_audio_raw.get('result', _show_audio_raw) if _show_audio_raw is mapping else {} -%}
+                                    {{ _sa.get('status', 'error') if _sa is mapping else 'error' }}
+                          - if: "{{ _with_audio and _show_room == '' }}"
+                            then:
+                              - variables:
+                                  _show_audio_status: no_room
+                          - if: "{{ _show_family == 'cast' }}"
+                            then:
+                              # ── HA's own media_player state can show
+                              # playing/correct app_name/media_title while
+                              # the physical panel stays asleep -- the
+                              # Chromecast-built-in module and the TV's own
+                              # display panel wake separately on at least
+                              # some models. cast.show_lovelace_view alone
+                              # doesn't wake the panel; turn_on does
+                              # (TURN_ON bit set in this entity's
+                              # supported_features). No delay needed here
+                              # unlike adb/webos -- this is a
+                              # same-integration call, not a
+                              # wake-then-separate-protocol handoff. ──
+                              - action: media_player.turn_on
+                                continue_on_error: true
+                                target:
+                                  entity_id: "{{ _show_entity }}"
+                              - action: cast.show_lovelace_view
+                                data:
+                                  entity_id: "{{ _show_entity }}"
+                                  dashboard_path: "{{ _dash }}"
+                                  view_path: "{{ _view }}"
+                          - if: "{{ _show_family == 'adb' }}"
+                            then:
+                              - action: media_player.turn_on
+                                target:
+                                  entity_id: "{{ _show_entity }}"
+                              - delay:
+                                  seconds: 3
+                              - action: androidtv.adb_command
+                                target:
+                                  entity_id: "{{ _show_entity }}"
+                                data:
+                                  command: >-
+                                    am start -a android.intent.action.VIEW -d "{{ _show_intent_url }}"
+                                    -p com.amazon.cloud9
+                          - if: "{{ _show_family == 'webos' }}"
+                            then:
+                              - action: media_player.turn_on
+                                target:
+                                  entity_id: "{{ _show_entity }}"
+                              - delay:
+                                  seconds: 3
+                              - action: webostv.command
+                                target:
+                                  entity_id: "{{ _show_entity }}"
+                                data:
+                                  command: system.launcher/open
+                                  payload:
+                                    target: "{{ _show_intent_url }}"
+                          # ── Persist the session drawer -- status/update/
+                          # dismiss all read this. Household cabinet,
+                          # same read-combine-write pattern used everywhere
+                          # else in this codebase (no new storage). ──
+                          - variables:
+                              _show_key: "display_session_{{ _show_entity | replace('.', '_') }}"
+                              _show_session:
+                                session_id: "{{ _show_session_id }}"
+                                entity_id: "{{ _show_entity }}"
+                                family: "{{ _show_family }}"
+                                dashboard_path: "{{ _dash }}"
+                                view_path: "{{ _view }}"
+                                with_audio: "{{ _with_audio }}"
+                                view_type: "{{ _view_type if _view_type != '' else none }}"
+                                title: "{{ _title if _title != '' else none }}"
+                                body_markdown: "{{ _body_markdown if _body_markdown != '' else none }}"
+                                image_entity: "{{ _image_entity if _image_entity != '' else none }}"
+                                image_bound: false
+                                alert_severity: "{{ _alert_severity if _alert_severity != '' else none }}"
+                                alert_text: "{{ _alert_text if _alert_text != '' else none }}"
+                                progress: "{{ _progress }}"
+                                response_type: "{{ _response_type if _response_type != '' else none }}"
+                                ack_owner: "{{ _ack_owner if _ack_owner != '' else none }}"
+                                ack_context: "{{ _ack_context if _ack_context != '' else none }}"
+                                created_at: "{{ now().isoformat() }}"
+                          - action: script.zen_dojotools_filecabinet
+                            continue_on_error: true
+                            data:
+                              action_type: update
+                              force_action: true
+                              key: "{{ _show_key }}"
+                              volume_entity_id: "{{ _hh_cabinet }}"
+                              value: "{{ _show_session | tojson }}"
+                          # ── Shared single-view pointer -- explicit design
+                          # call, v1 assumes ONE active display at a time, no
+                          # concurrency handling. The one shared Lovelace
+                          # view/sensor reads ONLY this fixed key, not the
+                          # per-entity one above (that one stays for
+                          # status/dismiss's per-target correctness). ──
+                          - action: script.zen_dojotools_filecabinet
+                            continue_on_error: true
+                            data:
+                              action_type: update
+                              force_action: true
+                              key: display_session_current
+                              volume_entity_id: "{{ _hh_cabinet }}"
+                              value: "{{ _show_session | tojson }}"
+                          - action: script.zen_dojotools_event_emitter
+                            continue_on_error: true
+                            data:
+                              mode: emit
+                              component: display
+                              kind: display_shown
+                              severity: info
+                              summary: >-
+                                {{ _dash }}/{{ _view }} cast to
+                                {{ _show_entity }} ({{ _show_family }}) via
+                                zen_dojotools_display.
+                              metadata:
+                                entity_id: "{{ _show_entity }}"
+                                family: "{{ _show_family }}"
+                                dashboard_path: "{{ _dash }}"
+                                view_path: "{{ _view }}"
+                                session_id: "{{ _show_session_id }}"
+                                prior_state: "{{ states(_show_entity) }}"
+                                prior_app_id: "{{ state_attr(_show_entity, 'app_id') }}"
+                                caller_token: "{{ _caller_token }}"
+                          - variables:
+                              result:
+                                status: ok
+                                mode: show
+                                dispatched: true
+                                family: "{{ _show_family }}"
+                                entity_id: "{{ _show_entity }}"
+                                dashboard_path: "{{ _dash }}"
+                                view_path: "{{ _view }}"
+                                session_id: "{{ _show_session_id }}"
+                                audio_status: "{{ _show_audio_status }}"
+
+          # ── UPDATE ────────────────────────────────────────────────────
+          # Same as show, except: requires an EXISTING session (no
+          # session, no silent create), and skips wake+delay for adb/webos
+          # -- the whole point is patching content on a target that's
+          # presumably already awake/displaying from the earlier show.
+          - conditions: "{{ _mode == 'update' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _resolved | length != 1 }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: "{{ 'no_match' if _resolved | length == 0 else 'ambiguous' }}"
+                            detail: "entity_id=, room=, and/or label= must resolve to exactly one display for mode=update."
+                            candidates: "{{ _resolved }}"
+                  - conditions: "{{ _dash == '' or _view == '' }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: missing_fields
+                            detail: "dashboard_path and view_path are both required."
+                default:
+                  - variables:
+                      _upd_entity: "{{ _resolved[0] }}"
+                      _upd_family: >-
+                        {{ 'cast' if _resolved[0] in _cast_entities else
+                           ('adb' if _resolved[0] in _adb_entities else 'webos') }}
+                      _upd_key: "display_session_{{ _resolved[0] | replace('.', '_') }}"
+                  - if: "{{ _upd_family in ['adb', 'webos'] and _base_url == '' }}"
+                    then:
+                      - variables:
+                          result:
+                            status: error
+                            error: missing_fields
+                            detail: "base_url is required for {{ _upd_family }} targets."
+                            entity_id: "{{ _upd_entity }}"
+                  - if: "{{ result is not defined }}"
+                    then:
+                      - action: script.zen_dojotools_filecabinet
+                        continue_on_error: true
+                        data:
+                          action_type: read
+                          key: "{{ _upd_key }}"
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                        response_variable: _upd_read_raw
+                      - variables:
+                          _upd_session: >-
+                            {%- set r = _upd_read_raw.get('result', {}) if _upd_read_raw is mapping else {} -%}
+                            {%- set r = r if r is mapping else (r | from_json({}) if r is string else {}) -%}
+                            {%- set d = r.get(_upd_key, {}) -%}
+                            {%- set d = d if d is mapping else (d | from_json({}) if d is string else {}) -%}
+                            {%- set v = d.get('value', d) if d is mapping else {} -%}
+                            {{ v if v is mapping else {} }}
+                      - if: "{{ _upd_session | length == 0 }}"
+                        then:
+                          - variables:
+                              result:
+                                status: error
+                                error: no_active_session
+                                detail: >-
+                                  No active session on {{ _upd_entity }} --
+                                  use mode=show to start one.
+                                entity_id: "{{ _upd_entity }}"
+                      - if: "{{ result is not defined }}"
+                        then:
+                          - action: script.zen_dojotools_identity
+                            response_variable: _upd_id_raw
+                            continue_on_error: true
+                            data:
+                              mode: resolve_caller_identity
+                              required_cert: display_control
+                              required_cert_level: 1
+                              caller_token: "{{ _caller_token }}"
+                          - variables:
+                              _upd_policy_status: "{{ _upd_id_raw.get('policy_status', 'blocked') if _upd_id_raw is mapping else 'blocked' }}"
+                              _upd_authorized: "{{ _upd_id_raw.get('authorized', false) if _upd_id_raw is mapping else false }}"
+                              _upd_cert_level: "{{ _upd_id_raw.get('cert_level', 0) if _upd_id_raw is mapping else 0 }}"
+                              _upd_intent_url: "{{ _base_url }}/{{ _dash }}/{{ _view }}"
+                          - choose:
+                              - conditions: "{{ _dry_run }}"
+                                sequence:
+                                  - variables:
+                                      result:
+                                        status: ok
+                                        mode: update
+                                        dry_run: true
+                                        dispatched: false
+                                        family: "{{ _upd_family }}"
+                                        session_id: "{{ _upd_session.get('session_id') }}"
+                                        would_dispatch: >-
+                                          {{ {'entity_id': _upd_entity, 'dashboard_path': _dash, 'view_path': _view}
+                                             if _upd_family == 'cast' else
+                                             {'entity_id': _upd_entity, 'intent_url': _upd_intent_url} }}
+                              - conditions: "{{ _upd_policy_status != 'allowed' or not _upd_authorized }}"
+                                sequence:
+                                  - variables:
+                                      result:
+                                        status: error
+                                        error: "{{ 'identity_policy_blocked' if _upd_policy_status != 'allowed' else 'cert_insufficient' }}"
+                                        mode: update
+                                        detail: >-
+                                          display_control cert level {{ _upd_cert_level }} is below the required minimum (1) to update {{ _upd_entity }}.
+                                        can_request: "{{ _upd_policy_status == 'allowed' }}"
+                                        request_via:
+                                          tool: zen_dojotools_persona_editor
+                                          mode: cert_grant
+                                          cert_component: display_control
+                                          cert_level: 1
+                            default:
+                              - variables:
+                                  _upd_area_id: "{{ area_id(_upd_entity) | default('', true) }}"
+                                  _upd_audio_status: none
+                              - variables:
+                                  _upd_room: "{{ area_name(_upd_area_id) if _upd_area_id != '' else '' }}"
+                              - if: "{{ _with_audio and _upd_room != '' }}"
+                                then:
+                                  - action: script.zen_dojotools_media_manager
+                                    continue_on_error: true
+                                    response_variable: _upd_audio_raw
+                                    data:
+                                      mode: prefs_apply
+                                      room: "{{ _upd_room }}"
+                                      caller_token: "{{ _caller_token }}"
+                                  - variables:
+                                      _upd_audio_status: >-
+                                        {%- set _ua = _upd_audio_raw.get('result', _upd_audio_raw) if _upd_audio_raw is mapping else {} -%}
+                                        {{ _ua.get('status', 'error') if _ua is mapping else 'error' }}
+                              - if: "{{ _upd_family == 'cast' }}"
+                                then:
+                                  # ── Same panel-wake fix as show -- cheap/
+                                  # idempotent, no-op if already awake. ──
+                                  - action: media_player.turn_on
+                                    continue_on_error: true
+                                    target:
+                                      entity_id: "{{ _upd_entity }}"
+                                  - action: cast.show_lovelace_view
+                                    data:
+                                      entity_id: "{{ _upd_entity }}"
+                                      dashboard_path: "{{ _dash }}"
+                                      view_path: "{{ _view }}"
+                              - if: "{{ _upd_family == 'adb' }}"
+                                then:
+                                  - action: androidtv.adb_command
+                                    target:
+                                      entity_id: "{{ _upd_entity }}"
+                                    data:
+                                      command: >-
+                                        am start -a android.intent.action.VIEW -d "{{ _upd_intent_url }}"
+                                        -p com.amazon.cloud9
+                              - if: "{{ _upd_family == 'webos' }}"
+                                then:
+                                  - action: webostv.command
+                                    target:
+                                      entity_id: "{{ _upd_entity }}"
+                                    data:
+                                      command: system.launcher/open
+                                      payload:
+                                        target: "{{ _upd_intent_url }}"
+                              - variables:
+                                  _upd_new_session: >-
+                                    {{ _upd_session | combine({
+                                      'dashboard_path': _dash,
+                                      'view_path': _view,
+                                      'with_audio': _with_audio,
+                                      'view_type': (_view_type if _view_type != '' else _upd_session.get('view_type')),
+                                      'title': (_title if _title != '' else _upd_session.get('title')),
+                                      'body_markdown': (_body_markdown if _body_markdown != '' else _upd_session.get('body_markdown')),
+                                      'image_entity': (_image_entity if _image_entity != '' else _upd_session.get('image_entity')),
+                                      'image_bound': (false if (_image_entity != '' and _image_entity != _upd_session.get('image_entity')) else _upd_session.get('image_bound', false)),
+                                      'alert_severity': (_alert_severity if _alert_severity != '' else _upd_session.get('alert_severity')),
+                                      'alert_text': (_alert_text if _alert_text != '' else _upd_session.get('alert_text')),
+                                      'progress': (_progress if _progress is not none else _upd_session.get('progress')),
+                                      'response_type': (_response_type if _response_type != '' else _upd_session.get('response_type')),
+                                      'ack_owner': (_ack_owner if _ack_owner != '' else _upd_session.get('ack_owner')),
+                                      'ack_context': (_ack_context if _ack_context != '' else _upd_session.get('ack_context')),
+                                      'updated_at': now().isoformat()
+                                    }) }}
+                              - action: script.zen_dojotools_filecabinet
+                                continue_on_error: true
+                                data:
+                                  action_type: update
+                                  force_action: true
+                                  key: "{{ _upd_key }}"
+                                  volume_entity_id: "{{ _hh_cabinet }}"
+                                  value: "{{ _upd_new_session | tojson }}"
+                              # ── Shared single-view pointer, same as show. ──
+                              - action: script.zen_dojotools_filecabinet
+                                continue_on_error: true
+                                data:
+                                  action_type: update
+                                  force_action: true
+                                  key: display_session_current
+                                  volume_entity_id: "{{ _hh_cabinet }}"
+                                  value: "{{ _upd_new_session | tojson }}"
+                              - variables:
+                                  result:
+                                    status: ok
+                                    mode: update
+                                    dispatched: true
+                                    family: "{{ _upd_family }}"
+                                    entity_id: "{{ _upd_entity }}"
+                                    dashboard_path: "{{ _dash }}"
+                                    view_path: "{{ _view }}"
+                                    session_id: "{{ _upd_session.get('session_id') }}"
+                                    audio_status: "{{ _upd_audio_status }}"
+
+          # ── DISMISS ───────────────────────────────────────────────────
+          # Idempotent -- clearing a session that doesn't exist (or whose
+          # receiver is offline/unavailable) is still success, not an
+          # error. Still cert-gated: it's still actuation on someone
+          # else's screen.
+          - conditions: "{{ _mode == 'dismiss' }}"
+            sequence:
+              - choose:
+                  - conditions: "{{ _resolved | length != 1 }}"
+                    sequence:
+                      - variables:
+                          result:
+                            status: error
+                            error: "{{ 'no_match' if _resolved | length == 0 else 'ambiguous' }}"
+                            detail: "entity_id=, room=, and/or label= must resolve to exactly one display for mode=dismiss."
+                            candidates: "{{ _resolved }}"
+                default:
+                  - variables:
+                      _dis_entity: "{{ _resolved[0] }}"
+                      _dis_key: "display_session_{{ _resolved[0] | replace('.', '_') }}"
+                  - action: script.zen_dojotools_identity
+                    response_variable: _dis_id_raw
+                    continue_on_error: true
+                    data:
+                      mode: resolve_caller_identity
+                      required_cert: display_control
+                      required_cert_level: 1
+                      caller_token: "{{ _caller_token }}"
+                  - variables:
+                      _dis_policy_status: "{{ _dis_id_raw.get('policy_status', 'blocked') if _dis_id_raw is mapping else 'blocked' }}"
+                      _dis_authorized: "{{ _dis_id_raw.get('authorized', false) if _dis_id_raw is mapping else false }}"
+                      _dis_cert_level: "{{ _dis_id_raw.get('cert_level', 0) if _dis_id_raw is mapping else 0 }}"
+                  - if: "{{ _dis_policy_status != 'allowed' or not _dis_authorized }}"
+                    then:
+                      - variables:
+                          result:
+                            status: error
+                            error: "{{ 'identity_policy_blocked' if _dis_policy_status != 'allowed' else 'cert_insufficient' }}"
+                            mode: dismiss
+                            detail: >-
+                              display_control cert level {{ _dis_cert_level }} is below the required minimum (1) to dismiss {{ _dis_entity }}.
+                            can_request: "{{ _dis_policy_status == 'allowed' }}"
+                            request_via:
+                              tool: zen_dojotools_persona_editor
+                              mode: cert_grant
+                              cert_component: display_control
+                              cert_level: 1
+                  - if: "{{ result is not defined }}"
+                    then:
+                      - action: script.zen_dojotools_filecabinet
+                        continue_on_error: true
+                        data:
+                          action_type: update
+                          force_action: true
+                          key: "{{ _dis_key }}"
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          value: "{}"
+                      - action: script.zen_dojotools_event_emitter
+                        continue_on_error: true
+                        data:
+                          mode: emit
+                          component: display
+                          kind: display_session_dismissed
+                          severity: info
+                          summary: "Display session on {{ _dis_entity }} dismissed via zen_dojotools_display."
+                          metadata:
+                            entity_id: "{{ _dis_entity }}"
+                            caller_token: "{{ _caller_token }}"
+                      - variables:
+                          result:
+                            status: ok
+                            mode: dismiss
+                            entity_id: "{{ _dis_entity }}"
+                            cleared: true
+
+          # ── RESPOND ───────────────────────────────────────────────────
+          # Called by the shared view's button row (tap_action), not
+          # normally by an agent directly. No cert gate -- a physical tap
+          # on the device itself is its own authorization, same principle
+          # as a physical switch press elsewhere in this house. Reads
+          # display_session_current (the ONE shared pointer the shared
+          # view/sensor actually track -- see zenos_display_surface_state.
+          # yaml), fires the SAME postman_ack event shape Postman's own
+          # phone-approval flow already emits, so any agent waiting on an
+          # ack needs zero new code to also accept an on-screen tap.
+        default:
+          - variables:
+              result:
+                status: error
+                error: unknown_mode
+                detail: "mode must be one of discover|show|update|dismiss|status|help|tool_manifest."
+
+      # ═══════════════════════════════════════════════════════════════════
+      # SINGLE EXIT — envelope() wrap
+      # ═══════════════════════════════════════════════════════════════════
+      - variables:
+          _envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (result.get('status') == 'error' if result is mapping else false) else 'success',
+              mode=_mode,
+              result=result,
+              tool='zen_dojotools_display',
+              caller_token=_caller_token
+            ) -}}
+      - variables:
+          _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+      - stop: display response
+        response_variable: _envelope
+
+automation:
+  - id: '1788409000001'
+    alias: "Zen Display Surface — Image Correlation"
+    description: >-
+      Listens for zen_dojotools_generate_image's image_generated event.
+      Scans active display sessions (household cabinet, display_session_*
+      keys) for one whose session_id matches the event's correlation_id
+      and marks it image_bound -- a late/stale event for a session that's
+      since been superseded (different correlation_id) simply finds no
+      match and is silently dropped, never applied.
+    triggers:
+      - trigger: event
+        event_type: zen_event
+        event_data:
+          event:
+            kind: image_generated
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.event.data.event.get('correlation_id', '') | trim != '' }}"
+    actions:
+      - variables:
+          _corr_id: "{{ trigger.event.data.event.correlation_id }}"
+          _hh_cabinet: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+      - action: script.zen_dojotools_filecabinet
+        continue_on_error: true
+        data:
+          action_type: list
+          path_prefix: display_session_
+          volume_entity_id: "{{ _hh_cabinet }}"
+        response_variable: _ic_list_raw
+      - variables:
+          # list's real script response has items at the top level directly --
+          # no wrapping 'result' key (that shape is specific to read/get's
+          # response, not list's). Same "assumed nested, actually flat"
+          # mistake already found and fixed in respond mode.
+          _ic_keys: >-
+            {%- set items = _ic_list_raw.get('items', []) if _ic_list_raw is mapping else [] -%}
+            {{ items | map(attribute='key') | list }}
+      - repeat:
+          for_each: "{{ _ic_keys }}"
+          sequence:
+            - action: script.zen_dojotools_filecabinet
+              continue_on_error: true
+              data:
+                action_type: get
+                path: "{{ repeat.item }}"
+                volume_entity_id: "{{ _hh_cabinet }}"
+              response_variable: _ic_read_raw
+            - variables:
+                _ic_session: >-
+                  {%- set v = _ic_read_raw.get('value', {}) if _ic_read_raw is mapping else {} -%}
+                  {%- set v = v if v is mapping else (v | from_json({}) if v is string else {}) -%}
+                  {{ v if v is mapping else {} }}
+            - if: "{{ _ic_session.get('session_id', '') == _corr_id }}"
+              then:
+                - action: script.zen_dojotools_filecabinet
+                  continue_on_error: true
+                  data:
+                    action_type: update
+                    force_action: true
+                    key: "{{ repeat.item }}"
+                    volume_entity_id: "{{ _hh_cabinet }}"
+                    value: >-
+                      {{ (_ic_session | combine({
+                        'image_bound': true,
+                        'image_bound_at': now().isoformat()
+                      })) | tojson }}
+    mode: queued
+    max: 5
+
+# ── Single shared projection sensor -- explicit design call, v1 assumes
+# ONE active display at a time, no concurrency handling, so this is a
+# plain sensor (not a blueprint) reading ONE fixed cabinet key
+# (display_session_current, written by show/update alongside the real
+# per-entity key). No script call at render time -- same
+# direct-attribute-read pattern dojotools_media_manager.yaml's
+# prefs_apply already uses for its own cabinet reads. The household
+# cabinet entity_id is hardcoded here (sensor.zenos_default_household_
+# cabinet, confirmed via label_entities('Zen Household Cabinet')) rather
+# than re-resolved by label on every render -- there's only one per
+# house. ──
+template:
+  - trigger:
+      - trigger: state
+        entity_id: sensor.zenos_default_household_cabinet
+      - trigger: homeassistant
+        event: start
+    variables:
+      _cabinet_vars: >-
+        {%- set _hc = state_attr('sensor.zenos_default_household_cabinet', 'variables') -%}
+        {{ _hc if _hc is mapping else {} }}
+      _drawer: >-
+        {%- set d = _cabinet_vars.get('display_session_current', {}) -%}
+        {%- set d = d if d is mapping else (d | from_json({}) if d is string else {}) -%}
+        {%- set v = d.get('value', d) if d is mapping else {} -%}
+        {%- set v = v if v is mapping else (v | from_json({}) if v is string else {}) -%}
+        {{ v if v is mapping else {} }}
+    sensor:
+      - name: "Zen Display Surface State"
+        unique_id: zen_display_surface_state
+        state: "{{ 'active' if (_drawer | length > 0) else 'inactive' }}"
+        icon: "{{ 'mdi:cast-connected' if (_drawer | length > 0) else 'mdi:cast-off' }}"
+        attributes:
+          entity_id: "{{ _drawer.get('entity_id') }}"
+          session_id: "{{ _drawer.get('session_id') }}"
+          family: "{{ _drawer.get('family') }}"
+          dashboard_path: "{{ _drawer.get('dashboard_path') }}"
+          view_path: "{{ _drawer.get('view_path') }}"
+          view_type: "{{ _drawer.get('view_type') }}"
+          title: "{{ _drawer.get('title') }}"
+          body_markdown: "{{ _drawer.get('body_markdown') }}"
+          image_entity: "{{ _drawer.get('image_entity') }}"
+          image_bound: "{{ _drawer.get('image_bound', false) }}"
+          alert_severity: "{{ _drawer.get('alert_severity') }}"
+          alert_text: "{{ _drawer.get('alert_text') }}"
+          has_alert: "{{ _drawer.get('alert_text') not in [none, ''] }}"
+          progress: "{{ _drawer.get('progress') }}"
+          has_progress: "{{ _drawer.get('progress') is not none }}"
+          response_type: "{{ _drawer.get('response_type') }}"
+          has_response: "{{ _drawer.get('response_type') not in [none, ''] }}"
+          with_audio: "{{ _drawer.get('with_audio', false) }}"
+          created_at: "{{ _drawer.get('created_at') }}"
+          updated_at: "{{ _drawer.get('updated_at') }}"
+

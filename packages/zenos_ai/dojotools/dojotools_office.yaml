@@ -30,7 +30,7 @@ script:
                 tool='zen_dojotools_teams',
                 display_name='Teams',
                 tier='dojotools',
-                version='1.0.0',
+                version='1.1.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['teams', 'm365'],
@@ -43,7 +43,9 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-            ) | from_json }}
+            ) | from_json | combine({'certs_required': [
+                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['send']}
+            ]}) }}
       - stop: tool_manifest
         response_variable: result
     # --------------------------------------------------------------
@@ -170,6 +172,40 @@ script:
           - stop: Pass response variables back to LLM
             response_variable: error_not_configured
           - set_conversation_response: '{{ error_not_configured }}'
+
+        # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390
+        # office.yaml rollout, corrected after user pushback: sending a
+        # Teams message is the same PII-exfiltration shape as sending mail
+        # -- chat_id and message are caller-supplied, message can carry
+        # anything the agent has read. Reuses the same cert as mail's
+        # create/send. mode=set (status update, no message content) stays
+        # ungated. ──
+        - action: script.zen_dojotools_identity
+          response_variable: _teams_id_raw
+          continue_on_error: true
+          data:
+            mode: resolve_caller_identity
+            required_cert: pii_disclosure_control
+            required_cert_level: 1
+            caller_token: "{{ caller_token | default('') }}"
+        - variables:
+            _teams_cert_policy: "{{ _teams_id_raw.get('policy_status', 'blocked') if _teams_id_raw is mapping else 'blocked' }}"
+            _teams_cert_authorized: "{{ _teams_id_raw.get('authorized', false) if _teams_id_raw is mapping else false }}"
+            _teams_cert_level: "{{ _teams_id_raw.get('cert_level', 0) if _teams_id_raw is mapping else 0 }}"
+            _teams_cert_block_reason: "{{ _teams_id_raw.get('block_reason', '') if _teams_id_raw is mapping else '' }}"
+        - if: "{{ _teams_cert_policy != 'allowed' or not _teams_cert_authorized }}"
+          then:
+            - variables:
+                _teams_cd_raw: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                  {{ OS.cert_denial(_teams_cert_policy, _teams_cert_authorized, _teams_cert_level, 'pii_disclosure_control', 1, 'send', _teams_cert_block_reason) -}}
+            - variables:
+                _teams_cd_response: >-
+                  {{ (((_teams_cd_raw | from_json) if _teams_cd_raw is string else _teams_cd_raw) | combine({'tool': 'zen_dojotools_teams', 'caller_token': caller_token | default('')})) }}
+            - stop: cert_insufficient
+              response_variable: _teams_cd_response
+            - set_conversation_response: '{{ _teams_cd_response }}'
+
         - if:
           - condition: template
             value_template: '{{ ( chat_id and ( chat_id != "") and ( chat_id != my_chat_id
@@ -346,7 +382,7 @@ script:
                 tool='zen_dojotools_mail',
                 display_name='Mail',
                 tier='dojotools',
-                version='5.0.0',
+                version='5.1.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['e_mail'],
@@ -359,7 +395,10 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-            ) | from_json }}
+            ) | from_json | combine({'certs_required': [
+                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['create']},
+                {'cert': 'pii_disclosure_control', 'level': 2, 'modes': ['whitelist_set']}
+            ]}) }}
       - stop: tool_manifest
         response_variable: result
     # --------------------------------------------------------------
@@ -390,8 +429,20 @@ script:
         mail_domain: '{{ states(''input_text.zen_mail_domain'') | default('''') | trim }}'
         my_address: '{{ states(''input_text.zen_mail_sender'') | default('''') | trim }}'
         reply_to: '{{ reply_to | default( my_address ) }}'
-        whitelist_ctrl: '{{ states(''input_text.zen_mail_whitelist'') }}'
-        whitelist_missing: '{{ states(''input_text.zen_mail_whitelist'') in [''unavailable'', ''unknown'', ''none'', ''''] }}'
+        # ── Whitelist moved off input_text into the household cabinet
+        # (2026-09-10, #10390 -- user-flagged: a self-editable helper meant
+        # any holder of the generic helper_text_edit cert could silently
+        # flip this to OFF or a wildcard, a much broader grant than
+        # "permission to defang the mail whitelist" should imply). Edits
+        # now require whitelist_set mode, gated at pii_disclosure_control
+        # level 2 -- higher than send's level 1, since loosening the
+        # whitelist is more consequential than a single send within it. ──
+        _hh_cabinet_mail: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+        _mwl_raw: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {{- CABS.cabinet_drawer_value_mounted(_hh_cabinet_mail, 'mail_whitelist_config') | from_json -}}
+        whitelist_ctrl: "{{ (_mwl_raw.get('value', '') if _mwl_raw is mapping else '') | default('', true) | trim }}"
+        whitelist_missing: "{{ whitelist_ctrl == '' }}"
         whitelist_off: '{{ whitelist_ctrl == ''OFF'' }}'
         whitelist_is_wildcard: '{{ whitelist_ctrl.startswith(''*@'') }}'
         whitelist_domain: '{{ whitelist_ctrl[2:] if whitelist_is_wildcard else '''' }}'
@@ -399,7 +450,7 @@ script:
     - choose:
       - conditions:
         - condition: template
-          value_template: '{{ action_type == ''help'' or action_type not in [''list'',''read'',''create'',''delete'',''move'']
+          value_template: '{{ action_type == ''help'' or action_type not in [''list'',''read'',''create'',''delete'',''move'',''whitelist_set'']
             }}'
         sequence:
         - variables:
@@ -415,6 +466,7 @@ script:
               does not expose a delete service. Returns not_implemented.\",\n      \"move\":
               \"[stub] Not yet implemented — MS365 Mail integration does not expose a
               move service. Returns not_implemented. Will require: uid, folder (destination).\",\n
+              \     \"whitelist_set\": \"Set the recipient whitelist (requires whitelist_value). Stored in the household cabinet, gated at pii_disclosure_control level 2 -- higher than create's level 1.\",\n
               \     \"help\": \"Returns this help block.\"\n    },\n    \"fields\": {\n
               \     \"folder\": \"Mail folder name (Inbox, Sent Items, Deleted Items,
               Junk Email, Outbox). Used as destination for move when implemented.\",\n
@@ -431,11 +483,13 @@ script:
               sensor.ms365_inbox attribute data — no live API call.\",\n      \"UIDs
               are only searchable within the current sensor window.\",\n      \"delete
               and move are stubbed — returns not_implemented until MS365 integration adds
-              the services.\",\n      \"create is whitelist-gated. Set input_text.zen_mail_whitelist:
-              OFF (unrestricted), *@domain.com, or exact address.\"\n    ],\n    \"setup\":
+              the services.\",\n      \"create is whitelist-gated AND requires pii_disclosure_control cert
+              level 1. The whitelist itself lives in the household cabinet's mail_whitelist_config
+              drawer (moved off a self-editable helper 2026-09-10) -- edit it via
+              action_type: whitelist_set, gated separately at level 2.\"\n    ],\n    \"setup\":
               {\n      \"input_text.zen_mail_sender\": \"Send-from address.\",\n      \"input_text.zen_mail_domain\":
-              \"Your email domain for wildcard matching.\",\n      \"input_text.zen_mail_whitelist\":
-              \"Whitelist mode: OFF / *@domain.com / exact address.\"\n    },\n    \"examples\":
+              \"Your email domain for wildcard matching.\",\n      \"mail_whitelist_config (household cabinet drawer)\":
+              \"Whitelist mode: OFF / *@domain.com / exact address. Set via action_type: whitelist_set.\"\n    },\n    \"examples\":
               [\n      { \"action_type\": \"list\" },\n      { \"action_type\": \"list\",
               \"from\": \"boss@example.com\" },\n      { \"action_type\": \"list\", \"query\":
               \"invoice\" },\n      { \"action_type\": \"read\", \"uid\": \"AAMkAG...==\"
@@ -573,6 +627,45 @@ script:
               if cc_list else {},\n    {\"bcc\": bcc_list} if bcc_list else {},\n    {\"importance\":
               importance_norm} if importance_norm != \"normal\" else {}\n  )\n  | tojson\n}}"
             mail_data: '{{ mail_data_json | from_json }}'
+
+        # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390
+        # office.yaml rollout, corrected after user pushback: sending mail
+        # is a real PII-exfiltration vector -- the recipient is caller-
+        # supplied free text and the body can contain anything the agent
+        # has read, unlike internal task/calendar CRUD. The existing
+        # zen_mail_whitelist check is NOT sufficient on its own: it's a
+        # self-configurable input_text helper, and the generic
+        # helper_text_edit cert (any input_text write) would incidentally
+        # let a holder flip it to OFF or a wildcard -- a much broader grant
+        # than "permission to send email" should imply. This cert is
+        # checked independently of and in addition to the whitelist, so
+        # holding helper_text_edit alone can never authorize a send. ──
+        - action: script.zen_dojotools_identity
+          response_variable: _mail_id_raw
+          continue_on_error: true
+          data:
+            mode: resolve_caller_identity
+            required_cert: pii_disclosure_control
+            required_cert_level: 1
+            caller_token: "{{ caller_token | default('') }}"
+        - variables:
+            _mail_cert_policy: "{{ _mail_id_raw.get('policy_status', 'blocked') if _mail_id_raw is mapping else 'blocked' }}"
+            _mail_cert_authorized: "{{ _mail_id_raw.get('authorized', false) if _mail_id_raw is mapping else false }}"
+            _mail_cert_level: "{{ _mail_id_raw.get('cert_level', 0) if _mail_id_raw is mapping else 0 }}"
+            _mail_cert_block_reason: "{{ _mail_id_raw.get('block_reason', '') if _mail_id_raw is mapping else '' }}"
+        - if: "{{ _mail_cert_policy != 'allowed' or not _mail_cert_authorized }}"
+          then:
+            - variables:
+                _mail_cd_raw: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                  {{ OS.cert_denial(_mail_cert_policy, _mail_cert_authorized, _mail_cert_level, 'pii_disclosure_control', 1, 'mail_create', _mail_cert_block_reason) -}}
+            - variables:
+                final_response: >-
+                  {{ ((_mail_cd_raw | from_json) if _mail_cd_raw is string else _mail_cd_raw) | combine({'tool': 'zen_dojotools_mail', 'caller_token': caller_token | default('')}) }}
+            - stop: cert_insufficient
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+
         - choose:
           - conditions:
             - condition: template
@@ -642,6 +735,64 @@ script:
         alias: move message stub
       - conditions:
         - condition: template
+          value_template: "{{ action_type == 'whitelist_set' }}"
+        sequence:
+        # ── Cert-gate — pii_disclosure_control level 2 (2026-09-10,
+        # #10390). Editing the whitelist is more consequential than a
+        # single send within it -- higher level than send's level 1. ──
+        - action: script.zen_dojotools_identity
+          response_variable: _mwl_id_raw
+          continue_on_error: true
+          data:
+            mode: resolve_caller_identity
+            required_cert: pii_disclosure_control
+            required_cert_level: 2
+            caller_token: "{{ caller_token | default('') }}"
+        - variables:
+            _mwl_cert_policy: "{{ _mwl_id_raw.get('policy_status', 'blocked') if _mwl_id_raw is mapping else 'blocked' }}"
+            _mwl_cert_authorized: "{{ _mwl_id_raw.get('authorized', false) if _mwl_id_raw is mapping else false }}"
+            _mwl_cert_level: "{{ _mwl_id_raw.get('cert_level', 0) if _mwl_id_raw is mapping else 0 }}"
+            _mwl_cert_block_reason: "{{ _mwl_id_raw.get('block_reason', '') if _mwl_id_raw is mapping else '' }}"
+        - if: "{{ _mwl_cert_policy != 'allowed' or not _mwl_cert_authorized }}"
+          then:
+            - variables:
+                _mwl_cd_raw: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                  {{ OS.cert_denial(_mwl_cert_policy, _mwl_cert_authorized, _mwl_cert_level, 'pii_disclosure_control', 2, 'whitelist_set', _mwl_cert_block_reason) -}}
+            - variables:
+                final_response: >-
+                  {{ ((_mwl_cd_raw | from_json) if _mwl_cd_raw is string else _mwl_cd_raw) | combine({'tool': 'zen_dojotools_mail', 'caller_token': caller_token | default('')}) }}
+            - stop: cert_insufficient
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+        - if: "{{ whitelist_value is not defined or whitelist_value | default('') | trim == '' }}"
+          then:
+            - variables:
+                final_response: >-
+                  {{ {'status': 'error', 'message': "whitelist_set requires whitelist_value: OFF, *@yourdomain.com, or an exact address.", 'caller_token': caller_token | default('')} }}
+            - stop: Pass response variables back to LLM
+              response_variable: final_response
+            - set_conversation_response: '{{ final_response }}'
+        - action: script.zen_dojotools_filecabinet
+          data:
+            action_type: >-
+              {%- set _cv = state_attr(_hh_cabinet_mail, 'variables') | default({}, true) -%}
+              {{ 'update' if _cv.get('mail_whitelist_config', none) is not none else 'create' }}
+            volume_entity_id: "{{ _hh_cabinet_mail }}"
+            key: mail_whitelist_config
+            value: >-
+              {{ {'value': whitelist_value | trim, 'updated_at': now().isoformat()} | tojson }}
+            force_action: true
+          response_variable: _mwl_fc_result
+        - variables:
+            final_response: >-
+              {{ {'status': 'ok', 'action_type': 'whitelist_set', 'whitelist_value': whitelist_value | trim, 'caller_token': caller_token | default('')} }}
+        - stop: Pass response variables back to LLM
+          response_variable: final_response
+        - set_conversation_response: '{{ final_response }}'
+        alias: whitelist set
+      - conditions:
+        - condition: template
           value_template: '{{ (action_type == ''read'' and uid == '''' and subject == '''')
             or (action_type in [''delete'',''move''] and uid == '''')
             or (action_type == ''create'' and (to == '''' or subject == '''' or body == '''')) }}'
@@ -658,9 +809,10 @@ script:
         - set_conversation_response: '{{ final_response }}'
         alias: missing required field error
     alias: Zen DojoTools Mail
-    description: 'Zen DojoTools Mail (5.0.0) MS365 Mail: list, read, create, delete
-      (stub), move (stub). list/read operate against sensor.ms365_inbox attributes
-      — no live API call. create is whitelist-gated. delete and move return not_implemented
+    description: 'Zen DojoTools Mail (5.1.0) MS365 Mail: list, read, create, delete
+      (stub), move (stub), whitelist_set. list/read operate against sensor.ms365_inbox attributes
+      — no live API call. create requires pii_disclosure_control cert + whitelist pass;
+      whitelist_set requires pii_disclosure_control level 2. delete and move return not_implemented
       until MS365 integration exposes those services. Use action_type: help for full
       reference.'
     fields:
@@ -672,7 +824,7 @@ script:
             options:
               - tool_manifest
       action_type:
-        description: '''list'', ''read'', ''create'', ''delete'' (stub), ''move'' (stub), ''help'' (default: help)'
+        description: '''list'', ''read'', ''create'', ''delete'' (stub), ''move'' (stub), ''whitelist_set'' (pii_disclosure_control level 2), ''help'' (default: help)'
         required: true
         selector:
           select:
@@ -682,8 +834,14 @@ script:
             - create
             - delete
             - move
+            - whitelist_set
             - help
         default: help
+      whitelist_value:
+        description: "whitelist_set only. OFF (unrestricted), *@yourdomain.com (domain wildcard), or an exact address. Stored in the household cabinet's mail_whitelist_config drawer -- no longer a self-editable helper."
+        required: false
+        selector:
+          text:
       folder:
         description: Target mail folder (e.g. 'Inbox', 'Deleted Items', 'Junk Email',
           'Sent Items', 'Outbox'). Defaults to 'Inbox'.

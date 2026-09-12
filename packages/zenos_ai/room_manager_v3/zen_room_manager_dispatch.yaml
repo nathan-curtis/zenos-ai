@@ -653,7 +653,7 @@ script:
                       response_variable: _ccr_current
                       continue_on_error: true
                     - variables:
-                        _ccr_cur_val: "{{ _ccr_current.get('current_value', '') if _ccr_current is mapping else '' }}"
+                        _ccr_cur_val: "{{ _ccr_current.get('result', {}).get('current_value', '') if _ccr_current is mapping else '' }}"
                     - if: "{{ _ccr_cur_val == 'Auto' and _room_should_be_cleaning }}"
                       then:
                         - action: script.zen_dojotools_room_manager
@@ -1144,7 +1144,41 @@ automation:
       - id: reflex_event
         trigger: event
         event_type: zen_event
+      # ── Wedged-instance watchdog -- queued mode has no self-healing: one
+      # instance stuck mid-run (e.g. a lost
+      # delay/timer resume callback under concurrent load) blocks every
+      # call behind it forever, with no error, until a full HA restart.
+      # `for: minutes: 3` on a plain state trigger resets on ANY
+      # state-changed event for the entity, attribute-only changes
+      # included -- every real call start/finish updates current/
+      # last_triggered, which resets this clock. Under genuine healthy
+      # load (however constant) this never fires; it only fires after
+      # 3 full minutes with ZERO progress, which is the actual signature
+      # observed live (current/last_updated frozen across repeated polls).
+      - id: rm_watchdog
+        trigger: state
+        entity_id: script.zen_dojotools_room_manager
+        to: "on"
+        for:
+          minutes: 3
     action:
+      - if: "{{ trigger.id == 'rm_watchdog' }}"
+        then:
+          - if: "{{ state_attr('script.zen_dojotools_room_manager', 'current') | int(0) > 0 }}"
+            then:
+              - action: homeassistant.turn_off
+                target:
+                  entity_id: script.zen_dojotools_room_manager
+              - action: script.zen_dojotools_event_emitter
+                data:
+                  mode: emit
+                  component: room_manager
+                  kind: watchdog_kill
+                  severity: warn
+                  summary: "Room Manager watchdog killed a wedged instance after 3 min with zero progress."
+                  metadata:
+                    current_before_kill: "{{ state_attr('script.zen_dojotools_room_manager', 'current') | int(0) }}"
+          - stop: watchdog handled
       - variables:
           _roomstate_enabled: >-
             {%- set _sw = label_entities('zenos_roomstate_master_switch') -%}
@@ -2020,3 +2054,34 @@ automation:
                               path: room_control_manager
                               title: room_control_manager
                               value: "{{ {_rcr_room: _rcr_requested} }}"
+
+          # ── LOAD COMPLETE (2026-09-09) — "room attention," not presence.
+          # Consumes the load_complete zen_event kind emitted by
+          # zen_room_manager_vibration_completion.yaml (metadata.source:
+          # vibration) and, per-household, washing_machine.yaml's power-based
+          # washer/dryer detector (metadata.source: power). Deliberately
+          # outside the occupancy cascade entirely -- no room_state write,
+          # just a Postman notify via the existing alertmanager dispatch
+          # layer. alert_key stamps area_id(entity_id) so downstream readers
+          # (Room Manager's own digest field) can filter pending
+          # notifications by room.
+          - conditions: "{{ trigger.id == 'reflex_event' and trigger.event.data.get('event', {}).get('kind') == 'load_complete' }}"
+            sequence:
+              - variables:
+                  _lc_meta: "{{ trigger.event.data.get('event', {}).get('metadata', {}) }}"
+                  _lc_entity_id: "{{ _lc_meta.get('entity_id', '') }}"
+                  _lc_summary: "{{ trigger.event.data.get('event', {}).get('summary', '') }}"
+              - if: "{{ _lc_entity_id != '' }}"
+                then:
+                  - variables:
+                      _lc_area: "{{ area_id(_lc_entity_id) | default('', true) }}"
+                  - action: script.zen_dojotools_alertmanager
+                    data:
+                      mode: fire
+                      alert_key: "load_complete_{{ _lc_area }}_{{ _lc_entity_id.split('.')[-1] }}"
+                      message: >-
+                        {{ _lc_summary | default((area_name(_lc_area) | default(_lc_area, true)) ~ ' load complete.', true) }}
+                      severity: info
+                      notify_target: postman
+                      clear_after_minutes: 60
+                    continue_on_error: true

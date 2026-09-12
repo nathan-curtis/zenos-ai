@@ -196,7 +196,7 @@ The self-description is produced by `MF.tool_manifest()` from `zenos_ai/zenos_ma
 tool: zen_dojotools_manifest
 display_name: System Manifest Broker
 tier: dojotools
-version: 6.4.0
+version: 6.4.9
 health:
   configured: true
   status: ok

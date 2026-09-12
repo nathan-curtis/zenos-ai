@@ -265,7 +265,7 @@ The Scheduler drives the summarizers automatically. Default trigger wiring:
 | `ha_start` + `daily_midnight` | Both |
 | `force_summary` | Both (delay skipped) |
 
-Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawer. See [Scheduler readme](zen_dojotools_scheduler_readme.md) and [KFC docs](../../kung_fu/readme.md).
+Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawer. See [Scheduler readme](zen_dojotools_scheduler_readme.md) and [KFC docs](../kung_fu/readme.md).
 
 ---
 

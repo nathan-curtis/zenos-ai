@@ -6,6 +6,8 @@
 
 Provisions, deprovisions, or replaces a cabinet-backed identity (`ai_user` / `user` / `family` / `household`) — pulling a stacks cabinet into service or returning one to the stacks pool. This is the write-path counterpart to the stacks model: cabinets live as `online_unmounted` spares until provisioned into a typed, labeled, `online_mounted` identity.
 
+All three modes (`provision`, `deprovision`, `replace`) require the `cabinet_lifecycle_control` certification (level 1) as of 2026-09-10 (#10390) — the same certification `zen_admintools_cabinetadmin` gates its own moderate-to-nuclear ops under. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
+
 ---
 
 ## Modes

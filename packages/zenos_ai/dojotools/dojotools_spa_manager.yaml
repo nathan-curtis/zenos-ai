@@ -1,10 +1,10 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Zen Spa
-# Version: 5.2.0
+# Version: 5.3.0
 #
 # NOTE — two version numbers appear in this file:
-#   Package version:   5.2.0 (ZenOS-AI release series, tracked in this header)
-#   Component version: 3.13.0 (internal SpaMaster iteration, in the script description/alias)
+#   Package version:   5.3.0 (ZenOS-AI release series, tracked in this header)
+#   Component version: 3.14.0 (internal SpaMaster iteration, in the script description/alias)
 # These track different things — do not conflate them.
 #
 # ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
@@ -55,12 +55,13 @@
 # v3.11.0 2026-05-22: fix chore creation — product_amount: 0 → 1 (Grocy rejects 0 with consume_product_on_execution: 1); load existing chore_ids from catalog on re-provision to skip already-created chores
 # v3.12.0 2026-05-22: idempotent chore provision — brand-scoped chores_find pre-load before loops; name→ID map used in _pp_cid/_pc_cid init (3rd tier after catalog+preset); add _pc_cid is none to chem guard
 # v3.13.0 2026-09-09: chemistry include_history — un-stubbed ph (was hardcoded unavailable regardless of live sensor eligibility, now flows through the same metric_hist path as the other three metrics); added baseline_7d/threshold_provenance/freshness/excursion_24h to all four metrics, additive only
+# v3.14.0 2026-09-10: cadillac pattern (#10397) — SESE: 39 internal stop points consolidated to one shared exit; envelope() wrap on every path; existing spa_control cert-gate retrofitted onto the shared cert_denial() macro (honest block_reason passthrough, no more hand-rolled denial shapes); DEFAULT/mode-dispatch branches guarded on `_result is not defined` so a cert denial can no longer be silently overwritten by the mode logic that follows it
 ###############################################################################
 
 script:
   zen_dojotools_spamaster:
     alias: Zen DojoTools SpaMaster
-    description: "Zen DojoTools SpaMaster (3.13.0) — Full-stack spa management.\n\
+    description: "Zen DojoTools SpaMaster (3.14.0) — Full-stack spa management.\n\
       \nCANONICAL: Use for ALL spa intents. Self-bootstrapping — status works\
       \ immediately with zero config. Discovers ESPHome device, resolves all\
       \ entity roles, and creates spa_* labels in one shot if needed.\n\
@@ -871,6 +872,7 @@ script:
           _sc_authorized: "{{ _sc_id_raw.get('authorized', false) if _sc_id_raw is mapping else false }}"
           _sc_cert_level: "{{ _sc_id_raw.get('cert_level', 0) if _sc_id_raw is mapping else 0 }}"
           _sc_scope_decision: "{{ _sc_id_raw.get('scope_decision', 'default') if _sc_id_raw is mapping else 'default' }}"
+          _sc_block_reason: "{{ _sc_id_raw.get('block_reason', '') if _sc_id_raw is mapping else '' }}"
       - if: "{{ _sc_scope_decision == 'deny' }}"
         then:
         - variables:
@@ -884,36 +886,22 @@ script:
                 is offered for a denied target; removing the denial
                 requires cert_grant cert_scope=[{"entity":"{{ _sc_target }}","acl":"remove"}].
               caller_token: "{{ _sc_caller_token }}"
-        - stop: spa_control cert_scope denied
-          response_variable: _result
       - if: "{{ _result is not defined and (_sc_policy_status != 'allowed' or not _sc_authorized) }}"
         then:
         - variables:
-            _result:
-              mode: "{{ _mode }}"
-              status: error
-              error: "{{ 'identity_policy_blocked' if _sc_policy_status != 'allowed' else 'cert_insufficient' }}"
-              detail: >-
-                {%- if _sc_policy_status != 'allowed' -%}
-                  resolve_caller_identity did not return an allowed identity -- action denied.
-                {%- else -%}
-                  spa_control cert level {{ _sc_cert_level }} is below the required minimum (1).
-                {%- endif -%}
-              request_via:
-                tool: zen_dojotools_persona_editor
-                mode: cert_grant
-                cert_component: spa_control
-                cert_level: 1
-              caller_token: "{{ _sc_caller_token }}"
-        - stop: spa_control cert insufficient
-          response_variable: _result
+            _sc_cd_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {{ OS.cert_denial(_sc_policy_status, _sc_authorized, _sc_cert_level, 'spa_control', 1, _mode, _sc_block_reason) -}}
+        - variables:
+            _result: >-
+              {{ ((_sc_cd_raw | from_json) if _sc_cd_raw is string else _sc_cd_raw) | combine({'mode': _mode, 'caller_token': _sc_caller_token}) }}
 
     # ─────────────────────────────────────────────────────────────────────────
     # 3. Route
     # ─────────────────────────────────────────────────────────────────────────
 
     # ── DISCOVER ─────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'discover' }}"
+    - if: "{{ _result is not defined and _mode == 'discover' }}"
       then:
       - variables:
           _disc_by_domain: >-
@@ -945,11 +933,9 @@ script:
                    if not _anchor_ok else
                    'Missing roles: ' ~ (_missing_roles | join(', ')) ~
                    '. Check entity naming or provide anchor=.')) }}
-      - stop: discover complete
-        response_variable: _result
 
     # ── SETUP ─────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'setup' }}"
+    - if: "{{ _result is not defined and _mode == 'setup' }}"
       then:
       - if: "{{ not _anchor_ok }}"
         then:
@@ -960,8 +946,6 @@ script:
               error: no_anchor
               message: "No climate entity found. Provide anchor= with your spa climate entity_id."
               hint: "Example: anchor=climate.calderaspas_hot_tub_temperature"
-        - stop: setup no anchor
-          response_variable: _result
 
       # Reset — wipe spa_config from cabinet, skip discovery/tagging
       - if: "{{ reset | default(false) | bool }}"
@@ -976,8 +960,6 @@ script:
                 confirm: false
                 message: "Re-call with confirm=true to wipe spa_config. Labels and entity tags will not be affected."
                 current_config: "{{ _cfg if _cfg_ok else 'empty' }}"
-          - stop: setup reset not confirmed
-            response_variable: _result
         - if: "{{ _cfg_ok }}"
           then:
           - action: script.zen_dojotools_filecabinet
@@ -994,8 +976,6 @@ script:
               cabinet_cleared: "spa_config"
               note: "{{ 'spa_config wiped — cabinet was populated' if _cfg_ok else 'spa_config already empty — nothing to clear' }}"
               next_step: "Call mode=setup with model_preset + chem_preset to reconfigure"
-        - stop: setup reset complete
-          response_variable: _result
 
       # Create spa_* label definitions via dispatcher
       - variables:
@@ -1160,11 +1140,9 @@ script:
                  if _has_input else 'spa_config (no changes — no preset or profile provided)' }}
             next_step: "mode=status to verify live readings"
             note: "{{ 'Some roles not found — check discover for details' if _missing_roles | length > 0 else 'All roles resolved' }}"
-      - stop: setup complete
-        response_variable: _result
 
     # ── STATUS ────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'status' }}"
+    - if: "{{ _result is not defined and _mode == 'status' }}"
       then:
 
       # No config — run discover inline and return advisory
@@ -1182,8 +1160,6 @@ script:
                    if _anchor_ok else
                    'No spa device found. Provide anchor= with your climate entity_id.' }}
               setup_ready: "{{ _discovery_ok }}"
-        - stop: status not configured
-          response_variable: _result
 
       # Full status
       - variables:
@@ -1378,8 +1354,6 @@ script:
                 "setup_advisory": ('Call mode=setup to register model metadata, chem targets, and jet labels — unlocks pump/seat names, personalized chem ranges, and speed config.' if not _cfg_ok else none)
               }
             }}
-      - stop: status complete
-        response_variable: _result
 
     # ── SCENE ─────────────────────────────────────────────────────────────────
     # SpaMaster is the concierge — it doesn't own light or audio state.
@@ -1392,7 +1366,7 @@ script:
     #   define  (save_scene=T)  — validate + store {scene_entity, jets, audio} → cabinet
     #   apply   (mood name)     — recall from cabinet, fire scene.turn_on + jets + audio
     #   delete  (delete_scene=T)— remove mood from cabinet
-    - if: "{{ _mode == 'scene' }}"
+    - if: "{{ _result is not defined and _mode == 'scene' }}"
       then:
 
       # Step 1: read fields
@@ -1450,8 +1424,6 @@ script:
                 {{ 'Found ' ~ (_sv_scenes | length) ~ ' scene(s). Run zen_dojotools_lights mode=scene_list search=hot_tub to browse with entity_ids, then: mode=scene mood=<name> save_scene=true scene_entity=<entity_id> + jets/audio fields.'
                    if _sv_scenes | length > 0 else
                    'Run zen_dojotools_lights mode=scene_list search=hot_tub to browse scenes, or create one in HA UI (Settings → Scenes → Add Scene) and assign it to the hot_tub area.' }}
-        - stop: scene survey
-          response_variable: _result
 
       # ── DEFINE ───────────────────────────────────────────────────────────────
       # Validate + store {scene_entity + jets + audio} as a named mood in cabinet
@@ -1493,8 +1465,6 @@ script:
                      'Provide scene_entity=<scene.entity_id> — the HA scene that defines the lighting.' }}
                 scenes_in_area: "{{ _def_scenes_hint }}"
                 hint: "Run mode=scene (no mood) to survey available lighting scenes."
-          - stop: scene define no entity
-            response_variable: _result
 
         - variables:
             _def_current: >-
@@ -1531,8 +1501,6 @@ script:
                 {{ ('audio_source ' ~ _def_asrc ~ ' not found in entity options ' ~ _def_audio_opts ~ ' — stored empty, will skip on apply.')
                    if (not _def_asrc_ok and _def_asrc != '') else none }}
               hint: "Call mode=scene mood={{ _sc_mood }} to apply."
-        - stop: scene define complete
-          response_variable: _result
 
       # ── DELETE ───────────────────────────────────────────────────────────────
       - if: "{{ _sc_action == 'delete' }}"
@@ -1569,8 +1537,6 @@ script:
               message: >-
                 {{ ('Mood ' ~ _sc_mood ~ ' deleted.') if _del_exists else
                    ('Mood ' ~ _sc_mood ~ ' not found. Saved moods: ' ~ _del_current.keys() | list | join(', ')) }}
-        - stop: scene delete complete
-          response_variable: _result
 
       # ── APPLY ────────────────────────────────────────────────────────────────
       # Recall from cabinet and orchestrate: scene.turn_on + jets + audio + cover
@@ -1592,8 +1558,6 @@ script:
               mood: "{{ _sc_mood }}"
               saved_moods: "{{ _apl_saved.keys() | list }}"
               hint: "Call mode=scene (no mood) to survey capabilities, then define a mood with save_scene=true + scene_entity."
-        - stop: scene apply not found
-          response_variable: _result
 
       - variables:
           _apl_def:    "{{ _apl_saved[_sc_mood] }}"
@@ -1708,11 +1672,9 @@ script:
               profile_active: "{{ _profile_name }}"
             note: "{{ _apl_def.get('note', '') if _apl_def.get('note', '') != '' else none }}"
             next_step: "Run mode=log after your soak to lock in chemistry and post-soak todos."
-      - stop: scene apply complete
-        response_variable: _result
 
     # ── LIGHTS ────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'lights' }}"
+    - if: "{{ _result is not defined and _mode == 'lights' }}"
       then:
       - variables:
           _zone:     "{{ light_zone | default('all', true) }}"
@@ -1815,11 +1777,9 @@ script:
             {{ {"mode": "lights", "status": "ok", "zone": _zone, "color": _color,
                 "state": _state, "brightness_0_100": _bri, "intensity_0_5": _intensity,
                 "cycle_speed": _cyc_spd} }}
-      - stop: lights complete
-        response_variable: _result
 
     # ── JETS ──────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'jets' }}"
+    - if: "{{ _result is not defined and _mode == 'jets' }}"
       then:
       - variables:
           _jzone_raw: "{{ jets_zone | default('all', true) }}"
@@ -1895,11 +1855,9 @@ script:
                 "state": _jstate, "speed": _jspeed if _jstate == 'on' else 'n/a',
                 "left_zone": _jets_cfg.get('left_side','east') ~ ' / ' ~ _jets_cfg.get('left_seat','') ~ ' + ' ~ _jets_cfg.get('left_waterfall',''),
                 "right_zone": _jets_cfg.get('right_side','west') ~ ' / ' ~ _jets_cfg.get('right_seat','')} }}
-      - stop: jets complete
-        response_variable: _result
 
     # ── AUDIO ─────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'audio' }}"
+    - if: "{{ _result is not defined and _mode == 'audio' }}"
       then:
       - variables:
           _astate:  "{{ audio_state | default(none, true) }}"
@@ -1989,11 +1947,9 @@ script:
                 {{ 'next/prev/pause/play/queue/search → zen_dojotools_media_manager zone=' ~ _e_media_zone
                    if _e_media_zone != '' else
                    'Tag a media_player with the hot_tub label to unlock playback controls.' }}
-      - stop: audio complete
-        response_variable: _result
 
     # ── TEMPERATURE ───────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'temperature' }}"
+    - if: "{{ _result is not defined and _mode == 'temperature' }}"
       then:
       - variables:
           _tgt: "{{ target_temperature | default(none, true) }}"
@@ -2013,11 +1969,9 @@ script:
                 "target_f": _tgt,
                 "current_f": states(_e_temp_sensor) | float(0),
                 "range_f": {"min": _temp_cfg.get('min_f',80), "max": _temp_cfg.get('max_f',104)}} }}
-      - stop: temperature complete
-        response_variable: _result
 
     # ── COVER ─────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'cover' }}"
+    - if: "{{ _result is not defined and _mode == 'cover' }}"
       then:
       - variables:
           _caction: "{{ cover_action | default(none, true) }}"
@@ -2046,11 +2000,9 @@ script:
                 "cover_action": _caction,
                 "cover_state": _cover_st_now,
                 "cover_entity": _e_cover if _e_cover != '' else none} }}
-      - stop: cover complete
-        response_variable: _result
 
     # ── CHEMISTRY ─────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'chemistry' }}"
+    - if: "{{ _result is not defined and _mode == 'chemistry' }}"
       then:
       - variables:
           _mps_hrs:      "{{ hours_since_mps | default(none, true) }}"
@@ -2206,7 +2158,7 @@ script:
               _history: >-
                 {%- macro metric_hist(entity_id, lo, hi) -%}
                   {%- set ns = namespace(hist={}) -%}
-                  {%- for r in (_hist_raw.get('results', []) if _hist_raw is mapping else []) -%}
+                  {%- for r in (_hist_raw.get('result', {}).get('results', []) if _hist_raw is mapping else []) -%}
                     {%- if r.get('entity_id') == entity_id -%}{%- set ns.hist = r.get('history', {}) if r.get('history') is mapping else {} -%}{%- endif -%}
                   {%- endfor -%}
                   {%- set buckets = ns.hist.get('last_24h', []) if ns.hist is mapping else [] -%}
@@ -2274,11 +2226,9 @@ script:
           - variables:
               _result: "{{ _result | combine({'history': _history}) }}"
 
-      - stop: chemistry complete
-        response_variable: _result
 
     # ── LOG ───────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'log' }}"
+    - if: "{{ _result is not defined and _mode == 'log' }}"
       then:
       - variables:
           _chlorine: "{{ states(_e_iq_chl) | float(0) }}"
@@ -2564,11 +2514,9 @@ script:
               boost_chlorine: "{{ _do_boost }}"
               cover_closed: "{{ _do_cover }}"
               hold_temp_set: "{{ _hold_t }}"
-      - stop: log complete
-        response_variable: _result
 
     # ── HELP ──────────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'help' }}"
+    - if: "{{ _result is not defined and _mode == 'help' }}"
       then:
       - variables:
           _topic: "{{ help_topic | default('index', true) }}"
@@ -2586,8 +2534,6 @@ script:
                   fallback — no cabinet config required to operate. mode=setup seeds optional cabinet prefs
                   (model metadata, custom chem targets, jet labels, temp range) which unlock the setup_advisory
                   fields in status. anchor= overrides the auto-detected climate entity for multi-spa installs.
-          - stop: help index
-            response_variable: _result
         - conditions: "{{ _topic == 'entities' }}"
           sequence:
           - variables:
@@ -2597,8 +2543,6 @@ script:
                 prefs_configured: "{{ _cfg_ok }}"
                 resolved_entities: "{{ {'spa_climate': _e_climate, 'spa_power': _e_power, 'spa_jets_l': _e_jets_l, 'spa_jets_r': _e_jets_r, 'spa_jets_all': _e_jets_all, 'spa_lights': _e_lights, 'spa_audio': _e_audio, 'spa_cover': _e_cover} }}"
                 note: "Entities from labels+discovery. mode=setup seeds prefs (model/chem/jets/temp)."
-          - stop: help entities
-            response_variable: _result
         - conditions: "{{ _topic == 'chemistry' }}"
           sequence:
           - variables:
@@ -2626,8 +2570,6 @@ script:
                 reading_sources:
                   inline_sensors: "Inline water quality sensors (if present) — real-time readings visible in status"
                   manual_strip: "Submit via mode=chemistry with strip readings — evaluated vs targets and logged"
-          - stop: help chemistry
-            response_variable: _result
         - conditions: "{{ _topic == 'actions' }}"
           sequence:
           - variables:
@@ -2710,8 +2652,6 @@ script:
                       set_hold_temp: "°F — sets hold/eco setpoint after soak (80–104)"
                       add_supplies: "true — adds needed chemistry to supplies todo list"
                     notes: "Post-soak wrap-up. Evaluates chemistry, logs to calendar, optionally doses and covers."
-          - stop: help actions
-            response_variable: _result
         - conditions: "{{ _topic == 'models' }}"
           sequence:
           - variables:
@@ -2727,19 +2667,15 @@ script:
                 preset_keys: "{{ _preset_lib.keys() | list }}"
                 presets: "{{ _preset_lib }}"
                 note: "Presets in spa_presets/*.yaml, !included into engine at load time. Add a file + wire in step 0, then reload scripts."
-          - stop: help models
-            response_variable: _result
 
         default:
         - variables:
             _result:
               error: unknown_topic
               valid_topics: [index, entities, chemistry, actions, models]
-        - stop: help unknown
-          response_variable: _result
 
     # ── CONSUMABLES ──────────────────────────────────────────────────────────────
-    - if: "{{ _mode == 'consumables' }}"
+    - if: "{{ _result is not defined and _mode == 'consumables' }}"
       then:
       - variables:
           _cons_action:  "{{ _action_raw | lower | trim if _action_raw != '' else 'status' }}"
@@ -2759,8 +2695,6 @@ script:
               mode: consumables
               result: not_provisioned
               note: "Run mode=consumables action=provision model_preset=caldera_utopia_florence_2024 first."
-        - stop: spa consumables not provisioned
-          response_variable: _result
 
       # ── action=provision ────────────────────────────────────────────────────
       - if: "{{ _cons_action == 'provision' }}"
@@ -2777,8 +2711,6 @@ script:
               _result: >-
                 {{ {'mode': 'consumables', 'action': 'provision', 'result': 'error',
                     'note': 'model_preset required. Available: ' ~ (_preset_lib.keys() | list | join(', '))} }}
-          - stop: spa consumables provision no preset
-            response_variable: _result
 
         - if: "{{ _gc_parts and not _cons_force }}"
           then:
@@ -2787,8 +2719,6 @@ script:
                 {{ {'mode': 'consumables', 'action': 'provision', 'result': 'already_provisioned',
                     'catalog': _gc,
                     'note': 'Already provisioned. Pass force=true to re-provision. Stock preserved.'} }}
-          - stop: spa consumables provision already done
-            response_variable: _result
 
         # Step 1: Find/create Grocy storage location for spa area
         - variables:
@@ -2957,8 +2887,6 @@ script:
                   'failures': _prov_failures,
                   'catalog': _prov_catalog,
                   'note': 'Catalog created. One spare seeded per part. Log extra stock: action=log_purchased part=<key> amount=<n>.'} }}
-        - stop: spa consumables provision complete
-          response_variable: _result
 
       # ── shared stock check (status + add_to_shopping) ──────────────────────
       - if: "{{ _cons_action in ['status', 'add_to_shopping'] }}"
@@ -3064,8 +2992,6 @@ script:
                     'added': _shop_adds,
                     'shopping_list_id': (_shop_adds | map(attribute='list_id') | list | first | default(1)),
                     'consumables': _consumables_report.get('parts', [])} }}
-          - stop: spa consumables add_to_shopping done
-            response_variable: _result
 
         - variables:
             _result: >-
@@ -3075,8 +3001,6 @@ script:
                   'consumables': _consumables_report.get('parts', []),
                   'shopping_actions': _consumables_report.get('shopping_actions', []),
                   'note': 'action=add_to_shopping queues all out/low items. action=provision to set up from scratch.'} }}
-        - stop: spa consumables status
-          response_variable: _result
 
       # ── action=log_replaced ─────────────────────────────────────────────────
       - if: "{{ _cons_action == 'log_replaced' }}"
@@ -3087,8 +3011,6 @@ script:
               _result: >-
                 {{ {'mode': 'consumables', 'action': 'log_replaced', 'result': 'error',
                     'note': 'part= required. Valid keys: ' ~ (_cons_catalog.keys() | list | join(', '))} }}
-          - stop: spa consumables log_replaced part required
-            response_variable: _result
         - variables:
             _lr_part: "{{ _cons_catalog[_cons_part] }}"
         - if: "{{ _lr_part.get('chore_id') is not none }}"
@@ -3123,8 +3045,6 @@ script:
                   'sku': _lr_part.get('sku'),
                   'chore_executed': _lr_part.get('chore_id') is not none,
                   'note': 'Installed unit consumed from slot. Next spare opened and moved to install location.'} }}
-        - stop: spa consumables log_replaced done
-          response_variable: _result
 
       # ── action=log_purchased ────────────────────────────────────────────────
       - if: "{{ _cons_action == 'log_purchased' }}"
@@ -3135,8 +3055,6 @@ script:
               _result: >-
                 {{ {'mode': 'consumables', 'action': 'log_purchased', 'result': 'error',
                     'note': 'part= required. Valid keys: ' ~ (_cons_catalog.keys() | list | join(', '))} }}
-          - stop: spa consumables log_purchased part required
-            response_variable: _result
         - variables:
             _lp_part: "{{ _cons_catalog[_cons_part] }}"
         - if: "{{ _lp_part.get('unit_id') is none }}"
@@ -3169,21 +3087,39 @@ script:
                   'sku': _lp_part.get('sku'),
                   'amount': _cons_amount,
                   'stored_at': _lp_part.get('storage_location_id')} }}
-        - stop: spa consumables log_purchased done
-          response_variable: _result
 
       # ── unknown action fallback ─────────────────────────────────────────────
       - variables:
           _result: >-
             {{ {'mode': 'consumables', 'result': 'error',
                 'note': 'Unknown action: ' ~ _cons_action ~ '. Valid: status, add_to_shopping, log_replaced, log_purchased, provision.'} }}
-      - stop: spa consumables unknown action
-        response_variable: _result
 
     # ── DEFAULT ───────────────────────────────────────────────────────────────
+    - if: "{{ _result is not defined }}"
+      then:
+      - variables:
+          _result: >-
+            {{ {"error": "unknown_mode", "mode": _mode,
+                "valid_modes": ["status","scene","discover","setup","lights","jets","audio","temperature","cover","chemistry","log","consumables","help"]} }}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # SINGLE EXIT — envelope() wrap
+    # ═══════════════════════════════════════════════════════════════════════
     - variables:
-        _result: >-
-          {{ {"error": "unknown_mode", "mode": _mode,
-              "valid_modes": ["status","scene","discover","setup","lights","jets","audio","temperature","cover","chemistry","log","consumables","help"]} }}
-    - stop: unknown mode
-      response_variable: _result
+        _envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (_result is mapping and (
+              _result.get('status') in ['error', 'denied'] or
+              _result.get('result') == 'error' or
+              'error' in _result
+            )) else 'success',
+            mode=_mode,
+            result=_result,
+            tool='zen_dojotools_spamaster',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+    - stop: spa_manager response
+      response_variable: _envelope

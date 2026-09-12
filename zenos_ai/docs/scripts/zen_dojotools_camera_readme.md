@@ -152,6 +152,8 @@ caller_token: ""
 
 Writes a `_alert_policy` drawer to the camera's cache entry. Defines how motion events from this camera are classified and where they route. Readable via `info`.
 
+Requires the `camera_alert_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md).
+
 ```yaml
 zen_dojotools_camera:
   mode: set_alert_policy

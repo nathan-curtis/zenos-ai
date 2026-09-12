@@ -80,14 +80,13 @@ script:
   zen_dojotools_plant:
     alias: "Zen DojoTools Plant"
     description: >
-      Physical plant + energy manager (v5.8.0). Electric: whole-home live watts, utility billing, grid carbon,
-      circuit breakdown, and — if a solar/battery panel is tagged — a nested solar block (PV production, battery
-      power/SOC, grid import/export, grid-connected status; absent entirely for households with no panel tagged).
-      Water: usage + billing. Gas: live sensor or graceful N/A. Utility registry from RM cabinet.
-      mode=overview: top-line all utilities. mode=electric: full electrical. mode=water/gas/mechanical/thermal/circuits: subsystem detail.
-      mode=managed [managed_labels=csv]: universal managed-machine display — all machines provisioned via provision_bom, grouped by ha_labels root label. Returns products[], chores[], stock summary, schema_warnings[]{type,message,next_call}, and top-level advisory[] with exact fix commands. Resolves area via product location → Grocy location homeassistant_area userfield (not product userfield). Chores globally deduped alphabetically — each chore claimed by first machine. Plant is READ-ONLY: never sets labels or locations. Fix schema issues via zen_dojotools_inventory. Call mode=help for quickstart, howto, and managed_guidance.
-      mode=validate: slot resolution report. mode=label_suggest integration=<slug>: scan a specific integration's entities (e.g. span_panel, emporia_vue, zwave_js) and suggest zen_plant_*/main_panel/sub_panel/consumed_energy/leak_sensor/auto_shutoff labels by device_class + name-pattern, preview by default, confirm_action=true to apply. mode=ignore/unignore: suppress/restore entities from discovery.
-      mode=leak_auto_shutoff_enable [leak_auto_shutoff_enabled=bool]: house-wide gate for automatic leak response. Omit the field to READ the current on/off state. When ON, a real leak (any zen_plant_leak_sensor-labeled entity going wet) closes every zen_plant_auto_shutoff-labeled valve immediately, no asking. When OFF (default), a real leak instead asks live — two separate questions: close the valve now?, and separately, turn this auto-response on for future leaks? Use this mode to check whether it's currently on, or to flip it directly instead of waiting for a real leak to trigger the live offer.
+      Household utilities + physical plant: electric (incl. solar/battery if
+      tagged), water, gas, mechanical/thermal equipment, circuit breakdown,
+      and Grocy-provisioned managed-machine status (chores/stock/parts).
+      Use for utility/equipment status or "what needs attention on X
+      machine" — domain controls (thermostat setpoints, etc.) belong to
+      their owner tools. Mostly read-only; label_suggest/ignore/unignore/
+      leak_auto_shutoff_enable write. mode=help for the full reference.
     mode: queued
     max: 3
 
@@ -170,7 +169,7 @@ script:
                     tool='zen_dojotools_plant',
                     display_name='Physical Plant',
                     tier='dojotools',
-                    version='5.10.0',
+                    version='5.11.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['zen_plant_leak_sensor', 'zen_plant_auto_shutoff', 'main_panel', 'sub_panel', 'consumed_energy', 'water_usage', 'utility_main', 'breaker_gfci', 'breaker_afci', 'surge_suppression', 'zen_plant_generator', 'zen_plant_battery', 'zen_plant_solar'],
@@ -183,7 +182,9 @@ script:
                     mcp_exposed=true,
 
                     caller_token=caller_token | default('')
-                ) | from_json }}
+                ) | from_json | combine({'certs_required': [
+                    {'cert': 'plant_auto_shutoff_config_edit', 'level': 1, 'modes': ['leak_auto_shutoff_enable (enable only)']}
+                ]}) }}
           - stop: tool_manifest
             response_variable: result
       # ── SETUP ─────────────────────────────────────────────────────────────
@@ -201,6 +202,40 @@ script:
         then:
           - variables:
               _lae_written: "{{ leak_auto_shutoff_enabled is defined and leak_auto_shutoff_enabled not in [none, ''] }}"
+
+          # ── Cert-gate — plant_auto_shutoff_config_edit (2026-09-10, #10390
+          # plant.yaml rollout). Only gates turning THIS ON -- that's the
+          # risk-increasing direction, letting the agent self-authorize
+          # skipping the live-ack that zen_plant_leak_watch otherwise asks
+          # for every real leak. Turning it off is safe (reverts to
+          # always-ask) and stays ungated. ──
+          - if: "{{ _lae_written and (leak_auto_shutoff_enabled | bool) }}"
+            then:
+              - action: script.zen_dojotools_identity
+                response_variable: _lae_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: plant_auto_shutoff_config_edit
+                  required_cert_level: 1
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _lae_cert_policy: "{{ _lae_id_raw.get('policy_status', 'blocked') if _lae_id_raw is mapping else 'blocked' }}"
+                  _lae_cert_authorized: "{{ _lae_id_raw.get('authorized', false) if _lae_id_raw is mapping else false }}"
+                  _lae_cert_level: "{{ _lae_id_raw.get('cert_level', 0) if _lae_id_raw is mapping else 0 }}"
+                  _lae_cert_block_reason: "{{ _lae_id_raw.get('block_reason', '') if _lae_id_raw is mapping else '' }}"
+              - if: "{{ _lae_cert_policy != 'allowed' or not _lae_cert_authorized }}"
+                then:
+                  - variables:
+                      _lae_cd_raw: >-
+                        {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                        {{ OS.cert_denial(_lae_cert_policy, _lae_cert_authorized, _lae_cert_level, 'plant_auto_shutoff_config_edit', 1, 'leak_auto_shutoff_enable', _lae_cert_block_reason) -}}
+                  - variables:
+                      result: >-
+                        {{ ((_lae_cd_raw | from_json) if _lae_cd_raw is string else _lae_cd_raw) | combine({'tool': 'zen_dojotools_plant', 'caller_token': _caller_token}) }}
+                  - stop: cert_insufficient
+                    response_variable: result
+
           - if: "{{ _lae_written }}"
             then:
               - action: script.zen_dojotools_filecabinet
@@ -804,7 +839,7 @@ script:
               caller_token: "{{ _caller_token }}"
             response_variable: _ls_resp
           - variables:
-              _ls_entities: "{{ (_ls_resp.entity_ids | default([])) if _ls_resp is mapping else [] }}"
+              _ls_entities: "{{ (_ls_resp.get('result', {}).get('entity_ids', [])) if _ls_resp is mapping else [] }}"
           - if: "{{ _ls_entities | count == 0 }}"
             then:
               - variables:

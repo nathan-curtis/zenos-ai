@@ -62,6 +62,80 @@ script:
         minihelp: 'Minihelp: actions = create, read, delete, tag, untag, update, reset, install, area_assign, area_remove. tag/untag accept target_entities and/or target_areas. area_assign requires target_entities + exactly one target_areas entry (Spook homeassistant.add_entity_to_area). area_remove requires target_entities only, clears the entity-level area override (Spook homeassistant.remove_entity_from_area) -- device area, if any, still applies afterward.'
         results_list: []
         failures_list: []
+
+    # ── Cert-gate — registry_lifecycle_control (2026-09-10, #10390
+    # labels.yaml rollout). create/delete/area_assign/area_remove are
+    # structural registry lifecycle actions -- area_assign/area_remove in
+    # particular is the SAME underlying Spook add_entity_to_area/
+    # remove_entity_from_area capability ectoplasm.yaml already gates
+    # under this cert, so leaving it open here would let a caller bypass
+    # that gate by coming through labels instead. reset wipes ALL zen_
+    # label assignments house-wide (reversible -- labels survive, only
+    # assignments cleared -- but broad blast radius), so it's gated here
+    # too PLUS a mandatory live-ack on top (no waiver), since a single
+    # self-settable confirm:true flag was its only gate before. This runs
+    # as a plain sequential step BEFORE the dispatch choose: block below
+    # (not as a competing choose branch -- choose only runs its first
+    # matching branch, so a cert-gate branch here would silently swallow
+    # the real action logic on every authorized call). tag/untag/read/
+    # install/tool_manifest stay ungated -- routine, load-bearing,
+    # constantly used internally by every other tool's setup flow. ──
+    - if: "{{ action in ['create', 'delete', 'area_assign', 'area_remove', 'reset'] }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _lbl_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: registry_lifecycle_control
+          required_cert_level: 1
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _lbl_cert_policy: "{{ _lbl_id_raw.get('policy_status', 'blocked') if _lbl_id_raw is mapping else 'blocked' }}"
+          _lbl_cert_authorized: "{{ _lbl_id_raw.get('authorized', false) if _lbl_id_raw is mapping else false }}"
+          _lbl_cert_level: "{{ _lbl_id_raw.get('cert_level', 0) if _lbl_id_raw is mapping else 0 }}"
+          _lbl_cert_block_reason: "{{ _lbl_id_raw.get('block_reason', '') if _lbl_id_raw is mapping else '' }}"
+      - if: "{{ _lbl_cert_policy != 'allowed' or not _lbl_cert_authorized }}"
+        then:
+          - variables:
+              _lbl_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_lbl_cert_policy, _lbl_cert_authorized, _lbl_cert_level, 'registry_lifecycle_control', 1, action, _lbl_cert_block_reason) -}}
+          - variables:
+              response: >-
+                {{ ((_lbl_cd_raw | from_json) if _lbl_cd_raw is string else _lbl_cd_raw) | combine({'tool': 'zen_dojotools_labels', 'caller_token': caller_token}) }}
+          - stop: cert_insufficient
+            response_variable: response
+      - if: "{{ action == 'reset' }}"
+        then:
+        - action: script.zen_dojotools_identity
+          response_variable: _lbl_reset_ack_raw
+          continue_on_error: true
+          data:
+            mode: request_live_ack
+            ack_message: >-
+              reset request: untags ALL entities from ALL zen_ labels
+              house-wide. Labels survive, only assignments are wiped, but
+              every tool that relies on label-based entity resolution will
+              see empty results until Flynn re-assigns. Approve this
+              reset? (No standing override exists for this action -- it
+              asks every time by design.)
+            caller_token: "{{ caller_token }}"
+        - variables:
+            _lbl_reset_ack_approved: "{{ _lbl_reset_ack_raw.get('approved', false) if _lbl_reset_ack_raw is mapping else false }}"
+            _lbl_reset_ack_reason: "{{ _lbl_reset_ack_raw.get('reason', 'dispatch_failed') if _lbl_reset_ack_raw is mapping else 'dispatch_failed' }}"
+        - if: "{{ not _lbl_reset_ack_approved }}"
+          then:
+          - variables:
+              response:
+                status: denied
+                action: reset
+                reason: "{{ _lbl_reset_ack_reason }}"
+                message: "reset requires a fresh live household-admin ack every time -- not granted."
+                caller_token: "{{ caller_token }}"
+          - stop: reset ack not granted
+            response_variable: response
+
     # --- tool_manifest ---
     - choose:
       - conditions:
@@ -75,7 +149,7 @@ script:
                 tool='zen_dojotools_labels',
                 display_name='Labels — HA Label CRUD',
                 tier='dojotools',
-                version='5.3.0',
+                version='5.4.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['labels'],
@@ -90,7 +164,9 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-              ) | from_json -}}
+              ) | from_json | combine({'certs_required': [
+                {'cert': 'registry_lifecycle_control', 'level': 1, 'modes': ['create', 'delete', 'area_assign', 'area_remove', 'reset']}
+              ]}) -}}
         - stop: labels tool manifest
           response_variable: result
 

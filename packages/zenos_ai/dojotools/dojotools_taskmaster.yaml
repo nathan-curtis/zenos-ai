@@ -45,12 +45,13 @@ script:
                 tool='zen_dojotools_taskmaster',
                 display_name='Taskmaster',
                 tier='dojotools',
-                version='0.3.0',
+                version='0.4.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
                 consumes=['area_id', 'label', 'person', 'company'],
                 returns=['task_evidence'],
+                modes={'help': 'help', 'setup': 'setup', 'tier_status': 'tier_status', 'task_create': 'task_create', 'task_list': 'task_list', 'task_complete': 'task_complete', 'briefing': 'briefing', 'catch_up': 'catch_up', 'almanac': 'almanac', 'stale_review': 'stale_review', 'facilities_brief': 'facilities_brief', 'register': 'register', 'unregister': 'unregister', 'manifest': 'tool_manifest', 'kfc_manifest': 'kfc_manifest'},
                 icon='mdi:checkbox-marked-circle-outline',
                 color='purple',
                 stripe=3,
@@ -58,7 +59,9 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'taskmaster', 'lens_provider': true, 'lens_anchors': ['area_id', 'label', 'person', 'company'], 'lens_returns': ['task_evidence']}) }}
+            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'taskmaster', 'lens_provider': true, 'lens_anchors': ['area_id', 'label', 'person', 'company'], 'lens_returns': ['task_evidence'], 'certs_required': [
+                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['task_create']}
+            ]}) }}
       - stop: tool_manifest
         response_variable: result
 
@@ -303,6 +306,71 @@ script:
             intent: "Bulk 'skip to today' for stale recurring To Do items (dailies — meds, chores, Friday's own schedule) — the app has no server-side skip-occurrence action (confirmed: todoTask.recurrence exists on the Graph object but is read-only metadata, no endpoint acts on it, and the ms365_todo HA integration doesn't even surface it), so this rolls due_date forward to today via the same ms365_todo.update_todo path zen_dojotools_todo already uses for a normal edit. Scans every todo list tagged 'taskmaster' or 'schedule', finds items with status=needs_action and due < today. Pass items to restrict to specific titles (substring match, case-insensitive); omit for a full stale sweep. Nothing is marked complete and no recurrence pattern is touched — only due_date moves."
             optional: [items (list of title substrings to restrict the sweep — omit to catch up everything stale), dry_run (report matches only, no writes, default false)]
 
+    # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390, user-
+    # flagged correction: task_create can route a caller-supplied item/note
+    # into an external/cloud-synced or support-visible backend (Radar
+    # ticket, O365 To Do, CRM task) -- same PII-disclosure shape as
+    # mail/Teams sending, just a different destination. task_list/
+    # task_complete/briefing/etc. stay ungated -- they read or close out
+    # existing items, they don't create new external PII exposure. Runs as
+    # a plain sequential step before the dispatch choose: below, not a
+    # competing branch (same class of bug already caught once this session
+    # in labels.yaml). ──
+    - if: "{{ mode_norm == 'task_create' }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _tm_pii_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: pii_disclosure_control
+          required_cert_level: 1
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _tm_pii_cert_policy: "{{ _tm_pii_id_raw.get('policy_status', 'blocked') if _tm_pii_id_raw is mapping else 'blocked' }}"
+          _tm_pii_cert_authorized: "{{ _tm_pii_id_raw.get('authorized', false) if _tm_pii_id_raw is mapping else false }}"
+          _tm_pii_cert_level: "{{ _tm_pii_id_raw.get('cert_level', 0) if _tm_pii_id_raw is mapping else 0 }}"
+          _tm_pii_cert_block_reason: "{{ _tm_pii_id_raw.get('block_reason', '') if _tm_pii_id_raw is mapping else '' }}"
+      - if: "{{ _tm_pii_cert_policy != 'allowed' or not _tm_pii_cert_authorized }}"
+        then:
+          - variables:
+              _tm_pii_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_tm_pii_cert_policy, _tm_pii_cert_authorized, _tm_pii_cert_level, 'pii_disclosure_control', 1, 'task_create', _tm_pii_cert_block_reason) -}}
+          - variables:
+              final_response: >-
+                {{ ((_tm_pii_cd_raw | from_json) if _tm_pii_cd_raw is string else _tm_pii_cd_raw) | combine({'tool': 'zen_dojotools_taskmaster', 'caller_token': caller_token}) }}
+          - stop: cert_insufficient
+            response_variable: final_response
+
+    # ── Shared tier-detection (2026-09-11, #10401) — tier_status, task_create,
+    # and task_list each carried a byte-identical copy of this 3-manifest
+    # fetch + _tm_*_ok flag computation. Same script file, so no separate
+    # helper script or macro needed (macros can't fire service calls anyway)
+    # -- just hoisted to run once here, before dispatch, guarded to the three
+    # modes that actually need it. ──
+    - if: "{{ mode_norm in ['tier_status', 'task_create', 'task_list'] }}"
+      then:
+      - action: script.zen_dojotools_servicedesk
+        response_variable: _tm_radar_mf
+        continue_on_error: true
+        data:
+          mode: tool_manifest
+      - action: script.zen_dojotools_inventory
+        response_variable: _tm_inv_mf
+        continue_on_error: true
+        data:
+          mode: tool_manifest
+      - action: script.zen_dojotools_rolodex
+        response_variable: _tm_crm_mf
+        continue_on_error: true
+        data:
+          mode: tool_manifest
+      - variables:
+          _tm_radar_ok: "{{ _tm_radar_mf is mapping and _tm_radar_mf.get('health', {}).get('configured', false) }}"
+          _tm_inv_ok: "{{ _tm_inv_mf is mapping and _tm_inv_mf.get('health', {}).get('configured', false) }}"
+          _tm_crm_ok: "{{ _tm_crm_mf is mapping and _tm_crm_mf.get('health', {}).get('configured', false) }}"
+
     - choose:
 
       # ── help ──────────────────────────────────────────────────────────────
@@ -414,25 +482,7 @@ script:
         - condition: template
           value_template: "{{ mode_norm == 'tier_status' }}"
         sequence:
-        - action: script.zen_dojotools_servicedesk
-          response_variable: _tm_radar_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - action: script.zen_dojotools_inventory
-          response_variable: _tm_inv_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - action: script.zen_dojotools_rolodex
-          response_variable: _tm_crm_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
         - variables:
-            _tm_radar_ok: "{{ _tm_radar_mf is mapping and _tm_radar_mf.get('health', {}).get('configured', false) }}"
-            _tm_inv_ok: "{{ _tm_inv_mf is mapping and _tm_inv_mf.get('health', {}).get('configured', false) }}"
-            _tm_crm_ok: "{{ _tm_crm_mf is mapping and _tm_crm_mf.get('health', {}).get('configured', false) }}"
             final_response:
               status: success
               radar: "{{ _tm_radar_ok }}"
@@ -457,25 +507,6 @@ script:
                 caller_token: "{{ caller_token }}"
           - stop: task_create missing item
             response_variable: final_response
-        - action: script.zen_dojotools_servicedesk
-          response_variable: _tm_radar_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - action: script.zen_dojotools_inventory
-          response_variable: _tm_inv_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - action: script.zen_dojotools_rolodex
-          response_variable: _tm_crm_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - variables:
-            _tm_radar_ok: "{{ _tm_radar_mf is mapping and _tm_radar_mf.get('health', {}).get('configured', false) }}"
-            _tm_inv_ok: "{{ _tm_inv_mf is mapping and _tm_inv_mf.get('health', {}).get('configured', false) }}"
-            _tm_crm_ok: "{{ _tm_crm_mf is mapping and _tm_crm_mf.get('health', {}).get('configured', false) }}"
         - choose:
           # Shape wins over tier, most specific signal first: an explicit
           # contact/company UUID means the caller has already decided this
@@ -685,25 +716,6 @@ script:
         - condition: template
           value_template: "{{ mode_norm == 'task_list' }}"
         sequence:
-        - action: script.zen_dojotools_servicedesk
-          response_variable: _tm_radar_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - action: script.zen_dojotools_inventory
-          response_variable: _tm_inv_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - action: script.zen_dojotools_rolodex
-          response_variable: _tm_crm_mf
-          continue_on_error: true
-          data:
-            mode: tool_manifest
-        - variables:
-            _tm_radar_ok: "{{ _tm_radar_mf is mapping and _tm_radar_mf.get('health', {}).get('configured', false) }}"
-            _tm_inv_ok: "{{ _tm_inv_mf is mapping and _tm_inv_mf.get('health', {}).get('configured', false) }}"
-            _tm_crm_ok: "{{ _tm_crm_mf is mapping and _tm_crm_mf.get('health', {}).get('configured', false) }}"
         - variables:
             _tm_overview: "{{ _area == '' and _contact_id == '' and _company_id == '' }}"
         # ── targeted-by-area reads ──────────────────────────────────────────

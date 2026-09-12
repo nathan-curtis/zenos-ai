@@ -211,4 +211,5 @@ and the system activates. No architectural changes required — the plumbing is 
 - `docs/scripts/zen_dojotools_identity_readme.md` — identity tool reference, `request_live_ack`/`cert_list`
 - `docs/scripts/zen_dojotools_profile_readme.md` — `cert_grant`/`cert_revoke` gating
 - `docs/scripts/zen_dojotools_locks_readme.md` — identity-gate pattern applied to lock actuation
+- `docs/scripts/zen_dojotools_display_readme.md` — identity-gate pattern applied to display casting (cert-only, no live-ack tier)
 - `sensor.zen_prompt_health` — prompt integrity sensor

@@ -31,7 +31,7 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 | `almanac` | On-demand "what does today look like" — meal plan (`zen_dojotools_kitchen mode=run case=mealplan_today`), appointments (`zen_dojotools_rolodex mode=appointments_list`), plus a meal/appointment collision flag. Informational only, never blocking. |
 | `stale_review` | Filters `briefing`'s own scoring to urgency ≥ 2, sorted highest-first. Suppresses Radar tickets triaged `radar_rank_backlog` regardless of raw priority — those are intentionally deprioritized, not stale in the "forgotten" sense. |
 | `facilities_brief` | Building-super/housekeeping-lead view. Reads live kata cabinet entries for physical-plant components directly (`energy_manager`, `water_manager`, `hot_tub_manager`, `garage_freezer_thermal_model`, `dishwasher_manager`, `laundry_manager`) — no re-query — surfaces only urgency ≥ 2. Plus open Radar tickets tagged to a physical area and the house-wide chore backlog. |
-| `task_create` | Create a task. Routes to the best available backend per the priority chain above. |
+| `task_create` | Create a task. Routes to the best available backend per the priority chain above. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `task_list` | List tasks across whichever backends are configured. The data `briefing` and `stale_review` build on. |
 | `task_complete` | Mark a task complete on whichever backend it lives on. |
 | `tier_status` | Reports which backends (Radar/Inventory/CRM) are actually configured right now, via each backend's own `tool_manifest`. |

@@ -2195,10 +2195,11 @@ script:
                         _sw_pm_msg: >-
                           {%- set name = _sw_pv.get('name', _sw_pk) -%}
                           {%- if _sw_stock_amt > 0 -%}
-                            {{ name }} is worn ({{ _sw_wear_val }}{{ _sw_wear_unit }} left). Spare on hand — run
-                            consumables action=log_replaced part={{ _sw_pk }} to install.
+                            {{ name }} has {{ _sw_wear_val }}{{ _sw_wear_unit }} left. A spare is already on hand —
+                            swap it in, then just tell me it's replaced and I'll log it.
                           {%- else -%}
-                            {{ name }} is worn ({{ _sw_wear_val }}{{ _sw_wear_unit }} left) and out of stock. Added to shopping list.
+                            {{ name }} has {{ _sw_wear_val }}{{ _sw_wear_unit }} left and there's no spare in stock —
+                            added it to the shopping list.
                           {%- endif -%}
                     - action: script.zen_dojotools_postman
                       data:
@@ -2217,13 +2218,50 @@ script:
                             mode: chores_execute
                             chore_id: "{{ _sw_pv.chore_id }}"
                           response_variable: _sw_chore_raw
+
+              # Dock health — label-driven (autovac_dock_signal), same scan-all
+              # pass as wear. sensor domain = enum fault (device_class enum,
+              # 'ok' means no fault); binary_sensor domain = device_class
+              # problem (on means fault). Deliberately excludes connectivity-
+              # class attachment sensors (mop/water-box attached) -- those go
+              # off between normal owner-driven maintenance too, no reliable
+              # "wrong" state to alert on without false-positiving constantly.
+              - variables:
+                  _cw_dock_faults: >-
+                    {%- set ns = namespace(faults=[]) -%}
+                    {%- for ent in label_entities('autovac_dock_signal') -%}
+                      {%- set dom = ent.split('.')[0] -%}
+                      {%- set st = states(ent) -%}
+                      {%- if dom == 'sensor' and st not in ['ok', 'unknown', 'unavailable'] -%}
+                        {%- set ns.faults = ns.faults + [{'entity_id': ent, 'name': state_attr(ent, 'friendly_name') | default(ent, true), 'value': st}] -%}
+                      {%- elif dom == 'binary_sensor' and st == 'on' -%}
+                        {%- set ns.faults = ns.faults + [{'entity_id': ent, 'name': state_attr(ent, 'friendly_name') | default(ent, true), 'value': 'problem detected'}] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.faults }}
+              - repeat:
+                  for_each: "{{ _cw_dock_faults }}"
+                  sequence:
+                    - action: script.zen_dojotools_postman
+                      data:
+                        mode: resolve_and_dispatch
+                        owner: autovac
+                        tag: "dock_fault_{{ repeat.item.entity_id }}"
+                        title: "{{ _cw_robot | title }} — Dock Needs Attention"
+                        message: >-
+                          {{ repeat.item.name }}: {{ repeat.item.value | replace('_', ' ') }}.
+                        urgency: 5
+                        channel_hint: push
+                      response_variable: _cw_dock_pm_raw
+
               - variables:
                   response: >-
                     {{ {
-                      'mode': 'check_wear', 'result': 'ok' if _cw_scan_worn | length == 0 else 'alerts',
+                      'mode': 'check_wear', 'result': 'ok' if (_cw_scan_worn | length == 0 and _cw_dock_faults | length == 0) else 'alerts',
                       'caller_token': _caller_token,
                       'alerts': _cw_scan_worn | length,
-                      'worn_parts': _cw_scan_worn | map(attribute='key') | list
+                      'worn_parts': _cw_scan_worn | map(attribute='key') | list,
+                      'dock_faults': _cw_dock_faults
                     } }}
               - stop: "autovac check_wear scan-all done"
                 response_variable: response
@@ -2288,10 +2326,11 @@ script:
                   _cw_pm_msg: >-
                     {%- set name = _cw_part.get('name', _cw_part_key) -%}
                     {%- if _cw_stock_amt > 0 -%}
-                      {{ name }} is worn ({{ _cw_wear_val }}{{ _cw_wear_unit }} left). Spare on hand — run
-                      consumables action=log_replaced part={{ _cw_part_key }} to install.
+                      {{ name }} has {{ _cw_wear_val }}{{ _cw_wear_unit }} left. A spare is already on hand —
+                      swap it in, then just tell me it's replaced and I'll log it.
                     {%- else -%}
-                      {{ name }} is worn ({{ _cw_wear_val }}{{ _cw_wear_unit }} left) and out of stock. Added to shopping list.
+                      {{ name }} has {{ _cw_wear_val }}{{ _cw_wear_unit }} left and there's no spare in stock —
+                      added it to the shopping list.
                     {%- endif -%}
               - action: script.zen_dojotools_postman
                 data:
@@ -3635,7 +3674,7 @@ script:
                     {%- set last = rv.get('last_cleaned', '') -%}
                     {%- set days_since = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) if last != '' else -1 -%}
                     {%- set db = rv.get('days_between', 7) -%}
-                    {%- set due = days_since >= db if days_since >= 0 else false -%}
+                    {%- set due = (days_since >= db and rv.get('enabled', true)) if days_since >= 0 else false -%}
                     {%- set queued = rv.get('queued', false) -%}
                     {%- set skip_next = rv.get('skip_next', false) -%}
                     {%- set req_ready = rv.get('requires_ready', rv.get('require_confirmation', false)) -%}
@@ -3811,6 +3850,15 @@ script:
       - if: "{{ _mode == 'tool_manifest' }}"
         then:
         - variables:
+            _autovac_health: >-
+              {%- set _vac_ok = _vac_ent != '' -%}
+              {%- set _drawer_ok = _av_rooms | length > 0 or _av_system | length > 0 -%}
+              {%- set _configured = _vac_ok and _drawer_ok -%}
+              {%- set _notes = [] -%}
+              {%- if not _vac_ok -%}{%- set _notes = _notes + ['no vacuum entity resolved (label:autovac)'] -%}{%- endif -%}
+              {%- if not _drawer_ok -%}{%- set _notes = _notes + ['autovac cabinet drawer has no rooms/system config'] -%}{%- endif -%}
+              {{ {'configured': _configured, 'status': 'ok' if _configured else 'degraded', 'notes': _notes} }}
+        - variables:
             result: >-
               {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
               {%- set _tm = MF.tool_manifest(
@@ -3818,7 +3866,7 @@ script:
                 display_name='Autovac',
                 tier='dojotools',
                 version='5.4.0',
-                health='sensor.zen_autovac_health',
+                health=_autovac_health,
                 required_labels=['autovac'],
                 optional_labels=['autovac_battery','autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room','autovac_wear','autovac_calendar','autovac_error_detail'],
                 consumes=['household_cabinet:autovac'],
@@ -3879,7 +3927,7 @@ script:
               {%- set last = rv.get('last_cleaned', '') -%}
               {%- set days_since = ((now().timestamp() - as_timestamp(last ~ 'T00:00:00', 0)) / 86400) | int(0) -%}
               {%- set db = rv.get('days_between', 7) -%}
-              {%- set due = days_since >= db -%}
+              {%- set due = (days_since >= db) and enabled -%}
               {%- set queued = rv.get('queued', false) -%}
               {%- set skip_next = rv.get('skip_next', false) -%}
               {%- set req_ready = rv.get('requires_ready', rv.get('require_confirmation', false)) -%}
@@ -4222,7 +4270,7 @@ automation:
                         area: "{{ repeat.item }}"
                       response_variable: _dk_current
                       continue_on_error: true
-                    - if: "{{ _dk_current is mapping and _dk_current.get('current_value', '') == 'Cleaning' }}"
+                    - if: "{{ _dk_current is mapping and _dk_current.get('result', {}).get('current_value', '') == 'Cleaning' }}"
                       then:
                         - action: script.zen_dojotools_room_manager
                           data:
@@ -4418,7 +4466,7 @@ automation:
                             area: "{{ repeat.item }}"
                           response_variable: _rc_current
                           continue_on_error: true
-                        - if: "{{ _rc_current is mapping and _rc_current.get('current_value', '') == 'Cleaning' }}"
+                        - if: "{{ _rc_current is mapping and _rc_current.get('result', {}).get('current_value', '') == 'Cleaning' }}"
                           then:
                             - action: script.zen_dojotools_room_manager
                               data:

@@ -39,6 +39,7 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 | `disarm` | Disarm the panel. **Identity-gated, higher tier than arm** — requires `security_control` **plus a fresh live household-admin ack every call**, no standing-cert shortcut. Disarming is the highest-risk direction; arming down is cert-only. |
 | `get_policy` | Read the `_alert_policy` from the household cabinet security_manager drawer. |
 | `set_alert_policy` | Merge `policy_patch` JSON into the alert policy. Partial update — existing keys not in patch are preserved. Same `security_control` cert gate as `arm`. |
+| `help` | Full action reference — all actions, fields, and cert tiers in one call. Not gated. |
 
 **Self-published cert:** `security_control` is declared in this tool's own `tool_manifest.certs_required` — that's what makes it a valid `cert_grant` target under the live-calculated catalog (`zen_dojotools_manifest mode=cert_audit`; see `zen_dojotools_profile_readme.md`'s certification section). Grant via `zen_dojotools_persona_editor mode=cert_grant cert_component=security_control`.
 

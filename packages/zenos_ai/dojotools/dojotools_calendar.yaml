@@ -34,7 +34,7 @@ script:
                 tool='zen_dojotools_calendar',
                 display_name='Calendar',
                 tier='dojotools',
-                version='1.0.0',
+                version='1.1.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['calendar'],
@@ -47,7 +47,9 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-            ) | from_json }}
+            ) | from_json | combine({'certs_required': [
+                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['create', 'update']}
+            ]}) }}
       - stop: tool_manifest
         response_variable: result
     # --------------------------------------------------------------
@@ -103,6 +105,42 @@ script:
           \ }}\n{% elif calendar_entity_exists %}\n  [ \"{{ calendar_entity_resolved\
           \ }}\" ]\n{% else %}\n  []\n{% endif %}"
         target_is_multi: '{{ (label_target_entities | count > 0) }}'
+
+    # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390, user-
+    # flagged correction: create/update can write caller-supplied event
+    # details (title/description/attendees) into an external/cloud-synced
+    # calendar -- same PII-disclosure shape as mail/Teams sending. delete/
+    # read stay ungated -- deleting or reading doesn't create new external
+    # exposure. Sequential pre-check before both dispatch choose: blocks
+    # below, not a competing branch (same class of bug already caught once
+    # in labels.yaml this session). ──
+    - if: "{{ action_type in ['create', 'update'] }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _cal_pii_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: pii_disclosure_control
+          required_cert_level: 1
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _cal_pii_cert_policy: "{{ _cal_pii_id_raw.get('policy_status', 'blocked') if _cal_pii_id_raw is mapping else 'blocked' }}"
+          _cal_pii_cert_authorized: "{{ _cal_pii_id_raw.get('authorized', false) if _cal_pii_id_raw is mapping else false }}"
+          _cal_pii_cert_level: "{{ _cal_pii_id_raw.get('cert_level', 0) if _cal_pii_id_raw is mapping else 0 }}"
+          _cal_pii_cert_block_reason: "{{ _cal_pii_id_raw.get('block_reason', '') if _cal_pii_id_raw is mapping else '' }}"
+      - if: "{{ _cal_pii_cert_policy != 'allowed' or not _cal_pii_cert_authorized }}"
+        then:
+          - variables:
+              _cal_pii_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_cal_pii_cert_policy, _cal_pii_cert_authorized, _cal_pii_cert_level, 'pii_disclosure_control', 1, action_type, _cal_pii_cert_block_reason) -}}
+          - variables:
+              final_response: >-
+                {{ ((_cal_pii_cd_raw | from_json) if _cal_pii_cd_raw is string else _cal_pii_cd_raw) | combine({'tool': 'zen_dojotools_calendar', 'caller_token': caller_token}) }}
+          - stop: cert_insufficient
+            response_variable: final_response
+
     - choose:
       - conditions:
         - condition: template
@@ -292,7 +330,7 @@ script:
             timeout: 30
           response_variable: inspect_response
         - variables:
-            final_response: '{{ inspect_response }}'
+            final_response: "{{ inspect_response.get('result', {}) if inspect_response is mapping else inspect_response }}"
         - variables:
             final_response: "{{ final_response | combine({'caller_token': caller_token | default('')}) if final_response is mapping else final_response }}"
         - stop:

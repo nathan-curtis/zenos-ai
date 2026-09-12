@@ -41,7 +41,7 @@ MCP-exposed. All modes accessed via `mode=run case={case_name}`.
 Internal only. Raw REST dispatcher (GET, POST, PUT, DELETE). Never call directly.
 
 ### zen_stack_firefly
-Lens Bus provider. Not MCP-exposed. Handles `label`, `person`, and `transaction` anchors. See [lens_bus.md](lens_bus.md).
+Lens Bus provider. Not MCP-exposed. Handles `label`, `person`, and `transaction` anchors. See [lens_bus.md](../library/lens_bus.md).
 
 ---
 
