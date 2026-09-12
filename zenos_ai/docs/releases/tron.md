@@ -100,7 +100,7 @@ A real production incident exposed a gap `mode: queued`'s FIFO design never acco
 
 A new tool, not a port of anything that existed before: `zen_dojotools_display` lets an agent cast a Lovelace view to any display in the house — a TV, a wall-mounted tablet, anything that isn't already running the HA Companion app (Companion devices route through Postman instead, which already does this better for them). Supported cast channels for this release: Google Cast, Fire TV/Android TV (via ADB into Silk), and LG webOS. If your setup has a display surface that isn't one of these three, we want to hear about it — additional channels are realistic to add if there's real demand.
 
-One piece is still catching up to the rest: the shared `room-state/display` Lovelace view every cast target renders is currently a hand-built `.storage` dashboard, not something that ships as config — you build it yourself the first time you set this up. A YAML-mode version of that dashboard is planned as a near-term follow-up, so it can be versioned and shared like everything else in this system instead of hand-recreated per install.
+Coming soon: a real YAML-mode dashboard for the shared display view every cast target renders, so it ships and updates like everything else in this system instead of being something you build by hand.
 
 ## Cross-Domain State Convergence (Room Manager / Media / Lighting / Display)
 

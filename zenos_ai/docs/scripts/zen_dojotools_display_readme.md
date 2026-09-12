@@ -26,12 +26,7 @@ your household has a display surface that isn't one of these three, let us know 
 channels are realistic to add if there's real demand, and Friday's Party's own thread is the
 place to ask.
 
-**The shared display view itself is still hand-built, not shipped as config.** `room-state/display`
-(the one Lovelace view every cast target renders) is currently a raw `.storage` UI-mode dashboard,
-built by hand per install — there's no YAML-mode version to drop in yet. That's coming: a
-YAML-mode dashboard for this view is planned as a follow-up, so installs can version and share it
-like any other config instead of hand-recreating it. Until then, expect to build this view
-yourself the first time you set Display Surface up.
+**Coming soon:** a real YAML-mode dashboard for the shared display view every cast target renders, so it ships and updates like everything else in this system.
 
 ---
 
