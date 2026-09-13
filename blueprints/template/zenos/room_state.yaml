@@ -1084,9 +1084,8 @@ variables:
   # Single source of truth for the cascade result, referenced by both the
   # sensor's own state below AND the REFLEX emitter action further down —
   # computed exactly once per trigger, never duplicated. CASCADE ORDER:
-  # emergency > paused > asleep > (any other manual override) > engaged >
-  # child-engaged > hold (wasp/entertaining/guest) > occupied (or hold) >
-  # vacant.
+  # emergency > paused > (any other manual override) > asleep > hold
+  # (wasp/entertaining/guest) > engaged > occupied (or hold) > vacant.
   #
   # Everything except Paused and Emergency yields to Asleep -- a room
   # manually set to Automation or Cleaning must still register a real
@@ -1096,27 +1095,57 @@ variables:
   # outright over everything, including Paused -- life-safety visibility
   # is never suppressible by a human/agent pick.
   #
-  # Below the override tier, two DIFFERENT priority rules govern
-  # asleep/engaged, easy to conflate — kept deliberately separate here:
-  # (1) Direct Asleep beats direct Engaged IN THE SAME ROOM — someone
-  # asleep should never register as "engaged" because a device nearby is
-  # still active. (2) This room's own direct Asleep beats ANY
-  # child-cascaded activity regardless (using the ensuite mid-sleep must
-  # never wake the parent). Child engaged only surfaces AFTER own asleep
-  # is checked and found false.
+  # Below the override tier: hold outranks engaged, on purpose — a room
+  # latched by wasp/entertaining/guest/presence hold stays 'hold' even
+  # with a genuinely active device (TV, etc.) in it; hold is a deliberate
+  # sustain state, engaged is just "something's active right now" and
+  # doesn't get to override a real hold latch. (Correction 2026-09-06 —
+  # this cascade previously checked engaged BEFORE hold, which is wrong
+  # and had been reverted back to that wrong order more than once; the
+  # correct order, top to bottom below override, is asleep > hold >
+  # engaged > occupied > vacant. Do not swap this back.)
+  # Direct Asleep beats direct Engaged AND beats hold IN THE SAME ROOM —
+  # someone asleep should never register as "engaged" or merely "held"
+  # because a device nearby is still active. This room's own direct
+  # Asleep also beats ANY child-cascaded activity regardless (using the
+  # ensuite mid-sleep must never wake the parent). Child engaged only
+  # surfaces AFTER own asleep is checked and found false.
+  #
+  # OVERRIDE PRIORITY + SELF-RELEASE ("user intent rules all"): a manual
+  # override sits ahead of asleep_hi in the cascade below (not just Paused,
+  # every override value) so pressing e.g. Vacant wins immediately even
+  # while genuine live asleep evidence (a bed sensor) is active -- asleep
+  # legitimately outranks ordinary evidence like motion, so an override
+  # can't rely on out-ranking it by tier alone, it has to bypass evidence
+  # comparison entirely.
+  #
+  # Release therefore doesn't compare evidence either: once an override is
+  # set, no live evidence should be consulted for release purposes at all,
+  # full stop -- that's the whole point of an override. It just needs to
+  # fire on the next REAL trigger, of any kind -- the override's job is to
+  # force exactly one decision right now and then get out of the way
+  # completely the moment anything else happens. The only trigger that
+  # must NOT count is the zen_room_refresh event this room's own
+  # room_control_set write fires immediately after setting the override --
+  # excluding that one keeps the override from erasing itself in the same
+  # instant it's set.
+  _override_release_now: >-
+    {{ _manual_override_hi
+       and not (trigger.platform == 'event' and trigger.event.event_type == 'zen_room_refresh')
+       and trigger.platform != 'homeassistant' }}
   _resolved_state: >-
     {%- if _emergency_hi or _child_emergency_hi -%}
       emergency
-    {%- elif (_manual_override_hi and _manual_override_value == 'paused') or _child_paused_hi -%}
+    {%- elif _child_paused_hi -%}
       paused
+    {%- elif _manual_override_hi and not _override_release_now -%}
+      {{ _manual_override_value }}
     {%- elif _asleep_hi -%}
       asleep
-    {%- elif _manual_override_hi -%}
-      {{ _manual_override_value }}
-    {%- elif _engaged_hi -%}
-      engaged
     {%- elif _wasp_flag_hi or _entertaining_hold_hi or _guest_hold_hi or _presence_hold_hi or _hold_hi -%}
       hold
+    {%- elif _engaged_hi -%}
+      engaged
     {%- elif _occ_hi or _child_occ_hi -%}
       occupied
     {%- else -%}
@@ -1181,6 +1210,24 @@ action:
             # the deliberate override on the very next render). Empty
             # string when this transition wasn't override-driven.
             manual_override: "{{ _manual_override_value if _manual_override_hi else '' }}"
+  # ── OVERRIDE SELF-RELEASE — persist the release _override_release_now
+  # already applied for THIS render's display. Without this, the cabinet's
+  # room_control key would still read the old override value on the VERY
+  # NEXT render (nothing else clears it), and since _live_tier_no_override
+  # would have already caught up to match by then, _override_release_now
+  # would evaluate false again next time -- the stale override would
+  # silently reassert itself one render later. Clearing the cabinet key
+  # here makes the release durable, not just a one-render flicker. ──
+  - if: "{{ _override_release_now and _hh_cab != '' }}"
+    then:
+      - action: script.zen_dojotools_filecabinet
+        data:
+          action_type: upsert
+          volume_entity_id: "{{ _hh_cab }}"
+          path: "room_control/{{ room }}"
+          title: "{{ room }}"
+          value: "{{ 'Auto' | tojson }}"
+        continue_on_error: true
 
 sensor:
   - name: !input friendly_name

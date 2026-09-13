@@ -573,7 +573,40 @@ script:
                             # Hold guard only blocks the 'occupied' arm --
                             # asleep/engaged both outrank hold in the
                             # cascade and should still win through.
-                            - if: "{{ (_desired == 'asleep') or (_desired == 'engaged' and _current_class != 'asleep') or (_desired == 'occupied' and _current_class in ['', 'occupied'] and not _room_currently_held) }}"
+                            #
+                            # Dropped the redundant "_current_class in
+                            # ['', 'occupied']" clause from the occupied
+                            # branch. _desired is
+                            # already computed in strict asleep > engaged >
+                            # occupied priority above (line ~561): by the
+                            # time _desired actually equals 'occupied', that
+                            # computation itself already proves neither
+                            # asleep nor engaged is currently truthy. The
+                            # extra _current_class check was redundant with
+                            # that priority order and had exactly one
+                            # practical effect: once a room's cabinet-stored
+                            # class drifted to 'asleep' or 'engaged' for any
+                            # reason (a cancelled timer, a missed expiry
+                            # handoff, anything), 'occupied' could NEVER
+                            # overwrite it again through this live reconcile
+                            # path -- only a future timer-expiry event could
+                            # fix it, and if that timer never fired again
+                            # (e.g. cancelled by the wasp-hold path below and
+                            # never restarted), the room was permanently
+                            # stuck with no sustain grace for Occupied,
+                            # confirmed live on Master Bedroom (motion
+                            # active, sensor genuinely Occupied, but reverted
+                            # to Vacant instantly on every motion drop since
+                            # the shared timer could never re-arm). The real
+                            # "is this room still actually asleep" guard
+                            # already exists separately via
+                            # _room_currently_held (reads the room's live
+                            # state sensor directly, not the stale cabinet
+                            # field) -- that's the guard that actually
+                            # matters, kept below. A room is only ever in
+                            # one state at a time; the class should always
+                            # be free to follow. ──
+                            - if: "{{ (_desired == 'asleep') or (_desired == 'engaged' and _current_class != 'asleep') or (_desired == 'occupied' and not _room_currently_held) }}"
                               then:
                                 - variables:
                                     _nap_latch: "{{ (label_entities('nap_latch') | intersect(_room_ents) | list | first) | default('', true) }}"
@@ -1598,6 +1631,34 @@ automation:
                             data:
                               duration: >-
                                 {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
+                      # Missing 'asleep' -> 'occupied' handoff: Room Timer
+                      # Expiry only handled the engaged->occupied handoff
+                      # above; asleep had no matching branch, so once a
+                      # room's class went 'asleep' it stayed there FOREVER
+                      # once that sustain timer finished -- the cascade
+                      # guard elsewhere only lets 'occupied' re-arm the
+                      # shared clock when current class is '' or 'occupied',
+                      # so a room stuck at 'asleep' permanently lost its
+                      # Occupied decay grace: state reverted to Vacant the
+                      # instant live motion cleared, with no sustain window
+                      # at all. Mirrors the engaged branch above exactly. ──
+                      - if: "{{ _expired_class == 'asleep' and _rtc_hh != '' and not _room_currently_held }}"
+                        then:
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              action_type: update
+                              volume_entity_id: "{{ _rtc_hh }}"
+                              key: room_topology
+                              value: >-
+                                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                                {%- set t = CABS.cabinet_drawer_value_mounted(_rtc_hh, 'room_topology') | from_json -%}
+                                {{ (t | combine({_room: (t.get(_room, {}) | combine({'room_timer_class': 'occupied'}))})) | tojson }}
+                          - action: timer.start
+                            target:
+                              entity_id: "{{ trigger.event.data.entity_id }}"
+                            data:
+                              duration: >-
+                                {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
                       # WASP FLAG CLEAR — RETIRED (2026-08-08 rev 2, "no need
                       # for a bool - just an attr on the sensor"). No dispatch
                       # action needed — room_state.yaml's trigger_entities
@@ -1742,47 +1803,6 @@ automation:
           # just releases plainly, no restart -- matches how the cascade
           # already treats asleep as never needing evidence-decay babysitting
           # the way occupied/engaged do.
-          - conditions: >-
-              {{ trigger.id == 'reflex_event'
-                 and trigger.event.data.get('event', {}).get('kind') == 'room_state_changed'
-                 and trigger.event.data.get('event', {}).get('metadata', {}).get('previous_state') == 'hold'
-                 and trigger.event.data.get('event', {}).get('metadata', {}).get('manual_override', '') == '' }}
-            sequence:
-              # This transition-level
-              # condition guards against a manual Vacant clear re-arming
-              # the room and immediately re-latching wasp with no real
-              # motion. manual_override is only
-              # non-empty when a human/agent explicitly picked the
-              # resulting state via room_control_set (room_state.yaml's
-              # own _manual_override_value at the exact render that
-              # produced this event). A manual Vacant clear IS a real
-              # hold->vacant transition, same event shape as a genuine
-              # wasp-door-open release -- but restarting the timer here
-              # directly undoes the explicit command: _occupied_timer_holding
-              # goes true again next render, and a still-sealed room
-              # re-latches wasp instantly. Only restart for releases the
-              # room resolved on its own (door opened, hold tier expired),
-              # never for a release a human/agent just deliberately typed in.
-              - variables:
-                  _hr_room: "{{ trigger.event.data.get('event', {}).get('metadata', {}).get('room', '') }}"
-                  _hr_hh: "{{ (label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first) | default('', true) }}"
-              - if: "{{ _hr_room != '' and _hr_hh != '' }}"
-                then:
-                  - variables:
-                      _hr_class: >-
-                        {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                        {%- set t = CABS.cabinet_drawer_value_mounted(_hr_hh, 'room_topology') | from_json -%}
-                        {{ t.get(_hr_room, {}).get('room_timer_class', '') if t is mapping else '' }}
-                  - if: "{{ _hr_class != '' and _hr_class != 'asleep' }}"
-                    then:
-                      - action: script.zen_dojotools_room_manager
-                        data:
-                          mode: room_signal_fire
-                          area: "{{ _hr_room }}"
-                          signal_class: "{{ _hr_class }}"
-                        continue_on_error: true
-            alias: Hold released — restart the suspended occupied/engaged timer
-
           - conditions: "{{ trigger.id == 'reflex_event' and trigger.event.data.get('event', {}).get('kind') == 'room_state_changed' }}"
             sequence:
               - variables:
@@ -1790,6 +1810,55 @@ automation:
                   _room: "{{ _meta.get('room', '') }}"
                   _state: "{{ _meta.get('state', '') }}"
                   _mode_slug: "{{ _meta.get('home_mode', '') | lower | replace(' ', '_') | replace('-', '_') }}"
+              # HOLD RELEASED restart and REFLEX Stage 2 (below) used to be
+              # two SIBLING entries in this same choose:, mutually exclusive
+              # by HA's first-match semantics. Any transition matching the
+              # narrower hold-release condition (previous_state=='hold', no
+              # manual_override) ran ONLY the timer restart and never
+              # reached the cabinet mirror or the scene resolver at all.
+              # These are genuinely independent concerns (one restarts a
+              # DIFFERENT class's suspended timer, the other mirrors +
+              # resolves THIS transition's own scene) that both need to run
+              # on every real room_state_changed event -- folded the
+              # hold-release check into an inline `if` here instead of a
+              # competing choose branch, so it can never eat the rest again.
+              - if: >-
+                  {{ _meta.get('previous_state') == 'hold'
+                     and _meta.get('manual_override', '') == '' }}
+                then:
+                  # This transition-level
+                  # condition guards against a manual Vacant clear re-arming
+                  # the room and immediately re-latching wasp with no real
+                  # motion. manual_override is only
+                  # non-empty when a human/agent explicitly picked the
+                  # resulting state via room_control_set (room_state.yaml's
+                  # own _manual_override_value at the exact render that
+                  # produced this event). A manual Vacant clear IS a real
+                  # hold->vacant transition, same event shape as a genuine
+                  # wasp-door-open release -- but restarting the timer here
+                  # directly undoes the explicit command: _occupied_timer_holding
+                  # goes true again next render, and a still-sealed room
+                  # re-latches wasp instantly. Only restart for releases the
+                  # room resolved on its own (door opened, hold tier expired),
+                  # never for a release a human/agent just deliberately typed in.
+                  - variables:
+                      _hr_room: "{{ _room }}"
+                      _hr_hh: "{{ (label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first) | default('', true) }}"
+                  - if: "{{ _hr_room != '' and _hr_hh != '' }}"
+                    then:
+                      - variables:
+                          _hr_class: >-
+                            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                            {%- set t = CABS.cabinet_drawer_value_mounted(_hr_hh, 'room_topology') | from_json -%}
+                            {{ t.get(_hr_room, {}).get('room_timer_class', '') if t is mapping else '' }}
+                      - if: "{{ _hr_class != '' and _hr_class != 'asleep' }}"
+                        then:
+                          - action: script.zen_dojotools_room_manager
+                            data:
+                              mode: room_signal_fire
+                              area: "{{ _hr_room }}"
+                              signal_class: "{{ _hr_class }}"
+                            continue_on_error: true
               # -- ROOM OCCUPANCY CABINET MIRROR — native per-room sensors
               # (History/dashboards/direct state triggers) stay
               # authoritative; this mirrors sensor.<room>_state into the
