@@ -114,7 +114,7 @@ script:
 
     sequence:
 
-      # 2026-08-18: manifest fan-out (mode=label_audit/cert_audit) calls every
+      # Manifest fan-out (mode=label_audit/cert_audit) calls every
       # zen_admintools_* script with bare {mode: tool_manifest} -- no other
       # fields. This script had no tool_manifest branch, so 'tool_manifest'
       # silently normalized to 'status' below and ran a real sequence of
@@ -122,10 +122,10 @@ script:
       # wrong behavior, though not the crash (that was kitchen_sync's
       # unguarded `limit`). Same short-circuit shape as every other
       # admintools script, checked before the mode normalization.
-      - if: "{{- mode | default('') == 'tool_manifest' -}}"
+      - if: "{{- _deploy_result is not defined and mode | default('') == 'tool_manifest' -}}"
         then:
           - variables:
-              result: >-
+              _deploy_result: >-
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{- MF.tool_manifest(
                   tool='zen_admintools_kungfu_loader',
@@ -144,8 +144,6 @@ script:
                   color='deep-orange',
                   caller_token=caller_token | default('')
                 ) | from_json -}}
-          - stop: kungfu_loader tool manifest
-            response_variable: result
 
       # ── Normalize inputs ──────────────────────────────────────────────────
       - variables:
@@ -159,8 +157,8 @@ script:
           _ship_zen_system:        "{{- _factory_run or (ship_zen_system | default(false) | bool) -}}"
           _ship_camera_heartbeat:  "{{- (ship_camera_heartbeat | default(false) | bool) -}}"
 
-      # ── Status mode: read drawers, build report, stop (no-op) ────────────
-      - if: "{{- _mode == 'status' -}}"
+      # ── Status mode: read drawers, build report, fall through (no-op) ────
+      - if: "{{- _deploy_result is not defined and _mode == 'status' -}}"
         then:
           - variables:
               _dojo_cab: "{{ states('sensor.zen_dojo_cabinet_resolved') }}"
@@ -347,7 +345,7 @@ script:
               _sm_dep: "{{ (_sm_ver | trim) != 'not_deployed' }}"
               _ch_dep: "{{ (_ch_ver | trim) != 'not_deployed' }}"
           - variables:
-              _kfc_status:
+              _deploy_result:
                 status: success
                 mode: status
                 caller_token: "{{ caller_token }}"
@@ -401,11 +399,9 @@ script:
                     version_match: "{{ (_ch_ver | trim) == '1.0.0' }}"
                     last_summary_at: "{{ _ch_last | trim }}"
                     factory: false
-          - stop: "KungFu Loader — status (no-op)"
-            response_variable: _kfc_status
 
       # ── Deploy: zen_system ───────────────────────────────────────────────
-      - if: "{{- _ship_zen_system -}}"
+      - if: "{{- _deploy_result is not defined and _ship_zen_system -}}"
         then:
           - alias: 'Ship KFC: zen_system (Scribe — new_thought)'
             action: script.zen_dojotools_scribe
@@ -478,7 +474,7 @@ script:
             response_variable: _zen_system_kfc_result
 
       # ── Deploy: camera_heartbeat ─────────────────────────────────────────
-      - if: "{{- _ship_camera_heartbeat -}}"
+      - if: "{{- _deploy_result is not defined and _ship_camera_heartbeat -}}"
         then:
           - alias: 'Ship KFC: camera_heartbeat (Scribe — new_thought)'
             action: script.zen_dojotools_scribe
@@ -611,86 +607,88 @@ script:
             response_variable: _ninja_config_result
 
       # ── Emit deploy/factory result ───────────────────────────────────────
-      - variables:
-          _shipped: >-
-            {%- set ns = namespace(s=[]) -%}
-            {%- if _ship_zen_system -%}{%- set ns.s = ns.s + ['zen_system'] -%}{%- endif -%}
-            {%- if _ship_camera_heartbeat -%}{%- set ns.s = ns.s + ['camera_heartbeat'] -%}{%- endif -%}
-            {{ ns.s }}
-          _readback: "{{- readback | default(false) | bool -}}"
-          _dojo_cab_v: "{{ states('sensor.zen_dojo_cabinet_resolved') }}"
-
-      # ── Verification: read back each shipped KFC and confirm landing ─────
-      - if: "{{- 'zen_system' in _shipped -}}"
+      - if: "{{- _deploy_result is not defined -}}"
         then:
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          data:
-            action_type: read
-            volume_entity_id: ["{{ _dojo_cab_v }}"]
-            key: zen_system
-          response_variable: _vr_zen_system
-      - if: "{{- 'camera_heartbeat' in _shipped -}}"
-        then:
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          data:
-            action_type: read
-            volume_entity_id: ["{{ _dojo_cab_v }}"]
-            key: camera_heartbeat
-          response_variable: _vr_camera_heartbeat
+        - variables:
+            _shipped: >-
+              {%- set ns = namespace(s=[]) -%}
+              {%- if _ship_zen_system -%}{%- set ns.s = ns.s + ['zen_system'] -%}{%- endif -%}
+              {%- if _ship_camera_heartbeat -%}{%- set ns.s = ns.s + ['camera_heartbeat'] -%}{%- endif -%}
+              {{ ns.s }}
+            _readback: "{{- readback | default(false) | bool -}}"
+            _dojo_cab_v: "{{ states('sensor.zen_dojo_cabinet_resolved') }}"
 
-      # ── Build per-KFC status from readback ────────────────────────────
-      - variables:
-          _kfc_detail: >-
-            {%- set ns = namespace(d={}) -%}
-            {%- set kfc_list = [
-              ('zen_system',       _vr_zen_system       | default({})),
-              ('camera_heartbeat', _vr_camera_heartbeat | default({}))
-            ] -%}
-            {%- for kname, vr in kfc_list if kname in _shipped -%}
-              {%- set ok = vr is mapping and vr.get('status') == 'success' -%}
-              {%- set val = vr.get('value', none) if vr is mapping else none -%}
-              {%- set val = (val | from_json(none)) if val is string and val | trim not in ['', 'null'] else val -%}
-              {%- set has_kfc = val is mapping and (val.get('component_key') is not none or val.get('index_call') is not none) -%}
-              {%- set kstatus = 'deployed' if has_kfc else ('stub_only' if (ok and val is not none) else 'failed') -%}
-              {%- set updated = vr.get('updated_at', '') | default('', true) if vr is mapping else '' -%}
-              {%- set entry = {'status': kstatus, 'drawer_key': kname, 'updated_at': updated} -%}
-              {%- if _readback and val is mapping -%}
-                {%- set entry = entry | combine({'readback': (val | tojson)[:200]}) -%}
-              {%- endif -%}
-              {%- set ns.d = ns.d | combine({kname: entry}) -%}
-            {%- endfor -%}
-            {{ ns.d }}
-      - variables:
-          _deployed_count: >-
-            {%- set cnt = namespace(n=0) -%}
-            {%- if _kfc_detail is mapping -%}
-              {%- for v in _kfc_detail.values() if v is mapping and v.get('status') == 'deployed' -%}
-                {%- set cnt.n = cnt.n + 1 -%}
+        # ── Verification: read back each shipped KFC and confirm landing ─────
+        - if: "{{- 'zen_system' in _shipped -}}"
+          then:
+          - action: script.zen_dojotools_filecabinet
+            continue_on_error: true
+            data:
+              action_type: read
+              volume_entity_id: ["{{ _dojo_cab_v }}"]
+              key: zen_system
+            response_variable: _vr_zen_system
+        - if: "{{- 'camera_heartbeat' in _shipped -}}"
+          then:
+          - action: script.zen_dojotools_filecabinet
+            continue_on_error: true
+            data:
+              action_type: read
+              volume_entity_id: ["{{ _dojo_cab_v }}"]
+              key: camera_heartbeat
+            response_variable: _vr_camera_heartbeat
+
+        # ── Build per-KFC status from readback ────────────────────────────
+        - variables:
+            _kfc_detail: >-
+              {%- set ns = namespace(d={}) -%}
+              {%- set kfc_list = [
+                ('zen_system',       _vr_zen_system       | default({})),
+                ('camera_heartbeat', _vr_camera_heartbeat | default({}))
+              ] -%}
+              {%- for kname, vr in kfc_list if kname in _shipped -%}
+                {%- set ok = vr is mapping and vr.get('status') == 'success' -%}
+                {%- set val = vr.get('value', none) if vr is mapping else none -%}
+                {%- set val = (val | from_json(none)) if val is string and val | trim not in ['', 'null'] else val -%}
+                {%- set has_kfc = val is mapping and (val.get('component_key') is not none or val.get('index_call') is not none) -%}
+                {%- set kstatus = 'deployed' if has_kfc else ('stub_only' if (ok and val is not none) else 'failed') -%}
+                {%- set updated = vr.get('updated_at', '') | default('', true) if vr is mapping else '' -%}
+                {%- set entry = {'status': kstatus, 'drawer_key': kname, 'updated_at': updated} -%}
+                {%- if _readback and val is mapping -%}
+                  {%- set entry = entry | combine({'readback': (val | tojson)[:200]}) -%}
+                {%- endif -%}
+                {%- set ns.d = ns.d | combine({kname: entry}) -%}
               {%- endfor -%}
-            {%- endif -%}
-            {{ cnt.n }}
-          _shipped_count: "{{ _shipped | length }}"
-      - variables:
-          _rollup_status: >-
-            {%- set sc = _shipped_count | int -%}
-            {%- set dc = _deployed_count | int -%}
-            {%- if sc == 0 -%}success
-            {%- elif dc == sc -%}success
-            {%- elif dc == 0 -%}error
-            {%- else -%}partial{%- endif -%}
+              {{ ns.d }}
+        - variables:
+            _deployed_count: >-
+              {%- set cnt = namespace(n=0) -%}
+              {%- if _kfc_detail is mapping -%}
+                {%- for v in _kfc_detail.values() if v is mapping and v.get('status') == 'deployed' -%}
+                  {%- set cnt.n = cnt.n + 1 -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {{ cnt.n }}
+            _shipped_count: "{{ _shipped | length }}"
+        - variables:
+            _rollup_status: >-
+              {%- set sc = _shipped_count | int -%}
+              {%- set dc = _deployed_count | int -%}
+              {%- if sc == 0 -%}success
+              {%- elif dc == sc -%}success
+              {%- elif dc == 0 -%}error
+              {%- else -%}partial{%- endif -%}
 
-      - variables:
-          _deploy_result:
-            status: "{{ _rollup_status }}"
-            mode: "{{ _mode }}"
-            caller_token: "{{ caller_token }}"
-            shipped: "{{ _shipped }}"
-            count: "{{ _shipped_count }}"
-            deployed_count: "{{ _deployed_count }}"
-            factory_seeds: "{{ _mode == 'factory' }}"
-            kfc_detail: "{{ _kfc_detail }}"
+        - variables:
+            _deploy_result:
+              status: "{{ _rollup_status }}"
+              mode: "{{ _mode }}"
+              caller_token: "{{ caller_token }}"
+              shipped: "{{ _shipped }}"
+              count: "{{ _shipped_count }}"
+              deployed_count: "{{ _deployed_count }}"
+              factory_seeds: "{{ _mode == 'factory' }}"
+              kfc_detail: "{{ _kfc_detail }}"
       - stop: "KungFu Loader — complete"
         response_variable: _deploy_result
 

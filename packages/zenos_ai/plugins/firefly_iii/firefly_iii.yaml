@@ -675,6 +675,7 @@ script:
       questions. Read: account_balance, transactions_list/search, budget_overview, bills_list,
       category_spend, net_worth_snapshot. Write (confirm=true): transaction_add/update,
       transfer, budget_limit_set, piggybank_update, account_create/update.
+      account_delete (irreversible — requires finance_account_control cert level 2 + confirm=true).
       Depreciation codex: full asset lifecycle — create, schedule (straight-line/DDB/
       declining_balance), post periods, business-use splits, book_value, replacement_plan,
       dispose, dispose_with_post, reconcile_firefly, warranty_check, attachments,
@@ -700,6 +701,7 @@ script:
             - account_balance
             - account_create
             - account_update
+            - account_delete
             - transactions_list
             - transactions_search
             - folio_report
@@ -1017,7 +1019,9 @@ script:
                     'lens_registry_keys': ['firefly_iii']
                 },
                 caller_token=caller_token | default('')
-            ) | from_json }}
+            ) | from_json | combine({'certs_required': [
+                {'cert': 'finance_account_control', 'level': 2, 'modes': ['account_delete']}
+            ]}) }}
       - stop: tool_manifest
         response_variable: result
     - variables:
@@ -1154,6 +1158,11 @@ script:
             needs: [item OR item_id]
             optional: [notes, account_type, currency_code, confirm]
             example: "{'mode':'run','case':'account_update','item_id':'12','notes':'Primary checking','confirm':true}"
+          account_delete:
+            intent: Permanently delete an account and every transaction on it. Irreversible, no undo in Firefly. Requires finance_account_control cert level 2 (via resolve_caller_identity) AND confirm=true. Preview (confirm omitted/false) shows the real account name/type/balance before you commit.
+            needs: [item OR item_id, confirm]
+            optional: []
+            example: "{'mode':'run','case':'account_delete','item_id':'13','confirm':true}"
           bill_status:
             intent: Single bill detail — paid history, next due, matched transactions, variance.
             needs: [item OR item_id]
@@ -3110,6 +3119,146 @@ script:
                 account_id: '{{ _au_id }}'
                 updated: '{{ _au_put_resp["status"] | default("error") == "success" if _au_put_resp is mapping else false }}'
                 applied_overrides: '{{ _au_overrides }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: account_delete ──────────────────────────────────────────────────
+    # Deliberately omitted for a long time (irreversible, no undo in Firefly)
+    # -- now cert-gated instead, same taxonomy as dojotools_ectoplasm.yaml's
+    # orphan_cleanup (registry_purge, level 2): finance_account_control,
+    # level 2. Mirrors account_update's name-resolution shape, ends in DELETE
+    # instead of PUT. Preview (confirm=false) shows the real account -- name,
+    # type, current balance -- so an operator isn't confirming blind.
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ mode_norm == "run" and case_norm == "account_delete" }}'
+        sequence:
+        - variables:
+            _ad_confirm: '{{ confirm | default(false) | bool }}'
+        - action: script.zen_dojotools_identity
+          response_variable: _ad_id_raw
+          continue_on_error: true
+          data:
+            mode: resolve_caller_identity
+            required_cert: finance_account_control
+            required_cert_level: 2
+            caller_token: '{{ caller_token | default("") }}'
+        - variables:
+            _ad_cert_policy: '{{ _ad_id_raw.get("policy_status", "blocked") if _ad_id_raw is mapping else "blocked" }}'
+            _ad_cert_authorized: '{{ _ad_id_raw.get("authorized", false) if _ad_id_raw is mapping else false }}'
+            _ad_cert_level: '{{ _ad_id_raw.get("cert_level", 0) if _ad_id_raw is mapping else 0 }}'
+            _ad_cert_block_reason: '{{ _ad_id_raw.get("block_reason", "") if _ad_id_raw is mapping else "" }}'
+            _ad_cert_denied: '{{ _ad_cert_policy != "allowed" or not _ad_cert_authorized }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ad_cert_denied }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_delete
+                  result: null
+                  error: >-
+                    {%- if _ad_cert_policy != "allowed" -%}
+                      {{ _ad_cert_block_reason | trim if (_ad_cert_block_reason | trim) != "" else "resolve_caller_identity did not return an allowed identity -- action denied." }}
+                    {%- else -%}
+                      finance_account_control cert level {{ _ad_cert_level }} is below the required minimum (2) for account_delete.
+                    {%- endif -%}
+            - stop: return
+              response_variable: final_response
+        - variables:
+            _ad_id: '{{ item_id_norm if item_id_norm != "" else none }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ad_id is none and item_norm != "" }}'
+            sequence:
+            - action: script.zen_root_firefly
+              response_variable: _ad_ac_resp
+              continue_on_error: true
+              data:
+                action_type: get
+                endpoint: 'autocomplete/accounts?query={{ item_norm | urlencode }}&limit=20'
+            - variables:
+                _ad_id: >-
+                  {%- set c = (_ad_ac_resp['result']['content'] | default([])) if (_ad_ac_resp is mapping and 'result' in _ad_ac_resp and _ad_ac_resp['result'] is mapping) else [] -%}
+                  {%- set c = c if c is sequence and c is not string and c is not mapping else [] -%}
+                  {%- set _ns = namespace(found=none) -%}
+                  {%- for a in c -%}{%- if (a.get('name','') | lower) == (item_norm | lower) -%}{%- set _ns.found = a.get('id') | string -%}{%- endif -%}{%- endfor -%}
+                  {{ _ns.found }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _ad_id is none }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_delete
+                  result: null
+                  error: 'No account found matching "{{ item_norm }}". Provide item_id for safety.'
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_root_firefly
+          response_variable: _ad_get_resp
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'accounts/{{ _ad_id }}'
+        - variables:
+            _ad_current: >-
+              {%- if _ad_get_resp is mapping and 'result' in _ad_get_resp and _ad_get_resp['result'] is mapping -%}
+                {%- set d = _ad_get_resp['result']['content'] | default({}) -%}
+                {%- if d is mapping -%}
+                  {%- set obj = d.get('data', {}) -%}
+                  {{ obj.get('attributes', {}) if obj is mapping else {} }}
+                {%- else -%}{{ {} }}{%- endif -%}
+              {%- else -%}{{ {} }}{%- endif -%}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not _ad_confirm }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: confirm_required
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: account_delete
+                  result:
+                    account_id: '{{ _ad_id }}'
+                    name: '{{ _ad_current.get("name", "") if _ad_current is mapping else "" }}'
+                    type: '{{ _ad_current.get("type", "") if _ad_current is mapping else "" }}'
+                    current_balance: '{{ _ad_current.get("current_balance", "") if _ad_current is mapping else "" }}'
+                  message: >-
+                    Irreversible -- Firefly has no undo for account deletion, and any
+                    transactions on this account are deleted with it. Review the
+                    account above. Set confirm=true to permanently delete account
+                    {{ _ad_id }}.
+            - stop: return
+              response_variable: final_response
+        - action: script.zen_root_firefly
+          response_variable: _ad_del_resp
+          continue_on_error: true
+          data:
+            action_type: delete
+            endpoint: 'accounts/{{ _ad_id }}'
+        - variables:
+            final_response:
+              status: '{{ _ad_del_resp["status"] | default("error") if _ad_del_resp is mapping else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: account_delete
+              result:
+                account_id: '{{ _ad_id }}'
+                deleted: '{{ _ad_del_resp["status"] | default("error") == "success" if _ad_del_resp is mapping else false }}'
+                name: '{{ _ad_current.get("name", "") if _ad_current is mapping else "" }}'
         - stop: return
           response_variable: final_response
 
