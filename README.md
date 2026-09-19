@@ -14,7 +14,7 @@ And a few things that are.
 
 > **2026.9.1 is a bugfix-only patch** — backported from work done on 2026.10.0 'Tron', deliberately isolated to fixes that don't depend on any of Tron's still-in-development feature work (admission certification, the administrative plane, Activity Orchestration, Z-Wave diagnostics, Display Surface). See the [2026.9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch) for the full fix list.
 
-> **Public beta: 2026.10.0 'Tron'** (`feat/2026.10.0`) — admission-gated ZenOS tool access, an administrative certification plane above normal participation, a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations system-wide, and Room Manager/Media/Lighting/Display convergence on one shared vocabulary. A few cert-gate audits (FileCabinet, Manifest/Scribe/Postman) are still open and tracked before this becomes a release candidate — see [Release Notes — Tron](zenos_ai/docs/releases/tron.md) for the full picture, including what's still in progress.
+> **Public beta: 2026.10.0 'Tron'** (`feat/2026.10.0`) — admission-gated ZenOS tool access, an administrative certification plane above normal participation, a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations system-wide, and Room Manager/Media/Lighting/Display convergence on one shared vocabulary. A few cert-gate audits (FileCabinet, Manifest/Scribe) are still open and tracked before this becomes a release candidate — see [Release Notes — Tron](zenos_ai/docs/releases/tron.md) for the full picture, including what's still in progress.
 
 > **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely, nothing depends on or drags in the new security machinery — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
 
@@ -46,25 +46,7 @@ And a few things that are.
 
 ---
 
-**2026.8.1 'Chef'** — *Yes, chef.* Taskmaster becomes a real cross-backend expediter. Kitchen (Mealie) gains a full fulfillment/costing layer plus an executive-chef batch. SP1 identity gate backs the first real gated capability, Portainer container control. Twenty CRM and Room Manager share one guest/occupant-prefs lookup.
-
-Release notes: [Chef](zenos_ai/docs/releases/chef.md) | [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md) | [Clue](zenos_ai/docs/releases/clue.md)
-
----
-
-**2026.7.0 'Neo'** (+ 7.1 patch) — *I know Kung Fu.* CabCeption (FileCabinet v6.2.0 nested drawer trees), Tapestry drawer composer, Tool Manifest self-description, Lens Bus `stack=` routing, five new plugins (Zammad, Wiki.js, Paperless-NGX, Twenty CRM, Firefly III), ZenZork. 7.1 patch adds KF5 self-registering tools, Firefly III depreciation/COGS codex tier, Grocy fixes, Battery Notes Lens Bus provider.
-
-Release notes: [Neo (incl. 7.1 patch)](zenos_ai/docs/releases/neo.md)
-
-**What's in 2026.7.2:** Two custom template files missed in the 7.1 audit — `zenos_cabinets.jinja` gains `cabinet_drawer_value_mounted` (follows FC write-mount pointers to expansion cabinets), and `zenos_manifest.jinja` gains `preferred_state`/`stripe`/`prerequisites`/`impact`/`fallback` params.
-
-→ [Patch Notes — 2026.7.2](zenos_ai/docs/releases/neo.md#202672-patch)
-
----
-
-**2026.6.0 'Clue'** — shipped 2026-06-01. Room Manager spatial topology, AutoVac, Grocy v5.2.0, Identity presence block, Plant Manager v5.4.0, Media Manager, Security Manager, ZenShade, Cortex v42 'The Answer'.
-
-Release notes: [Clue](zenos_ai/docs/releases/clue.md) | [Fry's Grandpa](zenos_ai/docs/releases/frys_grandpa.md) | [Lights, Camera, Action](zenos_ai/docs/releases/lights_camera_action.md) | [Action Jackson 2](zenos_ai/docs/releases/action_jackson_2.md) | [Action Jackson](zenos_ai/docs/releases/action_jackson.md) | [Ectoplasm](zenos_ai/docs/releases/ectoplasm.md) | [Ready Player Two](zenos_ai/docs/releases/ready_player_two.md)
+**Earlier releases:** [Chef (2026.8.1)](zenos_ai/docs/releases/chef.md) | [Neo (2026.7.x)](zenos_ai/docs/releases/neo.md) | [Clue (2026.6.0)](zenos_ai/docs/releases/clue.md) — full writeups for those, and everything before them, live in the [Documentation Hub](zenos_ai/docs/readme.md).
 
 ---
 
