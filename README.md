@@ -10,41 +10,41 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Current Stable: 2026.9.1 'Steel Magnolia'** (patch on 2026.9.0) | **Legacy line: 2026.8.1** (patch on 2026.8.0 'Chef') | Previous: 2026.7.1 (patch on 2026.7.0 'Neo'). See [release notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch).
-
-> **2026.9.1 is a bugfix-only patch** — backported from work done on 2026.10.0 'Tron', deliberately isolated to fixes that don't depend on any of Tron's still-in-development feature work (admission certification, the administrative plane, Activity Orchestration, Z-Wave diagnostics, Display Surface). See the [2026.9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch) for the full fix list.
-
-> **Public beta: 2026.10.0 'Tron'** (`feat/2026.10.0`) — admission-gated ZenOS tool access, an administrative certification plane above normal participation, a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations system-wide, and Room Manager/Media/Lighting/Display convergence on one shared vocabulary. A few cert-gate audits (FileCabinet, Manifest/Scribe) are still open and tracked before this becomes a release candidate — see [Release Notes — Tron](zenos_ai/docs/releases/tron.md) for the full picture, including what's still in progress.
-
-> **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely, nothing depends on or drags in the new security machinery — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
+**Public Beta: 2026.10.0 'Tron'** (`feat/2026.10.0`) | Current Stable: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) | Legacy line: 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/tron.md).
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-> **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way).
+> **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0 or later. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way).
 
-**What's in 2026.9.0 'Steel Magnolia':** *The duck looks calm, and the fence is exactly where it's supposed to be.*
+**What's in 2026.10.0 'Tron':** *Shore up the Grid.*
 
-**Room Manager v3** reads a room by what's actually happening in the space right now, not a clock — a real wasp-in-a-box occupancy model, opt-in `entertaining_hold`/`guest_hold`/`presence_hold`, a nighttime-gated asleep window, hold-release timer restart, a generic `trouble` attribute with native SPAN breaker confirmation, and unconditional Paused/Emergency cascade through nested rooms.
+**Admission certification** — every agent now needs a mandatory baseline ZenOS certification just to read the tool surface at all, not to administer or actuate anything. Issuance is reserved to Flynn's onboarding path; existing pre-2026.10.0 agents recertify through an onboarding-adjacent path rather than a rebuild.
 
-**Identity gates** now cover locks, exterior covers, the alarm panel, room unpause/topology edits, ZenLux, climate, ZenZork, and the spa tool — risky actuations require an explicit household certification, with the highest-risk actions asking live every time. A real deny primitive, centralized scope resolution, and a new admin-only CertAdmin tool round it out.
+**The administrative plane** — a second certification boundary above normal participation (`ZenOS Admin Certified, Level X`) gates CertAdmin, cabinet repair, and reset-class tools. Country club, not skeleton key: even the top Admin level doesn't waive a fresh live human ack on the functions that need one.
 
-**Security Manager** gets a full parity build against the legacy automation it replaces — new arm/disarm/mode-drive flags, a vacation wake-shift, and live security requests (clearing Paused, a cert grant, disarming) that never silently wait until morning to notify someone.
+**Closing the bypass routes** — a platform-wide audit went looking for gaps nobody thought to ask about and found roughly a dozen: cabinet lifecycle operations reachable with zero cert, a camera's alert routing silently redirectable, eight of thirteen Utilities scripts actuating without any gate, and a shared `pii_disclosure_control` cert now covering mail/Teams/task/todo/calendar writes so a caller can't route around one gate through a neighboring tool. New cert-taxonomy infrastructure — OID-style prefix inheritance and named cert bundles — came out of doing this at platform scale.
 
-**ZenLux** picks up Spook 5.2's adjust-only light controls and real `switch.*` control; REFLEX now fires every scene through it instead of bypassing its guards, and its rehearsal mode is fully independent of the live-fire switch in every direction.
+**The Cadillac Pass** — one shared exit per script, one canonical response envelope, cert-gating retrofitted through a shared macro, rolled out tool-by-tool across the platform (Scribe, Ectoplasm, SpaMaster, Media Manager, Library, Zenzork, Index/Query/Inspect, Room Manager, and this beta cycle's full dojotools sweep plus Postman's own cert-gate audit closing).
 
-**AutoVac** gets full Roborock support (battery, wear tracking, room targeting, manual-run tracking) plus a fix for automatic room election, which had silently never worked.
+**Display Surface** — net-new tool: cast a Lovelace view to any TV, wall tablet, or display that isn't already running the HA Companion app, via Google Cast, Fire TV/Android TV, or LG webOS.
 
-**ZenZork** ships its first real content chapter and a v1.8.0 follow-up — weighted loot, 16 quests, a corrected book-lore sequence, Game Genie cheat codes, a SoftDisk-style per-chapter release model, real persisted achievements, and a turn-based threat/combat system.
+**Room Manager / Media / Lighting / Display convergence** — one shared vocabulary (labels plus `room_control_manager`) instead of four systems each re-deriving "what room is this and what's it doing."
 
-**Hospitality lifecycle** gains an arrival-prep nudge and a checkout nudge with humanized local timestamps, one shared occupant-prefs lookup across Kitchen/Twenty CRM, and a fix keeping guest-stay status from reporting stale.
+A few cert-gate audits (FileCabinet, Manifest/Scribe) are still open and tracked before this becomes a release candidate.
 
-**Also in this release:** ZQ-1 flags bad query filters instead of silently returning nothing; recorder history stats stop lying about energy sensors; `sensor.home_overview` now feeds Friday's prompt real per-room state; manifest's scan modes share one audited collector; Taskmaster gains a `catch_up` mode and closes a self-sustaining alert loop between two summarizer components; Kitchen's search now finds recipes by tag; an AI persona's identity can no longer be silently reset on bootstrap; architecture docs were checked chapter-by-chapter against actual code.
-
-→ [Release Notes — Steel Magnolia](zenos_ai/docs/releases/steel_magnolia.md)
+→ [Release Notes — Tron](zenos_ai/docs/releases/tron.md)
 
 ---
+
+**Current stable: 2026.9.1 'Steel Magnolia'** (bugfix-only patch, backported from Tron work that doesn't depend on any of its still-in-development features) — Room Manager v3's wasp-in-a-box occupancy model, identity gates across locks/covers/alarm/climate/ZenLux/ZenZork/spa, a Security Manager parity build, full AutoVac Roborock support, and ZenZork's first content chapter.
+
+→ [Release Notes — Steel Magnolia](zenos_ai/docs/releases/steel_magnolia.md) ([9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch))
+
+---
+
+**2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
 
 **Earlier releases:** [Chef (2026.8.1)](zenos_ai/docs/releases/chef.md) | [Neo (2026.7.x)](zenos_ai/docs/releases/neo.md) | [Clue (2026.6.0)](zenos_ai/docs/releases/clue.md) — full writeups for those, and everything before them, live in the [Documentation Hub](zenos_ai/docs/readme.md).
 
