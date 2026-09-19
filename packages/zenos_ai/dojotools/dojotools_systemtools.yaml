@@ -346,9 +346,11 @@ script:
         - hassio/info
         - hassio/logs
 
-    # ── Single-exit architecture: every branch sets `response` and falls
-    # through; ONE stop at the true end. Sub-branches (services has_service
-    # check, get path-allowlist check) use if/else rather than early-stop.
+    # ── Single-exit architecture (2026-09-16, #10375): every branch sets
+    # `response` and falls through; ONE stop at the true end. Was 14
+    # separate stops, local var name `final`/`result` unified onto
+    # `response` throughout, sub-branches (services has_service check,
+    # get path-allowlist check) converted from early-stop to if/else.
     - if: "{{ response is not defined and (op == 'tool_manifest' or action_type | default('') == 'tool_manifest') }}"
       then:
       - variables:
@@ -713,10 +715,13 @@ script:
     - variables:
         tool: "{{ (mode | default('', true) | trim) or (tool | default('', true) | trim) }}"
         confirm: '{{ confirm_action | default(false) }}'
-    # ── Single-exit architecture: every branch across all 8 choose:
-    # clusters in this script sets `response` and falls through; ONE stop
-    # at the true bottom, wrapped in OS.envelope() for a consistent
-    # envelope across every mode.
+    # ── Single-exit architecture (2026-09-16, #10375): every branch across
+    # all 8 choose: clusters in this script sets `response` and falls
+    # through; ONE stop at the true bottom (the existing "return" exit),
+    # now also wrapped in OS.envelope() -- previously only tool_manifest
+    # and health_report had their own separate envelope-wrapped exits,
+    # every other mode returned unenveloped. local var name `result`
+    # unified onto `response` throughout.
     - choose:
       - conditions:
         - condition: template
@@ -743,7 +748,20 @@ script:
                 stripe=1,
                 impact='hard',
                 caller_token=caller_token | default('')
-              ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['zen_system']}) -}}
+              ) | from_json | combine({
+                'kfc_manifest': true,
+                'kfc_components': ['zen_system'],
+                'certs_required': [
+                  {'cert': 'zenos.system.reload_restart', 'display_name': 'Reload/Restart Control',
+                   'description': 'Supplementary to the existing confirm_action gate on ha_restart/ha_reload_all -- a standing cert layer so a compromised/confused agent cannot even attempt the call, not just get refused at the confirm step.',
+                   'max_level': 1, 'gates': ['tool=ha_restart/ha_reload_all (cert only, in addition to confirm_action)'],
+                   'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.reload_restart (or zen_dojotools_identity mode=cert_list to see current status)'},
+                  {'cert': 'zenos.system.home_config_write', 'display_name': 'Home Config Write',
+                   'description': 'Durable household-config writes: home_mode, quiet_hours, work_hours, scheduler_anchors, guest_mode, entertaining. Write path only -- reads stay open.',
+                   'max_level': 1, 'gates': ['tool=home_mode/quiet_hours/work_hours/scheduler_anchors/guest_mode/entertaining (write only, cert only)'],
+                   'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.home_config_write (or zen_dojotools_identity mode=cert_list to see current status)'}
+                ]
+              }) -}}
       # --- envelope_check: pilot diagnostic for the canonical envelope() macro ---
       - conditions:
         - condition: template
@@ -858,6 +876,51 @@ script:
               kfc: "{{ _kfc_out }}"
               count: "{{ _kfc_out | length }}"
               caller_token: "{{ caller_token | default('') }}"
+
+    # #10468: zenos.system.reload_restart cert gate. Supplementary to the
+    # confirm_action gate in the next choose: block below -- does NOT
+    # replace it. Only checked once confirm=true was already given (if
+    # confirm is false, the next block's own error fires first and this
+    # sets nothing since response gets defined there instead -- but this
+    # runs BEFORE that block, so guard on confirm here too to avoid an
+    # unnecessary identity call on an attempt that's about to be refused
+    # anyway). A standing cert layer blocks a compromised/confused agent
+    # from even attempting the call, not just getting refused at the
+    # confirm step. repair_fix/zen_log_enable intentionally NOT covered --
+    # out of scope for #10468. Deliberately a standalone if:, not a choose:
+    # branch -- nesting this inside the next choose: would consume that
+    # choose's single match even when authorized, permanently blocking the
+    # real ha_restart/ha_reload_all dispatch branches further down in it.
+    - if: "{{ response is not defined and tool in ['ha_restart', 'ha_reload_all'] and confirm }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _rr_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: zenos.system.reload_restart
+          required_cert_level: 1
+          caller_token: "{{ caller_token | default('') }}"
+      - variables:
+          _rr_authorized: "{{ _rr_id_raw.get('authorized', false) if _rr_id_raw is mapping else false }}"
+          _rr_cert_level: "{{ _rr_id_raw.get('cert_level', 0) if _rr_id_raw is mapping else 0 }}"
+          _rr_policy_status: "{{ _rr_id_raw.get('policy_status', 'blocked') if _rr_id_raw is mapping else 'blocked' }}"
+      - if: "{{ response is not defined and not _rr_authorized }}"
+        then:
+          - variables:
+              response:
+                status: error
+                error: cert_insufficient
+                message: >-
+                  zenos.system.reload_restart cert level {{ _rr_cert_level }} is
+                  below the required minimum (1) for tool={{ tool }}.
+                can_request: "{{ _rr_policy_status == 'allowed' }}"
+                request_via:
+                  tool: zen_dojotools_persona_editor
+                  mode: cert_req_grant
+                  cert_component: zenos.system.reload_restart
+                  cert_level: 1
+                caller_token: "{{ caller_token | default('') }}"
 
     - choose:
       - conditions:
@@ -1061,7 +1124,7 @@ script:
             }}"
       - conditions:
         - condition: template
-          value_template: '{{tool == ''ha_restart'' and confirm}}'
+          value_template: '{{ response is not defined and tool == ''ha_restart'' and confirm }}'
           alias: HA Restart
         sequence:
         - action: script.zen_sutra_ha_api
@@ -1142,7 +1205,7 @@ script:
       - conditions:
         - alias: Reload All
           condition: template
-          value_template: '{{ tool == ''ha_reload_all'' }}'
+          value_template: '{{ response is not defined and tool == ''ha_reload_all'' }}'
         sequence:
         - action: script.zen_sutra_ha_api
           data:
@@ -1373,7 +1436,7 @@ script:
                   'ha_reload_scripts': 'Scripts only. Config check runs first — blocked on nogo. Deferred via scheduler. Use when automations are running and you do not want to stop them.',
                   'ha_reload_automations': 'Automations only. Config check runs first — blocked on nogo. WARNING: stops all currently in-flight automation action sequences.',
                   'ha_reload_templates': 'config/custom_templates/ Jinja MACRO FILES only (e.g. zenos_cabinets.jinja). Does NOT reload template: platform entities — use ha_reload_template_entities for that. Config check runs first — blocked on nogo. Changes take effect on next render.',
-                  'ha_reload_template_entities': 'YAML template: platform entities (sensor/binary_sensor/switch/etc under a template: key in packages) — calls the core template.reload service. THIS is what you want for editing a template sensor/blueprint instantiation, not ha_reload_templates (common mix-up — ha_reload_templates silently does NOT cover these, forcing an unnecessary ha_reload_all). Config check runs first — blocked on nogo.'
+                  'ha_reload_template_entities': 'YAML template: platform entities (sensor/binary_sensor/switch/etc under a template: key in packages) — calls the core template.reload service. THIS is what you want for editing a template sensor/blueprint instantiation, not ha_reload_templates (common mix-up — confirmed live 2026-08-05 that ha_reload_templates silently does NOT cover these, forcing an unnecessary ha_reload_all). Config check runs first — blocked on nogo.'
                 },
                 'restart_required': 'auth_providers/auth_mfa_modules changes, http: block (port/SSL/CORS/trusted_proxies), recorder: block (db_url/include/exclude), adding net-new integrations never bootstrapped, logger: YAML block. Use logger.set_level service for runtime log level changes — no restart needed.',
                 'other_tools': {
@@ -1384,7 +1447,7 @@ script:
                   'ha_update_install': 'Install a pending update. Requires confirm=true + entity_id.',
                   'ha_update_skip': 'Skip a pending update. Requires confirm=true + entity_id.',
                   'ha_update_clear_skipped': 'Un-skip a skipped update. Requires confirm=true + entity_id.',
-                  'zen_log_enable': 'Enables persistent home-assistant.log (HA 2026.1+ ships journal-mode-only by default — no log file until this runs). Requires confirm=true. Also hard-requires a clean ha_config_check first (refuses on nogo) and refuses if disk is under 10% free — no override on either gate. DISRUPTIVE: triggers a real Supervisor core rebuild + restart, same class as ha_restart/ha_reload_all but with no cooldown-based undo. Works end-to-end: log file exists and zen_log_check stops returning journal_mode after this runs.',
+                  'zen_log_enable': 'Enables persistent home-assistant.log (HA 2026.1+ ships journal-mode-only by default — no log file until this runs). Requires confirm=true. Also hard-requires a clean ha_config_check first (refuses on nogo) and refuses if disk is under 10% free — no override on either gate. DISRUPTIVE: triggers a real Supervisor core rebuild + restart, same class as ha_restart/ha_reload_all but with no cooldown-based undo. Confirmed live 2026-08-08 (T) — works end-to-end, log file exists and zen_log_check stops returning journal_mode after this runs.',
                   'zen_supervisor_probe': 'Read-only. Confirms the Supervisor REST API auth path (SUPERVISOR_TOKEN via shell_command, not the ha CLI — that binary is NOT reachable from Core''s container, confirmed via zen_ha_cli_probe) is working, via GET core/info. Use to diagnose zen_log_enable failures before assuming the real command is broken.',
                   'zen_ha_cli_probe': 'Read-only. Checks whether the Supervisor ''ha'' CLI binary is reachable from Core''s container (it is not, on every install checked so far — this is WHY zen_log_enable goes through the Supervisor REST API instead of shell_command).'
                 },
@@ -2261,7 +2324,7 @@ script:
                 {%- if s.entity_id == _active -%}
                   {%- set _entry = config_entry_id(s.entity_id) -%}
                   {%- set _model = device_attr(s.entity_id, 'model_id') or device_attr(s.entity_id, 'model') -%}
-                  {# ConfigEntryState is a StrEnum in modern HA —
+                  {# 2026-08-27: ConfigEntryState is a StrEnum in modern HA —
                      stringifies lowercase ("loaded"), not "LOADED". The old
                      uppercase substring check was always false regardless of
                      actual load state. #}
@@ -2648,7 +2711,36 @@ script:
         sequence:
         - if: "{{ value | default('') | trim != '' }}"
           then:
-          - if: "{{ is_state('input_select.zen_home_mode', 'Paused') }}"
+          # #10468: zenos.system.home_config_write cert gate -- write path only.
+          - action: script.zen_dojotools_identity
+            response_variable: _hc_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.system.home_config_write
+              required_cert_level: 1
+              caller_token: "{{ caller_token | default('') }}"
+          - variables:
+              _hc_authorized: "{{ _hc_id_raw.get('authorized', false) if _hc_id_raw is mapping else false }}"
+              _hc_cert_level: "{{ _hc_id_raw.get('cert_level', 0) if _hc_id_raw is mapping else 0 }}"
+              _hc_policy_status: "{{ _hc_id_raw.get('policy_status', 'blocked') if _hc_id_raw is mapping else 'blocked' }}"
+          - if: "{{ response is not defined and not _hc_authorized }}"
+            then:
+              - variables:
+                  response:
+                    tool: "{{ tool }}"
+                    result: error
+                    error: cert_insufficient
+                    message: >-
+                      zenos.system.home_config_write cert level {{ _hc_cert_level }} is
+                      below the required minimum (1) to set {{ tool }}.
+                    can_request: "{{ _hc_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_req_grant
+                      cert_component: zenos.system.home_config_write
+                      cert_level: 1
+          - if: "{{ response is not defined and is_state('input_select.zen_home_mode', 'Paused') }}"
             then:
             - variables:
                 response:
@@ -2704,11 +2796,40 @@ script:
       - conditions:
         - alias: quiet_hours get/set
           condition: template
-          value_template: "{{ tool == 'quiet_hours' }}"
+          value_template: "{{ response is not defined and tool == 'quiet_hours' }}"
         sequence:
         - if: "{{ value | default('') | trim != '' }}"
           then:
-          - if: "{{ '/' in (value | string) }}"
+          # #10468: zenos.system.home_config_write cert gate -- write path only.
+          - action: script.zen_dojotools_identity
+            response_variable: _hc_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.system.home_config_write
+              required_cert_level: 1
+              caller_token: "{{ caller_token | default('') }}"
+          - variables:
+              _hc_authorized: "{{ _hc_id_raw.get('authorized', false) if _hc_id_raw is mapping else false }}"
+              _hc_cert_level: "{{ _hc_id_raw.get('cert_level', 0) if _hc_id_raw is mapping else 0 }}"
+              _hc_policy_status: "{{ _hc_id_raw.get('policy_status', 'blocked') if _hc_id_raw is mapping else 'blocked' }}"
+          - if: "{{ response is not defined and not _hc_authorized }}"
+            then:
+              - variables:
+                  response:
+                    tool: "{{ tool }}"
+                    result: error
+                    error: cert_insufficient
+                    message: >-
+                      zenos.system.home_config_write cert level {{ _hc_cert_level }} is
+                      below the required minimum (1) to set {{ tool }}.
+                    can_request: "{{ _hc_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_req_grant
+                      cert_component: zenos.system.home_config_write
+                      cert_level: 1
+          - if: "{{ response is not defined and '/' in (value | string) }}"
             then:
             - variables:
                 _qh_start: "{{ (value | string).split('/')[0] | trim }}"
@@ -2750,11 +2871,40 @@ script:
       - conditions:
         - alias: work_hours get/set
           condition: template
-          value_template: "{{ tool == 'work_hours' }}"
+          value_template: "{{ response is not defined and tool == 'work_hours' }}"
         sequence:
         - if: "{{ value | default('') | trim != '' }}"
           then:
-          - if: "{{ '/' in (value | string) }}"
+          # #10468: zenos.system.home_config_write cert gate -- write path only.
+          - action: script.zen_dojotools_identity
+            response_variable: _hc_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.system.home_config_write
+              required_cert_level: 1
+              caller_token: "{{ caller_token | default('') }}"
+          - variables:
+              _hc_authorized: "{{ _hc_id_raw.get('authorized', false) if _hc_id_raw is mapping else false }}"
+              _hc_cert_level: "{{ _hc_id_raw.get('cert_level', 0) if _hc_id_raw is mapping else 0 }}"
+              _hc_policy_status: "{{ _hc_id_raw.get('policy_status', 'blocked') if _hc_id_raw is mapping else 'blocked' }}"
+          - if: "{{ response is not defined and not _hc_authorized }}"
+            then:
+              - variables:
+                  response:
+                    tool: "{{ tool }}"
+                    result: error
+                    error: cert_insufficient
+                    message: >-
+                      zenos.system.home_config_write cert level {{ _hc_cert_level }} is
+                      below the required minimum (1) to set {{ tool }}.
+                    can_request: "{{ _hc_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_req_grant
+                      cert_component: zenos.system.home_config_write
+                      cert_level: 1
+          - if: "{{ response is not defined and '/' in (value | string) }}"
             then:
             - variables:
                 _wh_start: "{{ (value | string).split('/')[0] | trim }}"
@@ -2796,7 +2946,7 @@ script:
       - conditions:
         - alias: scheduler_anchors get/set
           condition: template
-          value_template: "{{ tool == 'scheduler_anchors' }}"
+          value_template: "{{ response is not defined and tool == 'scheduler_anchors' }}"
         sequence:
         - variables:
             _anchor_map:
@@ -2808,9 +2958,38 @@ script:
               late_night: input_datetime.zen_late_night_start
         - if: "{{ value | default('') | trim != '' and anchor | default('') | trim != '' }}"
           then:
+          # #10468: zenos.system.home_config_write cert gate -- write path only.
+          - action: script.zen_dojotools_identity
+            response_variable: _hc_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.system.home_config_write
+              required_cert_level: 1
+              caller_token: "{{ caller_token | default('') }}"
           - variables:
-              _target_eid: "{{ (_anchor_map if _anchor_map is mapping else {}).get(anchor | trim, '') }}"
-          - if: "{{ _target_eid == '' }}"
+              _hc_authorized: "{{ _hc_id_raw.get('authorized', false) if _hc_id_raw is mapping else false }}"
+              _hc_cert_level: "{{ _hc_id_raw.get('cert_level', 0) if _hc_id_raw is mapping else 0 }}"
+              _hc_policy_status: "{{ _hc_id_raw.get('policy_status', 'blocked') if _hc_id_raw is mapping else 'blocked' }}"
+          - if: "{{ response is not defined and not _hc_authorized }}"
+            then:
+              - variables:
+                  response:
+                    tool: "{{ tool }}"
+                    result: error
+                    error: cert_insufficient
+                    message: >-
+                      zenos.system.home_config_write cert level {{ _hc_cert_level }} is
+                      below the required minimum (1) to set {{ tool }}.
+                    can_request: "{{ _hc_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_req_grant
+                      cert_component: zenos.system.home_config_write
+                      cert_level: 1
+          - variables:
+              _target_eid: "{{ (_anchor_map if _anchor_map is mapping else {}).get(anchor | trim, '') if response is not defined else '' }}"
+          - if: "{{ response is not defined and _target_eid == '' }}"
             then:
             - variables:
                 response:
@@ -2906,48 +3085,118 @@ script:
       - conditions:
         - alias: guest_mode toggle
           condition: template
-          value_template: "{{ tool == 'guest_mode' }}"
+          value_template: "{{ response is not defined and tool == 'guest_mode' }}"
         sequence:
-        - if: "{{ value | default('') | trim | lower in ['on', 'true', '1'] }}"
+        - variables:
+            _gm_is_write: "{{ value | default('') | trim | lower in ['on', 'true', '1', 'off', 'false', '0'] }}"
+        # #10468: zenos.system.home_config_write cert gate -- write path only.
+        - if: "{{ _gm_is_write }}"
+          then:
+          - action: script.zen_dojotools_identity
+            response_variable: _hc_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.system.home_config_write
+              required_cert_level: 1
+              caller_token: "{{ caller_token | default('') }}"
+          - variables:
+              _hc_authorized: "{{ _hc_id_raw.get('authorized', false) if _hc_id_raw is mapping else false }}"
+              _hc_cert_level: "{{ _hc_id_raw.get('cert_level', 0) if _hc_id_raw is mapping else 0 }}"
+              _hc_policy_status: "{{ _hc_id_raw.get('policy_status', 'blocked') if _hc_id_raw is mapping else 'blocked' }}"
+          - if: "{{ response is not defined and not _hc_authorized }}"
+            then:
+              - variables:
+                  response:
+                    tool: "{{ tool }}"
+                    result: error
+                    error: cert_insufficient
+                    message: >-
+                      zenos.system.home_config_write cert level {{ _hc_cert_level }} is
+                      below the required minimum (1) to set {{ tool }}.
+                    can_request: "{{ _hc_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_req_grant
+                      cert_component: zenos.system.home_config_write
+                      cert_level: 1
+        - if: "{{ response is not defined and value | default('') | trim | lower in ['on', 'true', '1'] }}"
           then:
           - action: input_boolean.turn_on
             target:
               entity_id: input_boolean.zen_guest_mode
           else:
-          - if: "{{ value | default('') | trim | lower in ['off', 'false', '0'] }}"
+          - if: "{{ response is not defined and value | default('') | trim | lower in ['off', 'false', '0'] }}"
             then:
             - action: input_boolean.turn_off
               target:
                 entity_id: input_boolean.zen_guest_mode
-        - variables:
-            response:
-              tool: "{{ tool }}"
-              result: ok
-              guest_mode: "{{ is_state('input_boolean.zen_guest_mode', 'on') }}"
-              action: "{{ 'set' if value | default('') | trim != '' else 'get' }}"
+        - if: "{{ response is not defined }}"
+          then:
+          - variables:
+              response:
+                tool: "{{ tool }}"
+                result: ok
+                guest_mode: "{{ is_state('input_boolean.zen_guest_mode', 'on') }}"
+                action: "{{ 'set' if value | default('') | trim != '' else 'get' }}"
 
       - conditions:
         - alias: entertaining toggle
           condition: template
-          value_template: "{{ tool == 'entertaining' }}"
+          value_template: "{{ response is not defined and tool == 'entertaining' }}"
         sequence:
-        - if: "{{ value | default('') | trim | lower in ['on', 'true', '1'] }}"
+        - variables:
+            _et_is_write: "{{ value | default('') | trim | lower in ['on', 'true', '1', 'off', 'false', '0'] }}"
+        # #10468: zenos.system.home_config_write cert gate -- write path only.
+        - if: "{{ _et_is_write }}"
+          then:
+          - action: script.zen_dojotools_identity
+            response_variable: _hc_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.system.home_config_write
+              required_cert_level: 1
+              caller_token: "{{ caller_token | default('') }}"
+          - variables:
+              _hc_authorized: "{{ _hc_id_raw.get('authorized', false) if _hc_id_raw is mapping else false }}"
+              _hc_cert_level: "{{ _hc_id_raw.get('cert_level', 0) if _hc_id_raw is mapping else 0 }}"
+              _hc_policy_status: "{{ _hc_id_raw.get('policy_status', 'blocked') if _hc_id_raw is mapping else 'blocked' }}"
+          - if: "{{ response is not defined and not _hc_authorized }}"
+            then:
+              - variables:
+                  response:
+                    tool: "{{ tool }}"
+                    result: error
+                    error: cert_insufficient
+                    message: >-
+                      zenos.system.home_config_write cert level {{ _hc_cert_level }} is
+                      below the required minimum (1) to set {{ tool }}.
+                    can_request: "{{ _hc_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_req_grant
+                      cert_component: zenos.system.home_config_write
+                      cert_level: 1
+        - if: "{{ response is not defined and value | default('') | trim | lower in ['on', 'true', '1'] }}"
           then:
           - action: input_boolean.turn_on
             target:
               entity_id: input_boolean.zen_entertaining
           else:
-          - if: "{{ value | default('') | trim | lower in ['off', 'false', '0'] }}"
+          - if: "{{ response is not defined and value | default('') | trim | lower in ['off', 'false', '0'] }}"
             then:
             - action: input_boolean.turn_off
               target:
                 entity_id: input_boolean.zen_entertaining
-        - variables:
-            response:
-              tool: "{{ tool }}"
-              result: ok
-              entertaining: "{{ is_state('input_boolean.zen_entertaining', 'on') }}"
-              action: "{{ 'set' if value | default('') | trim != '' else 'get' }}"
+        - if: "{{ response is not defined }}"
+          then:
+          - variables:
+              response:
+                tool: "{{ tool }}"
+                result: ok
+                entertaining: "{{ is_state('input_boolean.zen_entertaining', 'on') }}"
+                action: "{{ 'set' if value | default('') | trim != '' else 'get' }}"
 
       default:
       - if: "{{ response is not defined }}"
@@ -2958,8 +3207,10 @@ script:
               \"No tool selected.\"\n  }\n}}"
     # ═══════════════════════════════════════════════════════════════════
     # SINGLE EXIT — every branch above sets `response` and falls through;
-    # nothing above this point ever stops. Wrapped in OS.envelope() for a
-    # consistent envelope across every mode.
+    # nothing above this point ever stops. Wrapped in OS.envelope()
+    # (2026-09-16, #10375) -- previously only tool_manifest and
+    # zen_health_report had their own separate envelope-wrapped exits,
+    # every other mode returned raw/unenveloped.
     # ═══════════════════════════════════════════════════════════════════
     - variables:
         response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
@@ -3195,8 +3446,10 @@ script:
           {%- set _raw = pattern | default('', true) | string | trim -%}
           {%- set _safe = _raw | replace("'", "") | replace('"', "") | replace(';', "") | replace('`', "") -%}
           {{ _safe }}
-    # ── Single-exit architecture: every branch sets `response` and falls
-    # through; ONE stop at the true end.
+    # ── Single-exit architecture (2026-09-16, #10375): every branch sets
+    # `response` and falls through; ONE stop at the true end. Was 5
+    # separate stops (tool_manifest/journal_mode/legacy_missing_error/
+    # invalid_search/done), local var names unified onto `response`.
     - choose:
       - conditions:
         - condition: template
