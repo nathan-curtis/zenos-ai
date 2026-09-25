@@ -44,7 +44,8 @@ script:
 
                 caller_token=caller_token | default('')
             ) | from_json | combine({'certs_required': [
-                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['send']}
+                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['send']},
+                {'cert': 'teams_control', 'level': 1, 'modes': ['set']}
             ]}) }}
     # --------------------------------------------------------------
     # Always normalize User/AI inputs so we don't have to react JIT
@@ -164,8 +165,7 @@ script:
             - variables:
                 final_response: "{{ {'status': 'error', 'error_message': 'No Teams chat sensor resolved. ' ~ _chat_fix_hint, 'caller_token': caller_token | default('')} }}"
 
-          # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390
-          # office.yaml rollout, corrected after user pushback: sending a
+          # ── Cert-gate — pii_disclosure_control: sending a
           # Teams message is the same PII-exfiltration shape as sending mail
           # -- chat_id and message are caller-supplied, message can carry
           # anything the agent has read. Reuses the same cert as mail's
@@ -182,10 +182,14 @@ script:
                 required_cert_level: 1
                 caller_token: "{{ caller_token | default('') }}"
             - variables:
-                _teams_cert_policy: "{{ _teams_id_raw.get('policy_status', 'blocked') if _teams_id_raw is mapping else 'blocked' }}"
-                _teams_cert_authorized: "{{ _teams_id_raw.get('authorized', false) if _teams_id_raw is mapping else false }}"
-                _teams_cert_level: "{{ _teams_id_raw.get('cert_level', 0) if _teams_id_raw is mapping else 0 }}"
-                _teams_cert_block_reason: "{{ _teams_id_raw.get('block_reason', '') if _teams_id_raw is mapping else '' }}"
+                _teams_id_fields: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                  {%- set _raw = OS.resolve_identity_fields(_teams_id_raw) -%}
+                  {{- (_raw | from_json) if _raw is string else _raw -}}
+                _teams_cert_policy: "{{ _teams_id_fields.policy_status }}"
+                _teams_cert_authorized: "{{ _teams_id_fields.authorized }}"
+                _teams_cert_level: "{{ _teams_id_fields.cert_level }}"
+                _teams_cert_block_reason: "{{ _teams_id_fields.block_reason }}"
             - if: "{{ _teams_cert_policy != 'allowed' or not _teams_cert_authorized }}"
               then:
                 - variables:
@@ -225,22 +229,57 @@ script:
           - condition: template
             value_template: '{{ action_type == ''set'' }}'
           sequence:
-          - variables:
-              availability: '{{ availability | default(''Available'') }}'
-              activity: "{%- set test_activity = activity| default('Available') -%}\n{%-
-                if availability == 'Available' -%}\n    {%- set test_activity = 'Available'
-                -%}\n{%- elif availability == 'Busy' -%}\n  {%- if activity == 'InACall'
-                -%}\n    {%- set test_activity = 'InACall' -%}\n  {%- else -%}\n    {%-
-                set test_activity = 'InAConferenceCall' -%}\n  {%- endif -%}\n{%- elif
-                availability == 'Away' -%}\n    {%- set test_activity = 'Away' -%}\n{%-
-                elif availability == 'DoNotDisturb' -%}\n    {%- set test_activity = 'Presenting'
-                -%}\n{%- else -%}\n  {%- set test_activity = 'Away' -%}\n{%- endif -%}\n{{test_activity}}"
-              expiration: '{{ expiration | default(''PT5M'') }}'
-              data: "{\n  \"availability\": \"{{ availability }}\",\n  \"activity\": \"{{
-                activity }}\",\n  \"expiration_duration\": \"{{ expiration }}\"\n}"
-          - if:
-            - condition: template
-              value_template: '{{ teams_status_sensor == "" }}'
+          # ── Cert-gate — teams_control.
+          # Setting Availability/Activity changes how the user is
+          # represented to their whole org -- an agent silently overriding
+          # a deliberate DoNotDisturb/Away, or broadcasting a false
+          # Available, is a presence-integrity risk distinct from the
+          # PII-exfiltration risk send/pii_disclosure_control guards
+          # against. ──
+          - if: "{{ final_response is not defined }}"
+            then:
+            - action: script.zen_dojotools_identity
+              response_variable: _teams_set_id_raw
+              continue_on_error: true
+              data:
+                mode: resolve_caller_identity
+                required_cert: teams_control
+                required_cert_level: 1
+                caller_token: "{{ caller_token | default('') }}"
+            - variables:
+                _teams_set_id_fields: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                  {%- set _raw = OS.resolve_identity_fields(_teams_set_id_raw) -%}
+                  {{- (_raw | from_json) if _raw is string else _raw -}}
+                _teams_set_cert_policy: "{{ _teams_set_id_fields.policy_status }}"
+                _teams_set_cert_authorized: "{{ _teams_set_id_fields.authorized }}"
+                _teams_set_cert_level: "{{ _teams_set_id_fields.cert_level }}"
+                _teams_set_cert_block_reason: "{{ _teams_set_id_fields.block_reason }}"
+            - if: "{{ _teams_set_cert_policy != 'allowed' or not _teams_set_cert_authorized }}"
+              then:
+                - variables:
+                    _teams_set_cd_raw: >-
+                      {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                      {{ OS.cert_denial(_teams_set_cert_policy, _teams_set_cert_authorized, _teams_set_cert_level, 'teams_control', 1, 'set', _teams_set_cert_block_reason) -}}
+                - variables:
+                    final_response: >-
+                      {{ (((_teams_set_cd_raw | from_json) if _teams_set_cd_raw is string else _teams_set_cd_raw) | combine({'tool': 'zen_dojotools_teams', 'caller_token': caller_token | default('')})) }}
+          - if: "{{ final_response is not defined }}"
+            then:
+            - variables:
+                availability: '{{ availability | default(''Available'') }}'
+                activity: "{%- set test_activity = activity| default('Available') -%}\n{%-
+                  if availability == 'Available' -%}\n    {%- set test_activity = 'Available'
+                  -%}\n{%- elif availability == 'Busy' -%}\n  {%- if activity == 'InACall'
+                  -%}\n    {%- set test_activity = 'InACall' -%}\n  {%- else -%}\n    {%-
+                  set test_activity = 'InAConferenceCall' -%}\n  {%- endif -%}\n{%- elif
+                  availability == 'Away' -%}\n    {%- set test_activity = 'Away' -%}\n{%-
+                  elif availability == 'DoNotDisturb' -%}\n    {%- set test_activity = 'Presenting'
+                  -%}\n{%- else -%}\n  {%- set test_activity = 'Away' -%}\n{%- endif -%}\n{{test_activity}}"
+                expiration: '{{ expiration | default(''PT5M'') }}'
+                data: "{\n  \"availability\": \"{{ availability }}\",\n  \"activity\": \"{{
+                  activity }}\",\n  \"expiration_duration\": \"{{ expiration }}\"\n}"
+          - if: "{{ final_response is not defined and teams_status_sensor == \"\" }}"
             then:
             - variables:
                 final_response: "{{ {'status': 'error', 'error_message': 'No Teams status sensor resolved. ' ~ _status_fix_hint, 'caller_token': caller_token | default('')} }}"
@@ -265,6 +304,19 @@ script:
                 caller_token | default('')} }}"
           - set_conversation_response: '{{ final_response }}'
           alias: unsupported
+    # ── SINGLE EXIT ──────────────────────────────────────────────────────
+    - variables:
+        _teams_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+            mode=(mode | default('') | lower) if (mode | default('') | lower) == 'tool_manifest' else action_type | default(''),
+            result=final_response,
+            tool='zen_dojotools_teams',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        final_response: "{{ (_teams_envelope_raw | from_json) if _teams_envelope_raw is string else _teams_envelope_raw }}"
     - stop: End of script
       response_variable: final_response
     - set_conversation_response: '{{ final_response }}'
@@ -407,12 +459,11 @@ script:
         mail_domain: '{{ states(''input_text.zen_mail_domain'') | default('''') | trim }}'
         my_address: '{{ states(''input_text.zen_mail_sender'') | default('''') | trim }}'
         reply_to: '{{ reply_to | default( my_address ) }}'
-        # ── Whitelist moved off input_text into the household cabinet
-        # (2026-09-10, #10390 -- user-flagged: a self-editable helper meant
-        # any holder of the generic helper_text_edit cert could silently
-        # flip this to OFF or a wildcard, a much broader grant than
-        # "permission to defang the mail whitelist" should imply). Edits
-        # now require whitelist_set mode, gated at pii_disclosure_control
+        # ── Whitelist lives in the household cabinet, not an input_text:
+        # a self-editable helper would let any holder of the generic
+        # helper_text_edit cert silently flip this to OFF or a wildcard, a
+        # much broader grant than "permission to defang the mail
+        # whitelist" should imply. Edits require whitelist_set mode, gated at pii_disclosure_control
         # level 2 -- higher than send's level 1, since loosening the
         # whitelist is more consequential than a single send within it. ──
         _hh_cabinet_mail: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
@@ -599,8 +650,7 @@ script:
                 importance_norm} if importance_norm != \"normal\" else {}\n  )\n  | tojson\n}}"
               mail_data: '{{ mail_data_json | from_json }}'
 
-          # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390
-          # office.yaml rollout, corrected after user pushback: sending mail
+          # ── Cert-gate — pii_disclosure_control: sending mail
           # is a real PII-exfiltration vector -- the recipient is caller-
           # supplied free text and the body can contain anything the agent
           # has read, unlike internal task/calendar CRUD. The existing
@@ -620,10 +670,14 @@ script:
               required_cert_level: 1
               caller_token: "{{ caller_token | default('') }}"
           - variables:
-              _mail_cert_policy: "{{ _mail_id_raw.get('policy_status', 'blocked') if _mail_id_raw is mapping else 'blocked' }}"
-              _mail_cert_authorized: "{{ _mail_id_raw.get('authorized', false) if _mail_id_raw is mapping else false }}"
-              _mail_cert_level: "{{ _mail_id_raw.get('cert_level', 0) if _mail_id_raw is mapping else 0 }}"
-              _mail_cert_block_reason: "{{ _mail_id_raw.get('block_reason', '') if _mail_id_raw is mapping else '' }}"
+              _mail_id_fields: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _raw = OS.resolve_identity_fields(_mail_id_raw) -%}
+                {{- (_raw | from_json) if _raw is string else _raw -}}
+              _mail_cert_policy: "{{ _mail_id_fields.policy_status }}"
+              _mail_cert_authorized: "{{ _mail_id_fields.authorized }}"
+              _mail_cert_level: "{{ _mail_id_fields.cert_level }}"
+              _mail_cert_block_reason: "{{ _mail_id_fields.block_reason }}"
           - if: "{{ _mail_cert_policy != 'allowed' or not _mail_cert_authorized }}"
             then:
               - variables:
@@ -693,8 +747,8 @@ script:
           - condition: template
             value_template: "{{ action_type == 'whitelist_set' }}"
           sequence:
-          # ── Cert-gate — pii_disclosure_control level 2 (2026-09-10,
-          # #10390). Editing the whitelist is more consequential than a
+          # ── Cert-gate — pii_disclosure_control level 2. Editing the
+          # whitelist is more consequential than a
           # single send within it -- higher level than send's level 1. ──
           - action: script.zen_dojotools_identity
             response_variable: _mwl_id_raw
@@ -705,10 +759,14 @@ script:
               required_cert_level: 2
               caller_token: "{{ caller_token | default('') }}"
           - variables:
-              _mwl_cert_policy: "{{ _mwl_id_raw.get('policy_status', 'blocked') if _mwl_id_raw is mapping else 'blocked' }}"
-              _mwl_cert_authorized: "{{ _mwl_id_raw.get('authorized', false) if _mwl_id_raw is mapping else false }}"
-              _mwl_cert_level: "{{ _mwl_id_raw.get('cert_level', 0) if _mwl_id_raw is mapping else 0 }}"
-              _mwl_cert_block_reason: "{{ _mwl_id_raw.get('block_reason', '') if _mwl_id_raw is mapping else '' }}"
+              _mwl_id_fields: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _raw = OS.resolve_identity_fields(_mwl_id_raw) -%}
+                {{- (_raw | from_json) if _raw is string else _raw -}}
+              _mwl_cert_policy: "{{ _mwl_id_fields.policy_status }}"
+              _mwl_cert_authorized: "{{ _mwl_id_fields.authorized }}"
+              _mwl_cert_level: "{{ _mwl_id_fields.cert_level }}"
+              _mwl_cert_block_reason: "{{ _mwl_id_fields.block_reason }}"
           - if: "{{ _mwl_cert_policy != 'allowed' or not _mwl_cert_authorized }}"
             then:
               - variables:
@@ -758,6 +816,19 @@ script:
         final_response: "{{ final_response | default({'status': 'error', 'message': 'Unknown action_type or no matching branch.'} | tojson) }}"
     - variables:
         final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
+    # ── SINGLE EXIT ──────────────────────────────────────────────────────
+    - variables:
+        _mail_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+            mode=(mode | default('') | lower) if (mode | default('') | lower) == 'tool_manifest' else action_type | default(''),
+            result=final_response,
+            tool='zen_dojotools_mail',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        final_response: "{{ (_mail_envelope_raw | from_json) if _mail_envelope_raw is string else _mail_envelope_raw }}"
     - stop: Zen DojoTools Mail response
       response_variable: final_response
     alias: Zen DojoTools Mail

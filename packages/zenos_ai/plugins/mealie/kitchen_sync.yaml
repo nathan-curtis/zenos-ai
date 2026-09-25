@@ -75,18 +75,17 @@ script:
           boolean:
         default: true
     sequence:
-    # 2026-08-18: manifest fan-out (mode=label_audit/cert_audit) calls every
+    # Manifest fan-out (mode=label_audit/cert_audit) calls every
     # zen_admintools_* script with bare {mode: tool_manifest} -- no other
-    # fields. This script previously had no tool_manifest branch, so that
-    # call fell straight into the unguarded `{{ limit | int }}` below (the
-    # fields: limit default is UI-only, never injected on a raw service
-    # call), throwing 'limit' is undefined and poisoning any admintools
-    # group scan. Root cause of the manifest's admintools-tier scan
-    # exclusion. Same short-circuit shape as every other admintools script.
+    # fields. Without this branch that call would fall into the unguarded
+    # `{{ limit | int }}` below (the fields: limit default is UI-only,
+    # never injected on a raw service call) and throw 'limit' is
+    # undefined, poisoning any admintools group scan. Same short-circuit
+    # shape as every other admintools script.
     - if: "{{- mode | default('') == 'tool_manifest' -}}"
       then:
         - variables:
-            result: >-
+            final_response: >-
               {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
               {{- MF.tool_manifest(
                 tool='zen_admintools_kitchen_sync',
@@ -104,8 +103,6 @@ script:
                 color='deep-orange',
                 caller_token=caller_token | default('')
               ) | from_json -}}
-        - stop: kitchen_sync tool manifest
-          response_variable: result
     - variables:
         tool_name: Zen AdminTools Kitchen Sync
         tool_version: 5.6.0
@@ -129,250 +126,270 @@ script:
         - condition: template
           value_template: '{{ mode_norm == ''apply'' and not apply_allowed }}'
         sequence:
-        - stop: return
-    - repeat:
-        count: '{{ max_pages | default(50) | int }}'
-        sequence:
-        - choose:
-          - conditions:
-            - condition: template
-              value_template: '{{ not mealie_done }}'
-            sequence:
-            - variables:
-                page_i: '{{ repeat.index }}'
-            - action: script.zen_dojotools_kitchen
-              response_variable: mealie_page
-              data:
-                mode: run
-                case: foods_list
-                page: '{{ page_i }}'
-                perPage: '{{ per_page | default(50) }}'
-            - variables:
-                items: "{{\n  mealie_page.raw.api.result.content.get('items', [])\n
-                  \ if mealie_page.raw.api.result.content is mapping\n  else []\n}}"
-            - variables:
-                mealie_foods: '{{ mealie_foods + items }}'
-                mealie_pages: '{{ page_i }}'
-            - choose:
-              - conditions:
-                - condition: template
-                  value_template: '{{ items | length < (per_page | default(50) | int) }}'
-                sequence:
-                - variables:
-                    mealie_done: true
-    - repeat:
-        for_each: '{{ mealie_foods }}'
-        sequence:
-        - choose:
-          - conditions:
-            - condition: template
-              value_template: >-
-                {{
-                  seen < limit_in
-                  and not (
-                    skip_linked_norm
-                    and (repeat.item.get('extras', {}) or {}).get('grocy_product_id', none) not in [none, '', 'None']
-                  )
-                }}
-            sequence:
-            - variables:
-                food_name: '{{ (repeat.item.get(''name'','''') ~ '''') | trim }}'
-                seen: '{{ seen + 1 }}'
-            - choose:
-              - conditions:
-                - condition: template
-                  value_template: '{{ food_name == '''' }}'
-                sequence:
-                - variables:
-                    errors: '{{ errors + [''empty name''] }}'
-            - choose:
-              - conditions:
-                - condition: template
-                  value_template: '{{ food_name != '''' }}'
-                sequence:
-                - action: script.zen_dojotools_inventory
-                  response_variable: find_resp
-                  data:
-                    mode: catalog_find_product
-                    item: '{{ food_name }}'
-                    report_inventory: false
-                - variables:
-                    find_status: '{{ find_resp.status | default(''error'') }}'
-                    find_message: '{{ find_resp.message | default('''') }}'
-                    find_results: '{{ find_resp.result | default([]) }}'
-                    cand_matches: '{{ find_resp.details.matches if find_resp.details
-                      is mapping else [] }}'
-                    exact_in_results: "{{ (find_results | selectattr('name', 'defined') | map(attribute='name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) or (find_results | selectattr('plural_name', 'defined') | map(attribute='plural_name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) }}"
-                    exact_in_candidates: "{{ (cand_matches | selectattr('name', 'defined') | map(attribute='name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) or (cand_matches | selectattr('plural_name', 'defined') | map(attribute='plural_name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) }}"
-                    is_multiple: '{{ ''Multiple possible matches'' in (find_message
-                      ~ '''') }}'
-            - choose:
-              - conditions:
-                - condition: template
-                  value_template: "{{\n  (find_status == 'success' and exact_in_results)\n
-                    \ or\n  (find_status == 'error' and is_multiple and exact_in_candidates)\n}}"
-                sequence:
-                - variables:
-                    matched_exact: '{{ matched_exact + [food_name] }}'
-                - variables:
-                    _orch_me_pid: >-
-                      {%- set _src = find_results if find_status == 'success' else cand_matches -%}
-                      {%- set _ns = namespace(pid=none) -%}
-                      {%- for c in _src | selectattr('name','defined') | list -%}
-                        {%- if c.name | lower == food_name | lower or (c.plural_name | default('') | lower) == food_name | lower -%}{%- set _ns.pid = c.id | default(none) -%}{%- endif -%}
-                      {%- endfor -%}
-                      {{ _ns.pid }}
-                    _orch_me_uuid: '{{ repeat.item.id | default("") | string | trim }}'
-                - choose:
-                  - conditions:
-                    - condition: template
-                      value_template: '{{ _orch_me_pid is not none and _orch_me_uuid != "" }}'
-                    sequence:
-                    - action: script.zen_dojotools_kitchen
-                      response_variable: _me_fk_resp
-                      continue_on_error: true
-                      data:
-                        mode: run
-                        case: foods_tag
-                        item_id: '{{ _orch_me_uuid }}'
-                        grocy_product_id: '{{ _orch_me_pid | string }}'
-                    - action: script.zen_sutra_grocy
-                      continue_on_error: true
-                      data:
-                        action_type: update
-                        endpoint: 'userfields/products/{{ _orch_me_pid }}'
-                        payload: '{{ {"mealie_ingredient_id": _orch_me_uuid} | tojson }}'
-              - conditions:
-                - condition: template
-                  value_template: "{{\n  find_status == 'error'\n  and is_multiple\n
-                    \ and not exact_in_candidates\n}}"
-                sequence:
-                - variables:
-                    matched_ambiguous: '{{ matched_ambiguous + [food_name] }}'
-                - variables:
-                    matched_ambiguous_details: >-
-                      {%- set _cs = cand_matches | selectattr('name','defined') | list -%}
-                      {%- set _ns = namespace(out=[]) -%}
-                      {%- for c in _cs -%}{%- set _ns.out = _ns.out + [{'id': c.id | default(none), 'name': c.name}] -%}{%- endfor -%}
-                      {{ matched_ambiguous_details + [{'food_name': food_name, 'food_id': repeat.item.id | default('') | string, 'candidates': _ns.out}] }}
-              - conditions:
-                - condition: template
-                  value_template: "{{\n  find_status == 'success'\n  and not exact_in_results\n  and (find_results | selectattr('name', 'defined') | list | length) > 0\n}}"
-                sequence:
-                - variables:
-                    matched_ambiguous: '{{ matched_ambiguous + [food_name] }}'
-                - variables:
-                    matched_ambiguous_details: >-
-                      {%- set _fs = find_results | selectattr('name','defined') | list -%}
-                      {%- set _ns = namespace(out=[]) -%}
-                      {%- for c in _fs -%}{%- set _ns.out = _ns.out + [{'id': c.id | default(none), 'name': c.name}] -%}{%- endfor -%}
-                      {{ matched_ambiguous_details + [{'food_name': food_name, 'food_id': repeat.item.id | default('') | string, 'candidates': _ns.out}] }}
-              - conditions:
-                - condition: template
-                  value_template: "{{\n  find_status == 'success'\n  and (find_results | selectattr('name', 'defined') | list | length) == 0\n}}"
-                sequence:
-                - choose:
-                  - conditions:
-                    - condition: template
-                      value_template: '{{ not apply_allowed }}'
-                    sequence:
-                    - variables:
-                        would_create: '{{ would_create + [food_name] }}'
-                  - conditions:
-                    - condition: template
-                      value_template: '{{ apply_allowed }}'
-                    sequence:
-                    - action: script.zen_dojotools_inventory
-                      response_variable: create_resp
-                      continue_on_error: true
-                      data:
-                        mode: catalog_add_product
-                        item: '{{ food_name }}'
-                        location: '{{ default_location }}'
-                        unit: '{{ default_unit }}'
-                    - variables:
-                        _orch_cp_pid: >-
-                          {{ create_resp.result.product_id | default(none)
-                             if (create_resp is mapping and create_resp.result is mapping)
-                             else none }}
-                        _orch_cp_uuid: '{{ repeat.item.id | default("") | string | trim }}'
-                    - choose:
-                      - conditions:
-                        - condition: template
-                          value_template: '{{ create_resp is mapping and (create_resp.status | default("")) == "success" }}'
-                        sequence:
-                        - variables:
-                            created: '{{ created + [food_name] }}'
-                        - choose:
-                          - conditions:
-                            - condition: template
-                              value_template: '{{ _orch_cp_pid is not none and _orch_cp_uuid != "" }}'
-                            sequence:
-                            - action: script.zen_dojotools_kitchen
-                              response_variable: _cp_fk_resp
-                              continue_on_error: true
-                              data:
-                                mode: run
-                                case: foods_tag
-                                item_id: '{{ _orch_cp_uuid }}'
-                                grocy_product_id: '{{ _orch_cp_pid | string }}'
-                            - action: script.zen_sutra_grocy
-                              continue_on_error: true
-                              data:
-                                action_type: update
-                                endpoint: 'userfields/products/{{ _orch_cp_pid }}'
-                                payload: '{{ {"mealie_ingredient_id": _orch_cp_uuid} | tojson }}'
-                      - conditions:
-                        - condition: template
-                          value_template: '{{ true }}'
-                        sequence:
-                        - variables:
-                            errors: '{{ errors + [food_name ~ ": create failed"] }}'
+        - variables:
+            final_response:
+              status: error
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              message: mode=apply requires confirmation=true.
+    - if: "{{ final_response is not defined }}"
+      then:
+      - repeat:
+          count: '{{ max_pages | default(50) | int }}'
+          sequence:
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: '{{ not mealie_done }}'
+              sequence:
+              - variables:
+                  page_i: '{{ repeat.index }}'
+              - action: script.zen_dojotools_kitchen
+                response_variable: mealie_page
+                data:
+                  mode: run
+                  case: foods_list
+                  page: '{{ page_i }}'
+                  perPage: '{{ per_page | default(50) }}'
+              - variables:
+                  items: "{{\n  mealie_page.raw.api.result.content.get('items', [])\n
+                    \ if mealie_page.raw.api.result.content is mapping\n  else []\n}}"
+              - variables:
+                  mealie_foods: '{{ mealie_foods + items }}'
+                  mealie_pages: '{{ page_i }}'
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: '{{ items | length < (per_page | default(50) | int) }}'
+                  sequence:
+                  - variables:
+                      mealie_done: true
+      - repeat:
+          for_each: '{{ mealie_foods }}'
+          sequence:
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: >-
+                  {{
+                    seen < limit_in
+                    and not (
+                      skip_linked_norm
+                      and (repeat.item.get('extras', {}) or {}).get('grocy_product_id', none) not in [none, '', 'None']
+                    )
+                  }}
+              sequence:
+              - variables:
+                  food_name: '{{ (repeat.item.get(''name'','''') ~ '''') | trim }}'
+                  seen: '{{ seen + 1 }}'
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: '{{ food_name == '''' }}'
+                  sequence:
+                  - variables:
+                      errors: '{{ errors + [''empty name''] }}'
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: '{{ food_name != '''' }}'
+                  sequence:
+                  - action: script.zen_dojotools_inventory
+                    response_variable: find_resp
+                    data:
+                      mode: catalog_find_product
+                      item: '{{ food_name }}'
+                      report_inventory: false
+                  - variables:
+                      find_status: '{{ find_resp.status | default(''error'') }}'
+                      find_message: '{{ find_resp.message | default('''') }}'
+                      find_results: '{{ find_resp.result | default([]) }}'
+                      cand_matches: '{{ find_resp.details.matches if find_resp.details
+                        is mapping else [] }}'
+                      exact_in_results: "{{ (find_results | selectattr('name', 'defined') | map(attribute='name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) or (find_results | selectattr('plural_name', 'defined') | map(attribute='plural_name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) }}"
+                      exact_in_candidates: "{{ (cand_matches | selectattr('name', 'defined') | map(attribute='name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) or (cand_matches | selectattr('plural_name', 'defined') | map(attribute='plural_name') | map('lower') | select('equalto', food_name | lower) | list | length > 0) }}"
+                      is_multiple: '{{ ''Multiple possible matches'' in (find_message
+                        ~ '''') }}'
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: "{{\n  (find_status == 'success' and exact_in_results)\n
+                      \ or\n  (find_status == 'error' and is_multiple and exact_in_candidates)\n}}"
+                  sequence:
+                  - variables:
+                      matched_exact: '{{ matched_exact + [food_name] }}'
+                  - variables:
+                      _orch_me_pid: >-
+                        {%- set _src = find_results if find_status == 'success' else cand_matches -%}
+                        {%- set _ns = namespace(pid=none) -%}
+                        {%- for c in _src | selectattr('name','defined') | list -%}
+                          {%- if c.name | lower == food_name | lower or (c.plural_name | default('') | lower) == food_name | lower -%}{%- set _ns.pid = c.id | default(none) -%}{%- endif -%}
+                        {%- endfor -%}
+                        {{ _ns.pid }}
+                      _orch_me_uuid: '{{ repeat.item.id | default("") | string | trim }}'
+                  - choose:
+                    - conditions:
+                      - condition: template
+                        value_template: '{{ _orch_me_pid is not none and _orch_me_uuid != "" }}'
+                      sequence:
+                      - action: script.zen_dojotools_kitchen
+                        response_variable: _me_fk_resp
+                        continue_on_error: true
+                        data:
+                          mode: run
+                          case: foods_tag
+                          item_id: '{{ _orch_me_uuid }}'
+                          grocy_product_id: '{{ _orch_me_pid | string }}'
+                      - action: script.zen_sutra_grocy
+                        continue_on_error: true
+                        data:
+                          action_type: update
+                          endpoint: 'userfields/products/{{ _orch_me_pid }}'
+                          payload: '{{ {"mealie_ingredient_id": _orch_me_uuid} | tojson }}'
+                - conditions:
+                  - condition: template
+                    value_template: "{{\n  find_status == 'error'\n  and is_multiple\n
+                      \ and not exact_in_candidates\n}}"
+                  sequence:
+                  - variables:
+                      matched_ambiguous: '{{ matched_ambiguous + [food_name] }}'
+                  - variables:
+                      matched_ambiguous_details: >-
+                        {%- set _cs = cand_matches | selectattr('name','defined') | list -%}
+                        {%- set _ns = namespace(out=[]) -%}
+                        {%- for c in _cs -%}{%- set _ns.out = _ns.out + [{'id': c.id | default(none), 'name': c.name}] -%}{%- endfor -%}
+                        {{ matched_ambiguous_details + [{'food_name': food_name, 'food_id': repeat.item.id | default('') | string, 'candidates': _ns.out}] }}
+                - conditions:
+                  - condition: template
+                    value_template: "{{\n  find_status == 'success'\n  and not exact_in_results\n  and (find_results | selectattr('name', 'defined') | list | length) > 0\n}}"
+                  sequence:
+                  - variables:
+                      matched_ambiguous: '{{ matched_ambiguous + [food_name] }}'
+                  - variables:
+                      matched_ambiguous_details: >-
+                        {%- set _fs = find_results | selectattr('name','defined') | list -%}
+                        {%- set _ns = namespace(out=[]) -%}
+                        {%- for c in _fs -%}{%- set _ns.out = _ns.out + [{'id': c.id | default(none), 'name': c.name}] -%}{%- endfor -%}
+                        {{ matched_ambiguous_details + [{'food_name': food_name, 'food_id': repeat.item.id | default('') | string, 'candidates': _ns.out}] }}
+                - conditions:
+                  - condition: template
+                    value_template: "{{\n  find_status == 'success'\n  and (find_results | selectattr('name', 'defined') | list | length) == 0\n}}"
+                  sequence:
+                  - choose:
+                    - conditions:
+                      - condition: template
+                        value_template: '{{ not apply_allowed }}'
+                      sequence:
+                      - variables:
+                          would_create: '{{ would_create + [food_name] }}'
+                    - conditions:
+                      - condition: template
+                        value_template: '{{ apply_allowed }}'
+                      sequence:
+                      - action: script.zen_dojotools_inventory
+                        response_variable: create_resp
+                        continue_on_error: true
+                        data:
+                          mode: catalog_add_product
+                          item: '{{ food_name }}'
+                          location: '{{ default_location }}'
+                          unit: '{{ default_unit }}'
+                      - variables:
+                          _orch_cp_pid: >-
+                            {{ create_resp.result.product_id | default(none)
+                               if (create_resp is mapping and create_resp.result is mapping)
+                               else none }}
+                          _orch_cp_uuid: '{{ repeat.item.id | default("") | string | trim }}'
+                      - choose:
+                        - conditions:
+                          - condition: template
+                            value_template: '{{ create_resp is mapping and (create_resp.status | default("")) == "success" }}'
+                          sequence:
+                          - variables:
+                              created: '{{ created + [food_name] }}'
+                          - choose:
+                            - conditions:
+                              - condition: template
+                                value_template: '{{ _orch_cp_pid is not none and _orch_cp_uuid != "" }}'
+                              sequence:
+                              - action: script.zen_dojotools_kitchen
+                                response_variable: _cp_fk_resp
+                                continue_on_error: true
+                                data:
+                                  mode: run
+                                  case: foods_tag
+                                  item_id: '{{ _orch_cp_uuid }}'
+                                  grocy_product_id: '{{ _orch_cp_pid | string }}'
+                              - action: script.zen_sutra_grocy
+                                continue_on_error: true
+                                data:
+                                  action_type: update
+                                  endpoint: 'userfields/products/{{ _orch_cp_pid }}'
+                                  payload: '{{ {"mealie_ingredient_id": _orch_cp_uuid} | tojson }}'
+                        - conditions:
+                          - condition: template
+                            value_template: '{{ true }}'
+                          sequence:
+                          - variables:
+                              errors: '{{ errors + [food_name ~ ": create failed"] }}'
+      - variables:
+          _ksync_hh: '{{ states("sensor.zen_default_household_cabinet_resolved") }}'
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: '{{ _ksync_hh != "" }}'
+          sequence:
+          - action: script.zen_dojotools_filecabinet
+            response_variable: _ksync_q_write
+            continue_on_error: true
+            data:
+              action_type: update
+              force_action: true
+              volume_entity_id: '{{ _ksync_hh }}'
+              key: kitchen_sync_ambiguous_queue
+              value: '{{ matched_ambiguous_details | tojson }}'
+              set_timestamp: true
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: >-
+                  {{ not (_ksync_q_write is mapping
+                     and (_ksync_q_write.get('success') == true
+                          or (_ksync_q_write.get('status','') | string | lower) == 'success')) }}
+              sequence:
+              - action: script.zen_dojotools_filecabinet
+                continue_on_error: true
+                data:
+                  action_type: create
+                  volume_entity_id: '{{ _ksync_hh }}'
+                  key: kitchen_sync_ambiguous_queue
+                  value: '{{ matched_ambiguous_details | tojson }}'
+                  set_timestamp: true
+                  label_input: kitchen_sync, zen_household
+      - variables:
+          final_response:
+            status: success
+            tool: '{{ tool_name }}'
+            version: '{{ tool_version }}'
+            summary:
+              evaluated: '{{ seen }}'
+              matched_exact: '{{ matched_exact | length }}'
+              matched_ambiguous: '{{ matched_ambiguous | length }}'
+              would_create: '{{ would_create | length }}'
+              created: '{{ created | length }}'
+              errors: '{{ errors | length }}'
+
     - variables:
-        _ksync_hh: '{{ states("sensor.zen_default_household_cabinet_resolved") }}'
-    - choose:
-      - conditions:
-        - condition: template
-          value_template: '{{ _ksync_hh != "" }}'
-        sequence:
-        - action: script.zen_dojotools_filecabinet
-          response_variable: _ksync_q_write
-          continue_on_error: true
-          data:
-            action_type: update
-            force_action: true
-            volume_entity_id: '{{ _ksync_hh }}'
-            key: kitchen_sync_ambiguous_queue
-            value: '{{ matched_ambiguous_details | tojson }}'
-            set_timestamp: true
-        - choose:
-          - conditions:
-            - condition: template
-              value_template: >-
-                {{ not (_ksync_q_write is mapping
-                   and (_ksync_q_write.get('success') == true
-                        or (_ksync_q_write.get('status','') | string | lower) == 'success')) }}
-            sequence:
-            - action: script.zen_dojotools_filecabinet
-              continue_on_error: true
-              data:
-                action_type: create
-                volume_entity_id: '{{ _ksync_hh }}'
-                key: kitchen_sync_ambiguous_queue
-                value: '{{ matched_ambiguous_details | tojson }}'
-                set_timestamp: true
-                label_input: kitchen_sync, zen_household
+        _ksync_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+            mode=mode_norm | default(''),
+            result=final_response,
+            tool='zen_admintools_kitchen_sync',
+            caller_token=caller_token | default('')
+          ) -}}
     - variables:
-        final_response:
-          status: success
-          tool: '{{ tool_name }}'
-          version: '{{ tool_version }}'
-          summary:
-            evaluated: '{{ seen }}'
-            matched_exact: '{{ matched_exact | length }}'
-            matched_ambiguous: '{{ matched_ambiguous | length }}'
-            would_create: '{{ would_create | length }}'
-            created: '{{ created | length }}'
-            errors: '{{ errors | length }}'
-    - stop: return
+        final_response: "{{ (_ksync_envelope_raw | from_json) if _ksync_envelope_raw is string else _ksync_envelope_raw }}"
+    - stop: kitchen_sync response
       response_variable: final_response

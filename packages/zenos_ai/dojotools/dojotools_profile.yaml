@@ -16,7 +16,7 @@
 #   Leaf merge strategy: each essence section patched independently.
 #   essence_patch (JSON) deep-merges anything not covered by named fields.
 #
-#   2026-08-18: cert_req_grant/cert_req_revoke/cert_list logic MOVED to the new
+#   cert_req_grant/cert_req_revoke/cert_list logic lives in
 #   zen_admintools_certadmin (admintools, not MCP-exposed). This tool's
 #   three cert modes are now thin delegates forwarding only the fields
 #   already declared below (cert_component, cert_level, cert_tool,
@@ -437,7 +437,7 @@ script:
                     caller_token: '{{ caller_token }}'
 
       ###########################################################################
-      # #10468: zenos.identity.profile_write cert gate. Read stays open;
+      # zenos.identity.profile_write cert gate. Read stays open;
       # only write mode (household/user/family profile mutation) is gated.
       ###########################################################################
       - if: "{{ final_response is not defined and _mode == 'write' }}"
@@ -451,9 +451,13 @@ script:
               required_cert_level: 1
               caller_token: "{{ caller_token | default('') }}"
           - variables:
-              _pe_authorized: "{{ _pe_id_raw.get('authorized', false) if _pe_id_raw is mapping else false }}"
-              _pe_cert_level: "{{ _pe_id_raw.get('cert_level', 0) if _pe_id_raw is mapping else 0 }}"
-              _pe_policy_status: "{{ _pe_id_raw.get('policy_status', 'blocked') if _pe_id_raw is mapping else 'blocked' }}"
+              _pe_id_fields: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _raw = OS.resolve_identity_fields(_pe_id_raw) -%}
+                {{- (_raw | from_json) if _raw is string else _raw -}}
+              _pe_authorized: "{{ _pe_id_fields.authorized }}"
+              _pe_cert_level: "{{ _pe_id_fields.cert_level }}"
+              _pe_policy_status: "{{ _pe_id_fields.policy_status }}"
           - if: "{{ final_response is not defined and not _pe_authorized }}"
             then:
               - variables:
@@ -909,6 +913,18 @@ script:
       ###########################################################################
       # SINGLE EXIT
       ###########################################################################
+      - variables:
+          _pe_envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+              mode=_mode | default(''),
+              result=final_response,
+              tool='zen_dojotools_profile_editor',
+              caller_token=caller_token | default('')
+            ) -}}
+      - variables:
+          final_response: "{{ (_pe_envelope_raw | from_json) if _pe_envelope_raw is string else _pe_envelope_raw }}"
       - stop: No matching branch
         response_variable: final_response
 
@@ -1595,12 +1611,9 @@ script:
                     {%- set _j_warm  = _in_humor  if (_in_humor  != '' and (_force or _old_tr.get('warm','') == ''))       else _old_tr.get('warm','') -%}
                     {# ── JACKET: combine onto existing — never replace unknown fields ── #}
                     {%- set _jacket_base = _old_j if _is_new else {} -%}
-                    {# 2026-08-27 (real bug found live: write mode never
-                       stamped jacket.id, ever -- but sign mode requires it
-                       non-empty ("sign requires a valid three-layer essence
-                       with a jacket id"), so signing has never actually been
-                       possible on this install. Stamp once, preserve always,
-                       same pattern as core.id above. #}
+                    {# sign mode requires a non-empty jacket.id, so write
+                       stamps one. Stamp once, preserve always, same pattern
+                       as core.id above. #}
                     {%- set _j_id = _jacket_base.get('id', '') if (_jacket_base is mapping and _jacket_base.get('id','') != '') else CABS.cabinet_guid_new() -%}
                     {%- set _j_persona_patch = {
                       'appearance': _old_ap | combine({'visual': _j_vis}),
@@ -1787,19 +1800,15 @@ script:
                     caller_token: '{{ caller_token }}'
 
       ###########################################################################
-      # 4 — CERT_LIST (delegated to zen_admintools_certadmin, 2026-08-18)
+      # 4 — CERT_LIST (delegated to zen_admintools_certadmin)
       #
-      # 2026-08-18 -- a real cert_req_grant hard-
-      # failed with a raw ServiceNotFound (an orphaned entity registry
-      # ghost, unrelated to this tool, several hops deep inside certadmin's
-      # own cert_audit catalog check) because THIS delegate call had zero
-      # fault isolation. continue_on_error alone two hops further in did
-      # NOT stop it from propagating all the way up -- so the fix is here,
-      # at the boundary an agent actually calls: continue_on_error PLUS an
-      # explicit fallback so a failure anywhere downstream (this ghost, or
-      # anything else) always degrades to a clean {status: error} response,
-      # never a raw unhandled exception. Same shape on all three cert modes
-      # below. ──
+      # Fault isolation at the boundary an agent actually calls: a failure
+      # several hops deep inside certadmin (e.g. a raw ServiceNotFound from
+      # an orphaned entity registry ghost) is not stopped by
+      # continue_on_error further in, so this delegate call carries
+      # continue_on_error PLUS an explicit fallback -- any downstream
+      # failure degrades to a clean {status: error} response, never a raw
+      # unhandled exception. Same shape on all three cert modes below. ──
       ###########################################################################
       - choose:
           - conditions: "{{ final_response is not defined and _mode == 'cert_list' }}"
@@ -1812,12 +1821,14 @@ script:
                   target: "{{ _target }}"
                   caller_token: "{{ caller_token }}"
               - variables:
+                  final_response: "{{ final_response.get('result', final_response) if final_response is mapping else final_response }}"
+              - variables:
                   final_response: >-
                     {{ final_response if final_response is mapping and final_response.get('status', '') != ''
                        else {'status': 'error', 'mode': 'cert_list', 'message': 'certadmin call failed -- see system log for the underlying error.', 'caller_token': caller_token} }}
 
       ###########################################################################
-      # 5 — CERT_GRANT (delegated to zen_admintools_certadmin, 2026-08-18)
+      # 5 — CERT_GRANT (delegated to zen_admintools_certadmin)
       #
       # persona_editor is agent-facing (MCP-exposed) — cert_req_grant logic and
       # the waives_live_ack capability now live in zen_admintools_certadmin
@@ -1825,11 +1836,11 @@ script:
       # indirectly). This block forwards ONLY the fields persona_editor's
       # own schema declares: target, cert_component, cert_bundle,
       # cert_bundle_members, also_grant, cert_level, cert_tool, cert_constraints,
-      # cert_scope, stats_patch, caller_token. cert_bundle_members (2026-09-11,
-      # #10415) is the narrow exception to "cert_bundle_set is operator-only" --
+      # cert_scope, stats_patch, caller_token. cert_bundle_members is the
+      # narrow exception to "cert_bundle_set is operator-only" --
       # it only ever takes effect inside cert_req_grant's own bundle path, and only
-      # when the named bundle doesn't exist yet (define-only by default as of
-      # 2026-09-12; also_grant=true is required to also grant it in the same ask);
+      # when the named bundle doesn't exist yet (define-only by default;
+      # also_grant=true is required to also grant it in the same ask);
       # it can never edit an EXISTING bundle's membership from here, that still
       # requires an operator calling cert_bundle_set directly.
       # waives_live_ack and ack_phrase are NOT declared anywhere in this
@@ -1858,12 +1869,14 @@ script:
                   stats_patch: "{{ stats_patch | default('') }}"
                   caller_token: "{{ caller_token }}"
               - variables:
+                  final_response: "{{ final_response.get('result', final_response) if final_response is mapping else final_response }}"
+              - variables:
                   final_response: >-
                     {{ final_response if final_response is mapping and final_response.get('status', '') != ''
                        else {'status': 'error', 'mode': 'cert_req_grant', 'message': 'certadmin call failed -- see system log for the underlying error. No cert was granted.', 'caller_token': caller_token} }}
 
       ###########################################################################
-      # 6 — CERT_REVOKE (delegated to zen_admintools_certadmin, 2026-08-18)
+      # 6 — CERT_REVOKE (delegated to zen_admintools_certadmin)
       ###########################################################################
       - choose:
           - conditions: "{{ final_response is not defined and _mode == 'cert_req_revoke' }}"
@@ -1876,6 +1889,8 @@ script:
                   target: "{{ _target }}"
                   cert_component: "{{ cert_component | default('') }}"
                   caller_token: "{{ caller_token }}"
+              - variables:
+                  final_response: "{{ final_response.get('result', final_response) if final_response is mapping else final_response }}"
               - variables:
                   final_response: >-
                     {{ final_response if final_response is mapping and final_response.get('status', '') != ''
@@ -2085,5 +2100,17 @@ script:
       ###########################################################################
       # SINGLE EXIT
       ###########################################################################
+      - variables:
+          _pers_envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+              mode=_mode | default(''),
+              result=final_response,
+              tool='zen_dojotools_persona_editor',
+              caller_token=caller_token | default('')
+            ) -}}
+      - variables:
+          final_response: "{{ (_pers_envelope_raw | from_json) if _pers_envelope_raw is string else _pers_envelope_raw }}"
       - stop: No matching branch
         response_variable: final_response

@@ -4,8 +4,8 @@
 #
 # 5.3.0 (2026-09-04) -- area_assign/area_remove: entity registry area_id
 #   assignment via Spook's homeassistant.add_entity_to_area /
-#   homeassistant.remove_entity_from_area (confirmed real services --
-#   checked custom_components/spook/services.yaml directly). Same
+#   homeassistant.remove_entity_from_area (real Spook services, see
+#   custom_components/spook/services.yaml). Same
 #   has_service positive-runtime-probe gate as update's spook_clean_update
 #   path below. No fallback path -- unlike update_label, there's no
 #   pre-Spook equivalent, so this errors cleanly if the probe fails
@@ -20,8 +20,8 @@
 #   path (homeassistant.update_label), gated behind a positive has_service
 #   runtime probe (never a version-number guess) -- eliminates the delete+
 #   recreate+retag dance for installs where it's actually available. Old
-#   path kept unconditionally as fallback; scheduled for removal once this
-#   house's minimum supported Spook version is N-2 or newer.
+#   path kept unconditionally as fallback; scheduled for removal once the
+#   minimum supported Spook version is N-2 or newer.
 #
 # Scripts:
 #   zen_dojotools_labels — Label CRUD. Read/modify the HA label index.
@@ -63,24 +63,26 @@ script:
         results_list: []
         failures_list: []
 
-    # ── Cert-gate — registry_lifecycle_control (2026-09-10, #10390
-    # labels.yaml rollout). create/delete/area_assign/area_remove are
-    # structural registry lifecycle actions -- area_assign/area_remove in
+    # ── Cert-gate — registry_lifecycle_control.
+    # create/delete/update/area_assign/area_remove are structural registry
+    # lifecycle actions -- update is included because its own
+    # delete+recreate path below carries the identical area/device loss
+    # risk as a direct delete call. area_assign/area_remove in
     # particular is the SAME underlying Spook add_entity_to_area/
     # remove_entity_from_area capability ectoplasm.yaml already gates
     # under this cert, so leaving it open here would let a caller bypass
     # that gate by coming through labels instead. reset wipes ALL zen_
     # label assignments house-wide (reversible -- labels survive, only
     # assignments cleared -- but broad blast radius), so it's gated here
-    # too PLUS a mandatory live-ack on top (no waiver), since a single
-    # self-settable confirm:true flag was its only gate before. This runs
+    # too PLUS a mandatory live-ack on top (no waiver), since a
+    # self-settable confirm:true flag alone is not a real gate. This runs
     # as a plain sequential step BEFORE the dispatch choose: block below
     # (not as a competing choose branch -- choose only runs its first
     # matching branch, so a cert-gate branch here would silently swallow
     # the real action logic on every authorized call). tag/untag/read/
     # install/tool_manifest stay ungated -- routine, load-bearing,
     # constantly used internally by every other tool's setup flow. ──
-    - if: "{{ action in ['create', 'delete', 'area_assign', 'area_remove', 'reset'] }}"
+    - if: "{{ action in ['create', 'delete', 'update', 'area_assign', 'area_remove', 'reset'] }}"
       then:
       - action: script.zen_dojotools_identity
         response_variable: _lbl_id_raw
@@ -91,10 +93,14 @@ script:
           required_cert_level: 1
           caller_token: "{{ caller_token }}"
       - variables:
-          _lbl_cert_policy: "{{ _lbl_id_raw.get('policy_status', 'blocked') if _lbl_id_raw is mapping else 'blocked' }}"
-          _lbl_cert_authorized: "{{ _lbl_id_raw.get('authorized', false) if _lbl_id_raw is mapping else false }}"
-          _lbl_cert_level: "{{ _lbl_id_raw.get('cert_level', 0) if _lbl_id_raw is mapping else 0 }}"
-          _lbl_cert_block_reason: "{{ _lbl_id_raw.get('block_reason', '') if _lbl_id_raw is mapping else '' }}"
+          _lbl_id_fields: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _raw = OS.resolve_identity_fields(_lbl_id_raw) -%}
+            {{- (_raw | from_json) if _raw is string else _raw -}}
+          _lbl_cert_policy: "{{ _lbl_id_fields.policy_status }}"
+          _lbl_cert_authorized: "{{ _lbl_id_fields.authorized }}"
+          _lbl_cert_level: "{{ _lbl_id_fields.cert_level }}"
+          _lbl_cert_block_reason: "{{ _lbl_id_fields.block_reason }}"
       - if: "{{ _lbl_cert_policy != 'allowed' or not _lbl_cert_authorized }}"
         then:
           - variables:
@@ -104,9 +110,7 @@ script:
           - variables:
               response: >-
                 {{ ((_lbl_cd_raw | from_json) if _lbl_cd_raw is string else _lbl_cd_raw) | combine({'tool': 'zen_dojotools_labels', 'caller_token': caller_token}) }}
-          - stop: cert_insufficient
-            response_variable: response
-      - if: "{{ action == 'reset' }}"
+      - if: "{{ response is not defined and action == 'reset' }}"
         then:
         - action: script.zen_dojotools_identity
           response_variable: _lbl_reset_ack_raw
@@ -133,8 +137,6 @@ script:
                 reason: "{{ _lbl_reset_ack_reason }}"
                 message: "reset requires a fresh live household-admin ack every time -- not granted."
                 caller_token: "{{ caller_token }}"
-          - stop: reset ack not granted
-            response_variable: response
 
     # --- tool_manifest ---
     - choose:
@@ -143,7 +145,7 @@ script:
           value_template: "{{- action == 'tool_manifest' -}}"
         sequence:
         - variables:
-            result: >-
+            response: >-
               {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
               {{- MF.tool_manifest(
                 tool='zen_dojotools_labels',
@@ -167,8 +169,6 @@ script:
               ) | from_json | combine({'certs_required': [
                 {'cert': 'registry_lifecycle_control', 'level': 1, 'modes': ['create', 'delete', 'area_assign', 'area_remove', 'reset']}
               ]}) -}}
-        - stop: labels tool manifest
-          response_variable: result
 
     # --- help ---
     - choose:
@@ -177,7 +177,7 @@ script:
           value_template: "{{- action == 'help' -}}"
         sequence:
         - variables:
-            result:
+            response:
               status: ok
               tool: zen_dojotools_labels
               help:
@@ -211,13 +211,11 @@ script:
                   - "mode=untag label_list=[old] target_entities=[entity.id]"
                   - "mode=tag label_list=[zen_kfc_provider] target_entities=[script.foo] confirm=true"
               caller_token: "{{ caller_token | default('') }}"
-        - stop: labels help
-          response_variable: result
 
     - choose:
       - conditions:
         - condition: template
-          value_template: '{{ action not in [''tag'',''untag'',''create'',''delete'',''update'',''read'',''reset'',''install'',''area_assign'',''area_remove'',''help'']
+          value_template: '{{ response is not defined and action not in [''tag'',''untag'',''create'',''delete'',''update'',''read'',''reset'',''install'',''area_assign'',''area_remove'',''help'',''tool_manifest'']
             }}'
           alias: Error - invalid Action
         sequence:
@@ -227,11 +225,9 @@ script:
               error: Invalid action_type '{{ action_type }}'. {{ minihelp }}
               index: '{{ label_index }}'
               caller_token: '{{ caller_token }}'
-        - stop: response
-          response_variable: response
       - conditions:
         - condition: template
-          value_template: '{{ action == ''create'' }}'
+          value_template: '{{ response is not defined and action == ''create'' }}'
           alias: CREATE
         sequence:
         - choose:
@@ -246,107 +242,105 @@ script:
                   error: Create requires at least one label. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
-        - variables:
-            to_create: "[{% for label in user_labels if label | slugify(separator='_') not in label_index %}\n
-              \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
-            already_exists: "[{% for label in user_labels if label | slugify(separator='_') in label_index %}\n
-              \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
-            target_labels: "{% if confirm %}\n  {{ to_create }}\n{% else %}\n  []\n{%
-              endif %}"
-        - variables:
-            response:
-              status: '{{ ''ok'' if target_labels | count > 0 else ''start'' }}'
-              action: create
-              to_create: '{{ to_create }}'
-              already_exists: '{{ already_exists }}'
-              confirm: '{{ confirm }}'
-              target_labels: '{{ target_labels }}'
-              message: "{% if target_labels | count > 0 %}\n  Started Create.\n{% else
-                %}\n  Some or all labels already existed and were skipped. Confirmation
-                required.\n{% endif %}"
-              caller_token: '{{ caller_token }}'
-        - variables:
-            # homeassistant.create_label doesn't support response_variable at
-            # all (confirmed: HA rejects the whole call if you ask for one),
-            # so per-item success/failure can't be read from a response — we
-            # detect it by comparing the live label registry before and after
-            # each attempt instead. This also sidesteps a real gap: HA's
-            # create_label service can reject a name as "already in use" even
-            # when our own pre-check above (comparing against the labels()
-            # slug index) didn't flag it as existing — HA's internal label-ID
-            # normalization can collide two names our slug convention treats
-            # as distinct (e.g. 'servicedesk' vs the existing 'service_desk').
-            # Previously that raised uncaught, aborting the whole repeat/batch
-            # partway through with no record of what happened to items still
-            # queued. continue_on_error keeps the batch going regardless; the
-            # before/after check then tells us honestly whether each one
-            # landed, without needing to parse error text at all.
-            create_succeeded: []
-            create_dupe_skipped: []
-            create_errors: []
-        - repeat:
-            for_each: '{{ target_labels }}'
-            sequence:
-            - variables:
-                _create_pre_existing: '{{ repeat.item | slugify(separator=''_'') in (labels() | list) }}'
-            - if:
-              - condition: template
-                value_template: '{{ new_icon | default('''', true) != '''' }}'
-              then:
-              - action: homeassistant.create_label
-                metadata: {}
-                continue_on_error: true
-                data:
-                  name: '{{ repeat.item }}'
-                  description: '{{ new_description | default('''', true) }}'
-                  icon: '{{ new_icon }}'
-                  color: '{{ new_color | default(''primary'', true) }}'
-              else:
-              - action: homeassistant.create_label
-                metadata: {}
-                continue_on_error: true
-                data:
-                  name: '{{ repeat.item }}'
-                  description: '{{ new_description | default('''', true) }}'
-                  color: '{{ new_color | default(''primary'', true) }}'
-            - variables:
-                _create_now_exists: '{{ repeat.item | slugify(separator=''_'') in (labels() | list) }}'
-            - choose:
-              - conditions: '{{ _create_now_exists and not _create_pre_existing }}'
-                sequence:
-                - variables:
-                    create_succeeded: '{{ create_succeeded + [repeat.item] }}'
-              - conditions: '{{ _create_now_exists and _create_pre_existing }}'
-                sequence:
-                - variables:
-                    create_dupe_skipped: '{{ create_dupe_skipped + [repeat.item] }}'
-              default:
-              - variables:
-                  create_errors: '{{ create_errors + [{''label'': repeat.item, ''error'': ''create_label call did not result in the label existing — check HA logs for the exact rejection reason''}] }}'
-        - variables:
-            created_count: '{{ create_succeeded | count }}'
-            response:
-              status: '{{ ''ok'' if created_count > 0 else (''partial'' if create_dupe_skipped | count > 0 else ''error'' if create_errors | count > 0 else ''partial'') }}'
-              action: create
-              confirm: '{{ confirm }}'
-              created_labels: '{{ create_succeeded }}'
-              already_existed: '{{ already_exists + create_dupe_skipped }}'
-              creation_errors: '{{ create_errors }}'
-              message: "{% if created_count > 0 %}\n  Create Action Complete.\n{% elif create_dupe_skipped | count > 0 and create_errors | count == 0 %}\n  All requested labels already existed (including some HA didn't report as pre-existing) — nothing new created.\n{% else %}\n  Create requires confirmation, no labels created.\n{% endif %}"
-              caller_token: '{{ caller_token }}'
-        - if:
-          - condition: template
-            value_template: '{{ created_count > 0 }}'
+        - if: "{{ response is not defined }}"
           then:
-          - event: zen_event
-            event_data:
-              event:
-                kind: label_mutation
-                action: "{{ action }}"
-        - stop: pass var scope
-          response_variable: response
+          - variables:
+              to_create: "[{% for label in user_labels if label | slugify(separator='_') not in label_index %}\n
+                \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
+              already_exists: "[{% for label in user_labels if label | slugify(separator='_') in label_index %}\n
+                \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
+              target_labels: "{% if confirm %}\n  {{ to_create }}\n{% else %}\n  []\n{%
+                endif %}"
+          - variables:
+              response:
+                status: '{{ ''ok'' if target_labels | count > 0 else ''start'' }}'
+                action: create
+                to_create: '{{ to_create }}'
+                already_exists: '{{ already_exists }}'
+                confirm: '{{ confirm }}'
+                target_labels: '{{ target_labels }}'
+                message: "{% if target_labels | count > 0 %}\n  Started Create.\n{% else
+                  %}\n  Some or all labels already existed and were skipped. Confirmation
+                  required.\n{% endif %}"
+                caller_token: '{{ caller_token }}'
+          - variables:
+              # homeassistant.create_label doesn't support response_variable at
+              # all (confirmed: HA rejects the whole call if you ask for one),
+              # so per-item success/failure can't be read from a response — we
+              # detect it by comparing the live label registry before and after
+              # each attempt instead. This also sidesteps a real gap: HA's
+              # create_label service can reject a name as "already in use" even
+              # when our own pre-check above (comparing against the labels()
+              # slug index) didn't flag it as existing — HA's internal label-ID
+              # normalization can collide two names our slug convention treats
+              # as distinct (e.g. 'servicedesk' vs the existing 'service_desk').
+              # Previously that raised uncaught, aborting the whole repeat/batch
+              # partway through with no record of what happened to items still
+              # queued. continue_on_error keeps the batch going regardless; the
+              # before/after check then tells us honestly whether each one
+              # landed, without needing to parse error text at all.
+              create_succeeded: []
+              create_dupe_skipped: []
+              create_errors: []
+          - repeat:
+              for_each: '{{ target_labels }}'
+              sequence:
+              - variables:
+                  _create_pre_existing: '{{ repeat.item | slugify(separator=''_'') in (labels() | list) }}'
+              - if:
+                - condition: template
+                  value_template: '{{ new_icon | default('''', true) != '''' }}'
+                then:
+                - action: homeassistant.create_label
+                  metadata: {}
+                  continue_on_error: true
+                  data:
+                    name: '{{ repeat.item }}'
+                    description: '{{ new_description | default('''', true) }}'
+                    icon: '{{ new_icon }}'
+                    color: '{{ new_color | default(''primary'', true) }}'
+                else:
+                - action: homeassistant.create_label
+                  metadata: {}
+                  continue_on_error: true
+                  data:
+                    name: '{{ repeat.item }}'
+                    description: '{{ new_description | default('''', true) }}'
+                    color: '{{ new_color | default(''primary'', true) }}'
+              - variables:
+                  _create_now_exists: '{{ repeat.item | slugify(separator=''_'') in (labels() | list) }}'
+              - choose:
+                - conditions: '{{ _create_now_exists and not _create_pre_existing }}'
+                  sequence:
+                  - variables:
+                      create_succeeded: '{{ create_succeeded + [repeat.item] }}'
+                - conditions: '{{ _create_now_exists and _create_pre_existing }}'
+                  sequence:
+                  - variables:
+                      create_dupe_skipped: '{{ create_dupe_skipped + [repeat.item] }}'
+                default:
+                - variables:
+                    create_errors: '{{ create_errors + [{''label'': repeat.item, ''error'': ''create_label call did not result in the label existing — check HA logs for the exact rejection reason''}] }}'
+          - variables:
+              created_count: '{{ create_succeeded | count }}'
+              response:
+                status: '{{ ''ok'' if created_count > 0 else (''partial'' if create_dupe_skipped | count > 0 else ''error'' if create_errors | count > 0 else ''partial'') }}'
+                action: create
+                confirm: '{{ confirm }}'
+                created_labels: '{{ create_succeeded }}'
+                already_existed: '{{ already_exists + create_dupe_skipped }}'
+                creation_errors: '{{ create_errors }}'
+                message: "{% if created_count > 0 %}\n  Create Action Complete.\n{% elif create_dupe_skipped | count > 0 and create_errors | count == 0 %}\n  All requested labels already existed (including some HA didn't report as pre-existing) — nothing new created.\n{% else %}\n  Create requires confirmation, no labels created.\n{% endif %}"
+                caller_token: '{{ caller_token }}'
+          - if:
+            - condition: template
+              value_template: '{{ created_count > 0 }}'
+            then:
+            - event: zen_event
+              event_data:
+                event:
+                  kind: label_mutation
+                  action: "{{ action }}"
       - conditions:
         - alias: READ
           condition: template
@@ -367,19 +361,15 @@ script:
                   \   \"labels_by_area\": labels_by_area\n  }\n}}"
             - variables:
                 response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
-            - stop: Pass context
-              response_variable: response
         - variables:
             response: "{{ {\n  'status': 'ok',\n  'action': 'read_index',\n  'target':
               '*',        \n  'index': label_index\n} }}"
         - variables:
             response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
-        - stop: pass var scope
-          response_variable: response
       - conditions:
         - alias: DELETE
           condition: template
-          value_template: '{{ action == ''delete'' }}'
+          value_template: '{{ response is not defined and action == ''delete'' }}'
         sequence:
         - choose:
           - conditions:
@@ -393,54 +383,52 @@ script:
                   error: Delete requires at least one label. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
-        - variables:
-            to_delete: "[{% for label in user_labels if label | slugify(separator='_') in label_index %}\n
-              \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
-            already_exists: "[{% for label in user_labels if label | slugify(separator='_') not in label_index %}\n
-              \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
-            target_labels: "{% if confirm %}\n  {{ to_delete }}\n{% else %}\n  []\n{%
-              endif %}"
-        - variables:
-            response:
-              status: '{{ ''ok'' if target_labels | count > 0 else ''start'' }}'
-              action: delete
-              to_delete: '{{ to_delete }}'
-              already_exists: '{{ already_exists }}'
-              confirm: '{{ confirm }}'
-              target_labels: '{{ target_labels }}'
-              message: "{% if target_labels | count > 0 %}\n  Started Delete.\n{% else
-                %}\n  Some or all labels were skipped. Confirmation required.\n{% endif
-                %}"
-              caller_token: '{{ caller_token }}'
-        - repeat:
-            for_each: '{{ target_labels }}'
-            sequence:
-            - action: homeassistant.delete_label
-              data:
-                label_id: '{{ repeat.item | slugify(separator=''_'') }}'
-        - variables:
-            deleted_count: '{{ target_labels | count }}'
-            response:
-              status: '{{ ''ok'' if deleted_count > 0 else ''partial'' }}'
-              action: delete
-              confirm: '{{ confirm }}'
-              deleted_labels: '{{ target_labels }}'
-              message: "{% if deleted_count > 0 %}\n  Delete Action Complete.\n{% else
-                %}\n  Delete requires confirmation, no labels deleted.\n{% endif %}"
-              caller_token: '{{ caller_token }}'
-        - if:
-          - condition: template
-            value_template: '{{ deleted_count > 0 }}'
+        - if: "{{ response is not defined }}"
           then:
-          - event: zen_event
-            event_data:
-              event:
-                kind: label_mutation
-                action: "{{ action }}"
-        - stop: pass var scope
-          response_variable: response
+          - variables:
+              to_delete: "[{% for label in user_labels if label | slugify(separator='_') in label_index %}\n
+                \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
+              already_exists: "[{% for label in user_labels if label | slugify(separator='_') not in label_index %}\n
+                \ \"{{ label }}\"{% if not loop.last %},{% endif %}\n{% endfor %}]"
+              target_labels: "{% if confirm %}\n  {{ to_delete }}\n{% else %}\n  []\n{%
+                endif %}"
+          - variables:
+              response:
+                status: '{{ ''ok'' if target_labels | count > 0 else ''start'' }}'
+                action: delete
+                to_delete: '{{ to_delete }}'
+                already_exists: '{{ already_exists }}'
+                confirm: '{{ confirm }}'
+                target_labels: '{{ target_labels }}'
+                message: "{% if target_labels | count > 0 %}\n  Started Delete.\n{% else
+                  %}\n  Some or all labels were skipped. Confirmation required.\n{% endif
+                  %}"
+                caller_token: '{{ caller_token }}'
+          - repeat:
+              for_each: '{{ target_labels }}'
+              sequence:
+              - action: homeassistant.delete_label
+                data:
+                  label_id: '{{ repeat.item | slugify(separator=''_'') }}'
+          - variables:
+              deleted_count: '{{ target_labels | count }}'
+              response:
+                status: '{{ ''ok'' if deleted_count > 0 else ''partial'' }}'
+                action: delete
+                confirm: '{{ confirm }}'
+                deleted_labels: '{{ target_labels }}'
+                message: "{% if deleted_count > 0 %}\n  Delete Action Complete.\n{% else
+                  %}\n  Delete requires confirmation, no labels deleted.\n{% endif %}"
+                caller_token: '{{ caller_token }}'
+          - if:
+            - condition: template
+              value_template: '{{ deleted_count > 0 }}'
+            then:
+            - event: zen_event
+              event_data:
+                event:
+                  kind: label_mutation
+                  action: "{{ action }}"
         alias: DELETE
       - conditions:
         - condition: template
@@ -459,8 +447,6 @@ script:
                   error: Tag requires at least one label. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
           - conditions:
             - alias: Error - no Targets
               condition: template
@@ -472,65 +458,63 @@ script:
                   error: Tag requires at least one target_entities or target_areas entry. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
-        - if:
-          - condition: template
-            value_template: '{{ target_ent_list | length > 0 }}'
+        - if: "{{ response is not defined }}"
           then:
-          - action: homeassistant.add_label_to_entity
-            data:
-              label_id: '{{ user_labels | map("slugify") | list }}'
-              entity_id: '{{ target_ent_list }}'
-        - if:
-          - condition: template
-            value_template: '{{ target_area_list | length > 0 }}'
-          then:
-          - action: homeassistant.add_label_to_area
-            data:
-              label_id: '{{ user_labels | map("slugify") | list }}'
-              area_id: '{{ target_area_list }}'
-        - variables:
-            _tag_label_ids: '{{ user_labels | map("slugify") | list }}'
-            _tag_failed_entities: >-
-              {%- set ns = namespace(out=[]) -%}
-              {%- for ent in target_ent_list -%}
-                {%- set present = labels(ent) | list -%}
-                {%- set missing = _tag_label_ids | reject('in', present) | list -%}
-                {%- if missing | length > 0 -%}
-                  {%- set ns.out = ns.out + [{'entity_id': ent, 'missing_labels': missing}] -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.out }}
-            _tag_failed_areas: >-
-              {%- set ns = namespace(out=[]) -%}
-              {%- for aid in target_area_list -%}
-                {%- set present = labels(aid) | list -%}
-                {%- set missing = _tag_label_ids | reject('in', present) | list -%}
-                {%- if missing | length > 0 -%}
-                  {%- set ns.out = ns.out + [{'area_id': aid, 'missing_labels': missing}] -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.out }}
-            response:
-              status: "{{ 'warning' if (_tag_failed_entities | length > 0 or _tag_failed_areas | length > 0) else 'ok' }}"
-              action: tag
-              affected_labels: '{{ user_labels }}'
-              affected_entities: '{{ target_ent_list }}'
-              affected_areas: '{{ target_area_list }}'
-              verification:
-                confirmed: "{{ _tag_failed_entities | length == 0 and _tag_failed_areas | length == 0 }}"
-                failed_entities: "{{ _tag_failed_entities }}"
-                failed_areas: "{{ _tag_failed_areas }}"
-                note: "{{ 'HA accepted the label service call but readback did not show all requested labels.' if (_tag_failed_entities | length > 0 or _tag_failed_areas | length > 0) else 'Readback confirmed requested label assignments.' }}"
-              caller_token: '{{ caller_token }}'
-        - event: zen_event
-          event_data:
-            event:
-              kind: label_mutation
-              action: "{{ action }}"
-        - stop: pass var scope
-          response_variable: response
+          - if:
+            - condition: template
+              value_template: '{{ target_ent_list | length > 0 }}'
+            then:
+            - action: homeassistant.add_label_to_entity
+              data:
+                label_id: '{{ user_labels | map("slugify") | list }}'
+                entity_id: '{{ target_ent_list }}'
+          - if:
+            - condition: template
+              value_template: '{{ target_area_list | length > 0 }}'
+            then:
+            - action: homeassistant.add_label_to_area
+              data:
+                label_id: '{{ user_labels | map("slugify") | list }}'
+                area_id: '{{ target_area_list }}'
+          - variables:
+              _tag_label_ids: '{{ user_labels | map("slugify") | list }}'
+              _tag_failed_entities: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for ent in target_ent_list -%}
+                  {%- set present = labels(ent) | list -%}
+                  {%- set missing = _tag_label_ids | reject('in', present) | list -%}
+                  {%- if missing | length > 0 -%}
+                    {%- set ns.out = ns.out + [{'entity_id': ent, 'missing_labels': missing}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+              _tag_failed_areas: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for aid in target_area_list -%}
+                  {%- set present = labels(aid) | list -%}
+                  {%- set missing = _tag_label_ids | reject('in', present) | list -%}
+                  {%- if missing | length > 0 -%}
+                    {%- set ns.out = ns.out + [{'area_id': aid, 'missing_labels': missing}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+              response:
+                status: "{{ 'warning' if (_tag_failed_entities | length > 0 or _tag_failed_areas | length > 0) else 'ok' }}"
+                action: tag
+                affected_labels: '{{ user_labels }}'
+                affected_entities: '{{ target_ent_list }}'
+                affected_areas: '{{ target_area_list }}'
+                verification:
+                  confirmed: "{{ _tag_failed_entities | length == 0 and _tag_failed_areas | length == 0 }}"
+                  failed_entities: "{{ _tag_failed_entities }}"
+                  failed_areas: "{{ _tag_failed_areas }}"
+                  note: "{{ 'HA accepted the label service call but readback did not show all requested labels.' if (_tag_failed_entities | length > 0 or _tag_failed_areas | length > 0) else 'Readback confirmed requested label assignments.' }}"
+                caller_token: '{{ caller_token }}'
+          - event: zen_event
+            event_data:
+              event:
+                kind: label_mutation
+                action: "{{ action }}"
       - conditions:
         - alias: UNTAG
           condition: template
@@ -548,8 +532,6 @@ script:
                   error: Untag requires at least one label. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
           - conditions:
             - alias: Error - no Targets
               condition: template
@@ -561,69 +543,67 @@ script:
                   error: Untag requires at least one target_entities or target_areas entry. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
-        - if:
-          - condition: template
-            value_template: '{{ target_ent_list | length > 0 }}'
+        - if: "{{ response is not defined }}"
           then:
-          - action: homeassistant.remove_label_from_entity
-            data:
-              label_id: '{{ user_labels | map("slugify") | list }}'
-              entity_id: '{{ target_ent_list }}'
-        - if:
-          - condition: template
-            value_template: '{{ target_area_list | length > 0 }}'
-          then:
-          - action: homeassistant.remove_label_from_area
-            data:
-              label_id: '{{ user_labels | map("slugify") | list }}'
-              area_id: '{{ target_area_list }}'
-        - variables:
-            _untag_label_ids: '{{ user_labels | map("slugify") | list }}'
-            _untag_failed_entities: >-
-              {%- set ns = namespace(out=[]) -%}
-              {%- for ent in target_ent_list -%}
-                {%- set present = labels(ent) | list -%}
-                {%- set still_present = _untag_label_ids | select('in', present) | list -%}
-                {%- if still_present | length > 0 -%}
-                  {%- set ns.out = ns.out + [{'entity_id': ent, 'still_present_labels': still_present}] -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.out }}
-            _untag_failed_areas: >-
-              {%- set ns = namespace(out=[]) -%}
-              {%- for aid in target_area_list -%}
-                {%- set present = labels(aid) | list -%}
-                {%- set still_present = _untag_label_ids | select('in', present) | list -%}
-                {%- if still_present | length > 0 -%}
-                  {%- set ns.out = ns.out + [{'area_id': aid, 'still_present_labels': still_present}] -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ ns.out }}
-            response:
-              status: "{{ 'warning' if (_untag_failed_entities | length > 0 or _untag_failed_areas | length > 0) else 'ok' }}"
-              action: untag
-              affected_labels: '{{ user_labels }}'
-              affected_entities: '{{ target_ent_list }}'
-              affected_areas: '{{ target_area_list }}'
-              verification:
-                confirmed: "{{ _untag_failed_entities | length == 0 and _untag_failed_areas | length == 0 }}"
-                failed_entities: "{{ _untag_failed_entities }}"
-                failed_areas: "{{ _untag_failed_areas }}"
-                note: "{{ 'HA accepted the label service call but readback still showed at least one removed label.' if (_untag_failed_entities | length > 0 or _untag_failed_areas | length > 0) else 'Readback confirmed requested label removals.' }}"
-              caller_token: '{{ caller_token }}'
-        - event: zen_event
-          event_data:
-            event:
-              kind: label_mutation
-              action: "{{ action }}"
-        - stop: pass var scope
-          response_variable: response
+          - if:
+            - condition: template
+              value_template: '{{ target_ent_list | length > 0 }}'
+            then:
+            - action: homeassistant.remove_label_from_entity
+              data:
+                label_id: '{{ user_labels | map("slugify") | list }}'
+                entity_id: '{{ target_ent_list }}'
+          - if:
+            - condition: template
+              value_template: '{{ target_area_list | length > 0 }}'
+            then:
+            - action: homeassistant.remove_label_from_area
+              data:
+                label_id: '{{ user_labels | map("slugify") | list }}'
+                area_id: '{{ target_area_list }}'
+          - variables:
+              _untag_label_ids: '{{ user_labels | map("slugify") | list }}'
+              _untag_failed_entities: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for ent in target_ent_list -%}
+                  {%- set present = labels(ent) | list -%}
+                  {%- set still_present = _untag_label_ids | select('in', present) | list -%}
+                  {%- if still_present | length > 0 -%}
+                    {%- set ns.out = ns.out + [{'entity_id': ent, 'still_present_labels': still_present}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+              _untag_failed_areas: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for aid in target_area_list -%}
+                  {%- set present = labels(aid) | list -%}
+                  {%- set still_present = _untag_label_ids | select('in', present) | list -%}
+                  {%- if still_present | length > 0 -%}
+                    {%- set ns.out = ns.out + [{'area_id': aid, 'still_present_labels': still_present}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+              response:
+                status: "{{ 'warning' if (_untag_failed_entities | length > 0 or _untag_failed_areas | length > 0) else 'ok' }}"
+                action: untag
+                affected_labels: '{{ user_labels }}'
+                affected_entities: '{{ target_ent_list }}'
+                affected_areas: '{{ target_area_list }}'
+                verification:
+                  confirmed: "{{ _untag_failed_entities | length == 0 and _untag_failed_areas | length == 0 }}"
+                  failed_entities: "{{ _untag_failed_entities }}"
+                  failed_areas: "{{ _untag_failed_areas }}"
+                  note: "{{ 'HA accepted the label service call but readback still showed at least one removed label.' if (_untag_failed_entities | length > 0 or _untag_failed_areas | length > 0) else 'Readback confirmed requested label removals.' }}"
+                caller_token: '{{ caller_token }}'
+          - event: zen_event
+            event_data:
+              event:
+                kind: label_mutation
+                action: "{{ action }}"
       - conditions:
         - alias: RESET (soft)
           condition: template
-          value_template: '{{ action == ''reset'' }}'
+          value_template: '{{ response is not defined and action == ''reset'' }}'
         sequence:
         - if:
           - condition: template
@@ -638,41 +618,39 @@ script:
                   when label IDs exist but assignments are wrong or missing. For
                   nuclear (delete labels too) use zen_admintools_reset_labels.
                 caller_token: '{{ caller_token }}'
-          - stop: confirm required
-            response_variable: response
-        - variables:
-            zen_labels: '{{ labels() | select(''match'', ''^zen_'') | list }}'
-        - repeat:
-            for_each: '{{ zen_labels }}'
-            sequence:
-            - variables:
-                lbl_entities: '{{ label_entities(repeat.item) | list }}'
-            - if:
-              - condition: template
-                value_template: '{{ lbl_entities | length > 0 }}'
-              then:
-              - action: homeassistant.remove_label_from_entity
-                data:
-                  label_id: '{{ repeat.item }}'
-                  entity_id: '{{ lbl_entities }}'
-        - event: zen_resolver_refresh
-        - variables:
-            response:
-              status: ok
-              action: reset
-              labels_cleared: '{{ zen_labels | length }}'
-              message: >-
-                Soft reset complete. {{ zen_labels | length }} zen_ label(s)
-                cleared. All assignments wiped. zen_resolver_refresh fired —
-                Flynn will re-assign on next label health check.
-              caller_token: '{{ caller_token }}'
-        - event: zen_event
-          event_data:
-            event:
-              kind: label_mutation
-              action: "{{ action }}"
-        - stop: pass var scope
-          response_variable: response
+        - if: "{{ response is not defined }}"
+          then:
+          - variables:
+              zen_labels: '{{ labels() | select(''match'', ''^zen_'') | list }}'
+          - repeat:
+              for_each: '{{ zen_labels }}'
+              sequence:
+              - variables:
+                  lbl_entities: '{{ label_entities(repeat.item) | list }}'
+              - if:
+                - condition: template
+                  value_template: '{{ lbl_entities | length > 0 }}'
+                then:
+                - action: homeassistant.remove_label_from_entity
+                  data:
+                    label_id: '{{ repeat.item }}'
+                    entity_id: '{{ lbl_entities }}'
+          - event: zen_resolver_refresh
+          - variables:
+              response:
+                status: ok
+                action: reset
+                labels_cleared: '{{ zen_labels | length }}'
+                message: >-
+                  Soft reset complete. {{ zen_labels | length }} zen_ label(s)
+                  cleared. All assignments wiped. zen_resolver_refresh fired —
+                  Flynn will re-assign on next label health check.
+                caller_token: '{{ caller_token }}'
+          - event: zen_event
+            event_data:
+              event:
+                kind: label_mutation
+                action: "{{ action }}"
       - conditions:
         - alias: INSTALL
           condition: template
@@ -693,66 +671,64 @@ script:
                   Requires confirm: true.
                 catalog_count: 16
                 caller_token: '{{ caller_token }}'
-          - stop: confirm required
-            response_variable: response
-        - variables:
-            _existing_zen: '{{ labels() | select(''match'', ''^zen_'') | list }}'
-            _catalog:
-              - {name: 'Zen Cabinet',                  icon: 'mdi:file-cabinet',    color: 'deep-purple', description: 'Parent label for all ZenOS cabinet sensors.'}
-              - {name: 'Zen System Cabinet',            icon: 'mdi:server-security', color: 'red',         description: 'ZenOS system core and OS cabinet.'}
-              - {name: 'Zen Dojo Cabinet',              icon: 'mdi:sword-cross',     color: 'orange',      description: 'ZenOS tool, automation, and DojoTools cabinet.'}
-              - {name: 'Zen Kata Cabinet',              icon: 'mdi:script-text',     color: 'amber',       description: 'ZenOS KFC component catalog cabinet.'}
-              - {name: 'Zen Default Household',         icon: 'mdi:home-group',      color: 'green',       description: 'Default household identity group.'}
-              - {name: 'Zen Default Household Cabinet', icon: 'mdi:home',            color: 'green',       description: 'Default household cabinet.'}
-              - {name: 'Zen Household Cabinet',         icon: 'mdi:home-city',       color: 'light-green', description: 'Household cabinet (any provisioned slot).'}
-              - {name: 'Zen Default Family',            icon: 'mdi:account-group',   color: 'teal',        description: 'Default family identity group.'}
-              - {name: 'Zen Default Family Cabinet',    icon: 'mdi:account-multiple', color: 'teal',       description: 'Default family cabinet.'}
-              - {name: 'Zen Family Cabinet',            icon: 'mdi:account-child',   color: 'cyan',        description: 'Family cabinet (any provisioned slot).'}
-              - {name: 'Zen Default User Cabinet',      icon: 'mdi:account',         color: 'blue',        description: 'Default user cabinet.'}
-              - {name: 'Zen User Cabinet',              icon: 'mdi:account-circle',  color: 'light-blue',  description: 'User cabinet (any provisioned slot).'}
-              - {name: 'Zen Default AI User Cabinet',   icon: 'mdi:robot',           color: 'indigo',      description: 'Default AI user cabinet.'}
-              - {name: 'Zen AI User Cabinet',           icon: 'mdi:robot-happy',     color: 'purple',      description: 'AI user cabinet (any provisioned slot).'}
-              - {name: 'Zen History Cabinet',           icon: 'mdi:history',         color: 'brown',       description: 'ZenOS history and long-term storage cabinet.'}
-              - {name: 'Zen Index Cabinet',             icon: 'mdi:magnify',         color: 'blue-grey',   description: 'ZenOS index and scratchpad cabinet.'}
-        - repeat:
-            for_each: '{{ _existing_zen }}'
-            sequence:
-            - action: homeassistant.delete_label
-              data:
-                label_id: '{{ repeat.item }}'
-        - repeat:
-            for_each: '{{ _catalog }}'
-            sequence:
-            - action: homeassistant.create_label
-              data:
-                name: '{{ repeat.item.name }}'
-                description: '{{ repeat.item.description }}'
-                icon: '{{ repeat.item.icon }}'
-                color: '{{ repeat.item.color }}'
-        - event: zen_resolver_refresh
-        - variables:
-            response:
-              status: ok
-              action: install
-              deleted_count: '{{ _existing_zen | length }}'
-              created_count: 16
-              message: >-
-                Install complete. {{ _existing_zen | length }} zen_ label(s) deleted,
-                16 canonical labels created with icons and colors.
-                zen_resolver_refresh fired — Flynn will re-tag core cabinets.
-              caller_token: '{{ caller_token }}'
-        - event: zen_event
-          event_data:
-            event:
-              kind: label_mutation
-              action: "{{ action }}"
-        - stop: pass var scope
-          response_variable: response
+        - if: "{{ response is not defined }}"
+          then:
+          - variables:
+              _existing_zen: '{{ labels() | select(''match'', ''^zen_'') | list }}'
+              _catalog:
+                - {name: 'Zen Cabinet',                  icon: 'mdi:file-cabinet',    color: 'deep-purple', description: 'Parent label for all ZenOS cabinet sensors.'}
+                - {name: 'Zen System Cabinet',            icon: 'mdi:server-security', color: 'red',         description: 'ZenOS system core and OS cabinet.'}
+                - {name: 'Zen Dojo Cabinet',              icon: 'mdi:sword-cross',     color: 'orange',      description: 'ZenOS tool, automation, and DojoTools cabinet.'}
+                - {name: 'Zen Kata Cabinet',              icon: 'mdi:script-text',     color: 'amber',       description: 'ZenOS KFC component catalog cabinet.'}
+                - {name: 'Zen Default Household',         icon: 'mdi:home-group',      color: 'green',       description: 'Default household identity group.'}
+                - {name: 'Zen Default Household Cabinet', icon: 'mdi:home',            color: 'green',       description: 'Default household cabinet.'}
+                - {name: 'Zen Household Cabinet',         icon: 'mdi:home-city',       color: 'light-green', description: 'Household cabinet (any provisioned slot).'}
+                - {name: 'Zen Default Family',            icon: 'mdi:account-group',   color: 'teal',        description: 'Default family identity group.'}
+                - {name: 'Zen Default Family Cabinet',    icon: 'mdi:account-multiple', color: 'teal',       description: 'Default family cabinet.'}
+                - {name: 'Zen Family Cabinet',            icon: 'mdi:account-child',   color: 'cyan',        description: 'Family cabinet (any provisioned slot).'}
+                - {name: 'Zen Default User Cabinet',      icon: 'mdi:account',         color: 'blue',        description: 'Default user cabinet.'}
+                - {name: 'Zen User Cabinet',              icon: 'mdi:account-circle',  color: 'light-blue',  description: 'User cabinet (any provisioned slot).'}
+                - {name: 'Zen Default AI User Cabinet',   icon: 'mdi:robot',           color: 'indigo',      description: 'Default AI user cabinet.'}
+                - {name: 'Zen AI User Cabinet',           icon: 'mdi:robot-happy',     color: 'purple',      description: 'AI user cabinet (any provisioned slot).'}
+                - {name: 'Zen History Cabinet',           icon: 'mdi:history',         color: 'brown',       description: 'ZenOS history and long-term storage cabinet.'}
+                - {name: 'Zen Index Cabinet',             icon: 'mdi:magnify',         color: 'blue-grey',   description: 'ZenOS index and scratchpad cabinet.'}
+          - repeat:
+              for_each: '{{ _existing_zen }}'
+              sequence:
+              - action: homeassistant.delete_label
+                data:
+                  label_id: '{{ repeat.item }}'
+          - repeat:
+              for_each: '{{ _catalog }}'
+              sequence:
+              - action: homeassistant.create_label
+                data:
+                  name: '{{ repeat.item.name }}'
+                  description: '{{ repeat.item.description }}'
+                  icon: '{{ repeat.item.icon }}'
+                  color: '{{ repeat.item.color }}'
+          - event: zen_resolver_refresh
+          - variables:
+              response:
+                status: ok
+                action: install
+                deleted_count: '{{ _existing_zen | length }}'
+                created_count: 16
+                message: >-
+                  Install complete. {{ _existing_zen | length }} zen_ label(s) deleted,
+                  16 canonical labels created with icons and colors.
+                  zen_resolver_refresh fired — Flynn will re-tag core cabinets.
+                caller_token: '{{ caller_token }}'
+          - event: zen_event
+            event_data:
+              event:
+                kind: label_mutation
+                action: "{{ action }}"
         alias: INSTALL
       - conditions:
         - alias: UPDATE
           condition: template
-          value_template: '{{ action == ''update'' }}'
+          value_template: '{{ response is not defined and action == ''update'' }}'
         sequence:
         - choose:
           - conditions:
@@ -766,8 +742,6 @@ script:
                   error: Update requires exactly one label. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
           - conditions:
             - condition: template
               value_template: '{{ user_labels | length > 1 }}'
@@ -779,267 +753,267 @@ script:
                   error: Update operates on one label at a time. {{ minihelp }}
                   index: '{{ label_index }}'
                   caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
-        - variables:
-            _upd_name: '{{ user_labels[0] }}'
-            _upd_id: '{{ user_labels[0] | slugify(separator=''_'') }}'
-            _has_change: '{{ new_description | default('''', true) != '''' or new_icon
-              | default('''', true) != '''' or new_color | default('''', true) != '''' }}'
-            _force_rewrite: '{{ force_rewrite | default(false) | bool }}'
-        # ── Existence guard -- shared by BOTH the clean-update
-        # and delete+recreate paths below. This check never
-        # existed before -- 'update' on a typo'd/nonexistent label name fell
-        # through to the old path's delete_label (silent no-op on a
-        # nonexistent id) + create_label (which doesn't care whether one
-        # existed -- just creates a NEW label under that name). That's worse
-        # than an error: a silent, wrong write. label_name() is a real
-        # Jinja-only HA template global (no REST) -- resolves a label_id to
-        # its display name, or None if it doesn't exist.
-        - choose:
-          - conditions:
-            - condition: template
-              value_template: '{{ label_name(_upd_id) is none }}'
-              alias: Label does not exist
-            sequence:
-            - variables:
-                response:
-                  status: error
-                  error: >-
-                    Label '{{ _upd_name }}' (id: {{ _upd_id }}) does not exist --
-                    update refuses to silently create it. Use 'create' if you
-                    meant to add a new label.
-                  caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
-        - choose:
-          - conditions:
-            - condition: template
-              value_template: '{{ not _has_change }}'
-            sequence:
-            - variables:
-                response:
-                  status: error
-                  error: Update requires at least one of new_description, new_icon, new_color.
-                  caller_token: '{{ caller_token }}'
-            - stop: pass var scope
-              response_variable: response
-        - alias: Pre-read existing label metadata via HA REST API
-          if:
-            - condition: template
-              value_template: '{{ not _force_rewrite }}'
-          then:
-            - action: rest_command.ha_api_get
-              data:
-                path: labels
-              response_variable: _labels_r
-        - variables:
-            _labels_ok: '{{ not _force_rewrite and (_labels_r.status | default(0) | int == 200) }}'
-            _labels_all: >-
-              {{ _labels_r.content if _labels_ok and _labels_r.content is iterable else [] }}
-            _existing: >-
-              {%- set found = _labels_all | selectattr('label_id', 'eq', _upd_id) | list -%}
-              {{ found | first | default({}) }}
-            _upd_desc: >-
-              {{ new_description if new_description | default('', true) != ''
-                 else _existing.get('description', '') | default('', true) }}
-            _upd_icon: >-
-              {{ new_icon if new_icon | default('', true) != ''
-                 else _existing.get('icon', '') | default('', true) }}
-            _upd_color: >-
-              {{ new_color if new_color | default('', true) != ''
-                 else _existing.get('color', 'primary') | default('primary', true) }}
-        - if:
-          - condition: template
-            value_template: '{{ not confirm }}'
+        - if: "{{ response is not defined }}"
           then:
           - variables:
-              response:
-                status: start
-                action: update
-                label: '{{ _upd_name }}'
-                label_id: '{{ _upd_id }}'
-                new_description: '{{ _upd_desc }}'
-                new_icon: '{{ _upd_icon }}'
-                new_color: '{{ _upd_color }}'
-                preserved_from_existing: '{{ _labels_ok }}'
-                message: Confirmation required. Update will delete and recreate the
-                  label then restore all entity associations.
-                caller_token: '{{ caller_token }}'
-          - stop: confirm required
-            response_variable: response
-        # ── Spook >=5.3 clean-update probe ──────────────────────────────────
-        # Spook v5.3.0 added a real update-label action, eliminating the
-        # delete+recreate+retag dance below. POSITIVE runtime detection only,
-        # never a version-number guess. Same has_service probe pattern
-        # dojotools_lights.yaml already uses for its Spook v5.2.0 gates
-        # (never assume, always confirm the real service exists before
-        # calling it). If found, use the one-call path and stop -- the old
-        # delete+recreate path below is UNTOUCHED as the fallback for any
-        # install where the probe comes back negative (Spook not installed,
-        # older version, service renamed, etc.).
-        # RETIREMENT NOTE: once this house's minimum supported Spook version
-        # guarantees the new service (N-2 versions back), delete the old
-        # delete+recreate branch below entirely and always take this path
-        # unconditionally.
-        - action: script.zen_sutra_ha_api
-          continue_on_error: true
-          data:
-            mode: services
-            has_service: homeassistant.update_label
-          response_variable: _lbl_svc_check
-        - variables:
-            _lbl_clean_update_available: >-
-              {{ _lbl_svc_check is mapping and _lbl_svc_check.get('found', false) == true }}
-        - if:
-          - condition: template
-            value_template: '{{ _lbl_clean_update_available }}'
-          then:
-          - if:
-            - condition: template
-              value_template: "{{ _upd_icon != '' }}"
+              _upd_name: '{{ user_labels[0] }}'
+              _upd_id: '{{ user_labels[0] | slugify(separator=''_'') }}'
+              _has_change: '{{ new_description | default('''', true) != '''' or new_icon
+                | default('''', true) != '''' or new_color | default('''', true) != '''' }}'
+              _force_rewrite: '{{ force_rewrite | default(false) | bool }}'
+          # ── Existence guard -- shared by BOTH the clean-update
+          # and delete+recreate paths below. This check never
+          # existed before -- 'update' on a typo'd/nonexistent label name fell
+          # through to the old path's delete_label (silent no-op on a
+          # nonexistent id) + create_label (which doesn't care whether one
+          # existed -- just creates a NEW label under that name). That's worse
+          # than an error: a silent, wrong write. label_name() is a real
+          # Jinja-only HA template global (no REST) -- resolves a label_id to
+          # its display name, or None if it doesn't exist.
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: '{{ label_name(_upd_id) is none }}'
+                alias: Label does not exist
+              sequence:
+              - variables:
+                  response:
+                    status: error
+                    error: >-
+                      Label '{{ _upd_name }}' (id: {{ _upd_id }}) does not exist --
+                      update refuses to silently create it. Use 'create' if you
+                      meant to add a new label.
+                    caller_token: '{{ caller_token }}'
+            - conditions:
+              - condition: template
+                value_template: '{{ not _has_change }}'
+                alias: No change requested
+              sequence:
+              - variables:
+                  response:
+                    status: error
+                    error: Update requires at least one of new_description, new_icon, new_color.
+                    caller_token: '{{ caller_token }}'
+          - if: "{{ response is not defined }}"
             then:
-            - action: homeassistant.update_label
-              continue_on_error: true
-              data:
-                label_id: '{{ _upd_id }}'
-                name: '{{ _upd_name }}'
-                description: '{{ _upd_desc }}'
-                icon: '{{ _upd_icon }}'
-                color: '{{ _upd_color }}'
-            else:
-            # icon field rejects empty string ("not a valid value at 'icon'")
-            # -- must be omitted entirely, not passed blank, same as the old
-            # delete+recreate path below already does for
-            # homeassistant.create_label.
-            - action: homeassistant.update_label
-              continue_on_error: true
-              data:
-                label_id: '{{ _upd_id }}'
-                name: '{{ _upd_name }}'
-                description: '{{ _upd_desc }}'
-                color: '{{ _upd_color }}'
-            # No response_variable: homeassistant.update_label is a
-            # fire-and-forget service with no response data ("Script does
-            # not support 'response_variable' for service ... which does
-            # not support response data").
-            #
-            # No REST re-read verification -- /api/labels is NOT a real HA
-            # REST API endpoint (404, not an auth failure -- label registry
-            # is WebSocket-only in HA core).
-            # This was a PRE-EXISTING latent bug: the old delete+recreate
-            # path's own pre-read below has always hit this same 404 and
-            # silently degraded to "REST pre-read unavailable," just never
-            # traced to root cause before now. Trusting update_label the
-            # same way this file already trusts create_label/delete_label
-            # elsewhere (continue_on_error, no deep verification) --
-            # consistent risk level with the rest of this tool, not a new
-            # gap introduced here.
-          - variables:
-              response:
-                status: ok
-                action: update
-                label: '{{ _upd_name }}'
-                label_id: '{{ _upd_id }}'
-                method: spook_clean_update
-                message: >-
-                  Update complete via Spook's native update-label action --
-                  no delete/recreate, no entity retagging needed, label
-                  never briefly stopped existing.
-                caller_token: '{{ caller_token }}'
-          - stop: clean update path done
-            response_variable: response
-        - variables:
-            _upd_entities: '{{ label_entities(_upd_id) | list }}'
-        - action: homeassistant.delete_label
-          data:
-            label_id: '{{ _upd_id }}'
-        - if:
-          - condition: template
-            value_template: '{{ _upd_icon != '''' }}'
-          then:
-          - action: homeassistant.create_label
-            data:
-              name: '{{ _upd_name }}'
-              description: '{{ _upd_desc }}'
-              icon: '{{ _upd_icon }}'
-              color: '{{ _upd_color }}'
-          else:
-          - action: homeassistant.create_label
-            data:
-              name: '{{ _upd_name }}'
-              description: '{{ _upd_desc }}'
-              color: '{{ _upd_color }}'
-        # homeassistant.create_label mints a NEW label id derived from the
-        # new name -- the pre-delete _upd_id is stale the moment the label
-        # is recreated. If a rename changed the generated slug, retagging
-        # with the old id silently retags nothing. Resolve the real
-        # post-recreate id via label_id() (Jinja-only HA template global,
-        # no REST) before using it for anything below.
-        - variables:
-            _upd_new_id: '{{ label_id(_upd_name) }}'
-        - if:
-          - condition: template
-            value_template: '{{ _upd_entities | length > 0 and (_upd_new_id | string | trim == "") }}'
-          then:
-          - variables:
-              response:
-                status: error
-                error: label_id_resolution_failed
-                action: update
-                label: '{{ _upd_name }}'
-                message: >-
-                  Label was deleted and recreated, but the new id could not be resolved --
-                  {{ _upd_entities | length }} previously-tagged entity association(s) were
-                  NOT restored. Re-run mode=update or manually retag.
-                caller_token: '{{ caller_token }}'
-          - stop: label_id resolution failed after recreate
-            response_variable: response
-        - if:
-          - condition: template
-            value_template: '{{ _upd_entities | length > 0 }}'
-          then:
-          - action: homeassistant.add_label_to_entity
-            data:
-              label_id: '{{ _upd_new_id }}'
-              entity_id: '{{ _upd_entities }}'
-        - variables:
-            response:
-              status: ok
-              action: update
-              label: '{{ _upd_name }}'
-              label_id: '{{ _upd_new_id }}'
-              retagged_count: '{{ _upd_entities | length }}'
-              preserved_from_existing: '{{ _labels_ok }}'
-              message: >-
-                Update complete. {{ _upd_entities | length }} entity association(s) restored.
-                {% if _labels_ok %}Icon/color/description preserved from existing where not provided.
-                {% else %}REST pre-read unavailable — only caller-provided fields applied.{% endif %}
-              caller_token: '{{ caller_token }}'
-        - event: zen_event
-          event_data:
-            event:
-              kind: label_mutation
-              action: "{{ action }}"
-        - stop: pass var scope
-          response_variable: response
+            - alias: Pre-read existing label metadata via HA REST API
+              if:
+                - condition: template
+                  value_template: '{{ not _force_rewrite }}'
+              then:
+                - action: rest_command.ha_api_get
+                  data:
+                    path: labels
+                  response_variable: _labels_r
+            - variables:
+                _labels_ok: '{{ not _force_rewrite and (_labels_r.status | default(0) | int == 200) }}'
+                _labels_all: >-
+                  {{ _labels_r.content if _labels_ok and _labels_r.content is iterable else [] }}
+                _existing: >-
+                  {%- set found = _labels_all | selectattr('label_id', 'eq', _upd_id) | list -%}
+                  {{ found | first | default({}) }}
+                _upd_desc: >-
+                  {{ new_description if new_description | default('', true) != ''
+                     else _existing.get('description', '') | default('', true) }}
+                _upd_icon: >-
+                  {{ new_icon if new_icon | default('', true) != ''
+                     else _existing.get('icon', '') | default('', true) }}
+                _upd_color: >-
+                  {{ new_color if new_color | default('', true) != ''
+                     else _existing.get('color', 'primary') | default('primary', true) }}
+            - if:
+              - condition: template
+                value_template: '{{ not confirm }}'
+              then:
+              - variables:
+                  response:
+                    status: start
+                    action: update
+                    label: '{{ _upd_name }}'
+                    label_id: '{{ _upd_id }}'
+                    new_description: '{{ _upd_desc }}'
+                    new_icon: '{{ _upd_icon }}'
+                    new_color: '{{ _upd_color }}'
+                    preserved_from_existing: '{{ _labels_ok }}'
+                    message: Confirmation required. Update will delete and recreate the
+                      label then restore all entity associations.
+                    caller_token: '{{ caller_token }}'
+            - if: "{{ response is not defined }}"
+              then:
+              # ── Spook >=5.3 clean-update probe ──────────────────────────────────
+              # Spook v5.3.0 added a real update-label action, eliminating the
+              # delete+recreate+retag dance below. POSITIVE runtime detection only,
+              # never a version-number guess. Same has_service probe pattern
+              # dojotools_lights.yaml already uses for its Spook v5.2.0 gates
+              # (never assume, always confirm the real service exists before
+              # calling it). If found, use the one-call path and stop -- the old
+              # delete+recreate path below is UNTOUCHED as the fallback for any
+              # install where the probe comes back negative (Spook not installed,
+              # older version, service renamed, etc.).
+              # RETIREMENT NOTE: once this house's minimum supported Spook version
+              # guarantees the new service (N-2 versions back), delete the old
+              # delete+recreate branch below entirely and always take this path
+              # unconditionally.
+              - action: script.zen_sutra_ha_api
+                continue_on_error: true
+                data:
+                  mode: services
+                  has_service: homeassistant.update_label
+                response_variable: _lbl_svc_check
+              - variables:
+                  _lbl_clean_update_available: >-
+                    {{ _lbl_svc_check is mapping and _lbl_svc_check.get('found', false) == true }}
+              - if:
+                - condition: template
+                  value_template: '{{ _lbl_clean_update_available }}'
+                then:
+                - if:
+                  - condition: template
+                    value_template: "{{ _upd_icon != '' }}"
+                  then:
+                  - action: homeassistant.update_label
+                    continue_on_error: true
+                    data:
+                      label_id: '{{ _upd_id }}'
+                      name: '{{ _upd_name }}'
+                      description: '{{ _upd_desc }}'
+                      icon: '{{ _upd_icon }}'
+                      color: '{{ _upd_color }}'
+                  else:
+                  # icon field rejects empty string ("not a valid value at 'icon'")
+                  # -- must be omitted entirely, not passed blank, same as the old
+                  # delete+recreate path below already does for
+                  # homeassistant.create_label.
+                  - action: homeassistant.update_label
+                    continue_on_error: true
+                    data:
+                      label_id: '{{ _upd_id }}'
+                      name: '{{ _upd_name }}'
+                      description: '{{ _upd_desc }}'
+                      color: '{{ _upd_color }}'
+                  # No response_variable: homeassistant.update_label is a
+                  # fire-and-forget service with no response data ("Script does
+                  # not support 'response_variable' for service ... which does
+                  # not support response data").
+                  #
+                  # No REST re-read verification -- /api/labels is NOT a real HA
+                  # REST API endpoint (404, not an auth failure -- label registry
+                  # is WebSocket-only in HA core).
+                  # This was a PRE-EXISTING latent bug: the old delete+recreate
+                  # path's own pre-read below has always hit this same 404 and
+                  # silently degraded to "REST pre-read unavailable," just never
+                  # traced to root cause before now. Trusting update_label the
+                  # same way this file already trusts create_label/delete_label
+                  # elsewhere (continue_on_error, no deep verification) --
+                  # consistent risk level with the rest of this tool, not a new
+                  # gap introduced here.
+                - variables:
+                    response:
+                      status: ok
+                      action: update
+                      label: '{{ _upd_name }}'
+                      label_id: '{{ _upd_id }}'
+                      method: spook_clean_update
+                      message: >-
+                        Update complete via Spook's native update-label action --
+                        no delete/recreate, no entity retagging needed, label
+                        never briefly stopped existing.
+                      caller_token: '{{ caller_token }}'
+                - event: zen_event
+                  event_data:
+                    event:
+                      kind: label_mutation
+                      action: "{{ action }}"
+              - if: "{{ response is not defined }}"
+                then:
+                - variables:
+                    _upd_entities: '{{ label_entities(_upd_id) | list }}'
+                - action: homeassistant.delete_label
+                  data:
+                    label_id: '{{ _upd_id }}'
+                - if:
+                  - condition: template
+                    value_template: '{{ _upd_icon != '''' }}'
+                  then:
+                  - action: homeassistant.create_label
+                    data:
+                      name: '{{ _upd_name }}'
+                      description: '{{ _upd_desc }}'
+                      icon: '{{ _upd_icon }}'
+                      color: '{{ _upd_color }}'
+                  else:
+                  - action: homeassistant.create_label
+                    data:
+                      name: '{{ _upd_name }}'
+                      description: '{{ _upd_desc }}'
+                      color: '{{ _upd_color }}'
+                # homeassistant.create_label mints a NEW label id derived from the
+                # new name -- the pre-delete _upd_id is stale the moment the label
+                # is recreated. If a rename changed the generated slug, retagging
+                # with the old id silently retags nothing. Resolve the real
+                # post-recreate id via label_id() (Jinja-only HA template global,
+                # no REST) before using it for anything below.
+                - variables:
+                    _upd_new_id: '{{ label_id(_upd_name) }}'
+                - if:
+                  - condition: template
+                    value_template: '{{ _upd_entities | length > 0 and (_upd_new_id | string | trim == "") }}'
+                  then:
+                  - variables:
+                      response:
+                        status: error
+                        error: label_id_resolution_failed
+                        action: update
+                        label: '{{ _upd_name }}'
+                        message: >-
+                          Label was deleted and recreated, but the new id could not be resolved --
+                          {{ _upd_entities | length }} previously-tagged entity association(s) were
+                          NOT restored. Re-run mode=update or manually retag.
+                        caller_token: '{{ caller_token }}'
+                - if:
+                  - condition: template
+                    value_template: '{{ response is not defined and _upd_entities | length > 0 }}'
+                  then:
+                  - action: homeassistant.add_label_to_entity
+                    data:
+                      label_id: '{{ _upd_new_id }}'
+                      entity_id: '{{ _upd_entities }}'
+                - if: "{{ response is not defined }}"
+                  then:
+                  - variables:
+                      response:
+                        status: ok
+                        action: update
+                        label: '{{ _upd_name }}'
+                        label_id: '{{ _upd_new_id }}'
+                        retagged_count: '{{ _upd_entities | length }}'
+                        preserved_from_existing: '{{ _labels_ok }}'
+                        message: >-
+                          Update complete. {{ _upd_entities | length }} entity association(s) restored.
+                          {% if _labels_ok %}Icon/color/description preserved from existing where not provided.
+                          {% else %}REST pre-read unavailable — only caller-provided fields applied.{% endif %}
+                        caller_token: '{{ caller_token }}'
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: label_mutation
+                        action: "{{ action }}"
         alias: UPDATE
 
-    # ── area_assign / area_remove (2026-09-04) -- entity registry
-    # area_id assignment via Spook's homeassistant.add_entity_to_area /
-    # homeassistant.remove_entity_from_area. Confirmed real, already-
-    # installed Spook services (checked custom_components/spook/
-    # services.yaml directly). Same has_service positive-runtime-probe
-    # gate as update's spook_clean_update path -- never a version-number
-    # guess. Distinct from labels (a many-to-many tag), area assignment
-    # is the single-value entity_registry.area_id field -- a different HA
-    # concept this tool didn't cover until now. No fallback path: unlike
+    # ── area_assign / area_remove -- entity registry area_id assignment
+    # via Spook's homeassistant.add_entity_to_area /
+    # homeassistant.remove_entity_from_area (real Spook services, see
+    # custom_components/spook/services.yaml). Same has_service
+    # positive-runtime-probe gate as update's spook_clean_update path --
+    # never a version-number guess. Distinct from labels (a many-to-many
+    # tag), area assignment is the single-value entity_registry.area_id
+    # field -- a different HA concept. No fallback path: unlike
     # update_label (which has an older delete+recreate equivalent),
     # there's no pre-Spook way to do this at all -- if the probe fails,
     # this errors cleanly rather than degrading. ──
     - if:
       - condition: template
-        value_template: "{{- action == 'area_assign' -}}"
+        value_template: "{{- response is not defined and action == 'area_assign' -}}"
       then:
         - if:
           - condition: template
@@ -1051,8 +1025,6 @@ script:
                 error: confirm_required
                 message: "area_assign requires confirm=true."
                 caller_token: '{{ caller_token }}'
-          - stop: area_assign confirm required
-            response_variable: response
         - if:
           - condition: template
             value_template: '{{ target_area_list | length != 1 or not have_target_ents }}'
@@ -1063,8 +1035,6 @@ script:
                 error: bad_targets
                 message: "area_assign requires exactly one target_areas entry and at least one target_entities entry (an entity can only be in one area)."
                 caller_token: '{{ caller_token }}'
-          - stop: area_assign bad targets
-            response_variable: response
         - if:
           - condition: template
             value_template: '{{ response is not defined }}'
@@ -1103,12 +1073,10 @@ script:
                 event:
                   kind: entity_area_mutation
                   action: area_assign
-            - stop: area_assign done
-              response_variable: response
 
     - if:
       - condition: template
-        value_template: "{{- action == 'area_remove' -}}"
+        value_template: "{{- response is not defined and action == 'area_remove' -}}"
       then:
         - if:
           - condition: template
@@ -1120,8 +1088,6 @@ script:
                 error: confirm_required
                 message: "area_remove requires confirm=true."
                 caller_token: '{{ caller_token }}'
-          - stop: area_remove confirm required
-            response_variable: response
         - if:
           - condition: template
             value_template: '{{ not have_target_ents }}'
@@ -1132,8 +1098,6 @@ script:
                 error: bad_targets
                 message: "area_remove requires at least one target_entities entry. Note: this only clears an entity-level area override -- the entity will still show its DEVICE's area afterward, if the device has one (Spook's own documented behavior)."
                 caller_token: '{{ caller_token }}'
-          - stop: area_remove bad targets
-            response_variable: response
         - if:
           - condition: template
             value_template: '{{ response is not defined }}'
@@ -1170,8 +1134,6 @@ script:
                 event:
                   kind: entity_area_mutation
                   action: area_remove
-            - stop: area_remove done
-              response_variable: response
 
     - choose:
       - conditions:
@@ -1182,10 +1144,23 @@ script:
         - variables:
             response: '{{ response | default({''status'': ''error'', ''error'': ''Unknown
               error occurred.'', ''index'': label_index, ''help'': minihelp}) }}'
-        - variables:
-            response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
-        - stop: Return
-          response_variable: response
+    - variables:
+        response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
+    # ── SINGLE EXIT ──────────────────────────────────────────────────────
+    - variables:
+        _lbl_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (response is mapping and response.get('status') in ['error', 'denied']) else 'success',
+            mode=action,
+            result=response,
+            tool='zen_dojotools_labels',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        response: "{{ (_lbl_envelope_raw | from_json) if _lbl_envelope_raw is string else _lbl_envelope_raw }}"
+    - stop: Return
+      response_variable: response
     alias: Zen DojoTools Labels
     description: >-
       HA label + entity/area registry management — apply/remove labels on any

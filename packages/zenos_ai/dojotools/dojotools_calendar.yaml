@@ -48,7 +48,8 @@ script:
 
                 caller_token=caller_token | default('')
             ) | from_json | combine({'certs_required': [
-                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['create', 'update']}
+                {'cert': 'pii_disclosure_control', 'level': 1, 'modes': ['create', 'update']},
+                {'cert': 'calendar_control', 'level': 2, 'modes': ['delete']}
             ]}) }}
     # --------------------------------------------------------------
     # Always normalize User/AI inputs so we don't have to react JIT
@@ -104,14 +105,14 @@ script:
           \ }}\" ]\n{% else %}\n  []\n{% endif %}"
         target_is_multi: '{{ (label_target_entities | count > 0) }}'
 
-    # ── Cert-gate — pii_disclosure_control (2026-09-10, #10390, user-
-    # flagged correction: create/update can write caller-supplied event
-    # details (title/description/attendees) into an external/cloud-synced
-    # calendar -- same PII-disclosure shape as mail/Teams sending. delete/
-    # read stay ungated -- deleting or reading doesn't create new external
-    # exposure. Sequential pre-check before both dispatch choose: blocks
-    # below, not a competing branch (same class of bug already caught once
-    # in labels.yaml this session). ──
+    # ── Cert-gate — pii_disclosure_control: create/update can write
+    # caller-supplied event details (title/description/attendees) into an
+    # external/cloud-synced calendar -- same PII-disclosure shape as
+    # mail/Teams sending. read stays ungated; delete creates no new
+    # external exposure and is covered separately by calendar_control
+    # below. Sequential pre-check before both dispatch choose: blocks
+    # below, not a competing branch -- a competing branch would swallow
+    # the real action logic on every authorized call. ──
     - if: "{{ action_type in ['create', 'update'] }}"
       then:
       - action: script.zen_dojotools_identity
@@ -123,10 +124,14 @@ script:
           required_cert_level: 1
           caller_token: "{{ caller_token }}"
       - variables:
-          _cal_pii_cert_policy: "{{ _cal_pii_id_raw.get('policy_status', 'blocked') if _cal_pii_id_raw is mapping else 'blocked' }}"
-          _cal_pii_cert_authorized: "{{ _cal_pii_id_raw.get('authorized', false) if _cal_pii_id_raw is mapping else false }}"
-          _cal_pii_cert_level: "{{ _cal_pii_id_raw.get('cert_level', 0) if _cal_pii_id_raw is mapping else 0 }}"
-          _cal_pii_cert_block_reason: "{{ _cal_pii_id_raw.get('block_reason', '') if _cal_pii_id_raw is mapping else '' }}"
+          _cal_pii_id_fields: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _raw = OS.resolve_identity_fields(_cal_pii_id_raw) -%}
+            {{- (_raw | from_json) if _raw is string else _raw -}}
+          _cal_pii_cert_policy: "{{ _cal_pii_id_fields.policy_status }}"
+          _cal_pii_cert_authorized: "{{ _cal_pii_id_fields.authorized }}"
+          _cal_pii_cert_level: "{{ _cal_pii_id_fields.cert_level }}"
+          _cal_pii_cert_block_reason: "{{ _cal_pii_id_fields.block_reason }}"
       - if: "{{ _cal_pii_cert_policy != 'allowed' or not _cal_pii_cert_authorized }}"
         then:
           - variables:
@@ -136,6 +141,44 @@ script:
           - variables:
               final_response: >-
                 {{ ((_cal_pii_cd_raw | from_json) if _cal_pii_cd_raw is string else _cal_pii_cd_raw) | combine({'tool': 'zen_dojotools_calendar', 'caller_token': caller_token}) }}
+
+    # ── Cert-gate — calendar_control level 2. delete creates no new
+    # external exposure, so it falls outside pii_disclosure_control, but
+    # it is a separate, independent data-loss risk (irreversible event
+    # removal) that pii_disclosure_control was never meant to cover.
+    # Own cert, own axis; level 2 (vs. level 1 reserved for lesser
+    # calendar_control actions, none yet defined) reflects delete's higher
+    # severity within this cert's own scale. Sequential pre-check, same
+    # pattern as the pii block above -- independent of it, both can apply
+    # to the same tool for different actions. ──
+    - if: "{{ final_response is not defined and action_type == 'delete' }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _cal_dl_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: calendar_control
+          required_cert_level: 2
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _cal_dl_id_fields: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _raw = OS.resolve_identity_fields(_cal_dl_id_raw) -%}
+            {{- (_raw | from_json) if _raw is string else _raw -}}
+          _cal_dl_cert_policy: "{{ _cal_dl_id_fields.policy_status }}"
+          _cal_dl_cert_authorized: "{{ _cal_dl_id_fields.authorized }}"
+          _cal_dl_cert_level: "{{ _cal_dl_id_fields.cert_level }}"
+          _cal_dl_cert_block_reason: "{{ _cal_dl_id_fields.block_reason }}"
+      - if: "{{ _cal_dl_cert_policy != 'allowed' or not _cal_dl_cert_authorized }}"
+        then:
+          - variables:
+              _cal_dl_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_cal_dl_cert_policy, _cal_dl_cert_authorized, _cal_dl_cert_level, 'calendar_control', 2, action_type, _cal_dl_cert_block_reason) -}}
+          - variables:
+              final_response: >-
+                {{ ((_cal_dl_cd_raw | from_json) if _cal_dl_cd_raw is string else _cal_dl_cd_raw) | combine({'tool': 'zen_dojotools_calendar', 'caller_token': caller_token}) }}
 
     - if: "{{ final_response is not defined }}"
       then:
@@ -445,6 +488,8 @@ script:
               event_id: '{{ event_id }}'
               calendar_name: '{{ calendar_entity_resolved }}'
             response_variable: zen_delete_response
+          - variables:
+              zen_delete_response: "{{ zen_delete_response.get('result', zen_delete_response) if zen_delete_response is mapping else zen_delete_response }}"
           - choose:
             - conditions:
               - condition: template
@@ -580,6 +625,19 @@ script:
         final_response: "{{ final_response | default({'status': 'error', 'message': 'Unknown action_type or no matching branch.'} | tojson) }}"
     - variables:
         final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
+    # ── SINGLE EXIT ──────────────────────────────────────────────────────
+    - variables:
+        _cal_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+            mode=(mode | default('') | lower) if (mode | default('') | lower) == 'tool_manifest' else action_type | default(''),
+            result=final_response,
+            tool='zen_dojotools_calendar',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        final_response: "{{ (_cal_envelope_raw | from_json) if _cal_envelope_raw is string else _cal_envelope_raw }}"
     - stop: Zen Dojotools Calendar response
       response_variable: final_response
     fields:

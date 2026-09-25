@@ -427,7 +427,7 @@ script:
     - if: "{{ (mode | default('') | lower) == 'tool_manifest' }}"
       then:
       - variables:
-          result: >-
+          response: >-
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{ MF.tool_manifest(
                 tool='zen_dojotools_identity',
@@ -447,13 +447,11 @@ script:
 
                 caller_token=caller_token | default('')
             ) | from_json }}
-      - stop: tool_manifest
-        response_variable: result
 
     - if: "{{ (mode | default('') | lower) == 'help' }}"
       then:
       - variables:
-          result:
+          response:
             status: ok
             mode: help
             tool: zen_dojotools_identity
@@ -486,14 +484,12 @@ script:
               ack_key: "request_live_ack: optional dedup key, auto-generated if omitted."
               required_cert: "resolve_caller_identity: optional cert component to check on the caller's behalf."
             caller_token: "{{ caller_token | default('') }}"
-      - stop: help
-        response_variable: result
 
     # ── request_live_ack — single chokepoint for "get me a live human
-    # yes/no", extracted 2026-08-15 after the same ~40-line fire+poll block
-    # turned up hand-rolled FOUR times (zen_dojotools_infra's Portainer
-    # d-class ack, zen_dojotools_locks' escalation_request, and
-    # zen_dojotools_persona_editor's cert_req_grant AND cert_req_revoke). Same
+    # yes/no", shared by zen_dojotools_infra's Portainer d-class ack,
+    # zen_dojotools_locks' escalation_request, and
+    # zen_dojotools_persona_editor's cert_req_grant/cert_req_revoke instead
+    # of each hand-rolling the same ~40-line fire+poll block. Same
     # "consumers must call identity instead of re-deriving their own
     # resolved-identity fallback" principle resolve_caller_identity already
     # established — this is the ack-flow equivalent. One-shot per call
@@ -501,20 +497,20 @@ script:
     # TIME-BOXED grant (not just one action's approval) still own writing
     # that grant to their own cabinet drawer after a true response here,
     # same as zen_dojotools_locks' escalation_request does today. ──
-    - if: "{{ (mode | default('') | lower) == 'request_live_ack' }}"
+    - if: "{{ response is not defined and (mode | default('') | lower) == 'request_live_ack' }}"
       then:
       - variables:
           _rla_message: "{{ ack_message | default('', true) | string | trim }}"
       - if: "{{ _rla_message == '' }}"
         then:
         - variables:
-            result:
+            response:
               status: error
               error: ack_message_required
               detail: "request_live_ack requires ack_message."
               caller_token: "{{ caller_token | default('') }}"
-        - stop: request_live_ack — missing message
-          response_variable: result
+    - if: "{{ response is not defined and (mode | default('') | lower) == 'request_live_ack' }}"
+      then:
       - variables:
           _rla_key: "{{ ack_key | default('', true) | string | trim }}"
           _rla_max_wait: "{{ [(ack_max_wait_seconds | default(90, true) | int(90)), 150] | min }}"
@@ -558,15 +554,15 @@ script:
       - if: "{{ _rla_fire_raw is not mapping or _rla_fire_raw.get('mode') != 'fire' }}"
         then:
         - variables:
-            result:
+            response:
               status: ok
               mode: request_live_ack
               approved: false
               reason: dispatch_failed
               waited_seconds: 0
               caller_token: "{{ caller_token | default('') }}"
-        - stop: request_live_ack — dispatch failed
-          response_variable: result
+    - if: "{{ response is not defined and (mode | default('') | lower) == 'request_live_ack' }}"
+      then:
       - variables:
           _rla_ack_result: pending
           _rla_ack_tries: 0
@@ -584,21 +580,27 @@ script:
               mode: get_response
               alert_key: "{{ _rla_key }}"
           - variables:
+              # zen_dojotools_alertmanager wraps its response in the canonical
+              # OS.envelope() shape -- its own domain fields
+              # (status=captured/ack_action) live under .result, not at the
+              # top level. envelope's own top-level
+              # 'mode' still matches (passed through unchanged), but 'status'
+              # at the top level is now the generic success/error envelope
+              # status, not alertmanager's own 'captured' value.
+              _rla_ack_inner: "{{ _rla_ack_raw.get('result', {}) if _rla_ack_raw is mapping else {} }}"
               _rla_ack_result: >-
-                {%- if _rla_ack_raw is mapping and _rla_ack_raw.get('status') == 'captured' and _rla_ack_raw.get('ack_action', '') in ['yes', 'no'] -%}
-                  {{ _rla_ack_raw.get('ack_action') }}
+                {%- if _rla_ack_inner is mapping and _rla_ack_inner.get('status') == 'captured' and _rla_ack_inner.get('ack_action', '') in ['yes', 'no'] -%}
+                  {{ _rla_ack_inner.get('ack_action') }}
                 {%- else -%}pending{%- endif -%}
               _rla_ack_tries: "{{ _rla_ack_tries + 1 }}"
       - variables:
-          result:
+          response:
             status: ok
             mode: request_live_ack
             approved: "{{ _rla_ack_result == 'yes' }}"
             reason: "{{ 'approved' if _rla_ack_result == 'yes' else ('declined' if _rla_ack_result == 'no' else 'timeout') }}"
             waited_seconds: "{{ _rla_ack_tries * _rla_poll_interval }}"
             caller_token: "{{ caller_token | default('') }}"
-      - stop: request_live_ack complete
-        response_variable: result
 
     # ── cert_list — "what could exist, and what do I actually hold right
     # now." This is a protected gate of ident READ, not
@@ -611,11 +613,11 @@ script:
     # policy_status == 'allowed' -- no specific cert, no live ack. Combines
     # the LIVE-CALCULATED catalog (zen_dojotools_manifest mode=cert_audit --
     # every cert any tool actually declares via tool_manifest certs_required,
-    # no separate hand-maintained file, 2026-08-15 cutover) with the live
+    # no separate hand-maintained file) with the live
     # grant roster from persona_editor's own cert_list (what's actually held
     # right now), so a caller gets one useful answer instead of having to
     # cross-reference two tools itself. ──
-    - if: "{{ (mode | default('') | lower) == 'cert_list' }}"
+    - if: "{{ response is not defined and (mode | default('') | lower) == 'cert_list' }}"
       then:
       - action: script.zen_dojotools_identity
         response_variable: _cl_id_raw
@@ -628,14 +630,14 @@ script:
       - if: "{{ _cl_policy_status != 'allowed' }}"
         then:
         - variables:
-            result:
+            response:
               status: denied
               mode: cert_list
               reason: identity_policy_blocked
               detail: "resolve_caller_identity did not return an allowed identity -- cert_list refused."
               caller_token: "{{ caller_token | default('') }}"
-        - stop: cert_list — identity blocked
-          response_variable: result
+    - if: "{{ response is not defined and (mode | default('') | lower) == 'cert_list' }}"
+      then:
       - action: script.zen_dojotools_manifest
         response_variable: _cl_catalog_raw
         continue_on_error: true
@@ -643,6 +645,9 @@ script:
           mode: cert_audit
           caller_token: "{{ caller_token | default('') }}"
       - variables:
+          # zen_dojotools_manifest wraps its response in the canonical
+          # OS.envelope() shape -- its own fields (catalog/etc) live under
+          # .result, not at the top level.
           _cl_catalog: "{{ (_cl_catalog_raw.get('result', _cl_catalog_raw) if _cl_catalog_raw is mapping else {}).get('catalog', {}) }}"
       - variables:
           _cl_target: "{{ persona_target | default('', true) | string | trim }}"
@@ -652,6 +657,8 @@ script:
         data:
           mode: cert_list
           target: "{{ _cl_target if _cl_target != '' else omit }}"
+      - variables:
+          _cl_pe_raw: "{{ _cl_pe_raw.get('result', _cl_pe_raw) if _cl_pe_raw is mapping else _cl_pe_raw }}"
       - variables:
           _cl_held: "{{ _cl_pe_raw.get('certifications', {}) if _cl_pe_raw is mapping else {} }}"
       - variables:
@@ -673,14 +680,12 @@ script:
             {%- endfor -%}
             {{ ns.items }}
       - variables:
-          result:
+          response:
             status: ok
             mode: cert_list
             target: "{{ _cl_pe_raw.get('target', '') if _cl_pe_raw is mapping else '' }}"
             certs: "{{ _cl_combined }}"
             caller_token: "{{ caller_token | default('') }}"
-      - stop: cert_list complete
-        response_variable: result
 
     # ── resolve_caller_identity — real call-site for SP1, shunted until active ──
     # OS-level sim_mode gate lives HERE, not per-consumer: integrations_config.identity.
@@ -732,9 +737,11 @@ script:
                 mode: cert_list
                 target: "{{ _rci_resolved_target }}"
             - variables:
+                _rci_pe_raw: "{{ _rci_pe_raw.get('result', _rci_pe_raw) if _rci_pe_raw is mapping else _rci_pe_raw }}"
+            - variables:
                 _rci_certs: "{{ _rci_pe_raw.get('certifications', {}) if _rci_pe_raw is mapping else {} }}"
-            # ── OID-style inheritance (2026-09-10, household: steel-mag
-            # pattern) -- cert names may be dotted (zenos.<domain>.
+            # ── OID-style inheritance (steel-mag pattern) -- cert names
+            # may be dotted (zenos.<domain>.
             # <capability>). Holding a PARENT node (e.g. zenos.media)
             # satisfies a check against any dotted-boundary descendant
             # (zenos.media.playback_control) at that parent's level. When
@@ -820,8 +827,6 @@ script:
                   'timestamp': now().isoformat()
                 }
               -}}
-        - stop: "resolve_caller_identity complete"
-          response_variable: response
 
     # ── Step 1: normalize inputs + target ──────────────────────────────────
     - variables:
@@ -933,78 +938,71 @@ script:
           {%- endif %}
 
     # ── Step 3a: mode = prompt → render capsule ─────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'prompt' -}}"
-          sequence:
-            - variables:
-                _capsule_raw: >-
-                  {% import 'zenos_ai/zen_os_1.jinja' as zen %}
-                  {%- set identity_block = cab if cab is mapping else (cab | from_json) -%}
-                  {%- if not identity_block.get('identity', {}).get('name', '') -%}
-                    {%- set identity_block = zen.identity_resolve_source(states('sensor.zen_default_ai_user_cabinet_resolved')) -%}
-                  {%- endif -%}
-                  {{- zen.ai_capsule(identity_block) -}}
-                _health_raw: >-
-                  {% import 'zenos_ai/zen_os_1.jinja' as zen %}
-                  {{- zen.prompt_health_check() -}}
-            - variables:
-                _capsule: >-
-                  {%- set raw = _capsule_raw | trim -%}
-                  {%- if raw.startswith('{') or raw.startswith('[') -%}
-                    {{- raw | from_json | tojson -}}
-                  {%- else -%}
-                    {{- {'rendered': raw} | tojson -}}
-                  {%- endif -%}
-                _health: >-
-                  {%- set raw = _health_raw | trim -%}
-                  {%- if raw.startswith('{') -%}
-                    {{- raw | from_json | tojson -}}
-                  {%- else -%}
-                    {{- {} | tojson -}}
-                  {%- endif -%}
-            - variables:
-                response: >
-                  {{-
-                    {
-                      'mode':               'prompt',
-                      'target_normalized':  normalized,
-                      'identity':           cab,
-                      'capsule':            _capsule,
-                      'prompt_health':      _health,
-                      'timestamp':          now().isoformat(),
-                      'caller_token':       caller_token | default('')
-                    }
-                  -}}
-            - stop: Prompt render complete
-              response_variable: response
+    - if: "{{- response is not defined and _mode == 'prompt' -}}"
+      then:
+        - variables:
+            _capsule_raw: >-
+              {% import 'zenos_ai/zen_os_1.jinja' as zen %}
+              {%- set identity_block = cab if cab is mapping else (cab | from_json) -%}
+              {%- if not identity_block.get('identity', {}).get('name', '') -%}
+                {%- set identity_block = zen.identity_resolve_source(states('sensor.zen_default_ai_user_cabinet_resolved')) -%}
+              {%- endif -%}
+              {{- zen.ai_capsule(identity_block) -}}
+            _health_raw: >-
+              {% import 'zenos_ai/zen_os_1.jinja' as zen %}
+              {{- zen.prompt_health_check() -}}
+        - variables:
+            _capsule: >-
+              {%- set raw = _capsule_raw | trim -%}
+              {%- if raw.startswith('{') or raw.startswith('[') -%}
+                {{- raw | from_json | tojson -}}
+              {%- else -%}
+                {{- {'rendered': raw} | tojson -}}
+              {%- endif -%}
+            _health: >-
+              {%- set raw = _health_raw | trim -%}
+              {%- if raw.startswith('{') -%}
+                {{- raw | from_json | tojson -}}
+              {%- else -%}
+                {{- {} | tojson -}}
+              {%- endif -%}
+        - variables:
+            response: >
+              {{-
+                {
+                  'mode':               'prompt',
+                  'target_normalized':  normalized,
+                  'identity':           cab,
+                  'capsule':            _capsule,
+                  'prompt_health':      _health,
+                  'timestamp':          now().isoformat(),
+                  'caller_token':       caller_token | default('')
+                }
+              -}}
 
     # ── Step 3b2: mode = render_prompt → full assembled prompt ───────────────
-    - choose:
-        - conditions: "{{- _mode == 'render_prompt' -}}"
-          sequence:
-            - variables:
-                _full_raw: >-
-                  {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
-                  {{ zen.render_prompt(states('input_text.zenos_persona_name')) }}
-            - variables:
-                response: >
-                  {{-
-                    {
-                      'mode':        'render_prompt',
-                      'persona':     states('input_text.zenos_persona_name'),
-                      'rendered':    _full_raw | trim | from_json({'raw': _full_raw | trim}) if (_full_raw | trim).startswith('{') else {'raw': _full_raw | trim},
-                      'chars':       _full_raw | trim | length,
-                      'timestamp':   now().isoformat(),
-                      'caller_token': caller_token | default('')
-                    }
-                  -}}
-            - stop: Full prompt render complete
-              response_variable: response
+    - if: "{{- response is not defined and _mode == 'render_prompt' -}}"
+      then:
+        - variables:
+            _full_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as zen -%}
+              {{ zen.render_prompt(states('input_text.zenos_persona_name')) }}
+        - variables:
+            response: >
+              {{-
+                {
+                  'mode':        'render_prompt',
+                  'persona':     states('input_text.zenos_persona_name'),
+                  'rendered':    _full_raw | trim | from_json({'raw': _full_raw | trim}) if (_full_raw | trim).startswith('{') else {'raw': _full_raw | trim},
+                  'chars':       _full_raw | trim | length,
+                  'timestamp':   now().isoformat(),
+                  'caller_token': caller_token | default('')
+                }
+              -}}
 
     # ── Step 3c: mode = build_identity_manifest ─────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'build_identity_manifest' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'build_identity_manifest' -}}"
+      then:
             - variables:
                 _hh_cab: "{{- _hh_target -}}"
             - if: "{{- _hh_cab in ['', 'unknown', 'unavailable'] -}}"
@@ -1019,8 +1017,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Household cabinet unavailable
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'build_identity_manifest' -}}"
+      then:
             - variables:
                 _roster_raw: >-
                   {% import 'zenos_ai/zen_os_1.jinja' as zen %}
@@ -1142,13 +1140,10 @@ script:
                   component: zen_dojotools_identity
                   severity: info
                   summary: Manifest rebuild triggered by build_identity_manifest.
-            - stop: Identity manifest written
-              response_variable: response
 
     # ── Step 3d: mode = household_add_family ────────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'household_add_family' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'household_add_family' -}}"
+      then:
             - variables:
                 _hh_cab: "{{- _hh_target -}}"
             - if: "{{- _hh_cab in ['', 'unknown', 'unavailable'] or family_entity == '' -}}"
@@ -1163,8 +1158,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'household_add_family' -}}"
+      then:
             - variables:
                 _fam_vi_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -1247,8 +1242,8 @@ script:
                           'timestamp':      now().isoformat()
                         }
                       -}}
-                - stop: Already a household member
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'household_add_family' -}}"
+      then:
             - variables:
                 _updated_members: >-
                   {%- set _m = _hh_members_raw | from_json if _hh_members_raw is string else _hh_members_raw -%}
@@ -1288,13 +1283,10 @@ script:
                 mode: build_identity_manifest
                 household_entity: "{{- _hh_cab -}}"
               continue_on_error: true
-            - stop: Household family added
-              response_variable: response
 
     # ── Step 3d-2: mode = household_remove_family ────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'household_remove_family' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'household_remove_family' -}}"
+      then:
             - variables:
                 _hh_cab: "{{- _hh_target -}}"
             - if: "{{- _hh_cab in ['', 'unknown', 'unavailable'] or family_entity == '' -}}"
@@ -1309,8 +1301,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'household_remove_family' -}}"
+      then:
             - variables:
                 _hh_members_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -1351,13 +1343,10 @@ script:
                 mode: build_identity_manifest
                 household_entity: "{{- _hh_cab -}}"
               continue_on_error: true
-            - stop: Household family removed
-              response_variable: response
 
     # ── Step 3e: mode = household_add_member ─────────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'household_add_member' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'household_add_member' -}}"
+      then:
             - variables:
                 _hh_cab: "{{- _hh_target -}}"
             - if: "{{- _hh_cab in ['', 'unknown', 'unavailable'] or member_entity == '' -}}"
@@ -1383,8 +1372,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'household_add_member' -}}"
+      then:
             - variables:
                 _hh_vi_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -1473,8 +1462,8 @@ script:
                           'timestamp':     now().isoformat()
                         }
                       -}}
-                - stop: Prime or HoH slot occupied
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'household_add_member' -}}"
+      then:
             - variables:
                 _list_key: "{{- 'ai_users' if member_type == 'ai_user' else 'users' -}}"
                 _hh_members: "{{- _hh_members_raw | from_json if _hh_members_raw is string else _hh_members_raw -}}"
@@ -1591,13 +1580,10 @@ script:
                 mode: build_identity_manifest
                 household_entity: "{{- _hh_cab -}}"
               continue_on_error: true
-            - stop: Household member added
-              response_variable: response
 
     # ── Step 3f: mode = household_remove_member ──────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'household_remove_member' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'household_remove_member' -}}"
+      then:
             - variables:
                 _hh_cab: "{{- _hh_target -}}"
             - if: "{{- _hh_cab in ['', 'unknown', 'unavailable'] or member_entity == '' -}}"
@@ -1616,8 +1602,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'household_remove_member' -}}"
+      then:
             - variables:
                 _list_key: "{{- 'ai_users' if member_type == 'ai_user' else 'users' -}}"
                 _hh_members_raw: >-
@@ -1685,35 +1671,32 @@ script:
                 mode: build_identity_manifest
                 household_entity: "{{- _hh_cab -}}"
               continue_on_error: true
-            - stop: Household member removed
-              response_variable: response
 
     # ── Step 3f-2: mode = set_principal ─────────────────────────────────────
     # Works on households or families — family_entity overrides default household.
-    - choose:
-        - conditions: "{{- _mode == 'set_principal' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'set_principal' -}}"
+      then:
+        - variables:
+            _target_cab: >-
+              {%- if family_entity | trim != '' -%}
+                {{- family_entity | trim -}}
+              {%- else -%}
+                {{- _hh_target -}}
+              {%- endif -%}
+        - if: "{{- _target_cab in ['', 'unknown', 'unavailable'] or member_entity == '' -}}"
+          then:
             - variables:
-                _target_cab: >-
-                  {%- if family_entity | trim != '' -%}
-                    {{- family_entity | trim -}}
-                  {%- else -%}
-                    {{- _hh_target -}}
-                  {%- endif -%}
-            - if: "{{- _target_cab in ['', 'unknown', 'unavailable'] or member_entity == '' -}}"
-              then:
-                - variables:
-                    response: >
-                      {{-
-                        {
-                          'mode':    'set_principal',
-                          'status':  'error',
-                          'message': 'A target cabinet (family_entity or default household) and member_entity are both required.',
-                          'timestamp': now().isoformat()
-                        }
-                      -}}
-                - stop: Missing required fields
-                  response_variable: response
+                response: >
+                  {{-
+                    {
+                      'mode':    'set_principal',
+                      'status':  'error',
+                      'message': 'A target cabinet (family_entity or default household) and member_entity are both required.',
+                      'timestamp': now().isoformat()
+                    }
+                  -}}
+        - if: "{{- response is not defined -}}"
+          then:
             - variables:
                 _hh_vi_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -1775,111 +1758,108 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Takeover blocked
-                  response_variable: response
-            - variables:
-                _hh_vi_updated: >-
-                  {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _mvi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                  {%- set _mguid = (_mvi if _mvi is mapping else {}).get('id', (_mvi if _mvi is mapping else {}).get('guid', '')) -%}
-                  {%- if member_type == 'user' -%}
-                    {%- set _acls = dict(_acls, **{'owner': [{'guid': _mguid, 'entity_id': member_entity}]}) -%}
-                  {%- else -%}
-                    {# replace prime entry, keep any non-prime partner entries #}
-                    {%- set _partners = _acls.get('partner', []) -%}
-                    {%- set _partners = _partners if _partners is iterable and _partners is not string else [] -%}
-                    {%- set _others = _partners | rejectattr('role', 'equalto', 'prime') | list -%}
-                    {%- set _acls = dict(_acls, **{'partner': _others + [{'guid': _mguid, 'entity_id': member_entity, 'role': 'prime'}]}) -%}
-                  {%- endif -%}
-                  {{- dict(_vi, **{'acls': _acls}) -}}
-            - event: set_variable_legacy
-              event_data:
-                key: AI_Cabinet_VolumeInfo
-                value: "{{- _hh_vi_updated -}}"
-                volume_entity: "{{- _target_cab -}}"
-                set_timestamp: true
-            # household_add_member keeps 'members' and 'acls' in sync in one
-            # call; set_principal only ever wrote acls, which left a caller
-            # that used set_principal directly (rather than
-            # household_add_member) with a principal pointer that a
-            # membership-based staleness check would wrongly flag as
-            # orphaned. Mirror that sync here too — dedup, only add if not
-            # already present, matching household_add_member's entry shape.
-            - variables:
-                _sp_list_key: "{{- 'ai_users' if member_type == 'ai_user' else 'users' -}}"
-                _sp_members_raw: >-
-                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                  {%- set _m = CABS.cabinet_drawer_value(_target_cab, 'members', {}) | from_json() -%}
-                  {{- _m | tojson -}}
-            - variables:
-                _sp_updated_members: >-
-                  {%- set _m = _sp_members_raw | from_json if _sp_members_raw is string else _sp_members_raw -%}
-                  {%- set _m = _m if _m is mapping else {} -%}
-                  {%- set _lst = _m.get(_sp_list_key, []) -%}
-                  {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
-                  {%- set _already = _lst | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -%}
-                  {%- if _already -%}
-                    {{- _m | tojson -}}
-                  {%- else -%}
-                    {%- set _mvi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                    {%- set _mguid = (_mvi if _mvi is mapping else {}).get('id', (_mvi if _mvi is mapping else {}).get('guid', '')) -%}
-                    {%- set _entry = {'guid': _mguid, 'entity_id': member_entity, 'name': member_entity} -%}
-                    {{- dict(_m, **{_sp_list_key: _lst + [_entry]}) | tojson -}}
-                  {%- endif -%}
-            - action: script.zen_dojotools_filecabinet
-              data:
-                action_type: create
-                force_action: true
-                set_timestamp: true
-                show_hidden_volumes: false
-                volume_entity_id:
-                  - "{{- _target_cab -}}"
-                key: members
-                value: "{{- _sp_updated_members -}}"
-            - variables:
-                _slot: "{{- 'hoh' if member_type == 'user' else 'prime' -}}"
-                response: >
-                  {{-
-                    {
-                      'mode':           'set_principal',
-                      'status':         'ok',
-                      'target_cabinet': _target_cab,
-                      'slot':              _slot,
-                      'member_entity':     member_entity,
-                      'member_type':       member_type,
-                      'member_guid':       _mem_guid,
-                      'member_name':       _mem_name,
-                      'timestamp':         now().isoformat(),
-                      'caller_token':      caller_token | default('')
-                    }
-                  -}}
-            - event: zen_event
-              event_data:
-                kind: principal_changed
-                target_cabinet: "{{- _target_cab -}}"
-                slot: "{{- _slot -}}"
-                member_entity: "{{- member_entity -}}"
-                member_name: "{{- _mem_name -}}"
-                member_type: "{{- member_type -}}"
-                prompt_profile_update: true
-            - event: zen_event
-              event_data:
-                event:
-                  kind: identity_manifest_rebuild
-                  component: zen_dojotools_identity
-                  severity: info
-                  summary: Manifest rebuild triggered by set_principal.
-            - stop: Principal set
-              response_variable: response
+            - if: "{{- response is not defined -}}"
+              then:
+                - variables:
+                    _hh_vi_updated: >-
+                      {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
+                      {%- set _vi = _vi if _vi is mapping else {} -%}
+                      {%- set _acls = _vi.get('acls', {}) -%}
+                      {%- set _acls = _acls if _acls is mapping else {} -%}
+                      {%- set _mvi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
+                      {%- set _mguid = (_mvi if _mvi is mapping else {}).get('id', (_mvi if _mvi is mapping else {}).get('guid', '')) -%}
+                      {%- if member_type == 'user' -%}
+                        {%- set _acls = dict(_acls, **{'owner': [{'guid': _mguid, 'entity_id': member_entity}]}) -%}
+                      {%- else -%}
+                        {# replace prime entry, keep any non-prime partner entries #}
+                        {%- set _partners = _acls.get('partner', []) -%}
+                        {%- set _partners = _partners if _partners is iterable and _partners is not string else [] -%}
+                        {%- set _others = _partners | rejectattr('role', 'equalto', 'prime') | list -%}
+                        {%- set _acls = dict(_acls, **{'partner': _others + [{'guid': _mguid, 'entity_id': member_entity, 'role': 'prime'}]}) -%}
+                      {%- endif -%}
+                      {{- dict(_vi, **{'acls': _acls}) -}}
+                - event: set_variable_legacy
+                  event_data:
+                    key: AI_Cabinet_VolumeInfo
+                    value: "{{- _hh_vi_updated -}}"
+                    volume_entity: "{{- _target_cab -}}"
+                    set_timestamp: true
+                # household_add_member keeps 'members' and 'acls' in sync in one
+                # call; set_principal only ever wrote acls, which left a caller
+                # that used set_principal directly (rather than
+                # household_add_member) with a principal pointer that a
+                # membership-based staleness check would wrongly flag as
+                # orphaned. Mirror that sync here too — dedup, only add if not
+                # already present, matching household_add_member's entry shape.
+                - variables:
+                    _sp_list_key: "{{- 'ai_users' if member_type == 'ai_user' else 'users' -}}"
+                    _sp_members_raw: >-
+                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                      {%- set _m = CABS.cabinet_drawer_value(_target_cab, 'members', {}) | from_json() -%}
+                      {{- _m | tojson -}}
+                - variables:
+                    _sp_updated_members: >-
+                      {%- set _m = _sp_members_raw | from_json if _sp_members_raw is string else _sp_members_raw -%}
+                      {%- set _m = _m if _m is mapping else {} -%}
+                      {%- set _lst = _m.get(_sp_list_key, []) -%}
+                      {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
+                      {%- set _already = _lst | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -%}
+                      {%- if _already -%}
+                        {{- _m | tojson -}}
+                      {%- else -%}
+                        {%- set _mvi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
+                        {%- set _mguid = (_mvi if _mvi is mapping else {}).get('id', (_mvi if _mvi is mapping else {}).get('guid', '')) -%}
+                        {%- set _entry = {'guid': _mguid, 'entity_id': member_entity, 'name': member_entity} -%}
+                        {{- dict(_m, **{_sp_list_key: _lst + [_entry]}) | tojson -}}
+                      {%- endif -%}
+                - action: script.zen_dojotools_filecabinet
+                  data:
+                    action_type: create
+                    force_action: true
+                    set_timestamp: true
+                    show_hidden_volumes: false
+                    volume_entity_id:
+                      - "{{- _target_cab -}}"
+                    key: members
+                    value: "{{- _sp_updated_members -}}"
+                - variables:
+                    _slot: "{{- 'hoh' if member_type == 'user' else 'prime' -}}"
+                    response: >
+                      {{-
+                        {
+                          'mode':           'set_principal',
+                          'status':         'ok',
+                          'target_cabinet': _target_cab,
+                          'slot':              _slot,
+                          'member_entity':     member_entity,
+                          'member_type':       member_type,
+                          'member_guid':       _mem_guid,
+                          'member_name':       _mem_name,
+                          'timestamp':         now().isoformat(),
+                          'caller_token':      caller_token | default('')
+                        }
+                      -}}
+                - event: zen_event
+                  event_data:
+                    kind: principal_changed
+                    target_cabinet: "{{- _target_cab -}}"
+                    slot: "{{- _slot -}}"
+                    member_entity: "{{- member_entity -}}"
+                    member_name: "{{- _mem_name -}}"
+                    member_type: "{{- member_type -}}"
+                    prompt_profile_update: true
+                - event: zen_event
+                  event_data:
+                    event:
+                      kind: identity_manifest_rebuild
+                      component: zen_dojotools_identity
+                      severity: info
+                      summary: Manifest rebuild triggered by set_principal.
 
     # ── Step 3g: mode = family_add_member ────────────────────────────────────
     # Nesting is allowed — resolver caps security resolution at depth 2.
-    - choose:
-        - conditions: "{{- _mode == 'family_add_member' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'family_add_member' -}}"
+      then:
             - if: "{{- family_entity == '' or member_entity == '' -}}"
               then:
                 - variables:
@@ -1892,8 +1872,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'family_add_member' -}}"
+      then:
             - variables:
                 _fam_members_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -1984,8 +1964,8 @@ script:
                           'timestamp':     now().isoformat()
                         }
                       -}}
-                - stop: Already a family member
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'family_add_member' -}}"
+      then:
             - variables:
                 _updated_members: >-
                   {%- set _m = _fam_members_raw | from_json if _fam_members_raw is string else _fam_members_raw -%}
@@ -2070,13 +2050,10 @@ script:
                 mode: build_identity_manifest
                 household_entity: "{{- _hh_target -}}"
               continue_on_error: true
-            - stop: Family member added
-              response_variable: response
 
     # ── Step 3h: mode = family_remove_member ─────────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'family_remove_member' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'family_remove_member' -}}"
+      then:
             - if: "{{- family_entity == '' or member_entity == '' -}}"
               then:
                 - variables:
@@ -2089,8 +2066,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'family_remove_member' -}}"
+      then:
             - variables:
                 _fam_members_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -2238,15 +2215,12 @@ script:
                 mode: build_identity_manifest
                 household_entity: "{{- _hh_target -}}"
               continue_on_error: true
-            - stop: Family member removed
-              response_variable: response
 
     # ── Step 3i: mode = link_partners ─────────────────────────────────────────
     # Works for any entity pair: user↔user, user↔ai_user, ai_user↔ai_user.
     # partner = delegation authority. acls.partner is written on BOTH sides.
-    - choose:
-        - conditions: "{{- _mode == 'link_partners' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'link_partners' -}}"
+      then:
             - if: "{{- member_entity == '' or ai_entity == '' -}}"
               then:
                 - variables:
@@ -2259,8 +2233,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'link_partners' -}}"
+      then:
             - variables:
                 _a_vi_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -2366,28 +2340,25 @@ script:
                   component: zen_dojotools_identity
                   severity: info
                   summary: Manifest rebuild triggered by link_partners.
-            - stop: User-AI link established
-              response_variable: response
 
     # ── Step 3i-2: mode = unlink_partners ─────────────────────────────────────
     # Symmetric: removes each entity from the other's acls.partner list.
-    - choose:
-        - conditions: "{{- _mode == 'unlink_partners' -}}"
-          sequence:
-            - if: "{{- member_entity == '' or ai_entity == '' -}}"
-              then:
-                - variables:
-                    response: >
-                      {{-
-                        {
-                          'mode':    'unlink_partners',
-                          'status':  'error',
-                          'message': 'member_entity and ai_entity (the two entities to unlink) are both required.',
-                          'timestamp': now().isoformat()
-                        }
-                      -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'unlink_partners' -}}"
+      then:
+        - if: "{{- member_entity == '' or ai_entity == '' -}}"
+          then:
+            - variables:
+                response: >
+                  {{-
+                    {
+                      'mode':    'unlink_partners',
+                      'status':  'error',
+                      'message': 'member_entity and ai_entity (the two entities to unlink) are both required.',
+                      'timestamp': now().isoformat()
+                    }
+                  -}}
+        - if: "{{- response is not defined -}}"
+          then:
             - variables:
                 _a_vi_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -2468,27 +2439,24 @@ script:
                   component: zen_dojotools_identity
                   severity: info
                   summary: Manifest rebuild triggered by unlink_partners.
-            - stop: Partners unlinked
-              response_variable: response
 
     # ── Step 3j: mode = set_default_family ───────────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'set_default_family' -}}"
-          sequence:
-            - if: "{{- member_entity == '' or family_entity == '' -}}"
-              then:
-                - variables:
-                    response: >
-                      {{-
-                        {
-                          'mode':    'set_default_family',
-                          'status':  'error',
-                          'message': 'member_entity (user cabinet) and family_entity are both required.',
-                          'timestamp': now().isoformat()
-                        }
-                      -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'set_default_family' -}}"
+      then:
+        - if: "{{- member_entity == '' or family_entity == '' -}}"
+          then:
+            - variables:
+                response: >
+                  {{-
+                    {
+                      'mode':    'set_default_family',
+                      'status':  'error',
+                      'message': 'member_entity (user cabinet) and family_entity are both required.',
+                      'timestamp': now().isoformat()
+                    }
+                  -}}
+        - if: "{{- response is not defined -}}"
+          then:
             - variables:
                 _mem_vi_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -2534,16 +2502,13 @@ script:
                   component: zen_dojotools_identity
                   severity: info
                   summary: Manifest rebuild triggered by set_default_family.
-            - stop: Default family set
-              response_variable: response
 
     # ── Step 3k: mode = membership ───────────────────────────────────────────
     # Tree view for containers; reverse lookup for members.
     # Reads VolumeInfo + members drawer from state_attr (template-time, no async).
     # Depth-2 tree: household → families (depth 1) → sub-families (depth 2).
-    - choose:
-        - conditions: "{{- _mode == 'membership' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'membership' -}}"
+      then:
             - variables:
                 # Determine root: family_entity > member_entity > default household
                 _root_entity: >-
@@ -2680,8 +2645,6 @@ script:
                               'caller_token':     caller_token | default('')
                             }
                           -}}
-                    - stop: Membership tree returned
-                      response_variable: response
 
                 # ── member reverse-lookup ─────────────────────────────────────
                 - conditions: "{{- not _root_is_container | bool -}}"
@@ -2707,7 +2670,7 @@ script:
                           {%- set _hm = _hh_m_raw | from_json if _hh_m_raw is string else _hh_m_raw -%}
                           {%- set _hm = _hm if _hm is mapping else {} -%}
                           {%- set _eid = _target_eid -%}
-                          {%- set _groups = [] -%}
+                          {%- set ns = namespace(groups=[]) -%}{# FG-25: namespace required for list mutation inside for-loop #}
                           {# household direct membership? #}
                           {%- set _hh_users = _hm.get('users', []) + _hm.get('ai_users', []) -%}
                           {%- set _in_hh = _hh_users | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
@@ -2719,7 +2682,7 @@ script:
                             {%- set _is_hoh = _own | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
                             {%- set _is_prime = _prt | selectattr('entity_id', 'equalto', _eid) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
                             {%- set _role = 'hoh' if _is_hoh else ('prime' if _is_prime else 'member') -%}
-                            {%- set _groups = _groups + [{'container': _lookup_root, 'container_type': 'household', 'guid': _hvi.get('id', _hvi.get('guid', '')), 'name': _hvi.get('friendly_name', _lookup_root), 'depth': 0, 'role': _role}] -%}
+                            {%- set ns.groups = ns.groups + [{'container': _lookup_root, 'container_type': 'household', 'guid': _hvi.get('id', _hvi.get('guid', '')), 'name': _hvi.get('friendly_name', _lookup_root), 'depth': 0, 'role': _role}] -%}
                           {%- endif -%}
                           {# scan depth-1 families #}
                           {%- for fam in _hm.get('families', []) -%}
@@ -2736,7 +2699,7 @@ script:
                               {%- set _is_fhoh = _fown | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
                               {%- set _is_fprime = _fprt | selectattr('entity_id', 'equalto', _eid) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
                               {%- set _frole = 'hoh' if _is_fhoh else ('prime' if _is_fprime else 'member') -%}
-                              {%- set _groups = _groups + [{'container': _fc_entity_id, 'container_type': 'family', 'guid': _fvi.get('id', _fvi.get('guid', '')), 'name': fam.get('name', _fvi.get('friendly_name', _fvi.get('name', _fc_entity_id))), 'depth': 1, 'role': _frole}] -%}
+                              {%- set ns.groups = ns.groups + [{'container': _fc_entity_id, 'container_type': 'family', 'guid': _fvi.get('id', _fvi.get('guid', '')), 'name': fam.get('name', _fvi.get('friendly_name', _fvi.get('name', _fc_entity_id))), 'depth': 1, 'role': _frole}] -%}
                             {%- endif -%}
                             {# scan depth-2 sub-families #}
                             {%- for sf in _fm.get('families', []) -%}
@@ -2746,11 +2709,11 @@ script:
                               {%- set _sf_users = _sfm.get('users', []) + _sfm.get('ai_users', []) -%}
                               {%- set _in_sf = _sf_users | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
                               {%- if _in_sf -%}
-                                {%- set _groups = _groups + [{'container': _sf_entity_id, 'container_type': 'family', 'guid': _sfvi.get('id', _sfvi.get('guid', '')), 'name': sf.get('name', _sfvi.get('friendly_name', _sfvi.get('name', _sf_entity_id))), 'depth': 2, 'role': 'member'}] -%}
+                                {%- set ns.groups = ns.groups + [{'container': _sf_entity_id, 'container_type': 'family', 'guid': _sfvi.get('id', _sfvi.get('guid', '')), 'name': sf.get('name', _sfvi.get('friendly_name', _sfvi.get('name', _sf_entity_id))), 'depth': 2, 'role': 'member'}] -%}
                               {%- endif -%}
                             {%- endfor -%}
                           {%- endfor -%}
-                          {{- _groups | tojson -}}
+                          {{- ns.groups | tojson -}}
                     - variables:
                         response: >
                           {{-
@@ -2763,27 +2726,24 @@ script:
                               'caller_token':  caller_token | default('')
                             }
                           -}}
-                    - stop: Member lookup returned
-                      response_variable: response
 
     # ── Step 3l: mode = is_member ─────────────────────────────────────────────
-    - choose:
-        - conditions: "{{- _mode == 'is_member' -}}"
-          sequence:
-            - if: "{{- member_entity == '' or family_entity == '' -}}"
-              then:
-                - variables:
-                    response: >
-                      {{-
-                        {
-                          'mode':    'is_member',
-                          'status':  'error',
-                          'message': 'member_entity (subject) and family_entity (container) are both required.',
-                          'timestamp': now().isoformat()
-                        }
-                      -}}
-                - stop: Missing required fields
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'is_member' -}}"
+      then:
+        - if: "{{- member_entity == '' or family_entity == '' -}}"
+          then:
+            - variables:
+                response: >
+                  {{-
+                    {
+                      'mode':    'is_member',
+                      'status':  'error',
+                      'message': 'member_entity (subject) and family_entity (container) are both required.',
+                      'timestamp': now().isoformat()
+                    }
+                  -}}
+        - if: "{{- response is not defined -}}"
+          then:
             - variables:
                 _container_m_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -2833,15 +2793,12 @@ script:
                       'caller_token':     caller_token | default('')
                     }
                   -}}
-            - stop: is_member check complete
-              response_variable: response
 
     # ── Step 3m: mode = provision_member ─────────────────────────────────────
     # Full orchestration: scan expansion slots → provision → family_add_member
     # → manifest rebuild. Handles the complete new-member lifecycle in one call.
-    - choose:
-        - conditions: "{{- _mode == 'provision_member' -}}"
-          sequence:
+    - if: "{{- response is not defined and _mode == 'provision_member' -}}"
+      then:
             # Resolve effective family and validate member_name
             - variables:
                 _pm_name: "{{- member_name | default('') | trim -}}"
@@ -2868,8 +2825,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: member_name required
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'provision_member' -}}"
+      then:
 
             # Gate: family entity must resolve
             - if: "{{- _pm_fam == '' or _pm_fam == 'unknown' -}}"
@@ -2884,8 +2841,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: family_entity unresolved
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'provision_member' -}}"
+      then:
 
             # Scan expansion slots for first available init slot
             - variables:
@@ -2919,8 +2876,8 @@ script:
                           'timestamp': now().isoformat()
                         }
                       -}}
-                - stop: no expansion slot available
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'provision_member' -}}"
+      then:
 
             # Build profile payload: merge member_name as preferred_name + name
             - variables:
@@ -2942,11 +2899,15 @@ script:
 
             # Gate: provisioner must succeed
             - variables:
-                _pm_prov_ok: >-
+                _pm_prov_result: >-
                   {%- set _r = _pm_prov_result if _pm_prov_result is mapping else (_pm_prov_result | from_json if _pm_prov_result is string else {}) -%}
+                  {{- _r.get('result', _r) -}}
+            - variables:
+                _pm_prov_ok: >-
+                  {%- set _r = _pm_prov_result if _pm_prov_result is mapping else {} -%}
                   {{- (_r.get('status', '') == 'success') | bool -}}
                 _pm_prov_msg: >-
-                  {%- set _r = _pm_prov_result if _pm_prov_result is mapping else (_pm_prov_result | from_json if _pm_prov_result is string else {}) -%}
+                  {%- set _r = _pm_prov_result if _pm_prov_result is mapping else {} -%}
                   {{- _r.get('message', 'Provisioner returned unknown error.') -}}
             - if: "{{- not (_pm_prov_ok | bool) -}}"
               then:
@@ -2962,8 +2923,8 @@ script:
                           'timestamp':          now().isoformat()
                         }
                       -}}
-                - stop: provisioner failed
-                  response_variable: response
+    - if: "{{- response is not defined and _mode == 'provision_member' -}}"
+      then:
 
             # Wire the new cabinet into the target family
             - action: script.zen_dojotools_identity
@@ -3000,8 +2961,6 @@ script:
                       'caller_token':       caller_token | default('')
                     }
                   -}}
-            - stop: provision_member complete
-              response_variable: response
 
     # ── Step 3b: mode = resolve (default) ──────────────────────────────────
     # Pre-compute: extract cabinet entity, error state, reverse-lookup flag
@@ -3044,7 +3003,7 @@ script:
           {%- else -%}{%- endif -%}
     # Early exit: ai_user cabinet → persona slice
     - choose:
-        - conditions: "{{- _r3b_is_ai | bool -}}"
+        - conditions: "{{- response is not defined and (_r3b_is_ai | bool) -}}"
           sequence:
             - variables:
                 _ai_raw: >-
@@ -3076,11 +3035,9 @@ script:
                       'caller_token':     caller_token | default('')
                     }
                   }}
-            - stop: ai_user persona slice
-              response_variable: response
     # Early exit: group cabinet (household / family_group) → group slice
     - choose:
-        - conditions: "{{- _r3b_is_group | bool -}}"
+        - conditions: "{{- response is not defined and (_r3b_is_group | bool) -}}"
           sequence:
             - variables:
                 _grp_raw: >-
@@ -3142,8 +3099,6 @@ script:
                       }
                     }}
                   {%- endif -%}
-            - stop: group slice
-              response_variable: response
     # Pre-compute: spaces block and area labels from resolved cabinet
     - variables:
         _r3b_spaces: >-
@@ -3332,7 +3287,7 @@ script:
           } | tojson -}}
     # Branch: reverse area lookup (label had no owner cabinet → find residents by area label)
     - choose:
-        - conditions: "{{- _r3b_is_reverse | bool -}}"
+        - conditions: "{{- response is not defined and (_r3b_is_reverse | bool) -}}"
           sequence:
             - variables:
                 response: >
@@ -3349,27 +3304,34 @@ script:
                       'caller_token':      caller_token | default('')
                     }
                   -}}
-            - stop: Area reverse lookup complete
-              response_variable: response
-    - variables:
-        response: >
-          {{-
-            {
-              'result':           cab,
-              'is_person':        not (_r3b_is_ai | bool) and not (_r3b_is_group | bool),
-              'is_group':         _r3b_is_group | bool,
-              'is_ai':            _r3b_is_ai | bool,
-              'cabinet':          _r3b_entity,
-              'person_entity':    _r3b_person_entity | default('') | trim,
-              'target_normalized': normalized,
-              'spaces':      _r3b_spaces      | from_json if _r3b_spaces      is string else _r3b_spaces,
-              'area_labels': _r3b_area_labels  | from_json if _r3b_area_labels  is string else _r3b_area_labels,
-              'tracking':    _r3b_tracking     | from_json if _r3b_tracking     is string else _r3b_tracking,
-              'mobile':      _r3b_mobile       | from_json if _r3b_mobile       is string else _r3b_mobile,
-              'presence':    _r3b_presence     | from_json if _r3b_presence     is string else _r3b_presence,
-              'timestamp':        now().isoformat(),
-              'caller_token':     caller_token | default('')
-            }
-          -}}
-    - stop: Return Variables
+    - if: "{{- response is not defined -}}"
+      then:
+        - variables:
+            response: >
+              {{-
+                {
+                  'result':           cab,
+                  'is_person':        not (_r3b_is_ai | bool) and not (_r3b_is_group | bool),
+                  'is_group':         _r3b_is_group | bool,
+                  'is_ai':            _r3b_is_ai | bool,
+                  'cabinet':          _r3b_entity,
+                  'person_entity':    _r3b_person_entity | default('') | trim,
+                  'target_normalized': normalized,
+                  'spaces':      _r3b_spaces      | from_json if _r3b_spaces      is string else _r3b_spaces,
+                  'area_labels': _r3b_area_labels  | from_json if _r3b_area_labels  is string else _r3b_area_labels,
+                  'tracking':    _r3b_tracking     | from_json if _r3b_tracking     is string else _r3b_tracking,
+                  'mobile':      _r3b_mobile       | from_json if _r3b_mobile       is string else _r3b_mobile,
+                  'presence':    _r3b_presence     | from_json if _r3b_presence     is string else _r3b_presence,
+                  'timestamp':        now().isoformat(),
+                  'caller_token':     caller_token | default('')
+                }
+              -}}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # SINGLE EXIT — every mode above sets response and falls through; this is
+    # the only stop point in the whole script (cadillac SESE,
+    # dojotools_locks.yaml is the reference shape — one stop per SCRIPT,
+    # not one per mode.)
+    # ═══════════════════════════════════════════════════════════════════════
+    - stop: identity response
       response_variable: response

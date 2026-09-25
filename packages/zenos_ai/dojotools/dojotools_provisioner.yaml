@@ -29,20 +29,10 @@ script:
   zen_dojotools_provisioner:
     alias: Zen DojoTools Provisioner
     description: >-
-      Zen DojoTools Provisioner 1.0.0. Ready Player 2 — provision, deprovision,
-      or replace a cabinet-backed identity (ai_user / user / family / household).
-
-      provision: pulls a stacks cab (online_unmounted) into service. Validates
-      GUID uniqueness, applies type label, mounts, directory-preloads profile
-      data, fires identity manifest rebuild. Rollback on health gate timeout.
-
-      deprovision: dismounts, strips type label, returns cab to stacks. Blocked
-      if cab holds a zen_default_* label — transfer the default label first.
-
-      replace: deprovisions replace_cabinet, then provisions target_cabinet with
-      the same cab_type.
-
-      All ops fire zen_event on completion and trigger identity manifest rebuild.
+      Ready Player 2 — provision, deprovision, or replace a cabinet-backed
+      identity (ai_user/user/family/household), activating or retiring a
+      stacks-backed identity slot. mode=help for the full gate/field/example
+      reference, mode=tool_manifest for self-description.
     mode: queued
     max: 5
 
@@ -62,6 +52,8 @@ script:
               - provision
               - deprovision
               - replace
+              - help
+              - tool_manifest
 
       cab_type:
         name: Cabinet Type
@@ -154,6 +146,74 @@ script:
             ) | from_json | combine({'certs_required': [
                 {'cert': 'cabinet_lifecycle_control', 'level': 1, 'modes': ['provision', 'deprovision', 'replace']}
             ]}) }}
+
+    - if: "{{ result is not defined and (mode | default('') | lower) == 'help' }}"
+      then:
+      - variables:
+          result:
+            status: ok
+            mode: help
+            tool: zen_dojotools_provisioner
+            summary: >-
+              Ready Player 2 -- provision, deprovision, or replace a
+              cabinet-backed identity (ai_user/user/family/household). All
+              write modes require the cabinet_lifecycle_control cert (level 1).
+            modes:
+              provision: >-
+                Pulls target_cabinet (must be in init or online_unmounted state)
+                into service. Auto-stamps via cabinetadmin_factory if the
+                cabinet is still 'init' with no VolumeInfo yet. Runs the GUID
+                gate (must exist, be a valid UUID, and be unique across every
+                online_mounted zen_cabinet) BEFORE applying any label -- a
+                failed gate leaves the cabinet untouched, no rollback needed.
+                Once gates pass: applies the cab_type label + the universal
+                zen_cabinet parent label, mounts (waits up to 10s for
+                online_mounted), directory-preloads person_entity/
+                profile_payload into a profile drawer, seeds a blank
+                zenai_essence for ai_user/user types, fires
+                cabinet_provisioned + identity_manifest_rebuild events.
+                Rolls back (strips the type label, cabinet returns to stacks)
+                if the mount health gate times out.
+              deprovision: >-
+                Requires target_cabinet in online_mounted state. Blocked if
+                the cabinet holds any zen_default_* label -- transfer the
+                default label to another cabinet first. Strips the cab_type
+                label + zen_cabinet parent label, dismounts (waits up to 10s
+                for online_unmounted), fires cabinet_deprovisioned +
+                identity_manifest_rebuild events.
+              replace: >-
+                Deprovisions replace_cabinet, then provisions target_cabinet
+                with the same cab_type -- same gates and side effects as
+                calling deprovision then provision separately, in one call.
+              help: This reference.
+              tool_manifest: UMP self-description, no side effects.
+            fields:
+              mode: "REQUIRED. provision (default) / deprovision / replace / help / tool_manifest."
+              cab_type: "REQUIRED for provision/replace. One of ai_user, user, family, household. Determines which type label is applied."
+              target_cabinet: "REQUIRED for all write modes. Cabinet entity to provision (must be init/online_unmounted) or deprovision (must be online_mounted)."
+              replace_cabinet: "REQUIRED for replace mode only. Existing cabinet to deprovision before provisioning target_cabinet."
+              person_entity: "Optional. HA person entity_id -- preloads friendly_name + user_id into the profile drawer during provisioning."
+              profile_payload: "Optional. JSON string of extra key/value pairs merged into the profile drawer, on top of person_entity data if both given."
+              caller_token: "Opaque token echoed in response."
+            gates_order: >-
+              For provision: target state check -> auto-stamp if init ->
+              GUID exists -> GUID is valid UUID -> GUID uniqueness across all
+              online_mounted cabinets -> cert check -> label+mount -> health
+              gate (rollback on timeout) -> profile preload -> essence seed.
+              For deprovision: target state check -> default-label check ->
+              cert check -> label strip+dismount -> health gate (no
+              rollback path -- dismount failure just reports unverified).
+            examples:
+              provision_ai_user: {mode: provision, cab_type: ai_user, target_cabinet: sensor.zenos_expansion_cabinet_1}
+              provision_with_profile: {mode: provision, cab_type: user, target_cabinet: sensor.zenos_expansion_cabinet_2, person_entity: person.member_name}
+              deprovision: {mode: deprovision, target_cabinet: sensor.zenos_secondary_user_cabinet}
+              replace: {mode: replace, cab_type: user, replace_cabinet: sensor.zenos_secondary_user_cabinet, target_cabinet: sensor.zenos_expansion_cabinet_1}
+            notes:
+              - "Cabinets provisioned/deprovisioned here are stacks-backed (online_unmounted <-> online_mounted) -- this is identity-slot activation, not raw cabinet hardware management (that's zen_admintools_cabinetadmin)."
+              - "GUID uniqueness check only looks at currently online_mounted cabinets -- a GUID reused after full deprovision + cabinet deletion elsewhere would not be caught here."
+              - "deprovision cannot be used to remove a zen_default_* cabinet -- transfer the default label first via the appropriate admin tool."
+            caller_token: "{{ caller_token | default('') }}"
+
     # ── Normalize inputs ───────────────────────────────────────────────────
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
@@ -221,8 +281,7 @@ script:
             message: replace mode requires replace_cabinet.
             caller_token: "{{ caller_token }}"
 
-    # ── Cert-gate — cabinet_lifecycle_control (2026-09-10, #10390
-    # provisioner.yaml rollout). Reuses the same cert admintools.yaml's
+    # ── Cert-gate — cabinet_lifecycle_control. Reuses the same cert admintools.yaml's
     # cabinetadmin already gates its own hardware-layer cabinet ops with --
     # provisioner is the identity-slot-activation layer of the same cabinet
     # lifecycle capability (spinning up/tearing down a household member or
@@ -242,10 +301,14 @@ script:
           target_entity: "{{ _target }}"
           caller_token: "{{ caller_token }}"
       - variables:
-          _prov_cert_policy: "{{ _prov_id_raw.get('policy_status', 'blocked') if _prov_id_raw is mapping else 'blocked' }}"
-          _prov_cert_authorized: "{{ _prov_id_raw.get('authorized', false) if _prov_id_raw is mapping else false }}"
-          _prov_cert_level: "{{ _prov_id_raw.get('cert_level', 0) if _prov_id_raw is mapping else 0 }}"
-          _prov_cert_block_reason: "{{ _prov_id_raw.get('block_reason', '') if _prov_id_raw is mapping else '' }}"
+          _prov_id_fields: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _raw = OS.resolve_identity_fields(_prov_id_raw) -%}
+            {{- (_raw | from_json) if _raw is string else _raw -}}
+          _prov_cert_policy: "{{ _prov_id_fields.policy_status }}"
+          _prov_cert_authorized: "{{ _prov_id_fields.authorized }}"
+          _prov_cert_level: "{{ _prov_id_fields.cert_level }}"
+          _prov_cert_block_reason: "{{ _prov_id_fields.block_reason }}"
       - if: "{{ _prov_cert_policy != 'allowed' or not _prov_cert_authorized }}"
         then:
           - variables:
@@ -710,5 +773,17 @@ script:
             message: "Unknown mode '{{ _op }}'."
             caller_token: "{{ caller_token }}"
 
+    - variables:
+        _prov_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (result is mapping and result.get('status') == 'error') else 'success',
+            mode=_op | default(''),
+            result=result,
+            tool='zen_dojotools_provisioner',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        result: "{{ (_prov_envelope_raw | from_json) if _prov_envelope_raw is string else _prov_envelope_raw }}"
     - stop: provisioner response
       response_variable: result

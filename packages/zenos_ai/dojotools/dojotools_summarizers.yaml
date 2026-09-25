@@ -219,7 +219,7 @@ script:
                 label: trapper_keeper
                 component_summary: ""
                 # This mode=kfc_manifest block IS the live registration path
-                # (confirmed 2026-09-07) — discovered by
+                # — discovered by
                 # zen_dojotools_manifest mode=bootstrap_kfc via the
                 # ha_start/daily-midnight automation. The old static
                 # factory-ship path in dojotools_kungfu_loader.yaml has been
@@ -652,8 +652,36 @@ script:
                 variables:
                   zen_summary: >-
                     {%- set ns = namespace(raw=monk_response.data | default('') | string | trim) -%}
-                    {%- set ns.raw = ns.raw | regex_replace('(?s)^```[a-zA-Z]*\n?(.+?)\n?```\s*$', '\\1') | trim -%}
+                    {%- set _b_start = ns.raw.find('{') -%}
+                    {%- set _b_end = ns.raw.rfind('}') -%}
+                    {%- if _b_start != -1 and _b_end != -1 and _b_end > _b_start -%}
+                      {%- set ns.raw = ns.raw[_b_start:_b_end + 1] -%}
+                    {%- endif -%}
                     {{ ns.raw }}
+
+              # Same concern as the kata extractor: the model can append
+              # trailing prose after the JSON block, which an exact-anchored
+              # fence regex doesn't survive (fences+prose left attached,
+              # from_json never attempted, downstream readers inherit a raw
+              # unparseable string). Validate explicitly here instead of
+              # trusting a non-empty string.
+              - alias: Validate zen_summary parses as real JSON
+                variables:
+                  _zen_summary_parsed: >-
+                    {{ (zen_summary | from_json(default={})) if zen_summary is string else (zen_summary if zen_summary is mapping else {}) }}
+
+              - alias: Log SuperSummary parse failure (visible failure signal)
+                if:
+                  - condition: template
+                    value_template: "{{ zen_summary | trim != '' and _zen_summary_parsed == {} }}"
+                then:
+                  - action: logbook.log
+                    data:
+                      name: "Zen SuperSummary - parse failure"
+                      message: >-
+                        SuperSummary parse failed - from_json fell back to {}
+                        on a non-empty raw response (len={{ zen_summary | length }}).
+                        Excerpt: {{ zen_summary | truncate(200) }}
 
               # ── 8a. Compute run duration ──────────────────────────────────────────
               - alias: Compute run duration
@@ -674,7 +702,7 @@ script:
                   value: >-
                     {{
                       {
-                        "status": "ok" if (zen_summary and zen_summary != {}) else "error",
+                        "status": "ok" if (_zen_summary_parsed is mapping and _zen_summary_parsed | length > 0) else "error",
                         "components": active_component_ids | default([]) | length,
                         "component_ids": active_component_ids | default([]),
                         "duration_seconds": duration_seconds | default(0),
@@ -686,8 +714,11 @@ script:
               # ── 9. Post to kata cabinet ───────────────────────────────────────────
               - alias: Post zen_summary to kata cabinet
                 if:
-                  - condition: template
-                    value_template: "{{ zen_summary and (post_to_kata_cabinet | default(false) | bool) }}"
+                  - alias: If post set to true with valid parsed data
+                    condition: template
+                    value_template: >-
+                      {{ (post_to_kata_cabinet | default(false) | bool)
+                         and _zen_summary_parsed is mapping and _zen_summary_parsed | length > 0 }}
                 then:
                   - delay:
                       milliseconds: 250
@@ -761,6 +792,18 @@ script:
                       else {}
                     }}
 
+      - variables:
+          _ss_envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+              mode=mode | default('run'),
+              result=final_response,
+              tool='zen_dojotools_supersummary',
+              caller_token=caller_token | default('')
+            ) -}}
+      - variables:
+          final_response: "{{ (_ss_envelope_raw | from_json) if _ss_envelope_raw is string else _ss_envelope_raw }}"
       - stop: Return Response
         response_variable: final_response
 
@@ -976,14 +1019,14 @@ script:
             dojo_drawer: >-
               {%- set _v = _dojo_fc.get('value', {}) if _dojo_fc is mapping else {} -%}
               {%- set _kfc = _v.get('kfc', none) if _v is mapping else none -%}
-              {# #10462: live-mounted (fc_args) KFC drawers return kfc as a
-                 JSON-ENCODED STRING, not a native mapping -- the mapping-only
-                 check below silently fell through to the outer wrapper
+              {# Live-mounted (fc_args) KFC drawers return kfc as a
+                 JSON-ENCODED STRING, not a native mapping -- a mapping-only
+                 check would fall through to the outer wrapper
                  (kfc/mode/status/tool/version), which has no seed/component_
-                 instructions/trigger_subscriptions at its top level. Masked
-                 for component_summary/component_instructions by the label-
-                 description fallback a few steps below; seed has no such
-                 fallback, so it silently never ran for any live-mounted
+                 instructions/trigger_subscriptions at its top level. The
+                 label-description fallback a few steps below covers
+                 component_summary/component_instructions, but seed has no
+                 such fallback, so it would never run for any live-mounted
                  component (finance_*, and any other tool using this same
                  live-resolution pattern). #}
               {%- set _kfc = (_kfc | from_json(none)) if _kfc is string else _kfc -%}
@@ -1061,7 +1104,7 @@ script:
               {%- set _s = (dojo_drawer.seed | default(none)) -%}
               {%- set _s = _s if _s is not none else (dojo_drawer_value.seed | default(none)) -%}
               {{ _s if _s is mapping else {} }}
-            # ── Optional per-component push shape (2026-09-11) -- a component
+            # ── Optional per-component push shape -- a component
             # can opt into an interactive postman push (a tag + response_type,
             # e.g. a single "Got it" ack button) instead of the default
             # fire-and-forget notify every other component gets. Sourced from
@@ -1667,6 +1710,47 @@ script:
                   minutes_remaining: "{{ (emission_cooldown_minutes | int - _minutes_since_last | float) | round(1) }}"
                   severity: info
 
+          - alias: Check alertmanager ack before urgency_handler ticket emission (#10474 wiring)
+            action: script.zen_dojotools_alertmanager
+            continue_on_error: true
+            data:
+              mode: check_ack
+              condition_key: "{{ kata_key }}"
+              caller_token: "zen_dojotools_summarizers/{{ kata_key }}"
+            response_variable: _kfc_ack_check
+          - variables:
+              _kfc_ack_check: "{{ _kfc_ack_check.get('result', _kfc_ack_check) if _kfc_ack_check is mapping else _kfc_ack_check }}"
+
+          - alias: Compute ack-suppressed flag
+            variables:
+              # alertmanager ack wiring: coarse, whole-component suppression keyed
+              # by kata_key. This does NOT do per-device/per-value materiality
+              # comparison (e.g. a NEW low battery beyond the acked set would
+              # still be suppressed here) -- that finer-grained check belongs in
+              # a domain-specific caller with access to the actual current
+              # values, which doesn't exist for LLM-summarized components like
+              # this one. Known limitation, not silently ignored: the ack's own
+              # expiry (default 7d) is the backstop that eventually lets
+              # unresolved-but-changed conditions through again.
+              _kfc_ack_suppressed: "{{ _kfc_ack_check is mapping and _kfc_ack_check.get('suppressed', false) | bool }}"
+
+          - alias: Emit emission_suppressed if acked
+            if:
+              - condition: template
+                value_template: >-
+                  {{ not _cooldown_active
+                     and post_to_kata_cabinet | default(false) | bool
+                     and _action_required
+                     and _kfc_ack_suppressed }}
+            then:
+              - event: zen_event
+                event_data:
+                  kind: emission_suppressed
+                  component: "{{ kata_key }}"
+                  reason: acked
+                  ack_note: "{{ _kfc_ack_check.get('note', '') if _kfc_ack_check is mapping else '' }}"
+                  severity: info
+
           - alias: Emit summary_force if urgency at or above drift_threshold
             if:
               - condition: template
@@ -1689,7 +1773,8 @@ script:
                 value_template: >-
                   {{ not _cooldown_active
                      and post_to_kata_cabinet | default(false) | bool
-                     and _action_required }}
+                     and _action_required
+                     and not _kfc_ack_suppressed }}
             then:
               - variables:
                   _urgency_correlation_id: >-
@@ -1892,11 +1977,20 @@ script:
                 {%- endif -%}
 
           # ── 8. Post to kata cabinet ───────────────────────────────────────────
+          # Gate on _kata_parsed being a real non-empty mapping, not just
+          # monk_response.data being non-empty -- a fence-stripped/malformed
+          # response still leaves monk_response.data non-empty (raw garbage
+          # text), but _kata_parsed correctly collapses to {} in that case
+          # (see the parse-failure log above). Writing anyway would stamp a
+          # fresh-looking timestamp on an empty drawer: dump invalid output
+          # instead of persisting it.
           - alias: Post kata summary to cabinet
             if:
-              - alias: If post set to true with valid data
+              - alias: If post set to true with valid parsed data
                 condition: template
-                value_template: "{{ monk_response.data and (post_to_kata_cabinet | default(false) | bool) }}"
+                value_template: >-
+                  {{ (post_to_kata_cabinet | default(false) | bool)
+                     and _kata_parsed is mapping and _kata_parsed | length > 0 }}
             then:
               - delay:
                   milliseconds: 250
@@ -1965,5 +2059,17 @@ script:
               kata: "{{ final_response.monk.data.kata_excerpt | default({}) }}"
               monk: "{{ final_response.monk.data.event_excerpt | default({}) }}"
 
+      - variables:
+          _ninja_envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+              mode=mode | default('run'),
+              result=final_response,
+              tool='zen_dojotools_ninja_summarizer',
+              caller_token=caller_token | default('')
+            ) -}}
+      - variables:
+          final_response: "{{ (_ninja_envelope_raw | from_json) if _ninja_envelope_raw is string else _ninja_envelope_raw }}"
       - stop: Return Response to Caller
         response_variable: final_response

@@ -73,6 +73,18 @@ script:
                 color='deep-orange',
                 caller_token=caller_token | default('')
               ) | from_json -}}
+        - variables:
+            _rtt_envelope_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {{- OS.envelope(
+                status='success',
+                mode='tool_manifest',
+                result=result,
+                tool='zen_admintools_reset_template',
+                caller_token=caller_token | default('')
+              ) -}}
+        - variables:
+            result: "{{ (_rtt_envelope_raw | from_json) if _rtt_envelope_raw is string else _rtt_envelope_raw }}"
         - stop: reset_template tool manifest
           response_variable: result
     - variables:
@@ -566,48 +578,68 @@ script:
         - condition: template
           value_template: "{{- not confirm -}}"
         then:
-        - stop: >-
-            Nuclear reset refused — confirm: true required. All zen_ labels and
-            assignments will be permanently deleted. Set confirm: true to proceed.
+        - variables:
+            result:
+              status: error
+              error: confirm_required
+              message: >-
+                Nuclear reset refused — confirm: true required. All zen_ labels and
+                assignments will be permanently deleted. Set confirm: true to proceed.
+              caller_token: "{{- caller_token -}}"
 
-      - variables:
-          zen_labels: "{{- labels() | select('match', '^zen_') | list -}}"
+      - if: "{{ result is not defined }}"
+        then:
+        - variables:
+            zen_labels: "{{- labels() | select('match', '^zen_') | list -}}"
 
-      # Pass 1 — untag all entities from every zen_ label
-      - repeat:
-          for_each: "{{- zen_labels -}}"
-          sequence:
-          - variables:
-              lbl_entities: "{{- label_entities(repeat.item) | list -}}"
-          - if:
-            - condition: template
-              value_template: "{{- lbl_entities | length > 0 -}}"
-            then:
-            - action: homeassistant.remove_label_from_entity
+        # Pass 1 — untag all entities from every zen_ label
+        - repeat:
+            for_each: "{{- zen_labels -}}"
+            sequence:
+            - variables:
+                lbl_entities: "{{- label_entities(repeat.item) | list -}}"
+            - if:
+              - condition: template
+                value_template: "{{- lbl_entities | length > 0 -}}"
+              then:
+              - action: homeassistant.remove_label_from_entity
+                data:
+                  label_id: "{{- repeat.item -}}"
+                  entity_id: "{{- lbl_entities -}}"
+
+        # Pass 2 — delete all zen_ labels
+        - repeat:
+            for_each: "{{- zen_labels -}}"
+            sequence:
+            - action: homeassistant.delete_label
               data:
                 label_id: "{{- repeat.item -}}"
-                entity_id: "{{- lbl_entities -}}"
 
-      # Pass 2 — delete all zen_ labels
-      - repeat:
-          for_each: "{{- zen_labels -}}"
-          sequence:
-          - action: homeassistant.delete_label
-            data:
-              label_id: "{{- repeat.item -}}"
+        # Pass 3 — kick resolvers; Flynn sentinel fires from zen_label_health change
+        - event: zen_resolver_refresh
 
-      # Pass 3 — kick resolvers; Flynn sentinel fires from zen_label_health change
-      - event: zen_resolver_refresh
+        - variables:
+            result:
+              status: success
+              message: >-
+                Nuclear label reset complete. {{ zen_labels | length }} zen_ label(s)
+                deleted. zen_resolver_refresh fired. Flynn will recreate and reassign
+                on next sentinel cycle.
+              deleted_count: "{{- zen_labels | length -}}"
+              caller_token: "{{- caller_token -}}"
 
-      - variables:
-          result:
-            status: success
-            message: >-
-              Nuclear label reset complete. {{ zen_labels | length }} zen_ label(s)
-              deleted. zen_resolver_refresh fired. Flynn will recreate and reassign
-              on next sentinel cycle.
-            deleted_count: "{{- zen_labels | length -}}"
-            caller_token: "{{- caller_token -}}"
+    - variables:
+        _rl_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (result is mapping and result.get('status') == 'error') else 'success',
+            mode='reset',
+            result=result,
+            tool='zen_admintools_reset_labels',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        result: "{{ (_rl_envelope_raw | from_json) if _rl_envelope_raw is string else _rl_envelope_raw }}"
     - stop: reset labels complete
       response_variable: result
 
@@ -911,8 +943,8 @@ script:
                 hammer_ok: Required for hammer mode. Explicit safety gate.
                 confirm: Required for reset_all. Explicit safety gate.
 
-        # ── Cert-gate — cabinet_lifecycle_control (2026-09-10, #10390
-        # admintools.yaml rollout). Covers every moderate-to-nuclear write op
+        # ── Cert-gate — cabinet_lifecycle_control. Covers every
+        # moderate-to-nuclear write op
         # (restore, repair_volumeinfo, reset, hammer, init, repair_mount,
         # repair_dismount, flip_schema_version, reset_all, expand_drawer).
         # inspect/mount_status/help stay ungated (read-only). This runs before
@@ -933,10 +965,14 @@ script:
             target_entity: "{{ target_cabinet | default('') }}"
             caller_token: "{{ caller_token }}"
         - variables:
-            _ca_cert_policy: "{{ _ca_id_raw.get('policy_status', 'blocked') if _ca_id_raw is mapping else 'blocked' }}"
-            _ca_cert_authorized: "{{ _ca_id_raw.get('authorized', false) if _ca_id_raw is mapping else false }}"
-            _ca_cert_level: "{{ _ca_id_raw.get('cert_level', 0) if _ca_id_raw is mapping else 0 }}"
-            _ca_cert_block_reason: "{{ _ca_id_raw.get('block_reason', '') if _ca_id_raw is mapping else '' }}"
+            _ca_id_fields: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {%- set _raw = OS.resolve_identity_fields(_ca_id_raw) -%}
+              {{- (_raw | from_json) if _raw is string else _raw -}}
+            _ca_cert_policy: "{{ _ca_id_fields.policy_status }}"
+            _ca_cert_authorized: "{{ _ca_id_fields.authorized }}"
+            _ca_cert_level: "{{ _ca_id_fields.cert_level }}"
+            _ca_cert_block_reason: "{{ _ca_id_fields.block_reason }}"
         - if: "{{ _ca_cert_policy != 'allowed' or not _ca_cert_authorized }}"
           then:
             - variables:
@@ -958,7 +994,7 @@ script:
                 message: 'Hammer mode requires hammer_ok: true'
                 caller_token: "{{- caller_token -}}"
 
-        # ── Mandatory live-ack — hammer (2026-09-10). On top of hammer_ok AND
+        # ── Mandatory live-ack — hammer. On top of hammer_ok AND
         # the cert above -- no waiver, no scope override, asks every single
         # call. Same posture as locks' exterior-unlock / security_manager's
         # disarm gate. ──
@@ -1153,6 +1189,8 @@ script:
                     cabinet_type: "{{- cab_type | default('') -}}"
                   response_variable: _hammer_init_result
                 - variables:
+                    _hammer_init_result: "{{- _hammer_init_result.get('result', _hammer_init_result) if _hammer_init_result is mapping else _hammer_init_result -}}"
+                - variables:
                     _hammer_init_guid: "{{- _hammer_init_result.get('guid', '') if _hammer_init_result is mapping else '' -}}"
             - conditions:
               - condition: template
@@ -1253,15 +1291,13 @@ script:
                           action_taken: stamped
                           reason: initialized
                           stamp_result: "{{- _stamp_result -}}"
-                    # BUG FIX (2026-08-01): this success path fired zero event on
-                    # completion — sensor.zen_cabinet_health had no way to know a
-                    # cabinet had just been stamped, and (separately) had no
-                    # trigger: block of its own either, so it sat on a stale
-                    # snapshot indefinitely after Gate 2.1 initialized cabinets
-                    # during a virgin-deploy test. Reusing the same event
-                    # reset_all already fires, rather than inventing a new one.
+                    # Fire a completion event so sensor.zen_cabinet_health
+                    # sees a freshly stamped cabinet instead of sitting on a
+                    # stale snapshot (e.g. after Gate 2.1 initializes cabinets
+                    # on a fresh deploy). Reuses the same event reset_all
+                    # already fires, rather than inventing a new one.
                     - event: zen_resolver_refresh
-                    # ROBOT DONUT FIX (2026-08-01): the immediate fire above can
+                    # ROBOT DONUT FIX: the immediate fire above can
                     # race the label registry — cabinet_health recomputes before
                     # label_entities() reflects the tag this same init call just
                     # applied, storing a wrong 'absent' reading with a timestamp
@@ -1400,10 +1436,10 @@ script:
                   'caller_token': caller_token | default('')
                 }
               -}}
-        # BUG FIX (2026-08-01): fired nothing on completion — sensor.zen_cabinet_health
-        # had no way to know a cabinet's content just changed. Same fix as init.
+        # Completion event so sensor.zen_cabinet_health sees the cabinet's
+        # content just changed. Same as init.
         - event: zen_resolver_refresh
-        # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as init's —
+        # ROBOT DONUT FIX: delayed retry, same reasoning as init's —
         # not a state trigger, doesn't read states(entity_id), purely "our own
         # write finished a few seconds ago."
         - delay:
@@ -1462,11 +1498,11 @@ script:
               previous_value: "{{- _current_v -}}"
               new_value: "{{- _new_v -}}"
               caller_token: "{{- caller_token -}}"
-        # BUG FIX (2026-08-01): fired nothing on completion — same gap as
-        # init/hammer. schema-version flips are exactly the kind of state
-        # change zen_cabinet_health's mount-aware logic needs to see fresh.
+        # Completion event, same as init/hammer. schema-version flips are
+        # exactly the kind of state change zen_cabinet_health's mount-aware
+        # logic needs to see fresh.
         - event: zen_resolver_refresh
-        # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as
+        # ROBOT DONUT FIX: delayed retry, same reasoning as
         # init/hammer's — not a state trigger, doesn't read states(entity_id).
         - delay:
             seconds: 5
@@ -1488,7 +1524,7 @@ script:
                   canonical cabinets, reseeds schemas, and triggers Flynn bootstrap.
                   No undo. Set confirm: true to proceed.
                 caller_token: "{{- caller_token -}}"
-        # ── Mandatory live-ack — reset_all (2026-09-10). On top of confirm AND
+        # ── Mandatory live-ack — reset_all. On top of confirm AND
         # the cert above -- no waiver, no scope override, asks every single
         # call. Same posture as hammer's gate just above. Nested under
         # `result is not defined` so a missing-confirm refusal above never
@@ -1828,16 +1864,16 @@ script:
                               round_trip_verified: true
                               caller_token: "{{ caller_token }}"
 
-      # BUG FIX (2026-08-01): generic fallthrough for restore/repair_volumeinfo/
-      # reset (legacy) — none of these had a completion event of their own,
-      # same gap as init/hammer/flip_schema_version above. Explicitly scoped to
+      # Generic completion event for restore/repair_volumeinfo/reset
+      # (legacy) — none of these fire one of their own, unlike
+      # init/hammer/flip_schema_version above. Explicitly scoped to
       # these 3 ops (rather than an implicit "nothing stopped yet" guard) --
       # every other op now sets `result` itself above and must NOT have it
       # clobbered here after this block's own single-exit consolidation.
       - if: "{{ op in ['restore', 'repair_volumeinfo', 'reset'] }}"
         then:
         - event: zen_resolver_refresh
-        # ROBOT DONUT FIX (2026-08-01): delayed retry, same reasoning as the other
+        # ROBOT DONUT FIX: delayed retry, same reasoning as the other
         # 3 sites — not a state trigger, doesn't read states(entity_id).
         - delay:
             seconds: 5
@@ -1857,6 +1893,18 @@ script:
               caller_token: "{{- caller_token -}}"
     # ── single true exit for the whole tool — every op branch above sets
     # `result` itself; this just returns whatever is currently held. ──────
+    - variables:
+        _ca_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (result is mapping and result.get('status') == 'error') else 'success',
+            mode=(mode | default('') if mode | default('') == 'tool_manifest' else op | default('')),
+            result=result,
+            tool='zen_admintools_cabinetadmin',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        result: "{{ (_ca_envelope_raw | from_json) if _ca_envelope_raw is string else _ca_envelope_raw }}"
     - stop: complete
       response_variable: result
 
@@ -2023,12 +2071,11 @@ script:
               -}}
             _label_index: "{{- {} -}}"
             meta: "{{ {'mounted': cabinet_entity == 'sensor.zenos_system_cabinet'} }}"
-            # #10456: stop the string/mapping flap -- every drawer in this
-            # init block writes a native mapping now, matching
-            # AI_Cabinet_VolumeInfo above and every other cabinet-creation
-            # write site in the codebase (dojotools_filecabinet.yaml,
-            # flynn.yaml). Previously these three used | tojson while
-            # VolumeInfo didn't -- an inconsistency, not a deliberate shape.
+            # Every drawer in this init block writes a native mapping,
+            # matching AI_Cabinet_VolumeInfo above and every other
+            # cabinet-creation write site in the codebase
+            # (dojotools_filecabinet.yaml, flynn.yaml). Never | tojson here --
+            # that makes the stored shape flap between string and mapping.
             _zen_relationships: >
               {{-
                 {
@@ -2136,6 +2183,18 @@ script:
               caller_token: "{{- caller_token -}}"
     - variables:
         response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
+    - variables:
+        _caf_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (response is mapping and response.get('status') == 'error') else 'success',
+            mode=mode | default('stamp'),
+            result=response,
+            tool='zen_admintools_cabinetadmin_factory',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        response: "{{ (_caf_envelope_raw | from_json) if _caf_envelope_raw is string else _caf_envelope_raw }}"
     - stop: complete
       response_variable: response
     alias: Zen AdminTools CabinetAdmin Factory
@@ -4044,6 +4103,18 @@ script:
             status: success
             cortex_version: "{{- _cv -}}"
             caller_token: "{{- caller_token -}}"
+    - variables:
+        _pl_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (result is mapping and result.get('status') == 'error') else 'success',
+            mode=_mode | default('load'),
+            result=result,
+            tool='zen_admintools_prompt_loader',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        result: "{{ (_pl_envelope_raw | from_json) if _pl_envelope_raw is string else _pl_envelope_raw }}"
     - stop: prompt load complete
       response_variable: result
 
@@ -4118,6 +4189,18 @@ script:
                       status: error
                       repair_action: "{{- _repair -}}"
                       message: "Unknown repair_action '{{ _repair }}'. Valid: identity_family_repair_4_5_6, stamp_cab_guid_4_5_6, roster_guid_repair_4_5_6."
+    - variables:
+        _rr_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (response is mapping and response.get('status') == 'error') else 'success',
+            mode=(mode | default('') if mode | default('') != '' else repair_action | default('')),
+            result=response,
+            tool='zen_admintools_run_repair',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        response: "{{ (_rr_envelope_raw | from_json) if _rr_envelope_raw is string else _rr_envelope_raw }}"
     - stop: run_repair complete
       response_variable: response
     alias: Zen AdminTools Run Repair
