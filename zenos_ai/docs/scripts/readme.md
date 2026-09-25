@@ -3,6 +3,8 @@
 DojoTools and operational scripts that drive Friday's real-time automation, reasoning, telemetry, storage access, and system reflexes. Each module is fully documented in its own readme.
 
 > **Response envelope (2026.10.0):** most tools here now return the standard OS envelope `{status, mode, tool, result, system_message, caller_token}` — domain fields live under `result`. See [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape) for the shape and the list of tools not yet converted.
+>
+> **Help standard (2026.10.0):** every agent-callable `zen_dojotools_*` tool answers `mode=help` with `{status: help, message: <string>}`. Tools whose native selector isn't named `mode` (`operator`, `action_type`, `action`, `tool`) accept `mode` as a uniform alias that takes precedence; the legacy field still works. `zen_dojotools_manifest mode=audit_help` checks every tool against this standard.
 
 ## Internal Tool Map
 
