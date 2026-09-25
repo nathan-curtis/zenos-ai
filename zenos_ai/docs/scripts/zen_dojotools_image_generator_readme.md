@@ -8,6 +8,8 @@ Generates an image via `ai_task.generate_image` (DALL·E-class model) and writes
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_generate_image` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Requirements
 
 Only `ai_task.openai_ai_task_3` (`gpt-image-1.5`) supports `GENERATE_IMAGE` in this install. Set `input_text.zenos_image_task` to that entity_id after any reload — the script falls back to it when no `entity_id` is passed explicitly.

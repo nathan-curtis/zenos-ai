@@ -127,13 +127,15 @@ Wraps `zen_cabinets(None)` and returns all valid cabinet-backed identities in th
 
 Reads the `zen_identity_manifest` drawer from the household cabinet. Returns the cached roster without re-resolving all cabinets. Used by the prompt pipeline and prompt health sensor.
 
-### envelope(status, mode, result, tool, caller_token) — Canonical Response Shape (Zammad #10297, pilot)
+### envelope(status, mode, result, tool, caller_token) — Canonical Response Shape
 
-**Pilot / not yet adopted broadly** — `zen_health_report` and `zen_dojotools_locks` are the first two real consumers as of this writing. Returns the canonical `{status, mode, tool, result, system_message, caller_token}` shape every tool call should eventually converge on, separating execution outcome (`status` — did the call itself succeed) from domain-level state (which lives inside `result`, unchanged from whatever the tool already returned).
+Returns the canonical `{status, mode, tool, result, system_message, caller_token}` shape, separating execution outcome (`status` — did the call itself succeed, always `success` or `error`) from domain-level state (which lives inside `result`, unchanged from whatever the tool itself computed).
 
-Lives in `zen_os_1.jinja` deliberately, not a standalone macro file — this file is already a hard dependency for the prompt itself and for Flynn, so importing it for the envelope shape adds zero *new* failure edge for R0/debug tools. This matters because a broken or missing `{% import %}` target in HA Jinja is **not soft** — it raises a raw exception that kills the entire MCP call outright (`TemplateNotFound`, not a JSON `status: error` response), confirmed live, and config-check does not catch this at deploy time.
+**Adoption:** as of 2026.10.0 most DojoTools/AdminTools scripts and plugin tools return this shape from their single exit (the cadillac single-exit pass). Not yet enveloped: `zen_dojotools_query`/`inspect`/`index`, `zen_dojotools_identity`, `zen_dojotools_filecabinet`, `zen_dojotools_ha_log_viewer`, `zen_dojotools_event_emitter`, `zen_admintools_toolscan`, `zen_dojotools_inventory`, `zen_dojotools_kitchen`, `zen_dojotools_rolodex`, `zen_codex_finance_depreciation`, and the `zen_stack_battery`/`crm`/`depreciation`/`firefly`/`media`/`paperless`/`radar` providers. Sutras (`zen_sutra_*`) are internal adapters and stay exempt. Check a tool's own reference page before assuming either shape. **Callers that read a tool's response through `response_variable` must read domain fields from `.result`**, not the top level. A tool that forwards another tool's response as its own (e.g. `persona_editor` delegating to `certadmin`, `zen_dojotools_kitchen case=sync_now` delegating to `kitchen_sync`) unwraps `.result` first, so its own callers never see a double envelope.
 
-**`system_message`** is a universal sideband channel — reads the same `_zen_priority_inject` drawer/GC/expiry the `priority_inject()` prompt macro already uses, filtered to entries whose `display` field is `tool_response` or `both` (the default, `prompt`, never surfaces here — zero behavior change for anything written before this field existed). Usually `null`; not padded onto every call. Hardened against one bad entry crashing the whole macro — a naive (no-tzinfo) `expires` timestamp on any single priority-inject entry used to raise an uncaught `TypeError` that took down `envelope()` for *every* tool call using it, not just the one with the malformed entry (confirmed live 2026-08-14). Malformed entries are now skipped, not fatal.
+Lives in `zen_os_1.jinja` deliberately, not a standalone macro file — this file is already a hard dependency for the prompt itself and for Flynn, so importing it for the envelope shape adds zero *new* failure edge for R0/debug tools. This matters because a broken or missing `{% import %}` target in HA Jinja is **not soft** — it raises a raw exception that kills the entire MCP call outright (`TemplateNotFound`, not a JSON `status: error` response), and config-check does not catch this at deploy time.
+
+**`system_message`** is a universal sideband channel — reads the same `_zen_priority_inject` drawer/GC/expiry the `priority_inject()` prompt macro already uses, filtered to entries whose `display` field is `tool_response` or `both` (the default, `prompt`, never surfaces here). Usually `null`; not padded onto every call. Hardened against one bad entry crashing the whole macro — a naive (no-tzinfo) `expires` timestamp on a priority-inject entry is skipped, not fatal, so it can't take down `envelope()` for every tool call.
 
 ```json
 {
@@ -145,6 +147,23 @@ Lives in `zen_os_1.jinja` deliberately, not a standalone macro file — this fil
   "caller_token": ""
 }
 ```
+
+### resolve_identity_fields(raw) — Shared Identity Extractor
+
+Single shared extractor for `zen_dojotools_identity mode=resolve_caller_identity`'s raw response. Every cert-gated tool needs the same field pull with the same defaults; this macro is the one seam for it, so a future change to `resolve_caller_identity`'s response shape is a one-file edit instead of touching every caller. Returns (tojson'd, same convention as `cert_denial()`/`cert_scope_check()`):
+
+`{authorized, policy_status, cert_level, block_reason, cert_scope, scope_decision}`
+
+Caller pattern:
+
+```yaml
+_xx_id: >-
+  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+  {{ OS.resolve_identity_fields(_xx_id_raw) -}}
+_xx_id_fields: "{{ (_xx_id | from_json) if _xx_id is string else _xx_id }}"
+```
+
+then reference `_xx_id_fields.authorized`, `_xx_id_fields.cert_level`, etc.
 
 The manifest is built by `zen_dojotools_identity` with `mode: build_identity_manifest` and rebuilt automatically on `ha_start` and `daily_midnight` by the scheduler.
 

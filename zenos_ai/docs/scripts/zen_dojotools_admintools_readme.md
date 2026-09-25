@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_admintools_reset_template`, `zen_admintools_reset_labels`, `zen_admintools_cabinetadmin`, `zen_admintools_cabinetadmin_factory`, `zen_admintools_prompt_loader`, and `zen_admintools_run_repair` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 AdminTools is the **Ring-2 administrative layer** of ZenOS-AI. It handles tasks that fall outside normal runtime behavior: repairing cabinets, pressing schema templates, and loading the AI's identity substrate.

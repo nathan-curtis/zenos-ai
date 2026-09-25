@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_calendar` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 `zen_dojotools_calendar` is the canonical tool for all AI-driven calendar operations in ZenOS-AI. All calendar reads, creates, updates, and deletes must go through this tool — never call HA calendar services directly.
@@ -22,7 +24,7 @@ Supports HA-native calendars (Google, Local, ICS), Microsoft 365, and any provid
 | `inspect` | Advanced read using the system inspect tool. Shows `event_id` if the provider exposes it. Use this to locate event_id before update/delete. |
 | `create` | Create a new event. Requires `calendar_name` and `summary`. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `update` | Update an existing event by `event_id`. Requires `event_id`. Blocked if provider does not expose event_id. Also requires `pii_disclosure_control` (level 1). |
-| `delete` | Delete an event by `event_id`. Requires `event_id`. Blocked if provider does not expose event_id. |
+| `delete` | Delete an event by `event_id`. Requires `event_id`. Blocked if provider does not expose event_id. Requires the `calendar_control` certification (level 2) — irreversible event removal is its own risk axis, independent of `pii_disclosure_control`; see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `list` | List all available calendar entities (equivalent to `calendar_name: '*'`). |
 | `help` | Return full action reference, field list, and provider notes. |
 
@@ -122,4 +124,5 @@ zen_dojotools_calendar:
 
 | Version | Change |
 |---------|--------|
+| 2026.10.0 | `delete` gated on the new `calendar_control` certification (level 2). Response wrapped in the standard OS envelope. The update path's internal delete step unwraps its own enveloped response. |
 | v1.11.0 | Split from `dojotools_office.yaml`. No behavior changes — file relocation only. |

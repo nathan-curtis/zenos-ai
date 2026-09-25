@@ -25,7 +25,8 @@ Key capabilities:
 * Wake scene assembly from essence environment block
 * Prompt integrity check (`prompt_health_check()`) — schema, signature, manifest presence
 * Prompt length audit (`prompt_length_audit()`) — per-section character counts, 9 sections
-* `envelope()` — canonical OS-level response shape (Zammad #10297, pilot). Separates execution `status` from domain-level `result` state. `zen_health_report` and `zen_dojotools_locks` are the first two real consumers
+* `envelope()` — canonical OS-level response shape. Separates execution `status` from domain-level `result` state. Returned by most DojoTools/AdminTools/plugin tools as of 2026.10.0 — callers read domain fields from `.result`
+* `resolve_identity_fields()` — shared extractor for `resolve_caller_identity`'s response (`authorized`/`policy_status`/`cert_level`/`block_reason`/`cert_scope`/`scope_decision`), used by every cert-gated tool
 * Flynn detection chain: `zen_flynn_override` → blank persona → explicit `flynn` label → resolver error → `prompt_system_flynn()`
 * `prompt_system_flynn()` — hardcoded fallback prompt, zero cabinet dependencies, always works
 

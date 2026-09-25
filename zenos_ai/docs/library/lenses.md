@@ -358,6 +358,8 @@ Provider evidence responsibilities:
 
 `zen_dojotools_lens_dispatch` returns:
 
+As of 2026.10.0 this is the `result` payload inside the standard OS envelope (`{status, mode, tool, result, system_message, caller_token}` — see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)); consumers read it from `.result`. The dispatcher itself unwraps each provider's `.result` before merging, so enveloped providers (`zen_stack_alarms`, `zen_stack_presence`, `zen_stack_timer`) and not-yet-enveloped ones merge identically.
+
 ```json
 {
   "status": "success",

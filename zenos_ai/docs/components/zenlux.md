@@ -1,10 +1,10 @@
 # ZenOS-AI ZenLux — Lighting Manager
 
-**Version:** 2.2.0 (2026-08-16 — see note below on the version-number reset)
+**Version:** 2.6.0 (see note below on the version-number reset)
 **Script:** `zen_dojotools_lights`
 **Codename:** ZenLux
 
-> **Version numbering note:** this file's version tracked a `5.x` series through 5.2.0. The script's own `tool_manifest` restarted its version counter independently at some point before this doc was updated (now `2.2.0`) — a known drift class across several DojoTools scripts (Zammad #10300), not specific to ZenLux. Trust the script's own `mode=help`/`tool_manifest` response over this header if they ever disagree again.
+> **Version numbering note:** this file's version tracked a `5.x` series through 5.2.0. The script's own `tool_manifest` restarted its version counter independently at some point before this doc was updated (now `2.6.0`) — a known drift class across several DojoTools scripts (Zammad #10300), not specific to ZenLux. Trust the script's own `mode=help`/`tool_manifest` response over this header if they ever disagree again.
 
 ---
 
@@ -112,12 +112,18 @@ Confirm all role slots resolve and advisory is clear.
 | `brightness_set` | Set brightness 0–100%. Supports `transition` (0–30s, default 1s). RM hold gate applies. |
 | `color_temp_set` | Set color temperature in Kelvin (2700–6500K). Entity must support color_temp. RM advisory. |
 | `rgb_set` | Set RGB color as `r,g,b` (0–255 each, e.g. `255,100,0`). RM advisory. |
+| `effect_set` | Set a named effect (`effect=`) on any light with a real `effect_list` + EFFECT feature flag. Also turns the light on, matching `rgb_set`/`color_temp_set` — `light.set_effect` alone does not power on a light whose color is backed by a select entity. Requires Spook v5.2.0+ (`light.set_effect`); on older Spook returns `spook_version_required` with nothing changed. |
+| `brightness_increase` / `brightness_decrease` | Relative dim/brighten by `step_pct=` (1–100). Requires Spook v5.2.0+ — no safe core fallback; returns `spook_version_required` on older Spook. |
 | `scene_set` | Activate HA scene entity OR apply intent preset. Intent presets: `movie` / `sleep` / `morning` / `work` / `away` / `party` with pre-defined brightness + color_temp. Supports `transition`. |
 | `bleed_set` | Primary room scene + propagate to adjacent rooms via Room Manager topology. See Bleed below. |
 | `reflex_sync` | Fires whatever Room Manager v3's REFLEX Stage 2 currently resolves for this room's live state, by calling `zen_dojotools_room_manager mode=reflex_wire` and reading `wired_matrix` — not a separate re-derivation of resolution logic. Not gated by the room-lock check below: a locked room's own resolved state already accounts for the lock (it fires that state's own wired scene, which isn't a violation of the lock, it *is* the lock's scene). |
 | `toggle` (2026-08-16) | Domain-agnostic — `homeassistant.toggle` on `entity_id=`, works on `light.*` or `switch.*`. `entity_id=`-only, deliberately: `room=` would be ambiguous light-vs-switch without an explicit hint. RM hold gate + room-lock guard + `lighting_control` cert all apply, same as every other write mode. |
 | `switch_set` (2026-08-16) | Explicit `switch.*` write: `switch_state=on\|off\|toggle`. `entity_id=` overrides; otherwise `room=` (+ optional `target_role=`) resolves via the same room/role/`primary`-tiebreak convention the light modes use — but switches have no fixed role-label taxonomy the way lights do, so `target_role=` here is a plain label filter, not one of the `zen_lm_*` roles. |
 | `scene_stage` (2026-08-16, relocated from Room Manager) | Works around a real HA limitation: `scene.create` doesn't persist. `scene_phase=before` snapshots every light/cover/climate/media_player/switch/fan/humidifier entity in a room before a scene-worthy action; `scene_phase=after` snapshots again; `scene_phase=confirm` auto-detects and tags what actually changed between the two. `room=` required. Room Manager still exposes its own `mode=scene_stage` as a thin backward-compatible delegator to this one — logic lives here now, not there (RBAC locality: the write belongs with the tool that owns the domain it's staging). |
+
+**`adjust_only=true`** (Spook v5.2.0+) on `brightness_set`/`color_temp_set`/`rgb_set` routes through Spook's own `light.set_brightness`/`light.set_color_temperature`/`light.set_color` instead of `light.turn_on`: lights that are deliberately off stay off, and group members step from their own level instead of flattening to an average. Default `false` keeps the force-on behavior.
+
+**Readback.** `brightness_set`, `color_temp_set`, `rgb_set`, and `effect_set` return the resulting `state` and `brightness_pct`, not just the requested value. Because a service call returning is not the same as the device confirming (a WiFi-bridged light can read `off` for a few seconds after the call), each waits up to 5s for the entity's state/brightness signature to actually change before reading back. `readback_confirmed: true` means the change was observed; `false` means the wait timed out and the readback may be stale.
 
 ### Preferences
 
@@ -198,5 +204,6 @@ Preferences stored in household cabinet — no additional helpers needed.
 
 | Version | Change |
 |---------|--------|
+| 2.6.0 | `adjust_only` on `brightness_set`/`color_temp_set`/`rgb_set`; new `brightness_increase`/`brightness_decrease`/`effect_set` modes (all Spook v5.2.0+, capability-probed). 2026.10.0: `effect_set` also turns the light on; the four color/level modes read back `state`/`brightness_pct` after waiting for the device to confirm (`readback_confirmed`). |
 | 2.2.0 (2026-08-16) | Real `switch.*` write support (`toggle`, `switch_set`), `mode=inspect`, `mode=scene_stage` relocated in from Room Manager, `lighting_control` identity gate turned on for real, full SESE + `envelope()` conversion across all modes, `mode=help`/`tool_manifest` content corrected (stale version string, 5 modes missing from the static mode list). Two real bugs found and fixed doing the conversion by hand: an internal validate-then-continue guard's early result could be silently overwritten by code that should never have run once its own `stop:` was stripped; a `choose:` block mis-nested at the wrong indentation level passed `config_check` cleanly while being dead code. |
 | 5.2.0 | Room Lock Guard (RM v3) — checks `room_control_manager` directly, `force=true` override. |

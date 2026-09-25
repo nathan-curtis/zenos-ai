@@ -16,6 +16,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_plant` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 Physical Plant + Energy Manager. Surfaces live state for all major utilities — electric, HVAC, water, gas, and mechanical systems — via a label-first discovery model.
@@ -77,6 +79,10 @@ See the [Security Certification Manual](../getting_started/security_certificatio
   sequentially: close the valve(s) now?, and separately, auto-close future
   leaks without asking? Both answers are real and independent — e.g. "handle
   this one myself, but yes, automate it going forward" is a valid outcome.
+- **No shutoff labeled** (no `zen_plant_auto_shutoff` switch/valve exists):
+  nothing to actuate, but the leak is never silent — the automation fires a
+  critical alert via `zen_dojotools_alertmanager` instead. A leak sensor does
+  not need to also carry the generic `moisture` label to be escalated.
 
 **Tagging requirements, and why the domain check matters:** `zen_plant_leak_sensor`
 belongs on `binary_sensor.*` entities with `device_class: moisture` — real

@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** Every script in this bundle returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 Utilities is a collection of general-purpose tools that don't belong to a specific subsystem. It covers math, randomness, TTS, music lookup, system introspection, cabinet auditing, and canonical GET+SET wrappers for HA domains that HA's own MCP built-ins handle inconsistently.

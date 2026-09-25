@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_manifest` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 The **Zen DojoTools Manifest** is the ZenOS-AI system manifest broker. As of v6.0.0 it is no longer a cabinet-only scanner — it is the single introspection lens for the entire system: cabinets, tools, identity, labels, automations, and topology.

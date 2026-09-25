@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_labels` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 `zen_dojotools_labels` is the core primitive for label management in ZenOS-AI. It is how the system creates, inspects, and assigns the labels that power the HyperIndex, KFC components, and cabinet resolution.
@@ -12,7 +14,7 @@ Labels are the connective tissue of the system. The Scheduler, Ninja Summarizer,
 
 This script is **MCP-exposed**. Friday can read the label index and create or update labels. Write operations (`create`, `update`, `delete`, `reset`) are gated behind `confirm: true` — they require an explicit operator confirmation before executing.
 
-**Certification gate (2026-09-10, #10390):** `create`, `delete`, `area_assign`, and `area_remove` additionally require the `registry_lifecycle_control` certification (level 1) — `area_assign`/`area_remove` share the underlying Spook capability `zen_dojotools_ectoplasm` already gates under this cert, so this closes a path that would otherwise bypass that gate by coming through Labels instead. `reset` requires the same certification **plus** a mandatory live household-admin acknowledgment on every call (no scope waiver available for this action — it wipes all `zen_` label assignments house-wide). `tag`, `untag`, `read`, and `install` remain ungated. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
+**Certification gate:** `create`, `delete`, `update`, `area_assign`, and `area_remove` additionally require the `registry_lifecycle_control` certification (level 1) — `update` is included because its delete→recreate fallback carries the same area/device-association loss risk as a direct `delete`; `area_assign`/`area_remove` share the underlying Spook capability `zen_dojotools_ectoplasm` already gates under this cert, so this closes a path that would otherwise bypass that gate by coming through Labels instead. `reset` requires the same certification **plus** a mandatory live household-admin acknowledgment on every call (no scope waiver available for this action — it wipes all `zen_` label assignments house-wide). `tag`, `untag`, `read`, and `install` remain ungated. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
 
 ---
 

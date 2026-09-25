@@ -10,12 +10,15 @@ All three modes (`provision`, `deprovision`, `replace`) require the `cabinet_lif
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_provisioner` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Modes
 
 | Mode | Description |
 |------|-------------|
 | `provision` (default) | Pulls a stacks cabinet (`init` or `online_unmounted`) into service. Validates GUID, applies the type label, mounts, optionally preloads profile data, fires an identity manifest rebuild. Rolls back (strips the label) if the mount doesn't land within the health-gate timeout. |
 | `deprovision` | Dismounts a cabinet, strips its type label, returns it to the stacks pool. Blocked if the cabinet holds a `zen_default_*` label — transfer the default elsewhere first. |
+| `help` | Read-only: full field reference, gate order for provision/deprovision, examples, and notes. Not cert-gated. Call this first. |
 | `replace` | Deprovisions `replace_cabinet`, then provisions `target_cabinet` — same `cab_type` for both. Cheaper than a raw deprovision+provision because stacks make cabinet turnover a labeling operation, not a data migration. |
 
 ---
@@ -24,7 +27,7 @@ All three modes (`provision`, `deprovision`, `replace`) require the `cabinet_lif
 
 | Field | Required | Description |
 |-------|----------|--------------|
-| `mode` | No | `provision` (default) / `deprovision` / `replace`. |
+| `mode` | No | `provision` (default) / `deprovision` / `replace` / `help` / `tool_manifest`. |
 | `cab_type` | provision, replace | `ai_user`, `user`, `family`, or `household` — determines which type label gets applied. |
 | `target_cabinet` | Yes | Cabinet entity to provision (must be `init`/`online_unmounted`) or deprovision (must be `online_mounted`). |
 | `replace_cabinet` | replace only | Existing cabinet to deprovision before `target_cabinet` is provisioned. |

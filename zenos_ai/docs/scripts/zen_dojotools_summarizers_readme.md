@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_supersummary` and `zen_dojotools_ninja_summarizer` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 The summarizer package is the KF4 action pipeline. It runs continuously on a schedule, reads each component's context via HyperIndex, writes structured kata to the Kata cabinet, and synthesizes that knowledge into the `zen_summary` drawer that loads Friday's prompt context. Where a component's kata calls for action — a notification, an event, a dispatch — the pipeline fires it.
@@ -102,8 +104,9 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 9. **Run library command** — if the component has a `command` field, dispatches it through `command_interpreter.jinja`
 10. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions
 11. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
-12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and monk returned data, writes result to `kata_cabinet[component_slug]`
+12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and the monk's output **parsed into a real, non-empty JSON object**, writes it to `kata_cabinet[component_slug]`. The JSON is extracted by first-`{`/last-`}` (surviving code fences and trailing model prose) and validated with `from_json`; a malformed or fence-stripped response is logged as a parse failure and **not written** — a raw non-empty string is never enough, so a bad run can't stamp a fresh timestamp on an empty drawer.
 13. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
+14. **Escalation (action_required components)** — before emitting a `dojotool_call` to `zen_dojotools_urgency_handler`, checks `zen_dojotools_alertmanager mode=check_ack` with `condition_key` = the component's `kata_key`. A live ack suppresses the escalation and fires `emission_suppressed` (`reason: acked`) instead. Coarse, whole-component suppression — see [AlertManager → Acknowledgements](../components/alertmanager.md#acknowledgements) for the key convention.
 
 ### Response
 
@@ -186,7 +189,7 @@ Synthesizes all active component kata drawers into a single `zen_summary` — th
 8. **Build monk prompt** — assembles query, schema (zen_template structure), example, and review data (all component kata values + prompt context)
 9. **Call ai_task.generate_data** — sends prompt to the AI task entity
 10. **Write `zen_supersummary_status`** — records run status + component count to Kata cabinet
-11. **Post `zen_summary`** — if `post_to_kata_cabinet` is true and monk returned data, writes to Kata cabinet as `ZEN_SUMMARY`
+11. **Post `zen_summary`** — if `post_to_kata_cabinet` is true and the monk's output parsed into a real, non-empty JSON object (same first-`{`/last-`}` extraction + `from_json` validation as the Ninja path), writes to Kata cabinet as `ZEN_SUMMARY`. A malformed response is logged and not written.
 12. **Emit event** — fires `zen_dojotools_event_emitter`
 
 ### Pipeline Tier Split (v5.1.0)

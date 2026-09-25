@@ -190,19 +190,22 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | `zen_dojotools_camera` | `camera_alert_policy_edit` | `set_alert_policy` | — |
 | `zen_dojotools_plant` | `plant_auto_shutoff_config_edit` | `leak_auto_shutoff_enable` | — |
 | `zen_dojotools_alertmanager` | `alert_policy_edit` | `set_policy` | — |
-| `zen_dojotools_labels` | `registry_lifecycle_control` (reused) | `create`, `delete`, `area_assign`, `area_remove` | `reset` (untags all `zen_` labels house-wide — cert plus a mandatory live ack every time, no scope waiver available for this action) |
+| `zen_dojotools_labels` | `registry_lifecycle_control` (reused) | `create`, `delete`, `update`, `area_assign`, `area_remove` | `reset` (untags all `zen_` labels house-wide — cert plus a mandatory live ack every time, no scope waiver available for this action) |
 | `zen_dojotools_office` (Mail) | `pii_disclosure_control` | `create` (send, level 1) | — |
 | `zen_dojotools_office` (Mail) | `pii_disclosure_control` (reused) | `whitelist_set` (level 2 — edits the household mail-whitelist cabinet drawer) | — |
 | `zen_dojotools_office` (Teams) | `pii_disclosure_control` (reused) | `send` | — |
+| `zen_dojotools_office` (Teams) | `teams_control` | `set` (Availability/Activity — how the user is represented to their org; level 1) | — |
 | `zen_dojotools_taskmaster` | `pii_disclosure_control` (reused) | `task_create` | — |
 | `zen_dojotools_todo` | `pii_disclosure_control` (reused) | `create`, `update` | — |
+| `zen_dojotools_todo` | `todo_control` | `delete` (level 2 — irreversible item removal) | — |
 | `zen_dojotools_calendar` | `pii_disclosure_control` (reused) | `create`, `update` | — |
+| `zen_dojotools_calendar` | `calendar_control` | `delete` (level 2 — irreversible event removal) | — |
 | `zen_dojotools_ectoplasm` (Spook actions) | `room_topology_edit` (reused) | `area_create`/`area_delete`, `floor_create`/`floor_delete`, `area_assign_device`/`area_unassign_device`, `area_assign_entity`/`area_unassign_entity`, `floor_assign_area`/`floor_unassign_area` (`area_delete`/`floor_delete` at level 2) | — |
 | `zen_dojotools_ectoplasm` (Spook actions) | `registry_lifecycle_control` (reused) | `entity_hide`/`entity_unhide`, `entity_disable`/`entity_enable`, `entity_rename`, `device_disable`/`device_enable`, `integration_disable`/`integration_enable`, `label_assign_area`/`label_unassign_area`, `label_assign_device`/`label_unassign_device`, `automation_snooze`, `automation_turn_on_for`, `input_number_create`/`input_number_delete` | — |
 | `zen_dojotools_ectoplasm` (Spook actions) | `registry_purge` | `orphan_cleanup` (level 2) | — |
 | `zen_dojotools_scribe` | `scribe_kfc_publish` | `publish_kfc`, `republish_kfc`, and `patch`/`replace`/`clear_field`/`delete` when the target artifact is an already-published `kfc` | — |
 | `zen_dojotools_media_manager` | `media_prefs_edit` | `prefs_set`, `prefs_apply`, `room_default_set`, `setup` | — |
-| `zen_dojotools_media_manager` | `media_playback_control` | `play_media`, `queue_command`/`queue_remove`/`queue_play_item`/`queue_clear_from_here`/`queue_unfavorite`, `source_set`, `sound_mode_set`, `activity_set`/`activity_apply`/`activity_end` | — |
+| `zen_dojotools_media_manager` | `zenos.media.playback_control` | `play_media`, `queue_command`/`queue_remove`/`queue_play_item`/`queue_clear_from_here`/`queue_unfavorite`, `source_set`, `sound_mode_set`, `activity_set`/`activity_apply`/`activity_end` | — |
 | `zen_dojotools_library` | `library_stacks_edit` | Paperless-NGX document writes (stacks department) | — |
 | `zen_dojotools_library` | `library_catalog_edit` | Physical-item catalog writes (catalog department) | — |
 | `zen_dojotools_zenzork` | `household_spatial_config_edit` | `mode=setup` (north calibration / portal commissioning) only | — |
@@ -216,8 +219,14 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | `zen_dojotools_zones` | `helper_zones_edit` | `zone.*` create/update/delete (read/bearing stay open) | — |
 | `zen_dojotools_room_manager` | `room_topology_edit` (reused) | `utility` mode's `set`/`delete` (household NFPA/emergency-cutoff registry writes) | — |
 | `zen_dojotools_room_manager` | `room_behavior_control` (reused) | `label_discover`'s `confirm_action=true` bulk-tag-apply path (preview stays open) | — |
+| `zen_dojotools_generate_image` | `zenos.media.generate` | Every generation call (costs real API spend per call) | — |
+| `zen_dojotools_print_shop` | `zenos.media.print_control` | `configure`, `test_page`, `print_text`, `print_image`, `clean`, `nozzle_check` (`status`/`list_jobs`/`help` stay open) | — |
+| `zen_dojotools_profile_editor` | `zenos.identity.profile_write` | `write` (household/user/family profile mutation; `read` stays open) | — |
+| `zen_dojotools_postman` | `zenos.comms.dispatch` | `resolve_and_dispatch` (except life-safety/breakthrough urgency, which always goes), `direct_dispatch`, `author_policy`, `clear_tag` | — |
+| `zen_dojotools_systemtools` | `zenos.system.reload_restart` | `ha_restart`, `ha_reload_all` (checked once `confirm=true` is given, in addition to the confirm gate) | — |
+| `zen_dojotools_systemtools` | `zenos.system.home_config_write` | Write path of `home_mode`, `quiet_hours`, `work_hours`, `scheduler_anchors`, `guest_mode`, `entertaining` (reads stay open) | — |
 
-`pii_disclosure_control` is a shared certification: level 1 gates any action that discloses or transmits household PII outward (mail/Teams send, task/todo/calendar create-update since these can carry personal details to shared surfaces); level 2 gates changing the disclosure policy itself (the mail whitelist).
+`pii_disclosure_control` is a shared certification: level 1 gates any action that discloses or transmits household PII outward (mail/Teams send, task/todo/calendar create-update since these can carry personal details to shared surfaces); level 2 gates changing the disclosure policy itself (the mail whitelist). It covers the *disclosure* axis only — irreversible deletes (`todo_control`, `calendar_control`) and presence representation (`teams_control`) are separate, independent risk axes with their own certs, and can apply to the same tool as `pii_disclosure_control` for different actions.
 
 Every entry in the middle and right columns requires holding the listed certification at the tool's required level as a baseline. The right column additionally requires Section 4's live ack, per call, unless the specific target is covered by a granted allow `cert_scope` (Section 6) — and refused outright, no ack offered, if covered by a `deny` entry instead.
 

@@ -1,6 +1,6 @@
 # ZenOS-AI AlertManager
 
-**Version:** 5.1.0
+**Version:** 5.4.1
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**
@@ -10,6 +10,8 @@
 - `script.zen_dojotools_alertmanager` — MCP-exposed CRUD tool (**MCP-exposed**)
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_alertmanager` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -256,8 +258,9 @@ This sensor is the integration point for Room Manager `home_overview`. Its state
 |--------|--------|------------|
 | `_zen_active_alerts` | `{alert_key: {fired_at, message, severity, expires_at}}` | Default 24h; `clear_after_minutes: 0` disables expiry |
 | `_zen_priority_inject` | `{alert_<alert_key>: {summary, urgency, expires, since, entities}}` | Provider expiry, usually 60 minutes for error alerts |
+| `_zen_alert_acks` | `{condition_key: {acked_at, acked_by, note, expires_at, baseline, change_check}}` | `ttl_days` on the `ack` call, default 7 days |
 
-Both drawers are created automatically on first write. The `_` prefix marks them hidden and protected from generic FileCabinet expiry. AlertManager/Core still perform purpose-built TTL cleanup by emitting `alert_clear` for expired alert entries.
+All three drawers are created automatically on first write. The `_` prefix marks them hidden and protected from generic FileCabinet expiry. AlertManager/Core still perform purpose-built TTL cleanup by emitting `alert_clear` for expired alert entries.
 
 ---
 
@@ -325,7 +328,10 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `clear_all` | Clear all active alerts. Returns count of keys cleared. |
 | `get_response` | Read the cached ack for a fired alert. Returns `{status: pending}` if the response hasn't arrived yet, or `{status: captured, ack_action, ack_timed_out, ack_device_id}` once captured. |
 | `get_policy` | Read the current notify policy from the household cabinet. |
-| `set_policy` | Write a new notify policy entry to the household cabinet. Requires the `alert_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `set_policy` | Write a new notify policy entry to the household cabinet. Requires the `alert_policy_edit` certification (level 1) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `ack` | Acknowledge a known, non-critical condition so a domain caller can suppress repeat escalation for it. Stores an entry in `_zen_alert_acks` keyed by `condition_key`, expiring after `ttl_days` (default 7). No cert gate — same rationale as `fire`/`clear`. |
+| `check_ack` | Read-only: is `condition_key` currently acknowledged? Returns `suppressed: true` plus the stored `baseline`/`change_check`/`note`/`acked_at`, or `suppressed: false` with `reason: no_ack` / `expired`. |
+| `revoke_ack` | Delete the ack for `condition_key` early. Returns `existed`. |
 | `help` | Return full tool contract and field reference. |
 
 **Default:** No input → `mode: help`.
@@ -348,6 +354,10 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `label` | `get_policy`, `set_policy` | string | HA label slug. Targets all entities returned by `label_entities()`. |
 | `target_entity` | `get_policy`, `set_policy` | string | Single entity ID. Overrides `label`. |
 | `policy_json` | `set_policy` | JSON string | Routing override shape: `{notify_target, channel_hint, suppress_minutes}`. |
+| `condition_key` | `ack`, `check_ack`, `revoke_ack` | string | Stable slug for the underlying condition — **not** the ephemeral `alert_key` (e.g. `garage_freezer_thermal_model:thermal_anomaly`). |
+| `baseline_json` | `ack` | JSON string | Domain-chosen snapshot of the values `change_check` will later compare against. Handed back verbatim by `check_ack`. |
+| `change_check` | `ack` | string | Free-text description of the domain's own materiality rule (e.g. `abs(current.temp_f - baseline.temp_f) > 5`). Stored and returned, **never executed** — see [Acknowledgements](#acknowledgements). |
+| `ttl_days` | `ack` | number | Days until the ack auto-expires. Default `7`, range 1–90. |
 
 ### Response
 
@@ -407,6 +417,28 @@ All modes return a structured response via `response_variable`. Shape varies by 
 ```
 
 The response is read from the kata cabinet drawer `alert_response_<alert_key>`. It is written there when `zen_alert_manager` processes the `alert_response` event from Postman. Call `get_response` after firing with `response_type` set — poll until `status: captured` or until `ack_timed_out: true`.
+
+**`check_ack` response — suppressed:**
+```json
+{
+  "mode": "check_ack",
+  "condition_key": "battery_health",
+  "suppressed": true,
+  "baseline": {},
+  "change_check": "",
+  "acked_at": "2026-09-22T15:00:00+00:00",
+  "note": "",
+  "caller_token": ""
+}
+```
+
+Not suppressed: `{"mode": "check_ack", "condition_key": "...", "suppressed": false, "reason": "no_ack" | "expired", "caller_token": ""}`.
+
+### Acknowledgements
+
+`ack`/`check_ack`/`revoke_ack` are a generic primitive: AlertManager stores and returns the acknowledgement, and the **domain caller** decides what it means. `change_check` is documentation only — stock HA Jinja has no supported way to render a stored string as a fresh template at runtime, so AlertManager never evaluates it. A domain tool that wants materiality checking compares its own current values against the returned `baseline` in its own script logic, and calls `revoke_ack` itself when the condition has materially changed.
+
+**KFC summarizer wiring.** The shared KFC emission chokepoint in `dojotools_summarizers.yaml` calls `check_ack` with `condition_key` set to the component's bare `kata_key` before emitting an escalation to `zen_dojotools_urgency_handler`. If a live ack exists, the escalation is suppressed and an `emission_suppressed` event (`reason: acked`) fires instead. This is coarse, whole-component suppression — a genuinely new problem inside an already-acked component is also suppressed until the ack expires or is revoked. To suppress a KFC-summarized component this way, the ack's `condition_key` **must equal the `kata_key` exactly** (e.g. `battery_health`, no suffix). Suffixed keys (`component:sub_condition`) only make sense for domain tools that call `check_ack` themselves.
 
 ### Notes
 

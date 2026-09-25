@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_profile_editor` and `zen_dojotools_persona_editor` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 `zen_dojotools_profile_editor` is the interactive profile surface for ZenOS-AI identity cabinets. It is **MCP-exposed** and called by Friday during OOBE and on user request.

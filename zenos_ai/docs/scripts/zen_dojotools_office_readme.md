@@ -4,6 +4,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_teams` and `zen_dojotools_mail` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 `dojotools_office.yaml` contains two Microsoft 365 scripts: `zen_dojotools_teams` and `zen_dojotools_mail`. Both follow the standard DojoTools multitool pattern and return all responses as structured JSON.
@@ -22,7 +24,7 @@ M365 Teams CRUD via the MS365 integration. Supports reading the latest incoming 
 |---|---|
 | `read` | Returns latest chat message, your current Teams status, and the partner's chat ID |
 | `send` | Sends a text message to an existing chat thread. Requires `chat_id` and `message`. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
-| `set` | Updates your Teams presence (availability + activity + expiration). Requires `availability` |
+| `set` | Updates your Teams presence (availability + activity + expiration). Requires `availability`. Requires the `teams_control` certification (level 1) — presence is how the user is represented to their whole org, a risk distinct from `send`'s PII-disclosure axis. |
 | `help` | Returns capability summary, field reference, and setup notes |
 
 Update and delete are not supported by the MS365 Teams integration.

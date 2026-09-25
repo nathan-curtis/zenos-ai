@@ -12,6 +12,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_room_manager` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 Zen DojoTools Room Manager is the spatial intelligence hub for ZenOS-AI. It stores and serves physical room topology — portals, adjacency, transmission values, exits, safety equipment — and provides live context slices combining topology with real-time HA state.

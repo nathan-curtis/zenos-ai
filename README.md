@@ -32,7 +32,9 @@ And a few things that are.
 
 **Room Manager / Media / Lighting / Display convergence** — one shared vocabulary (labels plus `room_control_manager`) instead of four systems each re-deriving "what room is this and what's it doing."
 
-A few cert-gate audits (FileCabinet, Manifest/Scribe) are still open and tracked before this becomes a release candidate.
+**Quieter alerts** — Alert Manager acknowledgements (`ack`/`check_ack`/`revoke_ack`) let a household say "we know, it's fine" and have the summarizer pipeline stop re-escalating that component until the ack expires; summarizer writes now guard on a validated parse.
+
+One cert-gate audit (FileCabinet, pending its own security-class design) is still open and tracked before this becomes a release candidate.
 
 → [Release Notes — Tron](zenos_ai/docs/releases/tron.md)
 

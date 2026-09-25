@@ -2,6 +2,8 @@
 
 DojoTools and operational scripts that drive Friday's real-time automation, reasoning, telemetry, storage access, and system reflexes. Each module is fully documented in its own readme.
 
+> **Response envelope (2026.10.0):** most tools here now return the standard OS envelope `{status, mode, tool, result, system_message, caller_token}` — domain fields live under `result`. See [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape) for the shape and the list of tools not yet converted.
+
 ## Internal Tool Map
 
 ```mermaid
@@ -161,7 +163,7 @@ HA lifecycle management: config check, safe restart, update install/skip. Log vi
 ## 14. Zen DojoTools Office — 2026.6.0 'Clue'
 **File:** [`zen_dojotools_office_readme.md`](zen_dojotools_office_readme.md)
 
-Unified, deterministic access to all HA calendar entities. Multi-calendar reads, event creation, update/delete, label-based targeting, strict ambiguity prevention.
+Microsoft 365 Teams (`zen_dojotools_teams`) and Mail (`zen_dojotools_mail`) via the MS365 integration. Sending (Teams `send`, Mail `create`) is cert-gated on `pii_disclosure_control`; Teams presence `set` requires `teams_control` as of 2026.10.0. Calendar and To Do moved to their own tools (27, 31).
 
 ---
 
@@ -259,7 +261,7 @@ Deploys KFC (Kung Fu Component) dojo drawers via Scribe, for components that don
 ## 27. Zen DojoTools Calendar — v1.11.0
 **File:** [`zen_dojotools_calendar_readme.md`](zen_dojotools_calendar_readme.md)
 
-HA Calendar domain CRUD, split from `dojotools_office.yaml`. MCP-exposed — `create`/`update` are cert-gated (`pii_disclosure_control`) as of the 2026.10.0 cert-gate rollout; `delete`/read stay open.
+HA Calendar domain CRUD, split from `dojotools_office.yaml`. MCP-exposed — `create`/`update` are cert-gated (`pii_disclosure_control`) and `delete` requires `calendar_control` (level 2) as of 2026.10.0; read stays open.
 
 ---
 
@@ -273,7 +275,7 @@ MCP-exposed image generation, dispatching `image_generated` correlated by an opt
 ## 29. Zen DojoTools Provisioner — v5.1.0
 **File:** [`zen_dojotools_provisioner_readme.md`](zen_dojotools_provisioner_readme.md)
 
-MCP-exposed household-member/AI-identity provisioning — activates/releases a cabinet. `provision`/`deprovision`/`replace` are cert-gated (`cabinet_lifecycle_control`, reused from AdminTools' `cabinetadmin`) as of the 2026.10.0 cert-gate rollout.
+MCP-exposed household-member/AI-identity provisioning — activates/releases a cabinet. `provision`/`deprovision`/`replace` are cert-gated (`cabinet_lifecycle_control`, reused from AdminTools' `cabinetadmin`) as of the 2026.10.0 cert-gate rollout. `mode=help` returns the full field reference and gate order.
 
 ---
 
@@ -284,10 +286,10 @@ Deterministic entity selector for Home Assistant — the compiled-filter query e
 
 ---
 
-## 31. Zen DojoTools ToDo — v2.5.1
+## 31. Zen DojoTools ToDo — v5.2.0
 **File:** [`zen_dojotools_todo_readme.md`](zen_dojotools_todo_readme.md)
 
-MCP-exposed HA to-do list CRUD. `create`/`update` are cert-gated (`pii_disclosure_control`) as of the 2026.10.0 cert-gate rollout; `delete`/read stay open.
+MCP-exposed HA to-do list CRUD. `create`/`update` are cert-gated (`pii_disclosure_control`) and `delete` requires `todo_control` (level 2) as of 2026.10.0; read stays open.
 
 ---
 

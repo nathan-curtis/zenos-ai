@@ -103,7 +103,7 @@ One flat `choose` block, one arm per `tool` + `version` pair — no tiering, no 
 | `zen_dojotools_index` v1 | Index build — index_command, filter_json (JSON-safe deserialization) |
 | `zen_dojotools_manifest` v1 | Manifest rebuild — show_hidden, show_stacks, extended |
 | `zen_admintools_summarizer_act` v1 | Routes to `zen_admintools_prompt_loader` mode=whitelist |
-| `zen_dojotools_urgency_handler` v1 | **Stub** — registered, handler not yet implemented |
+| `zen_dojotools_urgency_handler` v1 | Catch-all triage lane for `action_required=true` events — see [Urgency Handler](#urgency-handler) |
 | `zen_dojotools_todo` v1 | To-do list CRUD |
 | `zen_dojotools_calendar` v1 | Calendar read/write |
 | `zen_dojotools_security_manager` v1 | Security panel — arm/disarm/read_state |
@@ -119,6 +119,16 @@ One flat `choose` block, one arm per `tool` + `version` pair — no tiering, no 
 | `zen_stack_battery` v1 | Battery Notes Lens Bus provider (2026.7.1) — same dual-path shape as firefly above |
 
 **`zen_dojotools_notification_router` was removed entirely in v5.3.0 (2026-07-04)** — no backing script existed for it. A caller using that legacy tool name now falls through to `default` (`unknown_tool`). Use `zen_dojotools_postman` directly instead.
+
+---
+
+## Urgency Handler
+
+`zen_dojotools_urgency_handler` is the catch-all triage lane for `action_required=true` events that fall through both `summary_force` (needs `urgency >= drift_threshold`) and the four-layer autonomous-remediation gate (needs `urgency >= push_floor` **and** a non-empty `suggested_act_event`). Those low-urgency, no-automatable-action "needs a human" signals are routed to Taskmaster as a real task (priority scaled from urgency; no Postman push — anything push-worthy already went through the four-layer gate).
+
+- **Dedup.** Every ticket it creates is tagged with a stable per-component tag. Before creating, it searches for an already-open ticket carrying that tag: found → a recurrence note is added to the existing ticket; not found → create, then tag it so the next occurrence finds it.
+- **No-signal guard.** When there's no existing ticket **and** `urgency <= 0` **and** both `attention` and `suggested_act_event` are empty (missing, blank, or explicit `null`), `task_create` is skipped entirely and the handler returns `status: suppressed_no_signal` instead of opening an empty "Action required" ticket.
+- **Ack suppression happens upstream.** A KFC component acknowledged via `zen_dojotools_alertmanager mode=ack` (with `condition_key` = the component's `kata_key`) never reaches this handler — the summarizer suppresses the emission first. See [AlertManager → Acknowledgements](../components/alertmanager.md#acknowledgements).
 
 ---
 
@@ -144,7 +154,6 @@ Catches `cabinet_vi_degraded` events emitted by Inspect when a cabinet VolumeInf
 ## Caveats
 
 - **`correlation_id` is mandatory.** Calls without it are rejected with `dojotool_dispatch_error` before touching the registry.
-- **`zen_dojotools_urgency_handler` is a stub.** It is registered and will accept calls, but the backing implementation does not exist yet. Response: `status: stub`.
 - **`zen_dojotools_notification_router` no longer exists.** Removed entirely in v5.3.0 — there was never a backing script behind it, only the dispatcher arm. A caller using the old tool name gets `unknown_tool` now. Use `zen_dojotools_postman` directly.
 - **The dispatcher runs `mode: parallel, max: 20`.** Twenty concurrent dojotool calls can be in flight simultaneously. Each receives its own correlated return.
 - **`zen_stack_firefly` and `zen_stack_battery` have direct dispatcher arms** in addition to being Lens Bus registry providers. `lens_bus_autoreg.md` states stack providers don't need a dispatcher arm (the registry is the routing mechanism) — these two have one anyway, likely predating or running alongside that pattern. Not a conflict in practice: the arm here is for direct `dojotool_call` invocation, the Lens Bus registry is for `stacks_by_anchor` consumer routing. Worth a look if you're touching either path.

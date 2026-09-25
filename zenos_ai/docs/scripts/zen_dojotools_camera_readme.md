@@ -6,6 +6,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_camera` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 The Camera tool is Friday's visual surface. It wraps HA camera entities with LLM vision analysis, a household-cabinet cache, and a label-driven sweep mechanism so Friday can reason about what cameras see without burning an LLM call on every question.

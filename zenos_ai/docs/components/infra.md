@@ -12,6 +12,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_infra` and `zen_admintools_portainer_acl` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 `zen_dojotools_infra` is a unified, label-driven IT ops console: node/VM inventory, container/Portainer host health, Uptime Kuma service monitors, pending updates, SSL certificate expiry, HA supervisor health, and a log-tail peek. All discovery is by HA label or integration lookup — no hardcoded entity IDs.

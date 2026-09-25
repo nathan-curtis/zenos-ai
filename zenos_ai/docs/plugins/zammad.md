@@ -8,6 +8,8 @@
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_servicedesk` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Overview
 
 Zammad is the service desk and fulfillment surface for ZenOS-AI, codename **Radar**. It handles help tickets, work requests, triage, and customer/org management via the Zammad REST API.

@@ -6,6 +6,8 @@ Taskmaster is ZenOS-AI's cross-backend task orchestration layer: household chore
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_taskmaster` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Progressive Enhancement
 
 Taskmaster does **not** merge Radar, Inventory, CRM, and To Do into one data model — each backend keeps its native shape. It picks the best available backend at creation time and fans out reads across whichever backends are configured:
