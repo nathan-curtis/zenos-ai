@@ -76,6 +76,8 @@ Revokes and bundle changes also require a live acknowledgement.
 
 If the call's own Home Assistant context carries a real logged-in user (`context.user_id` is non-empty), CertAdmin treats that as a human physically at the console and skips the push round-trip for a single-certification grant. Automation-triggered and agent-triggered calls carry no `user_id`, so they cannot take this path. It exists so an install with no working notification target can still grant certifications, from Developer Tools, by a person.
 
+> **Not yet built.** The console-admin path covers single-certification grants only. Bundle grants, revokes, and bundle definition changes still require a live acknowledgement. Extending the console path to bundle grants is planned, since provisioning an agent's full posture is many certifications and a bundle is how that should be done.
+
 AdminTools generally follow the same rule: they are the configuration and recovery plane, not an agent capability, and they are not exposed to conversation agents unless a human deliberately exposes them.
 
 > **Not yet built.** A separate administrative competency certification ("ZenOS Admin Certified, Level X"), admitting an agent to the administrative plane with each AdminTool deciding which functions a given level may use, is design direction for this release line. Today the administrative plane is enforced by exposure (AdminTools are not agent-reachable) and by live acknowledgement, not by an admin certification.
