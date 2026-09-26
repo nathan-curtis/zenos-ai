@@ -1,8 +1,8 @@
-# 10. The Monastery
+# 13. The Monastery
 
 The twin is not built on every conversation turn. It is kept current in the background by the Monastery: a pipeline that reads each domain of the house through its labels, asks a model to summarize it into a fixed shape, validates the answer, and stores it. When Friday needs to know the state of the house, the summary is already there.
 
-## 10.1 The pipeline
+## 13.1 The pipeline
 
 ```mermaid
 graph TD
@@ -27,16 +27,16 @@ The pieces:
 
 | Piece | What it is |
 |---|---|
-| Kung Fu Component (KFC) | A domain definition in the Dojo cabinet: what it reads, what triggers it, its tier, its instructions (Chapter 9) |
+| Kung Fu Component (KFC) | A domain definition in the Dojo cabinet: what it reads, what triggers it, its tier, its instructions (Chapter 12) |
 | Ninja Summarizer | `zen_dojotools_ninja_summarizer`. Produces one component's Kata. |
 | Monk | The inference step inside every summarizer: one `ai_task.generate_data` call against the entity `input_text.zenos_ai_task_entity` names |
 | Trapper Keeper | An ambient-tier pre-digest that compresses low-urgency components into one-line breadcrumbs |
 | SuperSummary | `zen_dojotools_supersummary`. Consolidates everything into `zen_summary`. |
-| Abbot | The Scheduler and Dispatcher, deciding when each of the above runs (Chapter 18) |
+| Abbot | The Scheduler and Dispatcher, deciding when each of the above runs (Chapter 21) |
 
 A Monk is not a separate agent or layer. It is the model call, made once per component and once for the whole-house summary.
 
-## 10.2 Ninja: one component
+## 13.2 Ninja: one component
 
 For one KFC, the Ninja Summarizer:
 
@@ -45,10 +45,10 @@ For one KFC, the Ninja Summarizer:
 3. Loads the component Kata schema, `kata_template`, and the component's previous Kata for continuity.
 4. Builds a prompt: instructions, the schema to fill, an example, the gathered context, and trigger notes.
 5. Calls the Monk.
-6. Validates the result and writes it to the Kata cabinet under the component's `kata_key` (Chapter 11).
-7. Decides whether anything needs to escalate (10.4).
+6. Validates the result and writes it to the Kata cabinet under the component's `kata_key` (Chapter 14).
+7. Decides whether anything needs to escalate (13.4).
 
-## 10.3 SuperSummary: the whole house
+## 13.3 SuperSummary: the whole house
 
 SuperSummary reads every active component's Kata and produces one whole-house summary, `zen_summary`. A component is active if its definition has a `kata_key`, its `meta.enabled` is true or absent, and its Kata exists.
 
@@ -64,7 +64,7 @@ Trapper Keeper exists to keep SuperSummary's prompt small. Most components are q
 
 SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, default 600, so it runs at most once per window unless forced), a context budget (`max_context_tokens`, default 28,000, which drops ambient and system components before keeper ones), and a hard size guard (a prompt over 200,000 bytes aborts).
 
-## 10.4 Escalation
+## 13.4 Escalation
 
 A component Kata can say that something needs action: `action_required`, an `urgency` from 0 to 10, and optionally a `suggested_act_event` naming a tool call that would address it. The Ninja Summarizer routes that three ways.
 
@@ -76,11 +76,11 @@ A component Kata can say that something needs action: `action_required`, an `urg
 2. **Master switch.** `input_boolean.zen_action_emission_enabled` must be on. It is off on a fresh install, and it is operator-only: no agent can write it.
 3. **Whitelist.** The specific tool and mode must be on the action whitelist.
 
-**Ask a human.** Anything that needs attention but has no automatable action goes to `zen_dojotools_urgency_handler`, which opens or updates a task (Chapter 18). Before escalating, the summarizer checks `zen_dojotools_alertmanager mode=check_ack` for the component. If a household member has acknowledged the condition, the escalation is suppressed until the acknowledgement expires or is revoked (Chapter 11).
+**Ask a human.** Anything that needs attention but has no automatable action goes to `zen_dojotools_urgency_handler`, which opens or updates a task (Chapter 21). Before escalating, the summarizer checks `zen_dojotools_alertmanager mode=check_ack` for the component. If a household member has acknowledged the condition, the escalation is suppressed until the acknowledgement expires or is revoked (Chapter 14).
 
 A cooldown per component (`emission_cooldown_minutes`) stops the same condition from escalating repeatedly.
 
-## 10.5 Kill switches
+## 13.5 Kill switches
 
 Three switches stop the pipeline, checked master first:
 
@@ -91,3 +91,9 @@ Three switches stop the pipeline, checked master first:
 | `input_boolean.zen_supersummarizer_enabled` | On |
 
 The master ships off so a new install does not start continuous background inference before its owner has pointed `input_text.zenos_ai_task_entity` at something appropriate. The Ninja Summarizer runs several times an hour, and SuperSummary at least four times an hour, which is why the recommended target is a local model. Turning a switch off changes nothing else. Turning one back on fires the corresponding force event within seconds.
+
+<!-- nav -->
+---
+
+[← Components](12_components.md) · [Contents](00_toc.md) · [Katas →](14_katas.md)
+<!-- /nav -->

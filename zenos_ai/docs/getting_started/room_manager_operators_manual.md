@@ -773,7 +773,7 @@ architecture, including the cascade logic, the event bus, the label
 reference, and how to actually wire up a new room, see:
 
 - [Component Reference: Room Manager v3 & REFLEX](../components/room_manager_v3_reflex.md)
-- [Architecture Ch. 21: Room Manager v3 Reference](../architecture/21_room_manager_v3.md)
+- [Architecture Ch. 24: Room Manager v3 Reference](../architecture/24_room_manager_v3.md)
 
 ---
 

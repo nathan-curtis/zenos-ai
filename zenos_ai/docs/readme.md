@@ -169,13 +169,13 @@ Highlighted chapters:
 
 * [`00_preface.md`](architecture/00_preface.md) – Why Volume 2, and the thesis
 * [`00_toc.md`](architecture/00_toc.md) – Table of contents
-* [`03_labels_and_the_hypergraph.md`](architecture/03_labels_and_the_hypergraph.md) – The graph and how labels make it readable
-* [`10_the_monastery.md`](architecture/10_the_monastery.md) – The summarization pipeline
-* [`13_context_construction.md`](architecture/13_context_construction.md) – How the agent's prompt is built
-* [`15_certification.md`](architecture/15_certification.md) – Certification, scope, and denials
-* [`19_resilience.md`](architecture/19_resilience.md) – Health sensors and failure handling
-* [`20_developer_standards.md`](architecture/20_developer_standards.md) – Component classes and the tool contract
-* [`21_room_manager_v3.md`](architecture/21_room_manager_v3.md) – The state cascade and REFLEX, from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
+* [`06_labels_and_the_hypergraph.md`](architecture/06_labels_and_the_hypergraph.md) – The graph and how labels make it readable
+* [`13_the_monastery.md`](architecture/13_the_monastery.md) – The summarization pipeline
+* [`16_context_construction.md`](architecture/16_context_construction.md) – How the agent's prompt is built
+* [`18_certification.md`](architecture/18_certification.md) – Certification, scope, and denials
+* [`22_resilience.md`](architecture/22_resilience.md) – Health sensors and failure handling
+* [`23_developer_standards.md`](architecture/23_developer_standards.md) – Component classes and the tool contract
+* [`24_room_manager_v3.md`](architecture/24_room_manager_v3.md) – The state cascade and REFLEX, from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
 
 If you want to know how the mind works, start here.
 
@@ -352,7 +352,7 @@ The Identity subsystem defines:
 
 These cover it:
 
-* [`14_principals.md`](architecture/14_principals.md) through [`17_identity_as_traversal.md`](architecture/17_identity_as_traversal.md): the identity and authority model as it ships: principals, certification, the authority ladder, and what is not yet built.
+* [`17_principals.md`](architecture/17_principals.md) through [`20_identity_as_traversal.md`](architecture/20_identity_as_traversal.md): the identity and authority model as it ships: principals, certification, the authority ladder, and what is not yet built.
 
 * [`getting_started/security_certification_manual.md`](getting_started/security_certification_manual.md) — **the certification/identity-gate system in
   practice.** How locks, exterior covers, the alarm panel, container control, room unpause, and

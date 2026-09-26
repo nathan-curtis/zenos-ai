@@ -30,7 +30,7 @@ The book follows that thesis in order:
 
 | Part | Subject | Question it answers |
 |---|---|---|
-| I | Foundations | What rules does the system hold itself to? |
+| I | Foundations | Why is it built this way, and what rules does it hold itself to? |
 | II | The Graph | What exists, and how is it connected? |
 | III | The Ontology | How does an agent know what the graph means? |
 | IV | The Twin | What does the agent build when it reads the graph? |
@@ -44,3 +44,9 @@ Every factual claim in this volume describes behavior you can find in the code: 
 Script, mode, drawer, and field names appear exactly as they appear in the code. Versions are the `tool_manifest` version each tool reports about itself, which is the canonical version for every tool in the system.
 
 The chapters are written for three readers: someone building on ZenOS who needs to know how a piece works, someone reviewing it who needs to know why it works that way, and me, six months from now, trying to remember what I decided and what I only intended.
+
+<!-- nav -->
+---
+
+[Contents](00_toc.md) · [Contents →](00_toc.md)
+<!-- /nav -->

@@ -1,8 +1,8 @@
-# 3. Labels and the Hypergraph
+# 6. Labels and the Hypergraph
 
-Chapter 7 describes labels as vocabulary. This chapter describes them as structure: how labels turn Home Assistant's flat list of entities into a graph that tools can query, and why that graph is a hypergraph rather than an ordinary one.
+Chapter 10 describes labels as vocabulary. This chapter describes them as structure: how labels turn Home Assistant's flat list of entities into a graph that tools can query, and why that graph is a hypergraph rather than an ordinary one.
 
-## 3.1 Why a hypergraph
+## 6.1 Why a hypergraph
 
 In an ordinary graph an edge connects exactly two nodes. You could model the house that way: the kitchen light is in the kitchen, the kitchen motion sensor is in the kitchen, the kitchen light is a main light. Every fact is a pair.
 
@@ -47,7 +47,7 @@ graph LR
   I --> R[light.kitchen_ceiling]
 ```
 
-## 3.2 Three tools over the graph
+## 6.2 Three tools over the graph
 
 Three DojoTools read the graph, and all three live in `dojotools_index.yaml`. They share one file and one version, 5.1.0.
 
@@ -67,7 +67,7 @@ Index protects the agent's context budget. Any call with no explicit `limit` tha
 
 Index also reports the one blind spot of label resolution: a label applied to an area but not to any entity in it resolves to nothing, because Home Assistant does not propagate area labels to entities. Index says so instead of returning an empty set that looks like "nobody uses this label."
 
-`mode=build_compact_index` writes `_compact_index`, a capped, ranked summary of the label registry, into the household cabinet. The prompt uses it as Friday's index of what labels exist (Chapter 13). It is rebuilt whenever labels change and on a schedule.
+`mode=build_compact_index` writes `_compact_index`, a capped, ranked summary of the label registry, into the household cabinet. The prompt uses it as Friday's index of what labels exist (Chapter 16). It is rebuilt whenever labels change and on a schedule.
 
 ### Query (ZQ-1)
 
@@ -77,14 +77,20 @@ ZQ-1 is the deterministic selector underneath targeting. It takes explicit `targ
 
 Inspect turns identifiers into safe, complete records. For an entity it returns state, timestamps, friendly name, domain, labels, a sanitized attribute map (values reduced to scalars, mappings, or sequences, with stringified structures rehydrated), and whether the entity is eligible for long-term statistics. It also answers area, floor, device, person, and integration questions directly.
 
-When the entity is a cabinet, Inspect returns only the cabinet's header: GUID, version, type flags, validation signature. Drawer contents stay behind FileCabinet (Chapter 4). Reading a cabinet's identity is harmless. Reading its memory is FileCabinet's job.
+When the entity is a cabinet, Inspect returns only the cabinet's header: GUID, version, type flags, validation signature. Drawer contents stay behind FileCabinet (Chapter 7). Reading a cabinet's identity is harmless. Reading its memory is FileCabinet's job.
 
-## 3.3 Resolution rules
+## 6.3 Resolution rules
 
 Every tool that acts on the house follows the same order to find its targets:
 
 1. An explicit entity ID from the caller, used as given. If it does not exist, the call fails with `not_found`. It is never silently replaced.
-2. A role label intersected with a room label (Chapter 7).
+2. A role label intersected with a room label (Chapter 10).
 3. A tool's own documented fallback chain, where it has one, for example ZenLux's role order within a room.
 
 A tool never guesses an entity ID from a naming convention. The one entity every tool is most tempted to guess, a room's state sensor, is found by intersecting `zen_room_state` with the room's label.
+
+<!-- nav -->
+---
+
+[← Home Assistant as Substrate](05_home_assistant_substrate.md) · [Contents](00_toc.md) · [Cabinets as Graph →](07_cabinets_as_graph.md)
+<!-- /nav -->

@@ -1,8 +1,8 @@
-# 4. Cabinets as Graph
+# 7. Cabinets as Graph
 
 Labels describe the house. Cabinets hold what ZenOS itself knows and remembers: identities, preferences, component definitions, summaries, certifications, configuration. This chapter describes cabinets as the second half of the graph, and FileCabinet as the only way to read and write them.
 
-## 4.1 What a cabinet is
+## 7.1 What a cabinet is
 
 A cabinet is a Home Assistant template sensor whose `variables` attribute holds a set of drawers. Each drawer is a key with a value:
 
@@ -12,13 +12,13 @@ A cabinet is a Home Assistant template sensor whose `variables` attribute holds 
 
 Every cabinet carries a header drawer, `AI_Cabinet_VolumeInfo`: the cabinet's GUID, version, type flags, and a validation signature that marks the sensor as a genuine cabinet rather than any template sensor that happens to have a `variables` attribute. The header is protected. No garbage collector, summarizer, or ordinary write touches it.
 
-Cabinets have types, and types are labels (Chapter 14): household, family, user, AI persona, plus system cabinets for the Dojo (component definitions), the Kata (summaries), and the system itself. Expansion cabinets provide overflow space.
+Cabinets have types, and types are labels (Chapter 17): household, family, user, AI persona, plus system cabinets for the Dojo (component definitions), the Kata (summaries), and the system itself. Expansion cabinets provide overflow space.
 
-## 4.2 Finding a cabinet: the Highlander resolvers
+## 7.2 Finding a cabinet: the Highlander resolvers
 
 Code never looks up a cabinet by label at runtime. Each core cabinet (dojo, kata, system, household, family, user, AI persona) has a trigger-based resolver sensor, `sensor.zen_*_cabinet_resolved`, whose state is that cabinet's entity ID. The resolvers update on Home Assistant start, on label changes, and on an explicit `zen_resolver_refresh` event. Every piece of OS code reads cabinet entity IDs from these sensors. There can be only one source of truth per cabinet.
 
-## 4.3 Drawers form a graph
+## 7.3 Drawers form a graph
 
 Three things make a cabinet a graph rather than a key-value store.
 
@@ -26,7 +26,7 @@ Three things make a cabinet a graph rather than a key-value store.
 
 **Mounts.** A VirtualDrawer is a mount point: its value names a drawer in another cabinet, and reading it transparently returns the target's value. One drawer can therefore appear in many cabinets without being copied, the same way a filesystem link does.
 
-**Live drawers.** A LiveDrawer is a mount whose target is a tool call. Its value carries `fc_args`: a tool, its parameters, and a cache policy. Reading it calls the tool and caches the result in a `cache` sub-drawer. When the cache is cold, it returns the cached value and marks the read stale. A live drawer is never empty. This is how a KFC definition can live in a tool and still appear in the Dojo cabinet (Chapter 9).
+**Live drawers.** A LiveDrawer is a mount whose target is a tool call. Its value carries `fc_args`: a tool, its parameters, and a cache policy. Reading it calls the tool and caches the result in a `cache` sub-drawer. When the cache is cold, it returns the cached value and marks the read stale. A live drawer is never empty. This is how a KFC definition can live in a tool and still appear in the Dojo cabinet (Chapter 12).
 
 ```mermaid
 graph LR
@@ -49,7 +49,7 @@ graph LR
   KFC --- KFCC
 ```
 
-## 4.4 FileCabinet
+## 7.4 FileCabinet
 
 There are exactly two licensed paths to cabinet data, and they never cross:
 
@@ -67,3 +67,9 @@ A write reports `write_verified`: whether the value actually persisted when read
 Reserved drawers (keys beginning with `_`, and the header) are protected from ordinary writes and from garbage collection. `zen_dojotools_filecabinet_gc` removes expired drawers on a schedule and leaves reserved ones alone.
 
 > **Not yet built.** FileCabinet has no certification gate. Because every other part of ZenOS depends on it at boot, gating it needs its own security-class design rather than a bolt-on, and changes to it have to land without breaking a single running install. FileCabinet's single-exit pass, envelope, and certification gate are the scope of 2026.11.0 'This Is Spinal Tap'.
+
+<!-- nav -->
+---
+
+[← Labels and the Hypergraph](06_labels_and_the_hypergraph.md) · [Contents](00_toc.md) · [Spatial Topology →](08_spatial_topology.md)
+<!-- /nav -->

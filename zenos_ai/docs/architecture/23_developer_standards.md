@@ -1,4 +1,4 @@
-# 20. Developer Standards
+# 23. Developer Standards
 
 **Status:** Architecture standard
 **Source baseline:** ZenOS-AI `feat/2026.10.0`
@@ -690,7 +690,7 @@ A tool that gates on certification publishes the certificates it needs as `certs
 
 ## 9. Tool Contract Standard (2026.10.0)
 
-These rules apply to every new or revised DojoTool, SystemTool, and AdminTool. Chapter 8 (Contracts) explains why they exist.
+These rules apply to every new or revised DojoTool, SystemTool, and AdminTool. Chapter 11 (Contracts) explains why they exist.
 
 ### Response envelope
 
@@ -890,3 +890,9 @@ Before accepting a new component, reviewers should confirm:
 - **Health sensor:** load-bearing infrastructure other components gate real decisions on; event-triggered when it gates anything consequential, never collapsing safe-vs-broken into one opaque enum value.
 - **Stripe:** dependency order, never privilege.
 - **Package:** one coherent deployable capability, preferably one file; one dedicated folder when complexity demands it.
+
+<!-- nav -->
+---
+
+[← Resilience](22_resilience.md) · [Contents](00_toc.md) · [Room Manager v3 Reference →](24_room_manager_v3.md)
+<!-- /nav -->

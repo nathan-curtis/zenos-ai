@@ -706,5 +706,5 @@ A Jinja2-callable identity resolver lives at `custom_templates/zenos_ai/zen_iden
 - [User Management](../getting_started/user_management.md) — operator workflow for provisioning and teardown
 - [Profile Editor](zen_dojotools_profile_readme.md) — profile drawer writer
 - [Cabinet Specification](../cabinets/cabinet_spec.md) — valid cabinet and identity shapes
-- [Certification](../architecture/15_certification.md) and [Principals](../architecture/14_principals.md): current policy and caller-token status
+- [Certification](../architecture/18_certification.md) and [Principals](../architecture/17_principals.md): current policy and caller-token status
 - [Script Modules](readme.md) — return path to the internal tool map

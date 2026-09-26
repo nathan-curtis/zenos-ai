@@ -1,8 +1,8 @@
-# 16. The Authority Ladder
+# 19. The Authority Ladder
 
-Chapter 15 describes what a certification is. This chapter describes how authority is layered: what an agent must have before it can act, who can change what an agent has, and where a human stays in the loop no matter what the agent holds.
+Chapter 18 describes what a certification is. This chapter describes how authority is layered: what an agent must have before it can act, who can change what an agent has, and where a human stays in the loop no matter what the agent holds.
 
-## 16.1 The rungs
+## 19.1 The rungs
 
 Each rung is necessary, and none substitutes for another.
 
@@ -36,21 +36,21 @@ The administrative plane sits beside this path, not on it: it changes the policy
 
 A high rung never implies a lower one. Holding a domain certification does not waive the identity policy. A scope `allow` covers the per-call acknowledgement for named targets, but it cannot turn a blocked identity into an allowed one.
 
-## 16.2 Identity policy
+## 19.2 Identity policy
 
-The bottom rung is the whole-install policy on simulated identity (Chapter 14). When `sim_mode_allowed` is false and the caller's identity is simulated, `policy_status` is `blocked`, and every certification check fails regardless of what the agent holds. The policy sits in the household cabinet and the factory writes an explicit value on every install, so no install depends on an in-code default.
+The bottom rung is the whole-install policy on simulated identity (Chapter 17). When `sim_mode_allowed` is false and the caller's identity is simulated, `policy_status` is `blocked`, and every certification check fails regardless of what the agent holds. The policy sits in the household cabinet and the factory writes an explicit value on every install, so no install depends on an in-code default.
 
-## 16.3 Admission
+## 19.3 Admission
 
 > **Not yet built. In progress for the 2026.10.0 final.** Admission adds a mandatory base certification that an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. Flynn issues it at the successful end of onboarding, and that issuance path is reserved to onboarding rather than exposed as a general grant. Agents created before 2026.10.0 recertify through an onboarding-adjacent path instead of being rebuilt. This section will be rewritten against the code when it lands.
 
-## 16.4 Domain certification
+## 19.4 Domain certification
 
-This is the rung Chapter 15 covers in full: the tool declares `required_cert` and a level, `resolve_caller_identity` checks it against the resolved identity, and a shortfall returns a `cert_denial()` response. There are 83 of these checks across the tool surface.
+This is the rung Chapter 18 covers in full: the tool declares `required_cert` and a level, `resolve_caller_identity` checks it against the resolved identity, and a shortfall returns a `cert_denial()` response. There are 83 of these checks across the tool surface.
 
 The certification boundary is drawn around consequence, not around how dangerous a tool sounds. The cert-gate audit in 2026.10.0 asked "can this action actually hurt something?" of every tool, and gated things that do not sound dangerous but are: sending mail or a Teams message (disclosure of anything the agent has read), deleting a calendar event or to-do item (irreversible loss), setting Teams presence (misrepresenting a person to their organization), editing the mail whitelist (loosening the disclosure policy itself).
 
-## 16.5 Live acknowledgement
+## 19.5 Live acknowledgement
 
 For the actions that deserve it, a certified agent still needs a human's approval, every time. `zen_dojotools_identity mode=request_live_ack` is the single chokepoint:
 
@@ -73,9 +73,9 @@ Tools with a per-call acknowledgement tier today:
 | `zen_dojotools_labels` | `reset` (no scope waiver available) |
 | `zen_admintools_certadmin` | Every grant, revoke, and bundle change |
 
-A scope `allow` entry covers the ask for the named target only (Chapter 15). A `deny` entry refuses the target without asking.
+A scope `allow` entry covers the ask for the named target only (Chapter 18). A `deny` entry refuses the target without asking.
 
-## 16.6 The administrative plane
+## 19.6 The administrative plane
 
 Changing what an agent is allowed to do is itself an administrative act, and it lives on the other side of an exposure boundary.
 
@@ -101,6 +101,12 @@ AdminTools generally follow the same rule: they are the configuration and recove
 
 > **Not yet built.** A separate administrative competency certification ("ZenOS Admin Certified, Level X"), admitting an agent to the administrative plane with each AdminTool deciding which functions a given level may use, is design direction for this release line. Today the administrative plane is enforced by exposure (AdminTools are not agent-reachable) and by live acknowledgement, not by an admin certification.
 
-## 16.7 No ambient administrative authority
+## 19.7 No ambient administrative authority
 
 Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
+
+<!-- nav -->
+---
+
+[← Certification](18_certification.md) · [Contents](00_toc.md) · [Identity as Traversal →](20_identity_as_traversal.md)
+<!-- /nav -->
