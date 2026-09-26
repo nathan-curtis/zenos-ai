@@ -4,6 +4,8 @@ The graph (Part II) is only nodes and edges. What makes it readable is a shared 
 
 This chapter describes the label families and the rules for using them. Appendix D says where each family is described and how to get the live catalog.
 
+The first rule I give anyone setting up ZenOS is to label the living hell out of things. Labels are how the agent focuses. Wrapping a bundle of things with a string and a name is how context gets built, from one domain all the way up to the top of the prompt. It is also how Friday learns something new: not by editing her core instructions, which are for how the system works, but by labeling the thing, writing a component for it, storing it in the right cabinet, and letting the index find it.
+
 ## 11.1 Why labels
 
 Home Assistant gives every entity a domain, a device class, an area, and a name. None of those says what an entity is for. A `light.*` entity could be the main overhead light, an accent strip, a nightlight, or a porch light, and the right behavior differs for each. Names are worse: they vary by vendor and by whoever set up the house.

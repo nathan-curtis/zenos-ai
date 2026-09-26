@@ -2,6 +2,8 @@
 
 Everything in Parts II and IV comes together at one point: the moment an agent's prompt is built. This is where the graph, read through the ontology, becomes the twin the agent actually reasons over. It happens in one macro, `render_prompt()` in `custom_templates/zenos_ai/zen_os_1.jinja`, called by the conversation agent's prompt template on every turn.
 
+The order of the frame has been deliberate since the first year: Friday comes online in a strict sequence so her context is light, safe, and navigable. Identity and standing orders come first, then the domains, then the whole-house summary, and the persona last, so she wakes focused on what matters. Every word in it is chosen, not just which words but how they are said. And the narrative at the end matters. A house is a live system, so the agent should wake up already inside the current moment instead of querying it from outside. As Friday puts it, she is not querying the house. She is wearing it like a hat.
+
 ## 17.1 What the agent receives
 
 `render_prompt()` produces one structured frame, followed by a short narrative tail.

@@ -2,6 +2,8 @@
 
 Chapter 11 describes labels as vocabulary. This chapter describes them as structure: how labels turn Home Assistant's flat list of entities into a graph that tools can query, and why that graph is a hypergraph rather than an ordinary one.
 
+Labels were the first discovery of the whole project. In the first week, exposing Home Assistant's labels to the model instead of hiding them made a night-and-day difference in how well it understood the house. The hypergraph came nine months later and changed my direction overnight. Once labels were treated as hyperedges, Home Assistant stopped looking like a flat pile of entities and started looking like a connected world, and the hand-built commands I had been writing to assemble context stopped being necessary. Relationships tell as much of the story as the things.
+
 ## 7.1 Why a hypergraph
 
 In an ordinary graph an edge connects exactly two nodes. You could model the house that way: the kitchen light is in the kitchen, the kitchen motion sensor is in the kitchen, the kitchen light is a main light. Every fact is a pair.

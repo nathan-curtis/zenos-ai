@@ -4,6 +4,8 @@ A Kata is a summary in a fixed shape. The name comes from martial arts: a kata i
 
 There are two kinds: the component Kata each Ninja run produces, and `zen_summary`, the whole-house Kata SuperSummary produces.
 
+The first Katas were the monks' reports: structured JSON posted back to an archive, which the interactive agent read as fact. They were fixed into one schema because the whole house has to be readable the same way, so a security Kata and a pantry Kata can be compared at a glance. The write guard in 15.3 exists because the worst thing a summary can do is look fine while saying nothing.
+
 ## 15.1 The component Kata
 
 Every component fills the same schema, stored as `kata_template` in the Kata cabinet:

@@ -2,6 +2,8 @@
 
 The last piece of the ontology is the component vocabulary: the kinds of thing ZenOS is built from, and how they find each other at runtime. A component's class says who may call it, what it may call, and whether an agent ever sees it. Chapter 24 is the developer reference for building each class. This chapter is the reader's map.
 
+Components started as Kung Fu: a bundle of everything about one domain, loaded into the prompt when its switch was on (Chapter 3). The point was the part a tool cannot hold. A tool can say how to talk to the meal planner. It cannot say that the household checks the meal plan first thing in the morning. Kung Fu became callable scripts when I wanted a component's view of the world on demand, and those scripts became the DojoTools. The Lens Bus is the same instinct applied to knowledge: ask the house what it knows about a room or a person without having to know who knows it.
+
 ## 13.1 Classes
 
 | Class | Prefix | Role | Agent-exposed |

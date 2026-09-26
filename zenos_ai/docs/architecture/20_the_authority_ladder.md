@@ -2,6 +2,8 @@
 
 Chapter 19 describes what a certification is. This chapter describes how authority is layered: what an agent must have before it can act, who can change what an agent has, and where a human stays in the loop no matter what the agent holds.
 
+The clearest way I have found to explain the ladder is one ordinary sentence: put the living room back on Auto. If the room is paused, that sentence asks to take back authority a human deliberately removed, and neither the tool nor the model decides whether Friday is trustworthy enough to do it. The tool asks Identity. Putting a room into pause needs no permission at all, because it hands authority back to a human. That asymmetry runs through the whole ladder: actions that increase safety are open, and actions that reclaim authority are gated.
+
 ## 20.1 The rungs
 
 Each rung is necessary, and none substitutes for another.

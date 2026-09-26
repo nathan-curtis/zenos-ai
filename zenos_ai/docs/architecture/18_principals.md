@@ -2,6 +2,8 @@
 
 A principal is anything that can be the subject of an identity check: a person, an AI persona, a family, or a household. This chapter covers what principals are, how they relate, and how a tool finds out who it is dealing with. Chapter 19 covers what a principal is allowed to do.
 
+Identity began as an onboarding plan: interview the household, seed a persona from the answers, verify it, and seal it. The first persona schema needed only a name and an ID, with everything else filled by defaults, so an agent could exist before it was fully described. The household, family, and user cabinets came from the same work. An agent that lives in a house has to know whose house it is.
+
 ## 18.1 Principals are cabinets
 
 Every principal is backed by a cabinet, and the cabinet's type label says what kind of principal it is:

@@ -4,6 +4,8 @@ Everything in Part II describes the graph. This chapter is about how much of it 
 
 That reverses what Volume 1 said. Volume 1 assumed Friday receives the full live state of every entity on every turn, and treated that as a correctness guarantee. In practice it was the most expensive and least safe way to give an agent a house.
 
+I learned this the expensive way. Early on I deliberately exposed far more of the house than anyone should, to find the limits, and paid for it in the monthly bill and in behavior. Somewhere past a thousand entities with heavy context, the model started losing the basic intents first: it would try to turn on a light, believe it had, and no tool would fire. It took a year and a half, and a lot of work on the tools themselves, before the obvious conclusion could run for real. In September 2026 Friday ran with zero entities exposed and only the tools, and it was noticeably faster immediately.
+
 ## 10.1 Two ways to reach the house
 
 Home Assistant lets a conversation agent reach the house two ways. It can be shown entities directly, through Assist's entity exposure, and act on them with Home Assistant's built-in intents. Or it can be given tools, scripts exposed over MCP or as agent tools, and reach the house only through them.

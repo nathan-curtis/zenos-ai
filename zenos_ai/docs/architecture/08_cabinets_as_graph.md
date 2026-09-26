@@ -2,6 +2,10 @@
 
 Labels describe the house. Cabinets hold what ZenOS itself knows and remembers: identities, preferences, component definitions, summaries, certifications, configuration. This chapter describes cabinets as the second half of the graph, and FileCabinet as the only way to read and write them.
 
+Cabinets exist because Home Assistant offered exactly one place to keep durable text: a trigger-based template sensor holding values in its attributes. Most of the design follows from that constraint. The real question was never how to store facts. It was how to store context: what a fact relates to, who it belongs to, why it matters.
+
+Some context is small enough for a drawer. Some is a whole elephant, a person or a place with a history, and you do not stuff an elephant into a drawer. You store a picture of it, a pointer to the full thing, and let context be inherited by following links. The manifest started life as the library's card catalog.
+
 ## 8.1 What a cabinet is
 
 A cabinet is a Home Assistant template sensor whose `variables` attribute holds a set of drawers. Each drawer is a key with a value:

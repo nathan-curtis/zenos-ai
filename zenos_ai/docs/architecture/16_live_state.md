@@ -4,6 +4,8 @@ The Monastery gives the twin its memory: summaries that are minutes old. Some pa
 
 This chapter describes what a room's state means and how it is computed. Chapter 25 is the operational reference: every label, every construct, every edge case.
 
+Room state is older than ZenOS. On SmartThings I ran bangali's RoomManager, which treated each room as an object with attributes and a state of its own. I carried the idea into Home Assistant early, and through a Node-RED state engine, before rebuilding it natively as Room Manager v3. What changed with ZenOS was the reason for it. For a language model, a room's state is usually exactly the granularity it needs to act: it can look at the board and know what a room is doing right now, and why. It also makes the prompt cheaper. Room states roll up into the home overview as breadcrumbs, so the detail behind them no longer has to live in the prompt.
+
 ## 16.1 One state per room
 
 Every deployed room has exactly one state sensor, built from the shared `room_state.yaml` blueprint and found by the `zen_room_state` label. Its state is the room's resolved tier. Its attributes explain it.

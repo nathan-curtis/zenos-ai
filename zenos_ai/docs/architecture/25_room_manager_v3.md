@@ -4,6 +4,8 @@ Chapter 16 explains what a room's live state means and why it is built the way i
 
 Room Manager v3 is not the same system as RoomReg (`zen_dojotools_room_manager`'s spatial modes: topology, egress, emergency snapshots, Chapter 9). RoomReg answers what a room is and how it connects to the house. Room Manager v3 answers what a room is doing right now, and what should happen because of it. When someone says "room manager," check which one they mean.
 
+The room-as-object idea comes from bangali's RoomManager for SmartThings (Chapter 16).
+
 ## 25.1 Rules of the design
 
 * **Labels for judgment, naming for determinism.** Anything that needs a human to decide (which entity is this room's motion sensor, its timer, its control override) is found by label intersection: a class label plus the room's label, where the room label matches the area's `area_id`. Anything already fixed by the room slug at deploy time (`timer.<room>_tv_sleep_timer`, `input_number.<room>_fan_delay_minutes`) is found by name. A label for something the slug already predicts is taxonomy bloat.

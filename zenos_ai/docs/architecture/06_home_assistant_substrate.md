@@ -2,6 +2,10 @@
 
 ZenOS runs entirely inside Home Assistant. There is no separate broker, database, or service. Every piece of the system is a script, an automation, a template sensor, or a Jinja macro, and every piece of state lives where Home Assistant keeps state. This chapter describes what that substrate gives ZenOS, and just as important, what it does not.
 
+I did not so much choose Home Assistant for ZenOS as notice what it already was. Zoom out and it looks like the state machine layer of an enterprise system: an event bus, state transitions, message passing, and anything else attached alongside it instead of forced inside. Its templating is a sandboxed, bounded machine that makes you decide exactly how much state you carry. Those are the same pressures a language model puts on you, limited context and hard execution boundaries, and that is why I built on it instead of around it.
+
+People ask why ZenOS is not an integration. The short answer is that the house already has a state machine. ZenOS is the part that describes it to an agent.
+
 ## 6.1 What ZenOS builds on
 
 | Home Assistant primitive | What ZenOS uses it for |

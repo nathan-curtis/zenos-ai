@@ -47,7 +47,7 @@ Start with the [Preface](00_preface.md). It states the thesis the rest of the bo
 
 ## Appendices
 
-26. [Appendices](26_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, and the reference household.
+26. [Appendices](26_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, and the Friday's Party index.
 
 Volume 1 is the tree at commit `57a935f`.
 

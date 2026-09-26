@@ -8,6 +8,8 @@ Labels tell an agent what a node is. Contracts tell it what a tool is: what it d
 | Help | How do I call it? | `mode=help` |
 | Envelope | What shape will the answer have? | Every response |
 
+Contracts came from watching agents fail to use good tools. My success with any tool was always directly proportional to how well I described it. Once other people's agents started picking up ZenOS tools cold, every tool had to identify itself without a human explaining it. The envelope came later, from the pass that gave every tool a single exit and a common shape. And the descriptions went on a diet: every one is paid for on every turn, so a description now answers only what the tool does and when to use it, and the manual lives behind help.
+
 ## 12.1 The manifest
 
 Every tool describes itself by calling the shared `tool_manifest()` macro in `custom_templates/zenos_ai/zenos_manifest.jinja` from its own `mode=tool_manifest` branch. A field added to the macro propagates to every compliant tool at once.

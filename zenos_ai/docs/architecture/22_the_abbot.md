@@ -7,6 +7,8 @@ The Monastery decides what a summary says. The Abbot decides when the system thi
 | `dojotools_scheduler.yaml` | `zen_dojotools_scheduler` | Fires on schedules and state changes, decides which components run, sheds load |
 | `dojotools_dispatcher.yaml` | `zen_dojotool_dispatcher` | Routes correlated tool calls over the event bus, and hosts the support routers |
 
+The Abbot started as the second version of the Ninja summarizer, which looked at the calendar and the hour ahead and chose which components the next hour's prompt should carry. That idea split in two as the system grew. Choosing what the agent sees became the frame (Chapter 17). Choosing when the Monastery works became the Scheduler, fired by triggers instead of the clock once local summarization made each run nearly free.
+
 ## 22.1 Triggers
 
 The Scheduler owns a fixed set of trigger IDs:

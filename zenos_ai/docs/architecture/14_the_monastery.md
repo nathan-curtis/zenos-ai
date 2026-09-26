@@ -2,6 +2,10 @@
 
 The twin is not built on every conversation turn. It is kept current in the background by the Monastery: a pipeline that reads each domain of the house through its labels, asks a model to summarize it into a fixed shape, validates the answer, and stores it. When Friday needs to know the state of the house, the summary is already there.
 
+The Monastery exists because of a bill. Early on, the whole interactive prompt was summarized every hour by a cloud model, and it came to well over a hundred dollars a month for summaries alone. Summarizing one domain is a small job that a small local model can do, so the work moved to local workers, one component each, fired by triggers because they cost almost nothing to run. The summaries got cheaper and fresher at the same time, and the interactive prompt got smaller and faster. The lore followed: the workers were monks, their results were Katas posted to an archive, and the local model directing them was Kronk, curator of the Monastery.
+
+It is also where retrieval lives. I am not against retrieval. I think it belongs downstream, not at the front of an agent that runs a house. History and memory are gathered and reduced here, before the agent sees anything, so retrieval becomes part of the system's intelligence instead of the agent's burden.
+
 ## 14.1 The pipeline
 
 ```mermaid

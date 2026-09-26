@@ -2,6 +2,8 @@
 
 ZenOS treats failure as a normal operating condition. Wi-Fi drops packets, devices reboot, integrations return malformed payloads, models time out, and Home Assistant restarts in the middle of things. A system that assumes ideal conditions misbehaves in real ones. The goal is not to never fail. It is to fail predictably, visibly, and without corrupting what the system knows.
 
+Two lessons shaped this chapter. The first was a rule I set in October 2025: anything that could stop Friday from coming up lives where she cannot break it, and everything else is guarded so that even blanked out, she still boots. That rule is where Flynn came from. The second was the worst failure I nearly shipped. During boot, a cabinet in a perfectly normal transitional state looked broken, the health system treated a warning as an error, and the repair tool helped by wiping it. Nothing threw an error. Memory just quietly disappeared. The rules below, that transitional states are real, that a warning means degraded but safe, and that every failure must be visible, come from that week.
+
 ## 23.1 Where failure comes from
 
 | Surface | Typical failure |

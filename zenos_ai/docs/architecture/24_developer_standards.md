@@ -4,6 +4,8 @@
 **Source baseline:** ZenOS-AI `feat/2026.10.0`
 **Audience:** ZenOS-AI core developers, plugin authors, integration maintainers, and reviewers
 
+These standards were written down after the code, not before it. Home Assistant's templating is a strange hybrid that language models routinely get wrong, and as more of ZenOS came to be written with AI help, the rules had to be explicit: HALMark for the code itself, and this document for the shape of the components. The build loop that now produces most changes, with one agent implementing, one testing on a separate system, and a human approving every release, only works because the standard is written down.
+
 ## 1. Purpose
 
 Home Assistant provides the executable primitives used by ZenOS-AI: scripts, automations, template sensors, REST commands, helpers, and packages. Those primitives explain how code runs. They do not explain its architectural responsibility.

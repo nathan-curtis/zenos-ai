@@ -2,6 +2,8 @@
 
 The preface stated the thesis: an agent's identity emerges from the graph connections it can realize. Chapters 18 through 20 described the mechanics. This chapter puts them back together and shows that they are one idea, not four.
 
+This is where the newest idea in the thread lands. The agent is never handed the house. It is handed a resolved version of the house, rebuilt each turn from the systems that actually know it, and bounded by what it is allowed to touch. That is why I turned the label system into a hypergraph with cabinet drawers as nodes in it: the same structure that builds the agent's world decides what it may reach.
+
 ## 21.1 The graph an agent walks
 
 Every capability in ZenOS is a walk across the graph. When Friday turns off the kitchen lights, she does not address an entity. She asks ZenLux for the kitchen, and ZenLux walks from the room label to the entities that carry it, to their roles, to their capabilities. When she checks on a room, Room Manager walks from the area to its sensors, its portals, and its neighbors. When the summarizer builds a Kata, it walks from a component's declared labels to the state those labels reach (Chapter 14).

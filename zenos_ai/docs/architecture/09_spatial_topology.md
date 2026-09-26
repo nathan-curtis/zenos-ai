@@ -4,6 +4,8 @@ Labels say what a thing is and which room it belongs to. They do not say how roo
 
 This chapter is about the static graph of the house. Chapter 16 covers the live state that runs on top of it.
 
+If the index is the doorway into semantic reasoning, Room Manager was meant from the start to be the doorway into spatial reasoning: which rooms connect, how light and sound move between them, and how to get out. Part of how I worked it out was a text adventure. ZenZork runs on the live topology, and a game where you walk from room to room is a fast way to find out whether the map is actually right. It is no accident that pathfinding arrived alongside it. Egress and the emergency modes exist because a house is somewhere people sometimes need to leave in a hurry.
+
 ## 9.1 Rooms, portals, and boundaries
 
 The topology lives in one drawer, `room_topology`, in the household cabinet, with one object per area. Room Manager builds the connections between them:

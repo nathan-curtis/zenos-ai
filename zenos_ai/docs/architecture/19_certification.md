@@ -2,6 +2,8 @@
 
 A certification is a named capability, held at a level, by an AI persona. A tool that does something consequential declares which certification it requires and at what level, and it refuses the action unless the caller holds it. This is the authorization model ZenOS runs today. It replaced the ACL and session-token design in Volume 1, which never shipped.
 
+Certification came out of a very specific worry. Once an agent can unlock a door, the tool that grants the right to unlock doors cannot be one the agent can reach, or it will simply certify itself and open the lock. It will absolutely figure that out. So the tool that grants certifications is not agent-exposed, every grant needs a human (at the console or through a live acknowledgement), and each tool declares what it requires instead of trusting the caller to say what it holds.
+
 ## 19.1 The catalog is declared, not maintained
 
 There is no hand-maintained list of certifications. Each tool declares the certifications it enforces in its own `tool_manifest`, under `certs_required`:
