@@ -128,7 +128,8 @@ Every "Not yet built" box in the book, in one place.
 
 | Chapter | Item | Status |
 |---|---|---|
-| 3 | History cabinet as long-term episodic memory | Planned |
+| 3 | History cabinet as long-term episodic memory | In active development |
+| 3 | Self model layers (drives and values, meta-awareness); trajectory and prediction in SuperSummary | Design direction |
 | 7 | FileCabinet certification gate, single exit, envelope | Scope of 2026.11.0 'This Is Spinal Tap' |
 | 9 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
 | 16 | A real `session_token` in the prompt frame | Arrives with session binding |

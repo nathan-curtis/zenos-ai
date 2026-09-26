@@ -49,7 +49,7 @@ graph TB
 | External action: grounding | DojoTools acting on the house through Home Assistant | Chapters 9, 12 |
 | Decision procedure | The agent's own tool-use loop in Home Assistant, with the Abbot deciding when background cognition runs | Chapter 21 |
 
-> **Not yet built.** Episodic memory today is short-horizon: each Kata covers its current period, and older detail is summarized away. The history cabinet is the planned long-term episodic store. History cabinets are already provisioned and health-checked. Using them as lasting episodic memory is the planned part.
+> **Not yet built.** Episodic memory today is short-horizon: each Kata covers its current period, and older detail is summarized away. The history cabinet is the long-term episodic store, in active development. History cabinets are already provisioned and health-checked. Using them as lasting episodic memory is the planned part.
 
 The code even uses the vocabulary without meaning to. The certificate that gates Scribe's KFC publishing describes itself as writing into Friday's live procedural memory.
 
@@ -66,6 +66,41 @@ The code even uses the vocabulary without meaning to. The certificate that gates
 Two efforts starting from different places, a cognitive science framework and a home system built by fixing whatever broke next, ended up with the same memory split, the same internal and external action division, and the same loop. I do not think that is coincidence. The problem has a shape. An agent that has to live in a real environment for months, stay grounded, and not forget ends up needing working memory, the three kinds of long-term memory, and a clean line between thinking and acting. Anything that solves the problem seriously is pushed toward that shape.
 
 The part ZenOS adds, authority as graph traversal, is what the problem looks like once the environment is someone's home.
+
+## 3.5 The whole mind
+
+Put the mapping back together and it reads as one loop, from the world, through the substrate and the layers of cognition, to action, and back into the world.
+
+```mermaid
+flowchart TD
+  W["The world<br/>people, rooms, devices, weather, services"] --> HA["Home Assistant: the substrate<br/>entities, history, automations, topology,<br/>always on, deterministic"]
+  HA --> KFC["Domain cognition: KFCs<br/>each domain observed and summarized<br/>into a Kata"]
+  KFC --> TK["Ambient cognition: Trapper Keeper<br/>quiet domains compressed<br/>into a navigable index"]
+  KFC --> SS["Global synthesis: SuperSummary<br/>zen_summary: what is true, what matters,<br/>what to watch"]
+  TK --> SS
+  subgraph MEM["Memory"]
+    SEM["Semantic<br/>cabinets, labels, index"]
+    EPI["Episodic<br/>Katas, zen_summary, zen_event"]
+    PRO["Procedural<br/>KFCs, contracts, directives"]
+  end
+  subgraph SELF["Self model"]
+    ID["Identity and essence<br/>the capsule"]
+    SYS["System state<br/>health sensors, Flynn"]
+    CRT["Certifications<br/>what I may do"]
+    COG["Cognitive state<br/>confidence, urgency, error"]
+  end
+  SS --> CC["Context core: render_prompt()<br/>who I am, what is happening,<br/>what I can do"]
+  MEM --> CC
+  SELF --> CC
+  CC --> FR["Friday: deliberative cognition<br/>understand, reason, plan, choose tools"]
+  FR --> ACT["Action and tool surface<br/>DojoTools, inside the certification gates"]
+  ACT --> W2["The world, updated"]
+  W2 -. "the loop never ends" .-> HA
+```
+
+Everything above the context core runs whether or not anyone is talking to Friday. Everything below it runs when she is asked, or decides, to act.
+
+> **Not yet built.** The fuller self model is design direction: drives and values as distinct layers (id, ego, and superego), and meta-awareness of the agent's own limits that it can learn from and reflect on. SuperSummary's synthesis does not yet project trajectories or make predictions. It reports current state, attention, and a watchlist. Long-term episodic memory is the history cabinet work described in 3.2.
 
 ---
 
