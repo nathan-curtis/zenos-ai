@@ -199,8 +199,8 @@ v5.1.0 separates components into three pipeline tiers. Tier is set by the `pipel
 | Tier | Values | How SuperSummary handles it |
 |------|--------|----------------------------|
 | `keeper` | default when field absent | Full `component_data` included in the monk prompt |
-| `ambient` | `ambient` | Excluded from direct `component_data`. Pre-digested by **Trapper Keeper** into a compact breadcrumb + navigation index. Urgency ≥ 4 promotes the component to `active_components`. |
-| `system` | `system` | Excluded from direct `component_data`. Summary provided via a separate system_summary block. |
+| `ambient` | `ambient` | Excluded from full `component_data`. Pre-digested by **Trapper Keeper** into a compact breadcrumb + navigation index. Urgency ≥ 4 promotes the component to `active_components`. |
+| `system` | `system` | Excluded from `component_data`. The only system-tier component today is Trapper Keeper, whose output reaches SuperSummary as `ambient_context` (the ambient navigation index). |
 
 **Ambient urgency promotion rule:**
 - Urgency 0–3 → ambient_nav breadcrumb only
