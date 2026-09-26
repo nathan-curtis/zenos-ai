@@ -36,13 +36,13 @@ The original version of this idea named five constructs. They are all still here
 
 | Peg | What it does | Where it lives now |
 |---|---|---|
-| Hard rules | Directives the model reads before anything about the house. The factory set opens with "Respond truthfully", tells the agent to read sources in a fixed order (Katas first, then per-component summaries, then notifications, then the index), and says raw entity enumeration is never an acceptable answer. | System cabinet directives, loaded by `prompt_system()` (Chapter 16) |
-| A default out | Permission not to know. When the index finds nothing, its declared behavior is to stop with confidence 0, not to keep searching until something plausible turns up. Katas carry `confidence` and `error` so a thin answer can say it is thin. | Index workflow, Kata schema (Chapter 14) |
-| Units of meaning | A Kung Fu Component hands the model a domain as one coherent block with a fixed shape, instead of scattered facts that can drift apart. | KFCs and Katas (Chapters 13, 14) |
-| Persona lanes | Who is answering, with what character and boundaries. Character shapes which slopes are comfortable: an agent built to care about getting the house right and to be dry about uncertainty finds "I don't know" an easy thing to say. | The capsule (Chapter 16) |
-| Order | The laws come first, then the house, then the persona. What the model reads first frames everything after it. | The `render_prompt()` frame (Chapter 16) |
+| Hard rules | Directives the model reads before anything about the house. The factory set opens with "Respond truthfully", tells the agent to read sources in a fixed order (Katas first, then per-component summaries, then notifications, then the index), and says raw entity enumeration is never an acceptable answer. | System cabinet directives, loaded by `prompt_system()` (Chapter 17) |
+| A default out | Permission not to know. When the index finds nothing, its declared behavior is to stop with confidence 0, not to keep searching until something plausible turns up. Katas carry `confidence` and `error` so a thin answer can say it is thin. | Index workflow, Kata schema (Chapter 15) |
+| Units of meaning | A Kung Fu Component hands the model a domain as one coherent block with a fixed shape, instead of scattered facts that can drift apart. | KFCs and Katas (Chapters 14, 15) |
+| Persona lanes | Who is answering, with what character and boundaries. Character shapes which slopes are comfortable: an agent built to care about getting the house right and to be dry about uncertainty finds "I don't know" an easy thing to say. | The capsule (Chapter 17) |
+| Order | The laws come first, then the house, then the persona. What the model reads first frames everything after it. | The `render_prompt()` frame (Chapter 17) |
 
-One peg from the original list is gone on purpose. The first version exposed live entity state as the first thing in the prompt. It was the biggest peg on the board and the noisiest. It is replaced by the compact index, the Katas, and the overview, with tools reaching for detail when the agent needs it (Chapter 9). Fewer, better pegs beat more pegs.
+One peg from the original list is gone on purpose. The first version exposed live entity state as the first thing in the prompt. It was the biggest peg on the board and the noisiest. It is replaced by the compact index, the Katas, and the overview, with tools reaching for detail when the agent needs it (Chapter 10). Fewer, better pegs beat more pegs.
 
 ## 2.4 What this does not promise
 
@@ -55,5 +55,5 @@ Pegs change probabilities. They do not make a model infallible, and nothing in Z
 <!-- nav -->
 ---
 
-[← The Box and the Scrapbook](01_the_box_and_the_scrapbook.md) · [Contents](00_toc.md) · [CoALA Without Knowing It →](03_coala_without_knowing_it.md)
+[← The Box and the Scrapbook](01_the_box_and_the_scrapbook.md) · [Contents](00_toc.md) · [The Party →](03_the_party.md)
 <!-- /nav -->

@@ -1,13 +1,13 @@
-# 5. Home Assistant as Substrate
+# 6. Home Assistant as Substrate
 
 ZenOS runs entirely inside Home Assistant. There is no separate broker, database, or service. Every piece of the system is a script, an automation, a template sensor, or a Jinja macro, and every piece of state lives where Home Assistant keeps state. This chapter describes what that substrate gives ZenOS, and just as important, what it does not.
 
-## 5.1 What ZenOS builds on
+## 6.1 What ZenOS builds on
 
 | Home Assistant primitive | What ZenOS uses it for |
 |---|---|
 | State machine (entities, states, attributes) | The house itself, and cabinets, which are entities whose attributes hold drawers |
-| Registries (areas, floors, devices, labels) | The structure of the graph (Chapters 6 and 8) |
+| Registries (areas, floors, devices, labels) | The structure of the graph (Chapters 7 and 9) |
 | Event bus | `zen_event` signaling and correlated tool calls |
 | Scripts | Every tool: DojoTools, AdminTools, Sutras, Stacks |
 | Automations | The Scheduler, the Dispatcher, Room Manager's dispatch, KFC triggers |
@@ -16,7 +16,7 @@ ZenOS runs entirely inside Home Assistant. There is no separate broker, database
 
 Nothing here is private API. ZenOS uses the same primitives any Home Assistant configuration uses, which is why it installs as packages and templates in a config directory.
 
-## 5.2 What the event bus actually guarantees
+## 6.2 What the event bus actually guarantees
 
 Volume 1 described the event bus as synchronous, single-threaded, and FIFO, and built claims about deterministic ordering on that description. That overstated it.
 
@@ -26,19 +26,19 @@ Home Assistant runs on an asyncio event loop. Events are dispatched to their lis
 * `mode` and `max` bound how many runs of one script can overlap, and what happens to the excess.
 * State changes to a single entity are atomic.
 
-ZenOS gets its predictability from those guarantees plus its own discipline: single-exit tools (Chapter 11), explicit concurrency modes on every script, and state written through one path (Chapter 7). It does not get predictability from the event bus.
+ZenOS gets its predictability from those guarantees plus its own discipline: single-exit tools (Chapter 12), explicit concurrency modes on every script, and state written through one path (Chapter 8). It does not get predictability from the event bus.
 
-## 5.3 zen_event
+## 6.3 zen_event
 
 ZenOS does not invent event types. Every event it emits is `event_type: zen_event`, and the specific occurrence is carried in a `kind` field inside the event data: `summary_force`, `kata_emit`, `ninja_failure`, `emission_suppressed`, `cabinet_mounted`, `dojotool_call`, `dojotool_return`, and others. A consumer listens for `zen_event` and switches on `kind`. `zen_dojotools_event_emitter mode=help` returns the current lexicon, and the appendix lists it.
 
 The Dispatcher uses this for decoupled tool calls. A caller fires `zen_event` with `kind: dojotool_call`, a tool name, a correlation ID, and a payload. The Dispatcher routes it to the registered script and fires `kind: dojotool_return` with the same correlation ID. An unknown tool returns a structured error on the bus instead of faulting the caller's sequence.
 
-## 5.4 Constraints that shape the design
+## 6.4 Constraints that shape the design
 
 Several limits of the substrate show up repeatedly in how ZenOS is built. They are worth knowing before reading the rest of the book.
 
-**A script cannot call itself.** Home Assistant blocks recursive script execution unconditionally, regardless of `mode` or `max`. Anything that needs to fan out across every tool, including the tool doing the fanning, lives in a separate script. That is why ToolScan exists (Chapter 12).
+**A script cannot call itself.** Home Assistant blocks recursive script execution unconditionally, regardless of `mode` or `max`. Anything that needs to fan out across every tool, including the tool doing the fanning, lives in a separate script. That is why ToolScan exists (Chapter 13).
 
 **State is a string.** Every state is a string, even when it means a number or a boolean. Attributes can hold structure, and that is where cabinets keep their drawers.
 
@@ -53,5 +53,5 @@ Several limits of the substrate show up repeatedly in how ZenOS is built. They a
 <!-- nav -->
 ---
 
-[← Principles](04_principles.md) · [Contents](00_toc.md) · [Labels and the Hypergraph →](06_labels_and_the_hypergraph.md)
+[← Principles](05_principles.md) · [Contents](00_toc.md) · [Labels and the Hypergraph →](07_labels_and_the_hypergraph.md)
 <!-- /nav -->

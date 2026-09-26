@@ -43,10 +43,10 @@ That is the whole design principle. **You must build a box and a scrapbook.** Th
 | | What it is in ZenOS | Where |
 |---|---|---|
 | The house | Home Assistant's graph, extended with cabinets, labels, and topology | Part II |
-| The box | Tools instead of entities, contracts, and certification deciding which tools an agent may use | Chapters 9, 11, Part V |
+| The box | Tools instead of entities, contracts, and certification deciding which tools an agent may use | Chapters 10, 12, Part V |
 | The scrapbook | Labels as vocabulary, cabinets as memory, Katas as summaries, and the prompt frame that assembles them | Parts III and IV |
 
-In the language of the preface: the scrapbook is the ontology plus the twin, and the box is what decides which edges of the graph an agent may walk. The rest of this part explains why the scrapbook works (Chapter 2) and what it turned out to be (Chapter 3).
+In the language of the preface: the scrapbook is the ontology plus the twin, and the box is what decides which edges of the graph an agent may walk. The rest of this part explains why the scrapbook works (Chapter 2) and what it turned out to be (Chapter 4).
 
 ---
 

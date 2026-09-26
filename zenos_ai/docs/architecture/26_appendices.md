@@ -1,43 +1,43 @@
-# 25. Appendices
+# 26. Appendices
 
 ## A. Glossary
 
 | Term | Meaning |
 |---|---|
-| Abbot | The scheduling and dispatch function: the Scheduler and the Dispatcher together (Chapter 21) |
-| AdminTool | A privileged tool for setup, policy, repair, or recovery. Not agent-exposed (Chapter 12) |
-| Anchor | The subject of a Lens Bus query: a label, person, area, or zone (Chapter 12) |
-| Bundle | A named set of certifications granted together (Chapter 18) |
-| Cabinet | A structured store backed by a Home Assistant entity's attributes, holding drawers (Chapter 7) |
-| CabCeption | A cabinet mounted inside another cabinet (Chapter 7) |
-| Cert, certification | A grant of a class of action at a level, with optional scope and constraints (Chapter 18) |
-| Codex | Executable domain expertise or security-scoped action policy (Chapter 12) |
-| DojoTool | Friday's supported, agent-callable capability (Chapter 12) |
-| Drawer | One named value inside a cabinet (Chapter 7) |
-| Envelope | The standard tool response: `{status, mode, tool, result, system_message, caller_token}` (Chapter 11) |
-| Flynn | The boot orchestrator and the fallback persona the agent gets when boot or identity fails (Chapters 16, 22) |
-| Highlander resolver | A sensor that resolves exactly one cabinet of a type, so code never searches labels at runtime (Chapter 7) |
-| Kata | A summary in the fixed component schema (Chapter 14) |
-| KFC, Kung Fu Component | A declared summarization contract: what a component watches and how it is summarized (Chapter 13) |
-| Lens Bus | The anchor-query layer that merges evidence from registered providers (Chapter 12) |
-| Live acknowledgement | A human yes or no, asked for one specific action at the moment it is attempted (Chapter 19) |
-| LiveDrawer, VirtualDrawer | Drawers whose value is computed or mounted from elsewhere rather than stored (Chapter 7) |
-| Monastery | The summarization pipeline: Ninja, Monk, Trapper Keeper, SuperSummary (Chapter 13) |
+| Abbot | The scheduling and dispatch function: the Scheduler and the Dispatcher together (Chapter 22) |
+| AdminTool | A privileged tool for setup, policy, repair, or recovery. Not agent-exposed (Chapter 13) |
+| Anchor | The subject of a Lens Bus query: a label, person, area, or zone (Chapter 13) |
+| Bundle | A named set of certifications granted together (Chapter 19) |
+| Cabinet | A structured store backed by a Home Assistant entity's attributes, holding drawers (Chapter 8) |
+| CabCeption | A cabinet mounted inside another cabinet (Chapter 8) |
+| Cert, certification | A grant of a class of action at a level, with optional scope and constraints (Chapter 19) |
+| Codex | Executable domain expertise or security-scoped action policy (Chapter 13) |
+| DojoTool | Friday's supported, agent-callable capability (Chapter 13) |
+| Drawer | One named value inside a cabinet (Chapter 8) |
+| Envelope | The standard tool response: `{status, mode, tool, result, system_message, caller_token}` (Chapter 12) |
+| Flynn | The boot orchestrator and the fallback persona the agent gets when boot or identity fails (Chapters 17, 23) |
+| Highlander resolver | A sensor that resolves exactly one cabinet of a type, so code never searches labels at runtime (Chapter 8) |
+| Kata | A summary in the fixed component schema (Chapter 15) |
+| KFC, Kung Fu Component | A declared summarization contract: what a component watches and how it is summarized (Chapter 14) |
+| Lens Bus | The anchor-query layer that merges evidence from registered providers (Chapter 13) |
+| Live acknowledgement | A human yes or no, asked for one specific action at the moment it is attempted (Chapter 20) |
+| LiveDrawer, VirtualDrawer | Drawers whose value is computed or mounted from elsewhere rather than stored (Chapter 8) |
+| Monastery | The summarization pipeline: Ninja, Monk, Trapper Keeper, SuperSummary (Chapter 14) |
 | Ninja | The per-component summarizer run |
 | Monk | The model call inside a summarizer run, through `ai_task` |
 | Ontology | The shared vocabulary (labels, contracts, declarations) that lets an agent read the graph (Part III) |
-| Portal | A connection between two rooms, with light and sound transmission values (Chapter 8) |
-| REFLEX | The layer that turns a room's state into scenes and effects (Chapters 15, 24) |
-| Root | The lowest reusable backend transport. Never exposed (Chapter 12) |
-| Scope | Per-target `allow` or `deny` entries on a certification (Chapter 18) |
-| SESE | Single entry, single exit: a tool builds one response and returns it once (Chapter 11) |
-| Stack | A Lens Bus knowledge provider (Chapter 12) |
-| Stripe | A component's position in dependency order. Never a privilege level (Chapter 23) |
-| SuperSummary | The whole-house summarizer that writes `zen_summary` (Chapter 13) |
-| Sutra | An internal backend operations adapter. Never exposed (Chapter 12) |
-| Trapper Keeper | The step that writes a validated Kata to its drawer (Chapter 13) |
+| Portal | A connection between two rooms, with light and sound transmission values (Chapter 9) |
+| REFLEX | The layer that turns a room's state into scenes and effects (Chapters 16, 25) |
+| Root | The lowest reusable backend transport. Never exposed (Chapter 13) |
+| Scope | Per-target `allow` or `deny` entries on a certification (Chapter 19) |
+| SESE | Single entry, single exit: a tool builds one response and returns it once (Chapter 12) |
+| Stack | A Lens Bus knowledge provider (Chapter 13) |
+| Stripe | A component's position in dependency order. Never a privilege level (Chapter 24) |
+| SuperSummary | The whole-house summarizer that writes `zen_summary` (Chapter 14) |
+| Sutra | An internal backend operations adapter. Never exposed (Chapter 13) |
+| Trapper Keeper | The step that writes a validated Kata to its drawer (Chapter 14) |
 | Twin | The model of the house an agent builds by reading the graph through the ontology (Part IV) |
-| Wasp hold | Holding an enclosed room as occupied while its doors are shut and presence is live (Chapter 24) |
+| Wasp hold | Holding an enclosed room as occupied while its doors are shut and presence is live (Chapter 25) |
 
 ## B. Event kinds
 
@@ -60,7 +60,7 @@ A new kind should fit an existing group. Event names themselves are never templa
 
 ## C. Certification catalog
 
-This catalog is a snapshot. The live catalog is built from each tool's `certs_required` declaration by `zen_dojotools_manifest mode=cert_audit` (Chapter 23), and that is the authority. Levels shown are the highest level the declaring tool uses, or the level each listed mode requires.
+This catalog is a snapshot. The live catalog is built from each tool's `certs_required` declaration by `zen_dojotools_manifest mode=cert_audit` (Chapter 24), and that is the authority. Levels shown are the highest level the declaring tool uses, or the level each listed mode requires.
 
 | Cert | Declared by | Covers |
 |---|---|---|
@@ -109,18 +109,18 @@ Forty-six certificate types in all, counting each helper cert separately.
 
 ## D. Labels
 
-Chapter 10 describes the families. The live catalog is computed, not maintained: every tool declares `required_labels` and `optional_labels` in its manifest, and `zen_dojotools_manifest mode=label_audit` reports every declared label, which tools depend on it, and whether it exists. It can create missing definitions behind a confirmation.
+Chapter 11 describes the families. The live catalog is computed, not maintained: every tool declares `required_labels` and `optional_labels` in its manifest, and `zen_dojotools_manifest mode=label_audit` reports every declared label, which tools depend on it, and whether it exists. It can create missing definitions behind a confirmation.
 
 | Family | Where described |
 |---|---|
-| Room labels and `zen_room_state` | Chapters 10, 15 |
-| Room Manager signals, holds, and opt-outs | Chapter 24 |
-| `scene_<state>`, `reflex_transition_<N>` | Chapter 24 |
-| Tool role taxonomies (`zen_lm_*`, `zen_cv_*`, `zen_mm_*`, `zen_plant_*`, `autovac_*`), `primary` | Chapter 10 |
-| Security (`security_manager`, `security_camera`, `alarm_panel`, `ext_lock`) | Chapter 10 |
-| Cabinet type labels and tool tier labels | Chapters 7, 10 |
-| `zen_kfc_provider` | Chapter 12 |
-| `zen_agent_disabled` | Chapter 24 |
+| Room labels and `zen_room_state` | Chapters 11, 16 |
+| Room Manager signals, holds, and opt-outs | Chapter 25 |
+| `scene_<state>`, `reflex_transition_<N>` | Chapter 25 |
+| Tool role taxonomies (`zen_lm_*`, `zen_cv_*`, `zen_mm_*`, `zen_plant_*`, `autovac_*`), `primary` | Chapter 11 |
+| Security (`security_manager`, `security_camera`, `alarm_panel`, `ext_lock`) | Chapter 11 |
+| Cabinet type labels and tool tier labels | Chapters 8, 11 |
+| `zen_kfc_provider` | Chapter 13 |
+| `zen_agent_disabled` | Chapter 25 |
 
 ## E. Not yet built
 
@@ -128,22 +128,22 @@ Every "Not yet built" box in the book, in one place.
 
 | Chapter | Item | Status |
 |---|---|---|
-| 3 | History cabinet as long-term episodic memory | In active development |
-| 3 | Self model layers (drives and values, meta-awareness); trajectory and prediction in SuperSummary | Design direction |
-| 7 | FileCabinet certification gate, single exit, envelope | Scope of 2026.11.0 'This Is Spinal Tap' |
-| 9 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
-| 16 | A real `session_token` in the prompt frame | Arrives with session binding |
-| 17 | Partner-aware authorization | Design direction |
-| 17 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |
-| 18 | Certification expiry and revocation checks at use time | Design direction |
-| 18 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
-| 19 | Admission: the base agent certification | In progress for the 2026.10.0 final |
-| 19 | Console-admin path for bundle grants | Planned |
-| 19 | Administrative competency certification | Design direction for this release line |
-| 20 | Per-principal traversal | Arrives with session binding |
-| 20 | Membership edges that gate actions | Design direction |
-| 20 | Claims computed from a fold over the label graph | Design direction |
-| 21 | Routing inference jobs to different providers | Stated direction |
+| 4 | History cabinet as long-term episodic memory | In active development |
+| 4 | Self model layers (drives and values, meta-awareness); trajectory and prediction in SuperSummary | Design direction |
+| 8 | FileCabinet certification gate, single exit, envelope | Scope of 2026.11.0 'This Is Spinal Tap' |
+| 10 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
+| 17 | A real `session_token` in the prompt frame | Arrives with session binding |
+| 18 | Partner-aware authorization | Design direction |
+| 18 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |
+| 19 | Certification expiry and revocation checks at use time | Design direction |
+| 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
+| 20 | Admission: the base agent certification | In progress for the 2026.10.0 final |
+| 20 | Console-admin path for bundle grants | Planned |
+| 20 | Administrative competency certification | Design direction for this release line |
+| 21 | Per-principal traversal | Arrives with session binding |
+| 21 | Membership edges that gate actions | Design direction |
+| 21 | Claims computed from a fold over the label graph | Design direction |
+| 22 | Routing inference jobs to different providers | Stated direction |
 
 ## F. Reference household
 
@@ -170,10 +170,10 @@ The numbers in this book come from one real ZenOS install, measured on 2026-09-2
 
 The prompt sample by section: system 22,097, kata 16,566, index 4,578, capsule 2,366, wake 1,626, manifest 1,143, overview 797, header 497, id_manifest 198. The work queue, priority notices, and console line were empty and cost nothing.
 
-Two things stand out. The largest cabinet is the one to watch: each cabinet declares a storage ceiling, and the household cabinet is three quarters of the way to its own. And the prompt is dominated by the system section and the Katas, not by the house: the index that describes more than a thousand labels costs under 5,000 characters, which is what exposing tools instead of entities buys (Chapter 9).
+Two things stand out. The largest cabinet is the one to watch: each cabinet declares a storage ceiling, and the household cabinet is three quarters of the way to its own. And the prompt is dominated by the system section and the Katas, not by the house: the index that describes more than a thousand labels costs under 5,000 characters, which is what exposing tools instead of entities buys (Chapter 10).
 
 <!-- nav -->
 ---
 
-[← Room Manager v3 Reference](24_room_manager_v3.md) · [Contents](00_toc.md)
+[← Room Manager v3 Reference](25_room_manager_v3.md) · [Contents](00_toc.md)
 <!-- /nav -->

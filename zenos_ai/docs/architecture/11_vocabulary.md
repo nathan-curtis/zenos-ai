@@ -1,16 +1,16 @@
-# 10. Vocabulary
+# 11. Vocabulary
 
 The graph (Part II) is only nodes and edges. What makes it readable is a shared vocabulary, and in ZenOS that vocabulary is labels. A label is a claim about a node: this light is a room's main light, this sensor detects motion for the living room, this script is a DojoTool. Tools find what they act on by asking which nodes carry which labels. They never hardcode an entity ID.
 
 This chapter describes the label families and the rules for using them. Appendix D says where each family is described and how to get the live catalog.
 
-## 10.1 Why labels
+## 11.1 Why labels
 
 Home Assistant gives every entity a domain, a device class, an area, and a name. None of those says what an entity is for. A `light.*` entity could be the main overhead light, an accent strip, a nightlight, or a porch light, and the right behavior differs for each. Names are worse: they vary by vendor and by whoever set up the house.
 
 Labels are the one place a household can state purpose directly, in a form every tool can read with `label_entities()`, and in a form that survives a hardware swap. Replace a thermostat, give the new one the same label, and every tool that used the old one finds the new one.
 
-## 10.2 The families
+## 11.2 The families
 
 ### Rooms
 
@@ -18,7 +18,7 @@ Every room has a label named for its area, which ties the room's entities togeth
 
 ### Signals (Room Manager v3)
 
-These say what an entity contributes to a room's state (Chapter 15):
+These say what an entity contributes to a room's state (Chapter 16):
 
 | Label | Meaning |
 |---|---|
@@ -50,7 +50,7 @@ Several tools own a label family describing the roles their devices play. Each t
 
 ### Security
 
-`security_manager` feeds the security summary. `security_camera` marks the preferred stream of each physical camera. `alarm_panel` marks the panel. `ext_lock` marks exterior locks, which is what puts an unlock behind a live acknowledgement (Chapter 19).
+`security_manager` feeds the security summary. `security_camera` marks the preferred stream of each physical camera. `alarm_panel` marks the panel. `ext_lock` marks exterior locks, which is what puts an unlock behind a live acknowledgement (Chapter 20).
 
 ### Master switches and opt-outs
 
@@ -58,13 +58,13 @@ Several tools own a label family describing the roles their devices play. Each t
 
 ### Structure
 
-Some labels describe ZenOS itself rather than the house. Cabinets carry type labels (`zen_household_cabinet`, `zen_family_cabinet`, `zen_user_cabinet`, `zen_ai_user_cabinet`, and the `zen_cabinet` parent). Tools carry tier labels (`dojotools`, `admintools`, `sutra`, `stacks`) and domain labels describing what they cover (`calendar`, `finance`, `tickets`, `media_player`, and so on). `zen_kfc_provider` marks a tool that self-registers a Kung Fu Component (Chapter 12).
+Some labels describe ZenOS itself rather than the house. Cabinets carry type labels (`zen_household_cabinet`, `zen_family_cabinet`, `zen_user_cabinet`, `zen_ai_user_cabinet`, and the `zen_cabinet` parent). Tools carry tier labels (`dojotools`, `admintools`, `sutra`, `stacks`) and domain labels describing what they cover (`calendar`, `finance`, `tickets`, `media_player`, and so on). `zen_kfc_provider` marks a tool that self-registers a Kung Fu Component (Chapter 13).
 
-## 10.3 Rules
+## 11.3 Rules
 
 **Tools resolve targets through labels.** A tool that needs "the main light in the kitchen" intersects `label_entities('zen_lm_main')` with the kitchen's entities. An explicit entity ID is honored when a caller passes one, but a tool never invents one.
 
-**A tool declares the labels it depends on.** Each tool lists `required_labels` and `optional_labels` in its manifest (Chapter 11). The manifest macro computes `missing_required_labels` and `missing_optional_labels` against the live label registry on every call, and `zen_dojotools_manifest mode=label_audit` aggregates that across the whole system and can create the missing definitions, behind a confirmation.
+**A tool declares the labels it depends on.** Each tool lists `required_labels` and `optional_labels` in its manifest (Chapter 12). The manifest macro computes `missing_required_labels` and `missing_optional_labels` against the live label registry on every call, and `zen_dojotools_manifest mode=label_audit` aggregates that across the whole system and can create the missing definitions, behind a confirmation.
 
 **Suggest, then apply.** Discovery modes (`label_suggest` in ZenLux, Media Manager, and Plant, `label_discover` in Room Manager) propose labels with a confidence and a reason. Applying them is a separate, confirmed step. A name-pattern match is never enough to label something that controls physical equipment: Plant's suggestion for `zen_plant_auto_shutoff`, for example, is deliberately medium-confidence and warns that a flow sensor with a plausible name is not a valve.
 
@@ -75,5 +75,5 @@ Some labels describe ZenOS itself rather than the house. Cabinets carry type lab
 <!-- nav -->
 ---
 
-[← Exposure: Tools, Not Entities](09_exposure_tools_not_entities.md) · [Contents](00_toc.md) · [Contracts →](11_contracts.md)
+[← Exposure: Tools, Not Entities](10_exposure_tools_not_entities.md) · [Contents](00_toc.md) · [Contracts →](12_contracts.md)
 <!-- /nav -->

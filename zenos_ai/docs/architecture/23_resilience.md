@@ -1,8 +1,8 @@
-# 22. Resilience
+# 23. Resilience
 
 ZenOS treats failure as a normal operating condition. Wi-Fi drops packets, devices reboot, integrations return malformed payloads, models time out, and Home Assistant restarts in the middle of things. A system that assumes ideal conditions misbehaves in real ones. The goal is not to never fail. It is to fail predictably, visibly, and without corrupting what the system knows.
 
-## 22.1 Where failure comes from
+## 23.1 Where failure comes from
 
 | Surface | Typical failure |
 |---|---|
@@ -15,33 +15,33 @@ ZenOS treats failure as a normal operating condition. Wi-Fi drops packets, devic
 
 The rest of this chapter is how each is contained.
 
-## 22.2 Never trust raw state
+## 23.2 Never trust raw state
 
-Every read of Home Assistant state is guarded. `unknown` and `unavailable` are treated as absent, not as values. Attributes are read with defaults. Anything that might be a string holding JSON is checked by type before it is parsed, because `from_json` raises on bad input and one bad string should never crash a tool. Inspect goes further for attributes: it reduces every value to a scalar, mapping, or sequence and rehydrates structures that arrived stringified (Chapter 6).
+Every read of Home Assistant state is guarded. `unknown` and `unavailable` are treated as absent, not as values. Attributes are read with defaults. Anything that might be a string holding JSON is checked by type before it is parsed, because `from_json` raises on bad input and one bad string should never crash a tool. Inspect goes further for attributes: it reduces every value to a scalar, mapping, or sequence and rehydrates structures that arrived stringified (Chapter 7).
 
-Cabinet lookups never race. Each core cabinet is resolved once by a Highlander resolver sensor, and every piece of code reads the resolver instead of searching labels at runtime (Chapter 7).
+Cabinet lookups never race. Each core cabinet is resolved once by a Highlander resolver sensor, and every piece of code reads the resolver instead of searching labels at runtime (Chapter 8).
 
-## 22.3 Never write garbage
+## 23.3 Never write garbage
 
-**Summaries.** A Kata is written only when the model's output parses into a real, non-empty object. Otherwise the failure is logged and the previous Kata stays (Chapter 14). A timeout writes nothing and blocks nothing.
+**Summaries.** A Kata is written only when the model's output parses into a real, non-empty object. Otherwise the failure is logged and the previous Kata stays (Chapter 15). A timeout writes nothing and blocks nothing.
 
-**Cabinets.** FileCabinet checks volume health, identity, read-only flags, and schema before every write, and reports `write_verified` after it, so a write Home Assistant accepted but did not persist is caught (Chapter 7). Moves verify the destination before deleting the source.
+**Cabinets.** FileCabinet checks volume health, identity, read-only flags, and schema before every write, and reports `write_verified` after it, so a write Home Assistant accepted but did not persist is caught (Chapter 8). Moves verify the destination before deleting the source.
 
-**Tools.** A tool with a single exit cannot leave along a path that skipped its checks, and a denial cannot be overwritten by the mode logic that would otherwise run next (Chapter 11).
+**Tools.** A tool with a single exit cannot leave along a path that skipped its checks, and a denial cannot be overwritten by the mode logic that would otherwise run next (Chapter 12).
 
-## 22.4 Contain load
+## 23.4 Contain load
 
-The Scheduler sheds summarizer work under queue pressure by tier and recovers it when the queue drains, and a starvation guard keeps any component from going stale indefinitely (Chapter 21). SuperSummary runs under a run governor, a context budget, and a hard size guard (Chapter 13). Every script declares its concurrency `mode` and `max`. A script that could be called in a burst is queued, never allowed to overlap unboundedly.
+The Scheduler sheds summarizer work under queue pressure by tier and recovers it when the queue drains, and a starvation guard keeps any component from going stale indefinitely (Chapter 22). SuperSummary runs under a run governor, a context budget, and a hard size guard (Chapter 14). Every script declares its concurrency `mode` and `max`. A script that could be called in a burst is queued, never allowed to overlap unboundedly.
 
 A queued script has one failure mode worth designing for: if one run wedges, everything behind it waits. Room Manager carries a watchdog for exactly this: if its queue makes no progress for three minutes, the watchdog cancels the stuck run and emits an event, instead of waiting for someone to notice the house has gone quiet. Its script-level timeout is twice the documented worst-case legitimate runtime, and it records real call durations so that bound can be revisited with evidence.
 
-## 22.5 Degrade into advice
+## 23.5 Degrade into advice
 
-When the Monastery cannot produce fresh summaries (the model is unreachable, runs keep failing, the system just restarted), the previous Katas remain readable, and their own timestamps show how old they are (Chapter 14). Katas carry `confidence`, `urgency`, and `error`, so a degraded summary can be treated as advisory rather than authoritative. An agent that sees stale or low-confidence Katas should say so rather than speak with confidence it does not have.
+When the Monastery cannot produce fresh summaries (the model is unreachable, runs keep failing, the system just restarted), the previous Katas remain readable, and their own timestamps show how old they are (Chapter 15). Katas carry `confidence`, `urgency`, and `error`, so a degraded summary can be treated as advisory rather than authoritative. An agent that sees stale or low-confidence Katas should say so rather than speak with confidence it does not have.
 
-When identity or boot checks fail, the agent is handed Flynn instead of a broken persona (Chapter 16). The system still answers, and the answer it gives is about what is wrong.
+When identity or boot checks fail, the agent is handed Flynn instead of a broken persona (Chapter 17). The system still answers, and the answer it gives is about what is wrong.
 
-## 22.6 Make failure visible
+## 23.6 Make failure visible
 
 Failure is only survivable if someone can see it.
 
@@ -70,7 +70,7 @@ graph BT
 4. Search the log for the relevant `zen_event` kind.
 5. Check the cabinet drawer for staleness or a failed write.
 
-## 22.7 The rules
+## 23.7 The rules
 
 1. Never trust raw state without validating it.
 2. Never write what failed to validate. Keep the last good value instead.
@@ -82,5 +82,5 @@ graph BT
 <!-- nav -->
 ---
 
-[← The Abbot](21_the_abbot.md) · [Contents](00_toc.md) · [Developer Standards →](23_developer_standards.md)
+[← The Abbot](22_the_abbot.md) · [Contents](00_toc.md) · [Developer Standards →](24_developer_standards.md)
 <!-- /nav -->
