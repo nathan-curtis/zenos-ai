@@ -56,13 +56,13 @@ Components are handled by tier:
 
 | Tier | How SuperSummary sees it |
 |---|---|
-| `direct` (the default) | Full Kata included |
+| `keeper` (the default) | Full Kata included |
 | `ambient` | Pre-digested by Trapper Keeper into a breadcrumb. Urgency 4 or 5 adds it to the attention list. Urgency 6 or higher promotes it to full inclusion. |
-| `system` | Summarized separately as system state |
+| `system` | Never included as component data. Today the only system-tier component is Trapper Keeper itself, whose output reaches SuperSummary as the ambient index |
 
 Trapper Keeper exists to keep SuperSummary's prompt small. Most components are quiet most of the time, and a quiet component does not need its full Kata in the whole-house prompt. Trapper Keeper hands SuperSummary an index of breadcrumbs with pointers back to the full Katas, and SuperSummary only pulls in what is urgent.
 
-SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, default 600, so it runs at most once per window unless forced), a context budget (`max_context_tokens`, default 28,000, which drops ambient and system components before direct ones), and a hard size guard (a prompt over 200,000 bytes aborts).
+SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, default 600, so it runs at most once per window unless forced), a context budget (`max_context_tokens`, default 28,000, which drops ambient and system components before keeper ones), and a hard size guard (a prompt over 200,000 bytes aborts).
 
 ## 10.4 Escalation
 

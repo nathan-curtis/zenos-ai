@@ -33,9 +33,11 @@ Summarizer runs call a model, and a burst of state changes (a door opening and c
 
 | Tier | Dispatched | Shed when |
 |---|---|---|
-| `super` | Always, with no delay | Never |
-| `keeper` (the default; the summarizer calls it `direct`) | On every subscribed trigger | Queue depth reaches `shed_keeper_at` (default 8) |
+| `super`, `system` | Always, with no delay | Never |
+| `keeper` (the default) | On every subscribed trigger | Queue depth reaches `shed_keeper_at` (default 8) |
 | `ambient` | On slower triggers only | Any fast trigger (`quarter_hour`, `every_10_minutes`), or queue depth reaches `shed_ambient_at` (default 4) |
+
+`system` is exempt for a reason: it carries core platform health, which is the signal most needed to explain why the queue backed up in the first place.
 
 Shed work is not lost. The drain router watches queue depth and, once it stays below `drain_below` (default 3) for a settling period, dispatches the most stale shed-eligible component. A starvation guard dispatches any component whose Kata has passed its maximum age, regardless of queue depth. The result is that bursts slow the Monastery down without letting any component go stale indefinitely.
 
