@@ -115,7 +115,7 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v4.5.1 · SuperSummary v4.5.2
+## 7. Zen DojoTools Summarizers — Ninja v4.5.2 · SuperSummary v4.5.2
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
 The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model.
@@ -185,7 +185,7 @@ Authoritative, health-aware read/write controller for all Cabinet Volumes. Suppo
 
 ---
 
-## 17. Zen DojoTools Manifest — v6.4.10
+## 17. Zen DojoTools Manifest — v6.4.11
 **File:** [`zen_dojotools_manifest_readme.md`](zen_dojotools_manifest_readme.md)
 
 System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `audit_help`, `health`, `health_refresh`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `bootstrap_kfc`, `domains`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. `bootstrap_kfc` auto-registers KF5 self-declaring tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). Domain routing table maps domains to authoritative scripts (now built dynamically from `label_entities('zen_domain_*')`, not hardcoded). UMP `tool_manifest` contract supported.
