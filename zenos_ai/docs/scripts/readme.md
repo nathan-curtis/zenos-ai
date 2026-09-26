@@ -101,7 +101,7 @@ Identity resolver for household members and AI constructs. MCP-exposed. Resolves
 
 ---
 
-## 6. Zen DojoTools Scheduler — v5.1.0
+## 6. Zen DojoTools Scheduler — v5.2.0
 **File:** [`zen_dojotools_scheduler_readme.md`](zen_dojotools_scheduler_readme.md)
 
 Trigger orchestrator. 20+ trigger IDs, component subscription via Dojo drawer, heartbeat drawer, and manual force events (`summary_force`, `ninja_force`, `supersummary_force`). Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.
@@ -115,7 +115,7 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v4.5.1 · SuperSummary v4.5.1
+## 7. Zen DojoTools Summarizers — Ninja v4.5.1 · SuperSummary v4.5.2
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
 The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model.

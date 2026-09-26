@@ -1,4 +1,4 @@
-# Zen DojoTools Scheduler — v5.1.0
+# Zen DojoTools Scheduler — v5.2.0
 
 *Automation — no `tool_manifest`, so the file header version is canonical.*
 

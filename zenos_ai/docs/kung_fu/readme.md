@@ -85,7 +85,7 @@ Run with `mode=schema` to get the live `kfc_template` from the Dojo cabinet.
 | Tier | Shedding behavior | SuperSummary routing |
 |------|-------------------|----------------------|
 | `keeper` | Shed when queue depth ≥ `shed_keeper_at` (default 8). Standard components use this. | Kata read directly by SuperSummary |
-| `system` | Same shedding as `keeper`. Conventional for core infrastructure components (e.g. trapper_keeper). | Kata read directly by SuperSummary |
+| `system` | Never shed, dispatched with zero delay, same as `super`. Core platform health is the signal most needed when the queue is already under pressure. Conventional for core infrastructure components (e.g. trapper_keeper). | Kata read directly by SuperSummary |
 | `ambient` | Shed on fast triggers (`quarter_hour`, `every_10_minutes`) AND when depth ≥ `shed_ambient_at` (default 4). More aggressively deferred under load. | Kata pre-digested by Trapper Keeper into `ambient_context`; SuperSummary receives the index, not the raw kata |
 | `super` | Never shed. Reserved for `zen_dojotools_supersummary` internal dispatch. Do not use on regular components. | N/A |
 | `direct` | Deprecated alias for `keeper`. Honored but not written by new tooling. | Kata read directly by SuperSummary |
