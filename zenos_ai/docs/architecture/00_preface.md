@@ -1,5 +1,9 @@
 # The Book of Friday, Volume 2
 
+<p align="center">
+  <img src="images/book_of_friday_v2_cover.jpg" width="512" alt="The Book of Friday, Volume 2: ZenOS-AI Whitepaper, Cayt Edition" />
+</p>
+
 ## Preface
 
 This is the architecture record for ZenOS-AI as it ships, starting with 2026.10.0 'Tron'. It replaces the first volume in place. Volume 1 is not lost: it is the tree at commit `57a935f`, and it remains the design history of how we got here.
