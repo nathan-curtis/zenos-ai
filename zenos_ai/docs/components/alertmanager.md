@@ -358,6 +358,7 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `baseline_json` | `ack` | JSON string | Domain-chosen snapshot of the values `change_check` will later compare against. Handed back verbatim by `check_ack`. |
 | `change_check` | `ack` | string | Free-text description of the domain's own materiality rule (e.g. `abs(current.temp_f - baseline.temp_f) > 5`). Stored and returned, **never executed** — see [Acknowledgements](#acknowledgements). |
 | `ttl_days` | `ack` | number | Days until the ack auto-expires. Default `7`, range 1–90. |
+| `note` | `ack` | string | Free-text context for why the ack was raised. Stored verbatim on the ack entry and returned by `check_ack`. |
 
 ### Response
 
