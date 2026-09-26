@@ -33,7 +33,7 @@ with the live engine through:
 - `sensor.<room>_state` — the read surface, one per deployed room
 
 For the full architectural treatment (cascade design, event bus, the
-consolidation history), see [Architecture Ch. 22](../architecture/22_Room_Manager_v3_REFLEX.md).
+consolidation history), see [Architecture Ch. 21](../architecture/21_room_manager_v3.md).
 For the plain-language walkthrough, see the [Room Manager Operator's Manual](../getting_started/room_manager_operators_manual.md).
 
 ---
@@ -196,7 +196,7 @@ never requires touching either file.
 | `engaged` | media_player(s), monitored docks | Drives `engaged` on start; on stop, arms the shared timer's engaged→occupied decay |
 | `asleep` / `bed_occupancy` | Sleep-detection sensor(s) | Drives `asleep` |
 | `hold` | Any binary_sensor/cover | Floors at `occupied` while true, no clock, instant fall-through on close ("fridge door mode") |
-| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §22.9](../architecture/22_Room_Manager_v3_REFLEX.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. `checking`/`checking_timer` no longer exist. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
+| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §21.7](../architecture/21_room_manager_v3.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. `checking`/`checking_timer` no longer exist. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
 | `wasp_enabled` | The room's Area, OR any entity carrying the room's label | Room-level opt-in gate — a room needs this AND at least one `wasp_door`-tagged entity before `hold` can ever fire from wasp. Deliberately opt-in: a room connected by an open archway instead of a real door (no way to distinguish "someone's inside with the door shut" from "there is no door") would misfire constantly if wasp were on by default. Read/write via `zen_dojotools_room_manager mode=wasp_enable area=<room>` — omit `wasp_room_enabled=` to read, pass `true`/`false` to write. |
 | `smoke` / `carbon_monoxide` / `moisture` / `siren` | Detector entities | Arms `emergency_latch` — human/agent ack-only clear |
 | `vibration` | Any binary_sensor with a `vibration.detected`/`vibration.cleared` event source | Purpose-neutral by design — this label alone only makes the dispatch resync promptly on vibration edges. To actually feed `occupied`/`engaged`, ALSO apply that label to the same entity (works today with zero code change: `_occ_source_ents`/`_engaged_source_ents` already treat any labeled entity's `on` state as truthy). See `zen_room_manager_dispatch.yaml` ~L590-606. |
@@ -449,7 +449,7 @@ alternative to it; with `reflex_enable` off, nothing happens regardless of
 
 ## Related
 
-- [Architecture Ch. 22 — Room Manager v3 & REFLEX](../architecture/22_Room_Manager_v3_REFLEX.md) — full design rationale, the consolidation history, and the RoomState/RoomReg boundary
+- [Architecture Ch. 21: Room Manager v3 Reference](../architecture/21_room_manager_v3.md) — full design rationale, the consolidation history, and the RoomState/RoomReg boundary
 - [Room Manager Operator's Manual](../getting_started/room_manager_operators_manual.md) — plain-language guide
 - [Room Manager (RoomReg)](room_manager.md) — the spatial/topology tool, a different system
-- [RoomState and Perception](../architecture/11_RoomState_and_Perception.md) — the theoretical layer this system implements
+- [Live State](../architecture/12_live_state.md): the concepts this system implements

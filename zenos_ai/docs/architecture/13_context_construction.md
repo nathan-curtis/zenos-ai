@@ -63,4 +63,6 @@ A persona sensor that is unavailable (not blank, genuinely unavailable) is a dif
 
 The frame is sent on every turn, so every section is built to be small. The index is capped and ranked. The roster is cached. SuperSummary works under a context budget (Chapter 10). Empty tail sections cost nothing. `sensor.zen_prompt_length` reports the size of each section, and `sensor.zen_prompt_health` reports whether the persona's identity is intact, so a prompt that is growing or degrading is visible before it becomes a problem.
 
+For scale: in the reference household (Appendix F), one sampled frame was 49,868 characters. The system section and the Katas were about three quarters of it. The index describing more than a thousand labels was under 5,000.
+
 > **Not yet built.** The frame carries a `session_token` field with a fixed placeholder value. It is not a real session credential and nothing validates it. Real session binding is covered in Chapter 14.

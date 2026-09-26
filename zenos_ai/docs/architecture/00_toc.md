@@ -1,118 +1,48 @@
-## **ZenOS-AI Whitepaper "The Book of Friday" — Table of Contents**
+# The Book of Friday, Volume 2: Contents
 
-*(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
+Start with the [Preface](00_preface.md). It states the thesis the rest of the book follows.
 
-*(Content accuracy pass 2026-08-04: chapters 01, 04, 05, 06, 07, 08, 10, 14, 15,
-20, and security_model_ga corrected against current code. Fixed: stale
-entity/script names, fabricated dotted event types, a wrong validation
-signature constant, and several design-target claims (identity_hash
-enforcement, Abbot-level ACL enforcement, ch06/ch14's task-economy/scoring
-model) reframed as not-yet-implemented rather than current behavior. Redirector
-(ch10) documented as shipped — the Cabinet package, `zen_dojotools_filecabinet`.
-Abbot (ch06/ch10/ch14) documented as shipped — the Scheduler + Dispatcher
-working jointly, not a single component. "Monk Summaries" Tier 2 (ch07)
-corrected to `trapper_keeper`, its real and leaner realization; "Monk" clarified
-as the inference-execution step used inside every tier, not a separate layer.)*
+## Part I. Foundations
 
-<img 
-  src="https://github.com/user-attachments/assets/4b337f77-5c3e-4704-9d29-0749b5b7a187"
-  width="512"
-  height="768"
-  alt="image"
-/>
+1. [Principles](01_principles.md)
 
----
+## Part II. The Graph
 
-## **ZenOS-AI Whitepaper "The Book of Friday" — Table of Contents**
+2. [Home Assistant as Substrate](02_home_assistant_substrate.md)
+3. [Labels and the Hypergraph](03_labels_and_the_hypergraph.md)
+4. [Cabinets as Graph](04_cabinets_as_graph.md)
+5. [Spatial Topology](05_spatial_topology.md)
+6. [Exposure: Tools, Not Entities](06_exposure_tools_not_entities.md)
 
-*(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
+## Part III. The Ontology
 
----
+7. [Vocabulary](07_vocabulary.md)
+8. [Contracts](08_contracts.md)
+9. [Components](09_components.md)
 
-## **0. Preface & Release Notes**
-* **[readme.md](./readme.md)** — Executive overview, architectural intent, release scope.
-* **[00_toc.md](./00_toc.md)** — This document.
+## Part IV. The Twin
 
----
+10. [The Monastery](10_the_monastery.md)
+11. [Katas](11_katas.md)
+12. [Live State](12_live_state.md)
+13. [Context Construction](13_context_construction.md)
 
-## **1. The Monastery Core**
-* **[01_the_monastery_core.md](./01_the_monastery_core.md)**
+## Part V. Identity and Authority
 
-## **2. Architectural Overview**
-* **[02_Architectural_Overview.md](./02_Architectural_Overview.md)**
+14. [Principals](14_principals.md)
+15. [Certification](15_certification.md)
+16. [The Authority Ladder](16_the_authority_ladder.md)
+17. [Identity as Traversal](17_identity_as_traversal.md)
 
-## **3. Cognitive Architecture Foundations**
-* **[03_Cognitive_Architecture_Foundations.md](./03_Cognitive_Architecture_Foundations.md)**
+## Part VI. Operation
 
-## **4. Cognitive Data Flow**
-* **[04_Cognitive_Data_Flow.md](./04_Cognitive_Data_Flow.md)**
+18. [The Abbot](18_the_abbot.md)
+19. [Resilience](19_resilience.md)
+20. [Developer Standards](20_developer_standards.md)
+21. [Room Manager v3 Reference](21_room_manager_v3.md)
 
-## **5. Reasoning and Kata Design**
-* **[05_Reasoning_and_Kata_Design.md](./05_Reasoning_and_Kata_Design.md)**
+## Appendices
 
-## **6. Scheduler and The Abbot**
-* **[06_Scheduler_and_The_Abbot.md](./06_Scheduler_and_The_Abbot.md)**
+22. [Appendices](22_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, and the reference household.
 
-## **7. Summarizer Pipelines**
-* **[07_Summarizer_Pipelines.md](./07_Summarizer_Pipelines.md)**
-
-## **8. Kata Cabinet**
-* **[08_Kata_Cabinet.md](./08_Kata_Cabinet.md)**
-
-## **9. Identity Architecture**
-* **[09_Identity_Architecture.md](./09_Identity_Architecture.md)**
-
-## **10. Event Substrate and Home Assistant Implementation**
-* **[10_Event_Substrate_and_HomeAssistant_Implementation.md](./10_Event_Substrate_and_HomeAssistant_Implementation.md)**
-
-## **11. RoomState and Perception**
-* **[11_RoomState_and_Perception.md](./11_RoomState_and_Perception.md)**
-
-## **12. LiveState: Authoritative Environment Model**
-* **[12_LiveState_Authoritative_Environment_Model.md](./12_LiveState_Authoritative_Environment_Model.md)**
-
-## **13. Cognitive Context Construction**
-* **[13_Cognitive_Context_Construction.md](./13_Cognitive_Context_Construction.md)**
-
-## **14. Abbot Scheduler and Task Economy**
-* **[14_Abbot_Scheduler_And_Task_Economy.md](./14_Abbot_Scheduler_And_Task_Economy.md)**
-
-## **15. Identity Access Control: Person Capsules**
-* **[15_Identity_AccessControl_PersonCapsules.md](./15_Identity_AccessControl_PersonCapsules.md)**
-
-## **16. Summarizer Engine: Kata Pipeline**
-* **[16_SummarizerEngine_KataPipeline.md](./16_SummarizerEngine_KataPipeline.md)**
-
-## **17. Katas: Structure, Semantics, Validity**
-* **[17_Katas_Structure_Semantics_Validity.md](./17_Katas_Structure_Semantics_Validity.md)**
-
-## **18. Context Frame: Operational Cognitive Surface**
-* **[18_Context_Frame_Operational_Cognitive_Surface.md](./18_Context_Frame_Operational_Cognitive_Surface.md)**
-
-## **19. Resilience and Failure Modes**
-* **[19_Resilience_and_Failure_Modes.md](./19_Resilience_and_Failure_Modes.md)**
-
-## **20. Tool Invocation and Security**
-* **[20_tool_invocation_and_security.md](./20_tool_invocation_and_security.md)**
-
-## **21. Developer Taxonomy and Component Standards**
-* **[21_Developer_Taxonomy_and_Component_Standards.md](./21_Developer_Taxonomy_and_Component_Standards.md)** — Canonical component classes (DojoTool, AdminTool, Root, Sutra, Stack, Codex, KFC, Boot Orchestrator), Stripes, exposure rules, packaging conventions, and the design decision guide for core developers, plugin authors, and reviewers.
-
-## **22. Room Manager v3 & REFLEX: The Living Room-State Engine**
-* **[22_Room_Manager_v3_REFLEX.md](./22_Room_Manager_v3_REFLEX.md)** — The concrete implementation of Chapter 11's RoomState theory: the per-room cascade (`room_state.yaml`), the REFLEX event bus (Signal Dispatcher → scene resolution → nightlight), opt-in constructs (Control Burnout, TV Sleep Timer, Vent Fan Auto), and the one-automation/one-script consolidation. Distinct from `zen_dojotools_room_manager` (RoomReg, spatial topology) — see [components/room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md) for the practical/agent reference and [getting_started/room_manager_operators_manual.md](../getting_started/room_manager_operators_manual.md) for the plain-language operator's manual.
-
----
-
-## **Appendices (Future Work: Sections 23–30)**
-
-Reserved for:
-
-* SSE/MCP v2 architecture  
-* Persona certificates & identity proofs  
-* Kata algebra research  
-* Hypergraph engine v2  
-* External household federation  
-* Distributed Monastery workers  
-* Multimodal pipelines (vision/audio)  
-* Advanced safety model  
-* Formal proofs of invariants
+Volume 1 is the tree at commit `57a935f`.

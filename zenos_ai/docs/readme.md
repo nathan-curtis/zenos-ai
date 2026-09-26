@@ -167,23 +167,15 @@ This is the textbook for ZenOS-AI.
 
 Highlighted chapters:
 
+* [`00_preface.md`](architecture/00_preface.md) – Why Volume 2, and the thesis
 * [`00_toc.md`](architecture/00_toc.md) – Table of contents
-* [`01_the_monastery_core.md`](architecture/01_the_monastery_core.md) – The reasoning engine
-* [`02_Architectural_Overview.md`](architecture/02_Architectural_Overview.md) – The high level cognitive stack
-* [`03_Cognitive_Architecture_Foundations.md`](architecture/03_Cognitive_Architecture_Foundations.md)
-* [`04_Cognitive_Data_Flow.md`](architecture/04_Cognitive_Data_Flow.md) – How signals travel
-* [`05_Reasoning_and_Kata_Design.md`](architecture/05_Reasoning_and_Kata_Design.md)
-* [`06_Scheduler_and_The_Abbot.md`](architecture/06_Scheduler_and_The_Abbot.md) – Task routing
-* [`07_Summarizer_Pipelines.md`](architecture/07_Summarizer_Pipelines.md) – Awareness flow
-* [`08_Kata_Cabinet.md`](architecture/08_Kata_Cabinet.md)
-* [`09_Identity_Architecture.md`](architecture/09_Identity_Architecture.md) – Identity data model spec
-* [`11_RoomState_and_Perception.md`](architecture/11_RoomState_and_Perception.md) – Sensory model
-* [`14_Abbot_Scheduler_And_Task_Economy.md`](architecture/14_Abbot_Scheduler_And_Task_Economy.md)
-* [`18_Context_Frame_Operational_Cognitive_Surface.md`](architecture/18_Context_Frame_Operational_Cognitive_Surface.md) – Context assembly + prompt loader
-* [`19_Resilience_and_Failure_Modes.md`](architecture/19_Resilience_and_Failure_Modes.md) – Highlander resolver, health sensor stack
-* [`20_tool_invocation_and_security.md`](architecture/20_tool_invocation_and_security.md) – Tool ACLs, safety classes, caller_token
-* [`22_Room_Manager_v3_REFLEX.md`](architecture/22_Room_Manager_v3_REFLEX.md) – The state cascade and REFLEX's autonomous scene-firing, from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
-* [`security_model_ga.md`](architecture/security_model_ga.md) – **Operator reference:** what's active at GA vs SP1
+* [`03_labels_and_the_hypergraph.md`](architecture/03_labels_and_the_hypergraph.md) – The graph and how labels make it readable
+* [`10_the_monastery.md`](architecture/10_the_monastery.md) – The summarization pipeline
+* [`13_context_construction.md`](architecture/13_context_construction.md) – How the agent's prompt is built
+* [`15_certification.md`](architecture/15_certification.md) – Certification, scope, and denials
+* [`19_resilience.md`](architecture/19_resilience.md) – Health sensors and failure handling
+* [`20_developer_standards.md`](architecture/20_developer_standards.md) – Component classes and the tool contract
+* [`21_room_manager_v3.md`](architecture/21_room_manager_v3.md) – The state cascade and REFLEX, from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
 
 If you want to know how the mind works, start here.
 
@@ -358,16 +350,9 @@ The Identity subsystem defines:
  * what it may see
  * where its authority begins and ends
 
-Two documents cover this:
+These cover it:
 
-* [`09_Identity_Architecture.md`](architecture/09_Identity_Architecture.md) — full identity data model spec: GUIDs, identity hashes,
-  provenance chains, essence capsules, ACL rules, Squirrel Safe / Content Safe filters,
-  session tokens, visas, delegated capability (v1.5). The authoritative structural spec.
-
-* [`security_model_ga.md`](architecture/security_model_ga.md) — **start here if you’re an operator.** What is active at GA,
-  what is stubbed for SP1, the `security_policy` syscab drawer, caller_token plumbing,
-  prompt integrity sensor (`zen_prompt_health`), delegation and nesting hard rules, and
-  the SP1 claims engine architecture. No jargon — written for someone deploying the system.
+* [`14_principals.md`](architecture/14_principals.md) through [`17_identity_as_traversal.md`](architecture/17_identity_as_traversal.md): the identity and authority model as it ships: principals, certification, the authority ladder, and what is not yet built.
 
 * [`getting_started/security_certification_manual.md`](getting_started/security_certification_manual.md) — **the certification/identity-gate system in
   practice.** How locks, exterior covers, the alarm panel, container control, room unpause, and

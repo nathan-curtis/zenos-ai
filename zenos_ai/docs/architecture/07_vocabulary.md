@@ -2,7 +2,7 @@
 
 The graph (Part II) is only nodes and edges. What makes it readable is a shared vocabulary, and in ZenOS that vocabulary is labels. A label is a claim about a node: this light is a room's main light, this sensor detects motion for the living room, this script is a DojoTool. Tools find what they act on by asking which nodes carry which labels. They never hardcode an entity ID.
 
-This chapter describes the label families and the rules for using them. The full catalog is in the appendix.
+This chapter describes the label families and the rules for using them. Appendix D says where each family is described and how to get the live catalog.
 
 ## 7.1 Why labels
 
