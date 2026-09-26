@@ -1,4 +1,4 @@
-# Zen DojoTools Office — v5.1.0 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Office — Teams v1.1.0 · Mail v5.1.0
 
 *M365 Teams and Mail tools for Home Assistant*
 

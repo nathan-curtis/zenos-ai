@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — v5.1.0
+# Zen DojoTools Summarizers — Ninja Summarizer v4.5.1 · SuperSummary v4.5.1
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 

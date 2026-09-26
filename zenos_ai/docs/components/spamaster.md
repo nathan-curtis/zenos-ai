@@ -1,6 +1,6 @@
 # ZenOS-AI SpaMaster
 
-**Version:** 5.2.0
+**Version:** 1.2.0
 **Script:** `zen_dojotools_spamaster`
 
 ---

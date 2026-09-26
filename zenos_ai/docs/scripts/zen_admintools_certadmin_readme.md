@@ -1,4 +1,4 @@
-# Zen AdminTools CertAdmin — v1.0.0
+# Zen AdminTools CertAdmin — v1.2.0
 
 *Admin-only cert issuance/revocation authority for AI persona (ai_user) cabinets*
 

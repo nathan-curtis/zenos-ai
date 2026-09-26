@@ -1,4 +1,4 @@
-# Zen DojoTools Display — v0.4.0
+# Zen DojoTools Display — v0.5.1
 
 **File:** `packages/zenos_ai/dojotools/dojotools_display.yaml`
 **Script:** `zen_dojotools_display`

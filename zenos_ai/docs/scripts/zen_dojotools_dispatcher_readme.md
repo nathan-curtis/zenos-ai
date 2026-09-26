@@ -1,4 +1,6 @@
-# Zen DojoTool Dispatcher — v5.3.0
+# Zen DojoTool Dispatcher — v5.4.3
+
+*Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.0.0.*
 
 **File:** `packages/zenos_ai/dojotools/dojotools_dispatcher.yaml`
 **Automations:** `zen_dojotool_dispatcher` and supporting routers (single dispatch automation as of v5.2.0 — see below)

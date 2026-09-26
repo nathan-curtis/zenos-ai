@@ -1,6 +1,6 @@
 # ZenOS-AI Infrastructure Console
 
-**Version:** 1.3.0 (header) / 1.4.2 (tool_manifest)
+**Version:** 1.5.0
 **File:** `dojotools/dojotools_infra.yaml`
 
 **Entities:**

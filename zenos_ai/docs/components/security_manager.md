@@ -1,6 +1,6 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.3.1
+**Version:** 5.4.0
 **File:** `dojotools/dojotools_security_manager.yaml`
 **Replaces:** `zen_dojotools_alarm_panel` (deleted)
 

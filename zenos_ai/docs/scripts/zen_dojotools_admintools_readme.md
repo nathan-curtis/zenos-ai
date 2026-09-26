@@ -1,4 +1,6 @@
-# Zen DojoTools AdminTools — v5.3.1
+# Zen DojoTools AdminTools
+
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.0 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 42.1 · `run_repair` 5.1.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 

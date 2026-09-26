@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v1.8.0 (ZenOS-AI 5.1.0 — 2026.6.0 'Clue')
+# Zen DojoTools Scribe — v5.2.0
 
 *Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
 

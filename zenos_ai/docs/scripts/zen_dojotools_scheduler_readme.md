@@ -1,4 +1,6 @@
-# Zen DojoTools Scheduler — 2026.6.0 'Clue'
+# Zen DojoTools Scheduler — v5.1.0
+
+*Automation — no `tool_manifest`, so the file header version is canonical.*
 
 **File:** `packages/zenos_ai/dojotools/dojotools_scheduler.yaml`
 **Automation:** `automation.zen_dojotools_scheduler`

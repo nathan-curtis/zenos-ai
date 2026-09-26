@@ -2,7 +2,7 @@
 
 **File:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Scripts:** `zen_dojotools_finance` (MCP-exposed), `zen_stack_firefly`, `zen_root_firefly`  
-**Version:** 2.4.0  
+**Version:** 2.5.0  
 
 ---
 

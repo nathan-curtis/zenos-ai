@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.2.0
+# Zen DojoTools FileCabinet — v6.9.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.7.0 'Neo'

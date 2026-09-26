@@ -1,4 +1,4 @@
-# Zen DojoTools Image Generator — v5.1.0
+# Zen DojoTools Image Generator — v1.0.1
 
 **File:** `packages/zenos_ai/dojotools/dojotools_image_generator.yaml`
 **Script:** `zen_dojotools_generate_image`

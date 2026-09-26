@@ -1,4 +1,4 @@
-# Zen DojoTools Provisioner — v5.1.0
+# Zen DojoTools Provisioner — v1.1.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_provisioner.yaml`
 **Script:** `zen_dojotools_provisioner`

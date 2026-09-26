@@ -1,6 +1,6 @@
 # ZenOS-AI Zammad (Radar) Plugin
 
-**Version:** 0.4.0 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
+**Version:** 0.3.1 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
 **Package:** `packages/zenos_ai/plugins/zammad/zammad.yaml`
 **MCP-facing script:** `zen_dojotools_servicedesk`
 **Lens Bus stack provider:** `zen_stack_radar`

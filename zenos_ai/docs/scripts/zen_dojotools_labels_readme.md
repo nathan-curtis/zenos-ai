@@ -1,4 +1,4 @@
-# Zen DojoTools Labels — 2026.6.0 'Clue'
+# Zen DojoTools Labels — v5.5.0
 
 *Create, read, update, delete, and assign labels in the Home Assistant label index*
 

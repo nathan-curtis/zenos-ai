@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.8.0 — adds `leak_auto_shutoff_enable` mode + `zen_plant_leak_watch` automation (see below); `label_suggest` gained real water/leak/shutoff classification (was electrical-only)
+**Version:** 5.11.1 — 5.8.0 added `leak_auto_shutoff_enable` mode + `zen_plant_leak_watch` automation (see below); `label_suggest` gained real water/leak/shutoff classification (was electrical-only)
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant

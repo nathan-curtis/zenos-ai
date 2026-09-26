@@ -1,6 +1,6 @@
 # ZenOS-AI Firefly III Finance Component
 
-**Version:** 2.3.0  
+**Version:** 2.5.0 (`zen_dojotools_finance`)  
 **Package:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Primary script:** `zen_dojotools_finance`  
 **Internal REST dispatcher:** `zen_root_firefly` (renamed from `zen_sutra_firefly` in 2.3.0)  

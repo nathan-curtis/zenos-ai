@@ -1,4 +1,4 @@
-# Zen DojoTools History — 2026.6.0 'Clue'
+# Zen DojoTools History — v5.1.1
 
 *Recorder statistics query engine for HA long-term statistics*
 

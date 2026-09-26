@@ -1,4 +1,6 @@
-# Zen DojoTools Utilities — v5.1.0 (zen_dojotools_help v3.0.0)
+# Zen DojoTools Utilities
+
+**Script versions** (per-script `tool_manifest`, canonical): `help` 3.1.1 · `calculator` 1.3.0 · `dice_roller` 1.0.0 · `wait` 1.0.0 · `select_control` 1.1.0 · `boolean` 1.1.0 · `number` 1.1.0 · `text` 1.1.0 · `timekeeper` 1.3.0 · `climate` 2.0.0 · `water_heater` 1.1.0 · `datetime` 1.1.0 · `zones` 1.1.0.
 
 *Calculator, dice, announcements, music search, system help, wait, cabinet audit, and canonical HA domain control tools*
 

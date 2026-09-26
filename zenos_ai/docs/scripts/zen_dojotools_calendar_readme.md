@@ -1,4 +1,4 @@
-# Zen DojoTools Calendar — v1.11.0
+# Zen DojoTools Calendar — v1.1.0
 
 *HA Calendar domain CRUD. Split from `dojotools_office.yaml` (2026-05-15).*
 

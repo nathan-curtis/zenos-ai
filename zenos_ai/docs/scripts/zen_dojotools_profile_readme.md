@@ -1,4 +1,4 @@
-# Zen DojoTools Profile Editor — 5.3.0
+# Zen DojoTools Profile Editor — v5.3.0 · Persona Editor v1.2.1
 
 *Read, write, sign, restore, and certify ZenOS identity profiles*
 

@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v6.12.2 (ZenOS-AI 2026.7.0 'Neo')
+# Zen DojoTools Library — v6.13.0
 
 *Knowledge broker and Lens owner for the Monastery*
 

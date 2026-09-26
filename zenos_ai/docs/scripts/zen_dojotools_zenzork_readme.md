@@ -1,6 +1,6 @@
 # zen_dojotools_zenzork
 
-**ZenZork Adventure Engine** — v1.8.0 ("Chapter 1")
+**ZenZork Adventure Engine** — v1.9.0 ("Chapter 1")
 **File:** `packages/zenos_ai/dojotools/dojotools_zenzork.yaml`
 **Sidecar data:** `packages/zenos_ai/dojotools/.zenzork_quests/` — `quest_defs.json`,
 `book_lore.json`, `genie_codes.json`, `chapter_releases.json`,

@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.6.5
+**Version:** 5.12.2
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 

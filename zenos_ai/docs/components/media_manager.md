@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.0.0
+**Version:** 6.1.0
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 

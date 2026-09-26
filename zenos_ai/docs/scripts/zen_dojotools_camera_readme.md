@@ -1,4 +1,4 @@
-# Zen DojoTools Camera — v1.3.0
+# Zen DojoTools Camera — v5.1.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_camera.yaml`
 **Script:** `zen_dojotools_camera`

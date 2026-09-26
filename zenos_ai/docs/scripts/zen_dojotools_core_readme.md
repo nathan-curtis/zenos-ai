@@ -1,4 +1,4 @@
-# Zen DojoTools Core — 2026.6.0 'Clue'
+# Zen DojoTools Core — `zen_dojotools_filecabinet_gc` v4.5.1
 
 *FileCabinet garbage collector — drawer lifecycle management*
 
