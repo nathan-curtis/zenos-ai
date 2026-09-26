@@ -19,7 +19,16 @@ The mechanics in Part V are each a restriction on a different kind of edge.
 | Target | Which specific nodes does a capability reach, and which are fenced off? | Scope entries: `allow`, `deny`, or not mentioned (Chapter 15) |
 | Approval | Does crossing this edge, this time, need a human? | Live acknowledgement (Chapter 16) |
 
-An action happens only if every edge on its path is traversable. An agent certified for `lock_control` at level 1, whose scope denies `lock.back_door`, has a capability edge into the lock domain and a fenced-off target edge to one door. The front door is reachable for locking. Unlocking it crosses an approval edge, so it needs a human unless that target is explicitly covered. The back door is not reachable at all.
+```mermaid
+graph LR
+  A(("agent")) -- "capability:<br/>lock_control L1" --> LD["lock domain"]
+  LD -- "target: default" --> FD["lock.front_door<br/>(ext_lock)"]
+  LD -. "target: deny" .-x BD["lock.back_door"]
+  FD -- "lock" --> OK1["reachable"]
+  FD -- "unlock" --> AP{"approval edge"} -- "human yes" --> OK2["reachable"]
+```
+
+An action happens only if every edge on its path is traversable. An agent certified for `lock_control` at level 1, whose scope denies `lock.back_door`, has a capability edge into the lock domain and a fenced-off target edge to one door. The front door, tagged `ext_lock` as an exterior lock, is reachable for locking. Unlocking it crosses an approval edge, so it needs a human unless that target is explicitly covered. The back door is not reachable at all.
 
 ## 17.3 Why this is identity
 

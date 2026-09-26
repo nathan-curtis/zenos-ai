@@ -6,6 +6,25 @@ Chapter 15 describes what a certification is. This chapter describes how authori
 
 Each rung is necessary, and none substitutes for another.
 
+```mermaid
+flowchart TD
+  C["tool call"] --> I{"identity policy"}
+  I -- blocked --> X["denied"]
+  I -- allowed --> AD{"admission<br/>(10.0 final)"}
+  AD --> DC{"domain cert<br/>and level"}
+  DC -- short --> X
+  DC -- held --> S{"scope"}
+  S -- deny --> X
+  S -- allow --> GO["act"]
+  S -- default --> L{"live ack<br/>needed?"}
+  L -- no --> GO
+  L -- yes --> H{"human"}
+  H -- approved --> GO
+  H -- "declined, timeout,<br/>dispatch failed" --> X
+```
+
+The administrative plane sits beside this path, not on it: it changes the policy the path reads.
+
 | Rung | What it decides | Where it is enforced | Status |
 |---|---|---|---|
 | Identity policy | Is this caller's identity acceptable at all? | `resolve_caller_identity`, `sim_mode_allowed` | Built |

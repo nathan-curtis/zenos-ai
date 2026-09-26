@@ -18,6 +18,14 @@ Home Assistant already holds a graph: entities, devices, areas, floors, labels, 
 
 When an agent reads the graph through the ontology, the result is a digital twin: a working model of the house that the agent can reason over and act on. Which parts of the graph an agent can actually traverse is decided by what it has been certified to do. So identity is not a name or a persona prompt. It is the set of edges an agent is allowed to walk.
 
+```mermaid
+graph LR
+  G["The graph<br/>entities, areas, labels,<br/>cabinets, topology"] --> R(("agent reads"))
+  O["The ontology<br/>labels, contracts,<br/>declarations"] --> R
+  C["Certifications<br/>which edges it may walk"] -. bounds .-> R
+  R --> T["The twin<br/>a model of the house<br/>it can reason over"]
+```
+
 The book follows that thesis in order:
 
 | Part | Subject | Question it answers |

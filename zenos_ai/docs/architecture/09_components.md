@@ -34,6 +34,19 @@ Providers are Stacks (and some DojoTools acting as providers). Each declares in 
 
 `zen_dojotools_lens_dispatch` is the one consumer entry point. It groups the anchors by type, calls only the providers whose declarations match, applies soft-failure semantics (a failed provider is reported, not fatal), deduplicates evidence, and returns one merged answer. It unwraps each provider's `.result` before merging, so enveloped and not-yet-enveloped providers merge identically. Library is the Lens owner for documents, tickets, wiki pages, and catalog items, and consumers such as Inspect, Index, and Room Manager ask Library rather than calling providers directly.
 
+```mermaid
+graph LR
+  Q["consumer<br/>anchors: area, person"] --> D["lens_dispatch"]
+  REG[("lens_registry")] -. which providers .-> D
+  D -- area --> P1["provider A"]
+  D -- area, person --> P2["provider B"]
+  D -- person --> P3["provider C<br/>(fails)"]
+  P1 --> M["merge,<br/>dedupe"]
+  P2 --> M
+  P3 -. reported, not fatal .-> M
+  M --> A["one answer"]
+```
+
 ## 9.4 ToolScan and ToolMap
 
 System-wide questions about tools (which tools exist, what they require, what they depend on) are answered by fanning out across every tool's manifest.
