@@ -34,7 +34,7 @@ And a few things that are.
 
 **Quieter alerts** — Alert Manager acknowledgements (`ack`/`check_ack`/`revoke_ack`) let a household say "we know, it's fine" and have the summarizer pipeline stop re-escalating that component until the ack expires; summarizer writes now guard on a validated parse.
 
-One cert-gate audit (FileCabinet, pending its own security-class design) is still open and tracked before this becomes a release candidate.
+FileCabinet gets a bug pass in Tron; its single-exit/envelope/cert-gate work is the intended scope of **2026.11.0 'This Is Spinal Tap'**. Ours goes to 11.
 
 → [Release Notes — Tron](zenos_ai/docs/releases/tron.md)
 
@@ -232,7 +232,7 @@ packages/zenos_ai/
 
   dojotools/
     — Core infrastructure —
-    dojotools_filecabinet.yaml — FileCabinet v6.2.0 — CabCeption nested drawer trees, VirtualDrawer, LiveDrawer
+    dojotools_filecabinet.yaml — FileCabinet v6.9.0 — CabCeption nested drawer trees, VirtualDrawer, LiveDrawer
     dojotools_core.yaml        — Core operations + FileCabinet GC
     dojotools_scheduler.yaml   — Scheduled automation triggers
     dojotools_manifest.yaml    — Manifest engine

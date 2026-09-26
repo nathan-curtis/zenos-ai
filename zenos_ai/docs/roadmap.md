@@ -10,7 +10,21 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.9.0 'Steel Magnolia' — Shipped, current Stable**
+**2026.11.0 'This Is Spinal Tap' — Planned**
+
+It goes to 11. The intended scope is FileCabinet: its full cadillac pass (single exit, the canonical response envelope) and its cert-gate, built on a dedicated security-class design. FileCabinet is the one tool everything else depends on at boot, so this gets the whole month, done carefully enough that it doesn't break running installs.
+
+---
+
+**2026.10.0 'Tron' — Public Beta**
+
+Shore up the Grid: admission certification, the administrative plane, a platform-wide cert-gate audit, and the cadillac pass (one exit, one envelope) across the rest of the platform. FileCabinet's own cert-gate moves to Spinal Tap.
+
+See: [Release Notes — Tron](releases/tron.md)
+
+---
+
+**2026.9.0 'Steel Magnolia' (incl. 2026.9.1 patch) — Shipped, current Stable**
 
 Room Manager v3's state cascade and REFLEX (autonomous scene-firing on state change) reach their fullest form, plus the hospitality lifecycle (guest arrival through checkout) and cert-gated permission tightening across the board.
 
