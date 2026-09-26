@@ -185,7 +185,7 @@ Authoritative, health-aware read/write controller for all Cabinet Volumes. Suppo
 
 ---
 
-## 17. Zen DojoTools Manifest — v6.4.9
+## 17. Zen DojoTools Manifest — v6.4.10
 **File:** [`zen_dojotools_manifest_readme.md`](zen_dojotools_manifest_readme.md)
 
 System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `audit_help`, `health`, `health_refresh`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `bootstrap_kfc`, `domains`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. `bootstrap_kfc` auto-registers KF5 self-declaring tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). Domain routing table maps domains to authoritative scripts (now built dynamically from `label_entities('zen_domain_*')`, not hardcoded). UMP `tool_manifest` contract supported.

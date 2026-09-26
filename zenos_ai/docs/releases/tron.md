@@ -120,6 +120,8 @@ A real production incident exposed a gap `mode: queued`'s FIFO design never acco
 
 The summarizer tier the Scheduler calls `keeper` was called `direct` on the summarizer side. It is `keeper` everywhere now. Checking that turned up a real gap: the Scheduler had no rule for the `system` tier, so core platform health (Trapper Keeper today) was treated as ordinary keeper work, delayed and shed under queue pressure. That means the component most likely to explain why the queue backed up was the one going stale while it did. `system` now dispatches with zero delay and is never shed, same as `super`.
 
+Underneath that was a second gap. KFC self-registration (`zen_dojotools_manifest mode=bootstrap_kfc`) never wrote `pipeline_tier` into the drawers it mounts, so every self-registered component ran as `keeper` whatever its manifest declared, and a changed tier never triggered a rewrite. The mount now carries the declared tier and compares it on refresh.
+
 ## Display Surface — Net New This Cycle
 
 A new tool, not a port of anything that existed before: `zen_dojotools_display` lets an agent cast a Lovelace view to any display in the house — a TV, a wall-mounted tablet, anything that isn't already running the HA Companion app (Companion devices route through Postman instead, which already does this better for them). Supported cast channels for this release: Google Cast, Fire TV/Android TV (via ADB into Silk), and LG webOS. If your setup has a display surface that isn't one of these three, we want to hear about it — additional channels are realistic to add if there's real demand.
