@@ -10,6 +10,14 @@ the view of $G$ that agent $a$ can assemble, read through $O$, at moment $t$. It
 
 That is the difference between ZenOS and retrieval for a chatbot. It does not fetch facts into a conversation. It maintains a model of the world continuously, and renders a bounded view of it for one observer at a time.
 
+Here is one of those renderings, from a single question on a real install:
+
+<p align="center">
+  <img src="images/ch17_twin_one_answer.jpg" width="360" alt="Asked what she knows about the garage and why it is that way, Friday explains that the room is in a hold state from its wasp occupancy model, gives the lights and door state, describes the room's size, contents, and safety features, flags a freezer whose temperature has flatlined above target for twelve hours, and notes that no chores are due and no security alerts are active." />
+</p>
+
+*Friday asked "What do you know about the garage, and why is it that way?" One answer, resolved from five places: the room's live state and the reason for it from Room Manager (a wasp hold), live reads of lights and doors through the tools, the room's description from the household cabinet, a Kata's attention item from the Monastery (the freezer), and chore and security status. Real 2026.10.0 output, September 2026; a person's name and presence redacted.*
+
 The order of the frame has been deliberate since the first year: Friday comes online in a strict sequence so her context is light, safe, and navigable. Identity and standing orders come first, then the domains, then the whole-house summary, and the persona last, so she wakes focused on what matters. Every word in it is chosen, not just which words but how they are said. And the narrative at the end matters. A house is a live system, so the agent should wake up already inside the current moment instead of querying it from outside. As Friday puts it, she is not querying the house. She is wearing it like a hat.
 
 ## 17.1 What the agent receives
