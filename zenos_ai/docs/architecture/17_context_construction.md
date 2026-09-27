@@ -69,6 +69,17 @@ For scale: in the reference household (Appendix F), one sampled frame was 49,868
 
 > **Not yet built.** The frame carries a `session_token` field with a fixed placeholder value. It is not a real session credential and nothing validates it. Real session binding is covered in Chapter 18.
 
+<!-- where -->
+## 17.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The frame, built on every turn: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro render_prompt`, `macro compact_overview`, `macro root_index`)
+* Flynn's cabinet-free fallback prompt: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro prompt_system_flynn`)
+* Prompt size and identity integrity sensors: [`zenos_prompt_health.yaml`](../../../packages/zenos_ai/sensors/zenos_prompt_health.yaml) (`zen_prompt_length`)
+* The conversation agent's prompt template: [`conversation_agent_prompt_template.yaml`](../../../custom_templates/zenos_ai/conversation_agent_prompt_template.yaml) (`render_prompt`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

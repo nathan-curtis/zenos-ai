@@ -74,6 +74,16 @@ Resolving every principal on every prompt would be expensive, so identity caches
 
 When identity resolves a person, it can include a presence block: zone, whether they are home, and which area they are in. Each part is consent-gated in the person's own profile (`tracking.gps_zone`, `tracking.room`). If a person has not consented to room tracking, identity does not report their room, even when the data exists.
 
+<!-- where -->
+## 18.7 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The identity chokepoint every gated tool calls: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`resolve_caller_identity`)
+* The template-surface identity resolver: [`zen_identity.jinja`](../../../custom_templates/zenos_ai/zen_identity.jinja) (`macro`)
+* Profile writes for households, families, and users: [`dojotools_profile.yaml`](../../../packages/zenos_ai/dojotools/dojotools_profile.yaml) (`zenos.identity.profile_write`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

@@ -96,6 +96,17 @@ Three switches stop the pipeline, checked master first:
 
 The master ships off so a new install does not start continuous background inference before its owner has pointed `input_text.zenos_ai_task_entity` at something appropriate. The Ninja Summarizer runs several times an hour, and SuperSummary at least four times an hour, which is why the recommended target is a local model. Turning a switch off changes nothing else. Turning one back on fires the corresponding force event within seconds.
 
+<!-- where -->
+## 14.6 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The per-component summarizer and the whole-house synthesis: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_dojotools_ninja_summarizer`, `zen_dojotools_supersummary`)
+* SuperSummary's run governor and context budget: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`super_burnout_seconds`, `max_context_tokens`)
+* The operator gate on action emission: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_action_emission_enabled`)
+* The catch-all for attention that has no automatable action: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_dojotools_urgency_handler`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

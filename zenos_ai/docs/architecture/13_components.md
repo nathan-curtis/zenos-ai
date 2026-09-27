@@ -57,6 +57,18 @@ System-wide questions about tools (which tools exist, what they require, what th
 
 `zen_dojotools_manifest mode=toolmap` walks the `dependencies` each tool declares and builds the dependency graph: what depends on Identity, what breaks if FileCabinet is unhealthy, whether a missing dependency is actually missing or just undeclared. It is a declared graph, not runtime tracing. The tools say what they need, and ToolMap checks that it is there.
 
+<!-- where -->
+## 13.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* KFC self-registration and Lens provider registration on start and daily: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`bootstrap_kfc`, `bootstrap_stacks`, `zen_kfc_provider`)
+* The single Lens Bus consumer entry point: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_dojotools_lens_dispatch`)
+* Library, the Lens owner for knowledge: [`dojotools_library.yaml`](../../../packages/zenos_ai/dojotools/dojotools_library.yaml) (`zen_dojotools_library`)
+* Stack providers: [`zen_stack_presence.yaml`](../../../packages/zenos_ai/dojotools/zen_stack_presence.yaml) (`zen_stack_presence`)
+* ToolScan, the fan-out behind ToolMap and the audits: [`dojotools_toolscan.yaml`](../../../packages/zenos_ai/dojotools/dojotools_toolscan.yaml) (`toolscan`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

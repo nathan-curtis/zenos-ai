@@ -75,6 +75,17 @@ Most DojoTools, AdminTools, and plugin tools return the envelope. The ones that 
 
 A tool's `tool_manifest` version is its canonical version. It is the number `mode=help`, `audit_help`, and ToolMap report, so it is the number every other mention must match: the header comment, the help text, the description, and the tool's readme. A file that bundles several scripts has a version per script. An automation with no manifest uses its file header.
 
+<!-- where -->
+## 12.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The manifest macro every tool calls, with dependencies, inference, and exposure: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`, `dependencies`, `inference`)
+* The envelope: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`)
+* Audits: declared versus actual, help compliance, and the certification catalog: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`audit_help`, `cert_audit`)
+* Help-standard exemptions for Sutras, Stacks, and Codices: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`startswith('zen_sutra_')`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

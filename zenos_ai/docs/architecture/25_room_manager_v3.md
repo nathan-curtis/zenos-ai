@@ -184,6 +184,17 @@ Entities labeled `zen_mm_shadow` (whole-house media groups and the like) are exe
 
 **`zen_agent_disabled`.** Home Assistant has no template function for `disabled_by`. `zen_dojotools_ectoplasm`'s `entity_disable` and `entity_enable` tag and untag `zen_agent_disabled`, so "what has the agent disabled" stays answerable from labels, and `role_audit` can recommend disabling a duplicate holder without it vanishing from view.
 
+<!-- where -->
+## 25.10 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The cascade: [`room_state.yaml`](../../../blueprints/template/zenos/room_state.yaml) (`_manual_override_hi`, `wasp`)
+* The dispatch automation and the REFLEX controller script: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`zenos_room_manager_dispatch`, `zen_reflex_controller`, `self_label_resync`)
+* role_audit and room_control_set: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`role_audit`, `room_control_set`)
+* zen_agent_disabled tagging: [`dojotools_ectoplasm.yaml`](../../../packages/zenos_ai/dojotools/dojotools_ectoplasm.yaml) (`zen_agent_disabled`)
+<!-- /where -->
+
 ---
 
 *Related: [Room Manager v3 / REFLEX component reference](../components/room_manager_v3_reflex.md) for deployment steps and the label reference. [Room Manager (RoomReg)](../components/room_manager.md) for the spatial tool. [Chapter 16](16_live_state.md) for the concepts.*

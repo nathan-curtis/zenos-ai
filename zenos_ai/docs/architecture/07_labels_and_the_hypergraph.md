@@ -91,6 +91,16 @@ Every tool that acts on the house follows the same order to find its targets:
 
 A tool never guesses an entity ID from a naming convention. The one entity every tool is most tempted to guess, a room's state sensor, is found by intersecting `zen_room_state` with the room's label.
 
+<!-- where -->
+## 7.4 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Label set logic and the hypergraph: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`hypergraph`, `label_entities`)
+* The ZQ-1 query filter: [`zen_query.jinja`](../../../custom_templates/zenos_ai/zen_query.jinja) (`macro`)
+* Reporting a label applied only to an area, instead of an empty result: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`area-only label mismatch`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

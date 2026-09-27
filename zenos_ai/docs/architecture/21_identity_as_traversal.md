@@ -54,6 +54,15 @@ Tools resolve targets through labels, and gated tools refuse traversals the call
 
 > **Not yet built.** The graph fold that produces an agent's context (Chapter 7) and the traversal rules that decide what it may act on are separate code paths. Computing an agent's claims directly from a fold over the label graph, so the same traversal that builds its world also bounds it, is design direction.
 
+<!-- where -->
+## 21.6 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Scope decisions returned with every identity answer: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`scope_decision`)
+* A capability edge with an approval edge: unlocking an exterior lock: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`ext_lock`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

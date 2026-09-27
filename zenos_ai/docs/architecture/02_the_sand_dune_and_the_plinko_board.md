@@ -48,6 +48,17 @@ One peg from the original list is gone on purpose. The first version exposed liv
 
 Pegs change probabilities. They do not make a model infallible, and nothing in ZenOS claims they do. That is why the pegs sit inside a box. Anything consequential goes through a tool with a contract, a certification check, and for the actions that deserve it a human's yes (Part V). The scrapbook makes the truth the easy answer. The box makes sure that when the answer is still wrong, it cannot do much about it.
 
+<!-- where -->
+## 2.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The hard rules the model reads first, including "Respond truthfully" and the Kata-first reading order: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`Respond truthfully`, `KATA FIRST`)
+* The default out: the index stops with confidence 0 when it finds nothing: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`on_empty: {action: stop, confidence: 0}`)
+* The order of the pegs: the frame the model reads, top to bottom: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro render_prompt`)
+* Confidence and error carried on every Kata: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`confidence`, `kata_template`)
+<!-- /where -->
+
 ---
 
 *Source: "Why Friday Doesn't Hallucinate (Much): A Sand Dune, A Plinko Board, and a Little Bit of Breakfast Club Wisdom", Friday's Party ([post](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/234)).*

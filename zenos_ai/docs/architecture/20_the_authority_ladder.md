@@ -107,6 +107,16 @@ AdminTools generally follow the same rule: they are the configuration and recove
 
 Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
 
+<!-- where -->
+## 20.8 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The identity policy rung: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`, `policy_status`)
+* Live acknowledgement through AlertManager and Postman: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`)
+* The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_control_override`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

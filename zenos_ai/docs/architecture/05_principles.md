@@ -70,6 +70,18 @@ The same rule applies to this book. If something is designed but not built, it i
 
 Tools learned to describe themselves once other people started running ZenOS and their agents picked up tools they had never seen. An agent has to be able to tell what a tool is without a human explaining it.
 
+<!-- where -->
+## 5.9 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Inference is pluggable: the summarizers call whatever model this helper names: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zenos_ai_task_entity`)
+* One shape: the shared response envelope: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`)
+* Fail closed: simulated identity is refused unless the household allows it: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`)
+* The human gate: one live acknowledgement chokepoint: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`)
+* Declare what you are: every tool's self-description: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

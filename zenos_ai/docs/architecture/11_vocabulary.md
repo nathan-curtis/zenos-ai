@@ -74,6 +74,18 @@ Some labels describe ZenOS itself rather than the house. Cabinets carry type lab
 
 **Reuse before inventing.** A new behavior should use an existing label wherever one already means the right thing. The label vocabulary is shared across every tool, so a new label has a cost for every future reader of the graph.
 
+<!-- where -->
+## 11.4 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Required and optional labels, and what is missing, computed live on every manifest call: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`missing_required_labels`)
+* The system-wide label audit, which can create missing definitions: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`label_audit`)
+* Suggest, then apply: label suggestions in ZenLux: [`dojotools_lights.yaml`](../../../packages/zenos_ai/dojotools/dojotools_lights.yaml) (`label_suggest`, `zen_lm_main`)
+* Label discovery for rooms: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`label_discover`)
+* Label creation, tagging, and area assignment: [`dojotools_labels.yaml`](../../../packages/zenos_ai/dojotools/dojotools_labels.yaml) (`zen_dojotools_labels`, `area_assign`, `untag`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

@@ -81,6 +81,18 @@ graph BT
 5. Make every failure visible in a sensor, an event, or a response.
 6. A human can always reconstruct what happened.
 
+<!-- where -->
+## 23.8 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Boot orchestration and the readiness gate: [`flynn.yaml`](../../../packages/zenos_ai/flynn.yaml) (`flynn_system_ready`)
+* Layered health sensors: [`zenos_agent_health.yaml`](../../../packages/zenos_ai/sensors/zenos_agent_health.yaml) (`flynn_system_ready`)
+* Health rollups shared by every sensor: [`zenos_health.jinja`](../../../custom_templates/zenos_ai/zenos_health.jinja) (`macro`)
+* The queue watchdog: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`watchdog_kill`)
+* Writes confirmed after Home Assistant accepts them: [`dojotools_filecabinet.yaml`](../../../packages/zenos_ai/dojotools/dojotools_filecabinet.yaml) (`write_verified`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

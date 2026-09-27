@@ -54,6 +54,16 @@ Several limits of the substrate show up repeatedly in how ZenOS is built. They a
 
 **Recursion is also blocked across a chain.** If A calls B calls A while A is still running, the inner call is refused. Tools that would form such a chain call the underlying primitive directly instead of going back through the wrapper.
 
+<!-- where -->
+## 6.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Cabinets are template sensors, and their schema and routing: [`zenos_cabinets.yaml`](../../../packages/zenos_ai/zenos_cabinets.yaml) (`variables`)
+* The event every part of ZenOS signals on: [`dojotools_systemtools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_systemtools.yaml) (`zen_dojotools_event_emitter`, `zen_event`)
+* Logic that runs where Home Assistant runs: the shared Jinja macro libraries: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`, `macro render_prompt`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

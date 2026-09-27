@@ -72,6 +72,18 @@ Reserved drawers (keys beginning with `_`, and the header) are protected from or
 
 > **Not yet built.** FileCabinet has no certification gate. Because every other part of ZenOS depends on it at boot, gating it needs its own security-class design rather than a bolt-on, and changes to it have to land without breaking a single running install. FileCabinet's single-exit pass, envelope, and certification gate are the scope of 2026.11.0 'This Is Spinal Tap'.
 
+<!-- where -->
+## 8.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Cabinet schema, core cabinets, and volume routing: [`zenos_cabinets.yaml`](../../../packages/zenos_ai/zenos_cabinets.yaml) (`variables`)
+* Safe drawer reads, including mounted drawers: [`zenos_cabinets.jinja`](../../../custom_templates/zenos_ai/zenos_cabinets.jinja) (`macro cabinet_drawer_value_mounted`)
+* The agent-facing cabinet tool, which checks health before a write and confirms it persisted after: [`dojotools_filecabinet.yaml`](../../../packages/zenos_ai/dojotools/dojotools_filecabinet.yaml) (`zen_dojotools_filecabinet`, `write_verified`)
+* The Highlander resolvers every tool reads instead of searching: [`zenos_summarizer_system_health.yaml`](../../../packages/zenos_ai/sensors/zenos_summarizer_system_health.yaml) (`zen_default_household_cabinet_resolved`)
+* The index shows a drawer's description and a 64-character preview; the full value always comes from FileCabinet: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`truncated to 64 chars`, `use FileCabinet for full data`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

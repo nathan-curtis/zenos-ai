@@ -73,6 +73,15 @@ REFLEX has two master gates: `reflex_enable` (off by default) and `reflex_dry_ru
 
 A room's live state is the most current part of the twin. The Monastery summarizes the house. Room Manager v3 knows, right now, which rooms are occupied.
 
+<!-- where -->
+## 16.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The room state blueprint and its cascade: [`room_state.yaml`](../../../blueprints/template/zenos/room_state.yaml) (`_manual_override_hi`)
+* REFLEX Stage 2, the Signal Dispatcher, and the master gates: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`room_state_changed`, `reflex_dry_run`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

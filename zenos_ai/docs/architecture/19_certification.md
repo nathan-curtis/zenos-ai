@@ -87,6 +87,17 @@ A tool that refuses an action for lack of certification builds its answer with t
 
 `can_request` is computed centrally from the identity policy alone: true unless the caller's identity was itself blocked. No tool decides for itself whether a caller is eligible to ask. A tool requires the certification. Whether the caller may request it is the certification system's question, answered in one place.
 
+<!-- where -->
+## 19.8 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Certificates declared by each tool, the catalog built from them: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`'cert': 'lock_control'`)
+* Scope resolution and the shared denial shape: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro cert_scope_check`, `macro cert_denial`)
+* Granting and revoking: not agent-exposed, and every write needs a live acknowledgement or the console: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`cert_req_grant`, `mcp_exposed`)
+* Where a persona's certificates live: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`zen_ai_certs`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

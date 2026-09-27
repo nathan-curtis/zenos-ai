@@ -56,6 +56,16 @@ AdminTools stay off the agent surface unless a human deliberately exposes one fo
 
 > **Not yet built.** Even with trimmed descriptions, the full tool surface is sent every turn. A tool-search layer that sends a small set of core tools and lets the agent discover the rest on demand would cut this further. That depends on what Home Assistant's own agent integration supports, and it is likely to be the recommended configuration if it becomes available.
 
+<!-- where -->
+## 10.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The directive that overrides Home Assistant's instruction to call GetLiveContext: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`INSTALLATION OVERRIDE`)
+* Whether a tool is exposed to agents is declared in its manifest: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`mcp_exposed`)
+* Index as the way in when nothing is exposed: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`hypergraph`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

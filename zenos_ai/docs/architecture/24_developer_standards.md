@@ -893,6 +893,16 @@ Before accepting a new component, reviewers should confirm:
 - **Stripe:** dependency order, never privilege.
 - **Package:** one coherent deployable capability, preferably one file; one dedicated folder when complexity demands it.
 
+<!-- where -->
+## 15. Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The manifest macro: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`)
+* The envelope, identity field reader, denial shape, and scope check: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`, `macro resolve_identity_fields`, `macro cert_denial`, `macro cert_scope_check`)
+* Help and manifest compliance audit: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`audit_help`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

@@ -67,6 +67,16 @@ Daily, and on Home Assistant start, `zen_dojotools_manifest` also re-runs its bo
 
 > **Not yet built.** The Abbot does not yet route work to different inference providers. Tagging each job so it can go to the right model with the right metadata (keeping sensitive content on a local model, sending other work elsewhere) is stated direction, with the Abbot as the single dispatch point for all inference.
 
+<!-- where -->
+## 22.6 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Triggers, subscriptions, and load shedding: [`dojotools_scheduler.yaml`](../../../packages/zenos_ai/dojotools/dojotools_scheduler.yaml) (`shed_keeper_at`, `pipeline_tier`)
+* Correlated tool calls over the event bus: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`dojotool_call`, `dojotool_return`)
+* Recovering shed work: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_scheduler_drain_router`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

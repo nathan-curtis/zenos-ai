@@ -49,6 +49,15 @@ Room Manager does not require every to-do list or calendar to be assigned to a r
 
 Changing the shape of the house is gated. Structural modes (`set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, zone and landmark edits) require the `room_topology_edit` certification at level 1, and `area_delete` requires level 2. Reading the topology is open.
 
+<!-- where -->
+## 9.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Portals, boundaries, and the topology drawer: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_topology`, `boundary_link`)
+* Pathfinding and emergency egress: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`pathfind`, `emergency`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 

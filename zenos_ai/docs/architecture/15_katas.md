@@ -65,6 +65,16 @@ For KFC-summarized components, the summarizer checks for an acknowledgement whos
 
 AlertManager stores the acknowledgement. It does not judge whether a condition has materially changed since, and cannot: it has no way to evaluate a stored rule at runtime. A domain tool that wants that finer judgment compares current values against the stored baseline in its own logic and revokes the acknowledgement itself.
 
+<!-- where -->
+## 15.6 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The component Kata schema and the whole-house template: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`kata_template`, `zen_template`)
+* last_run_at, stamped on every successful write: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`last_run_at`)
+* Acknowledgements: set, check, revoke: [`dojotools_alertmanager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_alertmanager.yaml) (`check_ack`, `revoke_ack`)
+<!-- /where -->
+
 <!-- nav -->
 ---
 
