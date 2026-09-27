@@ -26,6 +26,10 @@ Certification names come in two forms.
 
 Dotted names inherit, the same way X.509 policy identifiers do. Holding a parent node satisfies a check against any descendant at a dot boundary: holding `zenos.media` at level 2 satisfies a check for `zenos.media.playback_control` at level 2. When a caller holds both a parent and a more specific child, the most specific match wins, so a narrow grant can restrict below what a broad grant would imply. A flat name only ever matches itself. The resolution lives in `resolve_caller_identity` (Chapter 18).
 
+The resemblance to X.509 is not an accident. The dotted names are OID-shaped on purpose, because they are meant to become real object identifiers.
+
+> **Not yet built.** A registered OID space for ZenOS is being pursued. Once it exists, the dotted certification tree maps onto real object identifiers under that arc, so a certification can travel as a standard policy identifier in a real certificate, not only as a name in a cabinet drawer. The dotted names in use today are the human-readable form of that tree.
+
 ## 19.3 Levels
 
 A level is an integer, 1 and up. A gated action declares the minimum level it needs, and holding the certification at or above that level satisfies it. Levels have no global meaning. Each tool defines its own scale, typically putting a destructive or broader action one level above the ordinary one:

@@ -136,6 +136,7 @@ Every "Not yet built" box in the book, in one place.
 | 17 | A real `session_token` in the prompt frame | Arrives with session binding |
 | 18 | Partner-aware authorization | Design direction |
 | 18 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |
+| 19 | A registered OID space, so dotted certification names become real object identifiers | Being pursued |
 | 19 | Certification expiry and revocation checks at use time | Design direction |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
 | 20 | Admission: the base agent certification | In design |
