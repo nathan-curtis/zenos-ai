@@ -26,7 +26,9 @@ Everything in Steel Magnolia is the starting state for Tron — Room Manager v3 
 
 Steel Magnolia has since shipped, and the 2026.9.1 bugfix patch — backported from this same branch's own fixes — has shipped on top of it. Tron inherits the released system, not an RC snapshot.
 
-## Basic ZenOS Certification
+## Basic ZenOS Certification (in planning)
+
+> **In planning.** Not in this build. This section describes the design.
 
 A mandatory baseline certification for access to the ZenOS tool surface. An agent without it isn't an admitted ZenOS agent and can't perform normal read operations against ZenOS tools — read-class access only, no domain authorization implied, no actuation, no configuration.
 
@@ -34,7 +36,9 @@ Flynn owns the issuance path: at successful completion of onboarding, Flynn's bo
 
 **Existing agents.** Agents created before 2026.10.0 will be fully configured and operational but won't hold the new baseline cert. Post-upgrade, the migration path is recertification through Flynn's approved onboarding-adjacent path — not a rebuild from scratch. Exact tooling TBD with implementation. If an existing agent can see ZenOS but can't read its tools after upgrading, that's a recertification gap to close, not a reason to weaken the gate.
 
-## The Administrative Plane
+## The Administrative Plane (in planning)
+
+> **In planning.** Not in this build. This section describes the design. Cert bundles, which came out of the same work, are built.
 
 A second certification boundary above normal participation. Every agent first needs the basic cert to participate at all; administrative access requires an additional competency credential — **ZenOS Admin Certified, Level X** — admission to the administrative plane, not unrestricted authority within it. Country club, not skeleton key: the cert gets a caller through the door, the AdminTool itself still decides which functions that level may use, and for most sensitive operations, authorization still isn't execution — a fresh live human ack remains the last gate.
 
