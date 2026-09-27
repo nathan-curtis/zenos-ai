@@ -144,6 +144,7 @@ Every "Not yet built" box in the book, in one place.
 | 20 | Console-admin path for bundle grants | Planned |
 | 20 | Administrative competency certification | Design direction for this release line |
 | 21 | Certifying a corpus (a cabinet) as an object, with hard links between cabinets enforced through cabinet ACLs | Direction; ACL structure exists, unenforced |
+| 21 | Filtering at the source: FileCabinet resolves security before returning any drawer, so each principal reads its own subgraph | In progress |
 | 21 | Per-principal traversal | Arrives with session binding |
 | 21 | Membership edges that gate actions | Design direction |
 | 21 | Claims computed from a fold over the label graph | Design direction |
