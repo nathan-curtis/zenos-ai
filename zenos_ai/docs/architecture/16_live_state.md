@@ -49,6 +49,12 @@ This is the hypergraph again (Chapter 7). A motion sensor carries `motion` and i
 
 **Every state explains itself.** Each tier that can be true carries a `*_last_trigger` attribute naming the entity that most recently caused it, or the timer keeping it alive. `last_trigger` does the same for whichever tier won. "Why does the office say engaged?" has an inspectable answer.
 
+Here it is answered, on a real install:
+
+<!-- screenshot: ch16_why_engaged.png -->
+> **Screenshot to come.** Friday asked why a room reads engaged. She answers from the state sensor's last_trigger attributes, naming what caused it. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 **Manual overrides release themselves.** An override wins over live evidence the moment it is set, and releases on its own when the room's underlying live state changes to something other than what it was when the override was set. Nothing needs to be cleared by hand later.
 
 ## 16.4 REFLEX: state becomes effect

@@ -70,6 +70,12 @@ Trapper Keeper exists to keep SuperSummary's prompt small. Most components are q
 
 SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, default 600, so it runs at most once per window unless forced), a context budget (`max_context_tokens`, default 28,000, which drops ambient and system components before keeper ones), and a hard size guard (a prompt over 200,000 bytes aborts).
 
+Here is what that synthesis reads like when Friday is asked for it:
+
+<!-- screenshot: ch14_briefing.png -->
+> **Screenshot to come.** Friday asked for a briefing. The answer is SuperSummary's whole-house view, with what matters first and how urgent it is. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 ## 14.4 Escalation
 
 A component Kata can say that something needs action: `action_required`, an `urgency` from 0 to 10, and optionally a `suggested_act_event` naming a tool call that would address it. The Ninja Summarizer routes that three ways.

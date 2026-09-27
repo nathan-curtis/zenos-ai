@@ -81,6 +81,12 @@ Inspect turns identifiers into safe, complete records. For an entity it returns 
 
 When the entity is a cabinet, Inspect returns only the cabinet's header: GUID, version, type flags, validation signature. Drawer contents stay behind FileCabinet (Chapter 8). Reading a cabinet's identity is harmless. Reading its memory is FileCabinet's job.
 
+Here is a question no single sensor can answer, asked of Friday:
+
+<!-- screenshot: ch07_humidity_pattern.png -->
+> **Screenshot to come.** Friday asked whether anything is unusual with humidity across the house. The answer comes from label intersection across rooms, not from any one entity. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 ## 7.3 Resolution rules
 
 Every tool that acts on the house follows the same order to find its targets:

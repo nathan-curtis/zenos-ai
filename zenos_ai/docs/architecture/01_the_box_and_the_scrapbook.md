@@ -80,6 +80,12 @@ By the autumn of 2025 it had become grandma's box o' junk: the raw live state th
 
 And by 2026 it had become a test with two levels, which is the most useful form of it. Label everything related to your heating and cooling, then ask your agent what it knows about your HVAC. Before labels, the answer is vague and often wrong. After labels, it finds everything. That is the first level passing: she can find it. She still does not understand it. A temperature of 74, a setpoint of 72, four hours of runtime, and the system running is a spreadsheet. It becomes understanding when something says what the system serves, what normal looks like, and what to do when it is not normal. That is the second level, and it is the difference between the box and the scrapbook in one example.
 
+Here is the second level passing, asked of Friday on a real install:
+
+<!-- screenshot: ch01_grandma_test_hvac.png -->
+> **Screenshot to come.** Friday asked "What do you know about my HVAC?" She finds every labeled part, then reads them against what normal looks like. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 ## 1.7 Where this book puts them
 
 | | What it is in ZenOS | Where |

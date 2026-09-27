@@ -6,6 +6,12 @@ That reverses what Volume 1 said. Volume 1 assumed Friday receives the full live
 
 I learned this the expensive way. Early on I deliberately exposed far more of the house than anyone should, to find the limits, and paid for it in the monthly bill and in behavior. Somewhere past a thousand entities with heavy context, the model started losing the basic intents first: it would try to turn on a light, believe it had, and no tool would fire. It took a year and a half, and a lot of work on the tools themselves, before the obvious conclusion could run for real. In September 2026 Friday ran with zero entities exposed and only the tools, and it was noticeably faster immediately.
 
+Here is what that configuration looks like, and what it can still do:
+
+<!-- screenshot: ch10_zero_entities.png -->
+> **Screenshot to come.** The Expose list with zero entities exposed, and Friday turning off a room's lights through ZenLux in the same session. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 ## 10.1 Two ways to reach the house
 
 Home Assistant lets a conversation agent reach the house two ways. It can be shown entities directly, through Assist's entity exposure, and act on them with Home Assistant's built-in intents. Or it can be given tools, scripts exposed over MCP or as agent tools, and reach the house only through them.

@@ -150,6 +150,12 @@ lock.side_gate
 
 Ask your AI something it can only answer through the tools: "What do you know about my HVAC?" or "Turn off the kitchen lights." If it cannot find something, the fix is almost always a missing label, not a missing exposure.
 
+This is what a working tools-only setup looks like:
+
+<!-- screenshot: setup_zero_entities_check.png -->
+> **Screenshot to come.** The Expose list with only the ZenOS tools exposed, and Friday answering a question she can only answer through them. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 `zen_dojotools_manifest mode=mcp_sync` compares a list of the tools your agent reports it can see against the DojoTools installed, and lists any that are missing. It cannot yet detect exposed AdminTools on its own, so check the Expose list for those by eye.
 
 ### If you keep some entities exposed

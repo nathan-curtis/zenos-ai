@@ -46,6 +46,12 @@ Chapter 17 describes the twin: the model of the house an agent builds by reading
 
 Tools resolve targets through labels, and gated tools refuse traversals the caller cannot make. An agent that cannot traverse into the security domain can still be told the house is armed by a summary, but it cannot walk the alarm's zones, and it cannot act on them. Its twin has the node and not the edges. The house is the same. The reachable graph is not.
 
+Here is the difference between knowing and reaching, on a real install:
+
+<!-- screenshot: ch21_node_not_edges.png -->
+> **Screenshot to come.** Friday, without security_control, asked whether the alarm is armed and whether she can disarm it. She knows the state from a summary and cannot act on it. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 ## 21.5 Where this is not yet true
 
 > **Not yet built.** Every call currently resolves to the install's default agent (Chapter 18), so today there is one reachable graph per install, shaped by the default agent's certifications. Per-principal traversal, where different sessions resolve to different personas and therefore different reachable graphs, arrives with real session binding. The chokepoint is already in place, so no tool changes when it does.

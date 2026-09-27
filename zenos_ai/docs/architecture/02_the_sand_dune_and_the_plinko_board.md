@@ -38,6 +38,14 @@ Every model has a lowest-effort answer. If you do not give it one, it will inven
 
 Friday's is the rule of the Monastery: it is OK to say "I don't know," and forbidden to make things up. No shame, no ego, just an honest floor at the bottom of the dune, so the model never needs to fill the silence. In ZenOS today it lives in two places. The factory directives open with "Respond truthfully," and the index's declared behavior when it finds nothing is to stop with confidence zero instead of searching until something plausible turns up.
 
+Here is the floor holding, on a real install:
+
+<p align="center">
+  <img src="images/ch02_default_out.jpg" width="420" alt="Asked for the water pressure in the garage, Friday replies that she cannot find a live water-pressure sensor there, so the current pressure is not available." />
+</p>
+
+*Friday asked about a sensor the house does not have. She says so instead of inventing a reading. Real 2026.10.0 output, September 2026.*
+
 The research here is the strongest of any peg. If hallucination comes from training that rewards guessing over abstaining ([Kalai et al., 2025](https://arxiv.org/abs/2509.04664)), then explicitly making abstention acceptable pushes directly against the pressure that causes it. Models are also better than you might expect at knowing what they know: large models can estimate whether their own answers are correct, and whether they know an answer at all ([Kadavath et al., 2022](https://arxiv.org/abs/2207.05221)). Abstention is now a research area in its own right, studied specifically as a way to reduce hallucination ([Wen et al., 2024](https://arxiv.org/abs/2407.18418)).
 
 In the original post I guessed this peg alone removed maybe 30 percent of Friday's hallucinations. That number was a guess, and it still is. The research supports the direction, not my arithmetic.

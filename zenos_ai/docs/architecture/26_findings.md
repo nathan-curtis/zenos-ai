@@ -42,6 +42,12 @@ And there is a larger claim this book deliberately does not make yet, about what
 
 Everything in this book is plumbing: cabinets, labels, summaries, contracts, certificates. None of it is what anyone notices. What they notice is that when they ask Friday about the house, she already knows, she knows why, and she knows what she is and is not allowed to do about it.
 
+This is what that looks like on an ordinary morning:
+
+<!-- screenshot: ch26_good_morning.png -->
+> **Screenshot to come.** Friday greeted with "Good morning." She opens already inside the moment, with what is actually going on in the house. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 That is the whole point. She is not querying the house.
 
 She is wearing it like a hat.

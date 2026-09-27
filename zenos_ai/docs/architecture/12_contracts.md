@@ -44,6 +44,12 @@ The message covers modes, fields, examples, and gotchas. Tools whose native sele
 
 Help exists so a tool's top-level description can stay short. The description is what a model reads when choosing a tool, and it is resent on every turn, so it says what the tool is for and points at `mode=help`. The detail lives in help, fetched only when the agent needs it. This is a large share of how tool descriptions came down to a quarter to a third of their previous size in 2026.10.0.
 
+Here is an agent reading a tool's own description instead of a manual:
+
+<!-- screenshot: ch12_help.png -->
+> **Screenshot to come.** Friday asked how to use the locks tool. She calls mode=help and answers from what the tool says about itself. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 `zen_dojotools_manifest mode=audit_help` checks every tool against this contract. A tool is compliant only if `mode=help` returns `{status: help, message}` and `mode=tool_manifest` returns a complete manifest. The report says which half failed. Internal-only tiers (`zen_sutra_*`, `zen_stack_*`, `zen_codex_*`) are reported as exempt, because they are never agent-callable and each is fronted by a compliant host tool. `zen_dojotools_help mode=help tool=<name>` proxies to any tool's help, and returns `status: unsupported` rather than passing a tool's live data off as documentation.
 
 ## 12.3 The envelope

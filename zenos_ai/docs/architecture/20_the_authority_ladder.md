@@ -4,6 +4,12 @@ Chapter 19 describes what a certification is. This chapter describes how authori
 
 The clearest way I have found to explain the ladder is one ordinary sentence: put the living room back on Auto. If the room is paused, that sentence asks to take back authority a human deliberately removed, and neither the tool nor the model decides whether Friday is trustworthy enough to do it. The tool asks Identity. Putting a room into pause needs no permission at all, because it hands authority back to a human. That asymmetry runs through the whole ladder: actions that increase safety are open, and actions that reclaim authority are gated.
 
+Here is that sentence on a real install, and the push it produces:
+
+<!-- screenshot: ch20_unpause_live_ack.png -->
+> **Screenshot to come.** Friday asked to put a paused room back on Auto, and the live acknowledgement it sends to a household admin's phone. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 ## 20.1 The rungs
 
 Each rung is necessary, and none substitutes for another.
@@ -76,6 +82,12 @@ Tools with a per-call acknowledgement tier today:
 | `zen_admintools_certadmin` | Every grant, revoke, and bundle change |
 
 A scope `allow` entry covers the ask for the named target only (Chapter 19). A `deny` entry refuses the target without asking.
+
+Here is a deny, which never reaches a human at all:
+
+<!-- screenshot: ch20_scope_deny.png -->
+> **Screenshot to come.** Friday asked to act on a target her scope denies. She is refused outright, with no acknowledgement offered. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
 
 ## 20.6 The administrative plane
 

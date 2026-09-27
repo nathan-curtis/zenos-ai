@@ -85,6 +85,12 @@ No shipped tool currently declares a bundle tag. Bundles exist today only as cus
 
 A tool that refuses an action for lack of certification builds its answer with the shared `cert_denial()` macro, so every denial in the system has the same shape: `status`, `error` (for example `cert_insufficient` or `identity_policy_blocked`), a human-readable `message`, `can_request`, and `request_via`.
 
+Here is a denial as Friday relays it:
+
+<!-- screenshot: ch19_cert_denial.png -->
+> **Screenshot to come.** Friday asked to unlock an exterior lock without holding lock_control. She can call the tool, and it refuses her, with the reason and how to request the certificate. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 `can_request` is computed centrally from the identity policy alone: true unless the caller's identity was itself blocked. No tool decides for itself whether a caller is eligible to ask. A tool requires the certification. Whether the caller may request it is the certification system's question, answered in one place.
 
 A certification is one control. It is not the whole of authority, and the next chapter is how the controls stack.
