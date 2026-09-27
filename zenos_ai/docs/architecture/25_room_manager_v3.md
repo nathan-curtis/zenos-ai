@@ -191,5 +191,5 @@ Entities labeled `zen_mm_shadow` (whole-house media groups and the like) are exe
 <!-- nav -->
 ---
 
-[← Developer Standards](24_developer_standards.md) · [Contents](00_toc.md) · [Appendices →](26_appendices.md)
+[← Developer Standards](24_developer_standards.md) · [Contents](00_toc.md) · [Findings →](26_findings.md)
 <!-- /nav -->

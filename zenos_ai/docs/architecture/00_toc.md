@@ -45,9 +45,13 @@ Start with the [Preface](00_preface.md). It states the thesis the rest of the bo
 24. [Developer Standards](24_developer_standards.md)
 25. [Room Manager v3 Reference](25_room_manager_v3.md)
 
+## Closing
+
+26. [Findings](26_findings.md)
+
 ## Appendices
 
-26. [Appendices](26_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, and the Friday's Party index.
+27. [Appendices](27_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, and the Friday's Party index.
 
 Volume 1 is the tree at commit `57a935f`.
 

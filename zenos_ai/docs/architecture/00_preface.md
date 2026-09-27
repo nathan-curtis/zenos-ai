@@ -36,6 +36,7 @@ The book follows that thesis in order:
 | IV | The Twin | What does the agent build when it reads the graph? |
 | V | Identity and Authority | Which parts of the graph may a given agent traverse? |
 | VI | Operation | How does the whole thing run, fail, and get extended? |
+| | Findings | What did we learn, and what should you do with it? |
 
 ## How to read this book
 

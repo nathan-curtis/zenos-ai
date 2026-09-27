@@ -1,4 +1,4 @@
-# 26. Appendices
+# 27. Appendices
 
 ## A. Glossary
 
@@ -227,5 +227,5 @@ Related sources:
 <!-- nav -->
 ---
 
-[← Room Manager v3 Reference](25_room_manager_v3.md) · [Contents](00_toc.md)
+[← Findings](26_findings.md) · [Contents](00_toc.md)
 <!-- /nav -->

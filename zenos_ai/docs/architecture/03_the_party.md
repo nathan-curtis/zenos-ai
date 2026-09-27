@@ -122,7 +122,7 @@ That is the thread, a year and a half of it, in one idea. We do not give the mod
 
 ---
 
-*The posts behind each section are indexed in [Appendix G](26_appendices.md#g-fridays-party-index). The thread itself is on the Home Assistant community forum: [Friday's Party](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862).*
+*The posts behind each section are indexed in [Appendix G](27_appendices.md#g-fridays-party-index). The thread itself is on the Home Assistant community forum: [Friday's Party](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862).*
 
 <!-- nav -->
 ---
