@@ -209,17 +209,15 @@ Plugins under `packages/zenos_ai/plugins/` are optional — install only what yo
 
 # What to Expose to Your Conversation Agent
 
-Not everything in your HA install should be visible to Friday. ZenOS-AI uses a three-tier model:
+As of 2026.10.0: **expose the tools, expose zero entities.** Friday reaches your lights, locks, sensors, and helpers through the tools, by label, so none of them need to be in her view. It is faster and cheaper on every turn.
 
-| Tier | Rule | How |
+| Group | Rule | How |
 |---|---|---|
-| **Actionable** | Friday needs to control it or read it immediately | Expose directly to the conversation agent |
-| **Contextable** | Friday should know about it | Tag with labels — HyperIndex finds it automatically |
+| **Tools** | The ZenOS scripts Friday calls | Expose `script.zen_dojotools_*` to the conversation agent |
+| **Contextable** | Anything Friday should understand or act on | Tag with labels; the tools and HyperIndex find it |
 | **Invisible** | Friday never needs it | Neither exposed nor labeled |
 
-**Always expose:** All `script.zen_dojotools_*` tools. These are Friday's hands. Keep everything else minimal.
-
-**Never expose:** AdminTools scripts, cabinet sensors, health sensors, raw telemetry, or anything containing credentials. (`zen_dojotools_scribe` is the MCP-exposed KFC registration tool — it lives in the DojoTools namespace, not AdminTools.)
+**Never expose:** AdminTools, Sutras, Stacks, Codices, Roots, cabinet sensors, health sensors, raw telemetry, or anything containing credentials. Turn off Home Assistant's "expose new entities by default" first. The full guide is [What to Expose](zenos_ai/docs/getting_started/entity_exposure.md).
 
 **Index everything else:** If it feeds a KFC component's Kata, it belongs behind a label — not in the tool list. One label on 50 sensors produces a rich, token-efficient context block. 50 individual direct reads does not.
 

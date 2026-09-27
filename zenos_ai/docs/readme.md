@@ -117,7 +117,7 @@ New to ZenOS-AI? Start here.
 
 * [`install.md`](getting_started/install.md) — File copy, configuration.yaml setup, conversation agent prompt, set conversation agent before restart, restart, health verification
 * [`first_run.md`](getting_started/first_run.md) — First boot walkthrough, OOBE conversation, persona selector, editing profiles, troubleshooting
-* [`entity_exposure.md`](getting_started/entity_exposure.md) — What to expose to your conversation agent: actionable vs contextable vs invisible, the three-tier model
+* [`entity_exposure.md`](getting_started/entity_exposure.md): what to expose to your conversation agent. As of 2026.10.0, the tools and zero entities; label everything else
 * [`autovac_first_setup.md`](getting_started/autovac_first_setup.md) — Full AutoVac commissioning: rooms, labels, schedules, Postman policy, Grocy inventory, consumables, wear checks, AlertManager
 * [`autovac_quick_start.md`](getting_started/autovac_quick_start.md) — New user 5-step overview: schedule setup, model preset selection, 3-button briefing walkthrough, first run
 * [`cabinet_placement.md`](getting_started/cabinet_placement.md) — Where things go and why: Dojo vs Kata, drawer vs KFC, the quick-reference placement table. Read after entity_exposure.

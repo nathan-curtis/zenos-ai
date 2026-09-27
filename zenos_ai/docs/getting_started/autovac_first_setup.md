@@ -1,6 +1,6 @@
 # AutoVac First Setup
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
 *The big integrated example: rooms, labels, schedules, inventory, alerts, and human acknowledgement*
 
@@ -96,22 +96,21 @@ Recommended but optional:
 
 ## Step 1: Confirm The Agent Can Operate
 
-In your conversation agent exposure list, include:
+In your conversation agent exposure list, expose the tools and nothing else:
 
 | Expose | Why |
 |--------|-----|
 | `script.zen_dojotools_*` | The governed tool surface your AI uses to configure labels, rooms, alerts, Postman, Grocy, and AutoVac |
-| `input_text.zenos_conversation_agent` | Conversation self-reference |
-| `input_select.zen_home_mode` | Sleep/work/home mode context for Postman gates |
 
 Do not expose:
 
 | Do not expose | Why |
 |---------------|-----|
 | `script.zen_admintools_*` | Operator repair/reset tools |
-| Cabinet sensors | Use resolver sensors and FileCabinet tools instead |
+| The vacuum, its sensors, and cabinet sensors | AutoVac reaches the vacuum by its `autovac` label; resolver sensors and FileCabinet cover the rest |
 
-`script.zen_dojotools_grocy_advanced` is the internal Grocy REST dispatcher. It may be present in the DojoTools surface, but normal inventory work should go through `zen_dojotools_inventory` unless the inventory tool explicitly tells you to use the advanced path.
+The helpers do not need exposing either: Postman's quiet-hour and home-mode gates read `input_select.zen_home_mode` directly. See [What to Expose](entity_exposure.md).
+
 
 Recommended dashboard controls:
 

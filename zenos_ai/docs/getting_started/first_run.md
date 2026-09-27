@@ -1,6 +1,6 @@
 # ZenOS-AI: First Run Guide
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
 *What this covers: what happens automatically the first time Home Assistant starts with ZenOS-AI installed, and the one conversation (OOBE) where your AI learns your home. By the end, your AI will know your rooms, your household, and be ready to actually do things.*
 
@@ -13,7 +13,7 @@ You'll need:
 - Home Assistant running with the ZenOS-AI packages installed (`packages/zenos_ai/` and `custom_templates/zenos_ai/`)
 - A conversation agent configured in HA and pointed at a compatible AI model (tool-calling support required; models smaller than ~8B parameters or with short context windows are not recommended)
 - The conversation agent prompt template loaded from `custom_templates/zenos_ai/conversation_agent_prompt_template.yaml`
-- The normal DojoTools scripts exposed to Assist: `script.zen_dojotools_*`
+- The DojoTools scripts exposed to Assist (`script.zen_dojotools_*`), and no other entities. As of 2026.10.0 the recommendation is tools only; see [What to Expose](entity_exposure.md).
 
 If you haven't done those steps yet, see the **[Install Guide](install.md)** first.
 

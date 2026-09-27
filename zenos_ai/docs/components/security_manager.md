@@ -41,7 +41,7 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 | `set_alert_policy` | Merge `policy_patch` JSON into the alert policy. Partial update — existing keys not in patch are preserved. Same `security_control` cert gate as `arm`. |
 | `help` | Full action reference — all actions, fields, and cert tiers in one call. Not gated. |
 
-**Self-published cert:** `security_control` is declared in this tool's own `tool_manifest.certs_required` — that's what makes it a valid `cert_grant` target under the live-calculated catalog (`zen_dojotools_manifest mode=cert_audit`; see `zen_dojotools_profile_readme.md`'s certification section). Grant via `zen_dojotools_persona_editor mode=cert_grant cert_component=security_control`.
+**Self-published cert:** `security_control` is declared in this tool's own `tool_manifest.certs_required` — that's what makes it a valid `cert_grant` target under the live-calculated catalog (`zen_dojotools_manifest mode=cert_audit`; see `zen_dojotools_profile_readme.md`'s certification section). Grant via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=security_control`.
 
 **Scoped disarm override:** unlike locks/covers, there's no per-entity target for a single alarm panel to scope against — an admin exempts disarm from the every-call ack via `cert_grant cert_component=security_control cert_scope=["disarm"]`, a literal token rather than an entity_id. Resolution goes through the same shared `cert_scope_check` macro as every other gated tool (2026-08-16 centralization) — see the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
 

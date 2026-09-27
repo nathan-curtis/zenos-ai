@@ -393,7 +393,7 @@ Autovac registers itself as a Lens Bus provider of `cleaning_evidence`, keyed on
 |------------|---------|
 | `zen_dojotools_filecabinet` | Cabinet reads and writes (autovac drawer in household cabinet) |
 | `zen_dojotools_inventory` | Grocy operations — stock, chores, shopping list |
-| `zen_dojotools_grocy_advanced` | Direct REST calls for stock queries during ERP loop |
+| `zen_sutra_grocy` | Direct REST calls for stock queries during ERP loop (internal, called by the inventory tool) |
 | `zen_dojotools_postman` | Briefing, wear alerts, provision notifications |
 | `zen_dojotools_camera` | Post-dock map analysis |
 | `Zen Household Cabinet` | `autovac` drawer — rooms + system config + grocy_catalog |

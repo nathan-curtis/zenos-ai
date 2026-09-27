@@ -3,7 +3,7 @@ ZENOS-AI SECURITY & CERTIFICATION SYSTEM
 OPERATOR REFERENCE MANUAL
 ```
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
 **Applies to:** `zen_dojotools_identity`, `zen_dojotools_persona_editor`, and every domain tool that gates actuation behind a certification (`zen_dojotools_locks`, `zen_dojotools_covers`, `zen_dojotools_security_manager`, `zen_dojotools_infra`, `zen_dojotools_room_manager`, `zen_dojotools_lights`, `zen_dojotools_display`).
 
@@ -47,7 +47,7 @@ There is no file listing which certifications exist. The catalog is calculated l
 
 This means a tool declaring `certs_required` in its own self-description is what makes a certification name valid — not a separately maintained list that can drift out of sync with what tools actually enforce.
 
-**A tool's declaration is a claim, not a grant of power.** Nothing stops a tool from declaring a certification it doesn't actually check, or checking one it never declared (`mode=cert_audit`'s `conflicts` field flags the one case this can't silently hide — the same certification name declared by two tools with different level requirements, which is an authoring error). The declaration only affects what `cert_grant` will accept as a valid target. It has no bearing on what actually happens when a tool executes — that logic lives in the tool itself, and is what this manual's Section 7 describes.
+**A tool's declaration is a claim, not a grant of power.** Nothing stops a tool from declaring a certification it doesn't actually check, or checking one it never declared (`mode=cert_audit`'s `conflicts` field flags the one case this can't silently hide — the same certification name declared by two tools with different level requirements, which is an authoring error). The declaration only affects what `cert_req_grant` will accept as a valid target. It has no bearing on what actually happens when a tool executes — that logic lives in the tool itself, and is what this manual's Section 7 describes.
 
 Query the current catalog directly with:
 
@@ -68,25 +68,25 @@ flowchart TD
 
 A narrower grant held at the same or a lower level than the broader one it sits under restricts, it never widens — the explicit entry wins for its own node, the parent still covers everything else beneath it.
 
-**Certification bundles.** `cert_grant` accepts `cert_bundle=` as an alternative to `cert_component=`, granting every certification in the named bundle with one combined live ack instead of one per member. A bundle's membership comes from either a code-tagged declaration (a certification's own catalog entry can carry `bundle: ['name']`) or a runtime-editable set stored in the household cabinet, visible in `zen_dojotools_manifest mode=cert_audit`'s `bundles` view. Editing an *existing* bundle's membership is not exposed through any agent-facing tool — only `zen_admintools_certadmin` (never agent-reachable, `mcp_exposed: false`) can change one via `cert_bundle_set`, requiring its own fresh live ack every time, since widening a bundle silently widens every future grant of it.
+**Certification bundles.** `cert_req_grant` accepts `cert_bundle=` as an alternative to `cert_component=`, granting every certification in the named bundle with one combined live ack instead of one per member. A bundle's membership comes from either a code-tagged declaration (a certification's own catalog entry can carry `bundle: ['name']`) or a runtime-editable set stored in the household cabinet, visible in `zen_dojotools_manifest mode=cert_audit`'s `bundles` view. Editing an *existing* bundle's membership is not exposed through any agent-facing tool — only `zen_admintools_certadmin` (never agent-reachable, `mcp_exposed: false`) can change one via `cert_bundle_set`, requiring its own fresh live ack every time, since widening a bundle silently widens every future grant of it.
 
-`cert_grant` does expose one narrow path to *originate* a brand-new bundle: passing `cert_bundle` (a name that doesn't exist yet) with `cert_bundle_members` (a JSON array of cert names) registers that bundle. This is **define-only by default** — the bundle is created granted to nobody. Pass `also_grant=true` in the same call to also grant it to the target as part of the same live ack. `cert_bundle_members` has no effect if `cert_bundle` already names an existing bundle; changing an existing bundle's membership still requires an operator using `cert_bundle_set` directly.
+`cert_req_grant` does expose one narrow path to *originate* a brand-new bundle: passing `cert_bundle` (a name that doesn't exist yet) with `cert_bundle_members` (a JSON array of cert names) registers that bundle. This is **define-only by default** — the bundle is created granted to nobody. Pass `also_grant=true` in the same call to also grant it to the target as part of the same live ack. `cert_bundle_members` has no effect if `cert_bundle` already names an existing bundle; changing an existing bundle's membership still requires an operator using `cert_bundle_set` directly.
 
 ---
 
 ## 4. GRANTING A CERTIFICATION — AND THE MOBILE REQUIREMENT
 
-Certifications are granted and revoked through one tool only:
+Certifications are granted and revoked through `zen_admintools_certadmin`, which is never exposed to an agent. An agent asks through `zen_dojotools_persona_editor`, which forwards the request:
 
 ```
-zen_dojotools_persona_editor mode=cert_grant
+zen_dojotools_persona_editor mode=cert_req_grant
     cert_component=<name>
     cert_level=<integer>
     [cert_scope=[...]]
     [cert_constraints=[...]]
 ```
 
-Every call to `cert_grant` or `cert_revoke` passes through two gates, in order, with no bypass at any certification level:
+Every call to `cert_req_grant` or `cert_req_revoke` passes through two gates, in order, with no bypass at any certification level. The one exception is a human at the console, described at the end of this section:
 
 **Gate 1 — catalog membership.** `cert_component` must appear in the live catalog described in Section 3. An unrecognized name is refused immediately, before Gate 2 runs. This gate catches typos. It is not a security boundary — see Section 8.
 
@@ -98,6 +98,8 @@ The dispatch uses `notify_target: postman` internally — this is the only notif
 
 This holds regardless of what is being requested. There is no certification, however permissive, that skips this gate to grant itself. If you intend to grant an agent unrestricted access to every gated action in the household — nothing in this system stops you from declaring and requesting exactly that — you will still receive one real push notification and must tap "yes" on your phone to complete it. After that, the certification exists and future actuations under it behave exactly as scoped. What you choose to certify is entirely your decision; this manual's only claim is that you will be asked, in real time, on a real device, before it takes effect.
 
+**The console path (2026.10.0).** When you run `zen_admintools_certadmin mode=cert_req_grant` yourself, as a logged-in Home Assistant user (from Developer Tools → Actions, or a dashboard button), your presence at the console is the approval. The grant proceeds without a push, and the reason `console_admin_bypass` is recorded with your user ID. An agent can never take this path: calls an agent or an automation makes carry no logged-in user, so they always fall through to the live acknowledgement above. The console path covers single-certification grants only. Revokes and bundle changes still require the live acknowledgement. It exists so an install without a working notification device can still be administered by the person sitting at it, and it means you can fully certify an agent without a phone, at the cost of a lot of typing.
+
 **Configure your mobile notification path before you need this.** If it is not working, you will not be able to grant your first certification to find that out.
 
 ---
@@ -105,7 +107,7 @@ This holds regardless of what is being requested. There is no certification, how
 ## 5. REVOKING A CERTIFICATION
 
 ```
-zen_dojotools_persona_editor mode=cert_revoke cert_component=<name>
+zen_dojotools_persona_editor mode=cert_req_revoke cert_component=<name>
 ```
 
 Identical gating to Section 4 — catalog membership, then a fresh live ack. Revocation is not exempt from the ack requirement; the household must confirm a revocation in real time the same as a grant.
@@ -119,7 +121,7 @@ By default, a certification that gates on "cert plus live ack every call" asks e
 `cert_scope` exists to relieve exactly that friction, narrowly:
 
 ```
-zen_dojotools_persona_editor mode=cert_grant
+zen_dojotools_persona_editor mode=cert_req_grant
     cert_component=lock_control
     cert_scope=["lock.front_door"]
 ```
@@ -128,10 +130,10 @@ A target covered by a granted **allow** scope skips the per-call live ack for th
 
 **Scope entries have two forms.** A bare string (`"lock.front_door"`) is shorthand for an allow entry. A full form, `{"entity": "lock.front_door", "acl": "allow"}` or `{"entity": "lock.front_door", "acl": "deny"}`, is explicit. **A `deny` entry is a hard block**, evaluated ahead of the certification check itself — a target explicitly denied is refused regardless of what level the certification is held at, with no live ack offered at all. This is not the inverse of an unscoped default; an unscoped target still asks normally, a denied target is refused outright.
 
-**Granting again merges, it does not replace.** A second `cert_grant` for a certification already held adds to the existing scope rather than overwriting it — each entry is upserted by entity, so granting a new exemption never silently drops previously granted ones. To remove a single entry without touching the rest of the scope or re-granting the whole certification, submit that entity with `"acl": "remove"`:
+**Granting again merges, it does not replace.** A second `cert_req_grant` for a certification already held adds to the existing scope rather than overwriting it — each entry is upserted by entity, so granting a new exemption never silently drops previously granted ones. To remove a single entry without touching the rest of the scope or re-granting the whole certification, submit that entity with `"acl": "remove"`:
 
 ```
-zen_dojotools_persona_editor mode=cert_grant
+zen_dojotools_persona_editor mode=cert_req_grant
     cert_component=lock_control
     cert_scope=[{"entity": "lock.front_door", "acl": "remove"}]
 ```
@@ -253,10 +255,10 @@ This system does not evaluate whether a given grant is wise. It enforces exactly
 | `error: identity_policy_blocked` | `resolve_caller_identity` did not return an allowed identity — a prerequisite failure upstream of certification entirely. Not a cert problem; check the identity/sim_mode policy gate. |
 | `error: cert_insufficient` | The identity resolved, but the held certification level is below what the action requires (or the certification isn't held at all). Grant it per Section 4. |
 | A gated action refuses a specific target with no live ack ever offered | The target is covered by a `deny` scope entry (Section 6) — a hard block, evaluated ahead of the certification check, not something a live ack can override. Remove the `deny` entry (submit it again with `"acl": "remove"`) if it was unintended. |
-| `reason: dispatch_failed` on a `cert_grant`/`cert_revoke`/gated actuation | The live-ack request never reached a real device. Check the household's Postman/mobile notification configuration — this is the Section 4 prerequisite not being met. |
+| `reason: dispatch_failed` on a `cert_req_grant`/`cert_req_revoke`/gated actuation | The live-ack request never reached a real device. Check the household's Postman/mobile notification configuration — this is the Section 4 prerequisite not being met. |
 | `reason: declined` | A human received the request and answered no. Working as intended. |
 | `reason: timeout` | The request dispatched, but no response arrived within the wait window. Check that the device that received the push is actually being watched. |
-| `cert_grant refused: '<name>' is not declared by any tool's tool_manifest` | The `cert_component` name doesn't match anything in the live catalog (Section 3). Check spelling, or confirm the tool you expect to gate on it actually declares it — run `mode=cert_audit` to see the real current catalog. |
+| `cert_req_grant refused: '<name>' is not declared by any tool's tool_manifest` | The `cert_component` name doesn't match anything in the live catalog (Section 3). Check spelling, or confirm the tool you expect to gate on it actually declares it — run `mode=cert_audit` to see the real current catalog. |
 
 ---
 

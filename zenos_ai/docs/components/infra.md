@@ -131,7 +131,7 @@ Devices with no diagnostic sensors enabled are invisible to `zwave_health_correl
 
 ### Cert: `infra_zwave_control`
 
-Gates `zwave_diag_enable` only (x-class, cert only — no live-ack tier). Grant via `persona_editor mode=cert_grant cert_component=infra_zwave_control` (or `zen_dojotools_identity mode=cert_list` to see current status).
+Gates `zwave_diag_enable` only (x-class, cert only — no live-ack tier). Grant via `persona_editor mode=cert_req_grant cert_component=infra_zwave_control` (or `zen_dojotools_identity mode=cert_list` to see current status).
 
 ---
 

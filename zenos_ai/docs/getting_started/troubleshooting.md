@@ -77,7 +77,7 @@ SystemTools also wraps reload and restart safely:
 | `ha_reload_templates` | `custom_templates/` Jinja changes | Config-check gated; takes effect on next render |
 | `ha_restart` | Core HA config or integration bootstrap changes | Requires `confirm_action: true`; config-check gated |
 
-Expose `script.zen_dojotools_systemtools` and `script.zen_dojotools_ha_log_viewer` to Assist. Do **not** expose `script.zen_dojotools_ha_api`; it is an internal primitive.
+Expose `script.zen_dojotools_systemtools` and `script.zen_dojotools_ha_log_viewer` to Assist. Do **not** expose `script.zen_sutra_ha_api`; it is the internal primitive they call.
 
 ---
 

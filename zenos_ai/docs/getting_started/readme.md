@@ -80,13 +80,13 @@ After first boot. Covers:
 
 After the first alert test, use this to clean up what the AI can see and touch. Covers:
 
-* The three-tier model: Actionable vs Contextable vs Invisible
-* What always gets exposed (DojoTools scripts)
-* What never gets exposed (AdminTools, cabinet sensors, credentials)
-* How to use labels instead of direct exposure for high-cardinality data
+* The 2026.10.0 recommendation: expose the tools, expose zero entities
+* The three groups: Tools vs Contextable vs Invisible
+* What never gets exposed (AdminTools, Sutras, Stacks, Codices, Roots, cabinet sensors, credentials)
+* How labels let the tools reach your lights, locks, and sensors without exposing them
 * How labels feed Room Manager, Camera, AutoVac, AlertManager, and summarizers
 
-**Read this before broadening your conversation agent's entity list.**
+**Read this before exposing anything beyond the tools.**
 
 ---
 

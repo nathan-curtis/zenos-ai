@@ -214,7 +214,7 @@ before resolving a watch/listen intent onto a display-capable screen. Design int
 
 Level 1, no live-ack tier (info boards aren't physical-security risk the way exterior lock
 unlock is). Gates `show`/`update`/`dismiss` only — `discover`/`status`/`help` stay open. Grant
-via `persona_editor mode=cert_grant cert_component=display_control cert_level=1`.
+via `persona_editor mode=cert_req_grant cert_component=display_control cert_level=1`.
 
 ---
 

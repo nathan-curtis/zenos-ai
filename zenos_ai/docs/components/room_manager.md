@@ -598,4 +598,4 @@ Room Manager joins the gated tools. All ~35 modes were surveyed; read stays full
 
 `room_control_override` (the pre-existing unpause gate) is additive, not replaced by these two. `scene_stage` (a thin delegate to ZenLux) gates there instead — see `components/zenlux.md`. `room_occupant_prefs` is pure read despite the name and was deliberately excluded from both new certs.
 
-Grant either via `zen_dojotools_persona_editor mode=cert_grant cert_component=room_topology_edit` (or `room_behavior_control`). See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model.
+Grant either via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=room_topology_edit` (or `room_behavior_control`). See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model.

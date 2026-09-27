@@ -54,7 +54,7 @@ flowchart LR
 
   subgraph GrocyLayer["Grocy Inventory Layer"]
     Inventory["zen_dojotools_inventory"]
-    Advanced["zen_dojotools_grocy_advanced"]
+    Advanced["zen_sutra_grocy"]
     Grocy["Grocy API"]
   end
 

@@ -1,28 +1,26 @@
 # What to Expose to Your Conversation Agent
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
-*How to decide which entities your AI can see, which it finds automatically through labels, and which stay invisible.*
+*Expose the tools. Expose zero entities. Label everything the tools need to understand.*
 
 ---
 
-Your Home Assistant install probably has hundreds of entities — lights, sensors, switches, helpers. Your AI doesn't need direct access to all of them, and giving it access to all of them would actually make it worse at its job (a longer tool list is a slower, less reliable one). This doc is about drawing that line deliberately instead of by accident.
+This changed in 2026.10.0. Earlier releases recommended exposing the DojoTools plus a short list of entities your AI controls directly (lights, locks, thermostats) and a couple of helpers. The recommendation now is simpler and faster: **expose the ZenOS tools and nothing else.** Every entity stays unexposed. The tools reach the house on the agent's behalf, through labels.
 
-## The Three-Tier Model
+Why: everything exposed to your conversation agent is sent to the model on every turn. Exposed entities cost context and slow the time to the first word of every answer, and a model handed a long list of raw entities gets worse at finding the right one, not better. With zero entities exposed and tool descriptions trimmed in the same release, the reference install got noticeably faster immediately. [The Book of Friday, Chapter 10](../architecture/10_exposure_tools_not_entities.md) explains the reasoning, and [Chapter 2](../architecture/02_the_sand_dune_and_the_plinko_board.md) the research behind it.
 
-Every entity in your Home Assistant install falls into one of three tiers:
+## The model
 
-| Tier | What It Means | How Your AI Sees It |
+Every entity in your install falls into one of three groups:
+
+| Group | What it means | How your AI reaches it |
 |---|---|---|
-| **Actionable** | your AI needs to control it or read it immediately | Exposed directly to the conversation agent |
-| **Contextable** | your AI benefits from knowing about it | Tagged with labels — the HyperIndex finds it |
-| **Invisible** | your AI never needs it | Neither exposed nor labeled |
+| **Tools** | The ZenOS scripts your AI calls | Exposed to the conversation agent |
+| **Contextable** | Anything your AI should understand or act on | Labeled; found and acted on through the tools |
+| **Invisible** | Anything your AI never needs | Neither exposed nor labeled |
 
-The goal is a **small, curated exposed set** and a **large, richly labeled contextable set**. The HyperIndex is designed to handle thousands of labeled entities efficiently. Your conversation agent's tool list is not.
-
-Labels also connect entities to the Room Manager map and to operational tools. A camera with a room label and `security_camera` is not just searchable; it can participate in room security views. A vacuum labeled `autovac` can become an AutoVac actor. A person entity tied to an identity profile can receive Postman questions under that user's quiet/work-hour policy.
-
-Use this rule of thumb:
+The rule of thumb:
 
 ```text
 Expose tools for action.
@@ -30,218 +28,156 @@ Label entities for meaning.
 Keep internals invisible unless a tool needs them.
 ```
 
-This is also the privacy/comfort boundary. Direct exposure is permission to act or read immediately. Labels are permission to understand an entity in context. Invisible means ZenOS-AI should not see or reason about it.
+A light you want your AI to dim is not exposed. It carries its room label and a role label (`zen_lm_main`, for example), and ZenLux finds it and dims it. A lock you want checked is not exposed. The locks tool finds it by label and reads it. The difference from the old model is that "actionable" now means "reachable by a tool", not "exposed to the agent".
 
 ```mermaid
 flowchart TB
   Entity["Home Assistant entity"]
-  Actionable{"Needs direct action or immediate read?"}
-  Contextable{"Provides operational meaning?"}
-  Expose["Expose to Assist"]
-  Label["Tag with HA labels"]
+  IsTool{"Is it a ZenOS agent tool?"}
+  Contextable{"Should the AI understand or act on it?"}
+  Expose["Expose to the conversation agent"]
+  Label["Tag with labels"]
   Invisible["Leave invisible"]
-  Tools["DojoTools and direct-control entities"]
-  Index["HyperIndex, Room Manager, and KFC tools"]
+  Tools["Tools reach labeled entities on the agent's behalf"]
 
-  Entity --> Actionable
-  Actionable -- "Yes" --> Expose --> Tools
-  Actionable -- "No" --> Contextable
-  Contextable -- "Yes" --> Label --> Index
+  Entity --> IsTool
+  IsTool -- "Yes" --> Expose
+  IsTool -- "No" --> Contextable
+  Contextable -- "Yes" --> Label --> Tools
   Contextable -- "No" --> Invisible
+  Expose --> Tools
 ```
 
 ---
 
-## Tier 1: Actionable — Expose to Assist
+## Group 1: Tools, exposed
 
-Expose an entity to the conversation agent when your AI needs to:
+Expose the agent-facing ZenOS tools. These are your AI's hands. Without them OOBE can talk about setup but cannot perform it: it needs them to create rooms, tag entities, write profiles, resolve identity, fire alerts, and talk through Postman.
 
-* **Control it directly** — run a script, toggle a switch, call a service
-* **Read it immediately** — check a value that isn't worth summarizing or indexing
-
-Keep this list as short as possible. Every entity exposed to Assist is a token in your AI's context window and a potential action surface. The vast majority of your home does not belong here.
-
-### Always Expose
-
-**All ZenOS-AI DojoTools scripts** — these are your AI's hands. Every `script.zen_dojotools_*` belongs in the exposed set.
-
-If you skip this, important things simply will not work. OOBE needs DojoTools to create rooms, tag entities, write profile data, resolve identity, call Room Manager, fire alerts, and talk through Postman.
-
-This is the minimum line for a functional first run: expose DojoTools to Assist. Without them, the AI can talk about setup but cannot reliably perform setup.
-
-> `zen_admintools_*` scripts are admin-only and should NOT be exposed to the conversation agent by default. See [AdminTools](../scripts/zen_dojotools_admintools_readme.md). (`zen_dojotools_scribe` is the MCP-exposed KFC registration tool — it is a DojoTools script and is already covered by the "always expose all `zen_dojotools_*`" rule.)
-
-Minimum default exposure:
-
-| Expose | Reason |
+| Expose | Why |
 |---|---|
-| `script.zen_dojotools_*` | Normal governed tool surface |
-| `input_text.zenos_conversation_agent` | Conversation agent self-reference |
-| `input_select.zen_home_mode` | Home mode context and preference application |
+| `script.zen_dojotools_*` | The agent-facing tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Postman, ZenLux, Locks, and the rest |
 
-Friendly dashboard controls:
+Two DojoTools declare themselves internal in their own manifests (`mcp_exposed: false`) and do not need to be exposed: `zen_dojotools_lens_dispatch`, which Library calls on the agent's behalf, and `zen_dojotools_filecabinet_gc`, which runs on its own schedule.
 
-| Add to dashboard | Writes to |
+Never expose:
+
+| Do not expose | Why |
 |---|---|
-| `select.zenos_conversation_agent` | `input_text.zenos_conversation_agent` |
-| `select.zenos_active_persona` | `input_text.zenos_persona_name` |
+| `script.zen_admintools_*` | The repair, reset, and certification plane. Operator-only. An agent that can reach CertAdmin can try to certify itself. |
+| `script.zen_sutra_*`, `script.zen_stack_*`, `script.zen_codex_*`, `script.zen_root_*` | Internal layers. DojoTools and Library call them; the agent never should. |
 
-These selects are not a separate source of truth. They make the canonical helpers usable as dropdowns, which is much less error-prone for a new installer.
+You can leave DojoTools unexposed for domains you do not run. Every exposed tool's description is sent on every turn, so a household with no finance or printing setup has no reason to spend context on those tools.
 
-Default deny:
+## Group 2: Contextable, labeled
 
-| Do not expose by default | Reason |
-|---|---|
-| `script.zen_admintools_*` | Repair/reset/admin functions |
-| Cabinet sensors | Use resolver + FileCabinet tools instead |
-| Secrets/debug/internal helpers | Not needed for normal operation |
+If your AI should understand an entity, or act on it through a tool, label it. Do not expose it.
 
-**Conversation agent helper** — `input_text.zenos_conversation_agent` (your AI needs to know its own entity ID for self-reference)
+The HyperIndex traverses the label graph, the Ninja Summarizer turns labeled domains into Katas, and domain tools resolve their targets by label. One label on fifty entities produces a compact, meaningful context block, far better than fifty raw entities in the agent's view.
 
-Use `select.zenos_conversation_agent` on a dashboard when available; it writes the same helper with a valid `conversation.*` entity.
+### How it works
 
-**Home mode** — `input_select.zen_home_mode` or equivalent (your AI actively sets this based on presence and context)
+1. Create a label in HA (for example `water`, `security`, `energy`).
+2. Tag every relevant entity with it, and with its room or area label.
+3. Reference the label in your KFC drawer (`label: water`).
+4. The summarizer runs the index against that label, finds everything tagged, and builds the Kata. Tools resolve their targets the same way.
 
-### Expose When Needed
+### What belongs here
 
-* **Controllable devices** where your AI acts on user request — lights you ask it to dim, locks you ask it to check, thermostats you ask it to adjust
-* **Sensors with immediate operational meaning** — door/lock state when you're asking "is the front door locked right now?" is a valid direct read. But if it's summarized by a Kata every 15 minutes, skip the direct exposure and let the Kata answer.
-
-### Do Not Expose
-
-* Every sensor in your home
-* Historical or telemetry sensors
-* Media player attributes
-* Energy/power monitors
-* Cabinet sensors (`sensor.zenos_*_cabinet`)
-* Health sensors — these are for your eyes, not your AI's tool list
-* Anything that HyperIndex can find better than a direct read
-
----
-
-## Tier 2: Contextable — Tag with Labels
-
-If your AI should *know about* an entity but not necessarily control it on demand, tag it with labels instead of exposing it.
-
-The HyperIndex traverses the label graph and assembles a structured entity snapshot for the Ninja Summarizer. This means a single label on 50 entities produces a rich, token-efficient context block — far better than 50 individual direct reads.
-
-### How It Works
-
-1. Create a label in HA (e.g., `water`, `security`, `energy`)
-2. Tag all relevant entities with that label
-3. Reference the label in your KFC drawer (`label: water`)
-4. The Ninja Summarizer runs HyperIndex against that label, finds all tagged entities, and builds the Kata
-
-Your AI gets a compressed, timestamped summary of everything tagged — without those entities ever appearing in its tool list.
-
-### What Belongs Here
-
-* All sensors you want summarized — water, energy, temperature, humidity, air quality
-* Media state sensors and media players that should be resolved by Media Manager
-* Security sensors — motion, contact, cameras, locks, and areas they protect
-* Device status sensors — appliances, pool/spa, irrigation
+* Everything your AI controls through a tool: lights (with `zen_lm_*` roles), covers (`zen_cv_*`), media players (`zen_mm_*`), locks, climate, vacuums
+* Everything you want summarized: water, energy, temperature, humidity, air quality
+* Security sensors: motion, contact, cameras, and the areas they protect
+* Device status: appliances, pool or spa, irrigation
 * Anything feeding a KFC component
-* Room-aware actors such as vacuums, covers, lights, and cameras that tools should resolve by label rather than hardcoded entity ID
 
-### The Rule
-
-> If it provides operational meaning, it belongs in a label — not in the exposed tool list.
-
-Some labels feed summaries. Others feed immediate tools. Both are contextable.
-
-**Labels now connect entities to operational context, not just summaries.** When an entity carries a room or area label, Room Manager can surface not just its live state but the full operational picture for that space: inventory held there, chores due there, and pre-built action sequences (`replace_action`, `chore_actions`) for acting on what's found. A wear sensor labeled `autovac_wear` doesn't just feed a Kata — it feeds a live catalog lookup that tells your AI exactly which spare to pull and how to log the replacement. The label is the permission slip; the operational context is what gets built from it.
-
-The best camera example is a fence or driveway camera. Do not expose every camera attribute directly just because it exists. Label the camera with its room/area and role, then let the camera/security tools resolve it when a component needs perception.
-
-Examples:
+Labels do more than feed summaries. When an entity carries a room or area label, Room Manager can surface the whole operational picture for that space: its live state, inventory held there, chores due there, and the actions for acting on what it finds. A wear sensor labeled `autovac_wear` does not just feed a Kata; it feeds a catalog lookup that tells your AI which spare to pull and how to log the replacement. The label is the permission slip.
 
 | Entity kind | Useful labels | Why |
 |---|---|---|
-| Fence or yard camera | Room/area label + `security_camera` | Camera, Security Manager, and Room Manager can agree where the image came from |
-| Robot vacuum | `autovac` + covered room labels/config | AutoVac can elect rooms and report blockers |
-| Mobile/person tracker | Person/identity labels | Postman and Identity can route to the right human |
-| Exterior lock/contact | Room label + `security` | Alerts can include which portal or boundary is involved |
+| Fence or yard camera | Room/area label + `security_camera` | Camera, Security Manager, and Room Manager agree where the image came from |
+| Main light in a room | Room label + `zen_lm_main` | ZenLux resolves "the kitchen lights" without an entity ID |
+| Robot vacuum | `autovac` + covered room labels | AutoVac can elect rooms and report blockers |
+| Person or tracker | Person/identity labels | Postman and Identity can route to the right human |
+| Exterior lock or contact | Room label + `security` (+ `ext_lock` for exterior locks) | Alerts know which boundary is involved; unlocking an exterior lock requires a live acknowledgement |
 | Utility meter | `utility_main`, `utility_billing`, or `zen_plant_*` | Plant Manager can resolve infrastructure state |
 
----
-
-## Tier 3: Invisible — Neither
+## Group 3: Invisible
 
 Some entities should never reach your AI at all:
 
 * Internal automation helpers not intended for AI use
-* Debug/test entities
-* Infrastructure sensors (network, server load) unless you have a specific reason
-* Duplicate or legacy entities you haven't cleaned up yet
-* Anything containing credentials, tokens, or sensitive config
+* Debug and test entities
+* Infrastructure sensors (network, server load) unless a tool needs them
+* Duplicate or legacy entities you have not cleaned up
+* Anything containing credentials, tokens, or sensitive configuration
+* Cabinet sensors and health sensors: the tools read these; your AI does not need them directly
 
-If an entity isn't tagged and isn't exposed, your AI cannot see it. That's the correct outcome for most of your install.
+If an entity is neither labeled nor exposed, your AI cannot see it. That is the correct outcome for most of your install.
 
 ---
 
-## Practical Setup
+## Practical setup
 
-### Step 0 — Check the global voice-exposure default first
+### Step 0: Turn off the global default
 
-Before doing any curation described below, check Home Assistant's own **global** default-expose toggle for Assist (Settings → Voice assistants → Expose, the "expose new entities by default" setting). This is a one-time, HA-level setting — no ZenOS-AI package can enforce or compensate for it in code.
+In Settings → Voice assistants → Expose, turn off "expose new entities by default". This is a Home Assistant setting that no ZenOS package can enforce. If it is left on, every new entity and helper you create becomes visible to your agent, whatever you curate afterward.
 
-On a correctly set-up install, every helper — curated or not — ends up with `should_expose: false` simply because this global toggle is off, not because any per-entity protection kicked in. If the global toggle is left on, newly created helpers (including kill-switch-style `input_boolean`/`input_select`/`input_number`/`input_text` helpers) become voice-reachable by default regardless of any curation you do in Steps 1-3. Confirm this toggle is off before relying on the tiering below to keep anything out of Assist's reach.
+### Step 1: Expose the tools, unexpose everything else
 
-### Step 1 — Build your exposed tool list
+In the Expose list:
 
-In your conversation agent configuration, add:
+* Expose `script.zen_dojotools_*`, apart from the two internal ones above and any domain tools you do not use.
+* Unexpose every other entity, including lights, locks, thermostats, and helpers you exposed under an earlier release.
 
-* All `script.zen_dojotools_*` (except admin-only scripts)
-* `input_text.zenos_conversation_agent`
-* Home mode entity
-* Any entities your AI needs to directly control on user request
+The ZenOS helpers (`input_text.zenos_conversation_agent`, `input_select.zen_home_mode`) no longer need to be exposed. The prompt layer reads them directly, and your AI reads or sets home mode through `zen_dojotools_systemtools mode=home_mode`. Put `select.zenos_conversation_agent` and `select.zenos_active_persona` on a dashboard for yourself; they write the same helpers as dropdowns.
 
-### Step 2 — Tag everything contextable
+### Step 2: Label everything contextable
 
-Create labels for each KFC domain you run. Tag every sensor that feeds those domains. The KFC drawer's `label` field connects the label to the Ninja Summarizer — from there, HyperIndex does the work.
-
-You do not need to maintain entity lists anywhere. Labels are the only list that matters.
-
-For room-aware tools, include the room or area label too. Domain labels say what the thing is; room labels say where it lives.
+Create labels for each KFC domain you run and tag everything that feeds them. Give every entity a tool should act on its room label and its role label. You do not maintain entity lists anywhere. Labels are the only list that matters.
 
 ```text
 camera.back_fence
   labels: security_camera, back_yard, fence_line
 
-vacuum.downstairs_robot
-  labels: autovac
+light.kitchen_ceiling
+  labels: kitchen, zen_lm_main
 
 lock.side_gate
   labels: security, side_yard
 ```
 
-### Step 3 — Leave everything else alone
+### Step 3: Check it
 
-Anything not tagged and not exposed is invisible. That is the correct default.
+Ask your AI something it can only answer through the tools: "What do you know about my HVAC?" or "Turn off the kitchen lights." If it cannot find something, the fix is almost always a missing label, not a missing exposure.
+
+`zen_dojotools_manifest mode=mcp_sync` compares a list of the tools your agent reports it can see against the DojoTools installed, and lists any that are missing. It cannot yet detect exposed AdminTools on its own, so check the Expose list for those by eye.
+
+### If you keep some entities exposed
+
+Zero is the recommendation, not a requirement. If you keep a few entities exposed for a reason of your own, keep the list as short as you can, and know that Home Assistant's built-in intents will act on those entities directly, outside ZenOS's tools and their certification checks.
 
 ---
 
 ## Summary
 
-```
-Actionable  →  Expose to conversation agent
-               (DojoTools scripts + direct-control entities only)
+```text
+Tools       →  Expose to the conversation agent
+               (agent-facing DojoTools only)
 
-Contextable →  Tag with labels
-               (HyperIndex + Ninja Summarizer does the rest)
+Contextable →  Label
+               (the tools, the index, and the summarizers do the rest)
 
 Invisible   →  Do nothing
-               (correct default for most of your install)
+               (the correct default for most of your install)
 ```
-
-The system is designed so that the labeled+indexed path handles the overwhelming majority of your home. The exposed path handles commands. Keep the boundary clean and your AI stays fast, accurate, and predictable.
 
 ---
 
 ## Related
 
-* [Cabinet Placement Guide](cabinet_placement.md) — where to store things once you've decided what to expose
-* [Understanding KF4](../kung_fu/understanding_kf4.md) — how labels connect to KFC components
-* [Zen HyperIndex](../zen_hyperindex/zen_hyperindex_overview.md) — how the index traverses labels
-* [DojoTools AdminTools](../scripts/zen_dojotools_admintools_readme.md) — what not to expose
-* [Install Guide](install.md) — conversation agent configuration
+* [The Book of Friday, Chapter 10: Exposure](../architecture/10_exposure_tools_not_entities.md): why tools, not entities
+* [Cabinet Placement Guide](cabinet_placement.md): where things go once you have decided what to label
+* [Understanding KF4](../kung_fu/understanding_kf4.md): how labels connect to KFC components
+* [Zen HyperIndex](../zen_hyperindex/zen_hyperindex_overview.md): how the index traverses labels
+* [DojoTools AdminTools](../scripts/zen_dojotools_admintools_readme.md): what never to expose
+* [Install Guide](install.md): conversation agent configuration

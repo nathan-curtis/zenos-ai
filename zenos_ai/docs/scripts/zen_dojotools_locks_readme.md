@@ -34,7 +34,7 @@ Bare `discover`/`status` with no filters returns a whole-house lock overview —
 
 ## Identity Gate on `mode=set`
 
-Read modes (`discover`/`status`/`inspect`) stay open. Actuation (`set`) requires the default agent's own `lock_control` certification, checked via `zen_dojotools_identity mode=resolve_caller_identity required_cert=lock_control required_cert_level=1`. **Fail-closed by design, not by bug** — until `lock_control` is granted via `zen_dojotools_persona_editor mode=cert_grant` (itself gated, see that tool's readme), every `mode=set` call is denied with `error: identity_policy_blocked` or `error: cert_insufficient`. `caller_token` is audit-only here, same as everywhere else in the platform — never a trust input.
+Read modes (`discover`/`status`/`inspect`) stay open. Actuation (`set`) requires the default agent's own `lock_control` certification, checked via `zen_dojotools_identity mode=resolve_caller_identity required_cert=lock_control required_cert_level=1`. **Fail-closed by design, not by bug** — until `lock_control` is granted via `zen_dojotools_persona_editor mode=cert_req_grant` (itself gated, see that tool's readme), every `mode=set` call is denied with `error: identity_policy_blocked` or `error: cert_insufficient`. `caller_token` is audit-only here, same as everywhere else in the platform — never a trust input.
 
 This tool self-declares `lock_control` in its own `tool_manifest`'s `certs_required` field — that's what makes it a valid `cert_grant` target at all under the live-calculated catalog (see `zen_dojotools_profile_readme.md`'s certification section; there's no separate hand-maintained cert list to also update).
 

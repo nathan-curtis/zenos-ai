@@ -1,6 +1,6 @@
 # ZenOS-AI: Install Guide
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
 *What this covers: getting the ZenOS-AI files into your Home Assistant install, confirming it started up correctly, and making sure your phone can actually receive the notifications the system will depend on almost immediately. By the end, Flynn (the system's own startup checker — see [Concepts](concepts.md)) will confirm everything loaded, and you'll be ready to talk to your AI for the first time in [First Run](first_run.md).*
 
@@ -129,19 +129,27 @@ You can test the template output in **Developer Tools → Templates** before pas
 
 ---
 
-## Step 4.5 — Expose the Required Tools to Assist
+## Step 4.5 — Expose the Tools, and Nothing Else
 
-Your conversation agent must be allowed to call the ZenOS DojoTools scripts. If these tools are not exposed to Assist, OOBE may start but it will not be able to write rooms, labels, profiles, alerts, or cabinet-backed setup state.
+Your conversation agent must be allowed to call the ZenOS tools. If they are not exposed, OOBE may start but it will not be able to write rooms, labels, profiles, alerts, or cabinet-backed setup state.
 
-Expose at minimum:
+As of 2026.10.0 the recommendation is to expose **only the tools, and zero entities**. The tools reach your lights, locks, sensors, and helpers on the agent's behalf, through labels. See [What to Expose](entity_exposure.md) for the full reasoning.
 
-| Entity pattern | Required? | Why |
-|---|---|---|
-| `script.zen_dojotools_*` | Yes | The normal tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Camera, Postman, AutoVac, etc. |
-| `input_text.zenos_conversation_agent` | Yes | Lets Flynn and the prompt layer know which conversation agent is active. |
-| `input_select.zen_home_mode` | Recommended | Lets the AI read/apply home mode context. |
+First, in Settings → Voice assistants → Expose, turn off "expose new entities by default". No ZenOS package can enforce this, and if it is left on, every new entity becomes visible to your agent ([details](entity_exposure.md#step-0-turn-off-the-global-default)).
 
-Once the package has loaded, add these friendly selector entities to a ZenOS setup dashboard:
+Then:
+
+| Expose | Why |
+|---|---|
+| `script.zen_dojotools_*` | The agent-facing tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Postman, ZenLux, and the rest. Two are internal and can stay unexposed: `zen_dojotools_lens_dispatch` and `zen_dojotools_filecabinet_gc`. |
+
+| Do not expose | Why not |
+|---|---|
+| `script.zen_admintools_*` | The repair, reset, and certification plane. Operator-only. |
+| `script.zen_sutra_*`, `zen_stack_*`, `zen_codex_*`, `zen_root_*` | Internal layers the DojoTools call. Never agent-facing. |
+| Every other entity | Lights, locks, sensors, cabinets, and helpers are reached through the tools. Label them instead. |
+
+The ZenOS helpers no longer need to be exposed: the prompt layer reads `input_text.zenos_conversation_agent` directly, and your AI reads and sets home mode through `zen_dojotools_systemtools`. Add these friendly selectors to a ZenOS setup dashboard for yourself instead:
 
 | Dashboard entity | Why it is friendlier |
 |---|---|
@@ -167,17 +175,7 @@ flowchart LR
   PersonaHelper --> Flynn
 ```
 
-Do **not** expose by default:
-
-| Entity pattern | Why not |
-|---|---|
-| `script.zen_admintools_*` | Admin/recovery surface. Keep this operator-only unless you are deliberately repairing the system. |
-| Cabinet sensors such as `sensor.zenos_*_cabinet` | The AI should use FileCabinet and resolver tools, not direct cabinet entities. |
-| Secrets, debug helpers, broad internal sensors | Not needed for first run and increases risk/noise. |
-
-Rule of thumb: **DojoTools are the default Assist tool surface. AdminTools are not.**
-
-Before relying on any of the above curation, also check Home Assistant's own **global** default-expose toggle for Assist (Settings → Voice assistants → Expose, the "expose new entities by default" setting). This is a one-time HA-level setting outside anything a ZenOS-AI package can enforce or compensate for in code — see [Entity Exposure Step 0](entity_exposure.md#step-0--check-the-global-voice-exposure-default-first) for details.
+Rule of thumb: **expose the tools, label the house.**
 
 ---
 
