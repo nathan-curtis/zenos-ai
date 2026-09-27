@@ -51,9 +51,11 @@ This is the hypergraph again (Chapter 7). A motion sensor carries `motion` and i
 
 Here it is answered, on a real install:
 
-<!-- screenshot: ch16_why_engaged.png -->
-> **Screenshot to come.** Friday asked why a room reads engaged. She answers from the state sensor's last_trigger attributes, naming what caused it. Real 2026.10.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch16_why_engaged.jpg" width="420" alt="Asked why the living room is engaged, Friday answers that the living room TV is currently playing, that the activity started at about 5:44 PM, and that the room's engagement timer is active." />
+</p>
+
+*Friday asked why the living room is engaged. Both halves of the answer come straight off the room's state sensor: what caused the tier and when (`engaged_last_trigger`), and what is keeping it alive (the shared room timer, running in class `engaged`). Real 2026.10.0 output, September 2026.*
 
 **Manual overrides release themselves.** An override wins over live evidence the moment it is set, and releases on its own when the room's underlying live state changes to something other than what it was when the override was set. Nothing needs to be cleared by hand later.
 
