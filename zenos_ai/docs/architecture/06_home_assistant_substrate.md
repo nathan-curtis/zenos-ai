@@ -54,6 +54,8 @@ Several limits of the substrate show up repeatedly in how ZenOS is built. They a
 
 **Recursion is also blocked across a chain.** If A calls B calls A while A is still running, the inner call is refused. Tools that would form such a chain call the underlying primitive directly instead of going back through the wrapper.
 
+The substrate holds the house as a long, flat list of entities. The next chapter is how that list becomes a graph.
+
 <!-- where -->
 ## 6.5 Where to look
 

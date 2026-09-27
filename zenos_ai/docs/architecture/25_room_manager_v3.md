@@ -1,6 +1,6 @@
 # 25. Room Manager v3 Reference
 
-Chapter 16 explains what a room's live state means and why it is built the way it is. This chapter is the operational reference: every tier, label, construct, and mode, and the rules the implementation holds to.
+Chapter 16 explains what a room's live state means and why it is built the way it is. This chapter is the operational reference: every tier, label, construct, and mode, and the rules the implementation holds to. It is also the most complete worked example in the book. Labels resolve the rooms, live state becomes part of the twin, REFLEX turns that state into effects, and certification decides which of those effects an agent may reach.
 
 Room Manager v3 is not the same system as RoomReg (`zen_dojotools_room_manager`'s spatial modes: topology, egress, emergency snapshots, Chapter 9). RoomReg answers what a room is and how it connects to the house. Room Manager v3 answers what a room is doing right now, and what should happen because of it. When someone says "room manager," check which one they mean.
 
@@ -183,6 +183,8 @@ Setup, diagnostics, and wiring go through `zen_dojotools_room_manager`: `label_d
 Entities labeled `zen_mm_shadow` (whole-house media groups and the like) are exempt from the ambiguity and mismatch checks.
 
 **`zen_agent_disabled`.** Home Assistant has no template function for `disabled_by`. `zen_dojotools_ectoplasm`'s `entity_disable` and `entity_enable` tag and untag `zen_agent_disabled`, so "what has the agent disabled" stays answerable from labels, and `role_audit` can recommend disabling a duplicate holder without it vanishing from view.
+
+That is the whole thesis in one component: a graph read through an ontology, maintained as live state, rendered for an agent, and bounded by what that agent may reach. The last chapter steps back and says what all of it adds up to.
 
 <!-- where -->
 ## 25.10 Where to look

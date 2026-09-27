@@ -75,6 +75,8 @@ Most DojoTools, AdminTools, and plugin tools return the envelope. The ones that 
 
 A tool's `tool_manifest` version is its canonical version. It is the number `mode=help`, `audit_help`, and ToolMap report, so it is the number every other mention must match: the header comment, the help text, the description, and the tool's readme. A file that bundles several scripts has a version per script. An automation with no manifest uses its file header.
 
+Labels and contracts describe the graph one node and one tool at a time. The last piece of the ontology is the kinds of component ZenOS is built from, and how they find each other.
+
 <!-- where -->
 ## 12.5 Where to look
 

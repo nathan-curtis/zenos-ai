@@ -74,6 +74,8 @@ Resolving every principal on every prompt would be expensive, so identity caches
 
 When identity resolves a person, it can include a presence block: zone, whether they are home, and which area they are in. Each part is consent-gated in the person's own profile (`tracking.gps_zone`, `tracking.room`). If a person has not consented to room tracking, identity does not report their room, even when the data exists.
 
+Knowing who the caller is only matters if something depends on the answer. The next chapter is what a principal is allowed to do.
+
 <!-- where -->
 ## 18.7 Where to look
 

@@ -72,6 +72,8 @@ Reserved drawers (keys beginning with `_`, and the header) are protected from or
 
 > **Not yet built.** FileCabinet has no certification gate. Because every other part of ZenOS depends on it at boot, gating it needs its own security-class design rather than a bolt-on, and changes to it have to land without breaking a single running install. FileCabinet's single-exit pass, envelope, and certification gate are the scope of 2026.11.0 'This Is Spinal Tap'.
 
+Between them, labels and cabinets say what every thing is and what the system knows about it. Neither says how the rooms of the house relate to each other, which is the last piece of the graph.
+
 <!-- where -->
 ## 8.5 Where to look
 

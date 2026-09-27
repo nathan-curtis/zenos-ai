@@ -107,6 +107,8 @@ AdminTools generally follow the same rule: they are the configuration and recove
 
 Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
 
+Identity policy, certification, scope, acknowledgement, and the administrative plane, with admission still to come, read like separate mechanisms. The next chapter shows they are one.
+
 <!-- where -->
 ## 20.8 Where to look
 

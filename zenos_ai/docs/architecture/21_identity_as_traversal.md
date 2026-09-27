@@ -54,6 +54,8 @@ Tools resolve targets through labels, and gated tools refuse traversals the call
 
 > **Not yet built.** The graph fold that produces an agent's context (Chapter 7) and the traversal rules that decide what it may act on are separate code paths. Computing an agent's claims directly from a fold over the label graph, so the same traversal that builds its world also bounds it, is design direction.
 
+That is the argument of this book, assembled. What remains is how the machine that carries it actually runs, fails, and gets extended, which is Part VI.
+
 <!-- where -->
 ## 21.6 Where to look
 

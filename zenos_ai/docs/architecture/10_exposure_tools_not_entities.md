@@ -56,6 +56,8 @@ AdminTools stay off the agent surface unless a human deliberately exposes one fo
 
 > **Not yet built.** Even with trimmed descriptions, the full tool surface is sent every turn. A tool-search layer that sends a small set of core tools and lets the agent discover the rest on demand would cut this further. That depends on what Home Assistant's own agent integration supports, and it is likely to be the recommended configuration if it becomes available.
 
+Showing the agent no entities only works if it can make sense of what the tools hand back. A graph an agent cannot interpret is still grandma's box. What makes it readable is an ontology, and that is Part III.
+
 <!-- where -->
 ## 10.5 Where to look
 

@@ -87,6 +87,8 @@ A tool that refuses an action for lack of certification builds its answer with t
 
 `can_request` is computed centrally from the identity policy alone: true unless the caller's identity was itself blocked. No tool decides for itself whether a caller is eligible to ask. A tool requires the certification. Whether the caller may request it is the certification system's question, answered in one place.
 
+A certification is one control. It is not the whole of authority, and the next chapter is how the controls stack.
+
 <!-- where -->
 ## 19.8 Where to look
 

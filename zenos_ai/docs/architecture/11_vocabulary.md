@@ -74,6 +74,8 @@ Some labels describe ZenOS itself rather than the house. Cabinets carry type lab
 
 **Reuse before inventing.** A new behavior should use an existing label wherever one already means the right thing. The label vocabulary is shared across every tool, so a new label has a cost for every future reader of the graph.
 
+Labels say what a node is. The next chapter says what a tool is.
+
 <!-- where -->
 ## 11.4 Where to look
 

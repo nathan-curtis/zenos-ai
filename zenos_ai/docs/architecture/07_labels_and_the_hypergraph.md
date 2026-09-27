@@ -91,6 +91,8 @@ Every tool that acts on the house follows the same order to find its targets:
 
 A tool never guesses an entity ID from a naming convention. The one entity every tool is most tempted to guess, a room's state sensor, is found by intersecting `zen_room_state` with the room's label.
 
+Labels describe the house. What ZenOS itself knows and remembers lives somewhere else: the cabinets, the other half of the graph.
+
 <!-- where -->
 ## 7.4 Where to look
 

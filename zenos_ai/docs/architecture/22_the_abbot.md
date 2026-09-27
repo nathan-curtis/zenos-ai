@@ -1,6 +1,6 @@
 # 22. The Abbot
 
-The Monastery decides what a summary says. The Abbot decides when the system thinks at all. It is not one component: it is the name for the scheduling and dispatch function, carried out jointly by two automations.
+Parts II through V described what ZenOS is and what an agent may do inside it. Part VI is about keeping all of that running. The Monastery decides what a summary says. The Abbot decides when the system thinks at all. It is not one component: it is the name for the scheduling and dispatch function, carried out jointly by two automations.
 
 | File | Automation | Job |
 |---|---|---|
@@ -66,6 +66,8 @@ Several small routers ride alongside the Dispatcher, each doing one job:
 Daily, and on Home Assistant start, `zen_dojotools_manifest` also re-runs its bootstrap modes: KFC self-registration and Lens Bus provider registration (Chapter 13).
 
 > **Not yet built.** The Abbot does not yet route work to different inference providers. Tagging each job so it can go to the right model with the right metadata (keeping sensitive content on a local model, sending other work elsewhere) is stated direction, with the Abbot as the single dispatch point for all inference.
+
+When everything works, the Abbot keeps the twin current. The next chapter is what the system does when things do not work.
 
 <!-- where -->
 ## 22.6 Where to look

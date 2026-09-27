@@ -57,6 +57,8 @@ System-wide questions about tools (which tools exist, what they require, what th
 
 `zen_dojotools_manifest mode=toolmap` walks the `dependencies` each tool declares and builds the dependency graph: what depends on Identity, what breaks if FileCabinet is unhealthy, whether a missing dependency is actually missing or just undeclared. It is a declared graph, not runtime tracing. The tools say what they need, and ToolMap checks that it is there.
 
+That is the ontology: labels for what things are, contracts for what tools do, and classes for what components may reach. With a graph and a way to read it, Part IV turns to what the agent builds when it reads: the twin, starting with how it is kept current before anyone asks.
+
 <!-- where -->
 ## 13.5 Where to look
 

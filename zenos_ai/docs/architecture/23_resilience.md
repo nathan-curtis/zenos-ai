@@ -85,6 +85,8 @@ The three top-level sensors answer three different questions, and keeping them s
 5. Make every failure visible in a sensor, an event, or a response.
 6. A human can always reconstruct what happened.
 
+Keeping the system truthful under failure is one discipline. Keeping it coherent as people extend it is the other, and that is the next chapter.
+
 <!-- where -->
 ## 23.8 Where to look
 

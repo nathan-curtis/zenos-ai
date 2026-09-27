@@ -1,6 +1,6 @@
 # 5. Principles
 
-These are the rules ZenOS holds itself to. Each one is enforced somewhere specific in the code, and each section says where. A principle with no enforcement point is a wish, and this chapter does not list wishes.
+Chapters 1 through 4 argued why ZenOS is shaped the way it is. This chapter is what that argument turns into in practice. These are the rules ZenOS holds itself to. Each one is enforced somewhere specific in the code, and each section says where. A principle with no enforcement point is a wish, and this chapter does not list wishes.
 
 None of these started as rules. Each one started as something that broke, usually in public, in the Friday's Party thread (Chapter 3). Each section says what it was.
 
@@ -69,6 +69,8 @@ Every tool describes itself through `mode=tool_manifest`: its version, its depen
 The same rule applies to this book. If something is designed but not built, it is labeled **Not yet built**, and it does not appear in the body text as if it runs.
 
 Tools learned to describe themselves once other people started running ZenOS and their agents picked up tools they had never seen. An agent has to be able to tell what a tool is without a human explaining it.
+
+These rules are about machinery, and the machinery starts somewhere specific. Part II begins with what ZenOS is built on, and what that foundation will and will not do for it.
 
 <!-- where -->
 ## 5.9 Where to look

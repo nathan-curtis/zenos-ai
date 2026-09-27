@@ -96,6 +96,8 @@ Three switches stop the pipeline, checked master first:
 
 The master ships off so a new install does not start continuous background inference before its owner has pointed `input_text.zenos_ai_task_entity` at something appropriate. The Ninja Summarizer runs several times an hour, and SuperSummary at least four times an hour, which is why the recommended target is a local model. Turning a switch off changes nothing else. Turning one back on fires the corresponding force event within seconds.
 
+The Monastery decides when and how each domain is summarized. The next chapter is the shape every one of those summaries takes.
+
 <!-- where -->
 ## 14.6 Where to look
 

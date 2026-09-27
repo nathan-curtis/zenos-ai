@@ -65,6 +65,8 @@ For KFC-summarized components, the summarizer checks for an acknowledgement whos
 
 AlertManager stores the acknowledgement. It does not judge whether a condition has materially changed since, and cannot: it has no way to evaluate a stored rule at runtime. A domain tool that wants that finer judgment compares current values against the stored baseline in its own logic and revokes the acknowledgement itself.
 
+Katas are minutes old, and for most of the house minutes are fine. Some parts of the twin cannot wait that long.
+
 <!-- where -->
 ## 15.6 Where to look
 
