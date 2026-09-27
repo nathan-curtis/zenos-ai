@@ -52,7 +52,29 @@ Here is the difference between knowing and reaching, on a real install:
 > **Screenshot to come.** Friday, without security_control, asked whether the alarm is armed and whether she can disarm it. She knows the state from a summary and cannot act on it. Real 2026.10.0 output; personal details redacted.
 <!-- /screenshot -->
 
-## 21.5 Where this is not yet true
+## 21.5 Everything is a cabinet
+
+Follow the model to its end and the graph an agent walks has only one kind of node. The agent lives in a cabinet. A person's description lives in a cabinet. Households and families are cabinets (Chapter 18). And a cabinet can hold a corpus: a body of knowledge treated as one object, with a description, an owner, and a place in the graph.
+
+Between those objects there are two kinds of connection, and the difference between them is the point.
+
+A **soft link** is a mount: a drawer in one cabinet that points at another (Chapter 8). It connects without conferring anything. It is cheap, it can be made and dropped as context demands, and following one tells an agent where something is, not what it is allowed to do there.
+
+A **hard link** is made through the security layer, and its home is the cabinet's own access control list. Every cabinet header already carries an `acls` block naming its owner and partners (Chapter 18); certifications, scope, and acknowledgement are the hard links that are enforced today. Hard links are the ones that decide what an agent may actually do.
+
+```mermaid
+graph LR
+  A["agent<br/>(cabinet)"] -- "hard: cabinet ACL" --> C["corpus<br/>(cabinet)"]
+  A -. "soft: mount" .-> H["household<br/>(cabinet)"]
+  H -- "hard: membership" --> P["person<br/>(cabinet)"]
+  H -. "soft: mount" .-> C
+```
+
+Seen this way, the four kinds of edge in 21.2 are all hard links of different kinds, and soft links are the fabric that lets context move without letting authority move with it. An agent's identity is the set of hard links it can realize. Everything it can merely see is soft.
+
+> **Not yet built.** Certifying a corpus as an object is the direction, not the code. Today certifications name a capability and live in the agent's own cabinet; nothing yet issues a certification whose subject is another cabinet, and cabinets themselves have no certification gate until FileCabinet's arrives in 2026.11.0, 'This Is Spinal Tap'. Soft links exist today as mounts. Cabinet ACLs exist as structure, with owner and partner entries in every cabinet header, but no tool enforces them yet; the hard links enforced today are certifications, scope, and acknowledgement. Household and family membership is resolved but does not gate anything either (21.6).
+
+## 21.6 Where this is not yet true
 
 > **Not yet built.** Every call currently resolves to the install's default agent (Chapter 18), so today there is one reachable graph per install, shaped by the default agent's certifications. Per-principal traversal, where different sessions resolve to different personas and therefore different reachable graphs, arrives with real session binding. The chokepoint is already in place, so no tool changes when it does.
 
@@ -63,7 +85,7 @@ Here is the difference between knowing and reaching, on a real install:
 That is the argument of this book, assembled. What remains is how the machine that carries it actually runs, fails, and gets extended, which is Part VI.
 
 <!-- where -->
-## 21.6 Where to look
+## 21.7 Where to look
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
