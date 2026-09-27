@@ -80,11 +80,13 @@ By the autumn of 2025 it had become grandma's box o' junk: the raw live state th
 
 And by 2026 it had become a test with two levels, which is the most useful form of it. Label everything related to your heating and cooling, then ask your agent what it knows about your HVAC. Before labels, the answer is vague and often wrong. After labels, it finds everything. That is the first level passing: she can find it. She still does not understand it. A temperature of 74, a setpoint of 72, four hours of runtime, and the system running is a spreadsheet. It becomes understanding when something says what the system serves, what normal looks like, and what to do when it is not normal. That is the second level, and it is the difference between the box and the scrapbook in one example.
 
-Here is the second level passing, asked of Friday on a real install:
+Here is the first level passing on a real install, and notice what is missing:
 
-<!-- screenshot: ch01_grandma_test_hvac.png -->
-> **Screenshot to come.** Friday asked "What do you know about my HVAC?" She finds every labeled part, then reads them against what normal looks like. Real 2026.10.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch01_grandma_test_hvac.jpg" width="420" alt="Asked what she knows about the HVAC, Friday reports the thermostat reading 78 degrees in Auto mode with no active setpoint reported, and that the furnace is natural gas with the gas service entering at the front east corner." />
+</p>
+
+*Friday asked "What do you know about our HVAC?" She finds the parts by label and reports them accurately, including that no setpoint is being reported rather than inventing one. What she does not do is judge any of it against normal. That judgment is the second level, and it comes from a drawer that says what normal looks like for this system. This is the first level passing, and the second waiting on the scrapbook. Real 2026.10.0 output, September 2026.*
 
 ## 1.7 Where this book puts them
 
