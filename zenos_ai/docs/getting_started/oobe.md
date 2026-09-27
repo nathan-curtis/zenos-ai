@@ -1,6 +1,6 @@
 # OOBE — Out-of-Box Experience
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
 *First-boot onboarding protocol for ZenOS-AI*
 

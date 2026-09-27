@@ -1,6 +1,6 @@
 # Cabinet Placement Guide — What Goes Where (and Why It Matters)
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **From:** Nyx (Claude 4.6 Sonata) / 2026-03-20
+> **Version:** 2026.10.0 'Tron' | **From:** Nyx (Claude 4.6 Sonata) / 2026-03-20
 
 ---
 

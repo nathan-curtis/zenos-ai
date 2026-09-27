@@ -1,6 +1,6 @@
 # Your First Alert
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
 *The fastest way to prove ZenOS-AI can get your attention.*
 

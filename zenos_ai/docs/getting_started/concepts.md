@@ -1,6 +1,6 @@
 # Concepts — The Words You'll Keep Seeing
 
-> **Version:** 2026.9.0 'Steel Magnolia'
+> **Version:** 2026.10.0 'Tron'
 
 *A plain-language reference for the recurring cast of names and terms in these docs. Read it straight through once, or jump back to it whenever a doc says "see Concepts."*
 
