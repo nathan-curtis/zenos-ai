@@ -78,12 +78,12 @@ A room's live state is the most current part of the twin. The Monastery summariz
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The room state blueprint and its cascade: [`room_state.yaml`](../../../blueprints/template/zenos/room_state.yaml) (`_manual_override_hi`)
-* REFLEX Stage 2, the Signal Dispatcher, and the master gates: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`room_state_changed`, `reflex_dry_run`)
+* The room state blueprint and its cascade: [`room_state.yaml`](../../../blueprints/template/zenos/room_state.yaml) (`_manual_override_hi`). Docs: [room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md).
+* REFLEX Stage 2, the Signal Dispatcher, and the master gates: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`room_state_changed`, `reflex_dry_run`). Docs: [room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Katas](15_katas.md) · [Contents](00_toc.md) · [Context Construction →](17_context_construction.md)
+[← Katas](15_katas.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Context Construction →](17_context_construction.md)
 <!-- /nav -->

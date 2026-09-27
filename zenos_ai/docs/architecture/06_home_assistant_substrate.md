@@ -59,13 +59,13 @@ Several limits of the substrate show up repeatedly in how ZenOS is built. They a
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Cabinets are template sensors, and their schema and routing: [`zenos_cabinets.yaml`](../../../packages/zenos_ai/zenos_cabinets.yaml) (`variables`)
-* The event every part of ZenOS signals on: [`dojotools_systemtools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_systemtools.yaml) (`zen_dojotools_event_emitter`, `zen_event`)
-* Logic that runs where Home Assistant runs: the shared Jinja macro libraries: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`, `macro render_prompt`)
+* Cabinets are template sensors, and their schema and routing: [`zenos_cabinets.yaml`](../../../packages/zenos_ai/zenos_cabinets.yaml) (`variables`). Docs: [readme.md](../cabinets/readme.md).
+* The event every part of ZenOS signals on: [`dojotools_systemtools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_systemtools.yaml) (`zen_dojotools_event_emitter`, `zen_event`). Docs: [zen_dojotools_event_emitter_readme.md](../scripts/zen_dojotools_event_emitter_readme.md).
+* Logic that runs where Home Assistant runs: the shared Jinja macro libraries: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`, `macro render_prompt`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Principles](05_principles.md) · [Contents](00_toc.md) · [Labels and the Hypergraph →](07_labels_and_the_hypergraph.md)
+[← Principles](05_principles.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Labels and the Hypergraph →](07_labels_and_the_hypergraph.md)
 <!-- /nav -->

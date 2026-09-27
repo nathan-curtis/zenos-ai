@@ -62,15 +62,15 @@ System-wide questions about tools (which tools exist, what they require, what th
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* KFC self-registration and Lens provider registration on start and daily: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`bootstrap_kfc`, `bootstrap_stacks`, `zen_kfc_provider`)
-* The single Lens Bus consumer entry point: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_dojotools_lens_dispatch`)
-* Library, the Lens owner for knowledge: [`dojotools_library.yaml`](../../../packages/zenos_ai/dojotools/dojotools_library.yaml) (`zen_dojotools_library`)
-* Stack providers: [`zen_stack_presence.yaml`](../../../packages/zenos_ai/dojotools/zen_stack_presence.yaml) (`zen_stack_presence`)
-* ToolScan, the fan-out behind ToolMap and the audits: [`dojotools_toolscan.yaml`](../../../packages/zenos_ai/dojotools/dojotools_toolscan.yaml) (`toolscan`)
+* KFC self-registration and Lens provider registration on start and daily: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`bootstrap_kfc`, `bootstrap_stacks`, `zen_kfc_provider`). Docs: [zen_dojotools_manifest_readme.md](../scripts/zen_dojotools_manifest_readme.md).
+* The single Lens Bus consumer entry point: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_dojotools_lens_dispatch`). Docs: [zen_dojotools_dispatcher_readme.md](../scripts/zen_dojotools_dispatcher_readme.md).
+* Library, the Lens owner for knowledge: [`dojotools_library.yaml`](../../../packages/zenos_ai/dojotools/dojotools_library.yaml) (`zen_dojotools_library`). Docs: [zen_dojotools_library_readme.md](../scripts/zen_dojotools_library_readme.md).
+* Stack providers: [`zen_stack_presence.yaml`](../../../packages/zenos_ai/dojotools/zen_stack_presence.yaml) (`zen_stack_presence`). Docs: [lens_bus.md](../library/lens_bus.md).
+* ToolScan, the fan-out behind ToolMap and the audits: [`dojotools_toolscan.yaml`](../../../packages/zenos_ai/dojotools/dojotools_toolscan.yaml) (`toolscan`).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Contracts](12_contracts.md) · [Contents](00_toc.md) · [The Monastery →](14_the_monastery.md)
+[← Contracts](12_contracts.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [The Monastery →](14_the_monastery.md)
 <!-- /nav -->

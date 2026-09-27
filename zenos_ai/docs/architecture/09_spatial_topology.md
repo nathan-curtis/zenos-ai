@@ -54,12 +54,12 @@ Changing the shape of the house is gated. Structural modes (`set`, `setup`, `are
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Portals, boundaries, and the topology drawer: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_topology`, `boundary_link`)
-* Pathfinding and emergency egress: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`pathfind`, `emergency`)
+* Portals, boundaries, and the topology drawer: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_topology`, `boundary_link`). Docs: [room_manager.md](../components/room_manager.md).
+* Pathfinding and emergency egress: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`pathfind`, `emergency`). Docs: [room_manager.md](../components/room_manager.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Cabinets as Graph](08_cabinets_as_graph.md) · [Contents](00_toc.md) · [Exposure: Tools, Not Entities →](10_exposure_tools_not_entities.md)
+[← Cabinets as Graph](08_cabinets_as_graph.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Exposure: Tools, Not Entities →](10_exposure_tools_not_entities.md)
 <!-- /nav -->

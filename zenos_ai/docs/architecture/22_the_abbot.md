@@ -72,13 +72,13 @@ Daily, and on Home Assistant start, `zen_dojotools_manifest` also re-runs its bo
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Triggers, subscriptions, and load shedding: [`dojotools_scheduler.yaml`](../../../packages/zenos_ai/dojotools/dojotools_scheduler.yaml) (`shed_keeper_at`, `pipeline_tier`)
-* Correlated tool calls over the event bus: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`dojotool_call`, `dojotool_return`)
-* Recovering shed work: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_scheduler_drain_router`)
+* Triggers, subscriptions, and load shedding: [`dojotools_scheduler.yaml`](../../../packages/zenos_ai/dojotools/dojotools_scheduler.yaml) (`shed_keeper_at`, `pipeline_tier`). Docs: [zen_dojotools_scheduler_readme.md](../scripts/zen_dojotools_scheduler_readme.md).
+* Correlated tool calls over the event bus: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`dojotool_call`, `dojotool_return`). Docs: [zen_dojotools_dispatcher_readme.md](../scripts/zen_dojotools_dispatcher_readme.md).
+* Recovering shed work: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_scheduler_drain_router`). Docs: [zen_dojotools_dispatcher_readme.md](../scripts/zen_dojotools_dispatcher_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Identity as Traversal](21_identity_as_traversal.md) · [Contents](00_toc.md) · [Resilience →](23_resilience.md)
+[← Identity as Traversal](21_identity_as_traversal.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Resilience →](23_resilience.md)
 <!-- /nav -->

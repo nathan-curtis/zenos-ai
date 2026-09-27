@@ -55,5 +55,5 @@ In the language of the preface: the scrapbook is the ontology plus the twin, and
 <!-- nav -->
 ---
 
-[← Contents](00_toc.md) · [Contents](00_toc.md) · [The Sand Dune and the Plinko Board →](02_the_sand_dune_and_the_plinko_board.md)
+[← Contents](00_toc.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [The Sand Dune and the Plinko Board →](02_the_sand_dune_and_the_plinko_board.md)
 <!-- /nav -->

@@ -101,14 +101,14 @@ The master ships off so a new install does not start continuous background infer
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The per-component summarizer and the whole-house synthesis: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_dojotools_ninja_summarizer`, `zen_dojotools_supersummary`)
-* SuperSummary's run governor and context budget: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`super_burnout_seconds`, `max_context_tokens`)
-* The operator gate on action emission: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_action_emission_enabled`)
-* The catch-all for attention that has no automatable action: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_dojotools_urgency_handler`)
+* The per-component summarizer and the whole-house synthesis: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_dojotools_ninja_summarizer`, `zen_dojotools_supersummary`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
+* SuperSummary's run governor and context budget: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`super_burnout_seconds`, `max_context_tokens`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
+* The operator gate on action emission: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_action_emission_enabled`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
+* The catch-all for attention that has no automatable action: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_dojotools_urgency_handler`). Docs: [zen_dojotools_dispatcher_readme.md](../scripts/zen_dojotools_dispatcher_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Components](13_components.md) · [Contents](00_toc.md) · [Katas →](15_katas.md)
+[← Components](13_components.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Katas →](15_katas.md)
 <!-- /nav -->

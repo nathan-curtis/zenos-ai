@@ -59,12 +59,12 @@ Tools resolve targets through labels, and gated tools refuse traversals the call
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Scope decisions returned with every identity answer: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`scope_decision`)
-* A capability edge with an approval edge: unlocking an exterior lock: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`ext_lock`)
+* Scope decisions returned with every identity answer: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`scope_decision`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* A capability edge with an approval edge: unlocking an exterior lock: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`ext_lock`). Docs: [zen_dojotools_locks_readme.md](../scripts/zen_dojotools_locks_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← The Authority Ladder](20_the_authority_ladder.md) · [Contents](00_toc.md) · [The Abbot →](22_the_abbot.md)
+[← The Authority Ladder](20_the_authority_ladder.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [The Abbot →](22_the_abbot.md)
 <!-- /nav -->

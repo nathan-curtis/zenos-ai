@@ -24,7 +24,7 @@ A model does not know your house, so you build it a box and a scrapbook. The box
 
 ## 26.3 What is still open
 
-The system is not finished, and the places it is not finished are named in every chapter and collected in Appendix E. The near ones are concrete. Admission, the base certification every agent needs just to use the ZenOS tool surface, lands in the 2026.10.0 final. FileCabinet gets its single exit, envelope, and certification gate in 2026.11.0, 'This Is Spinal Tap'. Real session binding, so that different callers resolve to different personas and different reachable graphs, is the step that turns identity as traversal from one graph per install into one per principal.
+The system is not finished, and the places it is not finished are named in every chapter and collected in Appendix E. The near ones are concrete. Admission, a base certification every agent would need just to use the ZenOS tool surface, is in design. FileCabinet gets its single exit, envelope, and certification gate in 2026.11.0, 'This Is Spinal Tap'. Real session binding, so that different callers resolve to different personas and different reachable graphs, is the step that turns identity as traversal from one graph per install into one per principal.
 
 The farther ones are research. Long-term episodic memory through the history cabinet is in active development. A fuller self model, with drives, values, and awareness of the agent's own limits, is design direction. So is letting the same traversal that builds an agent's world also compute what it may do.
 
@@ -49,5 +49,5 @@ She is wearing it like a hat.
 <!-- nav -->
 ---
 
-[← Room Manager v3 Reference](25_room_manager_v3.md) · [Contents](00_toc.md) · [Appendices →](27_appendices.md)
+[← Room Manager v3 Reference](25_room_manager_v3.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Appendices →](27_appendices.md)
 <!-- /nav -->

@@ -61,13 +61,13 @@ AdminTools stay off the agent surface unless a human deliberately exposes one fo
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The directive that overrides Home Assistant's instruction to call GetLiveContext: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`INSTALLATION OVERRIDE`)
-* Whether a tool is exposed to agents is declared in its manifest: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`mcp_exposed`)
-* Index as the way in when nothing is exposed: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`hypergraph`)
+* The directive that overrides Home Assistant's instruction to call GetLiveContext: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`INSTALLATION OVERRIDE`). Docs: [zen_dojotools_admintools_readme.md](../scripts/zen_dojotools_admintools_readme.md).
+* Whether a tool is exposed to agents is declared in its manifest: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`mcp_exposed`). Docs: [zenos_manifest_jinja.md](../custom_templates/zenos_manifest_jinja.md).
+* Index as the way in when nothing is exposed: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`hypergraph`). Docs: [zen_dojotools_index_readme.md](../scripts/zen_dojotools_index_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Spatial Topology](09_spatial_topology.md) · [Contents](00_toc.md) · [Vocabulary →](11_vocabulary.md)
+[← Spatial Topology](09_spatial_topology.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Vocabulary →](11_vocabulary.md)
 <!-- /nav -->

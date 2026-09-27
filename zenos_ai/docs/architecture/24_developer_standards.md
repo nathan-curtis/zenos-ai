@@ -898,13 +898,13 @@ Before accepting a new component, reviewers should confirm:
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The manifest macro: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`)
-* The envelope, identity field reader, denial shape, and scope check: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`, `macro resolve_identity_fields`, `macro cert_denial`, `macro cert_scope_check`)
-* Help and manifest compliance audit: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`audit_help`)
+* The manifest macro: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`). Docs: [zenos_manifest_jinja.md](../custom_templates/zenos_manifest_jinja.md).
+* The envelope, identity field reader, denial shape, and scope check: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`, `macro resolve_identity_fields`, `macro cert_denial`, `macro cert_scope_check`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
+* Help and manifest compliance audit: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`audit_help`). Docs: [zen_dojotools_manifest_readme.md](../scripts/zen_dojotools_manifest_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Resilience](23_resilience.md) · [Contents](00_toc.md) · [Room Manager v3 Reference →](25_room_manager_v3.md)
+[← Resilience](23_resilience.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Room Manager v3 Reference →](25_room_manager_v3.md)
 <!-- /nav -->

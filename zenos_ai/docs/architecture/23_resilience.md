@@ -86,15 +86,15 @@ graph BT
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Boot orchestration and the readiness gate: [`flynn.yaml`](../../../packages/zenos_ai/flynn.yaml) (`flynn_system_ready`)
-* Layered health sensors: [`zenos_agent_health.yaml`](../../../packages/zenos_ai/sensors/zenos_agent_health.yaml) (`flynn_system_ready`)
-* Health rollups shared by every sensor: [`zenos_health.jinja`](../../../custom_templates/zenos_ai/zenos_health.jinja) (`macro`)
-* The queue watchdog: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`watchdog_kill`)
-* Writes confirmed after Home Assistant accepts them: [`dojotools_filecabinet.yaml`](../../../packages/zenos_ai/dojotools/dojotools_filecabinet.yaml) (`write_verified`)
+* Boot orchestration and the readiness gate: [`flynn.yaml`](../../../packages/zenos_ai/flynn.yaml) (`flynn_system_ready`). Docs: [zen_flynn_readme.md](../scripts/zen_flynn_readme.md).
+* Layered health sensors: [`zenos_agent_health.yaml`](../../../packages/zenos_ai/sensors/zenos_agent_health.yaml) (`flynn_system_ready`). Docs: [readme.md](../sensors/readme.md).
+* Health rollups shared by every sensor: [`zenos_health.jinja`](../../../custom_templates/zenos_ai/zenos_health.jinja) (`macro`). Docs: [readme.md](../sensors/readme.md).
+* The queue watchdog: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`watchdog_kill`). Docs: [room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md).
+* Writes confirmed after Home Assistant accepts them: [`dojotools_filecabinet.yaml`](../../../packages/zenos_ai/dojotools/dojotools_filecabinet.yaml) (`write_verified`). Docs: [zen_dojotools_filecabinet_readme.md](../scripts/zen_dojotools_filecabinet_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← The Abbot](22_the_abbot.md) · [Contents](00_toc.md) · [Developer Standards →](24_developer_standards.md)
+[← The Abbot](22_the_abbot.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Developer Standards →](24_developer_standards.md)
 <!-- /nav -->

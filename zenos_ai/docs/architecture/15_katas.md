@@ -70,13 +70,13 @@ AlertManager stores the acknowledgement. It does not judge whether a condition h
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The component Kata schema and the whole-house template: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`kata_template`, `zen_template`)
-* last_run_at, stamped on every successful write: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`last_run_at`)
-* Acknowledgements: set, check, revoke: [`dojotools_alertmanager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_alertmanager.yaml) (`check_ack`, `revoke_ack`)
+* The component Kata schema and the whole-house template: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`kata_template`, `zen_template`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
+* last_run_at, stamped on every successful write: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`last_run_at`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
+* Acknowledgements: set, check, revoke: [`dojotools_alertmanager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_alertmanager.yaml) (`check_ack`, `revoke_ack`). Docs: [alertmanager.md](../components/alertmanager.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← The Monastery](14_the_monastery.md) · [Contents](00_toc.md) · [Live State →](16_live_state.md)
+[← The Monastery](14_the_monastery.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Live State →](16_live_state.md)
 <!-- /nav -->

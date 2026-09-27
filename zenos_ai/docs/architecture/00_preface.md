@@ -49,5 +49,5 @@ The chapters are written for three readers: someone building on ZenOS who needs 
 <!-- nav -->
 ---
 
-[Contents](00_toc.md) · [Contents →](00_toc.md)
+[Contents](00_toc.md) · [Doc hub](../readme.md) · [Contents →](00_toc.md)
 <!-- /nav -->

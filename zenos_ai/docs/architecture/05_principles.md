@@ -75,15 +75,15 @@ Tools learned to describe themselves once other people started running ZenOS and
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Inference is pluggable: the summarizers call whatever model this helper names: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zenos_ai_task_entity`)
-* One shape: the shared response envelope: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`)
-* Fail closed: simulated identity is refused unless the household allows it: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`)
-* The human gate: one live acknowledgement chokepoint: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`)
-* Declare what you are: every tool's self-description: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`)
+* Inference is pluggable: the summarizers call whatever model this helper names: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zenos_ai_task_entity`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
+* One shape: the shared response envelope: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro envelope`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
+* Fail closed: simulated identity is refused unless the household allows it: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* The human gate: one live acknowledgement chokepoint: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* Declare what you are: every tool's self-description: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`). Docs: [zenos_manifest_jinja.md](../custom_templates/zenos_manifest_jinja.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← CoALA Without Knowing It](04_coala_without_knowing_it.md) · [Contents](00_toc.md) · [Home Assistant as Substrate →](06_home_assistant_substrate.md)
+[← CoALA Without Knowing It](04_coala_without_knowing_it.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Home Assistant as Substrate →](06_home_assistant_substrate.md)
 <!-- /nav -->

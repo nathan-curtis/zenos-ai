@@ -137,7 +137,7 @@ Every "Not yet built" box in the book, in one place.
 | 18 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |
 | 19 | Certification expiry and revocation checks at use time | Design direction |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
-| 20 | Admission: the base agent certification | In progress for the 2026.10.0 final |
+| 20 | Admission: the base agent certification | In design |
 | 20 | Console-admin path for bundle grants | Planned |
 | 20 | Administrative competency certification | Design direction for this release line |
 | 21 | Per-principal traversal | Arrives with session binding |
@@ -227,5 +227,5 @@ Related sources:
 <!-- nav -->
 ---
 
-[← Findings](26_findings.md) · [Contents](00_toc.md)
+[← Findings](26_findings.md) · [Contents](00_toc.md) · [Doc hub](../readme.md)
 <!-- /nav -->

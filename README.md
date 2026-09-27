@@ -20,6 +20,8 @@ And a few things that are.
 
 **What's in 2026.10.0 'Tron':** *Shore up the Grid.*
 
+**New in 2026.10: The Book of Friday, Volume 2.** The architecture docs are rewritten from the ground up. It starts with why ZenOS is built the way it is: the box and the scrapbook, the plinko board, the design history from the Friday's Party thread, and how the system converged on CoALA without setting out to. Then it covers the graph, the ontology, the digital twin, identity and authority, and operation, and closes with what we found and what to do with it. Every chapter points to the code that implements it, and anything designed but not built is labeled that way. [Start with the preface](zenos_ai/docs/architecture/00_preface.md) or jump to the [contents](zenos_ai/docs/architecture/00_toc.md).
+
 **Admission certification** — every agent now needs a mandatory baseline ZenOS certification just to read the tool surface at all, not to administer or actuate anything. Issuance is reserved to Flynn's onboarding path; existing pre-2026.10.0 agents recertify through an onboarding-adjacent path rather than a rebuild.
 
 **The administrative plane** — a second certification boundary above normal participation (`ZenOS Admin Certified, Level X`) gates CertAdmin, cabinet repair, and reset-class tools. Country club, not skeleton key: even the top Admin level doesn't waive a fresh live human ack on the functions that need one.
@@ -60,6 +62,7 @@ FileCabinet gets a bug pass in Tron; its single-exit/envelope/cert-gate work is 
 | First boot | **[First Run & OOBE](zenos_ai/docs/getting_started/first_run.md)** |
 | First component | **[AutoVac Quick Start](zenos_ai/docs/getting_started/autovac_quick_start.md)** — touches every part of the system in one visible loop |
 | Adding a component | **[Understanding KF4](zenos_ai/docs/kung_fu/understanding_kf4.md)** · **[Building a KFC](zenos_ai/docs/kung_fu/building_a_kfc.md)** |
+| How it's built, and why | **[The Book of Friday, Volume 2](zenos_ai/docs/architecture/00_preface.md)** |
 | Full documentation | **[Documentation Hub](zenos_ai/docs/readme.md)** |
 
 ---
@@ -107,6 +110,8 @@ DojoTools scripts provide runtime behavior.
 Cabinets persist memory.
 The Monastery performs reasoning.
 Flynn guards the grid.
+
+The full design record, from the why to the code behind each piece, is [The Book of Friday, Volume 2](zenos_ai/docs/architecture/00_preface.md).
 
 ---
 

@@ -79,15 +79,15 @@ Some labels describe ZenOS itself rather than the house. Cabinets carry type lab
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Required and optional labels, and what is missing, computed live on every manifest call: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`missing_required_labels`)
-* The system-wide label audit, which can create missing definitions: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`label_audit`)
-* Suggest, then apply: label suggestions in ZenLux: [`dojotools_lights.yaml`](../../../packages/zenos_ai/dojotools/dojotools_lights.yaml) (`label_suggest`, `zen_lm_main`)
-* Label discovery for rooms: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`label_discover`)
-* Label creation, tagging, and area assignment: [`dojotools_labels.yaml`](../../../packages/zenos_ai/dojotools/dojotools_labels.yaml) (`zen_dojotools_labels`, `area_assign`, `untag`)
+* Required and optional labels, and what is missing, computed live on every manifest call: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`missing_required_labels`). Docs: [zenos_manifest_jinja.md](../custom_templates/zenos_manifest_jinja.md).
+* The system-wide label audit, which can create missing definitions: [`dojotools_manifest.yaml`](../../../packages/zenos_ai/dojotools/dojotools_manifest.yaml) (`label_audit`). Docs: [zen_dojotools_manifest_readme.md](../scripts/zen_dojotools_manifest_readme.md).
+* Suggest, then apply: label suggestions in ZenLux: [`dojotools_lights.yaml`](../../../packages/zenos_ai/dojotools/dojotools_lights.yaml) (`label_suggest`, `zen_lm_main`). Docs: [zenlux.md](../components/zenlux.md).
+* Label discovery for rooms: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`label_discover`). Docs: [room_manager.md](../components/room_manager.md).
+* Label creation, tagging, and area assignment: [`dojotools_labels.yaml`](../../../packages/zenos_ai/dojotools/dojotools_labels.yaml) (`zen_dojotools_labels`, `area_assign`, `untag`). Docs: [zen_dojotools_labels_readme.md](../scripts/zen_dojotools_labels_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Exposure: Tools, Not Entities](10_exposure_tools_not_entities.md) · [Contents](00_toc.md) · [Contracts →](12_contracts.md)
+[← Exposure: Tools, Not Entities](10_exposure_tools_not_entities.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Contracts →](12_contracts.md)
 <!-- /nav -->

@@ -96,13 +96,13 @@ A tool never guesses an entity ID from a naming convention. The one entity every
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Label set logic and the hypergraph: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`hypergraph`, `label_entities`)
-* The ZQ-1 query filter: [`zen_query.jinja`](../../../custom_templates/zenos_ai/zen_query.jinja) (`macro`)
-* Reporting a label applied only to an area, instead of an empty result: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`area-only label mismatch`)
+* Label set logic and the hypergraph: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`hypergraph`, `label_entities`). Docs: [zen_dojotools_index_readme.md](../scripts/zen_dojotools_index_readme.md).
+* The ZQ-1 query filter: [`zen_query.jinja`](../../../custom_templates/zenos_ai/zen_query.jinja) (`macro`). Docs: [zen_query_jinja.md](../custom_templates/zen_query_jinja.md).
+* Reporting a label applied only to an area, instead of an empty result: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`area-only label mismatch`). Docs: [zen_dojotools_index_readme.md](../scripts/zen_dojotools_index_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Home Assistant as Substrate](06_home_assistant_substrate.md) · [Contents](00_toc.md) · [Cabinets as Graph →](08_cabinets_as_graph.md)
+[← Home Assistant as Substrate](06_home_assistant_substrate.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Cabinets as Graph →](08_cabinets_as_graph.md)
 <!-- /nav -->

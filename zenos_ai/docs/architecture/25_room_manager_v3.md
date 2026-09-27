@@ -189,10 +189,10 @@ Entities labeled `zen_mm_shadow` (whole-house media groups and the like) are exe
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The cascade: [`room_state.yaml`](../../../blueprints/template/zenos/room_state.yaml) (`_manual_override_hi`, `wasp`)
-* The dispatch automation and the REFLEX controller script: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`zenos_room_manager_dispatch`, `zen_reflex_controller`, `self_label_resync`)
-* role_audit and room_control_set: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`role_audit`, `room_control_set`)
-* zen_agent_disabled tagging: [`dojotools_ectoplasm.yaml`](../../../packages/zenos_ai/dojotools/dojotools_ectoplasm.yaml) (`zen_agent_disabled`)
+* The cascade: [`room_state.yaml`](../../../blueprints/template/zenos/room_state.yaml) (`_manual_override_hi`, `wasp`). Docs: [room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md).
+* The dispatch automation and the REFLEX controller script: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`zenos_room_manager_dispatch`, `zen_reflex_controller`, `self_label_resync`). Docs: [room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md).
+* role_audit and room_control_set: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`role_audit`, `room_control_set`). Docs: [room_manager.md](../components/room_manager.md).
+* zen_agent_disabled tagging: [`dojotools_ectoplasm.yaml`](../../../packages/zenos_ai/dojotools/dojotools_ectoplasm.yaml) (`zen_agent_disabled`). Docs: [zen_dojotools_ectoplasm_readme.md](../scripts/zen_dojotools_ectoplasm_readme.md).
 <!-- /where -->
 
 ---
@@ -202,5 +202,5 @@ Every claim in this chapter can be checked in the code. These are the places to 
 <!-- nav -->
 ---
 
-[← Developer Standards](24_developer_standards.md) · [Contents](00_toc.md) · [Findings →](26_findings.md)
+[← Developer Standards](24_developer_standards.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Findings →](26_findings.md)
 <!-- /nav -->

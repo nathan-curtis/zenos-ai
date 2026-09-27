@@ -158,24 +158,23 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 
 ---
 
-## 🧠 **2. Architecture**
+## 🧠 **2. Architecture: The Book of Friday**
 
 **Folder:** `docs/architecture/`
 
-The full cognitive and systems architecture.
-This is the textbook for ZenOS-AI.
+The Book of Friday, Volume 2, is the architecture record for ZenOS-AI as it ships. It explains why the system is built this way, how each piece works, and where each piece lives in the code.
 
-Highlighted chapters:
-
-* [`00_preface.md`](architecture/00_preface.md) – Why Volume 2, and the thesis
-* [`00_toc.md`](architecture/00_toc.md) – Table of contents
-* [`07_labels_and_the_hypergraph.md`](architecture/07_labels_and_the_hypergraph.md) – The graph and how labels make it readable
-* [`14_the_monastery.md`](architecture/14_the_monastery.md) – The summarization pipeline
-* [`17_context_construction.md`](architecture/17_context_construction.md) – How the agent's prompt is built
-* [`19_certification.md`](architecture/19_certification.md) – Certification, scope, and denials
-* [`23_resilience.md`](architecture/23_resilience.md) – Health sensors and failure handling
-* [`24_developer_standards.md`](architecture/24_developer_standards.md) – Component classes and the tool contract
-* [`25_room_manager_v3.md`](architecture/25_room_manager_v3.md) – The state cascade and REFLEX, from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
+* [Preface](architecture/00_preface.md): why Volume 2, and the thesis
+* [Contents](architecture/00_toc.md): every chapter, by part
+* [The Box and the Scrapbook](architecture/01_the_box_and_the_scrapbook.md), [The Sand Dune and the Plinko Board](architecture/02_the_sand_dune_and_the_plinko_board.md), [The Party](architecture/03_the_party.md), [CoALA Without Knowing It](architecture/04_coala_without_knowing_it.md): the why
+* [Labels and the Hypergraph](architecture/07_labels_and_the_hypergraph.md): the graph and how labels make it readable
+* [The Monastery](architecture/14_the_monastery.md): the summarization pipeline
+* [Context Construction](architecture/17_context_construction.md): how the agent's prompt is built
+* [Certification](architecture/19_certification.md): certification, scope, and denials
+* [Resilience](architecture/23_resilience.md): health sensors and failure handling
+* [Developer Standards](architecture/24_developer_standards.md): component classes and the tool contract
+* [Room Manager v3 Reference](architecture/25_room_manager_v3.md): the state cascade and REFLEX from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
+* [Findings](architecture/26_findings.md): what we found, and what to do with it
 
 If you want to know how the mind works, start here.
 

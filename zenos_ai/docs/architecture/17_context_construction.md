@@ -74,14 +74,14 @@ For scale: in the reference household (Appendix F), one sampled frame was 49,868
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The frame, built on every turn: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro render_prompt`, `macro compact_overview`, `macro root_index`)
-* Flynn's cabinet-free fallback prompt: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro prompt_system_flynn`)
-* Prompt size and identity integrity sensors: [`zenos_prompt_health.yaml`](../../../packages/zenos_ai/sensors/zenos_prompt_health.yaml) (`zen_prompt_length`)
-* The conversation agent's prompt template: [`conversation_agent_prompt_template.yaml`](../../../custom_templates/zenos_ai/conversation_agent_prompt_template.yaml) (`render_prompt`)
+* The frame, built on every turn: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro render_prompt`, `macro compact_overview`, `macro root_index`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
+* Flynn's cabinet-free fallback prompt: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro prompt_system_flynn`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
+* Prompt size and identity integrity sensors: [`zenos_prompt_health.yaml`](../../../packages/zenos_ai/sensors/zenos_prompt_health.yaml) (`zen_prompt_length`). Docs: [readme.md](../sensors/readme.md).
+* The conversation agent's prompt template: [`conversation_agent_prompt_template.yaml`](../../../custom_templates/zenos_ai/conversation_agent_prompt_template.yaml) (`render_prompt`).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Live State](16_live_state.md) · [Contents](00_toc.md) · [Principals →](18_principals.md)
+[← Live State](16_live_state.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Principals →](18_principals.md)
 <!-- /nav -->

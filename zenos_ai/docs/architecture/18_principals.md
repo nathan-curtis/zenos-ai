@@ -79,13 +79,13 @@ When identity resolves a person, it can include a presence block: zone, whether 
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The identity chokepoint every gated tool calls: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`resolve_caller_identity`)
-* The template-surface identity resolver: [`zen_identity.jinja`](../../../custom_templates/zenos_ai/zen_identity.jinja) (`macro`)
-* Profile writes for households, families, and users: [`dojotools_profile.yaml`](../../../packages/zenos_ai/dojotools/dojotools_profile.yaml) (`zenos.identity.profile_write`)
+* The identity chokepoint every gated tool calls: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`resolve_caller_identity`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* The template-surface identity resolver: [`zen_identity.jinja`](../../../custom_templates/zenos_ai/zen_identity.jinja) (`macro`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* Profile writes for households, families, and users: [`dojotools_profile.yaml`](../../../packages/zenos_ai/dojotools/dojotools_profile.yaml) (`zenos.identity.profile_write`). Docs: [zen_dojotools_profile_readme.md](../scripts/zen_dojotools_profile_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Context Construction](17_context_construction.md) · [Contents](00_toc.md) · [Certification →](19_certification.md)
+[← Context Construction](17_context_construction.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Certification →](19_certification.md)
 <!-- /nav -->

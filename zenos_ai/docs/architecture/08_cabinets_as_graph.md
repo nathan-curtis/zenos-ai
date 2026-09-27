@@ -77,15 +77,15 @@ Reserved drawers (keys beginning with `_`, and the header) are protected from or
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Cabinet schema, core cabinets, and volume routing: [`zenos_cabinets.yaml`](../../../packages/zenos_ai/zenos_cabinets.yaml) (`variables`)
-* Safe drawer reads, including mounted drawers: [`zenos_cabinets.jinja`](../../../custom_templates/zenos_ai/zenos_cabinets.jinja) (`macro cabinet_drawer_value_mounted`)
-* The agent-facing cabinet tool, which checks health before a write and confirms it persisted after: [`dojotools_filecabinet.yaml`](../../../packages/zenos_ai/dojotools/dojotools_filecabinet.yaml) (`zen_dojotools_filecabinet`, `write_verified`)
-* The Highlander resolvers every tool reads instead of searching: [`zenos_summarizer_system_health.yaml`](../../../packages/zenos_ai/sensors/zenos_summarizer_system_health.yaml) (`zen_default_household_cabinet_resolved`)
-* The index shows a drawer's description and a 64-character preview; the full value always comes from FileCabinet: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`truncated to 64 chars`, `use FileCabinet for full data`)
+* Cabinet schema, core cabinets, and volume routing: [`zenos_cabinets.yaml`](../../../packages/zenos_ai/zenos_cabinets.yaml) (`variables`). Docs: [readme.md](../cabinets/readme.md).
+* Safe drawer reads, including mounted drawers: [`zenos_cabinets.jinja`](../../../custom_templates/zenos_ai/zenos_cabinets.jinja) (`macro cabinet_drawer_value_mounted`). Docs: [zenos_cabinets_jinja.md](../custom_templates/zenos_cabinets_jinja.md).
+* The agent-facing cabinet tool, which checks health before a write and confirms it persisted after: [`dojotools_filecabinet.yaml`](../../../packages/zenos_ai/dojotools/dojotools_filecabinet.yaml) (`zen_dojotools_filecabinet`, `write_verified`). Docs: [zen_dojotools_filecabinet_readme.md](../scripts/zen_dojotools_filecabinet_readme.md).
+* The Highlander resolvers every tool reads instead of searching: [`zenos_summarizer_system_health.yaml`](../../../packages/zenos_ai/sensors/zenos_summarizer_system_health.yaml) (`zen_default_household_cabinet_resolved`). Docs: [readme.md](../sensors/readme.md).
+* The index shows a drawer's description and a 64-character preview; the full value always comes from FileCabinet: [`dojotools_index.yaml`](../../../packages/zenos_ai/dojotools/dojotools_index.yaml) (`truncated to 64 chars`, `use FileCabinet for full data`). Docs: [zen_dojotools_index_readme.md](../scripts/zen_dojotools_index_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Labels and the Hypergraph](07_labels_and_the_hypergraph.md) · [Contents](00_toc.md) · [Spatial Topology →](09_spatial_topology.md)
+[← Labels and the Hypergraph](07_labels_and_the_hypergraph.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Spatial Topology →](09_spatial_topology.md)
 <!-- /nav -->

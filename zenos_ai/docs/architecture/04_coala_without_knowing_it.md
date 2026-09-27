@@ -109,5 +109,5 @@ Everything above the context core runs whether or not anyone is talking to Frida
 <!-- nav -->
 ---
 
-[← The Party](03_the_party.md) · [Contents](00_toc.md) · [Principles →](05_principles.md)
+[← The Party](03_the_party.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Principles →](05_principles.md)
 <!-- /nav -->

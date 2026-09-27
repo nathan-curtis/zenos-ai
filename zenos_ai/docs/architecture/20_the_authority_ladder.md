@@ -12,7 +12,7 @@ Each rung is necessary, and none substitutes for another.
 flowchart TD
   C["tool call"] --> I{"identity policy"}
   I -- blocked --> X["denied"]
-  I -- allowed --> AD{"admission<br/>(10.0 final)"}
+  I -- allowed --> AD{"admission<br/>(in design)"}
   AD --> DC{"domain cert<br/>and level"}
   DC -- short --> X
   DC -- held --> S{"scope"}
@@ -30,7 +30,7 @@ The administrative plane sits beside this path, not on it: it changes the policy
 | Rung | What it decides | Where it is enforced | Status |
 |---|---|---|---|
 | Identity policy | Is this caller's identity acceptable at all? | `resolve_caller_identity`, `sim_mode_allowed` | Built |
-| Admission | Is this agent a recognized participant in ZenOS? | Base agent certification | In progress for 2026.10.0 |
+| Admission | Is this agent a recognized participant in ZenOS? | Base agent certification | In design |
 | Domain certification | May this agent attempt this class of action? | `required_cert` checks in each tool | Built |
 | Scope | Which specific targets does that grant cover or exclude? | `cert_scope_check()` in each tool | Built |
 | Live acknowledgement | Does a human approve this specific action, right now? | `request_live_ack` | Built |
@@ -44,7 +44,7 @@ The bottom rung is the whole-install policy on simulated identity (Chapter 18). 
 
 ## 20.3 Admission
 
-> **Not yet built. In progress for the 2026.10.0 final.** Admission adds a mandatory base certification that an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. Flynn issues it at the successful end of onboarding, and that issuance path is reserved to onboarding rather than exposed as a general grant. Agents created before 2026.10.0 recertify through an onboarding-adjacent path instead of being rebuilt. This section will be rewritten against the code when it lands.
+> **Not yet built. In design.** Admission adds a mandatory base certification that an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. Flynn issues it at the successful end of onboarding, and that issuance path is reserved to onboarding rather than exposed as a general grant. Agents that already exist would recertify through an onboarding-adjacent path instead of being rebuilt. This section will be rewritten against the code when it lands.
 
 ## 20.4 Domain certification
 
@@ -112,13 +112,13 @@ Domain tools allow narrow, scoped exceptions to the per-call acknowledgement whe
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The identity policy rung: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`, `policy_status`)
-* Live acknowledgement through AlertManager and Postman: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`)
-* The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_control_override`)
+* The identity policy rung: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`, `policy_status`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* Live acknowledgement through AlertManager and Postman: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_control_override`). Docs: [room_manager.md](../components/room_manager.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Certification](19_certification.md) · [Contents](00_toc.md) · [Identity as Traversal →](21_identity_as_traversal.md)
+[← Certification](19_certification.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Identity as Traversal →](21_identity_as_traversal.md)
 <!-- /nav -->

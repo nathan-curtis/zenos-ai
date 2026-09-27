@@ -53,6 +53,18 @@ Start with the [Preface](00_preface.md). It states the thesis the rest of the bo
 
 27. [Appendices](27_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, and the Friday's Party index.
 
+## Beyond the book
+
+The book explains the design. These are the working docs:
+
+* [Documentation Hub](../readme.md): everything, organized by area
+* [Getting Started](../getting_started/readme.md): install, first run, and operator manuals
+* [Script readmes](../scripts/readme.md): one reference per tool, with every mode
+* [Component docs](../components/): Room Manager, Media Manager, ZenLux, AlertManager, and the rest
+* [Kung Fu](../kung_fu/readme.md): building your own components
+* [Cabinets](../cabinets/readme.md), [Library](../library/readme.md), [Templates](../custom_templates/readme.md), [Sensors](../sensors/readme.md)
+* [Release notes](../releases/tron.md)
+
 Volume 1 is the tree at commit `57a935f`.
 
 <!-- nav -->

@@ -92,14 +92,14 @@ A tool that refuses an action for lack of certification builds its answer with t
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Certificates declared by each tool, the catalog built from them: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`'cert': 'lock_control'`)
-* Scope resolution and the shared denial shape: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro cert_scope_check`, `macro cert_denial`)
-* Granting and revoking: not agent-exposed, and every write needs a live acknowledgement or the console: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`cert_req_grant`, `mcp_exposed`)
-* Where a persona's certificates live: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`zen_ai_certs`)
+* Certificates declared by each tool, the catalog built from them: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`'cert': 'lock_control'`). Docs: [zen_dojotools_locks_readme.md](../scripts/zen_dojotools_locks_readme.md).
+* Scope resolution and the shared denial shape: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro cert_scope_check`, `macro cert_denial`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
+* Granting and revoking: not agent-exposed, and every write needs a live acknowledgement or the console: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`cert_req_grant`, `mcp_exposed`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).
+* Where a persona's certificates live: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`zen_ai_certs`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).
 <!-- /where -->
 
 <!-- nav -->
 ---
 
-[← Principals](18_principals.md) · [Contents](00_toc.md) · [The Authority Ladder →](20_the_authority_ladder.md)
+[← Principals](18_principals.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [The Authority Ladder →](20_the_authority_ladder.md)
 <!-- /nav -->

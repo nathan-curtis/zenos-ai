@@ -127,5 +127,5 @@ That is the thread, a year and a half of it, in one idea. We do not give the mod
 <!-- nav -->
 ---
 
-[← The Sand Dune and the Plinko Board](02_the_sand_dune_and_the_plinko_board.md) · [Contents](00_toc.md) · [CoALA Without Knowing It →](04_coala_without_knowing_it.md)
+[← The Sand Dune and the Plinko Board](02_the_sand_dune_and_the_plinko_board.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [CoALA Without Knowing It →](04_coala_without_knowing_it.md)
 <!-- /nav -->

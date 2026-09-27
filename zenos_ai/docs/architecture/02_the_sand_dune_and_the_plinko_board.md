@@ -53,10 +53,10 @@ Pegs change probabilities. They do not make a model infallible, and nothing in Z
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* The hard rules the model reads first, including "Respond truthfully" and the Kata-first reading order: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`Respond truthfully`, `KATA FIRST`)
-* The default out: the index stops with confidence 0 when it finds nothing: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`on_empty: {action: stop, confidence: 0}`)
-* The order of the pegs: the frame the model reads, top to bottom: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro render_prompt`)
-* Confidence and error carried on every Kata: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`confidence`, `kata_template`)
+* The hard rules the model reads first, including "Respond truthfully" and the Kata-first reading order: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`Respond truthfully`, `KATA FIRST`). Docs: [zen_dojotools_admintools_readme.md](../scripts/zen_dojotools_admintools_readme.md).
+* The default out: the index stops with confidence 0 when it finds nothing: [`dojotools_admintools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_admintools.yaml) (`on_empty: {action: stop, confidence: 0}`). Docs: [zen_dojotools_admintools_readme.md](../scripts/zen_dojotools_admintools_readme.md).
+* The order of the pegs: the frame the model reads, top to bottom: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro render_prompt`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
+* Confidence and error carried on every Kata: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`confidence`, `kata_template`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
 <!-- /where -->
 
 ---
@@ -66,5 +66,5 @@ Every claim in this chapter can be checked in the code. These are the places to 
 <!-- nav -->
 ---
 
-[← The Box and the Scrapbook](01_the_box_and_the_scrapbook.md) · [Contents](00_toc.md) · [The Party →](03_the_party.md)
+[← The Box and the Scrapbook](01_the_box_and_the_scrapbook.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [The Party →](03_the_party.md)
 <!-- /nav -->
