@@ -26,7 +26,7 @@ Certification names come in two forms.
 
 Dotted names inherit, the same way X.509 policy identifiers do. Holding a parent node satisfies a check against any descendant at a dot boundary: holding `zenos.media` at level 2 satisfies a check for `zenos.media.playback_control` at level 2. When a caller holds both a parent and a more specific child, the most specific match wins, so a narrow grant can restrict below what a broad grant would imply. A flat name only ever matches itself. The resolution lives in `resolve_caller_identity` (Chapter 18).
 
-The resemblance to X.509 is not an accident. The dotted names are OID-shaped on purpose, because they are meant to become real object identifiers.
+The resemblance to X.509 is not an accident. The dotted names are OID-shaped on purpose, because they are meant to become real object identifiers. Shaping them that way now means that when the OID space arrives, nothing has to be renamed and no granted certification has to be migrated. The code is already speaking the format it will need.
 
 > **Not yet built.** A registered OID space for ZenOS is being pursued. Once it exists, the dotted certification tree maps onto real object identifiers under that arc, so a certification can travel as a standard policy identifier in a real certificate, not only as a name in a cabinet drawer. The dotted names in use today are the human-readable form of that tree.
 
