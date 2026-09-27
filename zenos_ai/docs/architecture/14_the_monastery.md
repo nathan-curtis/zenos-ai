@@ -6,7 +6,7 @@ The Monastery exists because of a bill. Early on, the whole interactive prompt w
 
 It is also where retrieval lives. I am not against retrieval. I think it belongs downstream, not at the front of an agent that runs a house. History and memory are gathered and reduced here, before the agent sees anything, so retrieval becomes part of the system's intelligence instead of the agent's burden.
 
-> **Not yet built.** Search and vector backends that plug in behind the index are under investigation. The exact mechanism is deliberately left open, to be whatever serves each tool best. What is not open is how it looks to the agent: search and retrieval are one seamless capability, always, however many backends sit behind them.
+> **Not yet built.** Search and vector backends that plug in behind the index are under investigation. The exact mechanism is deliberately left open, to be whatever serves each tool best. What is not open is how it looks to the agent: search and retrieval are one seamless capability, always, however many backends sit behind them. Seamless does not mean indistinguishable, and three constraints come with it. Every result says what kind of evidence it is: an exact label match, live state, a Kata, or a semantic match with its score, so a fuzzy match never reads like a fact. Empty stays a valid answer: semantic search always has a nearest neighbor, so a relevance floor keeps "found nothing" possible and the default out intact (Chapter 2). And nothing is returned that the caller could not have reached anyway: results are filtered by what the caller may traverse before they are ranked, so search never becomes a side door around certification and scope (Part V).
 
 ## 14.1 The pipeline
 
