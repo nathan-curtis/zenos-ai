@@ -2,7 +2,7 @@
 
 Chapters 1 through 4 argued why ZenOS is shaped the way it is. This chapter is what that argument turns into in practice. These are the rules ZenOS holds itself to. Each one is enforced somewhere specific in the code, and each section says where. A principle with no enforcement point is a wish, and this chapter does not list wishes.
 
-None of these started as rules. Each one started as something that broke, usually in public, in the Friday's Party thread (Chapter 3). Each section says what it was.
+None of these started as rules. All but the last started as something that broke, usually in public, in the Friday's Party thread (Chapter 3), and each section says what it was. The last started the other way around: as a decision made so that something would not have to break later.
 
 ## 5.1 The substrate is local. Inference is pluggable.
 
@@ -72,8 +72,18 @@ Tools learned to describe themselves once other people started running ZenOS and
 
 These rules are about machinery, and the machinery starts somewhere specific. Part II begins with what ZenOS is built on, and what that foundation will and will not do for it.
 
+## 5.9 Shape it like the standard it will become.
+
+Where ZenOS will eventually hand a job to an established standard, the code speaks that standard's shape now. Certification names are dotted, OID-shaped identifiers (Chapter 19). A certification entry has a subject, a policy, and permitted and excluded targets, the same structure an X.509 certificate carries. And identity resolution goes through `zen_root_authentik`, a stub with a stable OIDC-shaped contract: it recognizes a JWT-shaped caller token, reports its authentication method, and has a single flip point, `sim_mode`, that is on today (Chapter 18).
+
+None of those standards is live yet. That is the point. When a real OID arc, a real certificate authority, or a real Authentik instance arrives, it replaces a stub instead of forcing a redesign, and nothing that was granted, named, or resolved has to be migrated.
+
+The identity flip is the one that shows why. Today every call resolves to the default agent, so ZenOS is, in practice, a single-user system. The day `sim_mode` turns off and callers resolve to their own personas, it becomes a multi-user one, with every principal getting its own reachable graph (Chapter 21). That is going from Windows Me to Windows XP, without a reinstall.
+
+I would rather build the shape once than fix it later.
+
 <!-- where -->
-## 5.9 Where to look
+## 5.10 Where to look
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
@@ -82,6 +92,7 @@ Every claim in this chapter can be checked in the code. These are the places to 
 * Fail closed: simulated identity is refused unless the household allows it: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
 * The human gate: one live acknowledgement chokepoint: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
 * Declare what you are: every tool's self-description: [`zenos_manifest.jinja`](../../../custom_templates/zenos_ai/zenos_manifest.jinja) (`macro tool_manifest`). Docs: [zenos_manifest_jinja.md](../custom_templates/zenos_manifest_jinja.md).
+* Shape it like the standard: the OIDC-shaped identity root and its single flip point: [`authentik.yaml`](../../../packages/zenos_ai/plugins/authentik/authentik.yaml) (`zen_root_authentik`, `_sim_mode: true`, `oidc_client_credentials`).
 <!-- /where -->
 
 <!-- nav -->

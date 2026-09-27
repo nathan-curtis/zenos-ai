@@ -60,7 +60,7 @@ Every cert-gated tool reads these fields through the shared `resolve_identity_fi
 
 ### Simulated identity and the policy switch
 
-Identity resolution delegates to an authentication root, `zen_root_authentik`. Today that root is a stub, and resolution returns `sim_mode: true`, meaning the identity is the install's default agent rather than a cryptographically verified caller.
+Identity resolution delegates to an authentication root, `zen_root_authentik`. Today that root is a stub, and resolution returns `sim_mode: true`, meaning the identity is the install's default agent rather than a cryptographically verified caller. The stub is OIDC-shaped on purpose: it recognizes a JWT-shaped caller token, reports the authentication method it used, and keeps `sim_mode` as its single flip point, so wiring a real Authentik instance later replaces the stub without changing its contract (Chapter 5).
 
 Whether simulated identity is acceptable is a whole-install policy, not a per-tool choice. It lives in the household cabinet at `integrations_config.identity.sim_mode_allowed`, and the factory stamps an explicit value into it on every install. The default is `false`. When simulated identity is not allowed, `resolve_caller_identity` returns `policy_status: blocked`, and every certification check fails closed.
 

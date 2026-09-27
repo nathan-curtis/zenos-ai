@@ -24,11 +24,24 @@ Certification names come in two forms.
 
 **Dotted names** live in the `zenos.*` namespace and form a hierarchy: `zenos.media.generate`, `zenos.media.print_control`, `zenos.media.playback_control`, `zenos.comms.dispatch`, `zenos.identity.profile_write`, `zenos.system.reload_restart`, `zenos.system.home_config_write`.
 
-Dotted names inherit, the same way X.509 policy identifiers do. Holding a parent node satisfies a check against any descendant at a dot boundary: holding `zenos.media` at level 2 satisfies a check for `zenos.media.playback_control` at level 2. When a caller holds both a parent and a more specific child, the most specific match wins, so a narrow grant can restrict below what a broad grant would imply. A flat name only ever matches itself. The resolution lives in `resolve_caller_identity` (Chapter 18).
+Dotted names inherit by prefix. Holding a parent node satisfies a check against any descendant at a dot boundary: holding `zenos.media` at level 2 satisfies a check for `zenos.media.playback_control` at level 2. When a caller holds both a parent and a more specific child, the most specific match wins, so a narrow grant can restrict below what a broad grant would imply. A flat name only ever matches itself. The resolution lives in `resolve_caller_identity` (Chapter 18).
 
-The resemblance to X.509 is not an accident. The dotted names are OID-shaped on purpose, because they are meant to become real object identifiers. Shaping them that way now means that when the OID space arrives, nothing has to be renamed and no granted certification has to be migrated. The code is already speaking the format it will need.
+The prefix rule is ZenOS's own. OIDs nest the same way when they are allocated, but X.509 certificate validation matches policy identifiers exactly, so a real certificate will carry the specific identifier that was granted, and the prefix rule stays ZenOS's to apply. The OID shape itself is not an accident. The dotted names are OID-shaped on purpose, because they are meant to become real object identifiers. Shaping them that way now means that when the OID space arrives, nothing has to be renamed and no granted certification has to be migrated. The code is already speaking the format it will need.
 
 > **Not yet built.** A registered OID space for ZenOS is being pursued. Once it exists, the dotted certification tree maps onto real object identifiers under that arc, so a certification can travel as a standard policy identifier in a real certificate, not only as a name in a cabinet drawer. The dotted names in use today are the human-readable form of that tree.
+
+The certification entry is shaped the same way, and for the same reason (Chapter 5):
+
+| X.509 | ZenOS today |
+|---|---|
+| Certificate policies | The dotted certification name |
+| Name constraints, permitted and excluded subtrees | Scope `allow` and `deny` entries |
+| Subject | The persona cabinet the certification is written to |
+| Issuer | CertAdmin, with a human's live acknowledgement or console presence |
+| Validity period | None yet |
+| Revocation checked at use | Explicit revoke only |
+
+> **Not yet built.** The structure maps onto a certificate. The cryptography and the lifecycle do not exist yet: nothing is signed, nothing expires, and nothing is checked against a revocation list at the moment of use. Those arrive with the certificate authority the entry is shaped for.
 
 ## 19.3 Levels
 
