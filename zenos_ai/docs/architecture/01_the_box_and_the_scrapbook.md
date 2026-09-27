@@ -90,9 +90,11 @@ Here is the first level passing on a real install, and notice what is missing:
 
 And here is the same question about a system whose drawer does say what normal looks like:
 
-<!-- screenshot: ch01_grandma_test_electrical.png -->
-> **Screenshot to come.** Friday asked what she knows about the electrical system. With a context drawer describing normal, she does not just report readings; she judges them. Real 2026.10.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch01_grandma_test_electrical.jpg" width="420" alt="Asked what she knows about the home's electrical system, Friday describes a 200-amp two-leg panel drawing about 2.87 kilowatts with both legs steady near 122.6 volts, notes grid power with no solar, battery, or generator, gives daily and monthly usage and the recorded tariff, says where the main disconnect is, and reports surge monitoring with no active warnings." />
+</p>
+
+*The same question about the electrical system, which does have a drawer describing it. Now the live readings arrive already framed: the service size and what is and is not installed, both legs "steady," usage put in daily and monthly terms against the recorded tariff, where the main disconnect is, and no warnings active. That framing is the second level: the readings read against what this house says is normal. Real 2026.10.0 output, September 2026; the utility provider redacted.*
 
 ## 1.7 Where this book puts them
 
