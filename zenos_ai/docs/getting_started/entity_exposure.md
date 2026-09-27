@@ -58,7 +58,7 @@ Expose the agent-facing ZenOS tools. These are your AI's hands. Without them OOB
 |---|---|
 | `script.zen_dojotools_*` | The agent-facing tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Postman, ZenLux, Locks, and the rest |
 
-Two DojoTools declare themselves internal in their own manifests (`mcp_exposed: false`) and do not need to be exposed: `zen_dojotools_lens_dispatch`, which Library calls on the agent's behalf, and `zen_dojotools_filecabinet_gc`, which runs on its own schedule.
+Two DojoTools declare themselves internal in their own manifests (`mcp_exposed: false`) and stay unexposed by default. `zen_dojotools_lens_dispatch` is called by Library on the agent's behalf. `zen_dojotools_filecabinet_gc` runs on the Scheduler's own schedule; expose it only if you want your agent able to force a garbage-collection run.
 
 Never expose:
 

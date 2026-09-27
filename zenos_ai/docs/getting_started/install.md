@@ -141,7 +141,7 @@ Then:
 
 | Expose | Why |
 |---|---|
-| `script.zen_dojotools_*` | The agent-facing tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Postman, ZenLux, and the rest. Two are internal and can stay unexposed: `zen_dojotools_lens_dispatch` and `zen_dojotools_filecabinet_gc`. |
+| `script.zen_dojotools_*` | The agent-facing tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Postman, ZenLux, and the rest. Two are internal and stay unexposed by default: `zen_dojotools_lens_dispatch`, and `zen_dojotools_filecabinet_gc` (expose it only if you want your agent able to force a GC run). |
 
 | Do not expose | Why not |
 |---|---|
