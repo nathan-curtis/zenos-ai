@@ -8,6 +8,8 @@
 
 → [Project Overview & Install](../../README.md)
 
+→ [The Book of Friday, Volume 2](architecture/00_preface.md): how ZenOS is built, and why ([contents](architecture/00_toc.md))
+
 ---
 
 > ### 2026.9.1 'Steel Magnolia' — Current Stable
@@ -25,6 +27,8 @@
 > ### 2026.10.0 'Tron' — Public Beta
 >
 > Branch `feat/2026.10.0`. Admission-gated ZenOS tool access (a mandatory baseline certification just to read the tool surface), an administrative certification plane above normal participation, a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations rolled out system-wide, and Room Manager/Media/Lighting/Display convergence on one shared vocabulary. A few cert-gate audits are still open and tracked before this becomes a release candidate — see the relnote for specifics.
+>
+> New in this release: [The Book of Friday, Volume 2](architecture/00_preface.md), the architecture record rewritten from the ground up.
 >
 > → [Release Notes — Tron](releases/tron.md)
 
