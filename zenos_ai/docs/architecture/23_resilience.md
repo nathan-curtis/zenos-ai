@@ -53,14 +53,18 @@ Failure is only survivable if someone can see it.
 graph BT
   NS[zen_summarizer_health] --> M[zen_monastery_health]
   SS[zen_supersummary_health] --> M
-  L[zen_label_health] --> R[binary_sensor.flynn_system_ready]
-  C[zen_cabinet_health] --> R
-  M --> R
-  R --> A[zen_agent_health]
-  F[zen_flynn_health] -. boot gate status .- R
+  L[zen_label_health] --> F[zen_flynn_health]
+  C[zen_cabinet_health] --> F
+  M --> F
+  L --> R[binary_sensor.flynn_system_ready]
+  C --> R
+  M -. "only error or critical blocks" .-> R
+  L --> A[zen_agent_health]
+  C --> A
+  B["agent checks<br/>conversation agent, default AI cabinet"] --> A
 ```
 
-`sensor.zen_agent_health` names the blocking gate for each agent and is the first place to look when Friday will not start. Flynn's `current_gate` and `next_step` attributes name the exact boot failure in plain language. `sensor.zen_prompt_health` and `sensor.zen_prompt_length` watch the prompt itself.
+The three top-level sensors answer three different questions, and keeping them separate is deliberate. `sensor.zen_agent_health` answers whether an agent can boot: it rolls up labels, cabinets, and the agent checks, and nothing else. The Monastery does not affect it, so a summarizer outage never makes a perfectly bootable agent look broken; the Monastery appears only as a non-blocking note in its `reason`. It is the first place to look when Friday will not start. `sensor.zen_flynn_health` is the infrastructure rollup of labels, cabinets, and the Monastery, and its `current_gate` and `next_step` attributes name the exact boot failure in plain language. `binary_sensor.flynn_system_ready` needs labels and cabinets healthy and a Monastery that is not in error; a Monastery that is degraded or switched off does not hold readiness back. `sensor.zen_prompt_health` and `sensor.zen_prompt_length` watch the prompt itself.
 
 **Events carry the rest.** Failures emit `zen_event` kinds (`ninja_failure`, `monk_failure`, `emission_suppressed`, and others). `zen_dojotools_systemtools` provides the health report, the log viewer, and log search, and `zen_dojotools_manifest mode=audit` reports drift between what tools declare and what they do.
 

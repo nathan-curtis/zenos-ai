@@ -414,7 +414,7 @@ Flynn handles the full rebuild sequence automatically.
 |---|---|
 | Not sure what's wrong | `script.zen_dojotools_systemtools tool: zen_health_report` |
 | Your AI won't wake up | `sensor.zen_agent_health` → `roster` attr |
-| `zen_agent_health: warn` on fresh install | Expected — OOBE pending and/or summarizers disabled. Continue to [First Run](first_run.md). |
+| `zen_agent_health` not `ok` on fresh install | Read its `reason` attribute. The summarizers do not affect this sensor. `error` usually means the conversation agent helper is unset or unavailable, or the default AI cabinet is not assigned yet; `warn` means a label problem (see `zen_label_health`). |
 | `monastery: disabled` on fresh install | Kill switches ship off. Enable in Settings → Helpers: `zen_summarizers_enabled` (master), `zen_ninja_summarizer_enabled`, `zen_supersummarizer_enabled`. |
 | Summaries stopped | Run `script.zen_dojotools_systemtools tool: pipeline`, then check kill switches |
 | Summarizer health shows `disabled` | Kill switch is off — intentional state. Enable the relevant switch; autofire restarts it. |

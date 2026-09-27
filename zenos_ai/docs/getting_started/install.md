@@ -256,9 +256,21 @@ Check these sensors in **Developer Tools → States**:
 |---|---|
 | `sensor.zen_label_health` | `ok` |
 | `sensor.zen_cabinet_health` | `ok` |
-| `sensor.zen_agent_health` | `ok` after OOBE + summarizers enabled — `warn` is normal on first boot |
+| `sensor.zen_agent_health` | `ok` once an agent can boot: the conversation agent from Step 5 is set and available, and the default AI cabinet exists |
+| `sensor.zen_monastery_health` | `disabled` on a fresh install. The summarizers ship off and you enable them during first run. |
 
-If `sensor.zen_agent_health` shows `warn` with `reason: Summarizers disabled` — that's intentional, they ship off. Continue to [first_run.md](first_run.md) to complete OOBE and enable the pipeline.
+`sensor.zen_agent_health` answers one question: can an agent boot? It rolls up label health, cabinet health, and the agent checks, and nothing else. The summarizers do not affect it. A disabled or degraded Monastery shows in `sensor.zen_monastery_health` and `sensor.zen_flynn_health`, and in the agent sensor's `reason` attribute as a non-blocking note.
+
+If `sensor.zen_agent_health` is not `ok`, its `reason` attribute says why:
+
+| State | Usual reason | What to do |
+|---|---|---|
+| `error` | "Conversation agent not configured or unavailable" | Set `input_text.zenos_conversation_agent` (Step 5) to an available `conversation.*` entity |
+| `error` | "No bootable agent found" | The default AI cabinet is not assigned yet. Let Flynn finish, then run [first run](first_run.md) |
+| `warn` | A label health problem | Check `sensor.zen_label_health` and its attributes |
+| `critical` | Labels or cabinets in a critical state | Check `sensor.zen_flynn_health`; its `next_step` attribute says what to fix |
+
+Continue to [first_run.md](first_run.md) to complete OOBE and enable the summarizers.
 
 If any other sensor shows `warn` or `error`, check its attributes for detail. Flynn will attempt self-repair on the next HA restart or health sensor change.
 
