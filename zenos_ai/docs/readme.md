@@ -176,7 +176,7 @@ The Book of Friday, Volume 2, is the architecture record for ZenOS-AI as it ship
 * [Context Construction](architecture/17_context_construction.md): how the agent's prompt is built
 * [Certification](architecture/19_certification.md): certification, scope, and denials
 * [Resilience](architecture/23_resilience.md): health sensors and failure handling
-* [Developer Standards](architecture/24_developer_standards.md): component classes and the tool contract
+* [Developer Standards](architecture/24_developer_standards.md): the architectural rules, with the full working standard in [developer_standards.md](developer_standards.md)
 * [Room Manager v3 Reference](architecture/25_room_manager_v3.md): the state cascade and REFLEX from the architecture side (the operator-facing version is `getting_started/room_manager_operators_manual.md`)
 * [Findings](architecture/26_findings.md): what we found, and what to do with it
 
