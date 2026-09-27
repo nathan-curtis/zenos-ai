@@ -88,6 +88,12 @@ Here is the first level passing on a real install, and notice what is missing:
 
 *Friday asked "What do you know about our HVAC?" She finds the parts by label and reports them accurately, including that no setpoint is being reported rather than inventing one. What she does not do is judge any of it against normal. That judgment is the second level, and it comes from a drawer that says what normal looks like for this system. This is the first level passing, and the second waiting on the scrapbook. Real 2026.10.0 output, September 2026.*
 
+And here is the same question about a system whose drawer does say what normal looks like:
+
+<!-- screenshot: ch01_grandma_test_electrical.png -->
+> **Screenshot to come.** Friday asked what she knows about the electrical system. With a context drawer describing normal, she does not just report readings; she judges them. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
 ## 1.7 Where this book puts them
 
 | | What it is in ZenOS | Where |
