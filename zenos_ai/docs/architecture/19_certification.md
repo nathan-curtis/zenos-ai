@@ -66,6 +66,8 @@ Certifications are stored on the AI persona that holds them: the persona's cabin
 | `scope` | Optional per-target scope entries (19.5). |
 | `constraints` | Optional additional restrictions, interpreted by the consuming tool. |
 
+> **Not yet built. In progress.** Certifications move out of the persona's cabinet into a secure enclave cabinet built only to hold them. Nothing outside the enclave reads a certification directly. A caller gets controlled access through a representative token instead: salted and hashed to the Home Assistant session ID, and expiring with that session. The certification never leaves the enclave; the token stands in for it while the session lasts. It is also the missing half of session binding (Chapter 18): a token bound to a session is what lets the session, rather than a default, decide whose certifications apply.
+
 `zen_dojotools_identity mode=cert_list` answers two questions in one call: what certifications exist (the live catalog) and what the resolved caller actually holds.
 
 > **Not yet built.** Certifications do not expire and are not checked against a revocation list at use time. A grant stays in force until it is revoked explicitly. Expiry and lifecycle are design direction.

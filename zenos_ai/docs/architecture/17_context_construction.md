@@ -89,7 +89,7 @@ Here is that sensor on a live install:
 
 For scale: in the reference household (Appendix F), one sampled frame was 49,868 characters. The system section and the Katas were about three quarters of it. The index describing more than a thousand labels was under 5,000.
 
-> **Not yet built.** The frame carries a `session_token` field with a fixed placeholder value. It is not a real session credential and nothing validates it. Real session binding is covered in Chapter 18.
+> **Not yet built.** The frame carries a `session_token` field with a fixed placeholder value. It is not a real session credential and nothing validates it. Real session binding is covered in Chapter 18. The session-bound token from the certificate enclave (Chapter 19), in progress, is what gives session binding a real credential.
 
 The frame is the twin as one agent sees it. Which parts of the graph that agent may act on is a different question, and it is the one Part V answers, starting with who the agent is.
 

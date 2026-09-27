@@ -64,7 +64,7 @@ Identity resolution delegates to an authentication root, `zen_root_authentik`. T
 
 Whether simulated identity is acceptable is a whole-install policy, not a per-tool choice. It lives in the household cabinet at `integrations_config.identity.sim_mode_allowed`, and the factory stamps an explicit value into it on every install. The default is `false`. When simulated identity is not allowed, `resolve_caller_identity` returns `policy_status: blocked`, and every certification check fails closed.
 
-> **Not yet built.** There is no cryptographic binding between an MCP session and a specific persona cabinet. Every call currently resolves to the default agent, so "authorized" means "the default agent holds this certification." `caller_token` is threaded through the tool surface and returned unchanged, and `caller_id` is free-text audit metadata. Neither is an identity claim, and nothing may treat them as one. When real session binding replaces the stub, every tool inherits per-principal evaluation through the same chokepoint without changes of its own.
+> **Not yet built.** There is no cryptographic binding between an MCP session and a specific persona cabinet. Every call currently resolves to the default agent, so "authorized" means "the default agent holds this certification." `caller_token` is threaded through the tool surface and returned unchanged, and `caller_id` is free-text audit metadata. Neither is an identity claim, and nothing may treat them as one. When real session binding replaces the stub, every tool inherits per-principal evaluation through the same chokepoint without changes of its own. The planned path is the certificate enclave's session-bound token (Chapter 19), which is in progress.
 
 ## 18.5 The identity manifest
 
