@@ -51,7 +51,7 @@ Start with the [Preface](00_preface.md). It states the thesis the rest of the bo
 
 ## Appendices
 
-27. [Appendices](27_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, and the Friday's Party index.
+27. [Appendices](27_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, the Friday's Party index, and the research cited.
 
 ## Beyond the book
 

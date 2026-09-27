@@ -224,6 +224,34 @@ Related sources:
 * "A general problem with AI", post 6 ([post](https://community.home-assistant.io/t/a-general-problem-with-ai/1026421/6)): build a box and a scrapbook. Chapter 1.
 * [Cognitive architectures whitepaper](../research/whitepaper_cognitive_architectures.md): the first CoALA mapping. Chapter 4.
 
+## H. Research cited
+
+Every study the book cites, with a link to the paper. The year is the first public version.
+
+* Brown, T. B., et al. (2020). [Language Models are Few-Shot Learners](https://arxiv.org/abs/2005.14165).
+* Holtzman, A., et al. (2019). [The Curious Case of Neural Text Degeneration](https://arxiv.org/abs/1904.09751).
+* Hong, K., Troynikov, A., and Huber, J. (2025). [Context Rot: How Increasing Input Tokens Impacts LLM Performance. Chroma](https://www.trychroma.com/research/context-rot).
+* Hsieh, C.-P., et al. (2024). [RULER: What's the Real Context Size of Your Long-Context Language Models?](https://arxiv.org/abs/2404.06654).
+* Huang, L., et al. (2023). [A Survey on Hallucination in Large Language Models: Principles, Taxonomy, Challenges, and Open Questions](https://arxiv.org/abs/2311.05232).
+* Ji, Z., et al. (2022). [Survey of Hallucination in Natural Language Generation](https://arxiv.org/abs/2202.03629).
+* Kadavath, S., et al. (2022). [Language Models (Mostly) Know What They Know](https://arxiv.org/abs/2207.05221).
+* Kalai, A. T., et al. (2025). [Why Language Models Hallucinate](https://arxiv.org/abs/2509.04664).
+* Kong, A., et al. (2023). [Better Zero-Shot Reasoning with Role-Play Prompting](https://arxiv.org/abs/2308.07702).
+* Lewis, P., et al. (2020). [Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks](https://arxiv.org/abs/2005.11401).
+* Li, C., et al. (2023). [Large Language Models Understand and Can be Enhanced by Emotional Stimuli](https://arxiv.org/abs/2307.11760).
+* Liu, N. F., et al. (2023). [Lost in the Middle: How Language Models Use Long Contexts](https://arxiv.org/abs/2307.03172).
+* Ouyang, L., et al. (2022). [Training language models to follow instructions with human feedback](https://arxiv.org/abs/2203.02155).
+* Sclar, M., et al. (2023). [Quantifying Language Models' Sensitivity to Spurious Features in Prompt Design](https://arxiv.org/abs/2310.11324).
+* Shi, F., et al. (2023). [Large Language Models Can Be Easily Distracted by Irrelevant Context](https://arxiv.org/abs/2302.00093).
+* Shuster, K., et al. (2021). [Retrieval Augmentation Reduces Hallucination in Conversation](https://arxiv.org/abs/2104.07567).
+* Sumers, T. R., et al. (2023). [Cognitive Architectures for Language Agents. Transactions on Machine Learning Research, 2024](https://arxiv.org/abs/2309.02427).
+* Vaswani, A., et al. (2017). [Attention Is All You Need](https://arxiv.org/abs/1706.03762).
+* Wen, B., et al. (2024). [Know Your Limits: A Survey of Abstention in Large Language Models](https://arxiv.org/abs/2407.18418).
+* Xu, B., et al. (2023). [ExpertPrompting: Instructing Large Language Models to be Distinguished Experts](https://arxiv.org/abs/2305.14688).
+* Xu, Z., et al. (2024). [Hallucination is Inevitable: An Innate Limitation of Large Language Models](https://arxiv.org/abs/2401.11817).
+* Yao, S., et al. (2022). [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629).
+* Zheng, M., et al. (2023). [When "A Helpful Assistant" Is Not Really Helpful: Personas in System Prompts Do Not Improve Performances of Large Language Models](https://arxiv.org/abs/2311.10054).
+
 <!-- nav -->
 ---
 
