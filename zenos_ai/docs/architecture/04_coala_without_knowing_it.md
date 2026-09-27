@@ -63,7 +63,7 @@ The code even uses the vocabulary without meaning to. The certificate that gates
 
 ## 4.4 What the convergence means
 
-Two efforts starting from different places, a cognitive science framework and a home system built by fixing whatever broke next, ended up with the same memory split, the same internal and external action division, and the same loop. I do not think that is coincidence. The problem has a shape. An agent that has to live in a real environment for months, stay grounded, and not forget ends up needing working memory, the three kinds of long-term memory, and a clean line between thinking and acting. Anything that solves the problem seriously is pushed toward that shape.
+Two efforts starting from different places, a cognitive science framework and a home system built by fixing whatever broke next, ended up with the same memory taxonomy, the same internal and external action division, and the same loop, with durable episodic memory the one piece ZenOS is still completing. I do not think that is coincidence. The problem has a shape. An agent that has to live in a real environment for months, stay grounded, and not forget ends up needing working memory, the three kinds of long-term memory, and a clean line between thinking and acting. Anything that solves the problem seriously is pushed toward that shape.
 
 The part ZenOS adds, authority as graph traversal, is what the problem looks like once the environment is someone's home.
 

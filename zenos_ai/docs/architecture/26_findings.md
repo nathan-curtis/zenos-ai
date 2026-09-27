@@ -12,7 +12,7 @@ I started this to answer a question I could not answer with slides: can you buil
 
 **The graph is already there.** Home Assistant holds a far richer model of a home than it presents. Treat labels as hyperedges and a flat pile of entities becomes a connected world that an agent can query by meaning. The ontology does not have to be invented. It has to be written down where the agent can read it (Chapters 7 and 11).
 
-**The shape is convergent.** Built entirely from fixing what broke, ZenOS arrived at the same architecture a cognitive science framework describes: working memory, three kinds of long-term memory, and a clean line between thinking and acting. I did not plan that, which is why I trust it. The problem has a shape, and a serious answer gets pushed toward it (Chapter 4).
+**The shape is convergent.** Built entirely from fixing what broke, ZenOS arrived at the same architectural shape a cognitive science framework describes: working memory, the same taxonomy of long-term memory (with durable episodic memory still being completed), and a clean line between thinking and acting. I did not plan that, which is why I trust it. The problem has a shape, and a serious answer gets pushed toward it (Chapter 4).
 
 **Identity is what an agent can reach.** An agent's name tells you nothing about what it will do, and a persona prompt is advice. What actually determines an agent's behavior in a house is which parts of the graph it can walk. Certification, scope, and live acknowledgement turned out to be one idea: which edges an agent may traverse, and when a human has to say yes. That is the one piece the cognitive architecture literature does not supply, and it is the one a home cannot do without (Part V).
 
