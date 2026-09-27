@@ -4,6 +4,8 @@ A principal is anything that can be the subject of an identity check: a person, 
 
 Identity began as an onboarding plan: interview the household, seed a persona from the answers, verify it, and seal it. The first persona schema needed only a name and an ID, with everything else filled by defaults, so an agent could exist before it was fully described. The household, family, and user cabinets came from the same work. An agent that lives in a house has to know whose house it is.
 
+This is also the part of ZenOS I came to with the most background. In a former life I was a Microsoft field engineer for identity, messaging, and core infrastructure. I speak PKI natively, and I have designed several hardware-backed public key infrastructures, some of which, as far as I know, are still operational. That is why everything in Part V is shaped the way it is: certification names shaped like OIDs, certification entries shaped like certificates, an identity root shaped like OIDC, and a certificate store headed for an enclave (Chapter 5). I know what it costs to retrofit an identity system that was not built for where it is going, and I would rather not.
+
 ## 18.1 Principals are cabinets
 
 Every principal is backed by a cabinet, and the cabinet's type label says what kind of principal it is:
