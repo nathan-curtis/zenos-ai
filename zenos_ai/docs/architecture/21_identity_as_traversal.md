@@ -1,6 +1,6 @@
 # 21. Identity as Traversal
 
-The preface stated the thesis: an agent's identity emerges from the graph connections it can realize. Chapters 18 through 20 described the mechanics. This chapter puts them back together and shows that they are one idea, not four.
+The preface stated the thesis: an agent's operational identity emerges from the graph connections it can realize. Chapters 18 through 20 described the mechanics. This chapter puts them back together and shows that they are one idea, not four.
 
 This is where the newest idea in the thread lands. The agent is never handed the house. It is handed a resolved version of the house, rebuilt each turn from the systems that actually know it, and bounded by what it is allowed to touch. That is why I turned the label system into a hypergraph with cabinet drawers as nodes in it: the same structure that builds the agent's world decides what it may reach.
 

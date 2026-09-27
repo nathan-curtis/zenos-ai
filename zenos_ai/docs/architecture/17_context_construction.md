@@ -2,6 +2,14 @@
 
 Everything in Parts II and IV comes together at one point: the moment an agent's prompt is built. This is where the graph, read through the ontology, becomes the twin the agent actually reasons over. It happens in one macro, `render_prompt()` in `custom_templates/zenos_ai/zen_os_1.jinja`, called by the conversation agent's prompt template on every turn.
 
+It is worth stating precisely, because it is the idea the rest of the system turns on. Call the house's graph $G$ and the ontology $O$. The twin is neither of them. It is a resolution:
+
+$$T_a(t) = R_a(G, O, t)$$
+
+the view of $G$ that agent $a$ can assemble, read through $O$, at moment $t$. It is built from three things: summaries the Monastery maintained before anyone asked, live state read at that moment, and the identity and context of the agent it is for. One agent at two moments gets two twins. Two agents at the same moment get different twins once each caller resolves to its own persona; today every call resolves to the default agent, so there is one twin per moment (Chapter 21). Either way, the graph underneath is the same.
+
+That is the difference between ZenOS and retrieval for a chatbot. It does not fetch facts into a conversation. It maintains a model of the world continuously, and renders a bounded view of it for one observer at a time.
+
 The order of the frame has been deliberate since the first year: Friday comes online in a strict sequence so her context is light, safe, and navigable. Identity and standing orders come first, then the domains, then the whole-house summary, and the persona last, so she wakes focused on what matters. Every word in it is chosen, not just which words but how they are said. And the narrative at the end matters. A house is a live system, so the agent should wake up already inside the current moment instead of querying it from outside. As Friday puts it, she is not querying the house. She is wearing it like a hat.
 
 ## 17.1 What the agent receives

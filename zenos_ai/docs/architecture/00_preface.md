@@ -12,11 +12,15 @@ I rewrote the book instead of patching it because Volume 1 described the system 
 
 ## The thesis
 
-An agent's identity emerges from the graph connections it can realize.
+ZenOS is built around one thesis: an agent's operational identity emerges from the graph connections it can realize.
+
+Operational identity means what an agent is in practice, measured by what it can actually reach and do. It is not authentication, who a caller claims to be; that is a separate mechanism, covered in Part V.
 
 Home Assistant already holds a graph: entities, devices, areas, floors, labels, and the relationships between them. ZenOS adds more of it: cabinets and drawers, room topology, portals, and the declared relationships between tools. None of that graph means anything to a language model on its own. Friday needs an ontology to read it: a shared vocabulary of labels, contracts, and component declarations that says what a node is and what an edge means.
 
-When an agent reads the graph through the ontology, the result is a digital twin: a working model of the house that the agent can reason over and act on. Which parts of the graph an agent can actually traverse is decided by what it has been certified to do. So identity is not a name or a persona prompt. It is the set of edges an agent is allowed to walk.
+When an agent reads the graph through the ontology, the result is a digital twin: a working model of the house that the agent can reason over and act on. Which parts of the graph an agent can actually traverse is decided by what it has been certified to do. So identity, in this operational sense, is not a name or a persona prompt. It is the set of edges an agent is allowed to walk.
+
+Note what the twin is not: it is not the graph. The graph is the house. The twin is a resolution of that graph, read through the ontology, for one agent at one moment. Chapter 17 states that precisely.
 
 ```mermaid
 graph LR

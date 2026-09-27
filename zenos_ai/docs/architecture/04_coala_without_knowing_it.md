@@ -22,7 +22,7 @@ graph TB
     F["render_prompt() frame"]
   end
   subgraph LTM["Long-term memory"]
-    E["Episodic<br/>Katas, zen_summary,<br/>zen_event"]
+    E["Episodic (short-horizon)<br/>Katas, zen_summary,<br/>zen_event"]
     S["Semantic<br/>cabinets, labels,<br/>index, topology"]
     P["Procedural<br/>KFCs, tool contracts,<br/>directives"]
   end
@@ -40,7 +40,7 @@ graph TB
 | CoALA | ZenOS | Where |
 |---|---|---|
 | Working memory | The prompt frame assembled every turn: identity, directives, manifest, roster, index, Katas, capsule, overview | Chapter 17 |
-| Episodic memory | Component Katas and their `events`, `zen_summary`, the `zen_event` stream | Chapters 14, 15, 23 |
+| Episodic memory | Today, short-horizon episodic state: component Katas and their `events`, `zen_summary`, the `zen_event` stream. These carry recent experience and continuity, not durable remembered experience; the history cabinet is what completes the category | Chapters 14, 15, 23 |
 | Semantic memory | Cabinets and drawers, the label graph and its index, room topology | Chapters 7, 8, 9 |
 | Procedural memory | KFC definitions (how to summarize a domain), tool contracts and manifests (how to use a capability), system directives (how to behave) | Chapters 12, 13, 14 |
 | Internal action: retrieval | Index, Library and the Lens Bus, FileCabinet reads | Chapters 7, 8, 13 |
@@ -80,7 +80,7 @@ flowchart TD
   TK --> SS
   subgraph MEM["Memory"]
     SEM["Semantic<br/>cabinets, labels, index"]
-    EPI["Episodic<br/>Katas, zen_summary, zen_event"]
+    EPI["Episodic (short-horizon)<br/>Katas, zen_summary, zen_event"]
     PRO["Procedural<br/>KFCs, contracts, directives"]
   end
   subgraph SELF["Self model"]
