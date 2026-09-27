@@ -70,7 +70,7 @@ A write reports `write_verified`: whether the value actually persisted when read
 
 Reserved drawers (keys beginning with `_`, and the header) are protected from ordinary writes and from garbage collection. `zen_dojotools_filecabinet_gc` removes expired drawers on a schedule and leaves reserved ones alone.
 
-> **Not yet built.** FileCabinet has no certification gate. Because every other part of ZenOS depends on it at boot, gating it needs its own security-class design rather than a bolt-on, and changes to it have to land without breaking a single running install. FileCabinet's single-exit pass, envelope, and certification gate are the scope of 2026.11.0 'This Is Spinal Tap'.
+> **Not yet built.** FileCabinet has no certification gate. Because every other part of ZenOS depends on it at boot, gating it needs its own security-class design rather than a bolt-on, and changes to it have to land without breaking a single running install. FileCabinet's single-exit pass, envelope, and certification gate are the scope of 2026.11.0 'This Is Spinal Tap'. That work includes two rules for the graph: following a mount confers no authority, so a target reached through soft links is checked exactly as if it were reached directly, and security is resolved before a LiveDrawer's tool call runs (Chapter 21).
 
 Between them, labels and cabinets say what every thing is and what the system knows about it. Neither says how the rooms of the house relate to each other, which is the last piece of the graph.
 

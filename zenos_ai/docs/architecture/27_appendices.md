@@ -130,7 +130,7 @@ Every "Not yet built" box in the book, in one place.
 |---|---|---|
 | 4 | History cabinet as long-term episodic memory | In active development |
 | 4 | Self model layers (drives and values, meta-awareness); trajectory and prediction in SuperSummary | Design direction |
-| 8 | FileCabinet certification gate, single exit, envelope | Scope of 2026.11.0 'This Is Spinal Tap' |
+| 8 | FileCabinet certification gate, single exit, envelope; no bypass traverse checking through mounts; security resolved before a LiveDrawer target runs | Scope of 2026.11.0 'This Is Spinal Tap' |
 | 10 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
 | 14 | Search and vector backends behind the index, seamless to the agent | Under investigation |
 | 17 | A real `session_token` in the prompt frame | Arrives with session binding |

@@ -70,9 +70,11 @@ graph LR
   H -. "soft: mount" .-> C
 ```
 
+Two rules keep soft links soft. There is no bypass traverse checking: following a mount into another cabinet grants nothing, so reaching a target through a chain of soft links still requires the right to reach that target, the same as reaching it directly. And security is resolved before a LiveDrawer's target runs: a LiveDrawer is a mount whose target is a tool call, so reading one must never run that tool with authority the reader does not hold.
+
 Seen this way, the four kinds of edge in 21.2 are all hard links of different kinds, and soft links are the fabric that lets context move without letting authority move with it. An agent's identity is the set of hard links it can realize. Everything it can merely see is soft.
 
-> **Not yet built.** Certifying a corpus as an object is the direction, not the code. Today certifications name a capability and live in the agent's own cabinet; nothing yet issues a certification whose subject is another cabinet, and cabinets themselves have no certification gate until FileCabinet's arrives in 2026.11.0, 'This Is Spinal Tap'. Soft links exist today as mounts. Cabinet ACLs exist as structure, with owner and partner entries in every cabinet header, but no tool enforces them yet; the hard links enforced today are certifications, scope, and acknowledgement. Household and family membership is resolved but does not gate anything either (21.6).
+> **Not yet built.** Certifying a corpus as an object is the direction, not the code. Today certifications name a capability and live in the agent's own cabinet; nothing yet issues a certification whose subject is another cabinet, and cabinets themselves have no certification gate until FileCabinet's arrives in 2026.11.0, 'This Is Spinal Tap'. Soft links exist today as mounts, and so does the gap the two rules above close: FileCabinet performs no identity check today, so a mount or LiveDrawer is followed with no traversal check and a LiveDrawer's tool call carries no security resolution of its own. Both rules are part of FileCabinet's certification work in 2026.11.0. Cabinet ACLs exist as structure, with owner and partner entries in every cabinet header, but no tool enforces them yet; the hard links enforced today are certifications, scope, and acknowledgement. Household and family membership is resolved but does not gate anything either (21.6).
 
 ## 21.6 Where this is not yet true
 
