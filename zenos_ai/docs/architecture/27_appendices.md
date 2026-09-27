@@ -132,6 +132,7 @@ Every "Not yet built" box in the book, in one place.
 | 4 | Self model layers (drives and values, meta-awareness); trajectory and prediction in SuperSummary | Design direction |
 | 8 | FileCabinet certification gate, single exit, envelope | Scope of 2026.11.0 'This Is Spinal Tap' |
 | 10 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
+| 14 | Search and vector backends behind the index, seamless to the agent | Under investigation |
 | 17 | A real `session_token` in the prompt frame | Arrives with session binding |
 | 18 | Partner-aware authorization | Design direction |
 | 18 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |

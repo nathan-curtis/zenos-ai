@@ -6,6 +6,8 @@ The Monastery exists because of a bill. Early on, the whole interactive prompt w
 
 It is also where retrieval lives. I am not against retrieval. I think it belongs downstream, not at the front of an agent that runs a house. History and memory are gathered and reduced here, before the agent sees anything, so retrieval becomes part of the system's intelligence instead of the agent's burden.
 
+> **Not yet built.** Search and vector backends that plug in behind the index are under investigation. The exact mechanism is deliberately left open, to be whatever serves each tool best. What is not open is how it looks to the agent: search and retrieval are one seamless capability, always, however many backends sit behind them.
+
 ## 14.1 The pipeline
 
 ```mermaid

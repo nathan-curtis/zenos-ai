@@ -76,7 +76,7 @@ Summarizing one domain is a small, well-defined job that a small local model can
 
 The lore grew to match. The workers were monks, their results were Katas posted to an archive, and the local model directing them was Kronk, promoted to curator of the Monastery. His instructions carried a mantra that has stayed with the project ever since: it is OK not to know, and unforgivable to knowingly be wrong.
 
-A year later, when people asked why ZenOS does not just bolt a retrieval system onto the front of the agent, the Monastery was the answer. I am not against retrieval. It belongs in the system, downstream, where history and memory are gathered and reduced before the agent sees them, so retrieval becomes part of the system's intelligence instead of the agent's burden. The Monastery, the Katas, and the scheduler are Chapters 14, 15, and 22.
+A year later, when people asked why ZenOS does not just bolt a retrieval system onto the front of the agent, the Monastery was the answer. I am not against retrieval. It belongs in the system, downstream, where history and memory are gathered and reduced before the agent sees them, so retrieval becomes part of the system's intelligence instead of the agent's burden. In fact I am investigating search and vector options to plug in behind the index right now. I am deliberately not saying what form they take, because the right mechanism depends on the tool. The one rule is fixed: to the agent, search and retrieval are one thing, always. The Monastery, the Katas, and the scheduler are Chapters 14, 15, and 22.
 
 ## 3.8 From templates to tools
 
