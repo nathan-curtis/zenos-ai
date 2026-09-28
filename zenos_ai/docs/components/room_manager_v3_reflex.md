@@ -196,7 +196,7 @@ never requires touching either file.
 | `engaged` | media_player(s), monitored docks | Drives `engaged` on start; on stop, arms the shared timer's engaged→occupied decay |
 | `asleep` / `bed_occupancy` | Sleep-detection sensor(s) | Drives `asleep` |
 | `hold` | Any binary_sensor/cover | Floors at `occupied` while true, no clock, instant fall-through on close ("fridge door mode") |
-| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §25.7](../architecture/25_room_manager_v3.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. `checking`/`checking_timer` no longer exist. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
+| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §25.7](../architecture/25_room_manager_v3.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
 | `wasp_enabled` | The room's Area, OR any entity carrying the room's label | Room-level opt-in gate — a room needs this AND at least one `wasp_door`-tagged entity before `hold` can ever fire from wasp. Deliberately opt-in: a room connected by an open archway instead of a real door (no way to distinguish "someone's inside with the door shut" from "there is no door") would misfire constantly if wasp were on by default. Read/write via `zen_dojotools_room_manager mode=wasp_enable area=<room>` — omit `wasp_room_enabled=` to read, pass `true`/`false` to write. |
 | `smoke` / `carbon_monoxide` / `moisture` / `siren` | Detector entities | Arms `emergency_latch` — human/agent ack-only clear |
 | `vibration` | Any binary_sensor with a `vibration.detected`/`vibration.cleared` event source | Purpose-neutral by design — this label alone only makes the dispatch resync promptly on vibration edges. To actually feed `occupied`/`engaged`, ALSO apply that label to the same entity (works today with zero code change: `_occ_source_ents`/`_engaged_source_ents` already treat any labeled entity's `on` state as truthy). See `zen_room_manager_dispatch.yaml` ~L590-606. |
@@ -287,7 +287,6 @@ hold (wasp / entertaining / guest / presence) > occupied (or child-occupied, or 
   occupied, not that the parent itself is Engaged. De-escalation is now
   always a single step (occupied → vacant), never two.
 
-`checking` no longer exists as a producible state anywhere in the system.
 
 ---
 

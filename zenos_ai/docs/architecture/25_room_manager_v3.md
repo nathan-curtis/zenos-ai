@@ -33,8 +33,6 @@ emergency > manual override > asleep > engaged > child-engaged
 | `occupied` | Live signal, the shared timer decaying in class `occupied`, a non-vacant child, or an active `hold`-labeled entity (a fridge door: floors the room at occupied with no clock, and falls through the moment it closes). |
 | `vacant` | Nothing is true. |
 
-There is no `checking` tier and no `checking_timer`. A room resolves cleanly or lands in `hold`.
-
 **Direct asleep always wins.** Handlers that rearm a room's timer treat both `hold` and `asleep` as already held, so a motion event in an asleep room (a bathroom trip) cannot rearm the timer into class `occupied`. A child room going occupied cancels the parent's timer only when the parent's own state is outside `asleep` and `hold`. Either guard alone missing would let child activity or stray motion knock a sleeping room down to `occupied`.
 
 ### The shared timer
