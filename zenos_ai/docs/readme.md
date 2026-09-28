@@ -258,7 +258,9 @@ The Library is the glue that holds all subsystems together.
 
 **Folder:** `docs/research/`
 
-Background research and whitepapers.
+Background research and whitepapers, and every source the Book of Friday cites.
+
+* [`readme.md`](research/readme.md): the 23 studies behind the book, grouped by the claim each supports, with the community posts the book draws on
 
 * [`whitepaper_cognitive_architectures.md`](research/whitepaper_cognitive_architectures.md) – Theory behind the Monastery, Summarizers, and Cabinets
 
