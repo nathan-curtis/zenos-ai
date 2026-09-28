@@ -522,6 +522,12 @@ Model guidance for background summarization:
 
 Pull requests, issues, and tasteful memes welcome.
 
+Before you build a component or send a pull request, read the developer guide:
+
+* [Developer Standards](zenos_ai/docs/developer_standards.md): component classes, Stripes, exposure, the tool contract (manifest, envelope, help, certification), packaging, and the review checklist a new component is held to.
+* [The Book of Friday, Chapter 24](zenos_ai/docs/architecture/24_developer_standards.md): the same rules in short form, with why they exist.
+* [HALMark](https://github.com/nathan-curtis/HALMark): the standard for Home Assistant code written with an LLM. If a model wrote it, it gets checked against HALMark.
+
 If ZenOS-AI saved you time or made you laugh:
 
 [https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis)
