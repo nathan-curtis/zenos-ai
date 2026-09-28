@@ -106,9 +106,11 @@ A tool that refuses an action for lack of certification builds its answer with t
 
 Here is a denial as Friday relays it:
 
-<!-- screenshot: ch19_cert_denial.png -->
-> **Screenshot to come.** Friday asked to unlock an exterior lock without holding lock_control. She can call the tool, and it refuses her, with the reason and how to request the certificate. Real 2026.10.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch19_cert_denial.jpg" width="420" alt="Friday reports that Spotify is paused on a speaker, showing a different track than the requested playlist. Asked to switch to the playlist, she replies that playback control is locked behind the media-playback certification, so the playlist did not start and the speaker is unchanged." />
+</p>
+
+*Friday asked to switch a speaker to a playlist without holding `zenos.media.playback_control`. She calls Media Manager, it refuses, and she relays the refusal plainly: which certification is missing, that nothing started, and that the device is unchanged. Real 2026.10.0 output, September 2026; a device name redacted.*
 
 `can_request` is computed centrally from the identity policy alone: true unless the caller's identity was itself blocked. No tool decides for itself whether a caller is eligible to ask. A tool requires the certification. Whether the caller may request it is the certification system's question, answered in one place.
 
