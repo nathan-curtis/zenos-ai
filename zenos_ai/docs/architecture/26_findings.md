@@ -42,11 +42,13 @@ And there is a larger claim this book deliberately does not make yet, about what
 
 Everything in this book is plumbing: cabinets, labels, summaries, contracts, certificates. None of it is what anyone notices. What they notice is that when they ask Friday about the house, she already knows, she knows why, and she knows what she is and is not allowed to do about it.
 
-This is what that looks like on an ordinary morning:
+This is what that looks like on an ordinary night:
 
-<!-- screenshot: ch26_good_morning.png -->
-> **Screenshot to come.** Friday greeted with "Good morning." She opens already inside the moment, with what is actually going on in the house. Real 2026.10.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch26_good_morning.jpg" width="400" alt="Asked how she is doing and what is going on, Friday says systems are steady and the house is quiet in its late-night mode, and that the dryer finished a cycle an hour ago. Asked for anything else, she flags a garage freezer running warm, a redacted personal item, and a high electrical load." />
+</p>
+
+*Friday asked "How you doing? What's going on?" She answers from inside the moment, not from a lookup: the house's mode, a finished dryer cycle, and, when asked for more, a freezer running above target, a personal item (redacted here), and the electrical load. The redacted item is the case filtering at the source exists for (Chapter 21): once it lands, a household member's personal information appears only for a principal allowed to read it. Real 2026.10.0 output, September 2026; a name and personal health details redacted.*
 
 That is the whole point. She is not querying the house.
 
