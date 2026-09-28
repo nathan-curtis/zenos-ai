@@ -388,7 +388,7 @@ hand): `zen_dojotools_room_manager mode=reflex_wire area=<room>` — shows
 candidate scenes already matched by name/label/area_id, the full
 `wired_matrix` (every state × every daypart, same resolution REFLEX itself
 uses), and `tier_status` per state (`wired`/`inherited` = covered, `gap` =
-worth wiring, `ok_by_design` = `checking`/`paused`/`automation`, which
+worth wiring, `ok_by_design` = `paused`/`automation`, which
 legitimately have nothing to wire). Omit `area=` for a whole-home rollup.
 
 **Writing an assignment**: `reflex_assignments` takes a list of JSON
