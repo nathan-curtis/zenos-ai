@@ -47,7 +47,7 @@ ZenOS signals over one Home Assistant event, `zen_event`, distinguished by `kind
 |---|---|
 | Dispatch | `dojotool_call`, `dojotool_return`, `dojotool_dispatch_error` |
 | Monastery | `summary_force`, `ninja_force`, `supersummary_force`, `gc_force`, `summarizer_start`, `summarizer_skip`, `summarizer_run_blocked`, `supersummary_run_blocked`, `summarizer_size_exceeded`, `ninja_failure`, `ninja_context_overflow`, `monk_failure`, `kata_emit`, `kata_gc_complete` |
-| Escalation | `emission_suppressed`, `action_emission_blocked` |
+| Escalation | `emission_suppressed`, `action_emission_blocked`, `urgency_handler_dedup_tag_failed` |
 | Room state | `room_state_changed`, `room_control_request`, `reflex_dry_run`, `watchdog_kill` |
 | Graph upkeep | `label_mutation`, `entity_area_mutation`, `identity_manifest_rebuild`, `deferred_script_reload`, `deferred_reload_all` |
 | Cabinets | `cabinet_mounted`, `cabinet_dismounted`, `cabinet_boot_touch`, `cabinet_vi_degraded`, `cabinet_vi_repaired` |

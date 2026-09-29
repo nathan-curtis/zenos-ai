@@ -1,6 +1,12 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.4.3
+# Version: 5.4.4
+#
+# v5.4.4
+#   + zen_dojotools_urgency_handler dedup: a title-match search fallback
+#     when the tag search finds nothing (the title is set deterministically
+#     at creation), and the tag write's result is checked, firing
+#     urgency_handler_dedup_tag_failed on failure.
 #
 # v5.4.3 (2026-09-23)
 #   + no-signal guard handles explicit nulls. _uh_attention/_uh_suggested
@@ -364,6 +370,8 @@ automation:
                   # suggested_act_event slug are the only stable signal of
                   # an actual state change; free text is cosmetic.
                   _uh_content_sig: "{{ 'u=' ~ _uh_urgency ~ '|s=' ~ _uh_suggested }}"
+              - variables:
+                  _uh_title: "Action required — {{ _uh_component if _uh_component != '' else 'unknown component' }}"
               - action: script.zen_dojotools_servicedesk
                 continue_on_error: true
                 data:
@@ -375,6 +383,21 @@ automation:
                   _uh_existing: "{{ _uh_existing.get('result', _uh_existing) if _uh_existing is mapping else _uh_existing }}"
               - variables:
                   _uh_existing_ids: "{{ _uh_existing.get('ticket_ids', []) if _uh_existing is mapping else [] }}"
+              # Title-match fallback: the title is set deterministically at
+              # creation with no separate write step, so an exact-title search
+              # finds an open ticket even when its dedup tag is missing.
+              - if: "{{ _uh_existing_ids | length == 0 }}"
+                then:
+                - action: script.zen_dojotools_servicedesk
+                  continue_on_error: true
+                  data:
+                    mode: ticket_search
+                    input_json: >-
+                      {{ {'query': 'title:"' ~ _uh_title ~ '"', 'states': ['new', 'open']} | tojson }}
+                  response_variable: _uh_existing_by_title
+                - variables:
+                    _uh_existing_by_title: "{{ _uh_existing_by_title.get('result', _uh_existing_by_title) if _uh_existing_by_title is mapping else _uh_existing_by_title }}"
+                    _uh_existing_ids: "{{ _uh_existing_by_title.get('ticket_ids', []) if _uh_existing_by_title is mapping else [] }}"
               - choose:
                 - conditions: "{{ _uh_existing_ids | length > 0 }}"
                   sequence:
@@ -452,7 +475,7 @@ automation:
                   - action: script.zen_dojotools_taskmaster
                     data:
                       mode: task_create
-                      item: "Action required — {{ _uh_component if _uh_component != '' else 'unknown component' }}"
+                      item: "{{ _uh_title }}"
                       chore: false
                       priority: "{{ _uh_priority }}"
                       note: "{{ _uh_note }}"
@@ -464,10 +487,27 @@ automation:
                     then:
                     - action: script.zen_dojotools_servicedesk
                       continue_on_error: true
+                      response_variable: _uh_tag_result
                       data:
                         mode: ticket_tag
                         input_json: >-
                           {{ {'ticket_id': _result.get('ticket_number', ''), 'tag': _uh_dedup_tag} | tojson }}
+                    # continue_on_error above would otherwise hide a failed tag
+                    # write; surface it on the event bus so it is debuggable.
+                    - variables:
+                        _uh_tag_result: "{{ _uh_tag_result.get('result', _uh_tag_result) if _uh_tag_result is mapping else _uh_tag_result }}"
+                        _uh_tag_ok: "{{ _uh_tag_result is mapping and _uh_tag_result.get('status', '') == 'success' }}"
+                    - if: "{{ not _uh_tag_ok }}"
+                      then:
+                      - event: zen_event
+                        event_data:
+                          event:
+                            kind: urgency_handler_dedup_tag_failed
+                            component: "{{ _uh_component }}"
+                            ticket_number: "{{ _result.get('ticket_number', '') }}"
+                            tag: "{{ _uh_dedup_tag }}"
+                            detail: "{{ _uh_tag_result if _uh_tag_result is mapping else {} }}"
+                            severity: warn
 
           # ── zen_dojotools_todo v1 ────────────────────────────────────────
           - conditions: "{{ _tool == 'zen_dojotools_todo' and _ver | string == '1' }}"

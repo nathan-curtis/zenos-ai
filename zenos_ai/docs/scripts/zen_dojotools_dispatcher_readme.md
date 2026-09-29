@@ -1,4 +1,4 @@
-# Zen DojoTool Dispatcher — v5.4.3
+# Zen DojoTool Dispatcher — v5.4.4
 
 *Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.0.0.*
 
@@ -128,7 +128,7 @@ One flat `choose` block, one arm per `tool` + `version` pair — no tiering, no 
 
 `zen_dojotools_urgency_handler` is the catch-all triage lane for `action_required=true` events that fall through both `summary_force` (needs `urgency >= drift_threshold`) and the four-layer autonomous-remediation gate (needs `urgency >= push_floor` **and** a non-empty `suggested_act_event`). Those low-urgency, no-automatable-action "needs a human" signals are routed to Taskmaster as a real task (priority scaled from urgency; no Postman push — anything push-worthy already went through the four-layer gate).
 
-- **Dedup.** Every ticket it creates is tagged with a stable per-component tag. Before creating, it searches for an already-open ticket carrying that tag: found → a recurrence note is added to the existing ticket; not found → create, then tag it so the next occurrence finds it.
+- **Dedup.** Every ticket it creates is tagged with a stable per-component tag. Before creating, it searches for an already-open ticket carrying that tag: found → a recurrence note is added to the existing ticket; not found → create, then tag it so the next occurrence finds it. If the tag search finds nothing, it falls back to an exact-title search, since each ticket's title is set deterministically at creation. The tag write is checked after creation, and a failed tag fires `urgency_handler_dedup_tag_failed` so it can be traced.
 - **No-signal guard.** When there's no existing ticket **and** `urgency <= 0` **and** both `attention` and `suggested_act_event` are empty (missing, blank, or explicit `null`), `task_create` is skipped entirely and the handler returns `status: suppressed_no_signal` instead of opening an empty "Action required" ticket.
 - **Ack suppression happens upstream.** A KFC component acknowledged via `zen_dojotools_alertmanager mode=ack` (with `condition_key` = the component's `kata_key`) never reaches this handler — the summarizer suppresses the emission first. See [AlertManager → Acknowledgements](../components/alertmanager.md#acknowledgements).
 
