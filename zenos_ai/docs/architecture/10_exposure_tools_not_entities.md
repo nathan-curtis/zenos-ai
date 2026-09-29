@@ -60,6 +60,8 @@ At no point does the agent need an entity exposed. The tools resolve every targe
 
 AdminTools stay off the agent surface unless a human deliberately exposes one for recovery (Chapter 20). Each tool's manifest declares whether it is meant to be exposed (`mcp_exposed`), and the getting-started guide carries the current exposure list.
 
+Not exposing an entity does not make it disappear. Exposure decides how an agent reaches a thing, not whether the thing exists. An entity that is enabled in Home Assistant but not exposed is still real and current, and the Index and the tools still find it. Cortex 44, 'Open Door', says so to the agent in as many words, because an agent that reads an unexposed entity as missing will tell you your house has less in it than it does.
+
 > **Not yet built.** Even with trimmed descriptions, the full tool surface is sent every turn. A tool-search layer that sends a small set of core tools and lets the agent discover the rest on demand would cut this further. That depends on what Home Assistant's own agent integration supports, and it is likely to be the recommended configuration if it becomes available.
 
 Showing the agent no entities only works if it can make sense of what the tools hand back. A graph an agent cannot interpret is still grandma's box. What makes it readable is an ontology, and that is Part III.

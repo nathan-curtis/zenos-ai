@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.0 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 42.1 · `run_repair` 5.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.0 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 44.2 · `run_repair` 5.1.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -27,7 +27,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.6.0 | No | Inspect, restore, reset, hammer, init, expand_drawer, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 5.2.0 | No | Load versioned Cortex, Directives, and Purpose (v43 = Rule Zero (default/latest), v42 = The Answer, v40 = Room First, v38 = Kata First). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
+| `zen_admintools_prompt_loader` | 44.2 | No | Load versioned Cortex, Directives, and Purpose (v44 = Open Door (default/latest), v43 = Rule Zero, v42 = The Answer). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
 | `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -284,7 +284,7 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
-| `cortex_version` | select | `latest` | `latest` or `43` = Rule Zero (default). `42` = The Answer. `40` = Room First. `38` = Kata First. Only used when `mode=load`. |
+| `cortex_version` | select | `latest` | `latest` or `44` = Open Door (default). `43` = Rule Zero. `42` = The Answer. Only used when `mode=load`. |
 | `ship_zen_system` | boolean | `true` | When ON (default), chains `zen_admintools_kungfu_loader` in factory mode — deploys `zen_system` and `trapper_keeper`. `taskmaster`, `alert_manager`, `camera_manager`, and `security_manager` all self-register via KF5 instead (see each tool's own `mode=kfc_manifest`) and are no longer shipped from here. Turn OFF to load the prompt only, skipping all KFC deployment. |
 | `sim_mode_allowed` | boolean | `false` | Stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level policy switch (see `zen_dojotools_identity resolve_caller_identity`) — `false` (default) fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live. Leave off unless you deliberately want simulated identity resolution accepted platform-wide. |
 | `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
@@ -295,12 +295,11 @@ Use the `cortex_version` field to select which version to load. The three primit
 
 | Version | Codename | Notes |
 |---|---|---|
-| `38` | Kata First | Kata/supersummary hierarchy first. INDEX FIRST elevated. GetLiveContext last resort. |
-| `40` | Room First | Room Manager `home_overview` as spatial map before any room-aware task. |
 | `42` | The Answer | v10.0.0. INSTALLATION OVERRIDE (GetLiveContext blocked). WHO/WHAT/WHEN/WHERE/WHY/HOW tool map. MANAGED MACHINES directive. `inventory` replaces `grocy_helper` in core and domain tools. |
-| `43` / `latest` | Rule Zero | DojoTools supersede all HA built-ins. Not preference. Authority. Domain routing table in directives. Successor to v42 'The Answer'. |
+| `43` | Rule Zero | DojoTools supersede all HA built-ins. Not preference. Authority. Domain routing table in directives. Successor to v42 'The Answer'. |
+| `44` / `latest` | Open Door | v43 plus one clarification: Assist entity exposure is a routing switch, not an existence signal. An entity that is not exposed but is enabled in Home Assistant is still real and current through the Index and DojoTools. Shares v43's Purpose and Directives; only the Cortex changes. |
 
-Selecting `latest` or passing no `cortex_version` loads v43.
+Selecting `latest` or passing no `cortex_version` loads v44. A load writes purpose, directives, cortex, and `os_release` to the system cabinet with a one-second pause between writes, so consecutive `set_variable` events can't overwrite each other.
 
 ### Whitelist Management
 
@@ -394,6 +393,8 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 
 | Version | Change |
 |---------|--------|
+| v5.3.3 | prompt_loader: v44 loads purpose, directives, and `os_release` (cortex 44, Open Door); unreachable v40 branches removed. One-second settle delay between consecutive system-cabinet writes so none is dropped. `tool_manifest` 44.2. |
+| v5.3.2 | Cortex v44 "Open Door" added as latest, replacing the v40 "Room First" slot. Selectable versions: 44, 43, 42. |
 | v5.3.1 | prompt_loader: new `sim_mode_allowed` field (default `false`) — stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level SP1 policy switch (see `dojotools_identity.yaml` `resolve_caller_identity`). Fail-closed default, explicit on every install. `taskmaster` no longer inline-shipped by `ship_zen_system` — it self-registers via KF5. |
 | v5.3.0 | cabinetadmin: `expand_drawer` (atomic drawer migration with rollback), `repair_volumeinfo` self-heals missing-header case. prompt_loader: `fc`-type whitelist add rejects bare `*`/empty-suffix `tool:` entries; field renamed `allowed_action_types` → `allowed_tools` (KF5 mode-scoped whitelist). |
 | v5.2.0 | Cortex v43 "Rule Zero" added as latest. DojoTools supersede all HA built-ins — domain routing table in directives. v42 'The Answer' retained as prior slot. |
