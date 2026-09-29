@@ -141,7 +141,7 @@ Every "Not yet built" box in the book, in one place.
 | 19 | Signed certificates issued by a certificate authority | Design direction; the entry is already shaped for it |
 | 19 | Secure enclave cabinet for certifications, accessed only through a representative token derived from the conversation ID (salted and hashed), expiring at session start plus 5:30 | In progress |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
-| 20 | Admission: the base agent certification | In design |
+| 20 | Admission: the base agent certification | Minting in 2026.10.0; enforcement in 2026.11.0 |
 | 20 | Console-admin path for bundle grants | Planned |
 | 20 | Administrative competency certification | Design direction for this release line |
 | 21 | Certifying a corpus (a cabinet) as an object, with hard links between cabinets enforced through cabinet ACLs | Direction; ACL structure exists, unenforced |
@@ -170,11 +170,11 @@ The numbers in this book come from one real ZenOS install, measured on 2026-09-2
 | KFC components | 9 |
 | Kata drawers | 49, averaging about 1,000 characters |
 | A `zen_summary` record | about 3.2 to 3.5 KB |
-| `render_prompt()` output, one sample | 49,868 characters |
+| `render_prompt()` output, one sample | 49,868 characters (40,812 after the 2026.10.0 prompt trims) |
 | Principals | 2 (1 human, 1 AI persona) |
 | Certificate types, held by the default agent, scoped | 46, 19, 1 |
 
-The prompt sample by section: system 22,097, kata 16,566, index 4,578, capsule 2,366, wake 1,626, manifest 1,143, overview 797, header 497, id_manifest 198. The work queue, priority notices, and console line were empty and cost nothing.
+The prompt sample by section: system 22,097, kata 16,566, index 4,578, capsule 2,366, wake 1,626, manifest 1,143, overview 797, header 497, id_manifest 198. The work queue, priority notices, and console line were empty and cost nothing. A later sample, after the 2026.10.0 prompt trims removed repeated scaffolding and duplicated label descriptions, was 40,812 characters, about 18% smaller.
 
 Two things stand out. The largest cabinet is the one to watch: each cabinet declares a storage ceiling, and the household cabinet is three quarters of the way to its own. And the prompt is dominated by the system section and the Katas, not by the house: the index that describes more than a thousand labels costs under 5,000 characters, which is what exposing tools instead of entities buys (Chapter 10).
 

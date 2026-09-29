@@ -87,7 +87,7 @@ Here is that sensor on a live install:
 > **Screenshot to come.** sensor.zen_prompt_length attributes, showing the size of each section of the frame. Real 2026.10.0 output; personal details redacted.
 <!-- /screenshot -->
 
-For scale: in the reference household (Appendix F), one sampled frame was 49,868 characters. The system section and the Katas were about three quarters of it. The index describing more than a thousand labels was under 5,000.
+For scale: in the reference household (Appendix F), one sampled frame was 49,868 characters. The system section and the Katas were about three quarters of it. Trimming repeated scaffolding and duplicated label descriptions in 2026.10.0 brought a later sample to 40,812. The index describing more than a thousand labels was under 5,000.
 
 > **Not yet built.** The frame carries a `session_token` field with a fixed placeholder value. It is not a real session credential and nothing validates it. Real session binding is covered in Chapter 18. The session-bound token from the certificate enclave (Chapter 19), in progress, is what gives session binding a real credential.
 

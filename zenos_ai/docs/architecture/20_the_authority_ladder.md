@@ -18,7 +18,7 @@ Each rung is necessary, and none substitutes for another.
 flowchart TD
   C["tool call"] --> I{"identity policy"}
   I -- blocked --> X["denied"]
-  I -- allowed --> AD{"admission<br/>(in design)"}
+  I -- allowed --> AD{"admission<br/>(minted, not yet enforced)"}
   AD --> DC{"domain cert<br/>and level"}
   DC -- short --> X
   DC -- held --> S{"scope"}
@@ -36,7 +36,7 @@ The administrative plane sits beside this path, not on it: it changes the policy
 | Rung | What it decides | Where it is enforced | Status |
 |---|---|---|---|
 | Identity policy | Is this caller's identity acceptable at all? | `resolve_caller_identity`, `sim_mode_allowed` | Built |
-| Admission | Is this agent a recognized participant in ZenOS? | Base agent certification | In design |
+| Admission | Is this agent a recognized participant in ZenOS? | Base agent certification | Minted at onboarding in 2026.10.0; enforced in 2026.11.0 |
 | Domain certification | May this agent attempt this class of action? | `required_cert` checks in each tool | Built |
 | Scope | Which specific targets does that grant cover or exclude? | `cert_scope_check()` in each tool | Built |
 | Live acknowledgement | Does a human approve this specific action, right now? | `request_live_ack` | Built |
@@ -50,7 +50,13 @@ The bottom rung is the whole-install policy on simulated identity (Chapter 18). 
 
 ## 20.3 Admission
 
-> **Not yet built. In design.** Admission adds a mandatory base certification that an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. Flynn issues it at the successful end of onboarding, and that issuance path is reserved to onboarding rather than exposed as a general grant. Agents that already exist would recertify through an onboarding-adjacent path instead of being rebuilt. This section will be rewritten against the code when it lands.
+> **Built in two phases. Not yet enforced.** Admission is a mandatory base certification an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. Flynn issues it at the successful end of onboarding, and that issuance path is reserved to onboarding rather than exposed as a general grant.
+>
+> **Phase 1, 2026.10.0 (in progress):** create the certificate and prove it can be minted. Onboarding mints it, in its final shape (the dotted name and Flynn-only issuance), and verifies the mint. Agents that already exist get it through an onboarding-adjacent recertification path instead of a rebuild. Nothing is refused for lacking it yet; a log-only mode records what would have been denied.
+>
+> **Phase 2, 2026.11.0 'This Is Spinal Tap' (planned):** hook it up and make it meaningful. Once FileCabinet security lands, tools check it, and an agent without it cannot read the tool surface.
+>
+> This section will be rewritten against the code as each phase lands.
 
 ## 20.4 Domain certification
 
@@ -127,7 +133,7 @@ AdminTools generally follow the same rule: they are the configuration and recove
 
 Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
 
-Identity policy, certification, scope, acknowledgement, and the administrative plane, with admission still to come, read like separate mechanisms. The next chapter shows they are one.
+Identity policy, certification, scope, acknowledgement, and the administrative plane, with admission minted but not yet enforced, read like separate mechanisms. The next chapter shows they are one.
 
 <!-- where -->
 ## 20.8 Where to look

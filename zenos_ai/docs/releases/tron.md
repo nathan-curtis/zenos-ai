@@ -26,15 +26,19 @@ Everything in Steel Magnolia is the starting state for Tron — Room Manager v3 
 
 Steel Magnolia has since shipped, and the 2026.9.1 bugfix patch — backported from this same branch's own fixes — has shipped on top of it. Tron inherits the released system, not an RC snapshot.
 
-## Basic ZenOS Certification (in planning)
+## Basic ZenOS Certification (phase 1 in progress)
 
-> **In planning.** Not in this build. This section describes the design.
+> **Two phases.** Phase 1 ships in this build: create the certificate and prove Flynn can mint it during onboarding. Phase 2, enforcement, lands in 2026.11.0 'This Is Spinal Tap' after FileCabinet security. Nothing is gated on it in Tron.
 
-A mandatory baseline certification for access to the ZenOS tool surface. An agent without it isn't an admitted ZenOS agent and can't perform normal read operations against ZenOS tools — read-class access only, no domain authorization implied, no actuation, no configuration.
+A mandatory baseline certification for access to the ZenOS tool surface. Once enforced, an agent without it isn't an admitted ZenOS agent and can't perform normal read operations against ZenOS tools — read-class access only, no domain authorization implied, no actuation, no configuration.
 
 Flynn owns the issuance path: at successful completion of onboarding, Flynn's bootstrap workflow issues the basic certification to the newly onboarded agent. That capability is reserved to onboarding itself, not exposed as a general-purpose grant. The working rule: **onboarding admits the agent, certification defines the job.**
 
-**Existing agents.** Agents created before 2026.10.0 will be fully configured and operational but won't hold the new baseline cert. Post-upgrade, the migration path is recertification through Flynn's approved onboarding-adjacent path — not a rebuild from scratch. Exact tooling TBD with implementation. If an existing agent can see ZenOS but can't read its tools after upgrading, that's a recertification gap to close, not a reason to weaken the gate.
+**Existing agents.** Agents created before 2026.10.0 will be fully configured and operational but won't hold the new baseline cert. Post-upgrade, the migration path is recertification through Flynn's approved onboarding-adjacent path — not a rebuild from scratch. Exact tooling TBD with implementation. If an existing agent can see ZenOS but can't read its tools after enforcement lands, that's a recertification gap to close, not a reason to weaken the gate.
+
+**Phase 1 (this build).** Mint the certificate in its final shape (dotted name, Flynn-only issuance) so phase 2 doesn't have to reshape it. Onboarding mints and verifies it; existing agents get it through the recertification path; a log-only mode records what the gate would have denied, without denying anything.
+
+**Phase 2 (2026.11.0).** Hook it up and make it meaningful: tools check it, and it moves into the certificate enclave with FileCabinet security.
 
 ## The Administrative Plane (in planning)
 
