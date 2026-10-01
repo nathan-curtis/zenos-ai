@@ -27,7 +27,7 @@ Navigation is compass-bearing-native. Portals are the same bearing-tagged entrie
 
 | Mode | Description |
 |------|-------------|
-| `start` | Seed or resume session. Drops player at `front_hall`. `game_mode=free_roam\|treasure_hunt\|timed_treasure_hunt` sets the win condition style. `harassment_freq` and `difficulty` optional flavor fields. |
+| `start` | Seed or resume session. A new game starts in the household's entry room from Room Manager's topology (a room with a primary-exit portal), else the first room alphabetically. `game_mode=free_roam\|treasure_hunt\|timed_treasure_hunt` sets the win condition style. `harassment_freq` and `difficulty` optional flavor fields. |
 | `look` | Narrate current room from live RM state (+topo, +light, +climate). |
 | `go direction=X` | Move through a portal. Auto-narrates arrival. A portal with a linked entity_id (cover/lock) blocks traversal if that entity is closed/locked — same state `open`/`close` mode drives. Returns `blocked: true` with a narrator-aware "sealed passage" message and a hint to try `mode=open` first, rather than letting movement through with no physical entity actuated. Portals with no linked entity_id (the majority — purely narrative doors) are unaffected. |
 | `face direction=X` | Turn to face a compass direction without moving. Updates `facing_bearing`. |
