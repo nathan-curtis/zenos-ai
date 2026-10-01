@@ -255,6 +255,8 @@ fc_args: >
 
 Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`.
 
+If the called tool returns the standard response envelope (`{mode, status, tool, version, result}`), the LiveDrawer unwraps it immediately and serves `result`, before any `digest_fields` extraction (6.14.0). Tools without an envelope pass through unchanged.
+
 ### Whitelist Entry Formats
 
 The whitelist supports three entry formats, parsed via a `tool[:mode]` split:
