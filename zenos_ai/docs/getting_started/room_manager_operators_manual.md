@@ -36,10 +36,14 @@
 
 ## 1. BEFORE YOU BEGIN
 
-You don't need to read this whole manual to enjoy Room Manager. In fact,
-if Room Manager has already been installed in your home, it's already
-running. Every configured room has been quietly watching, thinking, and
-reacting since the day it was turned on.
+You don't need to read this whole manual to enjoy Room Manager. Once
+it's installed and you've opted in, every configured room quietly
+watches, thinks, and reacts on its own.
+
+**Opting in is your call.** Room state ships **off**, and nothing turns
+it on for you. Until you opt in, rooms stay where they are. To opt in:
+`zen_dojotools_room_manager  mode=roomstate_enable  roomstate_enabled=true`. Turn it back off any time and every room freezes in
+place. Off is off, emergency signals included.
 
 This manual is for the curious. The kind of person who reads the back of
 the cereal box. If that's you, welcome. Grab a controller.

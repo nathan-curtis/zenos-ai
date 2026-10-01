@@ -87,6 +87,14 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 
 `adjacent[]` is derived automatically from portals written by `mode=link` — do not build it by hand.
 
+**Step 4 — Opt in to room state**
+
+```
+zen_dojotools_room_manager  mode=roomstate_enable  roomstate_enabled=true
+```
+
+Room state is **off until you turn it on**. Nothing in setup, onboarding, or an upgrade enables it for you. While it is off, rooms do not change state from evidence (motion, presence, bed sensors, emergency signals), and an explicit `room_control_set` override still applies. Requires `room_behavior_control`. Turning it off again (`roomstate_enabled=false`) freezes every room at its current state.
+
 ---
 
 ## Modes

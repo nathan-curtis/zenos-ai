@@ -49,6 +49,8 @@ An ensuite or sub-room contributes to its parent, default on, opt out per room w
 
 Every tier that can be true carries a `*_last_trigger` attribute: `{entity_id, friendly_name, last_changed}` for the entity that most recently caused it, or `{reason, timer_entity, timer_last_changed}` when only timer decay is holding it. A top-level `last_trigger` does the same for whichever tier won.
 
+**Master switch.** The cascade runs only while room state is enabled, and it ships disabled: the household opts in with `room_manager mode=roomstate_enable`, and nothing enables it automatically. The switch resolves from a `zenos_roomstate_master_switch` labeled entity if one exists, then the household cabinet's `roomstate_config.enabled`, then off. While it is off, every room holds its current state and no evidence moves it, emergency included. An explicit manual override is a command, not evidence, so it still applies. With no transition, no `room_state_changed` event fires, so REFLEX and the dispatcher see nothing happen either.
+
 ## 25.3 REFLEX
 
 **Stage 1, emitter.** Inside `room_state.yaml`. On a real transition (the resolved state differs from the sensor's previous value), it fires `zen_event` with `kind: room_state_changed` through `zen_dojotools_event_emitter`. Every room built from the blueprint emits with no extra wiring.

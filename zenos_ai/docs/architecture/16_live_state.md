@@ -63,7 +63,7 @@ Here it is answered, on a real install:
 
 REFLEX turns a room's state into action in two stages, deliberately decoupled.
 
-**Stage 1** lives inside every room's state sensor. On a real transition it fires `zen_event` with `kind: room_state_changed`.
+**Stage 1** lives inside every room's state sensor. On a real transition it fires `zen_event` with `kind: room_state_changed`. Transitions happen only while the household has opted in to room state; it ships off (Chapter 25).
 
 **Stage 2** listens for that event and resolves a scene by intersecting three hyperedges: `scene_<state>`, the room's label, and the current home-mode label. If nothing matches with the mode applied, it tries room and state alone. No match is a safe no-op, never a guess.
 

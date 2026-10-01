@@ -11,7 +11,7 @@ This is not just "install the scripts and talk to the AI." The path is intention
 ```text
 installed but inert
   -> tools exposed to Assist
-  -> rooms mapped, then Room Manager v3 tracks what each one is actually doing right now
+  -> rooms mapped, then (once you opt in to room state) Room Manager v3 tracks what each one is actually doing right now
      (Vacant/Occupied/Engaged/Asleep/Hold, from real signals, not a fixed schedule)
   -> labels give devices and people meaning
   -> REFLEX reacts to state changes on its own — the right scene fires automatically,

@@ -20,6 +20,12 @@ At the same time, Flynn gets a better map of what he's protecting. Steel Magnoli
 
 ---
 
+## Breaking: Room State Is Opt-In
+
+Room state is now **off until the household turns it on**, and off means off. The master switch already defaulted to off, but until now it only stopped REFLEX and the dispatcher's follow-up actions; rooms still changed state on their own. In Tron, while room state is off, every room holds its current state and no evidence moves it, emergency signals included. An explicit manual override still applies, because a command isn't evidence. Nothing in setup, onboarding, or the upgrade turns room state on.
+
+**If you're upgrading and your rooms stop changing state,** opt in: `zen_dojotools_room_manager  mode=roomstate_enable  roomstate_enabled=true` (requires `room_behavior_control`).
+
 ## Inherited from 2026.9.0 'Steel Magnolia'
 
 Everything in Steel Magnolia is the starting state for Tron — Room Manager v3 and REFLEX, the hospitality lifecycle work, the identity-gate rollout across locks/covers/security/climate/ZenLux/Room Manager/spa, per-target cert scope with hard deny, fresh live acks, CertAdmin, ToolMap, ToolScan, and the manifest fan-out consolidation. See [Steel Magnolia release notes](steel_magnolia.md) for the full writeup.
