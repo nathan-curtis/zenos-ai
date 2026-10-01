@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.11.1 — 5.8.0 added `leak_auto_shutoff_enable` mode + `zen_plant_leak_watch` automation (see below); `label_suggest` gained real water/leak/shutoff classification (was electrical-only)
+**Version:** 5.11.2 — 5.11.2: `managed` attributes a product-linked chore only to the machine that owns that product. 5.8.0 added `leak_auto_shutoff_enable` mode + `zen_plant_leak_watch` automation (see below); `label_suggest` gained real water/leak/shutoff classification (was electrical-only)
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
@@ -51,7 +51,7 @@ All sections return `available: false` when entities are missing or unavailable.
 | `mechanical` | Water heater + sump pump + motors + water_management subnodes (softener, auto-shutoff, leak sensors). Optional `include_inventory=true` calls Grocy `room_brief` for each load area. |
 | `thermal` | Thermal-managed loads distinct from HVAC — hot tub, freezers, generic thermal. Not room air. |
 | `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`) |
-| `managed` | All Grocy-provisioned machines — chores due, stock summary, products grouped by `ha_labels` root. Any machine bootstrapped via `provision_bom` appears automatically. `managed_labels` scopes to specific machines (CSV). |
+| `managed` | All Grocy-provisioned machines — chores due, stock summary, products grouped by `ha_labels` root. Any machine bootstrapped via `provision_bom` appears automatically. A chore linked to a product is attributed only to the machine that owns that product; unlinked (area-tagged) chores go to the first matching machine. `managed_labels` scopes to specific machines (CSV). |
 | `validate` | Slot resolution report — entity_id, pinned, raw_state, ok |
 | `label_suggest` | Scans a named integration's entities (`integration=span_panel`, `emporia_vue`, or `zwave_js`) and suggests `zen_plant_*`/`main_panel`/`sub_panel`/`consumed_energy`/`leak_sensor`/`auto_shutoff` labels by device_class + name pattern. Preview-by-default; pass `confirm_action=true` to apply. Scoped to one integration at a time — Plant's domain is house-wide, so a blind device_class scan across every smart plug/appliance would flood with noise. Fills the gap between Room Manager's `label_discover` (area-scoped) and Media Manager's `label_suggest` (room-scoped). `moisture` device_class → `zen_plant_leak_sensor` (high confidence); `valve.*` domain → `zen_plant_auto_shutoff` (high confidence); `switch.*` name-pattern match → `zen_plant_auto_shutoff` (medium confidence — **verify by hand**, a plausibly-named monitoring entity is not the same as a real controllable valve). See [Plant Codex — Emporia Vue](../plugins/emporia_vue_codex.md) / [Plant Codex — SPAN Panel](../plugins/span_panel_codex.md). |
 | `ignore` | Tag entity with `zen_plant_ignore` (creates label if missing). Param: `target_entity`. |

@@ -1,4 +1,4 @@
-# Zen DojoTools Scheduler — v5.2.0
+# Zen DojoTools Scheduler — v5.2.1
 
 *Automation — no `tool_manifest`, so the file header version is canonical.*
 
@@ -110,6 +110,12 @@ event_data:
 ```
 
 `zen_pipeline_autofire_on_enable` uses `ninja_force` and `supersummary_force` internally when kill switches are re-enabled.
+
+---
+
+## Prior-Run Events Stale-Out
+
+Before a component's previous Kata is fed forward as `last_kata_summary`, any `events[]` entry older than 24 hours is dropped. Garbage collection expires whole drawers by their `expires_after` metadata and cannot see entries inside one, so without this a model could keep echoing a self-authored event forward indefinitely. It is a template filter on each event's own timestamp, not a prompt instruction.
 
 ---
 

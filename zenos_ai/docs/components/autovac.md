@@ -1,6 +1,6 @@
 # ZenOS-AI AutoVac
 
-**Version:** 5.4.0
+**Version:** 5.5.0
 **Script:** `zen_dojotools_autovac`
 
 ---
@@ -74,6 +74,9 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `analyze` | Post-dock map analysis — updates room last_cleaned, broadcasts completion event |
 | `briefing` | Pre-run announcement ~30 min before a schedule fires. Checks `autovac_calendar` label — "AUTOVAC HOLD" events in the 4-hour run window block the run; other events appended as soft warnings in the message. |
 | `handle_ack` | Process Postman push notification ack — go now, skip this run, or pause all day |
+| `maintenance_set` | Mark the robot out of service. `input_json`: `{reason, ordered_part, eta, note}`. Opens a Radar ticket, or amends the open one. Requires `autovac_operate`. See [Maintenance status](#maintenance-status). |
+| `maintenance_clear` | Return the robot to service by closing its open maintenance ticket. Requires `autovac_operate`. |
+| `maintenance_get` | Current maintenance status: whether an open maintenance ticket exists, and its reason, ordered part, and ETA. |
 | `nightly_reset` | Reset daily run flags and pause state (call at midnight) |
 | `morning_reset` | Clear `is_ready` flags after morning run starts |
 | `schedule` | Day-resolved schedule summary — see [Scheduling](#scheduling) |
@@ -84,6 +87,14 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `unregister` | Lens Bus — remove this tool's `lens_registry` entry |
 | `health` | Lens Bus — health check (vacuum entity live, cabinet reachable, rooms configured, inventory provisioned) |
 | `inspect` | Lens Bus — static capability descriptor (consumes/returns/fields) for provider discovery |
+
+---
+
+## Maintenance status
+
+Out-of-service status has no cabinet drawer. It is derived on each call from whether an open Radar (Zammad) ticket tagged `autovac`, `<robot_slug>`, and `maintenance` exists, so the ticket is the single source of truth. `robot_slug` is the robot's `robot_name` from the `grocy_catalog` cabinet key (the same identity `consumables` and `check_wear` use), slugified.
+
+The structured fields (`reason`, `ordered_part`, `eta`) are stored as `key=value` lines in the ticket's latest article. `status` and `health` both include a `maintenance` key. Only the modes that need it query Radar, so a Zammad outage does not block cleaning. `briefing` does not report maintenance status yet.
 
 ---
 

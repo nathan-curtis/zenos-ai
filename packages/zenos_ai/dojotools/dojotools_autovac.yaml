@@ -1,6 +1,14 @@
 ###############################################################################
 # DojoTools — Autovac
-# zen_dojotools_autovac (v5.4.0)
+# zen_dojotools_autovac (v5.5.0)
+#
+# v5.5.0 (#10546/#10547): maintenance_set/maintenance_clear/
+#   maintenance_get. Out-of-service status is derived live from whether an
+#   open Radar ticket tagged [autovac, <robot_slug>] exists -- no cabinet
+#   drawer, nothing local to drift out of sync with the ticket. Structured
+#   fields (reason/ordered_part/eta) live in the ticket's last article body
+#   as key=value lines. status and health now surface a 'maintenance' key;
+#   briefing intentionally not yet wired (multiple exit branches, deferred).
 #
 # Full vacuum control surface. All room state stored in the household cabinet
 # ('autovac' drawer). Zero hardcoded entity IDs — all discovery via HA labels.
@@ -41,7 +49,7 @@
 #        run, run_elected, schedule, schedule_blocks, analyze, briefing,
 #        handle_ack, nightly_reset, morning_reset, kfc_manifest,
 #        stacks_by_anchor, register, unregister, health, inspect,
-#        tool_manifest,
+#        tool_manifest, maintenance_set, maintenance_clear, maintenance_get,
 #        consumables (action=status|add_to_shopping|log_replaced|log_purchased|provision),
 #        check_wear (wear_entity= optional; omit for post-dock scan-all via analyze)
 ###############################################################################
@@ -100,6 +108,9 @@ script:
               - health
               - inspect
               - tool_manifest
+              - maintenance_set
+              - maintenance_clear
+              - maintenance_get
       caller_token:
         name: Caller Token
         description: "Optional governance token — echoed in all responses."
@@ -112,7 +123,7 @@ script:
           text:
       config:
         name: Config
-        description: "JSON string. configure: room fields to update. setup: {create_labels:true}."
+        description: "JSON string. configure: room fields to update. setup: {create_labels:true}. maintenance_set: {reason, ordered_part, eta, note}."
         selector:
           text:
       rooms:
@@ -228,7 +239,7 @@ script:
       - variables:
           _av_required_cert: >-
             {%- if _mode in ['configure', 'setup', 'preset'] -%}autovac_setup
-            {%- elif _mode in ['clean', 'run_elected', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'pause', 'unpause'] -%}autovac_operate
+            {%- elif _mode in ['clean', 'run_elected', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'pause', 'unpause', 'maintenance_set', 'maintenance_clear'] -%}autovac_operate
             {%- else -%}{%- endif -%}
       - if: "{{ _av_required_cert != '' }}"
         then:
@@ -724,6 +735,68 @@ script:
             {%- set val = _fc_av.get('value', {}) -%}
             {%- set cfg = (val | from_json) if val is string else val -%}
             {{ cfg.get('system', {}) }}
+
+      # -- Maintenance status (#10546/#10547) ----------------------------------
+      # Slug first, ticket derives from slug -- not the other way around.
+      # robot_name (grocy_catalog, set at provision time -- see mode=consumables/
+      # check_wear which already key off it) is this system's one canonical
+      # robot identity. Slugify THAT, the same slugify(separator='_') rule
+      # every other DojoTools file uses for tag/label matching, and tag
+      # Radar tickets with the result. No cabinet write, no local
+      # out-of-service flag -- an open [autovac,<robot_slug>] ticket IS the
+      # out-of-service state, queried live so nothing can drift out of sync.
+      # Only runs for modes that need it so a Radar/Zammad outage never
+      # blocks clean/queue/etc. Structured fields (reason/ordered_part/eta)
+      # live in the ticket's last article body as key=value lines, the same
+      # journal-append convention dojotools_dispatcher.yaml's urgency handler
+      # already uses for content_sig.
+      - variables:
+          _avm_robot_slug: "{{ (_av_system.get('grocy_catalog', {}).get('robot_name', '') if _av_system is mapping else '') | string | trim | slugify(separator='_') }}"
+          _avm_status: {}
+      - if: "{{ _avm_robot_slug != '' and _mode in ['status', 'health', 'briefing', 'maintenance_get', 'maintenance_set', 'maintenance_clear'] }}"
+        then:
+          - action: script.zen_dojotools_servicedesk
+            continue_on_error: true
+            response_variable: _avm_search_raw
+            data:
+              mode: ticket_search
+              input_json: >-
+                {{ {'tags': ['autovac', _avm_robot_slug, 'maintenance'], 'states': ['new', 'open']} | tojson }}
+          - variables:
+              _avm_search: "{{ _avm_search_raw.get('result', _avm_search_raw) if _avm_search_raw is mapping else {} }}"
+              _avm_ticket_ids: "{{ _avm_search.get('ticket_ids', []) if _avm_search is mapping else [] }}"
+          - if: "{{ _avm_ticket_ids | length > 0 }}"
+            then:
+              - action: script.zen_dojotools_servicedesk
+                continue_on_error: true
+                response_variable: _avm_articles_raw
+                data:
+                  mode: articles_list
+                  input_json: >-
+                    {{ {'ticket_id': _avm_ticket_ids[0]} | tojson }}
+              - variables:
+                  _avm_articles_result: "{{ _avm_articles_raw.get('result', _avm_articles_raw) if _avm_articles_raw is mapping else {} }}"
+                  _avm_articles: "{{ _avm_articles_result.get('articles', []) if _avm_articles_result is mapping else [] }}"
+              - variables:
+                  _avm_last_article: >-
+                    {%- set _sorted = _avm_articles | sort(attribute='created_at') if _avm_articles | length > 0 else [] -%}
+                    {{ _sorted[-1] if _sorted | length > 0 else {} }}
+              - variables:
+                  _avm_last_body: "{{ _avm_last_article.get('body', '') if _avm_last_article is mapping else '' }}"
+              - variables:
+                  _avm_status:
+                    out_of_service: true
+                    robot: "{{ _avm_robot_slug }}"
+                    ticket_id: "{{ _avm_ticket_ids[0] }}"
+                    reason: "{{ (_avm_last_body | regex_findall('reason=(.*)'))[0] if 'reason=' in _avm_last_body else '' }}"
+                    ordered_part: "{{ (_avm_last_body | regex_findall('ordered_part=(.*)'))[0] if 'ordered_part=' in _avm_last_body else '' }}"
+                    eta: "{{ (_avm_last_body | regex_findall('eta=(.*)'))[0] if 'eta=' in _avm_last_body else '' }}"
+            else:
+              - variables:
+                  _avm_status:
+                    out_of_service: false
+                    robot: "{{ _avm_robot_slug }}"
+
       - variables:
           _room_sched_map: >-
             {%- set ns = namespace(m={}) -%}
@@ -3735,8 +3808,129 @@ script:
                     ['consumables', 'check_wear'] if not _health_gc_ok else []
                   ) + (
                     ['stacks_by_anchor'] if not _health_rooms_ok else []
-                  )
+                  ),
+                  'maintenance': _avm_status
                 } }}
+
+      # ---- maintenance_get (#10546/#10547) --------------------------------------
+      - if: "{{ response is not defined and _mode == 'maintenance_get' }}"
+        then:
+          - variables:
+              response: >-
+                {{ {'mode': 'maintenance_get', 'result': 'ok', 'caller_token': _caller_token,
+                    'maintenance': _avm_status} }}
+
+      # ---- maintenance_set (#10546/#10547) --------------------------------------
+      # Radar ticket is the single source of truth -- no cabinet write. If an
+      # open [autovac,<robot>] ticket already exists (_avm_status computed
+      # above), amend it with a new internal article; otherwise create one.
+      - if: "{{ response is not defined and _mode == 'maintenance_set' }}"
+        then:
+          - variables:
+              _avms_cfg: "{{ _config | from_json(default={}) if _config is string else _config | default({}, true) }}"
+          - variables:
+              _avms_reason: "{{ _avms_cfg.get('reason', '') | string | trim if _avms_cfg is mapping else '' }}"
+              _avms_part: "{{ _avms_cfg.get('ordered_part', '') | string | trim if _avms_cfg is mapping else '' }}"
+              _avms_eta: "{{ _avms_cfg.get('eta', '') | string | trim if _avms_cfg is mapping else '' }}"
+              _avms_note: "{{ _avms_cfg.get('note', '') | string | trim if _avms_cfg is mapping else '' }}"
+          - if: "{{ _avm_robot_slug == '' }}"
+            then:
+              - variables:
+                  response: {status: error, mode: maintenance_set, error: no_vacuum_entity, message: "No entity labeled 'autovac' resolved.", caller_token: "{{ _caller_token }}"}
+          - if: "{{ response is not defined and not _avm_status.get('out_of_service', false) and _avms_reason == '' }}"
+            then:
+              - variables:
+                  response: {status: error, mode: maintenance_set, error: missing_field, message: "reason is required to open a new maintenance ticket.", caller_token: "{{ _caller_token }}"}
+          - if: "{{ response is not defined and not _avm_status.get('out_of_service', false) }}"
+            then:
+              - variables:
+                  # Real \n line breaks via string concat, not a YAML folded
+                  # (>-) scalar: folding collapses line breaks into spaces,
+                  # and the key=value parser relies on line boundaries.
+                  _avms_body: "{{ 'Autovac maintenance ticket for ' ~ _avm_robot_slug ~ '.\n' ~ 'reason=' ~ _avms_reason ~ '\n' ~ 'ordered_part=' ~ _avms_part ~ '\n' ~ 'eta=' ~ _avms_eta }}"
+              - action: script.zen_dojotools_servicedesk
+                continue_on_error: true
+                response_variable: _avms_create_raw
+                data:
+                  mode: ticket_create
+                  input_json: >-
+                    {{ {'title': 'Autovac maintenance — ' ~ _avm_robot_slug ~ ' — ' ~ _avms_reason,
+                        'body': _avms_body} | tojson }}
+              - variables:
+                  _avms_create: "{{ _avms_create_raw.get('result', _avms_create_raw) if _avms_create_raw is mapping else {} }}"
+                  _avms_new_ticket_id: "{{ _avms_create.get('ticket', {}).get('id', '') if _avms_create is mapping else '' }}"
+              # ticket_create does not accept a 'tags' field -- Zammad tags are
+              # applied one at a time via ticket_tag (same two-step pattern
+              # dojotools_dispatcher.yaml's urgency handler already uses after
+              # its own ticket_create).
+              - if: "{{ _avms_new_ticket_id != '' }}"
+                then:
+                  - repeat:
+                      for_each: ['autovac', _avm_robot_slug, 'maintenance']
+                      sequence:
+                        - action: script.zen_dojotools_servicedesk
+                          continue_on_error: true
+                          data:
+                            mode: ticket_tag
+                            input_json: >-
+                              {{ {'ticket_id': _avms_new_ticket_id, 'tag': repeat.item} | tojson }}
+              - variables:
+                  response:
+                    status: "{{ _avms_create.get('status', 'error') if _avms_create is mapping else 'error' }}"
+                    mode: maintenance_set
+                    action: opened
+                    robot: "{{ _avm_robot_slug }}"
+                    ticket: "{{ _avms_create.get('ticket', {}) if _avms_create is mapping else {} }}"
+                    caller_token: "{{ _caller_token }}"
+          - if: "{{ response is not defined and _avm_status.get('out_of_service', false) }}"
+            then:
+              - variables:
+                  _avms_body: >-
+                    {%- set _r = _avms_reason if _avms_reason != '' else _avm_status.get('reason', '') -%}
+                    {%- set _p = _avms_part if _avms_part != '' else _avm_status.get('ordered_part', '') -%}
+                    {%- set _e = _avms_eta if _avms_eta != '' else _avm_status.get('eta', '') -%}
+                    {{- 'Autovac maintenance update for ' ~ _avm_robot_slug ~ '.\n' ~ 'reason=' ~ _r ~ '\n' ~ 'ordered_part=' ~ _p ~ '\n' ~ 'eta=' ~ _e ~ ('\n' ~ _avms_note if _avms_note != '' else '') -}}
+              - action: script.zen_dojotools_servicedesk
+                continue_on_error: true
+                response_variable: _avms_update_raw
+                data:
+                  mode: article_add
+                  input_json: >-
+                    {{ {'ticket_id': _avm_status.get('ticket_id', ''), 'body': _avms_body, 'subject': 'Maintenance update', 'internal': true} | tojson }}
+              - variables:
+                  _avms_update: "{{ _avms_update_raw.get('result', _avms_update_raw) if _avms_update_raw is mapping else {} }}"
+                  response:
+                    status: "{{ _avms_update.get('status', 'error') if _avms_update is mapping else 'error' }}"
+                    mode: maintenance_set
+                    action: updated
+                    robot: "{{ _avm_robot_slug }}"
+                    ticket_id: "{{ _avm_status.get('ticket_id', '') }}"
+                    caller_token: "{{ _caller_token }}"
+
+      # ---- maintenance_clear (#10546/#10547) -------------------------------------
+      - if: "{{ response is not defined and _mode == 'maintenance_clear' }}"
+        then:
+          - if: "{{ not _avm_status.get('out_of_service', false) }}"
+            then:
+              - variables:
+                  response: {status: error, mode: maintenance_clear, error: no_open_maintenance_ticket, robot: "{{ _avm_robot_slug }}", caller_token: "{{ _caller_token }}"}
+          - if: "{{ response is not defined }}"
+            then:
+              - action: script.zen_dojotools_servicedesk
+                continue_on_error: true
+                response_variable: _avmc_close_raw
+                data:
+                  mode: ticket_close
+                  input_json: >-
+                    {{ {'ticket_id': _avm_status.get('ticket_id', '')} | tojson }}
+              - variables:
+                  _avmc_close: "{{ _avmc_close_raw.get('result', _avmc_close_raw) if _avmc_close_raw is mapping else {} }}"
+                  response:
+                    status: "{{ _avmc_close.get('status', 'error') if _avmc_close is mapping else 'error' }}"
+                    mode: maintenance_clear
+                    robot: "{{ _avm_robot_slug }}"
+                    closed_ticket_id: "{{ _avm_status.get('ticket_id', '') }}"
+                    caller_token: "{{ _caller_token }}"
 
       # ---- lens: inspect --------------------------------------------------------
       - if: "{{ response is not defined and _mode == 'inspect' }}"
@@ -3776,14 +3970,14 @@ script:
                 tool='zen_dojotools_autovac',
                 display_name='Autovac',
                 tier='dojotools',
-                version='5.4.0',
+                version='5.5.0',
                 health=_autovac_health,
                 required_labels=['autovac'],
                 optional_labels=['autovac_battery','autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room','autovac_wear','autovac_calendar','autovac_error_detail'],
                 consumes=['household_cabinet:autovac'],
-                returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear|cleaning_evidence results',
+                returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear|cleaning_evidence|maintenance results',
                 failure_policy='return error shape',
-                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','schedule','schedule_blocks','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest'],
+                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','schedule','schedule_blocks','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest','maintenance_set','maintenance_clear','maintenance_get'],
                 icon='mdi:robot-vacuum',
                 color='teal',
                 stripe=3,
@@ -3805,7 +3999,7 @@ script:
                   'display_name': 'Autovac Operate',
                   'description': "Steel-mag pattern -- runtime dispatch of the vacuum and its per-room queue state, including the force override that bypasses the DND election gate. mode=status/help stay ungated (read-only).",
                   'max_level': 4,
-                  'gates': ['mode=clean/run_elected/queue/dequeue/clear/skip/unskip/ready/unready/mark_cleaned/pause/unpause'],
+                  'gates': ['mode=clean/run_elected/queue/dequeue/clear/skip/unskip/ready/unready/mark_cleaned/pause/unpause/maintenance_set/maintenance_clear'],
                   'live_ack_required_for': [],
                   'grant_via': "persona_editor mode=cert_req_grant cert_component=autovac_operate (or zen_dojotools_identity mode=cert_list to see current status)"
                 }]}) -}}
@@ -3983,7 +4177,8 @@ script:
                 'schedule_active': _schedule_active,
                 'schedule_7day': _schedule_7day,
                 'room_decisions': _room_decisions,
-                'run_readiness': _run_readiness
+                'run_readiness': _run_readiness,
+                'maintenance': _avm_status
               } }}
 
       # ═══════════════════════════════════════════════════════════════════

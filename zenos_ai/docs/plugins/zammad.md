@@ -66,6 +66,8 @@ Use `mode=help` for the full field catalog. Key modes:
 
 **Do not call `zen_stack_radar` directly for ticket operations.** Use `zen_dojotools_servicedesk` for that.
 
+`zen_stack_radar` modes: `tool_manifest`, `get`, `find`, `list`, `configure`, `by_anchor`, `register`, `unregister`, `help`. `register` and `unregister` add or remove its entry in the Lens registry, matching the other stack providers.
+
 ### Lens Contract
 
 | Property | Value |
