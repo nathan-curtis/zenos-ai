@@ -1,6 +1,15 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.4.0
+# Version: 5.4.1
+#
+# v5.4.1:
+#   - prompt_loader: mode=cert_bypass gains action_type=status (read),
+#     enable and disable (write). enable/disable write the
+#     cert_admin_console_bypass drawer on the system cabinet; a missing
+#     drawer means disabled, so certadmin's cert_req_grant always goes
+#     through live-ack unless an operator enables it. Writes require a
+#     console session (console_user != '' from zen_dojotools_identity
+#     mode=whoami).
 #
 # v5.4.0:
 #   - prompt_loader: mode=cert_bypass, action_type=whoami only. A read-only
@@ -2340,7 +2349,7 @@ script:
     fields:
       mode:
         name: Mode
-        description: "load: stamp cortex/directives/purpose (default). whitelist: manage summarizer whitelists. lens_registry: manage household lens providers. cert_bypass: action_type=whoami only in this build -- see action_type."
+        description: "load: stamp cortex/directives/purpose (default). whitelist: manage summarizer whitelists. lens_registry: manage household lens providers. cert_bypass: certadmin console-bypass flag -- see action_type."
         required: false
         default: 'load'
         selector:
@@ -2352,7 +2361,7 @@ script:
                 value: whitelist
               - label: lens_registry — manage household lens providers
                 value: lens_registry
-              - label: cert_bypass — certadmin console-bypass resolver/flag (whoami only so far)
+              - label: cert_bypass — certadmin console-bypass resolver/flag
                 value: cert_bypass
               - label: tool_manifest — UMP self-description
                 value: tool_manifest
@@ -2384,7 +2393,7 @@ script:
               - fc
       action_type:
         name: Action Type
-        description: "mode=whitelist: list | add | remove | reset. mode=lens_registry: prime | list | get | register | update | unregister. mode=cert_bypass: whoami (read-only; enable/disable not shipped yet)."
+        description: "mode=whitelist: list | add | remove | reset. mode=lens_registry: prime | list | get | register | update | unregister. mode=cert_bypass: whoami | status (read-only) | enable | disable (console-only)."
         required: false
         selector:
           select:
@@ -2399,6 +2408,9 @@ script:
               - update
               - unregister
               - whoami
+              - status
+              - enable
+              - disable
       item:
         name: Item
         description: "mode=whitelist add/remove: string or JSON array of strings. mode=lens_registry: provider slug."
@@ -2463,7 +2475,7 @@ script:
                 failure_policy='hard',
                 dependencies=[{'tool': 'zen_dojotools_scribe', 'required': true, 'uses': 'new_thought + formalize_scroll + publish_kfc to ship the default zen_system and alert_manager KFC drawers'}],
                 modes={'load': 'load', 'whitelist': 'whitelist',
-                       'lens_registry': 'lens_registry', 'cert_bypass': 'cert_bypass (whoami only)',
+                       'lens_registry': 'lens_registry', 'cert_bypass': 'cert_bypass',
                        'manifest': 'tool_manifest'},
                 icon='mdi:brain',
                 color='deep-orange',
@@ -2922,16 +2934,12 @@ script:
                     caller_token: "{{- caller_token -}}"
 
     # ── CERT_BYPASS MODE ───────────────────────────────────────────────────────
-    # Phase A (current): action_type=whoami only -- a read-only diagnostic,
-    # NO write path and NO effect on anything else. Delegates to the shared
-    # zen_dojotools_identity mode=whoami resolver (not a re-derived inline
-    # copy -- that's an identity function, not an admintools one) so there
-    # is exactly one place this resolution logic lives. is_hoh is
-    # informational only -- HA has no template/REST-level way to check real
-    # admin status; gates needing "a real console
-    # session" should check console_user != '' only, same standard
-    # certadmin's cert_req_grant bypass uses. Enable/disable (Phase B, a
-    # future pass) will gate on that same console_user != '' standard.
+    # status is a plain read. enable/disable write the
+    # cert_admin_console_bypass drawer on the system cabinet; a missing drawer
+    # means disabled. Writes require a console session (console_user != ''
+    # via the shared zen_dojotools_identity mode=whoami resolver). HA exposes
+    # no real admin-status check to templates, so this is the strongest
+    # available gate. is_hoh is informational only.
     - if: "{{- result is not defined and _mode == 'cert_bypass' -}}"
       then:
         - variables:
@@ -2946,6 +2954,11 @@ script:
             _cb_console_user: "{{- (_cb_whoami_raw.get('console_user', '') if _cb_whoami_raw is mapping else '') | trim -}}"
             _cb_resolved_person: "{{- (_cb_whoami_raw.get('resolved_person', '') if _cb_whoami_raw is mapping else '') | trim -}}"
             _cb_is_hoh: "{{- _cb_whoami_raw.get('is_hoh', false) if _cb_whoami_raw is mapping else false -}}"
+        - variables:
+            _cb_flag_raw: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{- CABS.cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'cert_admin_console_bypass', {}) | from_json() -}}
+            _cb_enabled: "{{- (_cb_flag_raw.get('enabled', false) if _cb_flag_raw is mapping else false) | string | lower == 'true' -}}"
         - if:
           - condition: template
             value_template: "{{- result is not defined and _cb_action == 'whoami' -}}"
@@ -2960,17 +2973,61 @@ script:
                 caller_token: "{{- caller_token -}}"
         - if:
           - condition: template
+            value_template: "{{- result is not defined and _cb_action == 'status' -}}"
+          then:
+          - variables:
+              result:
+                status: success
+                action_type: status
+                enabled: "{{- _cb_enabled -}}"
+                caller_token: "{{- caller_token -}}"
+        - if:
+          - condition: template
+            value_template: "{{- result is not defined and _cb_action in ['enable', 'disable'] -}}"
+          then:
+          - if:
+            - condition: template
+              value_template: "{{- _cb_console_user == '' -}}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  action_type: "{{- _cb_action -}}"
+                  message: >-
+                    cert_bypass enable/disable requires a live console
+                    invocation. It is not available through automation,
+                    script, or agent calls.
+                  caller_token: "{{- caller_token -}}"
+          - if:
+            - condition: template
+              value_template: "{{- result is not defined -}}"
+            then:
+            - event: set_variable_zenos_system_cabinet
+              event_data:
+                key: cert_admin_console_bypass
+                value:
+                  enabled: "{{- _cb_action == 'enable' -}}"
+                  note: >-
+                    Enables certadmin's console-admin bypass. Managed only
+                    through zen_admintools_prompt_loader mode=cert_bypass.
+                    Default or missing means disabled.
+                set_timestamp: true
+            - variables:
+                result:
+                  status: success
+                  action_type: "{{- _cb_action -}}"
+                  enabled: "{{- _cb_action == 'enable' -}}"
+                  console_user: "{{- _cb_console_user -}}"
+                  caller_token: "{{- caller_token -}}"
+        - if:
+          - condition: template
             value_template: "{{- result is not defined -}}"
           then:
           - variables:
               result:
                 status: error
                 action_type: "{{- _cb_action -}}"
-                message: >-
-                  Only action_type=whoami is available in this build
-                  (cert_bypass enable/disable ships in a follow-up pass,
-                  after the whoami resolver above is verified against a
-                  real console session on both T and H).
+                message: "Unknown cert_bypass action_type. Valid: whoami, status, enable, disable."
                 caller_token: "{{- caller_token -}}"
 
     # ── RESOLVER + DELIVERY (choose-based, static writes) ────────────────────

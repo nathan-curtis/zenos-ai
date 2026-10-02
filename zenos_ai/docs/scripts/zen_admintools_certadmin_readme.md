@@ -32,11 +32,18 @@ Because persona_editor's schema structurally cannot pass `waives_live_ack`/`ack_
 
 ## Console-Admin Bypass (`cert_req_grant`)
 
-If the call's own HA context carries a real logged-in `user_id` (`context.user_id` non-empty), `cert_req_grant` treats that as proof a human is physically present at the console and skips the `request_live_ack` push/persistent-notification round-trip entirely — the grant proceeds with `_cg_approved: true` and a reason of `console_admin_bypass user_id=<id>`.
+The bypass is **off by default**. It applies only when both are true:
 
-This exists for installs with no working notify target configured: without it, such an install could never approve any cert grant at all, since the normal path depends on a live-ack notification reaching a device. Automations with no user context fall through to the normal live-ack flow.
+1. The call carries a real logged-in `context.user_id` (resolved through `zen_dojotools_identity mode=whoami`), and
+2. The operator has enabled the `cert_admin_console_bypass` flag on the system cabinet.
 
-> **Known limitation.** An MCP client's service account also carries a non-empty `context.user_id`, so this check cannot tell a human at the console from an agent calling through MCP. The console user is resolved through `zen_dojotools_identity mode=whoami`. Home Assistant exposes no admin-status check to templates, so a real fix depends on that being available.
+Otherwise `cert_req_grant` goes through the normal `request_live_ack` flow. When both hold, the grant proceeds with `_cg_approved: true` and a reason of `console_admin_bypass user_id=<id> person=<person>`. A missing drawer means disabled, and only an explicit `true` counts.
+
+The flag is written only by `zen_admintools_prompt_loader mode=cert_bypass` (`action_type=enable|disable`, `status` to read). Writes require a console session and are not reachable from automations or agent calls; the prompt loader is not exposed to MCP.
+
+The bypass exists for installs with no working notify target, which could otherwise never approve a cert grant.
+
+> **Note.** Home Assistant exposes no admin-status check to templates, so the flag is the operator's explicit opt-in and the strongest gate available. With it on, an MCP client's service account (which also carries a `context.user_id`) is indistinguishable from a human at the console. Leave it off unless you need it.
 
 This is not a full admin-role check — HA has no built-in `is_admin()` template function — it only distinguishes "a real logged-in session drove this call" from "an automation/agent did, with no human in the loop." A fuller per-user admin-role design is tracked separately and not yet built.
 
