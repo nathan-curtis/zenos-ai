@@ -1,6 +1,22 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Identity
-# Version: 5.4.1
+# Version: 5.5.0
+#
+# v5.5.0 — new mode=whoami, the shared console-presence
+#   resolver: resolves context.user_id to its person.* entity, plus
+#   whether that person is head of household per the household cabinet's
+#   ACLs (acls.owner/partner, never a label). context.user_id is also
+#   non-empty for an MCP service account, so it does not prove a human is
+#   at the console. is_hoh is INFORMATIONAL ONLY -- checked
+#   against HA's current Template Functions Reference, the context variable
+#   docs, and this project's own REST-only zen_sutra_ha_api that none of
+#   them expose real HA-admin status, so there is no way to actually check
+#   "is this user an admin" today. Gates needing "a real console session"
+#   should check console_user != '' only. certadmin's cert_req_grant
+#   console-bypass and (a future pass on) admintools' prompt_loader
+#   cert_bypass gate both call this instead of re-deriving their own copy --
+#   same chokepoint principle resolve_caller_identity already follows for
+#   cert checks.
 #
 # v5.4.0 — resolve_caller_identity performs cert checks on the caller's behalf (2026-07-18)
 #   New optional required_cert / required_cert_level inputs. When set, this mode
@@ -144,9 +160,10 @@ script:
           REQUIRED, exactly ONE value (not a set of boolean flags). resolve
           (default) reads identity/roster; the household_*/family_*/
           set_principal/link_partners modes manage group membership;
-          resolve_caller_identity/request_live_ack/cert_list are the shared
-          identity/cert-check/live-ack chokepoints other tools call. mode=help
-          for the full per-mode field reference.
+          resolve_caller_identity/request_live_ack/cert_list/whoami are the
+          shared identity/cert-check/live-ack/console-admin-resolver
+          chokepoints other tools call. mode=help for the full per-mode
+          field reference.
         default: resolve
         selector:
           select:
@@ -171,6 +188,7 @@ script:
               - resolve_caller_identity
               - request_live_ack
               - cert_list
+              - whoami
               - help
 
       user_label:
@@ -837,6 +855,144 @@ script:
                 }
               -}}
 
+    # ── WHOAMI — shared console-presence + current-agent resolver ────────────
+    # Human side: resolves context.user_id (populated by HA only when a real
+    # logged-in human triggers THIS call directly -- never set for an
+    # automation/script/agent-initiated chain) to its matching person.*
+    # entity. is_hoh is INFORMATIONAL ONLY -- HA has no template-level or
+    # REST-level way to check whether a user_id is a real HA admin (verified
+    # against the current Template Functions Reference, the
+    # context variable docs, and this project's own REST-only
+    # zen_sutra_ha_api -- none expose auth/admin status). Gates that need "a
+    # real console session, not an agent/automation call" should check
+    # console_user != '' only; is_hoh is surfaced for future use once a real
+    # admin check becomes available upstream, not as a security boundary
+    # today.
+    #
+    # Agent side: resolves which ai_user persona is asking (persona_target if
+    # given, same field cert-check modes already use, else the system
+    # default -- same _target pattern dojotools_certadmin.yaml uses) and its
+    # display name.
+    #
+    # Both sides' household/family role and membership (hoh/prime/member per
+    # container, at every depth) come from THIS SAME SCRIPT's own
+    # mode=membership member_entity=<eid> reverse-lookup (self-call) --
+    # reused, not re-derived a third time. is_hoh/is_prime are read off the
+    # depth-0 (direct household) entry's role when present. The household's
+    # own members list keys entries by CABINET entity_id with a separate
+    # person_entity_id field, so the human side resolves person.* -> cabinet
+    # first (same person_entity_id match Step 2's target-normalization
+    # already uses) before calling mode=membership -- passing the bare
+    # person.* entity directly silently returns an empty membership list,
+    # not an error.
+    #
+    # is_hoh is DELIBERATELY sourced from the household cabinet's acls.owner
+    # entry (via mode=membership's role field) ONLY -- never from an HA
+    # label. A label is something anyone with label-write access can apply
+    # to any entity; it proves nothing about real authority, only that a
+    # label exists. The cabinet's owner slot is set exclusively via
+    # mode=set_principal (single-occupant, confirm_action-gated to replace),
+    # which is the actual stamp of record. No label fallback, even for an
+    # entity with no resolvable cabinet (e.g. a guest) -- that case is
+    # correctly "not HoH," not "fall back to a weaker signal." This
+    # distinction matters more as the system gets locked down further, not
+    # less -- security-relevant identity never derives from a label.
+    #
+    # Read-only, no write path, no cert required.
+    - if: "{{ response is not defined and (mode | default('') | lower) == 'whoami' }}"
+      then:
+        - variables:
+            _wa_console_user: "{{ (context.user_id | default('', true)) | trim }}"
+            _wa_person: >-
+              {%- set ns = namespace(found='') -%}
+              {%- for p in states.person -%}
+                {%- if ns.found == '' and _wa_console_user != ''
+                       and state_attr(p.entity_id, 'user_id') == _wa_console_user -%}
+                  {%- set ns.found = p.entity_id -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.found }}
+            _wa_default_agent: "{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}"
+            _wa_agent_target: "{{ (persona_target | default('', true) | trim) or states('sensor.zen_default_ai_user_cabinet_resolved') }}"
+        # ── person.* -> user cabinet, same resolution Step 2 (normalized
+        # target) already uses for a person.* input: a household members.users[]
+        # entry with a matching person_entity_id, same source both read. The
+        # household's members list keys entries by CABINET entity_id with a
+        # separate person_entity_id field -- the raw person.* id never appears
+        # as an 'entity_id' itself, so mode=membership must be called with the
+        # resolved cabinet, not the bare person entity (passing the bare
+        # person entity silently returns an empty membership list, not an
+        # error).
+        - variables:
+            _wa_person_cabinet: >-
+              {%- if _wa_person == '' -%}
+                {{- '' -}}
+              {%- else -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+                {%- set _mbrs = CABS.cabinet_drawer_value(_hh, 'members', {}) | from_json() -%}
+                {%- set _mbrs = _mbrs if _mbrs is mapping else {} -%}
+                {%- set _all = _mbrs.get('users', []) + _mbrs.get('ai_users', []) -%}
+                {%- set _hit = _all | selectattr('person_entity_id', 'defined')
+                                     | selectattr('person_entity_id', 'equalto', _wa_person)
+                                     | first | default(none) -%}
+                {%- if _hit -%}{{- _hit.entity_id -}}{%- else -%}{{- '' -}}{%- endif -%}
+              {%- endif -%}
+        - variables:
+            _wa_is_default: "{{ _wa_agent_target == _wa_default_agent }}"
+            _wa_agent_vars: "{{ state_attr(_wa_agent_target, 'variables') | default({}, true) }}"
+            # Same "is this agent set up" signal zen_flynn_oobe's own
+            # mode=status uses (flynn_oobe.yaml) -- a written _oobe_complete/
+            # oobe_complete drawer key, not jacket-name presence (an onboarded
+            # agent can still have an empty/placeholder name; a non-onboarded
+            # one is the real "pending" case, not an error).
+            _wa_agent_onboarded: "{{ '_oobe_complete' in _wa_agent_vars or 'oobe_complete' in _wa_agent_vars }}"
+            _wa_agent_name: >-
+              {%- set raw = _wa_agent_vars.get('zenai_essence', {}) if _wa_agent_vars is mapping else {} -%}
+              {%- set ev_raw = raw.get('value', {}) if raw is mapping else {} -%}
+              {%- set ev = ev_raw if ev_raw is mapping else (ev_raw | from_json if ev_raw is string else {}) -%}
+              {%- set _j = ev.get('jacket', {}) if ev.get('jacket') is mapping else {} -%}
+              {{ _j.get('name', '') }}
+        # ── Self-calls into mode=membership -- one real resolver, reused ──────
+        - action: script.zen_dojotools_identity
+          continue_on_error: true
+          response_variable: _wa_person_mship_raw
+          data:
+            mode: membership
+            member_entity: "{{ _wa_person_cabinet }}"
+        - action: script.zen_dojotools_identity
+          continue_on_error: true
+          response_variable: _wa_agent_mship_raw
+          data:
+            mode: membership
+            member_entity: "{{ _wa_agent_target }}"
+        - variables:
+            _wa_person_memberships: >-
+              {{ (_wa_person_mship_raw.get('memberships', []) if _wa_person_mship_raw is mapping else []) if _wa_person_cabinet != '' else [] }}
+            _wa_agent_memberships: "{{ _wa_agent_mship_raw.get('memberships', []) if _wa_agent_mship_raw is mapping else [] }}"
+            _wa_person_hh_role: >-
+              {%- set _hh = (_wa_person_mship_raw.get('memberships', []) if _wa_person_mship_raw is mapping else [])
+                            | selectattr('container_type', 'equalto', 'household') | selectattr('depth', 'equalto', 0) | list -%}
+              {{ _hh[0].role if _hh | length > 0 else '' }}
+            _wa_agent_hh_role: >-
+              {%- set _hh = (_wa_agent_mship_raw.get('memberships', []) if _wa_agent_mship_raw is mapping else [])
+                            | selectattr('container_type', 'equalto', 'household') | selectattr('depth', 'equalto', 0) | list -%}
+              {{ _hh[0].role if _hh | length > 0 else '' }}
+        - variables:
+            response:
+              mode: whoami
+              console_user: "{{ _wa_console_user }}"
+              resolved_person: "{{ _wa_person }}"
+              is_hoh: "{{ _wa_person_hh_role == 'hoh' }}"
+              person_memberships: "{{ _wa_person_memberships }}"
+              agent: "{{ _wa_agent_name }}"
+              agent_entity: "{{ _wa_agent_target }}"
+              agent_onboarded: "{{ _wa_agent_onboarded }}"
+              is_default: "{{ _wa_is_default }}"
+              is_prime: "{{ _wa_agent_hh_role == 'prime' }}"
+              agent_memberships: "{{ _wa_agent_memberships }}"
+              caller_token: "{{ caller_token | default('') }}"
+
     # ── Step 1: normalize inputs + target ──────────────────────────────────
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
@@ -1454,9 +1610,30 @@ script:
                   {%- set _a = _hh_acls | from_json if _hh_acls is string else _hh_acls -%}
                   {%- set _a = _a if _a is mapping else {} -%}
                   {{- _a.get('owner', []) | list | count > 0 -}}
+                # "occupied" alone wrongly blocked a member
+                # retrying its OWN already-filled slot (e.g. to backfill a
+                # missing person_entity_id on the membership-list entry) --
+                # same class of dead-end as the already_member fix below.
+                # Only a DIFFERENT occupant should error; self-occupation
+                # falls through harmlessly (the slot-fill step further down
+                # is itself already a no-op when not _hoh_occupied/
+                # _prime_occupied is false, so this never double-fills).
+                _prime_occupied_by_other: >-
+                  {%- set _a = _hh_acls | from_json if _hh_acls is string else _hh_acls -%}
+                  {%- set _a = _a if _a is mapping else {} -%}
+                  {%- set _partners = _a.get('partner', []) -%}
+                  {%- set _partners = _partners if _partners is iterable and _partners is not string else [] -%}
+                  {{- _partners | selectattr('role', 'equalto', 'prime')
+                                 | rejectattr('entity_id', 'equalto', member_entity) | list | count > 0 -}}
+                _hoh_occupied_by_other: >-
+                  {%- set _a = _hh_acls | from_json if _hh_acls is string else _hh_acls -%}
+                  {%- set _a = _a if _a is mapping else {} -%}
+                  {%- set _owners = _a.get('owner', []) -%}
+                  {%- set _owners = _owners if _owners is iterable and _owners is not string else [] -%}
+                  {{- _owners | rejectattr('entity_id', 'equalto', member_entity) | list | count > 0 -}}
             - if: >-
-                {{- (member_type == 'ai_user' and _prime_occupied | bool)
-                   or (member_type == 'user' and _hoh_occupied | bool) -}}
+                {{- (member_type == 'ai_user' and _prime_occupied_by_other | bool)
+                   or (member_type == 'user' and _hoh_occupied_by_other | bool) -}}
               then:
                 - variables:
                     response: >
@@ -1495,6 +1672,16 @@ script:
             # already know at this point (having passed the slot_occupied
             # gate above) that the relevant slot is free, so just skip the
             # redundant membership write and fall through to fill it.
+            #
+            # already_member ALSO silently skipped backfilling
+            # person_entity_id on an existing entry that never got one (e.g.
+            # a member originally added without user_entity_id) -- a retry
+            # with the correct user_entity_id this time did nothing, which is
+            # not idempotent, it's a dead end identical in spirit to the one
+            # just above. Now: if already a member AND a
+            # user_entity_id was given AND the existing entry has no
+            # person_entity_id yet, update that one field on the existing
+            # entry in place -- never touches an entry that already has one.
             - if: "{{- not (_already_member | bool) -}}"
               then:
                 - variables:
@@ -1523,6 +1710,40 @@ script:
                       - "{{- _hh_cab -}}"
                     key: members
                     value: "{{- _updated_members -}}"
+            - variables:
+                _pid_backfill: "{{- user_entity_id | default('') | trim -}}"
+                _existing_entry_pid: >-
+                  {%- set _lst = _existing_list | from_json if _existing_list is string else _existing_list -%}
+                  {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
+                  {%- set _hit = _lst | selectattr('entity_id', 'equalto', member_entity) | first | default(none) -%}
+                  {{- (_hit.get('person_entity_id', '') | default('', true) | trim) if _hit else '' -}}
+            - if: "{{- (_already_member | bool) and _pid_backfill != '' and _existing_entry_pid == '' -}}"
+              then:
+                - variables:
+                    _backfilled_members: >-
+                      {%- set _m = _hh_members_raw | from_json if _hh_members_raw is string else _hh_members_raw -%}
+                      {%- set _m = _m if _m is mapping else {} -%}
+                      {%- set _lst = _m.get(_list_key, []) -%}
+                      {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
+                      {%- set ns = namespace(out=[]) -%}{# FG-25: namespace required for list mutation inside for-loop -- a plain {% set %} inside {% for %} does not persist past the loop, confirmed live 2026-10-02 (silently produced an empty list and corrupted real household data on T) #}
+                      {%- for _e in _lst -%}
+                        {%- if _e.get('entity_id', '') == member_entity -%}
+                          {%- set ns.out = ns.out + [dict(_e, **{'person_entity_id': _pid_backfill})] -%}
+                        {%- else -%}
+                          {%- set ns.out = ns.out + [_e] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{- dict(_m, **{_list_key: ns.out}) | tojson -}}
+                - action: script.zen_dojotools_filecabinet
+                  data:
+                    action_type: create
+                    force_action: true
+                    set_timestamp: true
+                    show_hidden_volumes: false
+                    volume_entity_id:
+                      - "{{- _hh_cab -}}"
+                    key: members
+                    value: "{{- _backfilled_members -}}"
             # — first occupant fills the prime/HoH slot in VolumeInfo.acls —
             - variables:
                 _slot_filled: >-

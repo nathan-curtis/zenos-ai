@@ -67,6 +67,7 @@ flowchart TD
 | Mode | Description | Writes? |
 |---|---|---|
 | `resolve` | Returns identity record for target, or full roster if no target | No |
+| `whoami` | Shared "who is asking" resolver. Human: `console_user`, `resolved_person`, `is_hoh` (from the household cabinet ACLs, never a label; informational only). Agent: `agent`, `agent_entity`, `agent_onboarded`, `is_default`, `is_prime`. Both: household and family memberships. Other tools call this rather than re-deriving identity. | No |
 | `prompt` | Returns rendered prompt capsule for target construct | No |
 | `build_identity_manifest` | Builds `{roster, tree}` and writes to household cabinet | Yes |
 | `household_add_family` | Wires a family cabinet into the household `members.families` list | Yes |

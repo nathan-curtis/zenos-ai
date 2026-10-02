@@ -1,4 +1,4 @@
-# Zen DojoTools Ectoplasm — v6.2.0
+# Zen DojoTools Ectoplasm — v6.3.0
 
 *Spook/HA extended surface wrapper — repairs, areas, floors, entity lifecycle, labels, integrations*
 
@@ -56,6 +56,8 @@ data:
 ---
 
 ## Action Reference
+
+> **New in 6.3.0 (Spook 5.7.0+):** helper create/delete for timer, input_boolean, counter, input_text, input_button, input_datetime, and input_select (same `registry_lifecycle_control` cert as input_number); `entity_set_icon` and `entity_set_aliases`; `category_create`, `category_delete`, `category_assign`, `category_unassign`. `repair_list` and `ghost_list` use Spook's `repairs.list`. Each new action checks that the Spook service exists and returns `spook_version_required` with nothing changed on older Spook.
 
 ### Reads (no confirm required)
 
