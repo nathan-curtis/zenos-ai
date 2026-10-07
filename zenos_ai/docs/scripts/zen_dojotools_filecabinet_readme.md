@@ -255,6 +255,8 @@ fc_args: >
 
 Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`.
 
+A live drawer whose tool call reads the same drawer back, directly or through another mount (A reads B, B reads A), is refused with `tool_call_cycle_detected`. While a resolution is in flight, FileCabinet keeps a `<key>/mount_resolving` marker on the volume and clears it on every exit. The marker is only checked when the cache misses, and one left behind by a crashed run expires after 30 seconds.
+
 If the called tool returns the standard response envelope (`{mode, status, tool, version, result}`), the LiveDrawer unwraps it immediately and serves `result`, before any `digest_fields` extraction (6.14.0). Tools without an envelope pass through unchanged.
 
 ### Whitelist Entry Formats
