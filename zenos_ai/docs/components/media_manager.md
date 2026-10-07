@@ -345,18 +345,23 @@ Preferences are stored in the household cabinet — no additional `input_text` o
 
 ## Scoped Search
 
-`mode=search` with `within_media_content_id` + `within_media_content_type` (both required) searches inside a prior result instead of across the library, e.g. an artist's `media_content_id` to list its albums and tracks. It calls HA's `media_player.search_media` on the room's `zen_mm_music_assistant` player rather than `music_assistant.search`, and returns a different shape (inside the envelope's `result`, like every Media Manager response):
+`mode=search` with `within_media_content_id` searches inside a prior result (pass that result's `media_content_type` as `within_media_content_type` with it) instead of across the library, e.g. an artist's `media_content_id` to list its albums and tracks. It calls HA's `media_player.search_media` on the room's `zen_mm_music_assistant` player (or the resolved `entity_id` when the room has none) rather than `music_assistant.search`, and returns a different shape (inside the envelope's `result`, like every Media Manager response):
 
 ```json
 {
   "status": "success",
+  "tool": "zen_dojotools_media_manager",
+  "action": "search",
   "search_path": "scoped",
   "entity_id": "media_player.<ma_player>",
+  "within_media_content_id": "<id searched inside>",
+  "within_media_content_type": "artist",
   "results": [
     {"title": "", "media_content_id": "", "media_content_type": "", "media_class": "album",
      "uri": null, "can_play": true, "can_search": true, "artist": null, "artists": [],
      "album_uri": null, "source": "media_player.<ma_player>"}
-  ]
+  ],
+  "caller_token": ""
 }
 ```
 
