@@ -1,4 +1,4 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 4.5.6
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.1
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -77,13 +77,27 @@ Labels don't exist yet. Flynn calls DojoTools Labels to create the full required
 
 **Trigger:** `sensor.zen_label_health == warn`
 
-Labels exist but aren't assigned to the right cabinet entities. Flynn calls `script.flynn_assign_labels` to wire each cabinet sensor to its required labels. Three passes:
+Labels exist but aren't assigned to the right cabinet entities. Flynn calls `script.flynn_assign_labels` to wire each cabinet sensor to its required labels. Five passes:
 
 1. All slot entities → `zen_cabinet` parent label
 2. Each slot → its specific slot label (e.g., `zen_dojo_cabinet`, `zen_kata_cabinet`)
 3. Broad labels → default household, family, user, AI user cabinet entities
+4. Static health sensors → their health labels (`zen_health`, `system_status`, …)
+5. Default helper labels → ZenOS's own helpers, only for a label no entity carries yet:
+
+| Label | Default entity |
+|---|---|
+| `zen_home_mode` | `input_select.zen_home_mode`, `sensor.zen_home_mode` |
+| `zen_quiet_hours` | `binary_sensor.zen_quiet_hours` |
+| `zen_work_hours` | `binary_sensor.zen_work_hours` |
+| `zen_image_task` | `input_text.zenos_image_task` |
+| `zen_display_surface` | `sensor.zen_display_surface_state` |
+
+Step 5 creates a missing label before applying it. Moving one of these labels to another entity overrides the default, and Flynn leaves it there.
 
 Once complete, Flynn stops and waits for `zen_label_health` to update.
+
+**Every pass after Gates 0–1** also runs `script.flynn_assign_labels`, so an install whose cabinet labels are already assigned (an upgrade never enters Gate 1) still gets the Step 5 defaults. Every step is idempotent.
 
 **Event fired:** `flynn_stepgate_event` (gate: 1, action: labels_assigned)
 

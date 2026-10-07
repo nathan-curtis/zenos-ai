@@ -1,6 +1,11 @@
 ###############################################################################
-# FLYNN — UNIFIED ENGINE (v5.1.0)
+# FLYNN — UNIFIED ENGINE (v5.1.1)
 # Canon-safe, no nested Jinja in service calls, fully HA-legal.
+#
+# v5.1.1: flynn_assign_labels runs on every Stepgate pass past Gates 0-1,
+#   not only from Gate 1, so upgraded installs also get the default helper
+#   labels (zen_home_mode, zen_quiet_hours, zen_work_hours, zen_image_task,
+#   zen_display_surface). Every step is idempotent.
 #
 # Includes:
 #   - RC1 Config (input_text helpers)
@@ -537,6 +542,12 @@ automation:
           key: flynn_active_notification
           value: {}
           set_timestamp: true
+
+      # Run flynn_assign_labels on every pass past Gates 0-1, so installs
+      # whose cabinet labels are already assigned (and never enter Gate 1)
+      # still get Step 5's default helper labels. Every step is idempotent.
+      - action: script.flynn_assign_labels
+        data: {}
 
       #####################################################################
       # GATE 2: Cabinets not ok
@@ -1092,6 +1103,47 @@ script:
                     data:
                       entity_id: "{{ _hs_entity }}"
                       label_id: "{{ repeat.item }}"
+
+      # Step 5: Default ZenOS-owned helper labels, override-respecting.
+      # These stay label-driven so a user can move the label to a different
+      # entity -- only applies the default when the label currently has zero
+      # entities, so an existing override is never touched.
+      - variables:
+          default_helper_labels:
+            - label: zen_home_mode
+              entities: [input_select.zen_home_mode, sensor.zen_home_mode]
+            - label: zen_quiet_hours
+              entities: [binary_sensor.zen_quiet_hours]
+            - label: zen_work_hours
+              entities: [binary_sensor.zen_work_hours]
+            - label: zen_image_task
+              entities: [input_text.zenos_image_task]
+            - label: zen_display_surface
+              entities: [sensor.zen_display_surface_state]
+      - repeat:
+          for_each: "{{ default_helper_labels }}"
+          sequence:
+            - variables:
+                _dhl_label: "{{ repeat.item.label }}"
+                _dhl_entities: "{{ repeat.item.entities }}"
+            - if: "{{ label_entities(_dhl_label) | list | length == 0 }}"
+              then:
+                - if: "{{ _dhl_label | slugify not in labels() }}"
+                  then:
+                    - action: homeassistant.create_label
+                      continue_on_error: true
+                      data:
+                        name: "{{ _dhl_label }}"
+                - repeat:
+                    for_each: "{{ _dhl_entities }}"
+                    sequence:
+                      - if: "{{ states(repeat.item) is not none }}"
+                        then:
+                          - action: homeassistant.add_label_to_entity
+                            continue_on_error: true
+                            data:
+                              label_id: "{{ _dhl_label | slugify }}"
+                              entity_id: "{{ repeat.item }}"
 
       - event: flynn_stepgate_event
         event_data:
@@ -1851,8 +1903,13 @@ script:
       #########################################################################
       - variables:
           act: "{{ action_type }}"
-          sys_cab: "{{ states('sensor.zen_default_user_cabinet') }}"
-          onboarding_root: "{{ state_attr('sensor.flynn_onboarding','value') or {} }}"
+          sys_cab: "{{ states('sensor.zen_default_user_cabinet_resolved') }}"
+      - variables:
+          # Onboarding state lives in the user cabinet's _onboarding drawer.
+          onboarding_root: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set _raw = CABS.cabinet_drawer_value(sys_cab, '_onboarding') | from_json -%}
+            {{- _raw if _raw is mapping else {} -}}
           drawers: "{{ onboarding_root.get('drawers',{}) }}"
           now_ts: "{{ now().isoformat() }}"
           effective_drawer: "{{ drawer | default('global') }}"
@@ -1915,7 +1972,11 @@ script:
             sequence:
 
               - variables:
-                  schema: "{{ state_attr('sensor.flynn_onboarding_schema','value') or {} }}"
+                  # Onboarding schema lives in the user cabinet's _onboarding_schema drawer.
+                  schema: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {%- set _raw = CABS.cabinet_drawer_value(sys_cab, '_onboarding_schema') | from_json -%}
+                    {{- _raw if _raw is mapping else {} -}}
                   schema_json: >-
                     {{
                       dict(meta=schema.get('meta', {}))
