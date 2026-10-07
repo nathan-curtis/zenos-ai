@@ -26,6 +26,12 @@ Room state is now **off until the household turns it on**, and off means off. Th
 
 **If you're upgrading and your rooms stop changing state,** opt in: `zen_dojotools_room_manager  mode=roomstate_enable  roomstate_enabled=true` (requires `room_behavior_control`).
 
+## Breaking: `sensor.zen_priority_context` Is Gone
+
+Alert Manager no longer ships the `sensor.zen_priority_context` template sensor. Every ZenOS consumer now reads priority state straight from the `_zen_priority_inject` drawer on the household cabinet: Alert Manager's `mode=list` (`priority_context_state`), Room Manager's home overview (`priority_context`, `priority_count`, `highest_urgency`, `priority_providers`, `oldest_since`), and the helper sensor's `all_quiet`, `priority_count`, and `highest_urgency` attributes. Nothing changes for agents.
+
+**If a dashboard card or automation of your own references `sensor.zen_priority_context`,** point it at those attributes instead, or call `zen_dojotools_alertmanager mode=list`.
+
 ## Inherited from 2026.9.0 'Steel Magnolia'
 
 Everything in Steel Magnolia is the starting state for Tron — Room Manager v3 and REFLEX, the hospitality lifecycle work, the identity-gate rollout across locks/covers/security/climate/ZenLux/Room Manager/spa, per-target cert scope with hard deny, fresh live acks, CertAdmin, ToolMap, ToolScan, and the manifest fan-out consolidation. See [Steel Magnolia release notes](steel_magnolia.md) for the full writeup.
@@ -131,6 +137,28 @@ Alert Manager gained `ack`/`check_ack`/`revoke_ack`: a household can say "we kno
 Summarizer writes now guard on a validated parse, not a non-empty string: a malformed or fence-wrapped model response is logged and dropped instead of stamping a fresh timestamp on an empty kata drawer. The same standard now covers SuperSummary.
 
 Smaller fixes in the same spirit: ZenLux's `effect_set` turns the light on like its color siblings, and color/level modes read back the real resulting state after waiting for the device to confirm; Plant's leak watch fires a critical alert when there's no shutoff valve to close instead of stopping silently; the log search no longer reports "binary file matches" instead of the matching line; and Room Manager v3 self-heals a stale timer class that could leave a room's motion arming silently stuck.
+
+### No More Hardcoded Helpers
+
+Tools no longer name the household's helpers by entity ID. They find them by label, so a household can point ZenOS at its own entity by moving the label. Flynn applies the defaults for ZenOS's own helpers on install and on upgrade, and only to a label no entity carries yet, so a household's override is never put back:
+
+| Label | Default entity |
+|---|---|
+| `zen_home_mode` | `input_select.zen_home_mode`, `sensor.zen_home_mode` |
+| `zen_quiet_hours` | `binary_sensor.zen_quiet_hours` |
+| `zen_work_hours` | `binary_sensor.zen_work_hours` |
+| `zen_image_task` | `input_text.zenos_image_task` |
+| `zen_display_surface` | `sensor.zen_display_surface_state` |
+
+Postman, ZenLux, Media Manager, Room Manager, Identity, Taskmaster, the Ninja summarizer, Camera, Image Generator, Display, and ZenZork all read through these. Integrations ZenOS doesn't ship are labeled by the household: `zen_tts` (Postman's default TTS engine), `printer` (Print Shop, when no printer is configured), `default` plus `e_mail` (the Mail inbox sensor), and `zen_mpaa_rating` (ZenZork's rating ceiling, PG-13 when unset). Automation `at:` triggers stay on entity IDs, because a trigger can't target a label.
+
+The same pass fixed real defects along the way:
+
+- **FileCabinet** cross-cabinet `move`/`copy` carried an empty value from a cabinet source. It now moves the drawer's real value. A live drawer whose tool call reads the same drawer back, directly or through another mount, is refused with `tool_call_cycle_detected` instead of recursing until the concurrency cap stops it.
+- **AutoVac** status, health, and briefing no longer exhaust the script's run limit. The shared schedule lookup was calling `mode=schedule`, which fell through to the same lookup and called itself again.
+- **Flynn** onboarding now reads and writes its real `_onboarding` and `_onboarding_schema` drawers. It had been reading two sensors that were never created, so each answer replaced the ones before it.
+- **Room Manager v3** label resync creates a missing label before applying it. Cleaning resync dispatches at most one stuck room per pass, since there is one vacuum.
+- **Camera** reports `fc_confirmed` from FileCabinet's `write_verified`, so cached captures no longer read as unconfirmed.
 
 ### Queued Mode Gets a Pulse
 
