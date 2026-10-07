@@ -346,6 +346,24 @@ script:
         required: false
         selector:
           text:
+      within_media_content_id:
+        name: Scoped Search — Within Content ID
+        description: >-
+          HA >= 2026.10.0 only. media_content_id of a prior search result
+          (e.g. an artist) to search inside — turns search into HA's native
+          media_player.search_media scoped/navigable path instead of the
+          broad music_assistant.search. Requires within_media_content_type
+          too. Omit for the normal broad search. On HA < 2026.10.0 this
+          returns a capability error instead of a raw service failure.
+        required: false
+        selector:
+          text:
+      within_media_content_type:
+        name: Scoped Search — Within Content Type
+        description: "media_content_type of the within_media_content_id result (e.g. artist, album, playlist). Required alongside within_media_content_id."
+        required: false
+        selector:
+          text:
 
       profile_target:
         name: Profile Target
@@ -472,7 +490,7 @@ script:
                     tool='zen_dojotools_media_manager',
                     display_name='Media Manager — Media Lens Surface',
                     tier='dojotools',
-                    version='6.1.1',
+                    version='6.1.2',
                     health=_h,
                     required_labels=['dojotools'],
                     optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch', 'zen_home_mode'],
@@ -549,6 +567,26 @@ script:
           _dry_run:      "{{ dry_run | default(false) | bool }}"
           _caller_token: "{{ caller_token | default('') | string | trim }}"
           _hh:           "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          _within_id:    "{{ within_media_content_id | default('', true) | string | trim }}"
+          _within_type:  "{{ within_media_content_type | default('', true) | string | trim | lower }}"
+
+      # ── 0a2. HA core version capability gate — scoped search through
+      # media_player.search_media needs HA 2026.10.0 or newer.
+      - variables:
+          # update.home_assistant_core_update is a platform singleton, like
+          # zone.home. It exists only on Supervisor installs; elsewhere the
+          # version is unknown, so the call is attempted and a failure goes
+          # through the error path below.
+          _ha_core_version: "{{ state_attr('update.home_assistant_core_update', 'installed_version') | default('', true) | string | trim }}"
+          _ha_supports_scoped_search: >-
+            {%- if _ha_core_version in ['', 'unknown', 'unavailable'] -%}
+            true
+            {%- else -%}
+              {%- set parts = _ha_core_version.split('.') -%}
+              {%- set major = parts[0] | int(0) -%}
+              {%- set minor = parts[1] | int(0) if parts | length > 1 else 0 -%}
+              {{ (major > 2026) or (major == 2026 and minor >= 10) }}
+            {%- endif -%}
 
       # ── 0b. Cabinet + room entity list ────────────────────────────────────
       - variables:
@@ -726,7 +764,7 @@ script:
                 status: ok
                 tool: zen_dojotools_media_manager
                 codename: NyxMau5
-                version: "6.1.1"
+                version: "6.1.2"
                 what_friday_can_do: >-
                   Say 'put on Disney in the LR for the kids' and this tool handles
                   it — discover the room layout once, teach a pref, apply it forever.
@@ -819,7 +857,7 @@ script:
                   room_default_set: "Store a target_role as this room's default resolver. Future calls without target_role hit this role first. Pass target_role=auto to clear back to auto chain."
                   now_playing: "Full playback snapshot for a room or entity. Returns playback{state, title, artist, album, uri, provider, volume, shuffle, repeat, artwork_url, group_members}, search_metadata (MA track match with artists + album_uri), and lyrics_hint. Pass room= or entity_id=. Wired into Room Manager +media context slice."
                   stacks_by_anchor: "Lens Bus lookup — anchors → MA search → ranked evidence with playback_hint per item. area_id anchors inject room_context (what's playing, provider, volume) without polluting the search query — semantic anchors (mood, activity, concept) drive the search. room_context provider match boosts evidence confidence. Pass anchors_json + optional profile_target."
-                  search: "Raw MA search pass-through. No Lens envelope. Fields: query, artist, album, media_type, limit, library_only. Returns results{tracks,albums,artists,playlists,radio,audiobooks,podcasts}, discovered_sources, source_prefs_applied."
+                  search: "Raw MA search pass-through. No Lens envelope. Fields: query, artist, album, media_type, limit, library_only. Returns results{tracks,albums,artists,playlists,radio,audiobooks,podcasts}, discovered_sources, source_prefs_applied. SCOPED SEARCH (HA >= 2026.10.0 only): pass within_media_content_id + within_media_content_type (both required together) to search inside a prior result instead — e.g. an artist's media_content_id to list its albums/tracks. Uses HA's native media_player.search_media, not MA's search; different response shape: results[] of {title, media_content_id, media_content_type, media_class, uri, can_play, can_search, artist, artists, album_uri, source}. media_class (artist/album/track/playlist/podcast/directory/music) is the real type discriminator, not media_content_type (a generic backend tag). Below HA 2026.10.0 returns status=error code=capability_unavailable instead of attempting the call; on an install where the version can't be read at all (Container/Core, no Supervisor), attempts the call anyway rather than assuming unsupported."
                   play_media: "Play a URI or media_id on a room's MA player. enqueue=replace|next|add|play. Refuses (status=error) if the room's room_control_manager select reads 'Paused' — a human has told Room Manager v3 to leave this room alone; use queue_command against an already-playing entity if you need transport control on paused-room media that's already going."
                   queue_command: "Player control — command=play|pause|stop|next|previous|seek|shuffle|repeat|crossfade|clear_queue."
                   queue_get: "Read current queue window. limit + page for pagination. Returns items with queue_item_id."
@@ -2714,6 +2752,128 @@ script:
       # Lightweight raw search — no Lens envelope, no pref ranking. Returns
       # the MA grouped response directly. Use stacks_by_anchor when you want
       # ranked evidence + playback hints. Use search when you just want to browse.
+      - if: "{{ _result is not defined and _mode == 'search' and _within_id != '' }}"
+        then:
+          # ── Scoped search — HA's native media_player.search_media, not the
+          # broad music_assistant.search. Navigable media graph (artist ->
+          # album -> track), gated on HA >= 2026.10.0 above. No media_type
+          # filter here -- HA intentionally dropped the media-class
+          # constraint from this path since player implementations support
+          # different classes.
+          - if: "{{ not _ha_supports_scoped_search }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    tool: zen_dojotools_media_manager
+                    action: search
+                    code: capability_unavailable
+                    message: >-
+                      Scoped search (within_media_content_id) needs HA core
+                      2026.10.0 or newer -- this install is on
+                      {{ _ha_core_version }}. Omit within_media_content_id
+                      for the normal broad search.
+                    ha_core_version: "{{ _ha_core_version }}"
+                    caller_token: "{{ _caller_token }}"
+            else:
+              - variables:
+                  _ma_entity: >-
+                    {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
+                    {{ ma_ents | first | default(_resolved_entity, true) }}
+              - if: "{{ _ma_entity == '' }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        tool: zen_dojotools_media_manager
+                        action: search
+                        message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player."
+                        caller_token: "{{ _caller_token }}"
+                else:
+                  # The service scopes with media_content_id/media_content_type.
+                  # within_media_content_* are the Assist tool's aliases and
+                  # are not valid service fields.
+                  - action: media_player.search_media
+                    target:
+                      entity_id: "{{ _ma_entity }}"
+                    data:
+                      search_query: "{{ query | default('', true) | string | trim }}"
+                      media_content_id: "{{ _within_id }}"
+                      media_content_type: "{{ _within_type }}"
+                    response_variable: _scoped_raw
+                    continue_on_error: true
+                  - variables:
+                      # continue_on_error leaves _scoped_raw undefined on a
+                      # failed call; report it as an error, not empty success.
+                      _scoped_call_failed: "{{ _scoped_raw is not defined or _scoped_raw is not mapping }}"
+                  - if: "{{ _scoped_call_failed }}"
+                    then:
+                      - variables:
+                          _result:
+                            status: error
+                            tool: zen_dojotools_media_manager
+                            action: search
+                            message: "media_player.search_media call failed for {{ _ma_entity }}. Check ha_log_viewer for the real service error."
+                            entity_id: "{{ _ma_entity }}"
+                            caller_token: "{{ _caller_token }}"
+                    else:
+                      - variables:
+                          # The response is keyed by entity_id, like
+                          # calendar.get_events. Each value is a SearchMedia
+                          # object (result=[BrowseMedia, ...]), not a dict.
+                          _scoped_items: >-
+                            {%- set r0 = _scoped_raw if _scoped_raw is mapping else {} -%}
+                            {#- Per-entity value is a raw SearchMedia dataclass, not a
+                               dict -- tojson rejects it outright (not registered with
+                               HA's lenient JSON encoder for this type). Jinja falls
+                               back to attribute access when subscript/.get() fails, so
+                               pull .result off it directly; each BrowseMedia item gets
+                               flattened via its own .as_dict(). -#}
+                            {%- set sm = r0.get(_ma_entity) -%}
+                            {%- set raw_items = (sm.result if sm is not none and sm.result is defined else []) -%}
+                            {%- set ns = namespace(out=[]) -%}
+                            {%- for bm in raw_items -%}
+                              {%- set ns.out = ns.out + [bm.as_dict()] -%}
+                            {%- endfor -%}
+                            {{ ns.out if ns.out is sequence and ns.out is not string else [] }}
+                      - variables:
+                          # media_class (artist/album/track/playlist/podcast/
+                          # directory/music) is the type discriminator;
+                          # media_content_type is a generic backend tag.
+                          # uri/artist/artists/album_uri/source are optional
+                          # and only present if a backend supplies them.
+                          # can_search falls back to BrowseMedia.can_expand.
+                          _scoped_normalized: >-
+                            {%- set ns = namespace(out=[]) -%}
+                            {%- for item in _scoped_items -%}
+                              {%- set _artists = item.get('artists') or ([item.get('artist')] if item.get('artist') else []) -%}
+                              {%- set ns.out = ns.out + [{
+                                'title': item.get('title', item.get('name', '')) | string,
+                                'media_content_id': item.get('media_content_id', '') | string,
+                                'media_content_type': item.get('media_content_type', '') | string,
+                                'media_class': item.get('media_class', '') | string,
+                                'uri': item.get('uri', none),
+                                'can_play': item.get('can_play', false) | bool,
+                                'can_search': item.get('can_search', item.get('can_expand', false)) | bool,
+                                'artist': item.get('artist', none),
+                                'artists': _artists,
+                                'album_uri': item.get('album_uri', none),
+                                'source': item.get('source', _ma_entity)
+                              }] -%}
+                            {%- endfor -%}
+                            {{ ns.out }}
+                      - variables:
+                          _result:
+                            status: success
+                            tool: zen_dojotools_media_manager
+                            action: search
+                            search_path: scoped
+                            entity_id: "{{ _ma_entity }}"
+                            within_media_content_id: "{{ _within_id }}"
+                            within_media_content_type: "{{ _within_type }}"
+                            results: "{{ _scoped_normalized }}"
+                            caller_token: "{{ _caller_token }}"
+
       - if: "{{ _result is not defined and _mode == 'search' }}"
         then:
           - action: script.zen_sutra_music_assistant
@@ -2835,6 +2995,8 @@ script:
       # ═══════════════════════════════════════════════════════════════════════
 
       # ── play_media ────────────────────────────────────────────────────────
+      # The paused-room and missing-entity checks set _result; every later
+      # step is gated on _result is not defined, so an error ends the mode.
       - if: "{{ _result is not defined and _mode == 'play_media' }}"
         then:
           - if: "{{ _room_paused }}"
@@ -2843,31 +3005,35 @@ script:
                   _err: {status: error, message: "Room '{{ _room_slug }}' is Paused (room_control_manager) — a human hit the brakes on this room. Not starting new playback. Un-pause the room first if this is intentional.", room_control_entity: "{{ _room_control_ent }}", caller_token: "{{ _caller_token }}"}
               - variables:
                   _result: "{{ _err }}"
-          - variables:
-              _ma_entity: >-
-                {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
-                {{ ma_ents | first | default(_resolved_entity, true) }}
-          - if: "{{ _ma_entity == '' }}"
+          - if: "{{ _result is not defined }}"
             then:
               - variables:
-                  _err: {status: error, message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player.", caller_token: "{{ _caller_token }}"}
+                  _ma_entity: >-
+                    {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
+                    {{ ma_ents | first | default(_resolved_entity, true) }}
+              - if: "{{ _ma_entity == '' }}"
+                then:
+                  - variables:
+                      _err: {status: error, message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player.", caller_token: "{{ _caller_token }}"}
+                  - variables:
+                      _result: "{{ _err }}"
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_sutra_music_assistant
+                data:
+                  mode: play_media
+                  entity_id: "{{ _ma_entity }}"
+                  media_id: "{{ media_id | default('', true) | trim or query | default('', true) | trim }}"
+                  media_type: "{{ media_types | default(none, true) }}"
+                  enqueue: "{{ enqueue | default('replace', true) }}"
+                response_variable: _pm_result
+                continue_on_error: true
               - variables:
-                  _result: "{{ _err }}"
-          - action: script.zen_sutra_music_assistant
-            data:
-              mode: play_media
-              entity_id: "{{ _ma_entity }}"
-              media_id: "{{ media_id | default('', true) | trim or query | default('', true) | trim }}"
-              media_type: "{{ media_types | default(none, true) }}"
-              enqueue: "{{ enqueue | default('replace', true) }}"
-            response_variable: _pm_result
-            continue_on_error: true
-          - variables:
-              _pm_result: >-
-                {%- set r = _pm_result if _pm_result is mapping else {} -%}
-                {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
-          - variables:
-              _result: "{{ _pm_result }}"
+                  _pm_result: >-
+                    {%- set r = _pm_result if _pm_result is mapping else {} -%}
+                    {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
+              - variables:
+                  _result: "{{ _pm_result }}"
 
       # ── queue_command ─────────────────────────────────────────────────────
       - if: "{{ _result is not defined and _mode == 'queue_command' }}"

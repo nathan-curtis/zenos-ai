@@ -159,6 +159,11 @@ The same pass fixed real defects along the way:
 - **Flynn** onboarding now reads and writes its real `_onboarding` and `_onboarding_schema` drawers. It had been reading two sensors that were never created, so each answer replaced the ones before it.
 - **Room Manager v3** label resync creates a missing label before applying it. Cleaning resync dispatches at most one stuck room per pass, since there is one vacuum.
 - **Camera** reports `fc_confirmed` from FileCabinet's `write_verified`, so cached captures no longer read as unconfirmed.
+- **Music Assistant** searches no longer crash on HA 2026.10, which raises on the deprecated `config_entries` device attribute. The sutra reads `config_entry_id` (2026.8+) and falls back on older cores.
+
+### Searching Inside a Result
+
+On HA 2026.10.0 or newer, Media Manager's `mode=search` can search inside a prior result: pass an artist's `media_content_id` and `media_content_type` as `within_media_content_id`/`within_media_content_type` to get its albums and tracks. It uses HA's native `media_player.search_media` on the room's Music Assistant player and returns items with a `media_class` to tell artists, albums, and tracks apart. Older cores get `capability_unavailable` instead of a raw service failure. See [Media Manager](../components/media_manager.md#scoped-search).
 
 ### Queued Mode Gets a Pulse
 

@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.1.1
+**Version:** 6.1.2
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 
@@ -55,7 +55,7 @@ query: "dark jazz"
 | Mode | What It Does |
 |------|-------------|
 | `stacks_by_anchor` | Anchor-based music evidence. `area_id` anchors inject `room_context` only (what's playing, provider, volume) — they do NOT drive the query. First semantic anchor (mood, activity, concept) drives the MA search. Evidence confidence boosted when item provider matches room's current provider (`room_provider_match`). |
-| `search` | Direct music search via MA. `media_source_prefs` applied: preferred sources float, excluded sources stripped. `discovered_sources` returned in every response. `library_only: true` forces MA library scope. |
+| `search` | Direct music search via MA. `media_source_prefs` applied: preferred sources float, excluded sources stripped. `discovered_sources` returned in every response. `library_only: true` forces MA library scope. **Scoped search** (HA 2026.10.0+): pass `within_media_content_id` and `within_media_content_type` from a prior result (an artist, say) to search inside it through `media_player.search_media`. See [Scoped Search](#scoped-search). |
 | `now_playing` | Full playback snapshot. Pass `room=` (area_id) or `entity_id=`. Returns: state, title, artist, album, uri, provider, volume, shuffle, repeat, artwork_url, group_members, `search_metadata` (MA track match with artists + album_uri), `lyrics_hint` (call shape for lyrics — lyrics fetch is async, hint instead of inline). |
 | `register` | Register MM in the Lens registry. |
 | `unregister` | Remove from Lens registry. |
@@ -343,8 +343,31 @@ Preferences are stored in the household cabinet — no additional `input_text` o
 
 ---
 
+## Scoped Search
+
+`mode=search` with `within_media_content_id` + `within_media_content_type` (both required) searches inside a prior result instead of across the library, e.g. an artist's `media_content_id` to list its albums and tracks. It calls HA's `media_player.search_media` on the room's `zen_mm_music_assistant` player rather than `music_assistant.search`, and returns a different shape (inside the envelope's `result`, like every Media Manager response):
+
+```json
+{
+  "status": "success",
+  "search_path": "scoped",
+  "entity_id": "media_player.<ma_player>",
+  "results": [
+    {"title": "", "media_content_id": "", "media_content_type": "", "media_class": "album",
+     "uri": null, "can_play": true, "can_search": true, "artist": null, "artists": [],
+     "album_uri": null, "source": "media_player.<ma_player>"}
+  ]
+}
+```
+
+- `media_class` (`artist`, `album`, `track`, `playlist`, `podcast`, `directory`, `music`) tells you what an item is. `media_content_type` is a generic backend tag.
+- `can_search` true means the item can be searched inside in turn.
+- Needs HA 2026.10.0 or newer. On an older core it returns `status: error`, `code: capability_unavailable`. If the core version can't be read (Container/Core installs have no update entity), the search is attempted anyway.
+- A failed service call returns `status: error` naming the player. Check `zen_dojotools_ha_log_viewer` for the cause.
+
 ## Music Assistant Notes
 
 - `music_assistant.play_media` does **not** support `response_variable` — do not add it
 - `music_assistant.queue_command` does **not** exist in this install — all queue control routes through standard `media_player.*` HA services (`media_play`, `media_pause`, `media_stop`, `media_next_track`, `media_previous_track`, `media_seek`, `shuffle_set`, `repeat_set`, `clear_playlist`)
+- The Music Assistant sutra finds its config entry from the `zen_mm_music_assistant` player's device: `config_entry_id` on HA 2026.8+, the older `config_entries` before that. Pass `ma_config_entry_id` to override.
 - Tag the correct entity with `zen_mm_music_assistant` — the Music Assistant proxy, not a universal or dead player
