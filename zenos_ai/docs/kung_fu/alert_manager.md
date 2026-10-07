@@ -130,23 +130,13 @@ For a full postman setup walkthrough: **[Your First Alert](../getting_started/fi
 Error-severity alerts now wire into the **priority inject** system automatically. When alertmanager raises an error-severity alert, it fires `zen_event kind: priority_inject_write`, which:
 
 1. Lands in the `_zen_priority_inject` drawer in the household cabinet (up to 5 slots, sorted by urgency)
-2. Updates `zen_priority_context` sensor (`active_count`, `highest_urgency`, `providers`, `oldest_since`)
-3. Appears in the **NOTIFICATIONS block** at the top of every AI prompt context frame
+2. Appears in the **NOTIFICATIONS block** at the top of every AI prompt context frame
 
 The AI enters every conversation already knowing what's wrong — without being told. When the alert clears, `zen_event kind: priority_inject_clear` removes it from the inject slot automatically.
 
-### `zen_priority_context` Sensor
+### Checking Inject State
 
-Always-live sensor tracking current inject state:
-
-| Field | Description |
-|---|---|
-| `active_count` | Number of active (non-expired) inject entries |
-| `providers` | List of providers with active entries |
-| `highest_urgency` | `critical` \| `urgent` \| `none` |
-| `oldest_since` | Timestamp of the oldest active entry |
-
-This sensor is readable at any time. It's the lightweight way to check whether the AI is currently carrying any active alert context.
+There is no priority sensor; it was removed in Alert Manager 5.4.3. To check whether the AI is carrying active alert context, read `priority_context_state` (`active` or `clear`) from `zen_dojotools_alertmanager mode=list`, or the `all_quiet`, `priority_count`, and `highest_urgency` attributes on the Home Overview helper sensor (`sensor_helpers.yaml`). Room Manager's `home_overview` carries the full rollup, including providers and the oldest active entry. See [AlertManager](../components/alertmanager.md#reading-priority-state).
 
 ### Urgency Mapping
 

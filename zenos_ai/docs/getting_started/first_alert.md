@@ -87,7 +87,6 @@ After installing, AlertManager should be present as:
 
 - `automation.zen_alert_manager`
 - `script.zen_dojotools_alertmanager`
-- `sensor.zen_priority_context`
 
 Ask your AI:
 
@@ -98,8 +97,8 @@ It should call `zen_dojotools_alertmanager` with `mode=list`. A clean system ret
 You can also check directly in HA:
 
 1. Open **Developer Tools -> States**
-2. Search for `sensor.zen_priority_context`
-3. It should usually read `clear`
+2. Search for `sensor.home_overview`
+3. Its `all_quiet` attribute should usually read `true`
 
 ---
 
@@ -137,7 +136,7 @@ What should happen:
 
 - HA shows a persistent notification
 - `_zen_active_alerts` gets a `first_alert_test` entry
-- `sensor.zen_priority_context` stays `clear` because this is only a warning
+- `sensor.home_overview` keeps `all_quiet: true` because this is only a warning
 
 If you prefer Developer Tools, fire the event directly:
 
@@ -222,7 +221,7 @@ What should change:
 - HA shows a persistent notification
 - `_zen_active_alerts` gets `first_error_test`
 - `_zen_priority_inject` gets a matching priority entry
-- `sensor.zen_priority_context` changes to `active`
+- `sensor.home_overview` flips `all_quiet` to `false`, and `mode=list` reports `priority_context_state: active`
 
 This is the part your AI sees in its context frame. Error alerts are not just notifications; they become situational awareness.
 
@@ -250,7 +249,7 @@ Then ask:
 
 > "List active alerts."
 
-You should see no active alerts, and `sensor.zen_priority_context` should return to `clear`.
+You should see no active alerts, `priority_context_state` should be `clear`, and `all_quiet` on `sensor.home_overview` should return to `true`.
 
 If you are testing and want to wipe all active alerts:
 
@@ -388,7 +387,7 @@ The older `alert_manager` KFC and `alert_when_*` labels still describe one summa
 **I fired the same alert twice and only got one notification.**
 Good. That means dedup is working. Clear the alert before firing it again.
 
-**`sensor.zen_priority_context` did not change for a warning.**
+**`all_quiet` did not change for a warning.**
 Correct. Only `severity: error` writes priority context.
 
 **The tool says queued but I do not see the alert immediately.**

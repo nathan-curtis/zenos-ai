@@ -1,12 +1,11 @@
 # ZenOS-AI AlertManager
 
-**Version:** 5.4.1
+**Version:** 5.4.3
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**
 - `automation.zen_alert_manager` — fire/clear handler
 - `automation.zen_priority_inject_handler` — priority slot write/clear handler
-- `sensor.zen_priority_context` — live priority status sensor
 - `script.zen_dojotools_alertmanager` — MCP-exposed CRUD tool (**MCP-exposed**)
 
 ---
@@ -42,7 +41,6 @@ flowchart TD
   RawNotify["notify.<service suffix>"]
   Severity{"severity = error?"}
   Priority["Household drawer: _zen_priority_inject"]
-  Sensor["sensor.zen_priority_context"]
   HomeOverview["Room Manager home_overview"]
   Human["Human sees, acknowledges, or acts"]
 
@@ -53,7 +51,7 @@ flowchart TD
   Notify -->|postman| Postman --> Human
   Notify -->|raw notify| RawNotify --> Human
   Active --> Severity
-  Severity -->|yes| Priority --> Sensor --> HomeOverview
+  Severity -->|yes| Priority --> HomeOverview
   Severity -->|no| HomeOverview
 ```
 
@@ -209,19 +207,17 @@ Clearing an `error` alert removes it from this drawer.
 
 For alerts, the internal priority provider ID is `alert_<alert_key>`. Users normally do not pass this value to `zen_dojotools_alertmanager`; it is generated when an `error` alert fires and cleared when the alert clears.
 
-### `sensor.zen_priority_context`
+### Reading priority state
 
-Live rollup sensor reading `_zen_priority_inject`:
+There is no priority sensor (`sensor.zen_priority_context` was removed in 5.4.3). Each consumer derives the rollup from `_zen_priority_inject` itself, counting only entries whose `expires` is still in the future:
 
-| Attribute | Description |
-|-----------|-------------|
-| state | `active` or `clear` |
-| `count` | Number of non-expired priority entries |
-| `providers` | List of active provider IDs |
-| `highest_urgency` | `critical`, `urgent`, or `""` |
-| `oldest_since` | ISO timestamp of oldest active entry |
+| Consumer | Fields |
+|----------|--------|
+| `zen_dojotools_alertmanager mode=list` | `priority_context_state`: `active` or `clear` |
+| Room Manager `home_overview` | `alerts.priority_context`, `priority_count`, `highest_urgency`, `priority_providers`, `oldest_since` (see below) |
+| Home Overview helper sensor (`sensor_helpers.yaml`) | `all_quiet`, `priority_count`, `highest_urgency` attributes |
 
-This sensor is the integration point for Room Manager `home_overview`. Its state feeds `signal.all_quiet` and `alerts.priority_context`.
+`highest_urgency` is `critical`, `urgent`, or `""`. `oldest_since` is the ISO timestamp of the oldest active entry.
 
 ---
 
