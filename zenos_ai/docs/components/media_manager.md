@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.1.0
+**Version:** 6.1.1
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 
@@ -251,7 +251,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 |------|-------------|
 | `prefs_get` | Read all stored preferences for a room — see every context and what source/volume it maps to. |
 | `prefs_set` | Teach a preference: `room` + `home_context` + `source` (+ optional `volume` + `target_role`). Stores role as the resolver — not entity ID — so it survives entity renames. |
-| `prefs_apply` | Apply stored preference for a room. Reads `input_select.zen_home_mode` automatically if no `home_context` given. Re-resolves device from stored role label live. Supports `dry_run=true`. |
+| `prefs_apply` | Apply stored preference for a room. Reads the `zen_home_mode`-labeled entity automatically if no `home_context` given. Re-resolves device from stored role label live. Supports `dry_run=true`. |
 | `room_default_get` | Read stored default role for a room. Shows what it resolves to and what auto-chain would pick. |
 | `room_default_set` | Store a `target_role` as the room's default resolver. Pass `target_role=auto` to clear back to automatic chain. |
 
@@ -327,7 +327,7 @@ An activity is a named, per-room preset stored under household cabinet key `medi
 
 Preferences are stored in the household cabinet under key `media_prefs` (household) or `media_prefs_<person_slug>` (per-person). Storage is role-based, not entity-ID-based — `prefs_apply` re-resolves the stored role label live at apply time. This means entity IDs can change (upgrades, renames, replacements) without breaking stored preferences.
 
-`home_context` values match `input_select.zen_home_mode` states. If no context is passed at apply time, the current mode value is used automatically.
+`home_context` values match the home-mode states (the `zen_home_mode`-labeled entity). If no context is passed at apply time, the current mode value is used automatically.
 
 `media_source_prefs` (`preferred`/`excluded` source lists) are applied automatically on every Lens search and stacks_by_anchor call — no caller action required after initial setup.
 
@@ -337,7 +337,7 @@ Preferences are stored in the household cabinet under key `media_prefs` (househo
 
 | Helper | Purpose |
 |--------|---------|
-| `input_select.zen_home_mode` | Current home mode. Used by `prefs_apply` for context auto-read. Must be created manually. |
+| `zen_home_mode` label | Current home mode, read by `prefs_apply` for context auto-read. Flynn applies it to `input_select.zen_home_mode`; move the label to use a different entity. |
 
 Preferences are stored in the household cabinet — no additional `input_text` or `input_number` helpers required.
 

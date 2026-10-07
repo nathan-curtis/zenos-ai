@@ -1,4 +1,4 @@
-# Zen DojoTools Display — v0.5.1
+# Zen DojoTools Display — v0.5.2
 
 **File:** `packages/zenos_ai/dojotools/dojotools_display.yaml`
 **Script:** `zen_dojotools_display`
@@ -188,7 +188,7 @@ Don't call `response_type` directly for a "wait for a human's call" flow — use
 | Field | Meaning |
 |---|---|
 | `deployed` | `true` only if both the shared session sensor and the internal respond script exist on this install |
-| `shared_sensor` | `sensor.zen_display_surface_state` if it exists, else `none` |
+| `shared_sensor` | The `zen_display_surface`-labeled sensor (`sensor.zen_display_surface_state` by default) if one exists, else `none` |
 | `respond_script` | `script.zenos_display_respond_internal` if it exists, else `none` |
 | `note` | Explains that `deployed: false` means the `display_room`/`response_type`/`also_notify_buttons` features on `zen_dojotools_alertmanager`'s fire mode won't work on this install, even if `target_count` shows one or more real castable displays. Deploying this isn't something an agent can self-serve — the Lovelace view is a raw `.storage` edit, the same caution bar as a restart — so the household needs to authorize the one-time setup. |
 

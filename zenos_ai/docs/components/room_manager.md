@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.12.2
+**Version:** 5.12.5
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -379,7 +379,7 @@ Returns everything needed for AI home-state reasoning in a single call.
 
 | Field | Content |
 |-------|---------|
-| `home_mode` | Current ZenOS home mode string (`sensor.zen_home_mode` or `input_select.zen_home_mode`). |
+| `home_mode` | Current ZenOS home mode string, from the `zen_home_mode`-labeled entity. |
 | `generated` | ISO timestamp of the snapshot. |
 | `registered_room_count` | Total rooms in topology. |
 | `floor_count` | Distinct floor count. |

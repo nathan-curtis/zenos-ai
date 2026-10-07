@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.0 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 44.2 · `run_repair` 5.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 44.2 · `run_repair` 5.1.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -22,7 +22,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 
 | Script | Version | MCP-Exposed | Purpose |
 |---|---|---|---|
-| `zen_admintools_reset_template` | 1.1.0 | **No** | Press zen_template and kfc_template into cabinets |
+| `zen_admintools_reset_template` | 5.1.1 | **No** | Press zen_template and kfc_template into cabinets |
 | `zen_admintools_reset_labels` | 4.5.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild |
 | `zen_admintools_cabinetadmin` | 4.6.0 | No | Inspect, restore, reset, hammer, init, expand_drawer, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |

@@ -1,4 +1,4 @@
-# Zen DojoTools Postman — v5.1.0
+# Zen DojoTools Postman — v5.1.1
 
 **File:** `packages/zenos_ai/dojotools/dojotools_postman.yaml`
 **Script:** `zen_dojotools_postman`
@@ -125,7 +125,7 @@ user cabinet   → postman_profile  (preference: urgency_tiers, push_targets, aw
 
 **Life safety bypass:** urgency >= `life_safety_bypass` (default 9) bypasses all gates including sleep. Use for fire/smoke/CO notifications. Setting `breakthrough: true` has the same effect for gate evaluation without requiring a high urgency level.
 
-**Sleep gate:** When `input_select.zen_home_mode == 'sleep'` or hour >= 23 or < 7, notifications below `block_below_urgency` (default 9) are blocked. Bypassed by life_safety threshold.
+**Sleep gate:** When the `zen_quiet_hours`-labeled binary sensor is `on`, or the `zen_home_mode`-labeled input_select is `Night` or `Night-Late`, notifications below `block_below_urgency` (default 9) are blocked. Bypassed by life_safety threshold.
 
 **Work gate:** `block_tts: true` in `house.work_gate` suppresses TTS during work mode (does not block push).
 
@@ -181,6 +181,7 @@ Use `image_entity` (preferred) or `image_url` for push notification images. `ima
 | `image.zen_image_<slot>` | `/local/zen_<slot>.jpg` |
 | `image.<other>` | `state_attr(entity, 'entity_picture')` |
 | `camera.<entity>` | `/api/camera_proxy/<entity_id>` |
+| a label name (no `.`) | resolved to the first `camera.*` or `image.*` entity carrying that label, then as above |
 
 The companion app fetches `data.image` lazily on notification open — camera and generated images do not need to be pre-fetched before dispatch.
 
@@ -221,7 +222,7 @@ Other automations can also listen for `zen_event(kind: postman_response)` filter
 | `message` | resolve_and_dispatch | — | Text to deliver. |
 | `title` | resolve_and_dispatch | — | Optional notification title. |
 | `channel_hint` | resolve, resolve_and_dispatch | — | Preferred channel (push, tts, teams). Prepended to tier channel list, still subject to gates. |
-| `image_entity` | resolve_and_dispatch | — | HA image or camera entity. Takes precedence over `image_url`. |
+| `image_entity` | resolve_and_dispatch | — | HA image or camera entity, or a label carried by one. Takes precedence over `image_url`. |
 | `image_url` | resolve_and_dispatch | — | URL or local path for push image. |
 | `audio_url` | resolve_and_dispatch | — | Audio file URL. AIFF/WAV/MP3/MPEG4, max 5 MB. Companion app only. |
 | `tag` | resolve_and_dispatch | — | Notification tag for replace/update/clear patterns. Auto-generated when `response_type` is set. |
@@ -298,6 +299,8 @@ Merge order: `notification_data` < `image_url` < `audio_url` < `tag` < `response
   "away_policy": { "push": "allow", "tts": "block" }
 }
 ```
+
+`tts_engine` is optional. When it is unset, Postman uses the first `tts.*` entity carrying the `zen_tts` label.
 
 `tts_engine_label`: when set, resolves the TTS engine from the first `tts.*` entity carrying that label. Falls back to `tts_engine` string if no match.
 

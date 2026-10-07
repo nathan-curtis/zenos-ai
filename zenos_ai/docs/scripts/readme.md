@@ -94,7 +94,7 @@ Core primitive for label CRUD and entity tagging. Backbone of the label index th
 
 ---
 
-## 5. Zen DojoTools Identity — v1.1.0
+## 5. Zen DojoTools Identity — v1.1.1
 **File:** [`zen_dojotools_identity_readme.md`](zen_dojotools_identity_readme.md)
 
 Identity resolver for household members and AI constructs. MCP-exposed. Resolves by label, person entity, cabinet entity, or GUID. Delegates to the same path the prompt uses.
@@ -115,7 +115,7 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v4.5.2 · SuperSummary v4.5.2
+## 7. Zen DojoTools Summarizers — Ninja v4.5.3 · SuperSummary v4.5.2
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
 The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model.
@@ -164,7 +164,7 @@ HA lifecycle management: config check, safe restart, update install/skip. Log vi
 
 ---
 
-## 14. Zen DojoTools Office — Teams v1.1.0 · Mail v5.1.0
+## 14. Zen DojoTools Office — Teams v1.1.0 · Mail v5.1.1
 **File:** [`zen_dojotools_office_readme.md`](zen_dojotools_office_readme.md)
 
 Microsoft 365 Teams (`zen_dojotools_teams`) and Mail (`zen_dojotools_mail`) via the MS365 integration. Sending (Teams `send`, Mail `create`) is cert-gated on `pii_disclosure_control`; Teams presence `set` requires `teams_control` as of 2026.10.0. Calendar and To Do moved to their own tools (27, 31).
@@ -178,7 +178,7 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.9.0
+## 16. Zen DojoTools FileCabinet — v6.9.1
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet.
@@ -213,14 +213,14 @@ Spook/HA extended surface wrapper. Repairs, areas, floors, entity/device lifecyc
 
 ---
 
-## 21. Zen DojoTools Camera — v5.1.0
+## 21. Zen DojoTools Camera — v5.1.2
 **File:** [`zen_dojotools_camera_readme.md`](zen_dojotools_camera_readme.md)
 
 Friday's visual surface. Wraps HA camera entities with LLM vision analysis, household-cabinet caching, and label-driven sweep. Modes: `look` (analyze + cache), `read` (cached result), `scan` (sweep all `security_camera`-labeled cameras), `info` (entity attributes + stored `_default_ctx` + cache status), `set_default_ctx` (store per-camera default context call), `help`. `camera_hint` resolves entity from free-text. `sendto` dispatches look results to `image.zen_image_<slot>` (dashboard snapshot) or `person.*` (postman with image).
 
 ---
 
-## 22. Zen DojoTools Postman — v5.1.0
+## 22. Zen DojoTools Postman — v5.1.1
 **File:** [`zen_dojotools_postman_readme.md`](zen_dojotools_postman_readme.md)
 
 Unified household communications layer. Supersedes `zen_dojotools_notification_router` (script retired; the dispatcher's legacy-name compat arms for it were removed in 2026.7.1 — old callers now get a structured `unknown_tool` fault instead of referencing a nonexistent script). Resolves urgency + target against the authority stack (house ceiling → family floor → user preference) and dispatches to push/TTS/Teams. Supports image attachments, actionable response buttons with push-ack wait, phone TTS audio attachment, `kata_input` pipeline derivation, `breakthrough` gate bypass, full Android `notification_data` passthrough, and `open_dashboard` tap navigation. `zen_postman_response_router` automation bridges `mobile_app_notification_action` → `zen_event(kind: postman_response)` for ack correlation. `author_policy` seeds `postman_profile` drawers. Full `resolve` dry-run audit before sending. **`direct_dispatch`** (v5.1.0) — authority-stack bypass, straight to `notify.*`; requires `override: true` or the call is blocked and logged.
@@ -241,7 +241,7 @@ Room-targetable lock/unlock control for the `lock.*` domain — the gap `zen_doj
 
 ---
 
-## 24. Zen DojoTools Display — v0.5.1 (2026.10.0 "Tron", net-new)
+## 24. Zen DojoTools Display — v0.5.2 (2026.10.0 "Tron", net-new)
 **File:** [`zen_dojotools_display_readme.md`](zen_dojotools_display_readme.md)
 
 Agent-composable casting of a Lovelace dashboard/view to any display in the house — Cast (`cast.show_lovelace_view`), Fire TV/Android TV (wake + ADB VIEW intent into Silk, `com.amazon.cloud9`), and LG webOS (wake + `webostv.command system.launcher/open`), auto-routed per target from `mode=discover`. Devices already running HA Companion route through `zen_dojotools_postman`'s `dashboard_path_override` instead — this tool exists for TVs/displays that can't run Companion at all. A brand-new tool this cycle; these three channels are what's supported for now, and we'd like to hear from anyone who wants another cast surface added. A YAML-mode dashboard for the shared display view is coming soon. DojoTools cadillac shape throughout: single entry/exit, `zen_target_resolve.jinja` resolver, `zen_os_1.jinja` envelope, a `display_control` cert gating `show`/`update`/`dismiss` (read modes stay open), Lens Bus registration (`register`/`unregister`/`stacks_by_anchor`). `show`/`update` carry content fields (`title`, `body_markdown`, `image_entity`, `alert_severity`/`alert_text`, `progress`, `view_type`) written to a per-entity household-cabinet session drawer plus one fixed `display_session_current` key — v1 deliberately assumes a single active display at a time (no concurrency handling), so ONE shared template sensor (`sensor.zen_display_surface_state`) and ONE shared Lovelace view (`room-state/display`) project that fixed key, rather than one sensor/view per display. `with_audio=true` delegates to `zen_dojotools_media_manager mode=prefs_apply` for the resolved room — never guesses a source, fails soft (`no_pref`/`no_room`) without blocking the cast. Image pipeline correlates `zen_dojotools_generate_image`'s `image_generated` event against the session's own `session_id` (via a `correlation_id` field on that tool) so a late/stale event for a superseded session is silently dropped. `zen_display_target` label designates which technically-capable entities the household actually offers as displays. An active-use guard on `mode=show` checks the target's live foreground app/source before dispatching, blocking a cast that would interrupt real in-progress media unless `override_active_use=true` is passed. `mode=expire_sessions` clears any idle session drawer, consolidated into `zen_dojotools_scheduler`'s existing `quarter_hour` trigger.
@@ -255,7 +255,7 @@ Admin-only cert issuance/revocation authority for AI persona (`ai_user`) cabinet
 
 ---
 
-## 26. Zen AdminTools KungFu Loader — v5.2.0
+## 26. Zen AdminTools KungFu Loader — v5.2.1
 **File:** [`zen_admintools_kungfu_loader_readme.md`](zen_admintools_kungfu_loader_readme.md)
 
 Deploys KFC (Kung Fu Component) dojo drawers via Scribe, for components that don't self-register through KF5.
@@ -269,7 +269,7 @@ HA Calendar domain CRUD, split from `dojotools_office.yaml`. MCP-exposed — `cr
 
 ---
 
-## 28. Zen DojoTools Image Generator — v1.0.1
+## 28. Zen DojoTools Image Generator — v1.0.2
 **File:** [`zen_dojotools_image_generator_readme.md`](zen_dojotools_image_generator_readme.md)
 
 MCP-exposed image generation, dispatching `image_generated` correlated by an optional caller-supplied `correlation_id` so an async consumer (e.g. Display Surface) can match a late-arriving event back to the request that triggered it.

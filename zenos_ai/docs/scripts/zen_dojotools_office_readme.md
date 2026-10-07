@@ -1,4 +1,4 @@
-# Zen DojoTools Office — Teams v1.1.0 · Mail v5.1.0
+# Zen DojoTools Office — Teams v1.1.0 · Mail v5.1.1
 
 *M365 Teams and Mail tools for Home Assistant*
 
@@ -128,4 +128,4 @@ Editing the whitelist is now its own gated mode:
 | MS365 integration | Teams and Mail data source and action target |
 | `sensor.homeassistant_chat` | Teams chat data |
 | `sensor.homeassistant_status` | Teams presence state |
-| `sensor.ms365_inbox` | Mail inbox data |
+| Inbox sensor labeled `default` and `e_mail` | Mail inbox data. Apply both labels to the MS365 inbox sensor. |

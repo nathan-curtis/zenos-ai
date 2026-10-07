@@ -1,4 +1,4 @@
-# Zen AdminTools KungFu Loader — v5.2.0
+# Zen AdminTools KungFu Loader — v5.2.1
 
 *Deploys KFC (Kung Fu Component) dojo drawers via Scribe, for components that don't self-register*
 

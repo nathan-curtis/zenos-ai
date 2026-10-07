@@ -1,4 +1,4 @@
-# Zen DojoTools Print Shop — v0.1.0-experimental
+# Zen DojoTools Print Shop — v0.1.1-experimental
 
 *IPP-based printer control: submit text print jobs and trigger maintenance on household printers*
 
@@ -23,7 +23,7 @@ Print Shop submits plain-text print jobs and triggers basic maintenance (head cl
 1. **Install HA's native IPP integration** (Settings → Devices & Services → Add Integration → IPP). Point it at the printer directly (e.g. `192.168.1.120:631/ipp/print`) or at a CUPS queue. This creates a status sensor, e.g. `sensor.epson_wf_7840_series` — note the entity_id, you'll need it. Repeat once per household printer.
 2. **Install Rudd-O's `homeassistant-ipp-printing` via HACS.** This is a single confirm-only config step — printer details are not configured inside Rudd-O itself, only in the IPP integration and this tool's `configure` mode.
 3. **Expose the IPP sensor via Settings → Voice Assistants** (needed for the entity to be usable by the automation layer).
-4. **Run `mode=configure`** with `epson_ip` and `epson_entity` to seed the `print_shop` drawer in the AI user cabinet.
+4. **Run `mode=configure`** with `epson_ip` and `epson_entity` to seed the `print_shop` drawer in the AI user cabinet. If `epson_entity` isn't configured, the tool uses the first `sensor.*` carrying the `printer` label.
 
 Without all four steps, most modes will either no-op or fail against an unconfigured/unreachable printer.
 
@@ -137,4 +137,5 @@ zen_dojotools_print_shop:
 
 | Version | Change |
 |---|---|
+| 0.1.1-experimental | Printer falls back to the `printer`-labeled sensor when `epson_entity` isn't configured, instead of a fixed entity ID. |
 | 0.1.0-experimental | Initial release. Text + image printing via IPP/Rudd-O, WF-7840-specific maintenance triggers. |

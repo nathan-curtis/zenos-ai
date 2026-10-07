@@ -109,7 +109,7 @@ Do not expose:
 | `script.zen_admintools_*` | Operator repair/reset tools |
 | The vacuum, its sensors, and cabinet sensors | AutoVac reaches the vacuum by its `autovac` label; resolver sensors and FileCabinet cover the rest |
 
-The helpers do not need exposing either: Postman's quiet-hour and home-mode gates read `input_select.zen_home_mode` directly. See [What to Expose](entity_exposure.md).
+The helpers do not need exposing either: Postman's quiet-hour and home-mode gates read the `zen_quiet_hours` and `zen_home_mode` labeled entities directly. See [What to Expose](entity_exposure.md).
 
 
 Recommended dashboard controls:

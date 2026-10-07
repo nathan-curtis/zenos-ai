@@ -1,6 +1,6 @@
 # zen_dojotools_zenzork
 
-**ZenZork Adventure Engine** — v1.9.1 ("Chapter 1")
+**ZenZork Adventure Engine** — v1.9.2 ("Chapter 1")
 **File:** `packages/zenos_ai/dojotools/dojotools_zenzork.yaml`
 **Sidecar data:** `packages/zenos_ai/dojotools/.zenzork_quests/` — `quest_defs.json`,
 `book_lore.json`, `genie_codes.json`, `chapter_releases.json`,
@@ -337,7 +337,9 @@ real inventory item from an escape/kill/defeat pool on every
 threat-encounter outcome — not just flavor text. Plus a one-time,
 MPAA-gated first-death gift, mutually exclusive: under R gets a
 Hermitcraft-flavored "Did You Die? Backup Box," R-and-above gets a
-DCC-flavored "Gold Rebound Box." Curtain docs:
+DCC-flavored "Gold Rebound Box." The household rating is read from the
+input_select carrying the `zen_mpaa_rating` label; with no labeled
+helper (or one that's unknown/unavailable), ZenZork plays at PG-13. Curtain docs:
 [`zenzork_swag_table.md`](zenzork_swag_table.md) /
 [`zenzork_swag_answer_key_REDACTED.md`](zenzork_swag_answer_key_REDACTED.md).
 

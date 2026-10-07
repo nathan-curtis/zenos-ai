@@ -1,4 +1,4 @@
-# Zen DojoTools Image Generator — v1.0.1
+# Zen DojoTools Image Generator — v1.0.2
 
 **File:** `packages/zenos_ai/dojotools/dojotools_image_generator.yaml`
 **Script:** `zen_dojotools_generate_image`
@@ -12,7 +12,7 @@ Generates an image via `ai_task.generate_image` (DALL·E-class model) and writes
 
 ## Requirements
 
-Only `ai_task.openai_ai_task_3` (`gpt-image-1.5`) supports `GENERATE_IMAGE` in this install. Set `input_text.zenos_image_task` to that entity_id after any reload — the script falls back to it when no `entity_id` is passed explicitly.
+Only `ai_task.openai_ai_task_3` (`gpt-image-1.5`) supports `GENERATE_IMAGE` in this install. Set the `zen_image_task`-labeled helper (`input_text.zenos_image_task` by default) to that entity_id after any reload — the script falls back to it when no `entity_id` is passed explicitly.
 
 ---
 
@@ -45,7 +45,7 @@ Create `/config/www/zen_images/` once to activate the organized path; until then
 |-------|----------|-------------|
 | `image_prompt` | Yes | Descriptive prompt — be specific about subject, style, lighting, composition. |
 | `slot` | No | One of the six slots above. Default `canvas`. |
-| `entity_id` | No | Specific `ai_task.*` entity to use. Defaults to `input_text.zenos_image_task`, then HA's preferred entity. |
+| `entity_id` | No | Specific `ai_task.*` entity to use. Defaults to the value of the `zen_image_task`-labeled helper, then HA's preferred entity. |
 | `mode` | No | Pass `tool_manifest` to get the tool's self-description. Not a dispatch mode otherwise — this script has exactly one real operation (generate). |
 | `caller_token` | No | Opaque pass-through for caller correlation. |
 
