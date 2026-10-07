@@ -150,7 +150,7 @@ Tools no longer name the household's helpers by entity ID. They find them by lab
 | `zen_image_task` | `input_text.zenos_image_task` |
 | `zen_display_surface` | `sensor.zen_display_surface_state` |
 
-Postman, ZenLux, Media Manager, Room Manager, Identity, Taskmaster, the Ninja summarizer, Camera, Image Generator, Display, and ZenZork all read through these. Integrations ZenOS doesn't ship are labeled by the household: `zen_tts` (Postman's default TTS engine), `printer` (Print Shop, when no printer is configured), `default` plus `e_mail` (the Mail inbox sensor), and `zen_mpaa_rating` (ZenZork's rating ceiling, PG-13 when unset). Automation `at:` triggers stay on entity IDs, because a trigger can't target a label.
+Postman, ZenLux, Media Manager, Room Manager, Identity, Taskmaster, the Ninja summarizer, Camera, Image Generator, and Display all read through these. Integrations ZenOS doesn't ship are labeled by the household: `zen_tts` (Postman's default TTS engine), `printer` (Print Shop, when no printer is configured), `default` plus `e_mail` (the Mail inbox sensor), and `zen_mpaa_rating` (ZenZork's rating ceiling, PG-13 when unset). Automation `at:` triggers stay on entity IDs, because a trigger can't target a label.
 
 The same pass fixed real defects along the way:
 

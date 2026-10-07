@@ -21,7 +21,7 @@ The state machine has **8 modes** and two auxiliary flags. Transitions happen au
 | `input_select.zen_home_mode` | input_select | Canonical 8-state home mode selector |
 | `sensor.zen_home_mode` | sensor | Mirror of `input_select.zen_home_mode` with per-state icons |
 
-Tools find these through the `zen_home_mode` label, and the quiet- and work-hours sensors through `zen_quiet_hours` and `zen_work_hours`, never by entity ID. Flynn applies each label to its default entity when no entity carries it yet. To have ZenOS follow a different entity, move the label to it; Flynn leaves a label alone once anything carries it. The time-anchor automations in this package still trigger on the entities directly, since a trigger can't target a label.
+DojoTools find these through the `zen_home_mode` label, and the quiet- and work-hours sensors through `zen_quiet_hours` and `zen_work_hours`, rather than by entity ID. Flynn applies each label to its default entity when no entity carries it yet. To have ZenOS follow a different entity, move the label to it; Flynn leaves a label alone once anything carries it. Triggers stay on the entities directly, since a trigger can't target a label: the time-anchor automations here and the Scheduler's `home_mode_updates` trigger. The Home Overview helper sensor also still reads `sensor.zen_home_mode` by entity ID.
 
 ### Flags
 

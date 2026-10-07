@@ -53,7 +53,7 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 |-------|--------|
 | `home_mode` / `is_away` | the `zen_home_mode`-labeled entity |
 | `is_weekday` | Calendar |
-| `quiet_hours_active` / `work_hours_active` | `binary_sensor.zen_quiet_hours` / `binary_sensor.zen_work_hours` |
+| `quiet_hours_active` / `work_hours_active` | the `zen_quiet_hours` / `zen_work_hours`-labeled binary sensors |
 | `guest_present` / `guest_note` | Manual flags + Rolodex `stays_list` for today |
 | `upcoming_appointments` | Rolodex `appointments_list` |
 | `prep_schedule` | `zen_dojotools_kitchen mode=run case=prep_brief` for today — scheduled `[PREP:N]`-tagged dishes sorted by `start_by`, plus `unscheduled_count`. Wired in 2026.8.0 so Kitchen's prep timing is proactive on Taskmaster's existing trigger, not pull-only. |
