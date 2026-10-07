@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.1.2
+**Version:** 6.1.3
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 
@@ -345,7 +345,7 @@ Preferences are stored in the household cabinet — no additional `input_text` o
 
 ## Scoped Search
 
-`mode=search` with `within_media_content_id` searches inside a prior result (pass that result's `media_content_type` as `within_media_content_type` with it) instead of across the library, e.g. an artist's `media_content_id` to list its albums and tracks. It calls HA's `media_player.search_media` on the room's `zen_mm_music_assistant` player (or the resolved `entity_id` when the room has none) rather than `music_assistant.search`, and returns a different shape (inside the envelope's `result`, like every Media Manager response):
+`mode=search` with `within_media_content_id` + `within_media_content_type` (both required; an id without a type returns an error) searches inside a prior result instead of across the library, e.g. an artist's `media_content_id` to list its albums and tracks. It calls HA's `media_player.search_media` on the room's `zen_mm_music_assistant` player (or the resolved `entity_id` when the room has none) rather than `music_assistant.search`, and returns a different shape (inside the envelope's `result`, like every Media Manager response):
 
 ```json
 {
