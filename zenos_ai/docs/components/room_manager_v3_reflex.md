@@ -234,7 +234,10 @@ never requires touching either file.
    This runs all four resync passes, including self-labeling — a brand new
    room's helpers get their labels applied automatically as long as they
    follow the naming conventions above, no manual tagging required for the
-   sensor itself.
+   sensor itself. Self-labeling creates any label that doesn't exist yet
+   (the room's own label, `zen_room_state`, a helper class label) before
+   applying it. The cleaning resync dispatches at most one stuck room to
+   AutoVac per pass; any others wait for the next pass.
 
 6. **Reload and verify:**
    ```
