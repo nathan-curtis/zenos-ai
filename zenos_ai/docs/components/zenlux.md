@@ -1,6 +1,6 @@
 # ZenOS-AI ZenLux — Lighting Manager
 
-**Version:** 2.6.1 (see note below on the version-number reset)
+**Version:** 2.6.2 (see note below on the version-number reset)
 **Script:** `zen_dojotools_lights`
 **Codename:** ZenLux
 
@@ -204,6 +204,7 @@ Preferences stored in household cabinet — no additional helpers needed.
 
 | Version | Change |
 |---------|--------|
+| 2.6.2 | Script queue holds 5 runs (was 3), so a multi-room burst isn't dropped. |
 | 2.6.1 | Home mode read through the `zen_home_mode` label instead of a fixed entity ID. |
 | 2.6.0 | `adjust_only` on `brightness_set`/`color_temp_set`/`rgb_set`; new `brightness_increase`/`brightness_decrease`/`effect_set` modes (all Spook v5.2.0+, capability-probed). 2026.10.0: `effect_set` also turns the light on; the four color/level modes read back `state`/`brightness_pct` after waiting for the device to confirm (`readback_confirmed`). |
 | 2.2.0 (2026-08-16) | Real `switch.*` write support (`toggle`, `switch_set`), `mode=inspect`, `mode=scene_stage` relocated in from Room Manager, `lighting_control` identity gate turned on for real, full SESE + `envelope()` conversion across all modes, `mode=help`/`tool_manifest` content corrected (stale version string, 5 modes missing from the static mode list). Two real bugs found and fixed doing the conversion by hand: an internal validate-then-continue guard's early result could be silently overwritten by code that should never have run once its own `stop:` was stripped; a `choose:` block mis-nested at the wrong indentation level passed `config_check` cleanly while being dead code. |
