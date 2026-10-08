@@ -1,6 +1,6 @@
 # ZenOS-AI Rolodex (Twenty CRM) Plugin
 
-**Version:** 1.13.3  
+**Version:** 1.14.0  
 **Package:** `packages/zenos_ai/plugins/twenty/twenty.yaml`  
 **Primary script:** `zen_dojotools_rolodex`  
 **Internal REST broker:** `zen_sutra_twenty`  
@@ -90,7 +90,7 @@ zen_dojotools_rolodex:
 |------|-------------|----------|
 | `company_find` | Search companies by name | `item` |
 | `company_get` | Company record + people list | `item_id` |
-| `company_create` | Create a new company | `item` |
+| `company_create` | Create a new company (optional `address`, `phone`) | `item` |
 | `vendor_history` | List notes for a vendor/company (service history) | `item_id` |
 
 ---
@@ -214,7 +214,7 @@ Tags are comma-separated label slugs, e.g. `plumber,vendor,active`.
 | `item` | Name for search, or company name for create |
 | `item_id` | Twenty UUID — bypasses name resolution |
 | `first_name` / `last_name` | Contact name for create |
-| `email` / `phone` | Contact contact info |
+| `email` / `phone` | Contact info. `phone` also applies to `company_create`/`company_update`; stored as a +1/US number. |
 | `company_id` | Twenty company UUID for contact linking |
 | `note_title` | Note title (auto-generated from date if omitted) |
 | `note_body` | Note body text |
