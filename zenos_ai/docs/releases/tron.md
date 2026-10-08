@@ -1,6 +1,6 @@
 # Release Notes — 2026.10.0 'Tron'
 
-**Status:** Public Beta
+**Status:** RC1
 **Branch:** `feat/2026.10.0`
 **Base:** 2026.9.0 'Steel Magnolia' (released) + 2026.9.1 patch (released)
 

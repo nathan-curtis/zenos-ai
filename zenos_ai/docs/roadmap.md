@@ -16,7 +16,7 @@ It goes to 11. The intended scope is FileCabinet: its full cadillac pass (single
 
 ---
 
-**2026.10.0 'Tron' — Public Beta**
+**2026.10.0 'Tron' — RC1**
 
 Shore up the Grid: admission certification, the administrative plane, a platform-wide cert-gate audit, and the cadillac pass (one exit, one envelope) across the rest of the platform. FileCabinet's own cert-gate moves to Spinal Tap.
 

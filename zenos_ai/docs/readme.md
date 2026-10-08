@@ -24,7 +24,7 @@
 
 ---
 
-> ### 2026.10.0 'Tron' — Public Beta
+> ### 2026.10.0 'Tron' — RC1
 >
 > Branch `feat/2026.10.0`. **Breaking:** Room Manager room state is opt-in and off means off; rooms hold still until you opt in with `room_manager mode=roomstate_enable` (see [the relnote](releases/tron.md#breaking-room-state-is-opt-in)). Admission certification, phase 1 (in progress: minting the mandatory baseline certification during onboarding; enforcement follows in 2026.11.0), an administrative certification plane above normal participation (in planning), a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations rolled out system-wide, and Room Manager/Media/Lighting/Display convergence on one shared vocabulary. A few cert-gate audits are still open and tracked before this becomes a release candidate — see the relnote for specifics.
 >
