@@ -1,6 +1,8 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Index Cluster
-# Version: 5.1.0
+# Version: 5.1.1
+# v5.1.1: the index automation replies only from its terminal Return Result
+#   step; an unparseable command sets the error there instead of replying early.
 #
 # 5.1.0 (2026-09-23, #10477): zen_dojotools_index's auto-cap now fires on
 #   resolved-set SIZE alone (>50 entities, no limit= set), regardless of
@@ -449,7 +451,7 @@ script:
                   "status": "help",
                   "message": "mode=inspect entity_id=X [output_fields=+attributes,+statistics,+history,+rm,+chores,+tasks,+inventory,+lenses] [extended=true] -- deep entity inspection (state, labels, device metadata, cabinet volume info, optional recorder statistics). mode=area_info target_area_id=X / mode=floor_info target_floor_id=X / mode=device_info target_device_id=X -- single-target drill-down. mode=area_list/floor_list/label_list/zone_list/person_list/device_list -- house-wide enumeration, no input required. mode=integration_entities integration=X -- entities by integration. mode=help -- this reference.",
                   "tool": "Zen DojoTools Inspect",
-                  "version": "4.9.1",
+                  "version": "5.1.0",
                   "intent": "Deep entity inspection + area/floor/device read modes. Returns state, labels, device metadata (incl. floor_id, device_labels, area_labels), cabinet volume info, and optional recorder statistics. Called directly or via Index when expand_entities=true. Camera entities: camera_cache merged inline into each result entry — {analysis, cached_at, cache_age_minutes, snapshot_path, found}.",
                   "inputs": {
                     "entity_id": "Required for mode=inspect. Single entity_id or list. Not required for help/area_info/floor_info/device_info.",
@@ -3224,92 +3226,94 @@ automation:
             {%- set out = out + [ parsed_cmd.index_2 ] -%}
           {%- endif -%}
           {{- out -}}
+    # SESE: an invalid command sets its error in zen_index_response and
+    # recursion/dispatch skip themselves, so "Return Result" at the bottom is
+    # the only step that fires the reply.
     - if:
       - condition: template
         value_template: '{{ not _cmd_valid }}'
         alias: parsed_cmd is not a mapping — parser returned string
       then:
-      - event: zen_index_response
-        event_data:
-          correlation_id: '{{ correlation_id }}'
-          response:
+      - variables:
+          zen_index_response:
             status: error
             message: index_command parse failed — parser returned string not mapping
             raw_cmd: '{{ parsed_cmd }}'
-      - stop: cmd_parse_failed
-    - choose:
-      - conditions:
-        - condition: template
-          value_template: "{{- needs_recursion and depth < max_depth -}}"
-        sequence:
-        - variables:
-            resolved_children: []
-        - repeat:
-            for_each: "{{- child_commands -}}"
-            sequence:
-            - event: zen_indexer_request
-              event_data:
-                index_command: "{{- repeat.item | tojson -}}"
-                depth: "{{- depth + 1 -}}"
-                correlation_id: "{{- correlation_id ~ '_c' ~ repeat.index -}}"
-            - wait_for_trigger:
-              - trigger: event
-                event_type: zen_index_response
+    - if: "{{ _cmd_valid }}"
+      then:
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: "{{- needs_recursion and depth < max_depth -}}"
+          sequence:
+          - variables:
+              resolved_children: []
+          - repeat:
+              for_each: "{{- child_commands -}}"
+              sequence:
+              - event: zen_indexer_request
                 event_data:
+                  index_command: "{{- repeat.item | tojson -}}"
+                  depth: "{{- depth + 1 -}}"
                   correlation_id: "{{- correlation_id ~ '_c' ~ repeat.index -}}"
-              timeout: 3
-            - variables:
-                resolved_children: >-
-                  {{- resolved_children + [
-                    wait.trigger.event.data.response if (wait.trigger is not none)
-                    else {'result': {'simple': [], 'entity_count': 0}, 'status': 'timeout'}
-                  ] -}}
-        - variables:
-            parsed_cmd: >
-              {{-
-              parsed_cmd
-                | combine({
-                    "index_1": resolved_children[0].result.simple
-                                if parsed_cmd.index_1 is defined 
-                                else none
-                })
-                | combine({
-                  "index_2": resolved_children[1].result.simple
-                    if parsed_cmd.index_2 is defined
-                    else none 
-                })
-              -}}
-    - alias: Dispatch Zen Index Command
-      data:
-        entities_1: >-
-          {%- if parsed_cmd.index_1 is defined and parsed_cmd.index_1 is iterable and parsed_cmd.index_1 is not string -%}
-            {{- parsed_cmd.index_1 | default([]) -}}
-          {%- elif parsed_cmd.entities_1 is defined and parsed_cmd.entities_1 is iterable -%}
-            {{- parsed_cmd.entities_1 | default([]) -}}
-          {%- else -%}
-            {{- entities_1 if entities_1 is defined else [] -}}
-          {%- endif -%}
-        label_1: >-
-          {%- if not (parsed_cmd.index_1 is defined and parsed_cmd.index_1 is iterable and parsed_cmd.index_1 is not string) -%}
-            {{- parsed_cmd.label_1 | default(parsed_cmd.label | default('')) -}}
-          {%- else -%}{{- '' -}}{%- endif -%}
-        entities_2: >-
-          {%- if parsed_cmd.index_2 is defined and parsed_cmd.index_2 is iterable and parsed_cmd.index_2 is not string -%}
-            {{- parsed_cmd.index_2 | default([]) -}}
-          {%- elif parsed_cmd.entities_2 is defined and parsed_cmd.entities_2 is iterable -%}
-            {{- parsed_cmd.entities_2 | default([]) -}}
-          {%- else -%}
-            {{- entities_2 if entities_2 is defined else [] -}}
-          {%- endif -%}
-        label_2: >-
-          {%- if not (parsed_cmd.index_2 is defined and parsed_cmd.index_2 is iterable and parsed_cmd.index_2 is not string) -%}
-            {{- parsed_cmd.label_2 | default(none) -}}
-          {%- else -%}{{- none -}}{%- endif -%}
-        operator: "{{- parsed_cmd.operator | default('OR') -}}"
-        expand_entities: "{{- parsed_cmd.expand_entities | default(false) -}}"
-        filter_json: "{{- parsed_cmd.filter_json | default({}) | tojson -}}"
-      response_variable: zen_index_response
-      action: script.zen_dojotools_index
+              - wait_for_trigger:
+                - trigger: event
+                  event_type: zen_index_response
+                  event_data:
+                    correlation_id: "{{- correlation_id ~ '_c' ~ repeat.index -}}"
+                timeout: 3
+              - variables:
+                  resolved_children: >-
+                    {{- resolved_children + [
+                      wait.trigger.event.data.response if (wait.trigger is not none)
+                      else {'result': {'simple': [], 'entity_count': 0}, 'status': 'timeout'}
+                    ] -}}
+          - variables:
+              parsed_cmd: >
+                {{-
+                parsed_cmd
+                  | combine({
+                      "index_1": resolved_children[0].result.simple
+                                  if parsed_cmd.index_1 is defined
+                                  else none
+                  })
+                  | combine({
+                    "index_2": resolved_children[1].result.simple
+                      if parsed_cmd.index_2 is defined
+                      else none
+                  })
+                -}}
+      - alias: Dispatch Zen Index Command
+        data:
+          entities_1: >-
+            {%- if parsed_cmd.index_1 is defined and parsed_cmd.index_1 is iterable and parsed_cmd.index_1 is not string -%}
+              {{- parsed_cmd.index_1 | default([]) -}}
+            {%- elif parsed_cmd.entities_1 is defined and parsed_cmd.entities_1 is iterable -%}
+              {{- parsed_cmd.entities_1 | default([]) -}}
+            {%- else -%}
+              {{- entities_1 if entities_1 is defined else [] -}}
+            {%- endif -%}
+          label_1: >-
+            {%- if not (parsed_cmd.index_1 is defined and parsed_cmd.index_1 is iterable and parsed_cmd.index_1 is not string) -%}
+              {{- parsed_cmd.label_1 | default(parsed_cmd.label | default('')) -}}
+            {%- else -%}{{- '' -}}{%- endif -%}
+          entities_2: >-
+            {%- if parsed_cmd.index_2 is defined and parsed_cmd.index_2 is iterable and parsed_cmd.index_2 is not string -%}
+              {{- parsed_cmd.index_2 | default([]) -}}
+            {%- elif parsed_cmd.entities_2 is defined and parsed_cmd.entities_2 is iterable -%}
+              {{- parsed_cmd.entities_2 | default([]) -}}
+            {%- else -%}
+              {{- entities_2 if entities_2 is defined else [] -}}
+            {%- endif -%}
+          label_2: >-
+            {%- if not (parsed_cmd.index_2 is defined and parsed_cmd.index_2 is iterable and parsed_cmd.index_2 is not string) -%}
+              {{- parsed_cmd.label_2 | default(none) -}}
+            {%- else -%}{{- none -}}{%- endif -%}
+          operator: "{{- parsed_cmd.operator | default('OR') -}}"
+          expand_entities: "{{- parsed_cmd.expand_entities | default(false) -}}"
+          filter_json: "{{- parsed_cmd.filter_json | default({}) | tojson -}}"
+        response_variable: zen_index_response
+        action: script.zen_dojotools_index
     - alias: Return Result
       event: zen_index_response
       event_data:
