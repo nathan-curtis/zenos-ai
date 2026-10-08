@@ -101,7 +101,7 @@ Identity resolver for household members and AI constructs. MCP-exposed. Resolves
 
 ---
 
-## 6. Zen DojoTools Scheduler — v5.2.2
+## 6. Zen DojoTools Scheduler — v5.2.3
 **File:** [`zen_dojotools_scheduler_readme.md`](zen_dojotools_scheduler_readme.md)
 
 Trigger orchestrator. 20+ trigger IDs, component subscription via Dojo drawer, heartbeat drawer, and manual force events (`summary_force`, `ninja_force`, `supersummary_force`). Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.
