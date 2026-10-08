@@ -98,7 +98,7 @@ A bundle is a named set of certifications granted together, at one level, with o
 
 A bundle grant is deliberately simple: uniform level, no per-member scope, no per-member constraints. Anything finer than that is a set of single grants.
 
-No shipped tool currently declares a bundle tag. Bundles exist today only as custom household definitions.
+One declared bundle ships: `zenos_agent_basic`, fourteen routine, reversible certifications that Flynn requests with one live acknowledgement when onboarding completes. Anything else is a custom household definition.
 
 ## 19.7 What a denial looks like
 
