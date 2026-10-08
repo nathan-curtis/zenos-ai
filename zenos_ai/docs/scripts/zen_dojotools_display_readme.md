@@ -1,8 +1,8 @@
-# Zen DojoTools Display — v0.5.2
+# Zen DojoTools Display — v0.5.3 (beta)
 
 **File:** `packages/zenos_ai/dojotools/dojotools_display.yaml`
 **Script:** `zen_dojotools_display`
-**2026.10.0 "Tron" — the agent-composable display surface, net-new this cycle**
+**2026.10.0 "Tron" — the agent-composable display surface, net-new this cycle. Beta: finishes in 2026.11.0, which ships the shared display dashboard.**
 
 ---
 

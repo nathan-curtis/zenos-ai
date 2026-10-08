@@ -32,7 +32,7 @@ And a few things that are.
 
 **The Cadillac Pass** — one shared exit per script, one canonical response envelope, cert-gating retrofitted through a shared macro, rolled out tool-by-tool across the platform (Scribe, Ectoplasm, SpaMaster, Media Manager, Library, Zenzork, Index/Query/Inspect, Room Manager, and this beta cycle's full dojotools sweep plus Postman's own cert-gate audit closing).
 
-**Display Surface** — net-new tool: cast a Lovelace view to any TV, wall tablet, or display that isn't already running the HA Companion app, via Google Cast, Fire TV/Android TV, or LG webOS.
+**Display Surface (beta)** — net-new tool, finishing in 2026.11.0 with its dashboard: cast a Lovelace view to any TV, wall tablet, or display that isn't already running the HA Companion app, via Google Cast, Fire TV/Android TV, or LG webOS.
 
 **Room Manager / Media / Lighting / Display convergence** — one shared vocabulary (labels plus `room_control_manager`) instead of four systems each re-deriving "what room is this and what's it doing."
 
@@ -273,7 +273,7 @@ packages/zenos_ai/
     dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
     dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
     dojotools_locks.yaml          — Lock Manager — lock inventory and control
-    dojotools_display.yaml        — Display Surface (v1 in progress) — cast a Lovelace view to Cast/Fire TV/webOS displays
+    dojotools_display.yaml        — Display Surface (beta; finishes in 2026.11.0) — cast a Lovelace view to Cast/Fire TV/webOS displays
     dojotools_music_assistant.yaml — Music Assistant bridge (internal)
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring

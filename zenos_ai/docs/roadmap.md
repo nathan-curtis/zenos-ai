@@ -14,6 +14,8 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 It goes to 11. The intended scope is FileCabinet: its full cadillac pass (single exit, the canonical response envelope) and its cert-gate, built on a dedicated security-class design. FileCabinet is the one tool everything else depends on at boot, so this gets the whole month, done carefully enough that it doesn't break running installs.
 
+Display Surface also finishes here. It ships as beta in Tron; 2026.11.0 adds the YAML-mode dashboard for its shared display view.
+
 ---
 
 **2026.10.0 'Tron' — RC1**

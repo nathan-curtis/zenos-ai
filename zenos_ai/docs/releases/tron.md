@@ -3,6 +3,7 @@
 **Status:** RC1
 **Branch:** `feat/2026.10.0`
 **Base:** 2026.9.0 'Steel Magnolia' (released) + 2026.9.1 patch (released)
+**Before GA:** ZenZork's next version and its content ship before Tron goes GA. It doesn't block RC1.
 
 ---
 
@@ -175,11 +176,11 @@ The summarizer tier the Scheduler calls `keeper` was called `direct` on the summ
 
 Underneath that was a second gap. KFC self-registration (`zen_dojotools_manifest mode=bootstrap_kfc`) never wrote `pipeline_tier` into the drawers it mounts, so every self-registered component ran as `keeper` whatever its manifest declared, and a changed tier never triggered a rewrite. The mount now carries the declared tier and compares it on refresh.
 
-## Display Surface — Net New This Cycle
+## Display Surface — Beta This Cycle
 
 A new tool, not a port of anything that existed before: `zen_dojotools_display` lets an agent cast a Lovelace view to any display in the house — a TV, a wall-mounted tablet, anything that isn't already running the HA Companion app (Companion devices route through Postman instead, which already does this better for them). Supported cast channels for this release: Google Cast, Fire TV/Android TV (via ADB into Silk), and LG webOS. If your setup has a display surface that isn't one of these three, we want to hear about it — additional channels are realistic to add if there's real demand.
 
-Coming soon: a real YAML-mode dashboard for the shared display view every cast target renders, so it ships and updates like everything else in this system instead of being something you build by hand.
+**Beta in Tron.** Display Surface finishes in 2026.11.0 'This Is Spinal Tap', which ships the YAML-mode dashboard for the shared display view every cast target renders, so it updates like everything else in this system instead of being something you build by hand.
 
 ## Cross-Domain State Convergence (Room Manager / Media / Lighting / Display)
 
