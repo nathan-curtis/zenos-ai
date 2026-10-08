@@ -52,7 +52,7 @@ The bottom rung is the whole-install policy on simulated identity (Chapter 18). 
 
 > **Built in two phases. Not yet enforced.** Admission is a mandatory base certification an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. The certificate is `zenos.agent.basic`. Flynn requests it at the successful end of onboarding, and like every grant it is issued only after a person approves a live acknowledgement. The approval is the gate, not which tool asked.
 >
-> **Phase 1, 2026.10.0:** the certificate exists in its final dotted shape. Onboarding requests it on its own and as part of the `zenos_agent_basic` starter bundle, so a household can admit the agent and still decline the starter capabilities. Agents that already exist recertify through the same live-ack grant instead of a rebuild. Nothing is refused for lacking it yet.
+> **Phase 1, 2026.10.0:** the certificate exists in its final dotted shape. Onboarding requests the `zenos_agent_basic` starter bundle, which includes it, so one approval covers both. If the bundle is declined or does not grant it, onboarding asks for the certificate on its own, so a household can admit the agent and still decline the starter capabilities. Agents that already exist recertify through the same live-ack grant instead of a rebuild. Nothing is refused for lacking it yet.
 >
 > **Not yet built:** a check after onboarding that the grant actually landed, and a log-only mode that records what the gate would have denied.
 >

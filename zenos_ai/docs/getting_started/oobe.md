@@ -193,7 +193,7 @@ The script itself is not a general-purpose dojotool — it is surfaced only thro
 |---|---|
 | `run` | Returns the full onboarding protocol for the AI to follow |
 | `status` | Reports current OOBE state (complete flag, persona name, pending status) |
-| `complete` | Writes the `_oobe_complete` flag to the AI user cabinet, then requests the `zenos.agent.basic` badge and the `zenos_agent_basic` starter bundle. Both are live-ack grant requests; declining either doesn't undo completion. |
+| `complete` | Writes the `_oobe_complete` flag to the AI user cabinet, then requests the `zenos_agent_basic` starter bundle, which includes the `zenos.agent.basic` badge (one live ack). If the bundle is declined or doesn't grant the badge, it asks for the badge alone (a second live ack). Declining doesn't undo completion. |
 
 ### Status response
 
