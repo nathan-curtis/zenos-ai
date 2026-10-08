@@ -40,15 +40,15 @@ Steel Magnolia has since shipped, and the 2026.9.1 bugfix patch — backported f
 
 ## Basic ZenOS Certification (phase 1 in progress)
 
-> **Two phases.** Phase 1 ships in this build: create the certificate and prove Flynn can mint it during onboarding. Phase 2, enforcement, lands in 2026.11.0 'This Is Spinal Tap' after FileCabinet security. Nothing is gated on it in Tron.
+> **Two phases.** Phase 1 ships in this build: the certificate exists and onboarding requests it. Phase 2, enforcement, lands in 2026.11.0 'This Is Spinal Tap' after FileCabinet security. Nothing is gated on it in Tron.
 
 A mandatory baseline certification for access to the ZenOS tool surface. Once enforced, an agent without it isn't an admitted ZenOS agent and can't perform normal read operations against ZenOS tools — read-class access only, no domain authorization implied, no actuation, no configuration.
 
-Flynn owns the issuance path: at successful completion of onboarding, Flynn's bootstrap workflow issues the basic certification to the newly onboarded agent. That capability is reserved to onboarding itself, not exposed as a general-purpose grant. The working rule: **onboarding admits the agent, certification defines the job.**
+The certificate is `zenos.agent.basic`, the Certified ZenOS Agent badge. When onboarding completes, Flynn requests it for the new agent, alongside the `zenos_agent_basic` starter bundle. Like every grant, issuance waits on a live acknowledgement from a person: the human approval is the gate, not which tool asked. The badge is requested on its own so a household can admit the agent and still decline the starter capabilities. The working rule: **onboarding admits the agent, certification defines the job.**
 
-**Existing agents.** Agents created before 2026.10.0 will be fully configured and operational but won't hold the new baseline cert. Post-upgrade, the migration path is recertification through Flynn's approved onboarding-adjacent path — not a rebuild from scratch. Exact tooling TBD with implementation. If an existing agent can see ZenOS but can't read its tools after enforcement lands, that's a recertification gap to close, not a reason to weaken the gate.
+**Existing agents.** Agents created before 2026.10.0 stay fully configured and operational but don't hold the badge. They recertify through the same live-ack grant, no rebuild: `persona_editor mode=cert_req_grant cert_component=zenos.agent.basic`, or the `zenos_agent_basic` bundle, which includes the badge. If an existing agent can see ZenOS but can't read its tools after enforcement lands, that's a recertification gap to close, not a reason to weaken the gate.
 
-**Phase 1 (this build).** Mint the certificate in its final shape (dotted name, Flynn-only issuance) so phase 2 doesn't have to reshape it. Onboarding mints and verifies it; existing agents get it through the recertification path; a log-only mode records what the gate would have denied, without denying anything.
+**Phase 1 (this build).** The certificate exists in its final dotted shape, onboarding requests it, and existing agents can recertify. Not yet built: a check after onboarding that the grant actually landed, and a log-only mode that records what the gate would have denied.
 
 **Phase 2 (2026.11.0).** Hook it up and make it meaningful: tools check it, and it moves into the certificate enclave with FileCabinet security.
 

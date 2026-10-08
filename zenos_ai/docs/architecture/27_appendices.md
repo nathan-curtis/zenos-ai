@@ -141,7 +141,8 @@ Every "Not yet built" box in the book, in one place.
 | 19 | Signed certificates issued by a certificate authority | Design direction; the entry is already shaped for it |
 | 19 | Secure enclave cabinet for certifications, accessed only through a representative token derived from the conversation ID (salted and hashed), expiring at session start plus 5:30 | In progress |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
-| 20 | Admission: the base agent certification | Minting in 2026.10.0; enforcement in 2026.11.0 |
+| 20 | Admission enforcement: tools refuse an agent without `zenos.agent.basic` | 2026.11.0 |
+| 20 | A check after onboarding that the admission grant landed, and a log-only mode recording what the gate would deny | Planned |
 | 20 | Console-admin path for bundle grants | Planned |
 | 20 | Administrative competency certification | Design direction for this release line |
 | 21 | Certifying a corpus (a cabinet) as an object, with hard links between cabinets enforced through cabinet ACLs | Direction; ACL structure exists, unenforced |
