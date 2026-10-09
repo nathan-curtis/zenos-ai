@@ -18,7 +18,7 @@ Display Surface also finishes here. It ships as beta in Tron; 2026.11.0 adds the
 
 ---
 
-**2026.10.0 'Tron' — RC1**
+**2026.10.0 'Tron' — RC2**
 
 Shore up the Grid: admission certification, the administrative plane, a platform-wide cert-gate audit, and the cadillac pass (one exit, one envelope) across the rest of the platform. FileCabinet's own cert-gate moves to Spinal Tap.
 

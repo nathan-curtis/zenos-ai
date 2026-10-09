@@ -1,6 +1,6 @@
 # Release Notes — 2026.10.0 'Tron'
 
-**Status:** RC1
+**Status:** RC2
 **Branch:** `feat/2026.10.0`
 **Base:** 2026.9.0 'Steel Magnolia' (released) + 2026.9.1 patch (released)
 **Before GA:** ZenZork 2.0 is in. Episode 1 ships unreleased and goes live before Tron goes GA.
