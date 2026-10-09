@@ -1,11 +1,13 @@
 # zen_dojotools_zenzork
 
-**ZenZork Adventure Engine** — v1.9.2 ("Chapter 1")
+**ZenZork Adventure Engine** — v2.0.0 (Prologue + Episode 1)
 **File:** `packages/zenos_ai/dojotools/dojotools_zenzork.yaml`
 **Sidecar data:** `packages/zenos_ai/dojotools/.zenzork_quests/` — `quest_defs.json`,
 `book_lore.json`, `genie_codes.json`, `chapter_releases.json`,
 `threat_defs.json`, `weapon_defs.json`, `protect_defs.json`,
-`swag_defs.json`, `household_systems.json`.
+`swag_defs.json`, `household_systems.json`, and v2's episode packs:
+`milestone_defs.json`, `collectible_defs.json`, `hardware_defs.json`,
+`capability_defs.json`.
 **Sidecar data:** `packages/zenos_ai/dojotools/.zenzork_loot/loot_table.json`.
 
 Building your own quest, achievement, or cheat code on top of this engine
@@ -50,6 +52,13 @@ Navigation is compass-bearing-native. Portals are the same bearing-tagged entrie
 | `stop` | Save session state, write post-game Room Manager quality report, and end. |
 | `quest` | Set or check quest win condition. 16 quest markers. See Quest section. |
 | `chapters` | Book-lore sequence status — which of the 12 chapters this player has earned vs. which the household has publicly released. `catch_up=true` claims released-but-unearned chapters. See Book-Lore Chapters section. |
+| `notebook` | The agent's investigation notebook. `notebook_action=create\|update\|query\|resolve\|summary` (default summary); `record_type` = objectives, claims, evidence, discoveries, questions, notes. See Releases, Episodes & the Notebook. |
+| `milestone` | `milestone_action=evaluate` (default: check episode milestones, apply effects for newly met ones) or `list` (no writes). |
+| `collectible` | `collectible_action=resolve\|collect\|list`. `collect` needs `collectible_id` and the player standing in its room. |
+| `hardware` | `hardware_action=resolve\|scavenge\|repair`. `scavenge` needs `hardware_id` and the player in its room; `repair` completes an item once its dependency chain is repaired. |
+| `capability_drop` | `capability_drop_action=list` (default) or `roll` with a canonical `capability_name` (not a raw HA label). |
+| `belief` | DungeonMind's belief state. `belief_action=set` (`belief_id`, `confidence`, one `evidence` item to append) or `list`. |
+| `comms` | Communication stage. `comms_action=get` (default) or `set` with `comms_stage`: mediated → quoted → partial_direct → direct, forward only. |
 | `genie` | Cheat codes. `code=X confirm_text="I hereby admit I am a cheater" confirm=true`. See Game Genie section. |
 | `help` | Full mode list, navigation reference, compass point table. |
 | `setup` | Commissioning checklist + direct portal setter + north calibration + landmark survey wizard. See Setup section. |
@@ -425,6 +434,17 @@ replicate this elsewhere).
 
 ---
 
+## Releases, Episodes & the Notebook (v2.0.0)
+
+The engine stays fixed; each episode ships as a content pack in `.zenzork_quests/`, the way a WAD extends DOOM.
+
+- **Releases.** `chapter_releases.json` `releases[]` lists `prologue` (the original game, released) and `episode_01` ("DEAD AIR"). An episode plays only when its `status` is `released` and the engine meets its `min_engine_version`. `episode_01` ships `unreleased`; the household flips it. `mode=chapters` reports releases and `prologue_complete`. The older `release_chapters` ledger for book-lore is unchanged.
+- **Notebook.** The AI cabinet's `zenzork_notebook` drawer holds the agent's own case file: objectives, claims, evidence, discoveries, questions, notes. Milestone effects can add records too. It keeps "what DungeonMind said" apart from "what's established".
+- **Milestones** (`milestone_defs.json`) fire on conditions (`achievement`, `capability`, `story_release`, `story_complete`, `all`, `any`; `requires` is accepted as an alias for `condition`) and apply effects to the notebook, belief state, and comms stage.
+- **Collectibles, hardware, capability drops** add habitat-placed finds, scavenge-and-repair chains, and drops keyed to what the household actually has.
+- **Agent guidance.** Book-lore, quest, and milestone nodes may carry `agent_guidance`, returned as its own result key, and only when that node unlocks.
+- **Spoiler curtain.** Story text in the four episode sidecars is base64 at rest, like `book_lore.json`, decoded once at load.
+
 ## Game Genie
 
 `mode=genie code=X confirm_text="I hereby admit I am a cheater" confirm=true`.
@@ -503,6 +523,7 @@ Two independent fallback paths, both silently returning template narration rathe
 
 | Version | Change |
 |---------|--------|
+| v2.0.0 | ZenZork v2: Prologue/Episode release ledger, agent notebook, milestones, navpoint quests, collectibles, hardware, capability drops, belief state, comms stage, `requires` and `agent_guidance` on content nodes, base64 story text in the new sidecars. Episode 1 "DEAD AIR" content ships unreleased. |
 | (2026-08-16) | Real security fix: `open`/`close`/`use`/`push`/`pull` no longer issue raw lock/cover service calls directly — routed through the same identity-gated tools (`zen_dojotools_locks`/`zen_dojotools_covers`), always in `dry_run` mode, narrating from the real `cert_scope`/live-ack check instead of a real actuation. `tool_manifest` version wasn't bumped for this fix — flagging per the known Zammad #10300 version-source gap rather than inventing a number. |
 | v1.8.0 | Training quest (auto-seeded, `training_quest`), 3 real persisted achievements (`oriented`/`hands_on`/`carls_briefing`). Data-driven turn-based threat engine (`threat_defs.json`, grue is threat #1, up to 5 concurrent) ticking on `look`/`go`/`wait`/`start` only. Lite-5e `mode=attack` combat (`weapon_defs.json`, reuses Friday's `zen_ai_certs` ability-score vocabulary), non-fatal always. Protect-token/saving-throw escape levers (`protect_defs.json`). DUNGEONMIND's swag on every threat outcome plus a one-time MPAA-gated first-death gift (`swag_defs.json`). Rare verified-real cartridge collectibles + `chapter_1_complete` capstone. Household-systems achievements (`household_systems.json`, real live-entity presence via `label_entities()`). New `mode=talk` (deliberate no-NPCs gag). `mode=help`/`mode=status` brought current with the new surface; `mode=status` also picked up several fields it was silently missing and a real bug fix (`mpaa_rating` referenced an out-of-scope variable, always empty). Fixed a real pre-existing bug in `mode=start`'s reset path — `quest`/`quest_won` weren't re-derived on a genuinely new session, so it reported the prior session's quest. |
 | v1.7.0 ("Chapter 1", cont.) | Data-driven quest table (12 of 15 markers, `.zenzork_quests/quest_defs.json`, 10 reusable types). `mode=chapters` — 12-entry book-lore sequence (`book_lore.json`) replacing the old ad-hoc Diawata/Valtay/Mongo mechanism, corrected against real book research (Diawata=book5/audio-only, Valtay=book6 not book5), release-chapter publishing system (`chapter_releases.json`, one JSON bundle per SoftDisk-style content chapter — corrected mid-build from an initial one-file-per-entry design that was the wrong grain, see below) with new-player catch-up and an engine-version gate (`min_engine_version`/`engine_ready`/`playable`, since a future chapter can ship unlock types this build doesn't have a dispatcher for yet). `mode=genie` — Game Genie cheat codes (`genie_codes.json`), dual-gate confession requirement, god-tattoo meta callback. Real loot table (`.zenzork_loot/loot_table.json`, 13 items/5 rarity tiers) replacing placeholder treasure names. Carl's Left Sock (real registered landmarks + take-mode special case). Fixed north-calibration write/read drawer mismatch (`_cal` was always 0, silently, since the feature shipped). |

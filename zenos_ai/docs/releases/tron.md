@@ -3,7 +3,7 @@
 **Status:** RC1
 **Branch:** `feat/2026.10.0`
 **Base:** 2026.9.0 'Steel Magnolia' (released) + 2026.9.1 patch (released)
-**Before GA:** ZenZork's next version and its content ship before Tron goes GA. It doesn't block RC1.
+**Before GA:** ZenZork 2.0 is in. Episode 1 ships unreleased and goes live before Tron goes GA.
 
 ---
 
@@ -181,6 +181,12 @@ Underneath that was a second gap. KFC self-registration (`zen_dojotools_manifest
 A new tool, not a port of anything that existed before: `zen_dojotools_display` lets an agent cast a Lovelace view to any display in the house — a TV, a wall-mounted tablet, anything that isn't already running the HA Companion app (Companion devices route through Postman instead, which already does this better for them). Supported cast channels for this release: Google Cast, Fire TV/Android TV (via ADB into Silk), and LG webOS. If your setup has a display surface that isn't one of these three, we want to hear about it — additional channels are realistic to add if there's real demand.
 
 **Beta in Tron.** Display Surface finishes in 2026.11.0 'This Is Spinal Tap', which ships the YAML-mode dashboard for the shared display view every cast target renders, so it updates like everything else in this system instead of being something you build by hand.
+
+## ZenZork 2.0
+
+The original game is now the **Prologue**, and new story arrives as **Episodes**: content packs the engine loads, the way WADs extend DOOM. 2.0 adds the pieces episodes need: a release ledger with an engine-version gate, the agent's own investigation notebook, data-driven milestones, habitat-placed collectibles, hardware to scavenge and repair, drops keyed to what the household actually runs, and DungeonMind's belief and communication state. Story text stays behind the existing spoiler curtain.
+
+Episode 1, "DEAD AIR", ships with this build marked unreleased. It goes live before GA. The unofficial owner's manual is in its [Second Printing](../getting_started/zenzork_manual_unofficial.md). See [ZenZork](../scripts/zen_dojotools_zenzork_readme.md#releases-episodes--the-notebook-v200).
 
 ## Cross-Domain State Convergence (Room Manager / Media / Lighting / Display)
 
