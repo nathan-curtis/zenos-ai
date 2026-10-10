@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**RC2: 2026.10.0 'Tron'** (`feat/2026.10.0`) | Current Stable: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) | Legacy line: 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/tron.md).
+**Current Stable: 2026.10.0 'Tron'** (`feat/2026.10.0`) | Previous: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) | Legacy line: 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/tron.md).
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -24,13 +24,13 @@ And a few things that are.
 
 **Breaking: room state is opt-in.** Room Manager's room state ships off, and off means off: until you opt in (`zen_dojotools_room_manager mode=roomstate_enable roomstate_enabled=true`), rooms hold their current state and no evidence moves them. Nothing turns it on for you. If your rooms stop changing state after upgrading, that's why.
 
-**Admission certification** (phase 1 in progress) — Tron creates the certificate and proves Flynn can mint it during onboarding; enforcement lands in 2026.11.0. Once enforced, every agent will need a mandatory baseline ZenOS certification just to read the tool surface at all, not to administer or actuate anything. Issuance will be reserved to Flynn's onboarding path; existing agents will recertify through an onboarding-adjacent path rather than a rebuild.
+**Admission certification** (phase 1 shipped) — Tron creates the `zenos.agent.basic` certificate and Flynn requests it, with a starter capability bundle, when onboarding completes; enforcement lands in 2026.11.0. Once enforced, every agent will need it just to read the tool surface at all, not to administer or actuate anything. Like every grant it waits on a live human acknowledgement, and existing agents recertify through the same grant rather than a rebuild.
 
 **The administrative plane** (in planning) — a second certification boundary above normal participation (`ZenOS Admin Certified, Level X`) will gate CertAdmin, cabinet repair, and reset-class tools. Country club, not skeleton key: even the top Admin level won't waive a fresh live human ack on the functions that need one.
 
 **Closing the bypass routes** — a platform-wide audit went looking for gaps nobody thought to ask about and found roughly a dozen: cabinet lifecycle operations reachable with zero cert, a camera's alert routing silently redirectable, eight of thirteen Utilities scripts actuating without any gate, and a shared `pii_disclosure_control` cert now covering mail/Teams/task/todo/calendar writes so a caller can't route around one gate through a neighboring tool. New cert-taxonomy infrastructure — OID-style prefix inheritance and named cert bundles — came out of doing this at platform scale.
 
-**The Cadillac Pass** — one shared exit per script, one canonical response envelope, cert-gating retrofitted through a shared macro, rolled out tool-by-tool across the platform (Scribe, Ectoplasm, SpaMaster, Media Manager, Library, Zenzork, Index/Query/Inspect, Room Manager, and this beta cycle's full dojotools sweep plus Postman's own cert-gate audit closing).
+**The Cadillac Pass** — one shared exit per script, one canonical response envelope, cert-gating retrofitted through a shared macro, rolled out tool-by-tool across the platform (Scribe, Ectoplasm, SpaMaster, Media Manager, Library, Zenzork, Index/Query/Inspect, Room Manager, and this cycle's full dojotools sweep plus Postman's own cert-gate audit closing).
 
 **Display Surface (beta)** — net-new tool, finishing in 2026.11.0 with its dashboard: cast a Lovelace view to any TV, wall tablet, or display that isn't already running the HA Companion app, via Google Cast, Fire TV/Android TV, or LG webOS.
 
@@ -44,7 +44,7 @@ FileCabinet gets a bug pass in Tron; its single-exit/envelope/cert-gate work is 
 
 ---
 
-**Current stable: 2026.9.1 'Steel Magnolia'** (bugfix-only patch, backported from Tron work that doesn't depend on any of its still-in-development features) — Room Manager v3's wasp-in-a-box occupancy model, identity gates across locks/covers/alarm/climate/ZenLux/ZenZork/spa, a Security Manager parity build, full AutoVac Roborock support, and ZenZork's first content chapter.
+**Previous stable: 2026.9.1 'Steel Magnolia'** (bugfix-only patch, backported from Tron work that doesn't depend on any of its still-in-development features) — Room Manager v3's wasp-in-a-box occupancy model, identity gates across locks/covers/alarm/climate/ZenLux/ZenZork/spa, a Security Manager parity build, full AutoVac Roborock support, and ZenZork's first content chapter.
 
 → [Release Notes — Steel Magnolia](zenos_ai/docs/releases/steel_magnolia.md) ([9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch))
 

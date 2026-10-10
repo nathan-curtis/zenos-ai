@@ -18,7 +18,7 @@ Display Surface also finishes here. It ships as beta in Tron; 2026.11.0 adds the
 
 ---
 
-**2026.10.0 'Tron' — RC2**
+**2026.10.0 'Tron' — Shipped, current Stable**
 
 Shore up the Grid: admission certification, the administrative plane, a platform-wide cert-gate audit, and the cadillac pass (one exit, one envelope) across the rest of the platform. FileCabinet's own cert-gate moves to Spinal Tap.
 
@@ -26,7 +26,7 @@ See: [Release Notes — Tron](releases/tron.md)
 
 ---
 
-**2026.9.0 'Steel Magnolia' (incl. 2026.9.1 patch) — Shipped, current Stable**
+**2026.9.0 'Steel Magnolia' (incl. 2026.9.1 patch) — Shipped, previous Stable**
 
 Room Manager v3's state cascade and REFLEX (autonomous scene-firing on state change) reach their fullest form, plus the hospitality lifecycle (guest arrival through checkout) and cert-gated permission tightening across the board.
 
@@ -38,7 +38,7 @@ See: [Release Notes — Steel Magnolia](releases/steel_magnolia.md)
 
 Taskmaster becomes a real cross-backend expediter. Kitchen gains a full fulfillment/costing layer plus an executive-chef batch (cost rollups, waste logging, event menus, prep briefing). A platform-wide identity gate (SP1's `resolve_caller_identity`) backs its first real gated capability, Portainer container control.
 
-**This is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Current Stable is 2026.9.0 'Steel Magnolia' — see [Chef's own "Last Release Before Identity Gates" section](releases/chef.md#202681--the-last-release-before-identity-gates) for why the gate exists and what it costs to stay on this line instead.
+**This is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** The line that has it is 2026.9.0 'Steel Magnolia' and its successors — see [Chef's own "Last Release Before Identity Gates" section](releases/chef.md#202681--the-last-release-before-identity-gates) for why the gate exists and what it costs to stay on this line instead.
 
 See: [Release Notes — Chef](releases/chef.md)
 

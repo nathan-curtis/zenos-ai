@@ -1,6 +1,6 @@
 # Release Notes — 2026.10.0 'Tron'
 
-**Status:** RC2
+**Status:** Released
 **Branch:** `feat/2026.10.0`
 **Base:** 2026.9.0 'Steel Magnolia' (released) + 2026.9.1 patch (released)
 
@@ -38,7 +38,7 @@ Everything in Steel Magnolia is the starting state for Tron — Room Manager v3 
 
 Steel Magnolia has since shipped, and the 2026.9.1 bugfix patch — backported from this same branch's own fixes — has shipped on top of it. Tron inherits the released system, not an RC snapshot.
 
-## Basic ZenOS Certification (phase 1 in progress)
+## Basic ZenOS Certification (phase 1 shipped)
 
 > **Two phases.** Phase 1 ships in this build: the certificate exists and onboarding requests it. Phase 2, enforcement, lands in 2026.11.0 'This Is Spinal Tap' after FileCabinet security. Nothing is gated on it in Tron.
 
@@ -86,7 +86,7 @@ Two pieces of cert-taxonomy infrastructure came out of doing this rollout at sca
 
 The audit's final pass closed four more, all on the same "can this actually hurt something" test. Labels' `update` joined `create`/`delete` under `registry_lifecycle_control` — its delete-and-recreate fallback carries the same association-loss risk as a direct delete. Deleting a calendar event or a to-do item got its own cert (`calendar_control`, `todo_control`, level 2): `pii_disclosure_control` answers "can this leak something," which says nothing about "can this destroy something," so irreversible deletes are tracked as their own independent axis rather than folded in. And setting Teams presence got `teams_control` — silently overriding someone's Do Not Disturb, or broadcasting a false Available to their whole org, is a representation risk distinct from what a message says. Manifest and Scribe audited clean (Manifest's writes all route through Labels' gate; Scribe's one shared gate covers every live-drawer write), and Postman closed its own audit with `zenos.comms.dispatch` on every dispatch-capable mode, life-safety urgency excepted.
 
-**FileCabinet goes to 11.** FileCabinet has no cert-gate yet — deliberately, not an oversight. Everything else in ZenOS depends on it at boot, so gating it needs its own security-class design rather than a bolt-on, and changes there have to land without breaking a single running install. Tron gives FileCabinet a bug pass only. Its full cadillac treatment (single exit, the canonical envelope) and its cert-gate are the intended scope of **2026.11.0 'This Is Spinal Tap'**, given the whole month to do it right. Tron's release candidate is not blocked on it.
+**FileCabinet goes to 11.** FileCabinet has no cert-gate yet — deliberately, not an oversight. Everything else in ZenOS depends on it at boot, so gating it needs its own security-class design rather than a bolt-on, and changes there have to land without breaking a single running install. Tron gives FileCabinet a bug pass only. Its full cadillac treatment (single exit, the canonical envelope) and its cert-gate are the intended scope of **2026.11.0 'This Is Spinal Tap'**, given the whole month to do it right.
 
 ## Mapping the Grid
 

@@ -12,7 +12,7 @@
 
 ---
 
-> ### 2026.9.1 'Steel Magnolia' — Current Stable
+> ### 2026.9.1 'Steel Magnolia' — Previous Stable
 >
 > Bugfix-only patch backported from 2026.10.0 'Tron' — see the [2026.9.1 patch notes](releases/steel_magnolia.md#202691--patch) for the full fix list. No new features, no schema changes.
 >
@@ -24,7 +24,7 @@
 
 ---
 
-> ### 2026.10.0 'Tron' — RC2
+> ### 2026.10.0 'Tron' — Current Stable
 >
 > Branch `feat/2026.10.0`. **Breaking:** Room Manager room state is opt-in and off means off; rooms hold still until you opt in with `room_manager mode=roomstate_enable` (see [the relnote](releases/tron.md#breaking-room-state-is-opt-in)). Also breaking: `sensor.zen_priority_context` is removed (see [the relnote](releases/tron.md#breaking-sensorzen_priority_context-is-gone)). Admission certification, phase 1 (the `zenos.agent.basic` badge, requested at onboarding; enforcement follows in 2026.11.0), an administrative certification plane above normal participation (in planning), a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations rolled out system-wide, Room Manager/Media/Lighting/Display convergence on one shared vocabulary, and Display Surface as a beta (finishes in 2026.11.0). ZenZork 2.0 (Prologue + Episodes; Episode 1 "DEAD AIR" is released).
 >
