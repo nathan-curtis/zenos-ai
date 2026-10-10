@@ -3,7 +3,6 @@
 **Status:** RC2
 **Branch:** `feat/2026.10.0`
 **Base:** 2026.9.0 'Steel Magnolia' (released) + 2026.9.1 patch (released)
-**Before GA:** ZenZork 2.0 is in. Episode 1 ships unreleased and goes live before Tron goes GA.
 
 ---
 
@@ -186,7 +185,7 @@ A new tool, not a port of anything that existed before: `zen_dojotools_display` 
 
 The original game is now the **Prologue**, and new story arrives as **Episodes**: content packs the engine loads, the way WADs extend DOOM. 2.0 adds the pieces episodes need: a release ledger with an engine-version gate, the agent's own investigation notebook, data-driven milestones, habitat-placed collectibles, hardware to scavenge and repair, drops keyed to what the household actually runs, and DungeonMind's belief and communication state. Story text stays behind the existing spoiler curtain.
 
-Episode 1, "DEAD AIR", ships with this build marked unreleased. It goes live before GA. The unofficial owner's manual is in its [Second Printing](../getting_started/zenzork_manual_unofficial.md). See [ZenZork](../scripts/zen_dojotools_zenzork_readme.md#releases-episodes--the-notebook-v200).
+Episode 1, "DEAD AIR", ships with this build, released. The unofficial owner's manual is in its [Second Printing](../getting_started/zenzork_manual_unofficial.md). See [ZenZork](../scripts/zen_dojotools_zenzork_readme.md#releases-episodes--the-notebook-v200).
 
 ## Cross-Domain State Convergence (Room Manager / Media / Lighting / Display)
 
