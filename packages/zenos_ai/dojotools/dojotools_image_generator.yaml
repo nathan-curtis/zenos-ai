@@ -1,6 +1,7 @@
 ###############################################################################
 # ZenOS-AI: Image Generator
-# Version: 5.1.0
+# Version: 1.0.2 — stored-entity lookup now resolves via the zen_image_task
+#   label instead of a hardcoded entity.
 #
 # Components:
 #   zen_dojotools_generate_image  — DojoTool: DALL-E via ai_task.generate_image
@@ -17,10 +18,10 @@
 #   - Entity fetches url once on event, HA caches via image proxy permanently
 #   - image.snapshot writes to /config/www/zen_images/<slot>.jpg after fetch
 #   - Survives restarts — snapshot on disk, trigger entity restored on next event
-#   - input_text.zenos_image_task selects which ai_task entity to use
+#   - the zen_image_task-labeled entity selects which ai_task entity to use
 #
 # IMPORTANT: Only ai_task.openai_ai_task_3 (gpt-image-1.5) supports GENERATE_IMAGE.
-# Set input_text.zenos_image_task to ai_task.openai_ai_task_3 after reload.
+# Set the zen_image_task-labeled entity to ai_task.openai_ai_task_3 after reload.
 ###############################################################################
 
 input_text:
@@ -40,7 +41,9 @@ script:
       (image.zen_image_<slot>) — url fetched once on event, cached by HA proxy.
       After fetch, image.snapshot writes to /config/www/zen_images/<slot>.jpg
       for restart persistence. If no slot is given, image goes to canvas. Result
-      includes slot and url. Fires zen_event (kind: image_generated). (v5.1.0)
+      includes slot and url. Fires zen_event (kind: image_generated). Requires
+      zenos.media.generate cert level 1 (costs real API/money per call) --
+      call mode=tool_manifest for grant instructions if blocked. (v1.0.1)
     fields:
       image_prompt:
         name: Image Prompt
@@ -80,19 +83,20 @@ script:
       entity_id:
         name: AI Task Entity
         description: >-
-          Optional. Specific ai_task entity to use. Defaults to
-          input_text.zenos_image_task, then HA preferred entity.
+          Optional. Specific ai_task entity to use. Defaults to the
+          zen_image_task-labeled entity, then HA preferred entity.
         required: false
         selector:
           entity:
             domain: ai_task
       mode:
-        description: "Pass tool_manifest to get self-description."
+        description: "Pass tool_manifest to get self-description, or help for a usage reference."
         required: false
         selector:
           select:
             options:
               - tool_manifest
+              - help
 
       caller_token:
         name: Caller Token
@@ -104,17 +108,28 @@ script:
     sequence:
       - variables:
           _tm_check: "{{ mode | default('') | lower }}"
-      - choose:
-        - conditions: "{{ _tm_check == 'tool_manifest' }}"
-          sequence:
+      - if: "{{ final_response is not defined and _tm_check == 'help' }}"
+        then:
           - variables:
-              result: >-
+              final_response:
+                status: help
+                message: >-
+                  image_prompt=X [slot=canvas|portrait|wallpaper|id_pic|dashboard_snap|
+                  home_state] -- generate an image via ai_task.generate_image (DALL-E),
+                  fires a zen_event with the resulting url which the matching
+                  image.zen_image_<slot> trigger entity fetches and caches permanently
+                  (survives restarts). mode=tool_manifest -- this tool's manifest
+                  declaration. mode=help -- this reference.
+      - if: "{{ final_response is not defined and _tm_check == 'tool_manifest' }}"
+        then:
+          - variables:
+              final_response: >-
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_generate_image',
                     display_name='Image Generator',
                     tier='dojotools',
-                    version='1.0.1',
+                    version='1.0.2',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['generative_ai', 'dall_e'],
@@ -129,110 +144,167 @@ script:
                                'requires_capabilities': ['image_generation'],
                                'est_tokens_in': 200, 'est_tokens_out': 0},
                     caller_token=caller_token | default('')
-                ) | from_json }}
-          - stop: tool_manifest
-            response_variable: result
+                ) | from_json | combine({
+                    'certs_required': [{
+                      'cert': 'zenos.media.generate',
+                      'display_name': 'Media Generation',
+                      'description': 'Generate an image via ai_task (costs real API/money per call).',
+                      'max_level': 1,
+                      'gates': ['generate'],
+                      'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.media.generate (or zen_dojotools_identity mode=cert_list to see current status)"
+                    }]
+                  }) }}
       # --------------------------------------------------------------
       # Always normalize User/AI inputs so we don't have to react JIT
       # --------------------------------------------------------------
       - variables:
           caller_token: "{{- caller_token | default('') -}}"
-      - variables:
-          _prompt: "{{ image_prompt | trim }}"
-          _slot: "{{ slot | default('canvas') | trim }}"
-          _correlation_id: "{{ correlation_id | default('', true) | string | trim }}"
-          _stored: >-
-            {% set s = states('input_text.zenos_image_task') %}
-            {{ s if s not in ['unknown', 'unavailable', 'none', ''] else '' }}
-          _entity: >-
-            {% set e = entity_id | default('') | trim %}
-            {{ e if e not in ['unknown', 'unavailable', 'none', ''] else _stored }}
+      - if: "{{ final_response is not defined }}"
+        then:
+          # zenos.media.generate cert gate -- image generation costs
+          # real API/money per call. Fail-closed until granted.
+          - action: script.zen_dojotools_identity
+            response_variable: _gi_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.media.generate
+              required_cert_level: 1
+              caller_token: "{{ caller_token }}"
+          - variables:
+              _gi_id_fields: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _raw = OS.resolve_identity_fields(_gi_id_raw) -%}
+                {{- (_raw | from_json) if _raw is string else _raw -}}
+              _gi_authorized: "{{ _gi_id_fields.authorized }}"
+              _gi_cert_level: "{{ _gi_id_fields.cert_level }}"
+              _gi_policy_status: "{{ _gi_id_fields.policy_status }}"
+          - if: "{{ final_response is not defined and not _gi_authorized }}"
+            then:
+              - variables:
+                  final_response:
+                    status: error
+                    error: cert_insufficient
+                    message: >-
+                      zenos.media.generate cert level {{ _gi_cert_level }} is below the
+                      required minimum (1) for image generation.
+                    can_request: "{{ _gi_policy_status == 'allowed' }}"
+                    request_via:
+                      tool: zen_dojotools_persona_editor
+                      mode: cert_req_grant
+                      cert_component: zenos.media.generate
+                      cert_level: 1
+                    caller_token: "{{ caller_token }}"
+      - if: "{{ final_response is not defined }}"
+        then:
+          - variables:
+              _prompt: "{{ image_prompt | trim }}"
+              _slot: "{{ slot | default('canvas') | trim }}"
+              _correlation_id: "{{ correlation_id | default('', true) | string | trim }}"
+              _stored: >-
+                {% set s = states(label_entities('zen_image_task') | select('match', 'input_text\\.') | list | first | default('', true)) %}
+                {{ s if s not in ['unknown', 'unavailable', 'none', ''] else '' }}
+              _entity: >-
+                {% set e = entity_id | default('') | trim %}
+                {{ e if e not in ['unknown', 'unavailable', 'none', ''] else _stored }}
 
-      # Only branch differs on entity_id — _response accessible after block
-      - choose:
-          - conditions: "{{ _entity != '' }}"
-            sequence:
+          # Only branch differs on entity_id — _response accessible after block
+          - choose:
+              - conditions: "{{ _entity != '' }}"
+                sequence:
+                  - action: ai_task.generate_image
+                    data:
+                      task_name: "{{ _slot }}"
+                      instructions: "{{ _prompt }}"
+                      entity_id: "{{ _entity }}"
+                    response_variable: _response
+            default:
               - action: ai_task.generate_image
                 data:
                   task_name: "{{ _slot }}"
                   instructions: "{{ _prompt }}"
-                  entity_id: "{{ _entity }}"
                 response_variable: _response
-        default:
-          - action: ai_task.generate_image
-            data:
-              task_name: "{{ _slot }}"
-              instructions: "{{ _prompt }}"
-            response_variable: _response
+
+          - variables:
+              _url: "{{ _response.url | default('') }}"
+
+          # Fire zen_event — triggers matching slot image entity to fetch and cache url
+          - event: zen_event
+            event_data:
+              event:
+                kind: image_generated
+                slot: "{{ _slot }}"
+                correlation_id: "{{ _correlation_id }}"
+                url: "{{ _url }}"
+                media_source_id: "{{ _response.media_source_id | default('') }}"
+                revised_prompt: "{{ _response.revised_prompt | default('') }}"
+                model: "{{ _response.model | default('') }}"
+                width: "{{ _response.width | default(0) }}"
+                height: "{{ _response.height | default(0) }}"
+                prompt: "{{ _prompt }}"
+                timestamp: "{{ now().isoformat() }}"
+
+          # Wait for trigger entity to fetch and cache the url, then snapshot to disk.
+          # Two-path strategy:
+          #   Primary   — /config/www/zen_images/<slot>.jpg (organized, continue_on_error)
+          #   Fallback  — /config/www/zen_<slot>.jpg        (flat www, always works)
+          # If the zen_images/ directory doesn't exist the primary fails silently;
+          # the fallback always lands. A persistent_notification fires once to tell
+          # the user to create the folder — dismissing it clears it permanently.
+          - delay: "00:00:03"
+          - if: "{{ _url != '' }}"
+            then:
+              # Primary: organized subfolder (fails silently if not created yet)
+              - action: image.snapshot
+                continue_on_error: true
+                data:
+                  filename: "/config/www/zen_images/{{ _slot }}.jpg"
+                target:
+                  entity_id: "image.zen_image_{{ _slot }}"
+              # Fallback: flat www — always fires regardless
+              - action: image.snapshot
+                data:
+                  filename: "/config/www/zen_{{ _slot }}.jpg"
+                target:
+                  entity_id: "image.zen_image_{{ _slot }}"
+
+          - variables:
+              final_response:
+                status: "{{ 'success' if _url != '' else 'error' }}"
+                message: >-
+                  {{ 'Image written to slot: ' ~ _slot ~ '.'
+                     if _url != ''
+                     else 'No url returned from ai_task.' }}
+                result:
+                  slot: "{{ _slot }}"
+                  url: "{{ _url }}"
+                  media_source_id: "{{ _response.media_source_id | default('') }}"
+                  revised_prompt: "{{ _response.revised_prompt | default('') }}"
+                  model: "{{ _response.model | default('') }}"
+                  width: "{{ _response.width | default(0) }}"
+                  height: "{{ _response.height | default(0) }}"
+                  prompt: "{{ _prompt }}"
+                  snapshot_fallback: "/config/www/zen_{{ _slot }}.jpg"
+                  snapshot_organized: "/config/www/zen_images/{{ _slot }}.jpg"
+                  storage_hint: >-
+                    {{ 'Saved to zen_images/' ~ _slot ~ '.jpg and fallback www/zen_' ~ _slot ~ '.jpg.'
+                       if _url != ''
+                       else '' }}
+                  setup_tip: "Create /config/www/zen_images/ to activate organized slot storage. Fallback www/zen_<slot>.jpg always fires."
+                caller_token: '{{ caller_token }}'
 
       - variables:
-          _url: "{{ _response.url | default('') }}"
-
-      # Fire zen_event — triggers matching slot image entity to fetch and cache url
-      - event: zen_event
-        event_data:
-          event:
-            kind: image_generated
-            slot: "{{ _slot }}"
-            correlation_id: "{{ _correlation_id }}"
-            url: "{{ _url }}"
-            media_source_id: "{{ _response.media_source_id | default('') }}"
-            revised_prompt: "{{ _response.revised_prompt | default('') }}"
-            model: "{{ _response.model | default('') }}"
-            width: "{{ _response.width | default(0) }}"
-            height: "{{ _response.height | default(0) }}"
-            prompt: "{{ _prompt }}"
-            timestamp: "{{ now().isoformat() }}"
-
-      # Wait for trigger entity to fetch and cache the url, then snapshot to disk.
-      # Two-path strategy:
-      #   Primary   — /config/www/zen_images/<slot>.jpg (organized, continue_on_error)
-      #   Fallback  — /config/www/zen_<slot>.jpg        (flat www, always works)
-      # If the zen_images/ directory doesn't exist the primary fails silently;
-      # the fallback always lands. A persistent_notification fires once to tell
-      # the user to create the folder — dismissing it clears it permanently.
-      - delay: "00:00:03"
-      - if: "{{ _url != '' }}"
-        then:
-          # Primary: organized subfolder (fails silently if not created yet)
-          - action: image.snapshot
-            continue_on_error: true
-            data:
-              filename: "/config/www/zen_images/{{ _slot }}.jpg"
-            target:
-              entity_id: "image.zen_image_{{ _slot }}"
-          # Fallback: flat www — always fires regardless
-          - action: image.snapshot
-            data:
-              filename: "/config/www/zen_{{ _slot }}.jpg"
-            target:
-              entity_id: "image.zen_image_{{ _slot }}"
-
+          _ig_envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+              mode=_tm_check | default(''),
+              result=final_response,
+              tool='zen_dojotools_generate_image',
+              caller_token=caller_token | default('')
+            ) -}}
       - variables:
-          final_response:
-            status: "{{ 'success' if _url != '' else 'error' }}"
-            message: >-
-              {{ 'Image written to slot: ' ~ _slot ~ '.'
-                 if _url != ''
-                 else 'No url returned from ai_task.' }}
-            result:
-              slot: "{{ _slot }}"
-              url: "{{ _url }}"
-              media_source_id: "{{ _response.media_source_id | default('') }}"
-              revised_prompt: "{{ _response.revised_prompt | default('') }}"
-              model: "{{ _response.model | default('') }}"
-              width: "{{ _response.width | default(0) }}"
-              height: "{{ _response.height | default(0) }}"
-              prompt: "{{ _prompt }}"
-              snapshot_fallback: "/config/www/zen_{{ _slot }}.jpg"
-              snapshot_organized: "/config/www/zen_images/{{ _slot }}.jpg"
-              storage_hint: >-
-                {{ 'Saved to zen_images/' ~ _slot ~ '.jpg and fallback www/zen_' ~ _slot ~ '.jpg.'
-                   if _url != ''
-                   else '' }}
-              setup_tip: "Create /config/www/zen_images/ to activate organized slot storage. Fallback www/zen_<slot>.jpg always fires."
-            caller_token: '{{ caller_token }}'
-
+          final_response: "{{ (_ig_envelope_raw | from_json) if _ig_envelope_raw is string else _ig_envelope_raw }}"
       - stop: Image generation complete
         response_variable: final_response
 

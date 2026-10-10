@@ -1,7 +1,9 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.13.0 — hard block _label_index in set_mount + expand_drawer: unsupported until traversal handles mount-pointer index reads.
+# Version: 6.15.0 — live-mount tool-call resolver refuses a self-referential or circular fc_args mount (tool_call_cycle_detected). An in-flight marker on the drawer is checked before dispatch and cleared on every exit (success, blocked, error); the cache-hit check runs first and never touches the marker. (zen_sutra_filecabinet 6.2.1). zen_dojotools_filecabinet 6.9.1: move/copy carries a cabinet source's value field.
+#   Previous: 6.14.0 — live-mount (fc_args) tool-call resolver now unwraps the cadillac {result:{...}} envelope immediately after the call, before digest_fields/raw-store (#10481 root cause — every fc_args mount was storing/serving the raw envelope).
+#   Previous: 6.13.0 — hard block _label_index in set_mount + expand_drawer: unsupported until traversal handles mount-pointer index reads.
 #   Previous: 6.12.0 — fleet discovery: broad zenos_.*_cabinet pattern (catches history, index, expansion); history role classification.
 #   Previous: 6.11.0 — fleet mode: single-call full cabinet fleet view (named + expansion), GUIDs, mount resolution, fat/broken/slot hints.
 #   Previous: 6.10.0 — sutra fields: add destination_volume_entity_id (was missing, caused _dest_vol='' on cross-cabinet copy).
@@ -324,11 +326,28 @@ script:
           {%- else -%}{{ _vi | string | trim }}{%- endif -%}
         _key: >-
           {%- set _rk = path | default(key | default('', true), true) | string | trim | regex_replace('^/', '') -%}
+          {#- Special-cased system drawers are deliberately NOT lowercase
+              (AI_Cabinet_VolumeInfo) or carry a leading underscore a caller
+              may omit (_label_index, _zen_relationships) -- without this
+              lookup, blind lowercase+slugify below permanently mismatches
+              their real stored key, so action_type=get always falsely
+              returns not_found for them regardless of cabinet, even though
+              the data is present and valid. This is a lookup-layer
+              fix only -- the real drawer names stay exactly as designed,
+              on purpose; do not "normalize" them elsewhere. -#}
+          {%- set _special_drawers = {
+            'ai_cabinet_volumeinfo': 'AI_Cabinet_VolumeInfo',
+            'label_index':           '_label_index',
+            'zen_relationships':     '_zen_relationships'
+          } -%}
           {%- set _segs = _rk.split('/') -%}
           {%- set _ns = namespace(parts=[]) -%}
           {%- for _seg in _segs -%}
             {%- set _s = _seg | lower | slugify -%}
-            {%- if loop.first and _rk.startswith('_') -%}
+            {%- set _s_nolead = _s[1:] if _s.startswith('_') else _s -%}
+            {%- if loop.first and _s_nolead in _special_drawers -%}
+              {%- set _ns.parts = _ns.parts + [_special_drawers[_s_nolead]] -%}
+            {%- elif loop.first and _rk.startswith('_') -%}
               {%- set _ns.parts = _ns.parts + ['_' ~ _s[1:] if _s.startswith('_') else '_' ~ _s] -%}
             {%- else -%}
               {%- set _ns.parts = _ns.parts + [_s] -%}
@@ -405,7 +424,7 @@ script:
               tool='zen_sutra_filecabinet',
               display_name='FileCabinet Sutra (Internal)',
               tier='sutra',
-              version='6.2.0',
+              version='6.2.1',
               health={'configured': true, 'status': 'ok', 'notes': []},
               required_labels=['dojotools'],
               optional_labels=['cabinet', 'knowledge'],
@@ -592,12 +611,19 @@ script:
         - stop: filecabinet sutra reserved key
           response_variable: result
 
-    # --- Guard: protected system drawers (non-underscore spellings) ---
+    # --- Guard: protected system drawers ---
+    # list updated to match _key's casing after the lookup fix
+    # just above (_key now preserves AI_Cabinet_VolumeInfo/_label_index/
+    # _zen_relationships' real casing instead of blindly lowercasing them --
+    # see that block's comment). This guard itself was always correctly
+    # enforced before today (both sides were consistently all-lowercase),
+    # it just needs to track _key's new canonical output or it would stop
+    # matching these three and silently lose write protection.
     - choose:
       - conditions:
         - condition: template
           value_template: >-
-            {%- set _prot = ['ai_cabinet_volumeinfo', 'label_index', 'zen_relationships', 'meta'] -%}
+            {%- set _prot = ['AI_Cabinet_VolumeInfo', '_label_index', '_zen_relationships', 'meta'] -%}
             {{ (_key in _prot and _action in ['create', 'update', 'upsert', 'delete', 'move', 'copy', 'set_mount'])
                or (_dest in _prot and _action in ['move', 'copy']) }}
         sequence:
@@ -611,7 +637,7 @@ script:
               volume: "{{ _vol }}"
               message: >-
                 Write blocked: '{{ _key }}' is a protected system drawer
-                (ai_cabinet_volumeinfo, label_index, zen_relationships, meta).
+                (AI_Cabinet_VolumeInfo, _label_index, _zen_relationships, meta).
                 Use the appropriate admin tool for this operation.
               trace:
                 caller_token: "{{ _caller_token }}"
@@ -1017,6 +1043,8 @@ script:
                 {{ _fa.get('tool') or _fa.get('action_type', '') }}
               _tc_params: "{{ (_g_mt.get('fc_args') or {}).get('params', {}) }}"
               _tc_cache_cfg: "{{ (_g_mt.get('fc_args') or {}).get('cache') or none }}"
+          # Cache check runs before the re-entrancy guard: a cache hit never
+          # dispatches, so it can't recurse and doesn't touch the marker.
           - variables:
               _tc_cache_raw: >-
                 {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -1032,9 +1060,10 @@ script:
               _tc_cache_hit: >-
                 {%- set _ttl = (_tc_cache_cfg if _tc_cache_cfg is mapping else {}).get('ttl_seconds', 300) | int -%}
                 {%- set _ts = _tc_cache_ts | default('', true) | trim -%}
-                {%- if _ttl == 0 or _ts == '' or _tc_cache_raw is none -%}false
+                {%- set _ts_dt = as_datetime(_ts, none) if _ts != '' else none -%}
+                {%- if _ttl == 0 or _ts_dt is none or _tc_cache_raw is none -%}false
                 {%- else -%}
-                  {{ (now().timestamp() - (as_datetime(_ts) | as_timestamp(0))) < _ttl }}
+                  {{ (now().timestamp() - (_ts_dt | as_timestamp(0))) < _ttl }}
                 {%- endif -%}
           - if:
             - condition: template
@@ -1057,11 +1086,67 @@ script:
                     caller_token: "{{ _caller_token }}"
             - stop: filecabinet tool-call mount cache hit
               response_variable: result
+          # Re-entrancy guard — a live-mount drawer dispatches a real script
+          # call on every read (cache already ruled out above). Nested script
+          # calls each get a fresh context.id, so the guard is presence-based:
+          # if a resolution of this drawer is already in flight (marker
+          # present, under 30s old), refuse. A second resolution before the
+          # first finishes is a cycle (self-reference or A->B->A). The marker
+          # is cleared on every exit below; the 30s expiry only covers a run
+          # that died mid-resolution.
+          - variables:
+              _tc_guard_key: "{{ _key }}/mount_resolving"
+              _tc_guard_raw: "{{ (_g_vol0.get(_tc_guard_key) or {}).get('value') }}"
+              _tc_guard_ts: "{{ (_tc_guard_raw if _tc_guard_raw is mapping else {}).get('started_at', '') }}"
+          - variables:
+              _tc_cycle_detected: >-
+                {%- set _gts = as_datetime(_tc_guard_ts, none) if _tc_guard_ts != '' else none -%}
+                {{ _gts is not none and (now() - _gts).total_seconds() < 30 }}
+          - if:
+            - condition: template
+              value_template: "{{ _tc_cycle_detected }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  tool: zen_sutra_filecabinet
+                  action: get
+                  key: "{{ _key }}"
+                  volume: "{{ _vol }}"
+                  mount_traversal:
+                    status: tool_call_cycle_detected
+                    reason: >-
+                      Live drawer '{{ _key }}' on {{ _vol }} is already being
+                      resolved — a nested call tried to read it again before
+                      the first resolution finished. Self-referential or
+                      circular fc_args mount. Refused instead of recursing.
+                      Check the drawer's fc_args (tool={{ _tc_tool }}) for a
+                      mount that points back at its own reader.
+                    tool: "{{ _tc_tool }}"
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+            - stop: filecabinet live mount cycle detected
+              response_variable: result
+          - action: script.zen_sutra_filecabinet
+            data:
+              action: upsert
+              volume_entity_id: "{{ _vol }}"
+              path: "{{ _tc_guard_key }}"
+              value:
+                started_at: "{{ now().isoformat() }}"
+              expires_after: "{{ (now() + timedelta(seconds=30)).isoformat() }}"
+            continue_on_error: true
           - choose:
             - conditions:
               - condition: template
                 value_template: "{{ not (_tc_tool | regex_search('^zen_')) }}"
               sequence:
+              - action: script.zen_sutra_filecabinet
+                data:
+                  action: delete
+                  volume_entity_id: "{{ _vol }}"
+                  path: "{{ _tc_guard_key }}"
+                continue_on_error: true
               - variables:
                   result:
                     status: error
@@ -1083,7 +1168,22 @@ script:
                 response_variable: result
           - action: "script.{{ _tc_tool }}"
             data: "{{ _tc_params }}"
+            continue_on_error: true
             response_variable: _tc_raw
+          - action: script.zen_sutra_filecabinet
+            data:
+              action: delete
+              volume_entity_id: "{{ _vol }}"
+              path: "{{ _tc_guard_key }}"
+            continue_on_error: true
+          - variables:
+              # Cadillac-enveloped tools return {mode,status,tool,version,result:{...}}.
+              # Unwrap immediately, one chokepoint, before anything downstream
+              # (digest_fields extraction or the raw-store fallback) ever sees
+              # it. Sutra/legacy callees with no 'result' key pass through
+              # untouched, so this stays compatible with non-enveloped tools.
+              _tc_unwrapped: >-
+                {{ _tc_raw.get('result', _tc_raw) if _tc_raw is mapping else _tc_raw }}
           - if:
             - condition: template
               value_template: "{{ _tc_raw is defined and _tc_raw is not none }}"
@@ -1091,12 +1191,12 @@ script:
             - variables:
                 _tc_digest: >-
                   {%- set _fields = (_tc_cache_cfg if _tc_cache_cfg is mapping else {}).get('digest_fields', []) -%}
-                  {%- if _fields | length == 0 -%}{{ _tc_raw }}
+                  {%- if _fields | length == 0 -%}{{ _tc_unwrapped }}
                   {%- else -%}
                     {%- set ns = namespace(d={}) -%}
                     {%- for _f in _fields -%}
                       {%- set _parts = _f.split('.') -%}
-                      {%- set _v = _tc_raw -%}
+                      {%- set _v = _tc_unwrapped -%}
                       {%- for _p in _parts -%}{%- set _v = (_v if _v is mapping else {}).get(_p) -%}{%- endfor -%}
                       {%- set ns.d = ns.d | combine({_f: _v}) -%}
                     {%- endfor -%}
@@ -1136,6 +1236,22 @@ script:
                     caller_token: "{{ _caller_token }}"
             - stop: filecabinet tool-call mount resolved
               response_variable: result
+            else:
+              - variables:
+                  result:
+                    status: error
+                    tool: zen_sutra_filecabinet
+                    action: get
+                    key: "{{ _key }}"
+                    volume: "{{ _vol }}"
+                    mount_traversal:
+                      status: tool_call_error
+                      reason: "Live drawer tool call returned no response."
+                      tool: "{{ _tc_tool }}"
+                    trace:
+                      caller_token: "{{ _caller_token }}"
+              - stop: filecabinet tool-call mount error
+                response_variable: result
         - variables:
             _get_val: >-
               {{ _get_raw.get('value') if _get_raw is mapping else none }}
@@ -2873,8 +2989,12 @@ script:
             show_hidden_volumes: "{{ _show_hidden }}"
             show_stacks: "{{ _show_stacks }}"
         - variables:
+            # zen_dojotools_manifest wraps its response in the canonical
+            # OS.envelope() shape -- its own fields live under .result, not
+            # at the top level.
             result: >-
-              {%- set _r = _fc_raw if _fc_raw is mapping else {'status': 'error', 'message': 'no_response'} -%}
+              {%- set _r = (_fc_raw.get('result', {}) if _fc_raw is mapping else {}) -%}
+              {%- set _r = _r if _r is mapping and _r | length > 0 else {'status': 'error', 'message': 'no_response'} -%}
               {{ _r | combine({'tool': 'zen_sutra_filecabinet', 'action': 'manifest'}) }}
         - stop: filecabinet sutra manifest done
           response_variable: result
@@ -3895,7 +4015,9 @@ script:
       - event: set_variable_legacy
         event_data:
           key: AI_Cabinet_VolumeInfo
-          value: '{"cabinet_class": "expansion", "hosted_by": "{{ _ed_src }}"}'
+          value:
+            cabinet_class: expansion
+            hosted_by: "{{ _ed_src }}"
           volume_entity: "{{- _ed_tgt -}}"
           set_timestamp: true
       - wait_template: >-
@@ -4329,7 +4451,7 @@ script:
                 tool='zen_dojotools_filecabinet',
                 display_name='FileCabinet — Knowledge Stack Surface',
                 tier='dojotools',
-                version='6.9.0',
+                version='6.9.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['cabinet', 'wiki_js', 'knowledge', 'documents'],
@@ -4338,7 +4460,9 @@ script:
                 failure_policy='soft',
                 content_policy='redacted_by_default',
                 risk_class='read_redacted',
-                modes={'lookup': 'stacks_by_anchor', 'manifest': 'tool_manifest'},
+                modes={'help': 'help', 'copy': 'copy', 'health': 'health', 'list': 'list',
+                       'lookup': 'stacks_by_anchor', 'weave_preview': 'weave_preview',
+                       'weave_save': 'weave_save', 'manifest': 'tool_manifest'},
                 children=[{
                   'tool': 'zen_sutra_wikijs',
                   'stack': 'wiki',
@@ -4367,7 +4491,7 @@ script:
               {{-
                 {
                   "tool": "zen_dojotools_filecabinet",
-                  "version": "6.9.0",
+                  "version": "6.9.1",
                   "intent": "Stack-agnostic knowledge surface. stack=cabinet is always available (built-in FileCabinet key-value store). stack=wiki is optional — requires zen_sutra_wikijs installed and registered; returns stack_not_available if missing. HA Labels are the shared tag/anchor system across both stacks.",
                   "you_should_use_this_tool_when": [
                     "You need to read, write, or manage key-value knowledge drawers in a FileCabinet volume (stack=cabinet — always available).",
@@ -4615,7 +4739,7 @@ script:
         - variables:
             _dom_inner: "{{ (help_json | from_json) | combine({'domain': 'knowledge', 'peers': {'inventory': 'zen_dojotools_inventory', 'finance': 'zen_dojotools_finance'}, 'see_also': 'zen_dojotools_manifest mode=domains name=knowledge'}) }}"
         - variables:
-            result: "{{ {'status': 'help', 'help': _dom_inner} }}"
+            result: "{{ {'status': 'help', 'message': _dom_inner.get('intent', 'Stack-agnostic knowledge surface (cabinet + optional wiki).'), 'help': _dom_inner} }}"
         - stop: knowledge help done
           response_variable: result
 
@@ -4665,7 +4789,12 @@ script:
         - variables:
             _src_ok: "{{ _src_raw is mapping and _src_raw.get('status') == 'success' }}"
             _src_title: "{{ _src_page.get('title', '') if _src_page is mapping else '' }}"
-            _src_content: "{{ _src_page.get('content', '') if _src_page is mapping else '' }}"
+            _src_content: >-
+              {%- if _stack == 'cabinet' and _src_page is mapping -%}
+                {{ _src_page.get('value') }}
+              {%- elif _src_page is mapping -%}
+                {{ _src_page.get('content', '') }}
+              {%- else -%}{{ none }}{%- endif -%}
             _src_desc: "{{ _src_page.get('description', '') if _src_page is mapping else '' }}"
             _src_created_at: >-
               {%- if _src_page is mapping -%}
@@ -4743,7 +4872,7 @@ script:
                 path: "{{ destination_path | default('', true) }}"
                 title: "{{ _src_title }}"
                 description: "{{ _src_desc }}"
-                content: "{{ _src_content }}"
+                value: "{{ _src_content }}"
                 mode: replace
                 tags: "{{ _src_tags | join(',') if _src_tags is sequence and _src_tags | length > 0 else '' }}"
                 source_created_at: "{{ _src_created_at }}"

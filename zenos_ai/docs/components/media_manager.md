@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.0.0
+**Version:** 6.1.4
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 
@@ -55,7 +55,7 @@ query: "dark jazz"
 | Mode | What It Does |
 |------|-------------|
 | `stacks_by_anchor` | Anchor-based music evidence. `area_id` anchors inject `room_context` only (what's playing, provider, volume) — they do NOT drive the query. First semantic anchor (mood, activity, concept) drives the MA search. Evidence confidence boosted when item provider matches room's current provider (`room_provider_match`). |
-| `search` | Direct music search via MA. `media_source_prefs` applied: preferred sources float, excluded sources stripped. `discovered_sources` returned in every response. `library_only: true` forces MA library scope. |
+| `search` | Direct music search via MA. `media_source_prefs` applied: preferred sources float, excluded sources stripped. `discovered_sources` returned in every response. `library_only: true` forces MA library scope. **Scoped search** (HA 2026.10.0+): pass `within_media_content_id` and `within_media_content_type` from a prior result (an artist, say) to search inside it through `media_player.search_media`. See [Scoped Search](#scoped-search). |
 | `now_playing` | Full playback snapshot. Pass `room=` (area_id) or `entity_id=`. Returns: state, title, artist, album, uri, provider, volume, shuffle, repeat, artwork_url, group_members, `search_metadata` (MA track match with artists + album_uri), `lyrics_hint` (call shape for lyrics — lyrics fetch is async, hint instead of inline). |
 | `register` | Register MM in the Lens registry. |
 | `unregister` | Remove from Lens registry. |
@@ -239,7 +239,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 | Mode | Description |
 |------|-------------|
 | `source_get` | Current source + full `source_list` for a device. Call before `source_set` to see exact source strings. |
-| `source_set` | Switch input source. Exact string match required — copy from `source_list`. Use `target_role=zen_mm_television` for streaming apps, `target_role=zen_mm_av_tuner` for physical inputs. |
+| `source_set` | Switch input source. Exact string match required — copy from `source_list`. Use `target_role=zen_mm_television` for streaming apps, `target_role=zen_mm_av_tuner` for physical inputs. Consults `zen_dojotools_display mode=status` first (read-only, fails soft) — response's `display_surface_interrupted` flags whether a Display Surface session on that target got switched away, but the switch always proceeds regardless; this tool has no authority over display sessions and doesn't gain any by asking. |
 | `sound_mode_get` | Current `sound_mode` + full `sound_mode_list`. Call before `sound_mode_set`. |
 | `sound_mode_set` | Set AVR or TV sound mode. Use `target_role=zen_mm_av_tuner` for the receiver. |
 | `state_get` | Full device snapshot: source, sound mode, volume, mute, media title, group membership, adjacent room co-playing detection, acoustic zone context. |
@@ -251,7 +251,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 |------|-------------|
 | `prefs_get` | Read all stored preferences for a room — see every context and what source/volume it maps to. |
 | `prefs_set` | Teach a preference: `room` + `home_context` + `source` (+ optional `volume` + `target_role`). Stores role as the resolver — not entity ID — so it survives entity renames. |
-| `prefs_apply` | Apply stored preference for a room. Reads `input_select.zen_home_mode` automatically if no `home_context` given. Re-resolves device from stored role label live. Supports `dry_run=true`. |
+| `prefs_apply` | Apply stored preference for a room. Reads the `zen_home_mode`-labeled entity automatically if no `home_context` given. Re-resolves device from stored role label live. Supports `dry_run=true`. |
 | `room_default_get` | Read stored default role for a room. Shows what it resolves to and what auto-chain would pick. |
 | `room_default_set` | Store a `target_role` as the room's default resolver. Pass `target_role=auto` to clear back to automatic chain. |
 
@@ -310,13 +310,24 @@ This is passive — no writes to Room Manager. Configure transmission values via
 
 **Room Manager v3 PAUSED-awareness** (2026-08-07, corrected 2026-08-09): `play_media` and `activity_apply` refuse to start new media in a room whose `room_control_manager` select reads `Paused` — a human has told Room Manager v3 to leave that room alone (`error: room_locked`-style response naming the paused entity). Read-only/query modes and queue navigation on already-playing media are untouched; only the "begin something new" entry points check this. A room with no `room_control_manager` select deployed is a safe no-op — never blocks.
 
+### Activity Orchestration
+
+An activity is a named, per-room preset stored under household cabinet key `media_activities_<room>`. `activity_set` teaches one (`activity_name`, `channel`, and optionally `light_context`, `lock_room`, `media_id`); `activity_get`/`activity_snapshot` read them back; `activity_apply` runs the whole scene in one call instead of just switching a source:
+
+* **`channel`** — source string, passed to the room's `zen_mm_universal` `select_source`. What that entity has to do with it is the [Universal Media Player spec](zen_mm_universal_spec.md).
+* **`media_id`** — played via the room's `zen_mm_music_assistant`-labeled entity (falling back to the UMP) using `zen_sutra_music_assistant mode=play_media` directly — **not** a self-call back into `zen_dojotools_media_manager`, which deadlocks (a `mode: queued` script self-invoking from inside its own run returns an empty `{}` response, no error).
+* **`light_context`** — fires `zen_dojotools_lights mode=prefs_apply room=<room> home_context=<this>`, provided that context was already taught there via `mode=prefs_set`.
+* **`lock_room`** — calls `zen_dojotools_room_manager mode=room_control_set room_control_state=Automation` for the room before applying, taking it out of Room Manager's live occupancy cascade so the activity's choice isn't immediately overridden by the next occupancy event. Also writes a `media_activity_current_<room>` cabinet marker, read by `room_control_set`'s own courtesy-pause check: if the room leaves `Automation` by any path (`activity_end`, a human clearing it by hand, another tool), that check pauses the room's media and clears the marker — a room's music never silently keeps playing after its lock is gone.
+
+`activity_end` is the generic undo — clears `room_control_set` back to `Auto` (handing the room back to RM's live cascade) and stops playback. Not activity-specific: works regardless of which activity, if any, is currently applied, since Room Manager only ever holds one lock state per room at a time.
+
 ---
 
 ## Preferences Architecture
 
 Preferences are stored in the household cabinet under key `media_prefs` (household) or `media_prefs_<person_slug>` (per-person). Storage is role-based, not entity-ID-based — `prefs_apply` re-resolves the stored role label live at apply time. This means entity IDs can change (upgrades, renames, replacements) without breaking stored preferences.
 
-`home_context` values match `input_select.zen_home_mode` states. If no context is passed at apply time, the current mode value is used automatically.
+`home_context` values match the home-mode states (the `zen_home_mode`-labeled entity). If no context is passed at apply time, the current mode value is used automatically.
 
 `media_source_prefs` (`preferred`/`excluded` source lists) are applied automatically on every Lens search and stacks_by_anchor call — no caller action required after initial setup.
 
@@ -326,14 +337,42 @@ Preferences are stored in the household cabinet under key `media_prefs` (househo
 
 | Helper | Purpose |
 |--------|---------|
-| `input_select.zen_home_mode` | Current home mode. Used by `prefs_apply` for context auto-read. Must be created manually. |
+| `zen_home_mode` label | Current home mode, read by `prefs_apply` for context auto-read. Flynn applies it to `input_select.zen_home_mode`; move the label to use a different entity. |
 
 Preferences are stored in the household cabinet — no additional `input_text` or `input_number` helpers required.
 
 ---
 
+## Scoped Search
+
+`mode=search` with `within_media_content_id` + `within_media_content_type` (both required; an id without a type returns an error) searches inside a prior result instead of across the library, e.g. an artist's `media_content_id` to list its albums and tracks. It calls HA's `media_player.search_media` on the room's `zen_mm_music_assistant` player (or the resolved `entity_id` when the room has none) rather than `music_assistant.search`, and returns a different shape (inside the envelope's `result`, like every Media Manager response):
+
+```json
+{
+  "status": "success",
+  "tool": "zen_dojotools_media_manager",
+  "action": "search",
+  "search_path": "scoped",
+  "entity_id": "media_player.<ma_player>",
+  "within_media_content_id": "<id searched inside>",
+  "within_media_content_type": "artist",
+  "results": [
+    {"title": "", "media_content_id": "", "media_content_type": "", "media_class": "album",
+     "uri": null, "can_play": true, "can_search": true, "artist": null, "artists": [],
+     "album_uri": null, "source": "media_player.<ma_player>"}
+  ],
+  "caller_token": ""
+}
+```
+
+- `media_class` (`artist`, `album`, `track`, `playlist`, `podcast`, `directory`, `music`) tells you what an item is. `media_content_type` is a generic backend tag.
+- `can_search` true means the item can be searched inside in turn.
+- Needs HA 2026.10.0 or newer. On an older core it returns `status: error`, `code: capability_unavailable`. If the core version can't be read (Container/Core installs have no update entity), the search is attempted anyway.
+- A failed service call returns `status: error` naming the player. Check `zen_dojotools_ha_log_viewer` for the cause.
+
 ## Music Assistant Notes
 
 - `music_assistant.play_media` does **not** support `response_variable` — do not add it
 - `music_assistant.queue_command` does **not** exist in this install — all queue control routes through standard `media_player.*` HA services (`media_play`, `media_pause`, `media_stop`, `media_next_track`, `media_previous_track`, `media_seek`, `shuffle_set`, `repeat_set`, `clear_playlist`)
+- The Music Assistant sutra finds its config entry from the `zen_mm_music_assistant` player's device: `config_entry_id` on HA 2026.8+, the older `config_entries` before that. Pass `ma_config_entry_id` to override.
 - Tag the correct entity with `zen_mm_music_assistant` — the Music Assistant proxy, not a universal or dead player

@@ -2,9 +2,11 @@
 
 **File:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Scripts:** `zen_dojotools_finance` (MCP-exposed), `zen_stack_firefly`, `zen_root_firefly`  
-**Version:** 2.4.0  
+**Version:** 2.5.0  
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_finance` and `zen_codex_finance_cogs` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -41,7 +43,7 @@ MCP-exposed. All modes accessed via `mode=run case={case_name}`.
 Internal only. Raw REST dispatcher (GET, POST, PUT, DELETE). Never call directly.
 
 ### zen_stack_firefly
-Lens Bus provider. Not MCP-exposed. Handles `label`, `person`, and `transaction` anchors. See [lens_bus.md](lens_bus.md).
+Lens Bus provider. Not MCP-exposed. Handles `label`, `person`, and `transaction` anchors. See [lens_bus.md](../library/lens_bus.md).
 
 ---
 

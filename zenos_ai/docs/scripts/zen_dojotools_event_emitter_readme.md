@@ -1,3 +1,5 @@
+# Zen DojoTools Event Emitter — v1.0.0
+
 Overview
 
 zen_dojotools_event_emitter is the official ZenOS-AI event publisher used to:

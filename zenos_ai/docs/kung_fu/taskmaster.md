@@ -6,6 +6,8 @@ Taskmaster is ZenOS-AI's cross-backend task orchestration layer: household chore
 
 ---
 
+> **Response envelope (2026.10.0):** `zen_dojotools_taskmaster` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
 ## Progressive Enhancement
 
 Taskmaster does **not** merge Radar, Inventory, CRM, and To Do into one data model — each backend keeps its native shape. It picks the best available backend at creation time and fans out reads across whichever backends are configured:
@@ -31,7 +33,7 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 | `almanac` | On-demand "what does today look like" — meal plan (`zen_dojotools_kitchen mode=run case=mealplan_today`), appointments (`zen_dojotools_rolodex mode=appointments_list`), plus a meal/appointment collision flag. Informational only, never blocking. |
 | `stale_review` | Filters `briefing`'s own scoring to urgency ≥ 2, sorted highest-first. Suppresses Radar tickets triaged `radar_rank_backlog` regardless of raw priority — those are intentionally deprioritized, not stale in the "forgotten" sense. |
 | `facilities_brief` | Building-super/housekeeping-lead view. Reads live kata cabinet entries for physical-plant components directly (`energy_manager`, `water_manager`, `hot_tub_manager`, `garage_freezer_thermal_model`, `dishwasher_manager`, `laundry_manager`) — no re-query — surfaces only urgency ≥ 2. Plus open Radar tickets tagged to a physical area and the house-wide chore backlog. |
-| `task_create` | Create a task. Routes to the best available backend per the priority chain above. |
+| `task_create` | Create a task. Routes to the best available backend per the priority chain above. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `task_list` | List tasks across whichever backends are configured. The data `briefing` and `stale_review` build on. |
 | `task_complete` | Mark a task complete on whichever backend it lives on. |
 | `tier_status` | Reports which backends (Radar/Inventory/CRM) are actually configured right now, via each backend's own `tool_manifest`. |
@@ -49,9 +51,9 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 
 | Field | Source |
 |-------|--------|
-| `home_mode` / `is_away` | `input_select.zen_home_mode` |
+| `home_mode` / `is_away` | the `zen_home_mode`-labeled entity |
 | `is_weekday` | Calendar |
-| `quiet_hours_active` / `work_hours_active` | `binary_sensor.zen_quiet_hours` / `binary_sensor.zen_work_hours` |
+| `quiet_hours_active` / `work_hours_active` | the `zen_quiet_hours` / `zen_work_hours`-labeled binary sensors |
 | `guest_present` / `guest_note` | Manual flags + Rolodex `stays_list` for today |
 | `upcoming_appointments` | Rolodex `appointments_list` |
 | `prep_schedule` | `zen_dojotools_kitchen mode=run case=prep_brief` for today — scheduled `[PREP:N]`-tagged dishes sorted by `start_by`, plus `unscheduled_count`. Wired in 2026.8.0 so Kitchen's prep timing is proactive on Taskmaster's existing trigger, not pull-only. |

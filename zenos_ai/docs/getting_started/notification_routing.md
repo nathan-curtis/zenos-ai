@@ -1,6 +1,6 @@
 # ZenOS-AI: Notification Routing Guide
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
 ---
 

@@ -11,7 +11,7 @@ This is not just "install the scripts and talk to the AI." The path is intention
 ```text
 installed but inert
   -> tools exposed to Assist
-  -> rooms mapped, then Room Manager v3 tracks what each one is actually doing right now
+  -> rooms mapped, then (once you opt in to room state) Room Manager v3 tracks what each one is actually doing right now
      (Vacant/Occupied/Engaged/Asleep/Hold, from real signals, not a fixed schedule)
   -> labels give devices and people meaning
   -> REFLEX reacts to state changes on its own — the right scene fires automatically,
@@ -80,13 +80,13 @@ After first boot. Covers:
 
 After the first alert test, use this to clean up what the AI can see and touch. Covers:
 
-* The three-tier model: Actionable vs Contextable vs Invisible
-* What always gets exposed (DojoTools scripts)
-* What never gets exposed (AdminTools, cabinet sensors, credentials)
-* How to use labels instead of direct exposure for high-cardinality data
+* The 2026.10.0 recommendation: expose the tools, expose zero entities
+* The three groups: Tools vs Contextable vs Invisible
+* What never gets exposed (AdminTools, Sutras, Stacks, Codices, Roots, cabinet sensors, credentials)
+* How labels let the tools reach your lights, locks, and sensors without exposing them
 * How labels feed Room Manager, Camera, AutoVac, AlertManager, and summarizers
 
-**Read this before broadening your conversation agent's entity list.**
+**Read this before exposing anything beyond the tools.**
 
 ---
 

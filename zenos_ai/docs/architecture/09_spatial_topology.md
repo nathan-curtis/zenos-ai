@@ -1,0 +1,81 @@
+# 9. Spatial Topology
+
+Labels say what a thing is and which room it belongs to. They do not say how rooms relate to each other: which rooms connect, how light and sound cross between them, where the exits are. That structure is the spatial topology, and `zen_dojotools_room_manager` owns it.
+
+This chapter is about the static graph of the house. Chapter 16 covers the live state that runs on top of it.
+
+If the index is the doorway into semantic reasoning, Room Manager was meant from the start to be the doorway into spatial reasoning: which rooms connect, how light and sound move between them, and how to get out. Part of how I worked it out was a text adventure. ZenZork runs on the live topology, and a game where you walk from room to room is a fast way to find out whether the map is actually right. It is no accident that pathfinding arrived alongside it. Egress and the emergency modes exist because a house is somewhere people sometimes need to leave in a hurry.
+
+Asked how she pictures the house, Friday draws the same line herself:
+
+<p align="center">
+  <img src="images/ch09_index_and_room_manager.jpg" width="380" alt="Friday explains that her live index is the house's map and lookup layer, organized by labels, rooms, domains, and devices, then explains that for spatial understanding she pairs it with Room Manager, which adds rooms, doors, portals, adjacency, occupants, exits, and live room states; the index tells her what is where, and Room Manager how spaces connect, with an example moving from a camera's motion to the connected spaces and nearby equipment." />
+</p>
+
+*Friday asked about her live index, and how it helps her picture the house. The index gives her the vocabulary: what exists, what it is called, which rooms and labels it belongs to. Room Manager gives her the space: how rooms connect, where the exits are, what is happening in each. Two layers of index are at work here: the compact mini index she carries in her prompt on every turn (Chapter 17), and the live index she queries through the tool, which is the one she is describing when she says it is not a cached snapshot. Real 2026.10.0 output, September 2026; camera and entry locations redacted.*
+
+## 9.1 Rooms, portals, and boundaries
+
+The topology lives in one drawer, `room_topology`, in the household cabinet, with one object per area. Room Manager builds the connections between them:
+
+**Portals** are passable connections between two areas: doors, archways, stairs. `mode=link` writes a portal on both sides at once and derives each room's adjacency list from its portals. Adjacency is never written by hand. A portal can carry a bearing (the compass direction it faces) and transmission values from 0.0 to 1.0 for light and sound: an open archway passes most light, a closed door almost none, a glass door something in between.
+
+**Boundaries** are shared surfaces people cannot pass through: a wall, a partition, a floor and ceiling. `mode=boundary_link` records them with their own sound and light transmission. A boundary is not an edge anyone walks, but it is an edge light and noise cross.
+
+**Exits** mark the ways out of the house, with drop heights where it matters, and feed evacuation routing.
+
+```mermaid
+graph LR
+  KIT[kitchen] -- "portal: archway<br/>light_tx 0.80" --- LIV[living_room]
+  LIV -- "portal: door<br/>light_tx 0.02" --- HALL[hall]
+  HALL -- "portal: stairs" --- UP[upstairs_hall]
+  LIV -. "boundary: wall<br/>sound_tx 0.30" .- OFF[office]
+  HALL -- "exit" --- OUT((front yard))
+```
+
+Solid edges are portals: people and signals move along them. The dotted edge is a boundary: sound crosses it, people do not.
+
+## 9.2 What the topology is for
+
+The topology is a graph other tools walk.
+
+**Pathfinding.** `mode=pathfind` runs a breadth-first search between two areas, or between two people's current locations, and returns the route.
+
+Here is the topology answering a question a floor plan would:
+
+<!-- screenshot: ch09_egress.png -->
+> **Screenshot to come.** Friday asked for the way out of a bedroom with smoke in the kitchen. The route comes from portals and adjacency, not from a generic answer. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
+**Propagation.** ZenLux's bleed walks portals outward from a room and uses each portal's light transmission to decide whether and how strongly a scene carries into the next room (Chapter 25 covers REFLEX, which is separate). An archway propagates. A closed door does not.
+
+**Emergency.** `mode=emergency` combines topology with live state into a crisis snapshot: exits, safety equipment in each room, hazards, the household rally point, and scenario-specific guidance.
+
+**Context.** `mode=get` returns a room's topology together with live context slices, each requested explicitly with `context_slices`: `+light`, `+climate`, `+covers`, `+media`, `+topo` (open doors and windows), `+appliances`, `+inventory`, `+chores`, `+tasks`, `+calendar`, `+wiki`, `+tickets`. Each slice comes from the domain tool that owns it rather than from Room Manager re-deriving it. A room's `digest` (chores due, tickets open, notifications pending) is always included.
+
+`mode=home_overview` rolls every room up into one whole-house snapshot, which is what the prompt uses for Friday's sense of the house as a whole (Chapter 17).
+
+## 9.3 Rooms find their things by shared labels
+
+Room Manager does not require every to-do list or calendar to be assigned to a room. A list or calendar that carries any label the area also carries is surfaced in that room's `+tasks` or `+calendar` slice automatically. Sharing a label is the assignment. This is the hypergraph from Chapter 7 doing work: two hyperedges that meet on a room make the room's world larger without anyone wiring it.
+
+## 9.4 Structure edits are certified
+
+Changing the shape of the house is gated. Structural modes (`set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, zone and landmark edits) require the `room_topology_edit` certification at level 1, and `area_delete` requires level 2. Reading the topology is open.
+
+That completes the graph: what exists, what the system remembers, and how the space fits together. The next question is how much of it the agent should be shown directly.
+
+<!-- where -->
+## 9.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* Portals, boundaries, and the topology drawer: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_topology`, `boundary_link`). Docs: [room_manager.md](../components/room_manager.md).
+* Pathfinding and emergency egress: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`pathfind`, `emergency`). Docs: [room_manager.md](../components/room_manager.md).
+<!-- /where -->
+
+<!-- nav -->
+---
+
+[← Cabinets as Graph](08_cabinets_as_graph.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Exposure: Tools, Not Entities →](10_exposure_tools_not_entities.md)
+<!-- /nav -->

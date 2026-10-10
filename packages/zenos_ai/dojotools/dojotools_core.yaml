@@ -1,7 +1,13 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Core Package
-# Version: 5.1.1
+# Version: 5.1.2
 #
+# 5.1.2 — GC: (1) kata eviction keys accumulate in a plain list
+#   (_kata_evict_keys) instead of a namespace(), which does not survive
+#   being re-assigned across variables: steps. (2) Expiry compares
+#   timestamps (now().timestamp() > exp_dt | as_timestamp), so an
+#   expires_after without a timezone no longer raises a naive/aware
+#   comparison error.
 # 5.1.1 — mode is now the primary selector for zen_dojotools_filecabinet_gc,
 #   matching the project-wide standard. action_type remains as a deprecated,
 #   fully-supported alias.
@@ -18,7 +24,9 @@
 #   automation.zen_dojotools_scheduler → Kata GC branch (daily_midnight trigger)
 #
 # MCP EXPOSURE:
-#   zen_dojotools_filecabinet_gc — expose to conversation agent (maintenance utility)
+#   zen_dojotools_filecabinet_gc — unexposed by default (mcp_exposed: false); runs on
+#   the Scheduler's GC branch. Expose it only if you want the agent able to
+#   force a garbage-collection run.
 #
 # PROTECTION RULES (zen_dojotools_filecabinet_gc):
 #   1. Keys starting with _ or . — always protected (system convention)
@@ -151,11 +159,24 @@ script:
       - variables:
           caller_token: "{{- caller_token | default('') -}}"
 
-      # --- tool_manifest early exit ---
-      - if: "{{ (action_type | default('') | lower) == 'tool_manifest' or (mode | default('') | lower) == 'tool_manifest' }}"
+      # --- tool_manifest: guarded fall-through, not an early exit ---
+      - if: "{{ final is not defined and ((action_type | default('') | lower) == 'help' or (mode | default('') | lower) == 'help') }}"
         then:
         - variables:
-            result: >-
+            final:
+              status: help
+              message: >-
+                mode=gc (default) [dry_run=true] -- auto-scan and process all drawers
+                by expiry metadata (meta.expires_after/no_autoexpire/no_autorecycle).
+                mode=recycle key=X -- hide a drawer and set expiry to now+24h.
+                mode=hide key=X -- hide a drawer, no expiry change. mode=unhide key=X
+                -- promote a hidden .drawer back to visible. Protected system drawers
+                (_prefix) are never touched. mode=tool_manifest -- this tool's
+                manifest declaration. mode=help -- this reference.
+      - if: "{{ final is not defined and ((action_type | default('') | lower) == 'tool_manifest' or (mode | default('') | lower) == 'tool_manifest') }}"
+        then:
+        - variables:
+            final: >-
               {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
               {{- MF.tool_manifest(
                 tool='zen_dojotools_filecabinet_gc',
@@ -170,8 +191,6 @@ script:
                 impact='soft',
                 caller_token=caller_token | default('')
               ) | from_json -}}
-        - stop: zen_dojotools_filecabinet_gc tool_manifest
-          response_variable: result
 
       # ── 1. Resolve inputs ──────────────────────────────────────────────────
       - alias: Resolve inputs
@@ -206,7 +225,8 @@ script:
           - condition: template
             value_template: >-
               {{
-                gc_action == 'recycle'
+                final is not defined
+                and gc_action == 'recycle'
                 and target_key != ''
                 and target_key[:1] != '_'
                 and target_key | lower not in protected_explicit | map('lower') | list
@@ -236,15 +256,14 @@ script:
                 hidden_as: ".{{ target_key }}"
                 expires_after: "{{ expiry_ts }}"
                 caller_token: '{{ caller_token }}'
-          - stop: recycle_complete
-            response_variable: final
 
       - alias: Hide — rename drawer to .drawer
         if:
           - condition: template
             value_template: >-
               {{
-                gc_action == 'hide'
+                final is not defined
+                and gc_action == 'hide'
                 and target_key != ''
                 and target_key[:1] != '_'
                 and target_key | lower not in protected_explicit | map('lower') | list
@@ -268,15 +287,14 @@ script:
                 drawer: "{{ target_key }}"
                 hidden_as: ".{{ target_key }}"
                 caller_token: '{{ caller_token }}'
-          - stop: hide_complete
-            response_variable: final
 
       - alias: Unhide — promote .drawer back to visible
         if:
           - condition: template
             value_template: >-
               {{
-                gc_action == 'unhide'
+                final is not defined
+                and gc_action == 'unhide'
                 and target_key != ''
                 and target_key[:1] != '_'
                 and target_key | lower not in protected_explicit | map('lower') | list
@@ -301,8 +319,6 @@ script:
                 drawer: "{{ target_key }}"
                 restored_from: ".{{ target_key }}"
                 caller_token: '{{ caller_token }}'
-          - stop: unhide_complete
-            response_variable: final
 
       # ── 3. Resolve cabinet list for GC scan ───────────────────────────────
       - alias: Resolve cabinet list
@@ -324,14 +340,20 @@ script:
             {%- endif -%}
 
       # ── 4. GC scan + execute: iterate all cabinets in series ──────────────
+      # Plain list, not namespace() -- a namespace object doesn't survive
+      # being re-assigned to the SAME variable name via a bare {{ }}
+      # variables: step (printing it coerces it to a non-namespace value,
+      # breaking the next repeat iteration's attribute assignment). A list
+      # IS natively preserved by HA's bare-expression type handling across
+      # steps, so accumulate into one directly instead.
       - alias: Init evicted-kata-key accumulator (scoped resummarize target list)
         variables:
-          _kata_evict_ns: "{{ namespace(keys=[]) }}"
+          _kata_evict_keys: "{{ [] }}"
 
       - alias: GC scan and process all cabinets in series
         if:
           - condition: template
-            value_template: "{{ gc_action == 'gc' }}"
+            value_template: "{{ final is not defined and gc_action == 'gc' }}"
         then:
           - repeat:
               for_each: "{{ gc_cabinet_entities }}"
@@ -354,7 +376,7 @@ script:
                             {%- set exp_raw = meta.get('expires_after', '') | string | trim -%}
                             {%- if not no_autoexpire and exp_raw != '' -%}
                               {%- set exp_dt = exp_raw | as_datetime -%}
-                              {%- if exp_dt is not none and now() > exp_dt -%}
+                              {%- if exp_dt is not none and now().timestamp() > exp_dt | as_timestamp -%}
                                 {%- set ns.out = ns.out + [key] -%}
                               {%- endif -%}
                             {%- endif -%}
@@ -374,7 +396,7 @@ script:
                             {%- set exp_raw = meta.get('expires_after', '') | string | trim -%}
                             {%- if exp_raw != '' -%}
                               {%- set exp_dt = exp_raw | as_datetime -%}
-                              {%- if exp_dt is not none and now() > exp_dt -%}
+                              {%- if exp_dt is not none and now().timestamp() > exp_dt | as_timestamp -%}
                                 {%- set ns.out = ns.out + [key] -%}
                               {%- endif -%}
                             {%- endif -%}
@@ -466,14 +488,10 @@ script:
                            and (to_delete | length > 0 or stale_drawers | length > 0) }}
                   then:
                     - variables:
-                        _kata_evict_ns: >-
+                        _kata_evict_keys: >-
                           {%- set _new = (to_delete | default([])) + (stale_drawers | default([])) -%}
-                          {%- for k in _new -%}
-                            {%- if k not in _kata_evict_ns.keys -%}
-                              {%- set _kata_evict_ns.keys = _kata_evict_ns.keys + [k] -%}
-                            {%- endif -%}
-                          {%- endfor -%}
-                          {{ _kata_evict_ns }}
+                          {%- set _existing = _kata_evict_keys | default([]) -%}
+                          {{ (_existing + (_new | reject('in', _existing) | list)) | list }}
                 - alias: Self-heal — stamp gc_eligible default if absent from header
                   if:
                     - condition: template
@@ -487,7 +505,7 @@ script:
                     - event: set_variable_legacy
                       event_data:
                         key: AI_Cabinet_VolumeInfo
-                        value: "{{ _new_vol_info | tojson }}"
+                        value: "{{ _new_vol_info }}"
                         set_timestamp: false
                         volume_entity: "{{ current_cab }}"
 
@@ -620,7 +638,7 @@ script:
                       {%- set exp = v.get('expires_at', '') | string | trim -%}
                       {%- if exp != '' -%}
                         {%- set exp_dt = exp | as_datetime -%}
-                        {%- if exp_dt is not none and now() > exp_dt -%}
+                        {%- if exp_dt is not none and now().timestamp() > exp_dt | as_timestamp -%}
                           {%- set ns.keys = ns.keys + [k] -%}
                         {%- endif -%}
                       {%- endif -%}
@@ -707,7 +725,7 @@ script:
       # announces what it collected. Drain router sees evicted drawers there as
       # maximally stale (age_min: 9999) and bubbles them up on the next scheduler
       # run. For the kata cabinet specifically, GC fires an immediate targeted
-      # summary_force per key it actually deleted (see _kata_evict_ns below) —
+      # summary_force per key it actually deleted (see _kata_evict_keys below) —
       # never a blanket full-fleet resummarize.
       - alias: Broadcast kata_gc_complete + nudge scheduler
         if:
@@ -727,10 +745,10 @@ script:
                   caller_token: '{{ caller_token }}'
           - if:
               - condition: template
-                value_template: "{{ _kata_evict_ns.keys | length > 0 }}"
+                value_template: "{{ (_kata_evict_keys | default([])) | length > 0 }}"
             then:
               - repeat:
-                  for_each: "{{ _kata_evict_ns.keys }}"
+                  for_each: "{{ _kata_evict_keys | default([]) }}"
                   sequence:
                     - event: zen_event
                       event_data:
@@ -741,15 +759,31 @@ script:
 
       # ── 6. Report ──────────────────────────────────────────────────────────
       - alias: Build GC report
-        variables:
-          final:
-            status: "{{ 'dry_run' if dry_run else 'complete' }}"
-            action: "{{ gc_action }}"
-            cabinets_scanned: "{{ gc_cabinet_entities | default([]) }}"
-            max_age_hours: "{{ max_age_hours }}"
-            dry_run: "{{ dry_run }}"
-            scheduler_nudged: "{{ gc_action == 'gc' and not dry_run }}"
-            caller_token: '{{ caller_token }}'
+        if:
+          - condition: template
+            value_template: "{{ final is not defined }}"
+        then:
+        - variables:
+            final:
+              status: "{{ 'dry_run' if dry_run else 'complete' }}"
+              action: "{{ gc_action }}"
+              cabinets_scanned: "{{ gc_cabinet_entities | default([]) }}"
+              max_age_hours: "{{ max_age_hours }}"
+              dry_run: "{{ dry_run }}"
+              scheduler_nudged: "{{ gc_action == 'gc' and not dry_run }}"
+              caller_token: '{{ caller_token }}'
 
+      - variables:
+          _gc_envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (final is mapping and final.get('status') == 'error') else 'success',
+              mode=gc_action | default(''),
+              result=final,
+              tool='zen_dojotools_filecabinet_gc',
+              caller_token=caller_token | default('')
+            ) -}}
+      - variables:
+          final: "{{ (_gc_envelope_raw | from_json) if _gc_envelope_raw is string else _gc_envelope_raw }}"
       - stop: filecabinet_gc_complete
         response_variable: final

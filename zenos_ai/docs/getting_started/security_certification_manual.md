@@ -3,9 +3,9 @@ ZENOS-AI SECURITY & CERTIFICATION SYSTEM
 OPERATOR REFERENCE MANUAL
 ```
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 
-**Applies to:** `zen_dojotools_identity`, `zen_dojotools_persona_editor`, and every domain tool that gates actuation behind a certification (`zen_dojotools_locks`, `zen_dojotools_covers`, `zen_dojotools_security_manager`, `zen_dojotools_infra`, `zen_dojotools_room_manager`, `zen_dojotools_lights`).
+**Applies to:** `zen_dojotools_identity`, `zen_dojotools_persona_editor`, and every domain tool that gates actuation behind a certification (`zen_dojotools_locks`, `zen_dojotools_covers`, `zen_dojotools_security_manager`, `zen_dojotools_infra`, `zen_dojotools_room_manager`, `zen_dojotools_lights`, `zen_dojotools_display`).
 
 **Read this before you grant your first certification.** Section 4 describes a hard requirement that will block you if you have not configured it.
 
@@ -47,7 +47,7 @@ There is no file listing which certifications exist. The catalog is calculated l
 
 This means a tool declaring `certs_required` in its own self-description is what makes a certification name valid — not a separately maintained list that can drift out of sync with what tools actually enforce.
 
-**A tool's declaration is a claim, not a grant of power.** Nothing stops a tool from declaring a certification it doesn't actually check, or checking one it never declared (`mode=cert_audit`'s `conflicts` field flags the one case this can't silently hide — the same certification name declared by two tools with different level requirements, which is an authoring error). The declaration only affects what `cert_grant` will accept as a valid target. It has no bearing on what actually happens when a tool executes — that logic lives in the tool itself, and is what this manual's Section 7 describes.
+**A tool's declaration is a claim, not a grant of power.** Nothing stops a tool from declaring a certification it doesn't actually check, or checking one it never declared (`mode=cert_audit`'s `conflicts` field flags the one case this can't silently hide — the same certification name declared by two tools with different level requirements, which is an authoring error). The declaration only affects what `cert_req_grant` will accept as a valid target. It has no bearing on what actually happens when a tool executes — that logic lives in the tool itself, and is what this manual's Section 7 describes.
 
 Query the current catalog directly with:
 
@@ -57,21 +57,36 @@ zen_dojotools_identity mode=cert_list
 
 This returns both the full catalog (every certification any tool currently declares) and, separately, what the calling agent currently holds.
 
+**Dotted certification names and prefix inheritance.** A certification name may be dotted (`zenos.<domain>.<capability>`); holding a broader parent node satisfies a check against any descendant below it at that parent's level, the same precedence X.509 policy OIDs use — an explicit narrower grant can still restrict below what a broader one implies. A flat (undotted) name, which is every certification in Section 7's table today, has no dots and so can only ever prefix-match itself exactly — this is a strict no-op for the existing catalog until a name actually migrates into the dotted namespace. `resolve_caller_identity`'s response includes `cert_satisfied_by`, showing which held certification actually matched.
+
+```mermaid
+flowchart TD
+    P["zenos.media\n(held by caller)"] --> C1["zenos.media.playback_control\nsatisfied by parent"]
+    P --> C2["zenos.media.prefs_edit\nsatisfied by parent"]
+    N["zenos.media.playback_control\n(held explicitly, narrower)"] -.overrides at this level.-> C1
+```
+
+A narrower grant held at the same or a lower level than the broader one it sits under restricts, it never widens — the explicit entry wins for its own node, the parent still covers everything else beneath it.
+
+**Certification bundles.** `cert_req_grant` accepts `cert_bundle=` as an alternative to `cert_component=`, granting every certification in the named bundle with one combined live ack instead of one per member. A bundle's membership comes from either a code-tagged declaration (a certification's own catalog entry can carry `bundle: ['name']`) or a runtime-editable set stored in the household cabinet, visible in `zen_dojotools_manifest mode=cert_audit`'s `bundles` view. One code-tagged bundle ships, `zenos_agent_basic`: a starter set of routine, reversible certifications that Flynn requests (one live ack) when onboarding completes. It includes no security, lock, infrastructure, PII-disclosure, or comms-dispatch certification. Editing an *existing* bundle's membership is not exposed through any agent-facing tool — only `zen_admintools_certadmin` (never agent-reachable, `mcp_exposed: false`) can change one via `cert_bundle_set`, requiring its own fresh live ack every time, since widening a bundle silently widens every future grant of it.
+
+`cert_req_grant` does expose one narrow path to *originate* a brand-new bundle: passing `cert_bundle` (a name that doesn't exist yet) with `cert_bundle_members` (a JSON array of cert names) registers that bundle. This is **define-only by default** — the bundle is created granted to nobody. Pass `also_grant=true` in the same call to also grant it to the target as part of the same live ack. `cert_bundle_members` has no effect if `cert_bundle` already names an existing bundle; changing an existing bundle's membership still requires an operator using `cert_bundle_set` directly.
+
 ---
 
 ## 4. GRANTING A CERTIFICATION — AND THE MOBILE REQUIREMENT
 
-Certifications are granted and revoked through one tool only:
+Certifications are granted and revoked through `zen_admintools_certadmin`, which is never exposed to an agent. An agent asks through `zen_dojotools_persona_editor`, which forwards the request:
 
 ```
-zen_dojotools_persona_editor mode=cert_grant
+zen_dojotools_persona_editor mode=cert_req_grant
     cert_component=<name>
     cert_level=<integer>
     [cert_scope=[...]]
     [cert_constraints=[...]]
 ```
 
-Every call to `cert_grant` or `cert_revoke` passes through two gates, in order, with no bypass at any certification level:
+Every call to `cert_req_grant` or `cert_req_revoke` passes through two gates, in order, with no bypass at any certification level. The one exception is a human at the console, described at the end of this section:
 
 **Gate 1 — catalog membership.** `cert_component` must appear in the live catalog described in Section 3. An unrecognized name is refused immediately, before Gate 2 runs. This gate catches typos. It is not a security boundary — see Section 8.
 
@@ -83,6 +98,8 @@ The dispatch uses `notify_target: postman` internally — this is the only notif
 
 This holds regardless of what is being requested. There is no certification, however permissive, that skips this gate to grant itself. If you intend to grant an agent unrestricted access to every gated action in the household — nothing in this system stops you from declaring and requesting exactly that — you will still receive one real push notification and must tap "yes" on your phone to complete it. After that, the certification exists and future actuations under it behave exactly as scoped. What you choose to certify is entirely your decision; this manual's only claim is that you will be asked, in real time, on a real device, before it takes effect.
 
+**The console path (2026.10.0).** When you run `zen_admintools_certadmin mode=cert_req_grant` yourself, as a logged-in Home Assistant user (from Developer Tools → Actions, or a dashboard button), your presence at the console is the approval. The grant proceeds without a push, and the reason `console_admin_bypass` is recorded with your user ID. An agent can never take this path: calls an agent or an automation makes carry no logged-in user, so they always fall through to the live acknowledgement above. The console path covers single-certification grants only. Revokes and bundle changes still require the live acknowledgement. It exists so an install without a working notification device can still be administered by the person sitting at it, and it means you can fully certify an agent without a phone, at the cost of a lot of typing.
+
 **Configure your mobile notification path before you need this.** If it is not working, you will not be able to grant your first certification to find that out.
 
 ---
@@ -90,7 +107,7 @@ This holds regardless of what is being requested. There is no certification, how
 ## 5. REVOKING A CERTIFICATION
 
 ```
-zen_dojotools_persona_editor mode=cert_revoke cert_component=<name>
+zen_dojotools_persona_editor mode=cert_req_revoke cert_component=<name>
 ```
 
 Identical gating to Section 4 — catalog membership, then a fresh live ack. Revocation is not exempt from the ack requirement; the household must confirm a revocation in real time the same as a grant.
@@ -104,7 +121,7 @@ By default, a certification that gates on "cert plus live ack every call" asks e
 `cert_scope` exists to relieve exactly that friction, narrowly:
 
 ```
-zen_dojotools_persona_editor mode=cert_grant
+zen_dojotools_persona_editor mode=cert_req_grant
     cert_component=lock_control
     cert_scope=["lock.front_door"]
 ```
@@ -113,10 +130,10 @@ A target covered by a granted **allow** scope skips the per-call live ack for th
 
 **Scope entries have two forms.** A bare string (`"lock.front_door"`) is shorthand for an allow entry. A full form, `{"entity": "lock.front_door", "acl": "allow"}` or `{"entity": "lock.front_door", "acl": "deny"}`, is explicit. **A `deny` entry is a hard block**, evaluated ahead of the certification check itself — a target explicitly denied is refused regardless of what level the certification is held at, with no live ack offered at all. This is not the inverse of an unscoped default; an unscoped target still asks normally, a denied target is refused outright.
 
-**Granting again merges, it does not replace.** A second `cert_grant` for a certification already held adds to the existing scope rather than overwriting it — each entry is upserted by entity, so granting a new exemption never silently drops previously granted ones. To remove a single entry without touching the rest of the scope or re-granting the whole certification, submit that entity with `"acl": "remove"`:
+**Granting again merges, it does not replace.** A second `cert_req_grant` for a certification already held adds to the existing scope rather than overwriting it — each entry is upserted by entity, so granting a new exemption never silently drops previously granted ones. To remove a single entry without touching the rest of the scope or re-granting the whole certification, submit that entity with `"acl": "remove"`:
 
 ```
-zen_dojotools_persona_editor mode=cert_grant
+zen_dojotools_persona_editor mode=cert_req_grant
     cert_component=lock_control
     cert_scope=[{"entity": "lock.front_door", "acl": "remove"}]
 ```
@@ -126,6 +143,32 @@ This still goes through both gates in Section 4 like any other grant — removin
 **Scope does not weaken Gate 1 or Gate 2 in Section 4.** Granting a scope, narrow or broad, allow or deny, is itself a certification grant and goes through the exact same live-ack requirement as any other. The system will accept a `cert_scope` covering every actuatable target in the household if you request it, with the same single real-time confirmation as any narrower request. It does not evaluate whether the scope you are requesting is a good idea. That evaluation is the human's, made once, at the moment of the ack. The system's only job past that point is to enforce whatever you approved.
 
 If you grant broad allow scope and later regret it, remove the specific entry as shown above, or revoke the entire certification (Section 5) — the same live-ack requirement applies either way.
+
+---
+
+## 6.5 THE RESOLUTION PATH, END TO END
+
+Sections 2–6 describe the pieces individually. This is the order they actually run in, for any gated action:
+
+```mermaid
+flowchart TD
+    A["Caller invokes a gated action"] --> B{"Held cert matches\nrequired_cert exactly?"}
+    B -- yes --> D{"Level >= required?"}
+    B -- no --> C{"Held cert is a broader\ndotted parent?\n(zenos.media vs\nzenos.media.playback_control)"}
+    C -- "yes, prefix match" --> D
+    C -- "no match at all" --> X["DENIED: cert_insufficient"]
+    D -- no --> X
+    D -- yes --> E{"Action tier?"}
+    E -- "cert-only" --> ALLOW["ALLOWED"]
+    E -- "cert + live ack every call" --> F{"cert_scope entry\nfor this target?"}
+    F -- deny --> REFUSE["REFUSED\nno ack offered"]
+    F -- allow --> ALLOW
+    F -- "none / unscoped" --> G["Send live ack request,\nawait real response"]
+    G -- approved --> ALLOW
+    G -- "timeout / denied" --> X
+```
+
+A `deny` scope entry (Section 6) short-circuits before the live-ack step ever runs — it is a hard block, not a slower path to the same answer. An `allow` scope entry skips the live-ack step entirely for that target. Everything else asks fresh, every time, per Section 4.
 
 ---
 
@@ -143,10 +186,53 @@ If you grant broad allow scope and later regret it, remove the specific entry as
 | `zen_dojotools_lights` (ZenLux) | `lighting_control` | All gated light/switch writes | — (no live-ack tier; lighting is not treated as a physical-security action) |
 | `zen_dojotools_climate` (also owns `fan.*`) | `climate_control` | All real setters on a `climate.*` or `fan.*` target | — |
 | `zen_dojotools_spa_manager` | `spa_control` | `scene`, `lights`, `jets`, `temperature`, `cover` | — |
+| `zen_dojotools_display` | `display_control` | `mode=show` — cast a Lovelace view to a house display | — (no live-ack tier; an info surface, not a physical-security action) |
+| `zen_admintools_cabinetadmin` | `cabinet_lifecycle_control` | Every moderate-to-nuclear write op (`restore`, `repair_volumeinfo`, `reset`, `hammer`, `init`, `repair_mount`, `repair_dismount`, `flip_schema_version`, `reset_all`, `expand_drawer`); `inspect`/`mount_status`/`help` stay ungated | — |
+| `zen_dojotools_provisioner` | `cabinet_lifecycle_control` (reused) | `provision`, `deprovision`, `replace` | — |
+| `zen_dojotools_camera` | `camera_alert_policy_edit` | `set_alert_policy` | — |
+| `zen_dojotools_plant` | `plant_auto_shutoff_config_edit` | `leak_auto_shutoff_enable` | — |
+| `zen_dojotools_alertmanager` | `alert_policy_edit` | `set_policy` | — |
+| `zen_dojotools_labels` | `registry_lifecycle_control` (reused) | `create`, `delete`, `update`, `area_assign`, `area_remove` | `reset` (untags all `zen_` labels house-wide — cert plus a mandatory live ack every time, no scope waiver available for this action) |
+| `zen_dojotools_office` (Mail) | `pii_disclosure_control` | `create` (send, level 1) | — |
+| `zen_dojotools_office` (Mail) | `pii_disclosure_control` (reused) | `whitelist_set` (level 2 — edits the household mail-whitelist cabinet drawer) | — |
+| `zen_dojotools_office` (Teams) | `pii_disclosure_control` (reused) | `send` | — |
+| `zen_dojotools_office` (Teams) | `teams_control` | `set` (Availability/Activity — how the user is represented to their org; level 1) | — |
+| `zen_dojotools_taskmaster` | `pii_disclosure_control` (reused) | `task_create` | — |
+| `zen_dojotools_todo` | `pii_disclosure_control` (reused) | `create`, `update` | — |
+| `zen_dojotools_todo` | `todo_control` | `delete` (level 2 — irreversible item removal) | — |
+| `zen_dojotools_calendar` | `pii_disclosure_control` (reused) | `create`, `update` | — |
+| `zen_dojotools_calendar` | `calendar_control` | `delete` (level 2 — irreversible event removal) | — |
+| `zen_dojotools_ectoplasm` (Spook actions) | `room_topology_edit` (reused) | `area_create`/`area_delete`, `floor_create`/`floor_delete`, `area_assign_device`/`area_unassign_device`, `area_assign_entity`/`area_unassign_entity`, `floor_assign_area`/`floor_unassign_area` (`area_delete`/`floor_delete` at level 2) | — |
+| `zen_dojotools_ectoplasm` (Spook actions) | `registry_lifecycle_control` (reused) | `entity_hide`/`entity_unhide`, `entity_disable`/`entity_enable`, `entity_rename`, `device_disable`/`device_enable`, `integration_disable`/`integration_enable`, `label_assign_area`/`label_unassign_area`, `label_assign_device`/`label_unassign_device`, `automation_snooze`, `automation_turn_on_for`, `input_number_create`/`input_number_delete` | — |
+| `zen_dojotools_ectoplasm` (Spook actions) | `registry_purge` | `orphan_cleanup` (level 2) | — |
+| `zen_dojotools_scribe` | `scribe_kfc_publish` | `publish_kfc`, `republish_kfc`, and `patch`/`replace`/`clear_field`/`delete` when the target artifact is an already-published `kfc` | — |
+| `zen_dojotools_media_manager` | `media_prefs_edit` | `prefs_set`, `prefs_apply`, `room_default_set`, `setup` | — |
+| `zen_dojotools_media_manager` | `zenos.media.playback_control` | `play_media`, `queue_command`/`queue_remove`/`queue_play_item`/`queue_clear_from_here`/`queue_unfavorite`, `source_set`, `sound_mode_set`, `activity_set`/`activity_apply`/`activity_end` | — |
+| `zen_dojotools_library` | `library_stacks_edit` | Paperless-NGX document writes (stacks department) | — |
+| `zen_dojotools_library` | `library_catalog_edit` | Physical-item catalog writes (catalog department) | — |
+| `zen_dojotools_zenzork` | `household_spatial_config_edit` | `mode=setup` (north calibration / portal commissioning) only | — |
+| `zen_dojotools_boolean` | `helper_boolean_edit` | `input_boolean`/`switch` writes | — |
+| `zen_dojotools_number` | `helper_number_edit` | `number`/`input_number` writes | — |
+| `zen_dojotools_text` | `helper_text_edit` | `input_text` writes | — |
+| `zen_dojotools_select_control` | `helper_select_edit` | `input_select`/`select` writes | — |
+| `zen_dojotools_timekeeper` | `helper_timer_control` | `timer.*` writes | — |
+| `zen_dojotools_water_heater` | `water_heater_control` | `water_heater.*` writes | — |
+| `zen_dojotools_datetime` | `helper_datetime_edit` | `input_datetime` writes | — |
+| `zen_dojotools_zones` | `helper_zones_edit` | `zone.*` create/update/delete (read/bearing stay open) | — |
+| `zen_dojotools_room_manager` | `room_topology_edit` (reused) | `utility` mode's `set`/`delete` (household NFPA/emergency-cutoff registry writes) | — |
+| `zen_dojotools_room_manager` | `room_behavior_control` (reused) | `label_discover`'s `confirm_action=true` bulk-tag-apply path (preview stays open) | — |
+| `zen_dojotools_generate_image` | `zenos.media.generate` | Every generation call (costs real API spend per call) | — |
+| `zen_dojotools_print_shop` | `zenos.media.print_control` | `configure`, `test_page`, `print_text`, `print_image`, `clean`, `nozzle_check` (`status`/`list_jobs`/`help` stay open) | — |
+| `zen_dojotools_profile_editor` | `zenos.identity.profile_write` | `write` (household/user/family profile mutation; `read` stays open) | — |
+| `zen_dojotools_postman` | `zenos.comms.dispatch` | `resolve_and_dispatch` (except life-safety/breakthrough urgency, which always goes), `direct_dispatch`, `author_policy`, `clear_tag` | — |
+| `zen_dojotools_systemtools` | `zenos.system.reload_restart` | `ha_restart`, `ha_reload_all` (checked once `confirm=true` is given, in addition to the confirm gate) | — |
+| `zen_dojotools_systemtools` | `zenos.system.home_config_write` | Write path of `home_mode`, `quiet_hours`, `work_hours`, `scheduler_anchors`, `guest_mode`, `entertaining` (reads stay open) | — |
+
+`pii_disclosure_control` is a shared certification: level 1 gates any action that discloses or transmits household PII outward (mail/Teams send, task/todo/calendar create-update since these can carry personal details to shared surfaces); level 2 gates changing the disclosure policy itself (the mail whitelist). It covers the *disclosure* axis only — irreversible deletes (`todo_control`, `calendar_control`) and presence representation (`teams_control`) are separate, independent risk axes with their own certs, and can apply to the same tool as `pii_disclosure_control` for different actions.
 
 Every entry in the middle and right columns requires holding the listed certification at the tool's required level as a baseline. The right column additionally requires Section 4's live ack, per call, unless the specific target is covered by a granted allow `cert_scope` (Section 6) — and refused outright, no ack offered, if covered by a `deny` entry instead.
 
-**ZenZork** (the text-adventure engine) is not itself gated, but every in-game `open`/`close`/`use`/`push`/`pull` that resolves to a real lock or cover now routes through `zen_dojotools_locks`/`zen_dojotools_covers` in `dry_run` mode — the game narrates from the same real `cert_scope`/live-ack check this table describes, without ever performing the real actuation. See the ZenZork readme's Identity Gate section.
+**ZenZork** (the text-adventure engine) holds one narrow cert of its own (above) for its household-config write surface; every other in-game `open`/`close`/`use`/`push`/`pull` that resolves to a real lock or cover routes through `zen_dojotools_locks`/`zen_dojotools_covers` in `dry_run` mode — the game narrates from the same real `cert_scope`/live-ack check this table describes, without ever performing the real actuation. Switch/`input_boolean` interactions (`use`/`push`/`pull`) are preview-only for the same reason, with no dry-run-capable gated tool to route through. See the ZenZork readme's Identity Gate section.
 
 ---
 
@@ -158,6 +244,8 @@ The live-ack-every-call tier (no standing exception, Section 4's mobile requirem
 
 This system does not evaluate whether a given grant is wise. It enforces exactly what was approved, and nothing was ever approved without a real person confirming it on a real device at the moment it mattered. What you approve is your decision to make.
 
+**What this system does not protect against: the cert store itself.** Held certifications live as plain data in the household cabinet — an entry there, not a hardened credential. There is no encryption at rest, no tamper-evidence, and no separation between "the record of what was granted" and "everything else in that cabinet." Anyone with the access level needed to edit cabinet data directly (bypassing the tool layer entirely) could edit a cert entry without ever going through Section 4's live ack. This is a deliberate, function-first sequencing choice, not an oversight: the authorization *logic* — what gets checked, when, and against what — was worth building and shipping now; a genuinely hardened cert store (encryption, tamper-evidence, an out-of-band trust anchor separate from the rest of cabinet storage) is real future work, tracked under Longer-Horizon Work in the [Tron release notes](../releases/tron.md), and will land once the system around it is stable enough to be worth hardening. Today's threat model assumes the household cabinet itself is trusted; that assumption is correct for a single-household local install and would not be for anything more adversarial.
+
 ---
 
 ## 9. TROUBLESHOOTING
@@ -167,10 +255,10 @@ This system does not evaluate whether a given grant is wise. It enforces exactly
 | `error: identity_policy_blocked` | `resolve_caller_identity` did not return an allowed identity — a prerequisite failure upstream of certification entirely. Not a cert problem; check the identity/sim_mode policy gate. |
 | `error: cert_insufficient` | The identity resolved, but the held certification level is below what the action requires (or the certification isn't held at all). Grant it per Section 4. |
 | A gated action refuses a specific target with no live ack ever offered | The target is covered by a `deny` scope entry (Section 6) — a hard block, evaluated ahead of the certification check, not something a live ack can override. Remove the `deny` entry (submit it again with `"acl": "remove"`) if it was unintended. |
-| `reason: dispatch_failed` on a `cert_grant`/`cert_revoke`/gated actuation | The live-ack request never reached a real device. Check the household's Postman/mobile notification configuration — this is the Section 4 prerequisite not being met. |
+| `reason: dispatch_failed` on a `cert_req_grant`/`cert_req_revoke`/gated actuation | The live-ack request never reached a real device. Check the household's Postman/mobile notification configuration — this is the Section 4 prerequisite not being met. |
 | `reason: declined` | A human received the request and answered no. Working as intended. |
 | `reason: timeout` | The request dispatched, but no response arrived within the wait window. Check that the device that received the push is actually being watched. |
-| `cert_grant refused: '<name>' is not declared by any tool's tool_manifest` | The `cert_component` name doesn't match anything in the live catalog (Section 3). Check spelling, or confirm the tool you expect to gate on it actually declares it — run `mode=cert_audit` to see the real current catalog. |
+| `cert_req_grant refused: '<name>' is not declared by any tool's tool_manifest` | The `cert_component` name doesn't match anything in the live catalog (Section 3). Check spelling, or confirm the tool you expect to gate on it actually declares it — run `mode=cert_audit` to see the real current catalog. |
 
 ---
 

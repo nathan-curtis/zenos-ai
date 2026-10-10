@@ -1,8 +1,10 @@
-# Zen DojoTools History — 2026.6.0 'Clue'
+# Zen DojoTools History — v5.1.1
 
 *Recorder statistics query engine for HA long-term statistics*
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_history` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 

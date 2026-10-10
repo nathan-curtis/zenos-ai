@@ -1,6 +1,12 @@
 ###############################################################################
-# zen_dojotools_media_manager v5.5.0 (codename: NyxMau5)
+# zen_dojotools_media_manager v6.1.4 (codename: NyxMau5)
 # Room-aware AV intent resolver with memory + label-driven topology
+#
+# CHANGELOG:
+#   6.1.4 — queue holds 5 runs (was 3), so a multi-room burst isn't dropped.
+#   6.1.3 — search: within_media_content_id and within_media_content_type are
+#     required together; passing the id without the type returns an error
+#     and makes no service call.
 #
 # ── LABEL TAXONOMY ──────────────────────────────────────────────────────────
 #
@@ -77,25 +83,14 @@ script:
   zen_dojotools_media_manager:
     alias: Zen DojoTools MediaManager
     description: >-
-      Call with nothing and get a whole-home AV map — every room, every
-      device, live state. Pass room= to drill into a room. This tool turns
-      "put on Disney in the LR for the kids" into a done deal: label each
-      device once with its room + role (TV, AVR, speakers), then use
-      source_set or prefs_apply forever — no entity IDs, no guessing.
-      prefs_set teaches a context once ("kids = Disney+ vol 35") and
-      prefs_apply reads the current home mode and re-resolves the right
-      physical device every time. room_default_set stores a room's preferred
-      default role (e.g. zen_mm_television) so future calls without target_role
-      hit the right device automatically. target_role= picks a specific slot:
-      zen_mm_video_output for streaming apps, zen_mm_av_tuner for the AVR,
-      zen_mm_audio_output for dedicated audio zones. search queries the Music
-      Assistant library by string; stacks_by_anchor takes typed anchors
-      (mood, activity, person, area) and returns ranked track/album/playlist
-      evidence with playback_hint URIs ready for music_assistant_start_playback.
-      mode=help for full reference and setup flow.
+      Whole-home AV control by room + role, not entity ID — "put on Disney
+      in the LR for the kids" resolves through room/role/intent labels once
+      set up. Use for media playback, room AV state, or Music Assistant
+      search. Call with no args for a whole-home AV map, room= to drill in.
+      mode=help for the full reference and setup flow.
     icon: mdi:television-play
     mode: queued
-    max: 3
+    max: 5
     fields:
       mode:
         name: Mode
@@ -153,6 +148,7 @@ script:
               - activity_set
               - activity_apply
               - activity_snapshot
+              - activity_end
               - register
               - unregister
               - health
@@ -219,8 +215,8 @@ script:
         description: >-
           Which home mode this pref applies to: kids, evening, morning,
           party, away, etc. Required for prefs_set. Omit on prefs_apply —
-          it reads input_select.zen_home_mode and picks the right preset
-          automatically.
+          it reads the zen_home_mode-labeled entity and picks the right
+          preset automatically.
         selector:
           text:
       volume:
@@ -256,6 +252,31 @@ script:
           Required for activity_set. Use discover to see valid values.
         selector:
           text:
+      light_context:
+        name: Light Context
+        description: >-
+          activity_set only. Optional home_context value to store alongside
+          this activity — activity_apply fires zen_dojotools_lights
+          mode=prefs_apply room=<room> home_context=<this> as part of a
+          single activity_apply call, IF that context has already been
+          taught there via zen_dojotools_lights mode=prefs_set (teach the
+          light look first, then reference its context name here). Omit to
+          leave lighting untouched by this activity.
+        selector:
+          text:
+      lock_room:
+        name: Lock Room
+        description: >-
+          activity_set only. If true, activity_apply calls
+          zen_dojotools_room_manager mode=room_control_set
+          room_control_state=Automation for this room before applying —
+          takes the room out of Room Manager's live occupancy cascade so
+          the activity's media/lighting choice isn't immediately overridden
+          on the next occupancy event. activity_end (or room_control_set
+          state=Auto directly) hands control back. Omit/false to leave RM's
+          cascade untouched.
+        selector:
+          boolean:
       caller_token:
         name: Caller Token
         description: "Opaque audit token echoed in all responses for correlation."
@@ -328,6 +349,24 @@ script:
       query:
         name: Query Override
         description: "Direct search string (overrides anchor-derived query)."
+        required: false
+        selector:
+          text:
+      within_media_content_id:
+        name: Scoped Search — Within Content ID
+        description: >-
+          HA >= 2026.10.0 only. media_content_id of a prior search result
+          (e.g. an artist) to search inside — turns search into HA's native
+          media_player.search_media scoped/navigable path instead of the
+          broad music_assistant.search. Requires within_media_content_type
+          too. Omit for the normal broad search. On HA < 2026.10.0 this
+          returns a capability error instead of a raw service failure.
+        required: false
+        selector:
+          text:
+      within_media_content_type:
+        name: Scoped Search — Within Content Type
+        description: "media_content_type of the within_media_content_id result (e.g. artist, album, playlist). Required alongside within_media_content_id."
         required: false
         selector:
           text:
@@ -443,13 +482,13 @@ script:
       - variables:
           _tm_check: "{{ mode | default('') | lower }}"
       - choose:
-        - conditions: "{{ _tm_check == 'tool_manifest' }}"
+        - conditions: "{{ _result is not defined and _tm_check == 'tool_manifest' }}"
           sequence:
           - variables:
               _tm_ms_ok: >-
                 {{ states('script.zen_sutra_music_assistant') not in ['unavailable', 'unknown'] }}
           - variables:
-              result: >-
+              _result: >-
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {%- set _h = {'configured': _tm_ms_ok | bool, 'status': 'ok' if _tm_ms_ok | bool else 'warn',
                               'notes': [] if _tm_ms_ok | bool else ['zen_sutra_music_assistant unavailable']} -%}
@@ -457,10 +496,10 @@ script:
                     tool='zen_dojotools_media_manager',
                     display_name='Media Manager — Media Lens Surface',
                     tier='dojotools',
-                    version='6.0.0',
+                    version='6.1.4',
                     health=_h,
                     required_labels=['dojotools'],
-                    optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch'],
+                    optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch', 'zen_home_mode'],
                     consumes=['label', 'person', 'area_id', 'zone', 'concept', 'mood', 'activity'],
                     returns=['track_evidence', 'album_evidence', 'artist_evidence', 'playlist_evidence',
                              'radio_evidence', 'podcast_evidence', 'audiobook_evidence',
@@ -472,11 +511,28 @@ script:
                                   'denied': ['w', 'x', 'd', 'a'],
                                   'note': 'Lens lookup returns media metadata and playback hints only. Playback/control actions remain outside the Lens path.'},
                     modes={'lookup': 'stacks_by_anchor', 'manifest': 'tool_manifest',
-                           'search': 'search', 'now_playing': 'now_playing',
+                           'discover': 'discover', 'setup': 'setup', 'label_suggest': 'label_suggest',
+                           'resolve_debug': 'resolve_debug', 'source_get': 'source_get', 'source_set': 'source_set',
+                           'sound_mode_get': 'sound_mode_get', 'sound_mode_set': 'sound_mode_set',
+                           'state_get': 'state_get', 'now_playing': 'now_playing',
+                           'prefs_get': 'prefs_get', 'prefs_set': 'prefs_set', 'prefs_apply': 'prefs_apply',
+                           'room_default_get': 'room_default_get', 'room_default_set': 'room_default_set',
+                           'stacks_by_anchor': 'stacks_by_anchor', 'search': 'search', 'play_media': 'play_media',
+                           'queue_command': 'queue_command', 'queue_get': 'queue_get', 'queue_remove': 'queue_remove',
+                           'queue_play_item': 'queue_play_item', 'queue_move_up': 'queue_move_up',
+                           'queue_move_down': 'queue_move_down', 'queue_move_next': 'queue_move_next',
+                           'queue_clear_from_here': 'queue_clear_from_here', 'queue_unfavorite': 'queue_unfavorite',
+                           'collection_recommendations': 'collection_recommendations', 'collection_album': 'collection_album',
+                           'collection_artist': 'collection_artist', 'collection_playlist': 'collection_playlist',
+                           'collection_podcast': 'collection_podcast', 'get_library': 'get_library', 'lyrics': 'lyrics',
+                           'group_volume_get': 'group_volume_get', 'group_volume_set': 'group_volume_set',
+                           'queue_transfer': 'queue_transfer', 'queue_snapshot': 'queue_snapshot',
+                           'queue_restore': 'queue_restore', 'queue_sync': 'queue_sync',
                            'register': 'register', 'unregister': 'unregister',
                            'health': 'health', 'audit': 'audit', 'help': 'help',
                            'activity_get': 'activity_get', 'activity_set': 'activity_set',
-                           'activity_apply': 'activity_apply', 'activity_snapshot': 'activity_snapshot'},
+                           'activity_apply': 'activity_apply', 'activity_snapshot': 'activity_snapshot',
+                           'activity_end': 'activity_end'},
                     icon='mdi:television-play',
                     color='deep-orange',
                     stripe=3,
@@ -488,10 +544,21 @@ script:
                     'provider_key': 'media',
                     'department': 'special_collections',
                     'register_mode': 'register',
-                    'lens_provider': true
+                    'lens_provider': true,
+                    'certs_required': [
+                      {'cert': 'media_prefs_edit', 'display_name': 'Media Preferences Edit',
+                       'description': '2026-09-10, household: steel-mag pattern -- room/user AV config writes (prefs_set/apply, room_default_set, setup). Not actuation -- see zenos.media.playback_control for that.',
+                       'max_level': 4, 'gates': ['mode=prefs_set/prefs_apply/room_default_set/setup'],
+                       'live_ack_required_for': [],
+                       'grant_via': 'persona_editor mode=cert_req_grant cert_component=media_prefs_edit (or zen_dojotools_identity mode=cert_list to see current status)'},
+                      {'cert': 'zenos.media.playback_control', 'display_name': 'Media Playback Control',
+                       'description': '2026-09-10, household: steel-mag pattern -- actual AV actuation (play_media, queue_command/remove/play_item/clear_from_here/unfavorite, source_set, sound_mode_set, activity_set/apply/end). Cert-only, no live-ack tier. Renamed from flat media_playback_control to the zenos.* OID namespace 2026-09-18 (#10407) -- no active grant existed at rename time (confirmed via cert_list).',
+                       'max_level': 4, 'gates': ['mode=play_media/queue_*/source_set/sound_mode_set/activity_set/activity_apply/activity_end'],
+                       'live_ack_required_for': [],
+                       'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.media.playback_control (or zen_dojotools_identity mode=cert_list to see current status)',
+                       'bundle': ['zenos_agent_basic']}
+                    ]
                 }) -}}
-          - stop: tool_manifest
-            response_variable: result
       # ── 0. Resolve inputs ─────────────────────────────────────────────────
       - variables:
           _mode:         "{{ mode | default('discover') | string | trim | lower }}"
@@ -507,14 +574,37 @@ script:
           _dry_run:      "{{ dry_run | default(false) | bool }}"
           _caller_token: "{{ caller_token | default('') | string | trim }}"
           _hh:           "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+          _within_id:    "{{ within_media_content_id | default('', true) | string | trim }}"
+          _within_type:  "{{ within_media_content_type | default('', true) | string | trim | lower }}"
+
+      # ── 0a2. HA core version capability gate — scoped search through
+      # media_player.search_media needs HA 2026.10.0 or newer.
+      - variables:
+          # update.home_assistant_core_update is a platform singleton, like
+          # zone.home. It exists only on Supervisor installs; elsewhere the
+          # version is unknown, so the call is attempted and a failure goes
+          # through the error path below.
+          _ha_core_version: "{{ state_attr('update.home_assistant_core_update', 'installed_version') | default('', true) | string | trim }}"
+          _ha_supports_scoped_search: >-
+            {%- if _ha_core_version in ['', 'unknown', 'unavailable'] -%}
+            true
+            {%- else -%}
+              {%- set parts = _ha_core_version.split('.') -%}
+              {%- set major = parts[0] | int(0) -%}
+              {%- set minor = parts[1] | int(0) if parts | length > 1 else 0 -%}
+              {{ (major > 2026) or (major == 2026 and minor >= 10) }}
+            {%- endif -%}
 
       # ── 0b. Cabinet + room entity list ────────────────────────────────────
       - variables:
           _hh_cabinet: >-
             {{ states('sensor.zen_default_household_cabinet_resolved') | default('', true) | string | trim }}
           _room_ents: >-
-            {{ label_entities(_room_slug) | select('match', 'media_player\\.') | list
-               if _room_slug != '' else [] }}
+            {%- if _room_slug != '' -%}
+              {%- set _by_area = area_entities(_room_slug) | list -%}
+              {%- set _by_label = label_entities(_room_slug) | list -%}
+              {{ ((_by_area + _by_label) | unique | list) | select('match', 'media_player\\.') | list }}
+            {%- else -%}[]{%- endif -%}
 
       # ── 0b2. Stored room default role (cabinet read, guarded) ─────────────
       - variables:
@@ -593,18 +683,16 @@ script:
                else (_intent_resolved if _intent_resolved != ''
                else _role_resolved) }}
 
-      # ── 0d2. Room Manager v3 PAUSED awareness (2026-08-07, fixed 2026-08-09
-      # to read the right entity post-isolation) ─────────────────────────────
+      # ── 0d2. Room Manager v3 PAUSED awareness ──────────────────────────────
       # A room's room_control_manager select set to 'Paused' means a human
       # hit the brakes on that room — REFLEX itself won't fire scenes there,
       # and this tool shouldn't START new media there either. Read-only/query
       # modes and queue-navigation on ALREADY-PLAYING media are untouched;
       # only the "begin something new in this room" entry points
-      # (play_media, activity_apply) check this. Originally written against
-      # label 'room_control' — the legacy, Node-RED-owned select — before the
-      # 2026-08-08 isolation incident gave RM v3 zero read access to it.
-      # Corrected to 'room_control_manager', the label RM v3 itself actually
-      # reads now. Empty string (no room_control_manager select for this
+      # (play_media, activity_apply) check this. Reads label
+      # 'room_control_manager' -- the select RM v3 itself owns -- not the
+      # legacy Node-RED-owned 'room_control' select, which RM v3 has no
+      # read access to. Empty string (no room_control_manager select for this
       # room, or room not RM-v3-deployed) is a safe no-op — never blocks.
       - variables:
           _room_control_ent: >-
@@ -620,15 +708,70 @@ script:
               {{ {'status': 'no_nyx_labeled_entities', 'message': 'NyxMau5 label definitions may exist, but no media_player entities currently use core zen_mm_* labels. Run mode=setup to create label definitions, then tag your devices.', 'next_steps': ['mode=setup', 'mode=help']} }}
             {%- else -%}null{%- endif -%}
 
+      # ─────────────────────────────────────────────────────────────────────
+      # Cert-gate — platform-capability-named, two tiers: media_prefs_edit
+      # (room/user config writes) vs zenos.media.playback_control (actual AV
+      # actuation, formerly the flat media_playback_control). register/unregister
+      # (Lens Bus provider bootstrap) deliberately left ungated -- no
+      # platform precedent for gating Lens registration elsewhere either.
+      # ─────────────────────────────────────────────────────────────────────
+      - variables:
+          _mm_required_cert: >-
+            {%- if _mode in ['prefs_set', 'prefs_apply', 'room_default_set', 'setup'] -%}
+              media_prefs_edit
+            {%- elif _mode in ['play_media', 'queue_command', 'queue_remove', 'queue_play_item',
+                                'queue_clear_from_here', 'queue_unfavorite', 'source_set',
+                                'sound_mode_set', 'activity_set', 'activity_apply', 'activity_end'] -%}
+              zenos.media.playback_control
+            {%- else -%}
+            {%- endif -%}
+          _mm_required_level: 1
+      - if: "{{ _mm_required_cert | trim != '' }}"
+        then:
+          - action: script.zen_dojotools_identity
+            data:
+              mode: resolve_caller_identity
+              required_cert: "{{ _mm_required_cert | trim }}"
+              required_cert_level: "{{ _mm_required_level }}"
+              target_entity: "{{ _resolved_entity }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _mm_id_raw
+          - variables:
+              _mm_id_fields: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _raw = OS.resolve_identity_fields(_mm_id_raw) -%}
+                {{- (_raw | from_json) if _raw is string else _raw -}}
+              _mm_cert_policy: "{{ _mm_id_fields.policy_status }}"
+              _mm_cert_authorized: "{{ _mm_id_fields.authorized }}"
+              _mm_cert_level: "{{ _mm_id_fields.cert_level }}"
+              _mm_cert_block_reason: "{{ _mm_id_fields.block_reason }}"
+        else:
+          - variables:
+              _mm_cert_policy: allowed
+              _mm_cert_authorized: true
+              _mm_cert_level: 0
+              _mm_cert_block_reason: ''
+      - variables:
+          _mm_cert_denied: "{{ (_mm_required_cert | trim != '') and (_mm_cert_policy != 'allowed' or not _mm_cert_authorized) }}"
+      - if: "{{ _mm_cert_denied }}"
+        then:
+          - variables:
+              _mm_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_mm_cert_policy, _mm_cert_authorized, _mm_cert_level, _mm_required_cert | trim, _mm_required_level, _mode, _mm_cert_block_reason) -}}
+          - variables:
+              _result: >-
+                {{ ((_mm_cd_raw | from_json) if _mm_cd_raw is string else _mm_cd_raw) | combine({'mode': _mode, 'caller_token': _caller_token}) }}
+
       # ── 1. Help ───────────────────────────────────────────────────────────
-      - if: "{{ _mode == 'help' }}"
+      - if: "{{ _result is not defined and _mode == 'help' }}"
         then:
           - variables:
               _result:
                 status: ok
                 tool: zen_dojotools_media_manager
                 codename: NyxMau5
-                version: "5.5.0"
+                version: "6.1.4"
                 what_friday_can_do: >-
                   Say 'put on Disney in the LR for the kids' and this tool handles
                   it — discover the room layout once, teach a pref, apply it forever.
@@ -716,12 +859,12 @@ script:
                   state_get: "Full device snapshot — source, sound_mode, volume, mute, media title."
                   prefs_get: "Read all stored prefs for a room — see every context and what it maps to."
                   prefs_set: "Teach a preference: room + home_context + source (+ optional volume + target_role). Stores role as the resolver — entity_id is fallback/debug only."
-                  prefs_apply: "Apply stored pref for room. Reads input_select.zen_home_mode automatically if no context given. Re-resolves device from stored role label live — entity IDs can change."
+                  prefs_apply: "Apply stored pref for room. Reads the zen_home_mode-labeled entity automatically if no context given. Re-resolves device from stored role label live — entity IDs can change."
                   room_default_get: "Read the stored default role for a room + what it resolves to + what the auto chain would pick. Good for auditing."
                   room_default_set: "Store a target_role as this room's default resolver. Future calls without target_role hit this role first. Pass target_role=auto to clear back to auto chain."
                   now_playing: "Full playback snapshot for a room or entity. Returns playback{state, title, artist, album, uri, provider, volume, shuffle, repeat, artwork_url, group_members}, search_metadata (MA track match with artists + album_uri), and lyrics_hint. Pass room= or entity_id=. Wired into Room Manager +media context slice."
                   stacks_by_anchor: "Lens Bus lookup — anchors → MA search → ranked evidence with playback_hint per item. area_id anchors inject room_context (what's playing, provider, volume) without polluting the search query — semantic anchors (mood, activity, concept) drive the search. room_context provider match boosts evidence confidence. Pass anchors_json + optional profile_target."
-                  search: "Raw MA search pass-through. No Lens envelope. Fields: query, artist, album, media_type, limit, library_only. Returns results{tracks,albums,artists,playlists,radio,audiobooks,podcasts}, discovered_sources, source_prefs_applied."
+                  search: "Raw MA search pass-through. No Lens envelope. Fields: query, artist, album, media_type, limit, library_only. Returns results{tracks,albums,artists,playlists,radio,audiobooks,podcasts}, discovered_sources, source_prefs_applied. SCOPED SEARCH (HA >= 2026.10.0 only): pass within_media_content_id + within_media_content_type (both required together) to search inside a prior result instead — e.g. an artist's media_content_id to list its albums/tracks. Uses HA's native media_player.search_media, not MA's search; different response shape: results[] of {title, media_content_id, media_content_type, media_class, uri, can_play, can_search, artist, artists, album_uri, source}. media_class (artist/album/track/playlist/podcast/directory/music) is the real type discriminator, not media_content_type (a generic backend tag). Below HA 2026.10.0 returns status=error code=capability_unavailable instead of attempting the call; on an install where the version can't be read at all (Container/Core, no Supervisor), attempts the call anyway rather than assuming unsupported."
                   play_media: "Play a URI or media_id on a room's MA player. enqueue=replace|next|add|play. Refuses (status=error) if the room's room_control_manager select reads 'Paused' — a human has told Room Manager v3 to leave this room alone; use queue_command against an already-playing entity if you need transport control on paused-room media that's already going."
                   queue_command: "Player control — command=play|pause|stop|next|previous|seek|shuffle|repeat|crossfade|clear_queue."
                   queue_get: "Read current queue window. limit + page for pagination. Returns items with queue_item_id."
@@ -862,16 +1005,21 @@ script:
           - variables:
               _dom_inner: "{{ _result | combine({'domain': 'media', 'peers': {'music': 'zen_sutra_music_assistant'}, 'see_also': 'zen_dojotools_manifest mode=domains name=media'}) }}"
           - variables:
-              _result: "{{ {'status': 'help', 'help': _dom_inner} }}"
-          - stop: help
-            response_variable: _result
+              _mm_help_message: >-
+                {%- set ns = namespace(out='Media/AV resolution + Lens Bus music search, via role labels not entity_ids. ') -%}
+                {%- for k, v in _dom_inner.get('modes', {}).items() if v is string -%}
+                  {%- set ns.out = ns.out ~ 'mode=' ~ k ~ ' -- ' ~ v ~ ' ' -%}
+                {%- endfor -%}
+                {{ ns.out | trim }}
+          - variables:
+              _result: "{{ {'status': 'help', 'message': _mm_help_message, 'help': _dom_inner} }}"
 
       # ── 2. discover ───────────────────────────────────────────────────────
       # Room: trolls all canonical AV role labels, returns filled slots,
       # default resolver, unlabeled entities. source_list values are exact
       # strings to pass to source_set.
       # No room: whole-home overview — every HA area with media players.
-      - if: "{{ _mode == 'discover' }}"
+      - if: "{{ _result is not defined and _mode == 'discover' }}"
         then:
           # setup_advisory: check if any zen_mm_* role labels have been applied.
           # Zero entities across sentinels = label set not initialized.
@@ -934,8 +1082,6 @@ script:
                     rooms: "{{ _home_map }}"
                     setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
                     caller_token: "{{ _caller_token }}"
-              - stop: whole-home discover complete
-                response_variable: _result
           - variables:
               _role_map: >-
                 {%- set role_labels = [
@@ -1011,11 +1157,9 @@ script:
                   {%- endif -%}
                 setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: discover complete
-            response_variable: _result
 
       # ── 3. state_get ──────────────────────────────────────────────────────
-      - if: "{{ _mode == 'state_get' }}"
+      - if: "{{ _result is not defined and _mode == 'state_get' }}"
         then:
           - if: "{{ _resolved_entity == '' }}"
             then:
@@ -1024,8 +1168,8 @@ script:
                     status: error
                     message: "entity_id or room (with role-labeled entity) required for state_get"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
 
           # Pre-fetch attrs used by both capabilities and situation
           - variables:
@@ -1212,18 +1356,14 @@ script:
                 sound_context: "{{ _mm_sound_context }}"
                 adjacent_media: "{{ _mm_adjacent_media }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: state_get complete
-            response_variable: _result
 
       # ── 4. now_playing ────────────────────────────────────────────────────
       # Full-fidelity playback snapshot: player state + MA search metadata + lyrics.
       # Requires room= or entity_id= with intent=listen to resolve MA player.
-      - if: "{{ _mode == 'now_playing' }}"
+      - if: "{{ _result is not defined and _mode == 'now_playing' }}"
         then:
           - if: "{{ _resolved_entity == '' }}"
             then:
-            - stop: now_playing requires room or entity_id
-              response_variable: _result
           - variables:
               _np_state:    "{{ states(_resolved_entity) }}"
               _np_title:    "{{ state_attr(_resolved_entity, 'media_title') | default(none, true) }}"
@@ -1303,11 +1443,9 @@ script:
                 search_metadata: "{{ _np_search_results | default(none, true) }}"
                 lyrics_hint: "{{ 'call mode=lyrics query=' ~ _np_title ~ ' artist=' ~ _np_artist if _np_can_search | bool(false) else none }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: now_playing complete
-            response_variable: _result
 
       # ── 4. source_get ─────────────────────────────────────────────────────
-      - if: "{{ _mode == 'source_get' }}"
+      - if: "{{ _result is not defined and _mode == 'source_get' }}"
         then:
           - if: "{{ _resolved_entity == '' }}"
             then:
@@ -1316,8 +1454,8 @@ script:
                     status: error
                     message: "entity_id or room (with role-labeled entity) required for source_get"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _result:
                 status: ok
@@ -1327,11 +1465,9 @@ script:
                 current_source: "{{ state_attr(_resolved_entity, 'source') | default(none, true) }}"
                 source_list: "{{ state_attr(_resolved_entity, 'source_list') | default([], true) }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: source_get complete
-            response_variable: _result
 
       # ── 5. source_set ─────────────────────────────────────────────────────
-      - if: "{{ _mode == 'source_set' }}"
+      - if: "{{ _result is not defined and _mode == 'source_set' }}"
         then:
           - if: "{{ _resolved_entity == '' or _source == '' }}"
             then:
@@ -1340,8 +1476,26 @@ script:
                     status: error
                     message: "entity_id (or room + role label) and source required for source_set"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing fields
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
+          # ── Display Surface peer-awareness consult -- read-only, never
+          # blocking. zen_dojotools_display owns display sessions; this
+          # tool doesn't gain any authority over them by asking. Decision
+          # policy (warn vs proceed) stays here, not enforced by Display
+          # Surface -- default is proceed anyway, just surface it in the
+          # response so a caller isn't surprised a screen mid-info-board
+          # got a source switch. Fails soft: any error/unexposed-tool case
+          # just means no warning, never blocks source_set. ──
+          - action: script.zen_dojotools_display
+            continue_on_error: true
+            response_variable: _ss_display_status_raw
+            data:
+              mode: status
+              entity_id: "{{ _resolved_entity }}"
+          - variables:
+              _ss_display_active: >-
+                {%- set r = _ss_display_status_raw.get('result', {}) if _ss_display_status_raw is mapping else {} -%}
+                {{ r.get('active', false) if r is mapping else false }}
           - action: media_player.select_source
             target:
               entity_id: "{{ _resolved_entity }}"
@@ -1357,12 +1511,11 @@ script:
                 source_requested: "{{ _source }}"
                 active_source: "{{ state_attr(_resolved_entity, 'source') | default(none, true) }}"
                 confirmed: "{{ state_attr(_resolved_entity, 'source') == _source }}"
+                display_surface_interrupted: "{{ _ss_display_active }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: source_set complete
-            response_variable: _result
 
       # ── 6. sound_mode_get ─────────────────────────────────────────────────
-      - if: "{{ _mode == 'sound_mode_get' }}"
+      - if: "{{ _result is not defined and _mode == 'sound_mode_get' }}"
         then:
           - if: "{{ _resolved_entity == '' }}"
             then:
@@ -1371,8 +1524,8 @@ script:
                     status: error
                     message: "entity_id or room (with role-labeled entity) required for sound_mode_get"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _result:
                 status: ok
@@ -1382,11 +1535,9 @@ script:
                 sound_mode: "{{ state_attr(_resolved_entity, 'sound_mode') | default(none, true) }}"
                 sound_mode_list: "{{ state_attr(_resolved_entity, 'sound_mode_list') | default([], true) }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: sound_mode_get complete
-            response_variable: _result
 
       # ── 7. sound_mode_set ─────────────────────────────────────────────────
-      - if: "{{ _mode == 'sound_mode_set' }}"
+      - if: "{{ _result is not defined and _mode == 'sound_mode_set' }}"
         then:
           - if: "{{ _resolved_entity == '' or _sound_mode == '' }}"
             then:
@@ -1395,8 +1546,8 @@ script:
                     status: error
                     message: "entity_id (or room + role label) and sound_mode required for sound_mode_set"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing fields
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - action: media_player.select_sound_mode
             target:
               entity_id: "{{ _resolved_entity }}"
@@ -1413,11 +1564,9 @@ script:
                 active_sound_mode: "{{ state_attr(_resolved_entity, 'sound_mode') | default(none, true) }}"
                 confirmed: "{{ state_attr(_resolved_entity, 'sound_mode') == _sound_mode }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: sound_mode_set complete
-            response_variable: _result
 
       # ── 8. prefs_get ──────────────────────────────────────────────────────
-      - if: "{{ _mode == 'prefs_get' }}"
+      - if: "{{ _result is not defined and _mode == 'prefs_get' }}"
         then:
           - if: "{{ _room_slug == '' }}"
             then:
@@ -1426,8 +1575,8 @@ script:
                     status: error
                     message: "room required for prefs_get"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing room
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -1435,8 +1584,8 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _pref_key: "media_prefs_{{ _room_slug }}"
           - action: script.zen_dojotools_filecabinet
@@ -1466,11 +1615,9 @@ script:
                 found: "{{ _pref_value != {} }}"
                 contexts: "{{ (_pref_value.get('contexts', {}).keys() | list) if _pref_value is mapping else [] }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: prefs_get complete
-            response_variable: _result
 
       # ── 9. prefs_set ──────────────────────────────────────────────────────
-      - if: "{{ _mode == 'prefs_set' }}"
+      - if: "{{ _result is not defined and _mode == 'prefs_set' }}"
         then:
           - if: "{{ _room_slug == '' or _context_raw == '' or _source == '' }}"
             then:
@@ -1479,8 +1626,8 @@ script:
                     status: error
                     message: "room, home_context, and source all required for prefs_set"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing fields
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -1488,8 +1635,8 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _pref_key: "media_prefs_{{ _room_slug }}"
           - action: script.zen_dojotools_filecabinet
@@ -1552,11 +1699,9 @@ script:
                 full_prefs: "{{ _new_prefs }}"
                 cabinet_status: "{{ _fc_write.get('status', 'unknown') if _fc_write.get('status', 'unknown') != 'warning' else 'written' }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: prefs_set complete
-            response_variable: _result
 
       # ── 10. prefs_apply ───────────────────────────────────────────────────
-      - if: "{{ _mode == 'prefs_apply' }}"
+      - if: "{{ _result is not defined and _mode == 'prefs_apply' }}"
         then:
           - if: "{{ _room_slug == '' }}"
             then:
@@ -1565,8 +1710,8 @@ script:
                     status: error
                     message: "room required for prefs_apply"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing room
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -1574,11 +1719,11 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _pref_key:  "media_prefs_{{ _room_slug }}"
-              _home_mode: "{{ states('input_select.zen_home_mode') | default('', true) | lower | trim }}"
+              _home_mode: "{{ states(label_entities('zen_home_mode') | select('match', '(sensor|input_select)\\.') | list | first | default('', true)) | default('', true) | lower | trim }}"
               _ctx:       "{{ _context_raw if _context_raw != '' else _home_mode }}"
           - action: script.zen_dojotools_filecabinet
             data:
@@ -1638,8 +1783,8 @@ script:
                       Use prefs_set to create one.
                     available_contexts: "{{ _contexts.keys() | list if _contexts is mapping else [] }}"
                     caller_token: "{{ _caller_token }}"
-              - stop: no pref found
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _apply_entry:  "{{ _contexts.get(_matched_ctx, {}) }}"
               _apply_source: "{{ _apply_entry.get('source', '') if _apply_entry is mapping else '' }}"
@@ -1657,8 +1802,6 @@ script:
                     would_set_source: "{{ _apply_source }}"
                     would_set_volume: "{{ _apply_volume if _apply_volume >= 0 else 'no change' }}"
                     caller_token: "{{ _caller_token }}"
-              - stop: dry_run complete
-                response_variable: _result
           - if: "{{ _target_entity == '' }}"
             then:
               - variables:
@@ -1669,8 +1812,8 @@ script:
                       with the {{ _room_slug }} room label + a role label, or pass
                       entity_id directly.
                     caller_token: "{{ _caller_token }}"
-              - stop: missing entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _apply_source != '' }}"
             then:
               - action: media_player.select_source
@@ -1700,11 +1843,9 @@ script:
                 active_source: "{{ state_attr(_target_entity, 'source') | default(none, true) }}"
                 confirmed: "{{ state_attr(_target_entity, 'source') == _apply_source if _apply_source != '' else none }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: prefs_apply complete
-            response_variable: _result
 
       # ── 11. room_default_get ──────────────────────────────────────────────
-      - if: "{{ _mode == 'room_default_get' }}"
+      - if: "{{ _result is not defined and _mode == 'room_default_get' }}"
         then:
           - if: "{{ _room_slug == '' }}"
             then:
@@ -1713,8 +1854,8 @@ script:
                     status: error
                     message: "room required for room_default_get"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing room
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -1722,8 +1863,8 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: read
@@ -1768,11 +1909,9 @@ script:
                     with target_role= to pin a preferred role for this room.
                   {%- endif -%}
                 caller_token: "{{ _caller_token }}"
-          - stop: room_default_get complete
-            response_variable: _result
 
       # ── 12. room_default_set ──────────────────────────────────────────────
-      - if: "{{ _mode == 'room_default_set' }}"
+      - if: "{{ _result is not defined and _mode == 'room_default_set' }}"
         then:
           - if: "{{ _room_slug == '' or _target_role == '' }}"
             then:
@@ -1781,8 +1920,8 @@ script:
                     status: error
                     message: "room and target_role required for room_default_set. Pass target_role=auto to clear."
                     caller_token: "{{ _caller_token }}"
-              - stop: missing fields
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -1790,8 +1929,8 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           # auto writes a sentinel {target_role: auto} rather than deleting the drawer.
           # The read path (line 215) maps 'auto' → '' immediately — runtime behavior
           # is identical to no drawer. Sentinel preserved intentionally for audit trail.
@@ -1832,13 +1971,11 @@ script:
                     Tag one with zen_dojotools_labels and this will auto-apply.
                   {%- endif -%}
                 caller_token: "{{ _caller_token }}"
-          - stop: room_default_set complete
-            response_variable: _result
 
       # ── 13. setup ─────────────────────────────────────────────────────────
       # Creates all NyxMau5-owned label definitions in HA if they don't exist.
       # Does NOT apply labels to entities — definitions only.
-      - if: "{{ _mode == 'setup' }}"
+      - if: "{{ _result is not defined and _mode == 'setup' }}"
         then:
           - variables:
               _label_defs: >-
@@ -1895,13 +2032,11 @@ script:
                 total: "{{ _label_defs | length }}"
                 next_step: "Run mode=discover to map your rooms, then mode=label_suggest room=X to get proposed assignments."
                 caller_token: "{{ _caller_token }}"
-          - stop: setup complete
-            response_variable: _result
 
       # ── 14. label_suggest ─────────────────────────────────────────────────
       # Analyzes room entities by name + integration and proposes zen_mm_* labels.
       # Does NOT apply labels — returns suggestions for review.
-      - if: "{{ _mode == 'label_suggest' }}"
+      - if: "{{ _result is not defined and _mode == 'label_suggest' }}"
         then:
           - if: "{{ _room_slug == '' }}"
             then:
@@ -1910,8 +2045,8 @@ script:
                     status: error
                     message: "room required for label_suggest"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing room
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _suggestions: >-
                 {%- set ns = namespace(s=[]) -%}
@@ -1969,13 +2104,11 @@ script:
                 review_needed: "{{ _suggestions | selectattr('confidence', 'eq', 'low') | list | length }}"
                 hint: "Review suggestions, then apply via zen_dojotools_labels. Run mode=discover after labeling to verify."
                 caller_token: "{{ _caller_token }}"
-          - stop: label_suggest complete
-            response_variable: _result
 
       # ── 15. resolve_debug ─────────────────────────────────────────────────
       # Traces the full selection chain for a room + optional intent/role.
       # Read-only diagnostic — no hardware actions.
-      - if: "{{ _mode == 'resolve_debug' }}"
+      - if: "{{ _result is not defined and _mode == 'resolve_debug' }}"
         then:
           - if: "{{ _room_slug == '' }}"
             then:
@@ -1984,8 +2117,8 @@ script:
                     status: error
                     message: "room required for resolve_debug"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing room
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _dbg_intent_candidates: >-
                 {%- if _intent != '' -%}
@@ -2091,11 +2224,9 @@ script:
                   {%- else -%}{{ [] }}{%- endif -%}
                 setup_advisory: "{{ _setup_advisory if _setup_advisory != 'null' else none }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: resolve_debug complete
-            response_variable: _result
 
       # ── Lens: stacks_by_anchor ────────────────────────────────────────────────
-      - if: "{{ _mode == 'stacks_by_anchor' }}"
+      - if: "{{ _result is not defined and _mode == 'stacks_by_anchor' }}"
         then:
           - variables:
               _sba_raw: >-
@@ -2196,8 +2327,8 @@ script:
                         count: 0
                     trace:
                       caller_token: "{{ _caller_token }}"
-              - stop: stacks_by_anchor empty
-                response_variable: _sba_result
+              - variables:
+                  _result: "{{ _sba_result }}"
           - variables:
               _sba_anchor_0: >-
                 {%- set _non_area = (_sba_anchors if _sba_anchors is sequence else []) | rejectattr('type', 'eq', 'area_id') | list -%}
@@ -2238,8 +2369,8 @@ script:
                         note: zen_sutra_music_assistant unavailable
                     trace:
                       caller_token: "{{ _caller_token }}"
-              - stop: stacks_by_anchor degraded
-                response_variable: _sba_result
+              - variables:
+                  _result: "{{ _sba_result }}"
           - action: script.zen_sutra_music_assistant
             data:
               mode: search
@@ -2455,11 +2586,11 @@ script:
                 trace:
                   query: "{{ _sba_derived_query }}"
                   caller_token: "{{ _caller_token }}"
-          - stop: stacks_by_anchor complete
-            response_variable: _sba_result
+          - variables:
+              _result: "{{ _sba_result }}"
 
       # ── Lens: register ────────────────────────────────────────────────────────
-      - if: "{{ _mode == 'register' }}"
+      - if: "{{ _result is not defined and _mode == 'register' }}"
         then:
           - action: script.zen_dojotools_filecabinet
             response_variable: _reg_fc_raw
@@ -2525,11 +2656,11 @@ script:
                     }
                   }
                 }}
-          - stop: media register done
-            response_variable: _reg_result
+          - variables:
+              _result: "{{ _reg_result }}"
 
       # ── Lens: unregister ──────────────────────────────────────────────────────
-      - if: "{{ _mode == 'unregister' }}"
+      - if: "{{ _result is not defined and _mode == 'unregister' }}"
         then:
           - action: script.zen_dojotools_filecabinet
             response_variable: _unreg_fc_raw
@@ -2571,11 +2702,11 @@ script:
                 trace:
                   fc_status: "{{ _unreg_write_raw.get('status', 'unknown') if _unreg_write_raw is mapping else 'no_response' }}"
                   caller_token: "{{ _caller_token }}"
-          - stop: media unregister done
-            response_variable: _unreg_result
+          - variables:
+              _result: "{{ _unreg_result }}"
 
       # ── Lens: health ──────────────────────────────────────────────────────────
-      - if: "{{ _mode == 'health' }}"
+      - if: "{{ _result is not defined and _mode == 'health' }}"
         then:
           - variables:
               _health_ms_ok: >-
@@ -2592,11 +2723,11 @@ script:
                     script: zen_sutra_music_assistant
                 trace:
                   caller_token: "{{ _caller_token }}"
-          - stop: media health done
-            response_variable: _health_result
+          - variables:
+              _result: "{{ _health_result }}"
 
       # ── Lens: audit ───────────────────────────────────────────────────────────
-      - if: "{{ _mode == 'audit' }}"
+      - if: "{{ _result is not defined and _mode == 'audit' }}"
         then:
           - variables:
               _audit_result:
@@ -2621,14 +2752,147 @@ script:
                   risk_class: read_metadata
                 trace:
                   caller_token: "{{ _caller_token }}"
-          - stop: media audit done
-            response_variable: _audit_result
+          - variables:
+              _result: "{{ _audit_result }}"
 
       # ── 16. search ────────────────────────────────────────────────────────
       # Lightweight raw search — no Lens envelope, no pref ranking. Returns
       # the MA grouped response directly. Use stacks_by_anchor when you want
       # ranked evidence + playback hints. Use search when you just want to browse.
-      - if: "{{ _mode == 'search' }}"
+      - if: "{{ _result is not defined and _mode == 'search' and _within_id != '' }}"
+        then:
+          # ── Scoped search — HA's native media_player.search_media, not the
+          # broad music_assistant.search. Navigable media graph (artist ->
+          # album -> track), gated on HA >= 2026.10.0 above. No media_type
+          # filter here -- HA intentionally dropped the media-class
+          # constraint from this path since player implementations support
+          # different classes.
+          - if: "{{ _within_type == '' }}"
+            then:
+              - variables:
+                  _result:
+                    status: error
+                    tool: zen_dojotools_media_manager
+                    action: search
+                    message: "within_media_content_id and within_media_content_type are required together. Pass both, or omit within_media_content_id for the normal broad search."
+                    caller_token: "{{ _caller_token }}"
+          - if: "{{ _result is not defined }}"
+            then:
+              - if: "{{ not _ha_supports_scoped_search }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        tool: zen_dojotools_media_manager
+                        action: search
+                        code: capability_unavailable
+                        message: >-
+                          Scoped search (within_media_content_id) needs HA core
+                          2026.10.0 or newer -- this install is on
+                          {{ _ha_core_version }}. Omit within_media_content_id
+                          for the normal broad search.
+                        ha_core_version: "{{ _ha_core_version }}"
+                        caller_token: "{{ _caller_token }}"
+                else:
+                  - variables:
+                      _ma_entity: >-
+                        {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
+                        {{ ma_ents | first | default(_resolved_entity, true) }}
+                  - if: "{{ _ma_entity == '' }}"
+                    then:
+                      - variables:
+                          _result:
+                            status: error
+                            tool: zen_dojotools_media_manager
+                            action: search
+                            message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player."
+                            caller_token: "{{ _caller_token }}"
+                    else:
+                      # The service scopes with media_content_id/media_content_type.
+                      # within_media_content_* are the Assist tool's aliases and
+                      # are not valid service fields.
+                      - action: media_player.search_media
+                        target:
+                          entity_id: "{{ _ma_entity }}"
+                        data:
+                          search_query: "{{ query | default('', true) | string | trim }}"
+                          media_content_id: "{{ _within_id }}"
+                          media_content_type: "{{ _within_type }}"
+                        response_variable: _scoped_raw
+                        continue_on_error: true
+                      - variables:
+                          # continue_on_error leaves _scoped_raw undefined on a
+                          # failed call; report it as an error, not empty success.
+                          _scoped_call_failed: "{{ _scoped_raw is not defined or _scoped_raw is not mapping }}"
+                      - if: "{{ _scoped_call_failed }}"
+                        then:
+                          - variables:
+                              _result:
+                                status: error
+                                tool: zen_dojotools_media_manager
+                                action: search
+                                message: "media_player.search_media call failed for {{ _ma_entity }}. Check ha_log_viewer for the real service error."
+                                entity_id: "{{ _ma_entity }}"
+                                caller_token: "{{ _caller_token }}"
+                        else:
+                          - variables:
+                              # The response is keyed by entity_id, like
+                              # calendar.get_events. Each value is a SearchMedia
+                              # object (result=[BrowseMedia, ...]), not a dict.
+                              _scoped_items: >-
+                                {%- set r0 = _scoped_raw if _scoped_raw is mapping else {} -%}
+                                {#- Per-entity value is a raw SearchMedia dataclass, not a
+                                   dict -- tojson rejects it outright (not registered with
+                                   HA's lenient JSON encoder for this type). Jinja falls
+                                   back to attribute access when subscript/.get() fails, so
+                                   pull .result off it directly; each BrowseMedia item gets
+                                   flattened via its own .as_dict(). -#}
+                                {%- set sm = r0.get(_ma_entity) -%}
+                                {%- set raw_items = (sm.result if sm is not none and sm.result is defined else []) -%}
+                                {%- set ns = namespace(out=[]) -%}
+                                {%- for bm in raw_items -%}
+                                  {%- set ns.out = ns.out + [bm.as_dict()] -%}
+                                {%- endfor -%}
+                                {{ ns.out if ns.out is sequence and ns.out is not string else [] }}
+                          - variables:
+                              # media_class (artist/album/track/playlist/podcast/
+                              # directory/music) is the type discriminator;
+                              # media_content_type is a generic backend tag.
+                              # uri/artist/artists/album_uri/source are optional
+                              # and only present if a backend supplies them.
+                              # can_search falls back to BrowseMedia.can_expand.
+                              _scoped_normalized: >-
+                                {%- set ns = namespace(out=[]) -%}
+                                {%- for item in _scoped_items -%}
+                                  {%- set _artists = item.get('artists') or ([item.get('artist')] if item.get('artist') else []) -%}
+                                  {%- set ns.out = ns.out + [{
+                                    'title': item.get('title', item.get('name', '')) | string,
+                                    'media_content_id': item.get('media_content_id', '') | string,
+                                    'media_content_type': item.get('media_content_type', '') | string,
+                                    'media_class': item.get('media_class', '') | string,
+                                    'uri': item.get('uri', none),
+                                    'can_play': item.get('can_play', false) | bool,
+                                    'can_search': item.get('can_search', item.get('can_expand', false)) | bool,
+                                    'artist': item.get('artist', none),
+                                    'artists': _artists,
+                                    'album_uri': item.get('album_uri', none),
+                                    'source': item.get('source', _ma_entity)
+                                  }] -%}
+                                {%- endfor -%}
+                                {{ ns.out }}
+                          - variables:
+                              _result:
+                                status: success
+                                tool: zen_dojotools_media_manager
+                                action: search
+                                search_path: scoped
+                                entity_id: "{{ _ma_entity }}"
+                                within_media_content_id: "{{ _within_id }}"
+                                within_media_content_type: "{{ _within_type }}"
+                                results: "{{ _scoped_normalized }}"
+                                caller_token: "{{ _caller_token }}"
+
+      - if: "{{ _result is not defined and _mode == 'search' }}"
         then:
           - action: script.zen_sutra_music_assistant
             data:
@@ -2740,8 +3004,8 @@ script:
                 excluded_sources: "{{ _src_pref_excluded if _src_pref_excluded | length > 0 else none }}"
                 results: "{{ _applied_results }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: search complete
-            response_variable: _search_result
+          - variables:
+              _result: "{{ _search_result }}"
 
       # ═══════════════════════════════════════════════════════════════════════
       # MA CONTROL MODES — proxy to zen_sutra_music_assistant
@@ -2749,42 +3013,48 @@ script:
       # ═══════════════════════════════════════════════════════════════════════
 
       # ── play_media ────────────────────────────────────────────────────────
-      - if: "{{ _mode == 'play_media' }}"
+      # The paused-room and missing-entity checks set _result; every later
+      # step is gated on _result is not defined, so an error ends the mode.
+      - if: "{{ _result is not defined and _mode == 'play_media' }}"
         then:
           - if: "{{ _room_paused }}"
             then:
               - variables:
                   _err: {status: error, message: "Room '{{ _room_slug }}' is Paused (room_control_manager) — a human hit the brakes on this room. Not starting new playback. Un-pause the room first if this is intentional.", room_control_entity: "{{ _room_control_ent }}", caller_token: "{{ _caller_token }}"}
-              - stop: room paused
-                response_variable: _err
-          - variables:
-              _ma_entity: >-
-                {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
-                {{ ma_ents | first | default(_resolved_entity, true) }}
-          - if: "{{ _ma_entity == '' }}"
+              - variables:
+                  _result: "{{ _err }}"
+          - if: "{{ _result is not defined }}"
             then:
               - variables:
-                  _err: {status: error, message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player.", caller_token: "{{ _caller_token }}"}
-              - stop: no entity
-                response_variable: _err
-          - action: script.zen_sutra_music_assistant
-            data:
-              mode: play_media
-              entity_id: "{{ _ma_entity }}"
-              media_id: "{{ media_id | default('', true) | trim or query | default('', true) | trim }}"
-              media_type: "{{ media_types | default(none, true) }}"
-              enqueue: "{{ enqueue | default('replace', true) }}"
-            response_variable: _pm_result
-            continue_on_error: true
-          - variables:
-              _pm_result: >-
-                {%- set r = _pm_result if _pm_result is mapping else {} -%}
-                {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: play_media complete
-            response_variable: _pm_result
+                  _ma_entity: >-
+                    {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
+                    {{ ma_ents | first | default(_resolved_entity, true) }}
+              - if: "{{ _ma_entity == '' }}"
+                then:
+                  - variables:
+                      _err: {status: error, message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player.", caller_token: "{{ _caller_token }}"}
+                  - variables:
+                      _result: "{{ _err }}"
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_sutra_music_assistant
+                data:
+                  mode: play_media
+                  entity_id: "{{ _ma_entity }}"
+                  media_id: "{{ media_id | default('', true) | trim or query | default('', true) | trim }}"
+                  media_type: "{{ media_types | default(none, true) }}"
+                  enqueue: "{{ enqueue | default('replace', true) }}"
+                response_variable: _pm_result
+                continue_on_error: true
+              - variables:
+                  _pm_result: >-
+                    {%- set r = _pm_result if _pm_result is mapping else {} -%}
+                    {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
+              - variables:
+                  _result: "{{ _pm_result }}"
 
       # ── queue_command ─────────────────────────────────────────────────────
-      - if: "{{ _mode == 'queue_command' }}"
+      - if: "{{ _result is not defined and _mode == 'queue_command' }}"
         then:
           - variables:
               _ma_entity: >-
@@ -2794,8 +3064,8 @@ script:
             then:
               - variables:
                   _err: {status: error, message: "No MA entity resolved for queue_command.", caller_token: "{{ _caller_token }}"}
-              - stop: no entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - action: script.zen_sutra_music_assistant
             data:
               mode: queue_command
@@ -2808,11 +3078,11 @@ script:
               _qc_result: >-
                 {%- set r = _qc_result if _qc_result is mapping else {} -%}
                 {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: queue_command complete
-            response_variable: _qc_result
+          - variables:
+              _result: "{{ _qc_result }}"
 
       # ── queue_get ─────────────────────────────────────────────────────────
-      - if: "{{ _mode == 'queue_get' }}"
+      - if: "{{ _result is not defined and _mode == 'queue_get' }}"
         then:
           - variables:
               _ma_entity: >-
@@ -2822,8 +3092,8 @@ script:
             then:
               - variables:
                   _err: {status: error, message: "No MA entity resolved for queue_get.", caller_token: "{{ _caller_token }}"}
-              - stop: no entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - action: script.zen_sutra_music_assistant
             data:
               mode: queue_get
@@ -2836,11 +3106,11 @@ script:
               _qg_result: >-
                 {%- set r = _qg_result if _qg_result is mapping else {} -%}
                 {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: queue_get complete
-            response_variable: _qg_result
+          - variables:
+              _result: "{{ _qg_result }}"
 
       # ── queue_remove ──────────────────────────────────────────────────────
-      - if: "{{ _mode == 'queue_remove' }}"
+      - if: "{{ _result is not defined and _mode == 'queue_remove' }}"
         then:
           - variables:
               _ma_entity: >-
@@ -2856,11 +3126,9 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: queue_remove complete
-            response_variable: _result
 
       # ── queue_play_item ───────────────────────────────────────────────────
-      - if: "{{ _mode == 'queue_play_item' }}"
+      - if: "{{ _result is not defined and _mode == 'queue_play_item' }}"
         then:
           - variables:
               _ma_entity: >-
@@ -2876,8 +3144,6 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: queue_play_item complete
-            response_variable: _result
 
       # ── queue_move_up / queue_move_down / queue_move_next ─────────────────
       - if: "{{ _mode in ['queue_move_up', 'queue_move_down', 'queue_move_next'] }}"
@@ -2896,11 +3162,9 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: "{{ _mode }} complete"
-            response_variable: _result
 
       # ── queue_clear_from_here ─────────────────────────────────────────────
-      - if: "{{ _mode == 'queue_clear_from_here' }}"
+      - if: "{{ _result is not defined and _mode == 'queue_clear_from_here' }}"
         then:
           - variables:
               _ma_entity: >-
@@ -2915,11 +3179,9 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: queue_clear_from_here complete
-            response_variable: _result
 
       # ── queue_unfavorite ──────────────────────────────────────────────────
-      - if: "{{ _mode == 'queue_unfavorite' }}"
+      - if: "{{ _result is not defined and _mode == 'queue_unfavorite' }}"
         then:
           - variables:
               _ma_entity: >-
@@ -2934,11 +3196,9 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: queue_unfavorite complete
-            response_variable: _result
 
       # ── collection_recommendations ────────────────────────────────────────
-      - if: "{{ _mode == 'collection_recommendations' }}"
+      - if: "{{ _result is not defined and _mode == 'collection_recommendations' }}"
         then:
           - variables:
               _ma_entity: >-
@@ -2954,8 +3214,6 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: collection_recommendations complete
-            response_variable: _result
 
       # ── collection_album / collection_artist / collection_playlist / collection_podcast ──
       - if: "{{ _mode in ['collection_album', 'collection_artist', 'collection_playlist', 'collection_podcast'] }}"
@@ -2971,11 +3229,9 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'caller_token': _caller_token}) }}
-          - stop: "{{ _mode }} complete"
-            response_variable: _result
 
       # ── lyrics ───────────────────────────────────────────────────────────
-      - if: "{{ _mode == 'lyrics' }}"
+      - if: "{{ _result is not defined and _mode == 'lyrics' }}"
         then:
           - action: script.zen_sutra_music_assistant
             data:
@@ -2989,11 +3245,9 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'caller_token': _caller_token}) }}
-          - stop: lyrics complete
-            response_variable: _result
 
       # ── get_library ───────────────────────────────────────────────────────
-      - if: "{{ _mode == 'get_library' }}"
+      - if: "{{ _result is not defined and _mode == 'get_library' }}"
         then:
           - action: script.zen_sutra_music_assistant
             data:
@@ -3007,8 +3261,6 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'caller_token': _caller_token}) }}
-          - stop: get_library complete
-            response_variable: _result
 
       # ── group_volume_get / group_volume_set ───────────────────────────────
       - if: "{{ _mode in ['group_volume_get', 'group_volume_set'] }}"
@@ -3021,8 +3273,8 @@ script:
             then:
               - variables:
                   _err: {status: error, message: "No MA entity resolved for group volume.", caller_token: "{{ _caller_token }}"}
-              - stop: no entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - action: script.zen_sutra_music_assistant
             data:
               mode: "{{ _mode }}"
@@ -3033,8 +3285,6 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
-          - stop: "{{ _mode }} complete"
-            response_variable: _result
 
       # ── queue_transfer / queue_snapshot / queue_restore / queue_sync ────────
       - if: "{{ _mode in ['queue_transfer', 'queue_snapshot', 'queue_restore', 'queue_sync'] }}"
@@ -3047,8 +3297,8 @@ script:
             then:
               - variables:
                   _err: {status: error, message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player.", caller_token: "{{ _caller_token }}"}
-              - stop: no entity
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - action: script.zen_sutra_music_assistant
             data:
               mode: "{{ _mode }}"
@@ -3061,11 +3311,9 @@ script:
           - variables:
               _result: >-
                 {{ (_result if _result is mapping else {}) | combine({'caller_token': _caller_token}) }}
-          - stop: "{{ _mode }} complete"
-            response_variable: _result
 
       # ── 18. activity_get ──────────────────────────────────────────────────
-      - if: "{{ _mode == 'activity_get' }}"
+      - if: "{{ _result is not defined and _mode == 'activity_get' }}"
         then:
           - if: "{{ _room_slug == '' }}"
             then:
@@ -3074,8 +3322,8 @@ script:
                     status: error
                     message: "room required for activity_get"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing room
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -3083,8 +3331,8 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _act_key: "media_activities_{{ _room_slug }}"
           - action: script.zen_dojotools_filecabinet
@@ -3111,11 +3359,9 @@ script:
                 activities: "{{ _activities }}"
                 count: "{{ _activities | length if _activities is mapping else 0 }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: activity_get complete
-            response_variable: _result
 
       # ── 19. activity_set ──────────────────────────────────────────────────
-      - if: "{{ _mode == 'activity_set' }}"
+      - if: "{{ _result is not defined and _mode == 'activity_set' }}"
         then:
           - variables:
               _act_name: "{{ activity_name | default('', true) | trim }}"
@@ -3127,8 +3373,8 @@ script:
                     status: error
                     message: "room and activity_name required for activity_set"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing params
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -3136,8 +3382,8 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _act_key: "media_activities_{{ _room_slug }}"
           - action: script.zen_dojotools_filecabinet
@@ -3158,9 +3404,17 @@ script:
           - variables:
               _ex_activities: "{{ (_ex_drawer.get('value', _ex_drawer)) if _ex_drawer is mapping else {} }}"
           - variables:
+              _act_light_context: "{{ light_context | default('', true) | trim }}"
+              _act_lock_room: "{{ lock_room | default(false) | bool(false) }}"
+              _act_media_id: "{{ media_id | default('', true) | trim }}"
+          - variables:
               _new_activity: >-
-                {%- set ch = _channel if _channel != '' else _act_name -%}
-                {{ {'channel': ch} }}
+                {%- set e = {} -%}
+                {%- if _channel != '' -%}{%- set e = dict(e, channel=_channel) -%}{%- endif -%}
+                {%- if _act_light_context != '' -%}{%- set e = dict(e, light_context=_act_light_context) -%}{%- endif -%}
+                {%- if _act_lock_room -%}{%- set e = dict(e, lock_room=true) -%}{%- endif -%}
+                {%- if _act_media_id != '' -%}{%- set e = dict(e, media_id=_act_media_id) -%}{%- endif -%}
+                {{ e }}
           - variables:
               _updated_activities: >-
                 {{ dict(_ex_activities if _ex_activities is mapping else {}, **{_act_name: _new_activity}) }}
@@ -3184,11 +3438,9 @@ script:
                 total_activities: "{{ _updated_activities | length }}"
                 cabinet_status: "{{ _fc_write.get('status', 'unknown') }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: activity_set complete
-            response_variable: _result
 
       # ── 20. activity_apply ────────────────────────────────────────────────
-      - if: "{{ _mode == 'activity_apply' }}"
+      - if: "{{ _result is not defined and _mode == 'activity_apply' }}"
         then:
           - variables:
               _act_name: "{{ activity_name | default('', true) | trim }}"
@@ -3199,8 +3451,8 @@ script:
                     status: error
                     message: "room and activity_name required for activity_apply"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing params
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _room_paused }}"
             then:
               - variables:
@@ -3209,8 +3461,8 @@ script:
                     message: "Room '{{ _room_slug }}' is Paused (room_control_manager) — a human hit the brakes on this room. Not applying activity '{{ _act_name }}'. Un-pause the room first if this is intentional."
                     room_control_entity: "{{ _room_control_ent }}"
                     caller_token: "{{ _caller_token }}"
-              - stop: room paused
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - if: "{{ _hh_cabinet in ['', 'unavailable', 'unknown'] }}"
             then:
               - variables:
@@ -3218,8 +3470,8 @@ script:
                     status: error
                     message: "Household cabinet unavailable"
                     caller_token: "{{ _caller_token }}"
-              - stop: cabinet unavailable
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _act_key: "media_activities_{{ _room_slug }}"
           - action: script.zen_dojotools_filecabinet
@@ -3246,17 +3498,13 @@ script:
                     status: error
                     message: "Activity '{{ _act_name }}' not found for {{ _room_slug }}. Use activity_get to list available."
                     caller_token: "{{ _caller_token }}"
-              - stop: activity not found
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _activity: "{{ _all_acts[_act_name] if _all_acts is mapping else {} }}"
               _ap_channel: >-
                 {%- set act = _all_acts[_act_name] if _all_acts is mapping else {} -%}
-                {%- if act is mapping and act.get('channel', '') != '' -%}
-                  {{ act['channel'] }}
-                {%- else -%}
-                  {{ _act_name }}
-                {%- endif -%}
+                {{ act.get('channel', '') if act is mapping else '' }}
           - variables:
               _ump_entity: >-
                 {{ label_entities('zen_mm_universal')
@@ -3272,29 +3520,160 @@ script:
                       Build a compliant Universal Media Player and label it
                       zen_mm_universal. See zenos_ai/docs/components/zen_mm_universal_spec.yaml.
                     caller_token: "{{ _caller_token }}"
-              - stop: no ump
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
+          - variables:
+              _ap_lock_room: "{{ _activity.get('lock_room', false) if _activity is mapping else false }}"
+              _ap_light_context: "{{ _activity.get('light_context', '') if _activity is mapping else '' }}"
+              _ap_media_id: "{{ _activity.get('media_id', '') if _activity is mapping else '' }}"
+              _ap_chain: {}
+              # A taught channel may be valid on the room's Music Assistant
+              # proxy entity but meaningless on the raw receiver entity
+              # select_source actually targets -- validate against the
+              # resolved UMP's real source_list before calling, instead of
+              # letting HA raise a raw ServiceValidationError.
+              _ap_channel_valid: >-
+                {{ _ap_channel != '' and _ap_channel in (state_attr(_ump_entity, 'source_list') | default([], true)) }}
           - if: "{{ not (dry_run | default(false)) }}"
             then:
-              - action: media_player.select_source
-                target:
-                  entity_id: "{{ _ump_entity }}"
-                data:
-                  source: "{{ _ap_channel }}"
+              - if: "{{ _ap_lock_room }}"
+                then:
+                  - action: script.zen_dojotools_room_manager
+                    data:
+                      mode: room_control_set
+                      area: "{{ _room_slug }}"
+                      room_control_state: Automation
+                      caller_token: "{{ _caller_token }}"
+                    response_variable: _ap_rm_lock
+                  - variables:
+                      _ap_chain: "{{ dict(_ap_chain, room_lock=_ap_rm_lock) }}"
+                  # Marker read by room_control_set's own courtesy-pause
+                  # check -- if this room leaves Automation by ANY path
+                  # (activity_end, a human clearing it by hand, another
+                  # tool), that check pauses the media and clears this key.
+                  # Doesn't need clearing here on success -- only on the
+                  # OTHER end of the lifecycle.
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: read
+                      key: "media_activity_current_{{ _room_slug }}"
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      caller_token: "{{ _caller_token }}"
+                    response_variable: _ap_marker_existing
+                    continue_on_error: true
+                  - action: script.zen_dojotools_filecabinet
+                    data:
+                      action_type: >-
+                        {%- set _r = _ap_marker_existing.get('result', {}) if _ap_marker_existing is mapping else {} -%}
+                        {{ 'update' if (_r is mapping and _r.get('status') != 'not_found') else 'create' }}
+                      key: "media_activity_current_{{ _room_slug }}"
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      value: "{{ _act_name }}"
+                      force_action: true
+                      caller_token: "{{ _caller_token }}"
+                    continue_on_error: true
+              - if: "{{ _ap_channel_valid }}"
+                then:
+                  - action: media_player.select_source
+                    target:
+                      entity_id: "{{ _ump_entity }}"
+                    data:
+                      source: "{{ _ap_channel }}"
+              - if: "{{ _ap_media_id != '' }}"
+                then:
+                  # Direct call to the real underlying script, NOT a
+                  # self-call back into zen_dojotools_media_manager --
+                  # that deadlocked (mode: queued calling itself from
+                  # inside its own run returned an empty {} response).
+                  # Same resolution play_media itself does
+                  # (zen_mm_music_assistant-labeled entity, falling back
+                  # to whatever this room already resolved).
+                  - variables:
+                      _ap_ma_entity: >-
+                        {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
+                        {{ ma_ents | first | default(_ump_entity, true) }}
+                  - action: script.zen_sutra_music_assistant
+                    data:
+                      mode: play_media
+                      entity_id: "{{ _ap_ma_entity }}"
+                      media_id: "{{ _ap_media_id }}"
+                      enqueue: replace
+                    response_variable: _ap_media
+                    continue_on_error: true
+                  - variables:
+                      _ap_chain: "{{ dict(_ap_chain, media=(_ap_media if _ap_media is mapping else {}) | combine({'entity_id': _ap_ma_entity})) }}"
+              - if: "{{ _ap_light_context != '' }}"
+                then:
+                  - action: script.zen_dojotools_lights
+                    data:
+                      mode: prefs_apply
+                      room: "{{ _room_slug }}"
+                      home_context: "{{ _ap_light_context }}"
+                      caller_token: "{{ _caller_token }}"
+                    response_variable: _ap_lights
+                  - variables:
+                      _ap_chain: "{{ dict(_ap_chain, lights=_ap_lights) }}"
           - variables:
               _result:
                 status: ok
                 room: "{{ _room_slug }}"
                 activity_name: "{{ _act_name }}"
                 channel: "{{ _ap_channel }}"
+                channel_skipped: >-
+                  {{ ('Taught channel ' ~ _ap_channel ~ ' is not in ' ~ _ump_entity ~ '\'s source_list -- skipped. Likely meant the Music Assistant proxy entity, not the universal receiver.') if (_ap_channel != '' and not _ap_channel_valid) else none }}
                 ump_entity: "{{ _ump_entity }}"
+                lock_room: "{{ _ap_lock_room }}"
+                light_context: "{{ _ap_light_context if _ap_light_context != '' else none }}"
+                media_id: "{{ _ap_media_id if _ap_media_id != '' else none }}"
+                chained_results: "{{ _ap_chain }}"
                 dry_run: "{{ dry_run | default(false) }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: activity_apply complete
-            response_variable: _result
+
+      # ── 21b. activity_end ────────────────────────────────────────────────
+      # The generic "off" counterpart to activity_apply's lock_room -- clears
+      # room_control_set back to Auto (handing the room back to RM's live
+      # cascade) and stops whatever's playing. Not activity-specific -- works
+      # regardless of which activity (if any) is currently applied, since RM
+      # only ever has one lock state per room at a time.
+      - if: "{{ _result is not defined and _mode == 'activity_end' }}"
+        then:
+          - if: "{{ _room_slug == '' }}"
+            then:
+              - variables:
+                  _err:
+                    status: error
+                    message: "room required for activity_end"
+                    caller_token: "{{ _caller_token }}"
+              - variables:
+                  _result: "{{ _err }}"
+          - action: script.zen_dojotools_room_manager
+            data:
+              mode: room_control_set
+              area: "{{ _room_slug }}"
+              room_control_state: Auto
+              caller_token: "{{ _caller_token }}"
+            response_variable: _end_rm
+          - variables:
+              _ump_entity: >-
+                {{ label_entities('zen_mm_universal')
+                   | select('in', label_entities(_room_slug))
+                   | list | first | default('') }}
+          - if: "{{ _ump_entity != '' }}"
+            then:
+              - action: media_player.media_stop
+                continue_on_error: true
+                target:
+                  entity_id: "{{ _ump_entity }}"
+          - variables:
+              _result:
+                status: ok
+                room: "{{ _room_slug }}"
+                room_control_cleared: "{{ _end_rm }}"
+                media_stopped: "{{ _ump_entity != '' }}"
+                caller_token: "{{ _caller_token }}"
 
       # ── 21. activity_snapshot ─────────────────────────────────────────────
-      - if: "{{ _mode == 'activity_snapshot' }}"
+      - if: "{{ _result is not defined and _mode == 'activity_snapshot' }}"
         then:
           - variables:
               _snap_name: "{{ activity_name | default('', true) | trim }}"
@@ -3305,8 +3684,8 @@ script:
                     status: error
                     message: "room required for activity_snapshot"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing room
-                response_variable: _err
+              - variables:
+                  _result: "{{ _err }}"
           - variables:
               _snap_ump_ent: >-
                 {{ label_entities('zen_mm_universal')
@@ -3369,23 +3748,43 @@ script:
                     ump_state: "{{ _snap_ump_state }}"
                     ump_source: "{{ _snap_ump_source }}"
                 caller_token: "{{ _caller_token }}"
-          - stop: activity_snapshot complete
-            response_variable: _result
 
       # ── 22. Fallback ──────────────────────────────────────────────────────
+      - if: "{{ _result is not defined }}"
+        then:
+        - variables:
+            _result:
+              status: error
+              message: >-
+                Unknown mode '{{ _mode }}'. Valid: discover, setup, label_suggest,
+                resolve_debug, source_get, source_set, sound_mode_get,
+                sound_mode_set, state_get, prefs_get, prefs_set, prefs_apply,
+                room_default_get, room_default_set, stacks_by_anchor, search,
+                activity_get, activity_set, activity_apply, activity_snapshot,
+                register, unregister, health, audit, help
+              caller_token: "{{ _caller_token }}"
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # SINGLE EXIT — envelope() wrap
+      # ═══════════════════════════════════════════════════════════════════════
       - variables:
-          _err:
-            status: error
-            message: >-
-              Unknown mode '{{ _mode }}'. Valid: discover, setup, label_suggest,
-              resolve_debug, source_get, source_set, sound_mode_get,
-              sound_mode_set, state_get, prefs_get, prefs_set, prefs_apply,
-              room_default_get, room_default_set, stacks_by_anchor, search,
-              activity_get, activity_set, activity_apply, activity_snapshot,
-              register, unregister, health, audit, help
-            caller_token: "{{ _caller_token }}"
-      - stop: unknown mode
-        response_variable: _err
+          _envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (_result is mapping and (
+                _result.get('status') in ['error', 'denied'] or
+                _result.get('result') == 'error' or
+                'error' in _result
+              )) else 'success',
+              mode=_mode,
+              result=_result,
+              tool='zen_dojotools_media_manager',
+              caller_token=_caller_token
+            ) -}}
+      - variables:
+          _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+      - stop: media_manager response
+        response_variable: _envelope
 
   zen_stack_media:
     alias: Zen Stack Provider — Media (Internal)
@@ -3484,7 +3883,7 @@ script:
     # instead of zen_stack_media/tier=stacks — indistinguishable from calling
     # the backing tool directly, and inconsistent with the paperless/radar
     # stack adapters, which do self-describe.
-    - if: "{{ _mode == 'tool_manifest' }}"
+    - if: "{{ _out is not defined and _mode == 'tool_manifest' }}"
       then:
       - variables:
           _sm_ms_ok: >-
@@ -3500,14 +3899,14 @@ script:
                 version='1.0.0',
                 health=_health,
                 required_labels=['media_manager'],
-                optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch'],
+                optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch', 'zen_home_mode'],
                 consumes=['label', 'person', 'area_id', 'zone', 'concept', 'mood', 'activity'],
                 returns=['track_evidence', 'album_evidence', 'artist_evidence', 'playlist_evidence', 'radio_evidence', 'podcast_evidence', 'audiobook_evidence'],
                 failure_policy='soft',
                 content_policy='metadata_only',
                 risk_class='read_metadata',
                 security_act={'model': 'rwxda', 'required': 'r', 'allowed': ['r'], 'denied': ['w', 'x', 'd', 'a'], 'note': 'Lens lookup returns media metadata and playback hints only — playback/control actions require zen_dojotools_media_manager directly.'},
-                modes={'lookup': 'stacks_by_anchor', 'manifest': 'tool_manifest', 'search': 'search', 'now_playing': 'now_playing'},
+                modes={'lookup': 'stacks_by_anchor', 'manifest': 'tool_manifest', 'search': 'search', 'now_playing': 'now_playing', 'by_anchor': 'by_anchor', 'register': 'register', 'unregister': 'unregister', 'health': 'health', 'audit': 'audit'},
                 limitations=['Playback control is outside the Lens path — use zen_dojotools_media_manager directly.'],
                 evidence_shape={'tracks': {'title': 'Track title.', 'artist': 'Artist name.', 'album': 'Album name.'}},
                 icon='mdi:television-play',
@@ -3518,28 +3917,29 @@ script:
                 lens_provider=true,
                 caller_token=caller_token | default('')
             ) | from_json | combine({'register_mode': 'register', 'provider_key': 'media'}) -}}
-      - stop: zen_stack_media tool_manifest complete
-        response_variable: _out
 
-    - action: script.zen_dojotools_media_manager
-      response_variable: _result
-      continue_on_error: true
-      data:
-        mode: "{{ _mm_mode }}"
-        anchors_json: "{{ anchors_json | default('', true) }}"
-        anchor_type: "{{ anchor_type | default('', true) }}"
-        anchor_ids: "{{ anchor_ids | default('', true) }}"
-        media_types: "{{ media_types | default('', true) }}"
-        limit: "{{ limit | default(10) }}"
-        query: "{{ query | default('', true) }}"
-        profile_target: "{{ profile_target | default('', true) }}"
-        consumer: "{{ consumer | default('', true) }}"
-        caller_token: "{{ _caller_token }}"
+    - if: "{{ _out is not defined }}"
+      then:
+      - action: script.zen_dojotools_media_manager
+        response_variable: _result
+        continue_on_error: true
+        data:
+          mode: "{{ _mm_mode }}"
+          anchors_json: "{{ anchors_json | default('', true) }}"
+          anchor_type: "{{ anchor_type | default('', true) }}"
+          anchor_ids: "{{ anchor_ids | default('', true) }}"
+          media_types: "{{ media_types | default('', true) }}"
+          limit: "{{ limit | default(10) }}"
+          query: "{{ query | default('', true) }}"
+          profile_target: "{{ profile_target | default('', true) }}"
+          consumer: "{{ consumer | default('', true) }}"
+          caller_token: "{{ _caller_token }}"
 
-    - variables:
-        _out: >-
-          {%- set r = _result if _result is mapping else {} -%}
-          {{ r | combine({'stack': 'media', 'handler': 'zen_stack_media'}) }}
+      - variables:
+          _out: >-
+            {%- set r = _result if _result is mapping else {} -%}
+            {%- set r = r.get('result', r) if r is mapping else r -%}
+            {{ r | combine({'stack': 'media', 'handler': 'zen_stack_media'}) }}
 
     - stop: zen_stack_media complete
       response_variable: _out

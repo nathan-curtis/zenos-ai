@@ -1,6 +1,16 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scheduler
-# Version: 5.1.0
+# Version: 5.2.3
+#
+# v5.2.3: the 24h events[] prune compares timestamps, so a stored time
+#   without a UTC offset no longer fails the comparison against now().
+# v5.2.2 (#10553): the vacuum purpose triggers target label_id: autovac
+#   instead of a specific entity.
+# v5.2.1: events[] entries older than 24h are dropped from a kata's prior-run
+#   context before it is fed forward as last_kata_summary. GC expires whole
+#   drawers only, so without this a self-authored event could be echoed
+#   forward indefinitely. A template-level filter on each event's timestamp,
+#   not a prompt instruction.
 #
 # Automations:
 #   Zen DojoTools Scheduler — time/event orchestrator for the Dojo system
@@ -35,7 +45,14 @@ automation:
       remain explicit branches.
     triggers:
     - trigger: time
-      at: 00:00:00
+      # Offset 60s past exact midnight (2026-09-17, #10458) -- quarter_hour,
+      # hourly_trigger, and every_10_minutes all land at exactly 00:00:00 too
+      # (time_pattern triggers with no seconds field default to :00 seconds).
+      # Colliding with this trigger's own heavy upstream branches (Manifest,
+      # Identity Manifest, Compact Index) pushed queue_depth to 5-6 for
+      # ~3.5min, starving the queue_depth<5 Ninja dispatch gate. Offsetting
+      # gives the three ambient triggers time to clear the queue first.
+      at: '00:01:00'
       weekday:
       - sat
       - fri
@@ -73,25 +90,20 @@ automation:
       not_from:
       - unknown
       - unavailable
-    # Purpose-trigger
-    # pair for the vacuum's cleaning lifecycle. Label filtering (e.g.
-    # 'autovac') happens downstream, in whatever subscribes to these trigger
-    # IDs via trigger_subscriptions -- check
-    # `'autovac' in (labels(trigger.entity_id) | default([]))` there, not
-    # here. Dormant until something actually subscribes: the dispatch loop
-    # below only acts on trigger IDs present in a KFC drawer's
-    # trigger_subscriptions list, so these are currently harmless no-ops.
-    # target is required by this trigger platform (undocumented; omitting it
-    # raises "required key not provided @ data['target']"). Hardcoded to the
-    # one real vacuum entity in the house today;
-    # extend entity_id to a list if a second vacuum is ever added.
+    # Purpose-trigger pair for the vacuum's cleaning lifecycle. target
+    # supports label_id directly (HA purpose-specific triggers accept
+    # entity/device/area/floor/label targets) -- labeled to autovac, no
+    # entity hardcode, portable to any install/vacuum count. Dormant until
+    # something actually subscribes: the dispatch loop below only acts on
+    # trigger IDs present in a KFC drawer's trigger_subscriptions list, so
+    # these are currently harmless no-ops.
     - trigger: vacuum.started_cleaning
       target:
-        entity_id: vacuum.roborock_rosie
+        label_id: autovac
       id: vacuum_started
     - trigger: vacuum.returned_to_dock
       target:
-        entity_id: vacuum.roborock_rosie
+        label_id: autovac
       id: vacuum_docked
     - trigger: persistent_notification
       update_type:
@@ -329,6 +341,21 @@ automation:
           response_variable: response_filecabinet_gc
         alias: FileCabinet GC
 
+      # Same quarter_hour cadence FileCabinet GC above already uses. Clears
+      # any display_session_* cabinet key idle 5+ minutes; see
+      # dojotools_display.yaml mode=expire_sessions for the logic.
+      - conditions:
+        - condition: trigger
+          id:
+          - quarter_hour
+        sequence:
+        - action: script.zen_dojotools_display
+          metadata: {}
+          data:
+            mode: expire_sessions
+          response_variable: response_display_expire_sessions
+        alias: Display Surface Session Expiry
+
       - conditions:
         - condition: trigger
           id:
@@ -371,7 +398,10 @@ automation:
     # force_ninja remaps to ha_start scope — runs only boot-sequence KFCs.
     # force_supersummary skips this block entirely (gated by if above).
     # Pipeline tier filtering: ambient blocked on fast triggers; under pressure,
-    # keeper/ambient shed according to zen_scheduler_config thresholds.
+    # keeper/ambient shed according to zen_scheduler_config thresholds. super and
+    # system tiers never shed and always dispatch with zero delay -- system carries
+    # core platform health, the signal most needed when the queue is already under
+    # pressure, so it gets the same priority treatment as super.
     - variables:
         _household_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
         _queue_depth: "{{ states('sensor.zen_scheduler_queue_depth') | int(0) }}"
@@ -412,12 +442,12 @@ automation:
                   {%- set subscribed = trig_id in sub_list -%}
                   {%- set targeted   = force_c == '' or force_c == key -%}
                   {%- set _tier      = val.get('pipeline_tier', 'keeper') | lower -%}
-                  {%- set _eff_delay = 0 if _tier == 'super' else val.get('delay_seconds', 0) | int(0) -%}
+                  {%- set _eff_delay = 0 if _tier in ['super', 'system'] else val.get('delay_seconds', 0) | int(0) -%}
                   {%- set _forced    = trig_id == 'force_summary' and force_c != '' -%}
                   {%- set _shed = not _forced and (
                       (_tier == 'ambient' and (trig_id in ['quarter_hour', 'every_10_minutes'] or _queue_depth | int(0) >= _shed_ambient_at | int(4)))
                       or
-                      (_tier not in ['super', 'ambient'] and _queue_depth | int(0) >= _shed_keeper_at | int(8))
+                      (_tier not in ['super', 'system', 'ambient'] and _queue_depth | int(0) >= _shed_keeper_at | int(8))
                   ) -%}
                   {%- if subscribed and targeted and not _shed -%}
                     {%- set schedules = val.get('schedules', []) -%}
@@ -505,12 +535,41 @@ automation:
                   - "{{ _kata_cab }}"
                   key: "{{ repeat.item.kata_key | default(repeat.item._drawer_key) }}"
                 response_variable: _iter_last_kata
+              # 24h events[] stale-out, at the point every kata's prior-run
+              # context flows back through before the next run. GC expires
+              # whole drawers only and can't see a list field inside one.
+              - variables:
+                  _iter_last_kata_pruned: >-
+                    {%- set _fc = _iter_last_kata if _iter_last_kata is mapping else (_iter_last_kata | from_json({}) if _iter_last_kata is string else {}) -%}
+                    {%- set _r = (_fc or {}).get('result', {}) -%}
+                    {%- set _r = _r if _r is mapping else (_r | from_json({}) if _r is string else {}) -%}
+                    {%- set _kkey = repeat.item.kata_key | default(repeat.item._drawer_key) -%}
+                    {%- set _raw = _r.get(_kkey, _fc) -%}
+                    {%- set _raw = _raw if _raw is mapping else (_raw | from_json({}) if _raw is string else {}) -%}
+                    {%- set _val = _raw.get('value', _raw) -%}
+                    {%- set _val = _val if _val is mapping else (_val | from_json({}) if _val is string else {}) -%}
+                    {%- set _events = _val.get('events', []) -%}
+                    {%- set _events = _events if _events is sequence and _events is not string else [] -%}
+                    {%- set _cutoff_ts = (now() - timedelta(hours=24)).timestamp() -%}
+                    {%- set _ns = namespace(kept=[]) -%}
+                    {%- for _e in _events -%}
+                      {%- set _ts_raw = (_e.get('timestamp', '') if _e is mapping else '') -%}
+                      {%- set _ts = as_datetime(_ts_raw) if _ts_raw else none -%}
+                      {#- as_datetime() returns naive when _ts_raw lacks a tz
+                         offset, which crashes the aware/naive compare below --
+                         compare via .timestamp() instead, same fix as the
+                         _zen_priority_inject expiry check (dojotools_core.yaml). -#}
+                      {%- if _ts is not none and _ts.timestamp() >= _cutoff_ts -%}
+                        {%- set _ns.kept = _ns.kept + [_e] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ _raw | combine({'value': _val | combine({'events': _ns.kept})}) }}
               - variables:
                   _iter_prompt: >-
                     {%- set _p = {
                       "source":            {"id": trigger.id | default(''), "platform": trigger.platform | default('')},
                       "current_local_time": now().strftime('%Y-%m-%d %H:%M %Z'),
-                      "last_kata_summary": _iter_last_kata | default({})
+                      "last_kata_summary": _iter_last_kata_pruned | default({})
                     } | tojson -%}
                     {{ _p[:50000] }}
               - action: script.turn_on

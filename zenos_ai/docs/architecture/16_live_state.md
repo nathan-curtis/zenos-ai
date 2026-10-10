@@ -1,0 +1,97 @@
+# 16. Live State
+
+The Monastery gives the twin its memory: summaries that are minutes old. Some parts of the twin cannot wait minutes. Whether a room is occupied, whether someone is asleep in it, whether a door has opened: these have to be true now. That live layer is Room Manager v3, and its product is one state per room.
+
+This chapter describes what a room's state means and how it is computed. Chapter 25 is the operational reference: every label, every construct, every edge case.
+
+Room state is older than ZenOS. On SmartThings I ran bangali's RoomManager, which treated each room as an object with attributes and a state of its own. I carried the idea into Home Assistant early, and through a Node-RED state engine, before rebuilding it natively as Room Manager v3. What changed with ZenOS was the reason for it. For a language model, a room's state is usually exactly the granularity it needs to act: it can look at the board and know what a room is doing right now, and why. It also makes the prompt cheaper. Room states roll up into the home overview as breadcrumbs, so the detail behind them no longer has to live in the prompt.
+
+## 16.1 One state per room
+
+Every deployed room has exactly one state sensor, built from the shared `room_state.yaml` blueprint and found by the `zen_room_state` label. Its state is the room's resolved tier. Its attributes explain it.
+
+The tiers resolve as a cascade. The highest tier with an active source wins:
+
+```mermaid
+flowchart TD
+  A["emergency"] --> B["manual override<br/>(room_control_manager)"]
+  B --> C["asleep"]
+  C --> D["engaged"]
+  D --> E["child engaged"]
+  E --> F["hold<br/>(wasp, entertaining, guest)"]
+  F --> G["occupied"]
+  G --> H["vacant"]
+```
+
+| Tier | Means |
+|---|---|
+| `emergency` | A smoke, carbon monoxide, moisture, or siren signal latched. Wins even over a paused room: life safety is never silenced. Cleared only by a human or agent acknowledgement. |
+| manual override | Someone deliberately set the room (paused, automation, cleaning, or a specific state) through `room_control_manager`. |
+| `asleep` | Someone is asleep here. A device staying active nearby never overrides a real asleep signal. |
+| `engaged` | Someone is actively doing something: media playing, a desk in use. |
+| `hold` | Presence that cannot be resolved yet, or a deliberate conservative hold. |
+| `occupied` | Presence with no specific activity, or a child room that is not vacant. |
+| `vacant` | Nothing is true. |
+
+A room's state is what an agent means when it asks whether a room is occupied. It is also what REFLEX acts on (16.4).
+
+## 16.2 Signals come from labels
+
+Nothing is wired per room. The Signal Dispatcher listens for a fixed set of purpose triggers (motion, occupancy, door, lock, media, smoke, carbon monoxide, moisture, siren, button), each scoped to entities that carry the matching label. When one fires, it reads the firing entity's labels, finds the one that is a real area, and that is the room. It then does whatever that class of signal requires for that room: arm the emergency latch, start the room's timer in the right class, check the enclosed-room logic. A new room works the day it is labeled.
+
+This is the hypergraph again (Chapter 7). A motion sensor carries `motion` and its room's label. The intersection of those two hyperedges is the whole routing table.
+
+## 16.3 Time, children, and explanation
+
+**One timer per room.** Presence decays: a room stays occupied for a while after the last motion. Each room that opts in has one `room_timer` and records which tier currently owns it (occupied, engaged, or asleep). A room is never decaying two tiers at once, so one timer is enough. A room without a timer uses live signals only, which is a simpler mode, not a broken one.
+
+**Child rooms cascade up.** An ensuite or sub-room contributes to its parent. A child that is engaged makes the parent engaged. A child in any other active state holds the parent at occupied for as long as it stays active. The one exception: a parent's own direct asleep signal always wins.
+
+**Every state explains itself.** Each tier that can be true carries a `*_last_trigger` attribute naming the entity that most recently caused it, or the timer keeping it alive. `last_trigger` does the same for whichever tier won. "Why does the office say engaged?" has an inspectable answer.
+
+Here it is answered, on a real install:
+
+<p align="center">
+  <img src="images/ch16_why_engaged.jpg" width="420" alt="Asked why the living room is engaged, Friday answers that the living room TV is currently playing, that the activity started at about 5:44 PM, and that the room's engagement timer is active." />
+</p>
+
+*Friday asked why the living room is engaged. Both halves of the answer come straight off the room's state sensor: what caused the tier and when (`engaged_last_trigger`), and what is keeping it alive (the shared room timer, running in class `engaged`). Real 2026.10.0 output, September 2026.*
+
+**Manual overrides release themselves.** An override wins over live evidence the moment it is set, and releases on its own when the room's underlying live state changes to something other than what it was when the override was set. Nothing needs to be cleared by hand later.
+
+## 16.4 REFLEX: state becomes effect
+
+REFLEX turns a room's state into action in two stages, deliberately decoupled.
+
+**Stage 1** lives inside every room's state sensor. On a real transition it fires `zen_event` with `kind: room_state_changed`. Transitions happen only while the household has opted in to room state; it ships off (Chapter 25).
+
+**Stage 2** listens for that event and resolves a scene by intersecting three hyperedges: `scene_<state>`, the room's label, and the current home-mode label. If nothing matches with the mode applied, it tries room and state alone. No match is a safe no-op, never a guess.
+
+```mermaid
+graph LR
+  S["room state:<br/>asleep"] --> E["zen_event<br/>room_state_changed"]
+  E --> R{"scene_asleep<br/>∩ bedroom<br/>∩ night"}
+  R -- match --> D["debounce,<br/>re-check live state"] --> F["scene.turn_on"]
+  R -- none --> N["no-op"]
+```
+
+Scene firing is debounced. After a state change, Stage 2 waits for the transition to settle, re-reads the room's live state, and fires only if it still matches. A room flickering through several states fires one scene, not a burst of whole-room commands across the mesh. The state sensor itself is never debounced: it stays instant and truthful.
+
+REFLEX has two master gates: `reflex_enable` (off by default) and `reflex_dry_run`, which, when REFLEX is enabled, logs what would have fired instead of firing it. A household can rehearse its scenes against real state changes before they touch a light.
+
+A room's live state is the most current part of the twin. The Monastery summarizes the house. Room Manager v3 knows, right now, which rooms are occupied.
+
+<!-- where -->
+## 16.5 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The room state blueprint and its cascade: [`room_state.yaml`](../../../blueprints/template/zenos/room_state.yaml) (`_manual_override_hi`). Docs: [room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md).
+* REFLEX Stage 2, the Signal Dispatcher, and the master gates: [`zen_room_manager_dispatch.yaml`](../../../packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml) (`room_state_changed`, `reflex_dry_run`). Docs: [room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md).
+<!-- /where -->
+
+<!-- nav -->
+---
+
+[← Katas](15_katas.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Context Construction →](17_context_construction.md)
+<!-- /nav -->

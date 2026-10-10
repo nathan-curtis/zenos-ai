@@ -1,6 +1,6 @@
 # ZenOS-AI Firefly III Finance Component
 
-**Version:** 2.3.0  
+**Version:** 2.5.0 (`zen_dojotools_finance`)  
 **Package:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Primary script:** `zen_dojotools_finance`  
 **Internal REST dispatcher:** `zen_root_firefly` (renamed from `zen_sutra_firefly` in 2.3.0)  
@@ -10,6 +10,8 @@
 > **Lens Bus (2026.7.0):** `zen_stack_firefly` is now a fully registered Lens Bus stack provider. It was the first ZenOS plugin to use bootstrap auto-registration — on every HA boot, `zen_dojotools_manifest mode=bootstrap_stacks` discovers and registers it automatically. See [Lens Bus Auto-Registration](lens_bus_autoreg.md).
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_finance` and `zen_codex_finance_cogs` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 

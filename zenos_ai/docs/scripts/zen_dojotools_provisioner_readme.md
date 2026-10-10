@@ -1,4 +1,4 @@
-# Zen DojoTools Provisioner — v5.1.0
+# Zen DojoTools Provisioner — v1.1.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_provisioner.yaml`
 **Script:** `zen_dojotools_provisioner`
@@ -6,7 +6,11 @@
 
 Provisions, deprovisions, or replaces a cabinet-backed identity (`ai_user` / `user` / `family` / `household`) — pulling a stacks cabinet into service or returning one to the stacks pool. This is the write-path counterpart to the stacks model: cabinets live as `online_unmounted` spares until provisioned into a typed, labeled, `online_mounted` identity.
 
+All three modes (`provision`, `deprovision`, `replace`) require the `cabinet_lifecycle_control` certification (level 1) as of 2026-09-10 (#10390) — the same certification `zen_admintools_cabinetadmin` gates its own moderate-to-nuclear ops under. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
+
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_provisioner` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Modes
 
@@ -14,6 +18,7 @@ Provisions, deprovisions, or replaces a cabinet-backed identity (`ai_user` / `us
 |------|-------------|
 | `provision` (default) | Pulls a stacks cabinet (`init` or `online_unmounted`) into service. Validates GUID, applies the type label, mounts, optionally preloads profile data, fires an identity manifest rebuild. Rolls back (strips the label) if the mount doesn't land within the health-gate timeout. |
 | `deprovision` | Dismounts a cabinet, strips its type label, returns it to the stacks pool. Blocked if the cabinet holds a `zen_default_*` label — transfer the default elsewhere first. |
+| `help` | Read-only: full field reference, gate order for provision/deprovision, examples, and notes. Not cert-gated. Call this first. |
 | `replace` | Deprovisions `replace_cabinet`, then provisions `target_cabinet` — same `cab_type` for both. Cheaper than a raw deprovision+provision because stacks make cabinet turnover a labeling operation, not a data migration. |
 
 ---
@@ -22,7 +27,7 @@ Provisions, deprovisions, or replaces a cabinet-backed identity (`ai_user` / `us
 
 | Field | Required | Description |
 |-------|----------|--------------|
-| `mode` | No | `provision` (default) / `deprovision` / `replace`. |
+| `mode` | No | `provision` (default) / `deprovision` / `replace` / `help` / `tool_manifest`. |
 | `cab_type` | provision, replace | `ai_user`, `user`, `family`, or `household` — determines which type label gets applied. |
 | `target_cabinet` | Yes | Cabinet entity to provision (must be `init`/`online_unmounted`) or deprovision (must be `online_mounted`). |
 | `replace_cabinet` | replace only | Existing cabinet to deprovision before `target_cabinet` is provisioned. |

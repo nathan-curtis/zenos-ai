@@ -2,7 +2,7 @@
 
 ### *Universal HyperGraph Index for Labels, Entities, Drawers & Metadata*
 
-**Version:** 2026.6.0 'Clue'
+**Version:** 5.1.0 (`zen_dojotools_index`)
 **Category:** DojoTools / Indexing
 **Icon:** `mdi:graphql`
 

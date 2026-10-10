@@ -1,5 +1,13 @@
 ###############################################################################
-# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v5.10.0)
+# ZEN DOJOTOOLS PLANT — Physical Plant + Energy Manager (v5.11.2)
+#
+# v5.11.2 (Radar #10480): mode=managed attributes a chore with a product_id
+#   only to the machine group that owns that product. Previously, machines
+#   sharing a Home Assistant area could each claim every product-linked chore
+#   in that area. Chores with no product_id (area-tagged) remain first-claim
+#   across groups, as before.
+#
+# v5.11.1: header version reconciled with the tool_manifest version.
 #
 # v5.10.0 (2026-08-29): mode=circuit_draw rows now carry SPAN's own native
 #   relay_state/relay_requester/is_sheddable/shed_priority. relay_open=true
@@ -80,14 +88,13 @@ script:
   zen_dojotools_plant:
     alias: "Zen DojoTools Plant"
     description: >
-      Physical plant + energy manager (v5.8.0). Electric: whole-home live watts, utility billing, grid carbon,
-      circuit breakdown, and — if a solar/battery panel is tagged — a nested solar block (PV production, battery
-      power/SOC, grid import/export, grid-connected status; absent entirely for households with no panel tagged).
-      Water: usage + billing. Gas: live sensor or graceful N/A. Utility registry from RM cabinet.
-      mode=overview: top-line all utilities. mode=electric: full electrical. mode=water/gas/mechanical/thermal/circuits: subsystem detail.
-      mode=managed [managed_labels=csv]: universal managed-machine display — all machines provisioned via provision_bom, grouped by ha_labels root label. Returns products[], chores[], stock summary, schema_warnings[]{type,message,next_call}, and top-level advisory[] with exact fix commands. Resolves area via product location → Grocy location homeassistant_area userfield (not product userfield). Chores globally deduped alphabetically — each chore claimed by first machine. Plant is READ-ONLY: never sets labels or locations. Fix schema issues via zen_dojotools_inventory. Call mode=help for quickstart, howto, and managed_guidance.
-      mode=validate: slot resolution report. mode=label_suggest integration=<slug>: scan a specific integration's entities (e.g. span_panel, emporia_vue, zwave_js) and suggest zen_plant_*/main_panel/sub_panel/consumed_energy/leak_sensor/auto_shutoff labels by device_class + name-pattern, preview by default, confirm_action=true to apply. mode=ignore/unignore: suppress/restore entities from discovery.
-      mode=leak_auto_shutoff_enable [leak_auto_shutoff_enabled=bool]: house-wide gate for automatic leak response. Omit the field to READ the current on/off state. When ON, a real leak (any zen_plant_leak_sensor-labeled entity going wet) closes every zen_plant_auto_shutoff-labeled valve immediately, no asking. When OFF (default), a real leak instead asks live — two separate questions: close the valve now?, and separately, turn this auto-response on for future leaks? Use this mode to check whether it's currently on, or to flip it directly instead of waiting for a real leak to trigger the live offer.
+      Household utilities + physical plant: electric (incl. solar/battery if
+      tagged), water, gas, mechanical/thermal equipment, circuit breakdown,
+      and Grocy-provisioned managed-machine status (chores/stock/parts).
+      Use for utility/equipment status or "what needs attention on X
+      machine" — domain controls (thermostat setpoints, etc.) belong to
+      their owner tools. Mostly read-only; label_suggest/ignore/unignore/
+      leak_auto_shutoff_enable write. mode=help for the full reference.
     mode: queued
     max: 3
 
@@ -164,18 +171,19 @@ script:
         - conditions: "{{ _tm_check == 'tool_manifest' }}"
           sequence:
           - variables:
-              result: >-
+              _result: >-
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_plant',
                     display_name='Physical Plant',
                     tier='dojotools',
-                    version='5.10.0',
+                    version='5.11.2',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['zen_plant_leak_sensor', 'zen_plant_auto_shutoff', 'main_panel', 'sub_panel', 'consumed_energy', 'water_usage', 'utility_main', 'breaker_gfci', 'breaker_afci', 'surge_suppression', 'zen_plant_generator', 'zen_plant_battery', 'zen_plant_solar'],
                     consumes=['area', 'mode', 'integration'],
-                    returns=['overview', 'electric', 'water', 'gas', 'mechanical', 'thermal', 'circuits', 'circuit_draw', 'managed'],
+                    returns=['overview', 'electric', 'hvac', 'water', 'gas', 'mechanical', 'thermal', 'circuits', 'circuit_draw', 'managed'],
+                    dependencies=[{'tool': 'zen_dojotools_labels', 'required': true, 'uses': 'mode=ignore/unignore delegate directly to it (create+tag / untag the zen_plant_ignore label)'}],
                     icon='mdi:home-city-outline',
                     color='amber',
                     stripe=3,
@@ -183,16 +191,16 @@ script:
                     mcp_exposed=true,
 
                     caller_token=caller_token | default('')
-                ) | from_json }}
-          - stop: tool_manifest
-            response_variable: result
+                ) | from_json | combine({'certs_required': [
+                    {'cert': 'plant_auto_shutoff_config_edit', 'level': 1, 'modes': ['leak_auto_shutoff_enable (enable only)']}
+                ]}) }}
       # ── SETUP ─────────────────────────────────────────────────────────────
       - variables:
           _mode: "{{ mode | default('overview') | lower | trim }}"
           _caller_token: "{{ caller_token | default('') }}"
           _hh_cabinet: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
 
-      # ── LEAK AUTO-SHUTOFF ENABLE (2026-08-24) ────────────────────────────
+      # ── LEAK AUTO-SHUTOFF ENABLE ────────────────────────────
       # House-wide gate for zen_plant_leak_watch (automation, below). Same
       # read-omit/write-bool + cabinet-drawer shape as room_manager's
       # roomstate_enable/reflex_enable. Default false (opt-in, not opt-out) --
@@ -201,7 +209,43 @@ script:
         then:
           - variables:
               _lae_written: "{{ leak_auto_shutoff_enabled is defined and leak_auto_shutoff_enabled not in [none, ''] }}"
-          - if: "{{ _lae_written }}"
+
+          # ── Cert-gate — plant_auto_shutoff_config_edit. Only gates
+          # turning THIS ON -- that's the
+          # risk-increasing direction, letting the agent self-authorize
+          # skipping the live-ack that zen_plant_leak_watch otherwise asks
+          # for every real leak. Turning it off is safe (reverts to
+          # always-ask) and stays ungated. ──
+          - if: "{{ _lae_written and (leak_auto_shutoff_enabled | bool) }}"
+            then:
+              - action: script.zen_dojotools_identity
+                response_variable: _lae_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: plant_auto_shutoff_config_edit
+                  required_cert_level: 1
+                  caller_token: "{{ _caller_token }}"
+              - variables:
+                  _lae_id_fields: >-
+                    {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                    {%- set _raw = OS.resolve_identity_fields(_lae_id_raw) -%}
+                    {{- (_raw | from_json) if _raw is string else _raw -}}
+                  _lae_cert_policy: "{{ _lae_id_fields.policy_status }}"
+                  _lae_cert_authorized: "{{ _lae_id_fields.authorized }}"
+                  _lae_cert_level: "{{ _lae_id_fields.cert_level }}"
+                  _lae_cert_block_reason: "{{ _lae_id_fields.block_reason }}"
+              - if: "{{ _lae_cert_policy != 'allowed' or not _lae_cert_authorized }}"
+                then:
+                  - variables:
+                      _lae_cd_raw: >-
+                        {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                        {{ OS.cert_denial(_lae_cert_policy, _lae_cert_authorized, _lae_cert_level, 'plant_auto_shutoff_config_edit', 1, 'leak_auto_shutoff_enable', _lae_cert_block_reason) -}}
+                  - variables:
+                      _result: >-
+                        {{ ((_lae_cd_raw | from_json) if _lae_cd_raw is string else _lae_cd_raw) | combine({'tool': 'zen_dojotools_plant', 'caller_token': _caller_token}) }}
+
+          - if: "{{ _result is not defined and _lae_written }}"
             then:
               - action: script.zen_dojotools_filecabinet
                 data:
@@ -219,35 +263,60 @@ script:
                     mode: leak_auto_shutoff_enable
                     written: "{{ leak_auto_shutoff_enabled | bool }}"
                     caller_token: "{{ _caller_token }}"
-              - stop: leak_auto_shutoff_enable write done
-                response_variable: _result
-          - variables:
-              _lae_resolved: >-
-                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                {%- set _raw = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'plant_auto_shutoff_config') if _hh_cabinet != '' else none -%}
-                {%- set _cfg = (_raw | from_json) if _raw not in [none, ''] else {} -%}
-                {{ (_cfg.enabled | default(false)) if _cfg is mapping else false }}
-          - variables:
-              _result:
-                status: ok
-                mode: leak_auto_shutoff_enable
-                enabled: "{{ _lae_resolved | trim | lower == 'true' }}"
-                shutoff_entities: "{{ label_entities('zen_plant_auto_shutoff') }}"
-                leak_sensor_entities: "{{ label_entities('zen_plant_leak_sensor') }}"
-                caller_token: "{{ _caller_token }}"
-          - stop: leak_auto_shutoff_enable read done
-            response_variable: _result
+          - if: "{{ _result is not defined }}"
+            then:
+              - variables:
+                  _lae_resolved: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {%- set _raw = CABS.cabinet_drawer_value_mounted(_hh_cabinet, 'plant_auto_shutoff_config') if _hh_cabinet != '' else none -%}
+                    {%- set _cfg = (_raw | from_json) if _raw not in [none, ''] else {} -%}
+                    {{ (_cfg.enabled | default(false)) if _cfg is mapping else false }}
+              - variables:
+                  _result:
+                    status: ok
+                    mode: leak_auto_shutoff_enable
+                    enabled: "{{ _lae_resolved | trim | lower == 'true' }}"
+                    shutoff_entities: "{{ label_entities('zen_plant_auto_shutoff') }}"
+                    leak_sensor_entities: "{{ label_entities('zen_plant_leak_sensor') }}"
+                    caller_token: "{{ _caller_token }}"
 
       # ── HELP ──────────────────────────────────────────────────────────────
       - if: "{{ _mode == 'help' }}"
         then:
           - variables:
+              _pl_modes:
+                overview: "Top-line snapshot: electric, hvac, thermal, water, gas, mechanical, utility registry"
+                electric: "Live whole-home power + billing + grid carbon + panel status + panel_features."
+                hvac: "Climate units (room air) -- HA climate.* entities labeled 'hvac' or 'main_thermostat'. Operational view only -- for physical equipment use mode=managed."
+                water: "Water usage sensor + billing rate"
+                gas: "zen_plant_gas sensor if tagged, else graceful N/A + utility contact surfaced"
+                mechanical: "Water heater + sump pump + motors bucket + water_management subnodes. include_inventory=true fetches Grocy room_brief per load area inline."
+                thermal: "Thermal-managed loads -- distinct from HVAC. Water heater, hot tub, freezers."
+                circuits: "Circuit breakdown. Params: circuit_limit (default 10), sort_by (energy|current)"
+                circuit_draw: "Draw vs capacity per circuit -- real amps against real breaker rating. Param: circuit_limit (default 25)."
+                managed: "All provisioned machines from Grocy -- chores due, stock summary, products grouped by label. Param: managed_labels."
+                validate: "Resolution report -- every slot: entity_id, pinned, raw_state, ok."
+                label_suggest: "Integration-scoped label discovery. Param: integration= (required)."
+                ignore: "Tag entity with zen_plant_ignore. Param: target_entity."
+                unignore: "Remove zen_plant_ignore tag. Param: target_entity."
+                leak_auto_shutoff_enable: "House-wide gate for zen_plant_leak_watch automation. Pass leak_auto_shutoff_enabled=true/false to write, omit to read."
+                help: "This reference"
+          - variables:
+              _pl_help_message: >-
+                {%- set ns = namespace(out='Household infrastructure monitoring: electric, water, gas, HVAC, thermal, mechanical, provisioned equipment. ') -%}
+                {%- for k, v in _pl_modes.items() -%}
+                  {%- set ns.out = ns.out ~ 'mode=' ~ k ~ ' -- ' ~ v ~ ' ' -%}
+                {%- endfor -%}
+                {{ ns.out | trim }}
+          - variables:
               _result:
-                status: ok
+                status: help
+                message: "{{ _pl_help_message }}"
                 mode: help
                 tool: zen_dojotools_plant
-                version: "5.10.0"
-                modes:
+                version: "5.11.1"
+                modes: "{{ _pl_modes }}"
+                modes_full:
                   overview: "Top-line snapshot: electric, hvac, thermal, water, gas, mechanical, utility registry"
                   electric: "Live whole-home power + billing + grid carbon + panel status + panel_features (surge_suppressor/generator/battery/solar present t/f, human-confirmed via zen_plant_generator/zen_plant_battery/zen_plant_solar/surge_suppression labels — not SPAN-derived, its PV/battery sensors are always-on stubs regardless of real hardware)"
                   hvac: "Climate units (room air) — HA climate.* entities labeled 'hvac' or 'main_thermostat'. Live mode, setpoint, current temp. Gas utility contact surfaced. Operational view only — for physical equipment (compressor, air handler, parts, chores) use mode=managed (see hvac_guidance)."
@@ -321,7 +390,7 @@ script:
                   step_2: "Tag its products with a machine-type root label: zen_dojotools_inventory mode=products_tag item='Product Name' ha_labels='machine_type,machine_type_part'"
                   step_3: "OR do both at once for new machines: zen_dojotools_inventory mode=provision_bom bom='{\"ha_labels\":\"machine_type,machine_type_part\",\"chore_ha_labels\":\"machine_type,machine_type_chore\",\"parts\":[...]}' confirm_action=true"
                   step_4: "Verify: mode=managed managed_labels=machine_type — check schema_warnings[] is empty and chores/stock look right"
-                  rule: "Plant is read-only. Never ask plant to set labels or locations — use zen_dojotools_inventory for all writes."
+                  rule: "For machine registration/setup specifically (provision_bom, products_tag, locations_metadata_set): use zen_dojotools_inventory, not Plant — mode=managed only READS Grocy products, it never writes them. This is scoped to registration only — Plant itself is NOT read-only overall: mode=ignore/unignore write via zen_dojotools_labels, and mode=leak_auto_shutoff_enable writes the household cabinet directly (see top-level description)."
                 howto:
                   fix_no_area_resolved: "zen_dojotools_inventory mode=locations_metadata_set location_id=<id> area_id=<ha_area_id> — child locations inherit the area automatically, no need to set each one."
                   fix_root_label_is_area: "zen_dojotools_inventory mode=products_tag product_id=<id> ha_labels=<machine_type>,<subtype> — retag each product. Root label must not match an HA area_id (e.g. use 'garage_door' not 'garage')."
@@ -329,8 +398,6 @@ script:
                   fix_chore_bleed: "Chores from other appliances appear because those appliances have no machine group yet. Run provision_bom for each unmapped appliance (dishwasher, refrigerator, range, etc.) — machines are processed alphabetically, so each claims its own chores before shared-area machines see them."
                   investigate_machine: "mode=managed managed_labels=<label> — scope to one machine. Check products[].location_id to find storage locations. Check schema_warnings[].next_call for exact fix commands."
                   provision_bom_no_products: "If provision_bom ran but the machine does not appear in mode=managed: (1) confirm_action=true is REQUIRED — without it provision_bom is a dry run that shows a plan but creates nothing. (2) verify ha_labels is set in the BOM — it is the ONLY mechanism that makes a product visible to mode=managed. A product without ha_labels is invisible to Plant regardless of location or chores. (3) the root label (first value in ha_labels CSV) is the machine group identifier in mode=managed — verify it matches what you expect to see."
-          - stop: help
-            response_variable: _result
 
       # ── IGNORE ────────────────────────────────────────────────────────────
       - if: "{{ _mode == 'ignore' }}"
@@ -342,37 +409,35 @@ script:
                     status: error
                     message: "target_entity is required for mode=ignore"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing target_entity
-                response_variable: _result
-          - action: script.zen_dojotools_labels
-            data:
-              action_type: create
-              label_list: ["zen_plant_ignore"]
-              new_description: "Suppress entity from all zen_dojotools_plant discovery waterfalls"
-              new_icon: "mdi:eye-off"
-              confirm: true
-            response_variable: _create_resp
-          - action: script.zen_dojotools_labels
-            data:
-              action_type: tag
-              label_list: ["zen_plant_ignore"]
-              target_entities: "{{ [target_entity | trim] }}"
-              confirm: true
-            response_variable: _tag_resp
-          - variables:
-              _result:
-                status: ok
-                mode: ignore
-                summary:
-                  entity_id: "{{ target_entity | trim }}"
-                  label: zen_plant_ignore
-                entities:
-                  message: "Entity suppressed from all plant discovery waterfalls"
-                warnings: []
-                next_actions: []
-                caller_token: "{{ _caller_token }}"
-          - stop: ignore
-            response_variable: _result
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_dojotools_labels
+                data:
+                  action_type: create
+                  label_list: ["zen_plant_ignore"]
+                  new_description: "Suppress entity from all zen_dojotools_plant discovery waterfalls"
+                  new_icon: "mdi:eye-off"
+                  confirm: true
+                response_variable: _create_resp
+              - action: script.zen_dojotools_labels
+                data:
+                  action_type: tag
+                  label_list: ["zen_plant_ignore"]
+                  target_entities: "{{ [target_entity | trim] }}"
+                  confirm: true
+                response_variable: _tag_resp
+              - variables:
+                  _result:
+                    status: ok
+                    mode: ignore
+                    summary:
+                      entity_id: "{{ target_entity | trim }}"
+                      label: zen_plant_ignore
+                    entities:
+                      message: "Entity suppressed from all plant discovery waterfalls"
+                    warnings: []
+                    next_actions: []
+                    caller_token: "{{ _caller_token }}"
 
       # ── UNIGNORE ──────────────────────────────────────────────────────────
       - if: "{{ _mode == 'unignore' }}"
@@ -384,29 +449,27 @@ script:
                     status: error
                     message: "target_entity is required for mode=unignore"
                     caller_token: "{{ _caller_token }}"
-              - stop: missing target_entity
-                response_variable: _result
-          - action: script.zen_dojotools_labels
-            data:
-              action_type: untag
-              label_list: ["zen_plant_ignore"]
-              target_entities: "{{ [target_entity | trim] }}"
-              confirm: true
-            response_variable: _untag_resp
-          - variables:
-              _result:
-                status: ok
-                mode: unignore
-                summary:
-                  entity_id: "{{ target_entity | trim }}"
-                  label: zen_plant_ignore
-                entities:
-                  message: "Entity restored to plant discovery waterfalls"
-                warnings: []
-                next_actions: []
-                caller_token: "{{ _caller_token }}"
-          - stop: unignore
-            response_variable: _result
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_dojotools_labels
+                data:
+                  action_type: untag
+                  label_list: ["zen_plant_ignore"]
+                  target_entities: "{{ [target_entity | trim] }}"
+                  confirm: true
+                response_variable: _untag_resp
+              - variables:
+                  _result:
+                    status: ok
+                    mode: unignore
+                    summary:
+                      entity_id: "{{ target_entity | trim }}"
+                      label: zen_plant_ignore
+                    entities:
+                      message: "Entity restored to plant discovery waterfalls"
+                    warnings: []
+                    next_actions: []
+                    caller_token: "{{ _caller_token }}"
 
       # ── UTILITY REGISTRY ──────────────────────────────────────────────────
       - variables:
@@ -471,7 +534,7 @@ script:
           _zp_auto_shutoff: "{{ label_entities('zen_plant_auto_shutoff') | reject('in', _zp_ignored) | list }}"
           _zp_leak_sensor: "{{ label_entities('zen_plant_leak_sensor') | reject('in', _zp_ignored) | list }}"
           _zp_motor: "{{ label_entities('zen_plant_motor') | reject('in', _zp_ignored) | list }}"
-          # SOLAR/BATTERY (2026-08-09) — site-level rollup only, v1. Multiple
+          # SOLAR/BATTERY — site-level rollup only, v1. Multiple
           # inverters/battery banks are SUMMED for power slots, AVERAGED for
           # SOC (a simple average, not capacity-weighted — fine for "how full
           # is the bank overall," not a precision BMS readout). No dedicated
@@ -579,11 +642,11 @@ script:
           _freezer_eids: "{{ _zp_freezer | list }}"
           # Garage water subnodes
           _softener_eids: "{{ _zp_water_softener | list }}"
-          # 2026-08-24: domain-filtered, not just "first tagged" -- a
-          # mislabeled flow-rate sensor (domain sensor, not actuatable)
-          # was silently picked as THE shutoff entity here for hours
-          # before being found live, with nothing surfacing the mistake.
-          # switch/valve only -- the two real actuatable domains for a
+          # Domain-filtered, not just "first tagged" -- a mislabeled
+          # flow-rate sensor (domain sensor, not actuatable) could otherwise
+          # be silently picked as THE shutoff entity here, with nothing
+          # surfacing the mistake. switch/valve only -- the two real
+          # actuatable domains for a
           # water shutoff -- so a future mislabel at least fails safe
           # (resolves empty, mode=leak_auto_shutoff_enable's own
           # shutoff_entities list still shows everything tagged for a
@@ -771,11 +834,9 @@ script:
             {%- endif -%}
 
       # ═══════════════════════════════════════════════════════════════════════
-      # LABEL_SUGGEST (2026-08-07) — design note: "does plant have a way to
-      # detect these and suggest how to tag if it sees some certain kind
-      # of ent?" It didn't; Room Manager has label_discover (area-scoped)
-      # and Media Manager has label_suggest (room-scoped) but Plant had no
-      # equivalent. Plant's domain is house-wide, not room-scoped, so a
+      # LABEL_SUGGEST — Plant's counterpart to Room Manager's label_discover
+      # (area-scoped) and Media Manager's label_suggest (room-scoped).
+      # Plant's domain is house-wide, not room-scoped, so a
       # blind device_class scan (every device_class=power entity in the
       # house — every smart plug, every appliance) would flood with noise.
       # Instead this is INTEGRATION-scoped: point it at a specific
@@ -795,26 +856,24 @@ script:
                     mode: label_suggest
                     message: "integration= required (e.g. integration=span_panel or integration=emporia_vue). Use zen_dojotools_inspect mode=integration_entities to browse available integrations first if unsure of the slug."
                     caller_token: "{{ _caller_token }}"
-              - stop: label_suggest error
-                response_variable: _result
-          - action: script.zen_dojotools_inspect
-            data:
-              mode: integration_entities
-              integration: "{{ integration | trim }}"
-              caller_token: "{{ _caller_token }}"
-            response_variable: _ls_resp
-          - variables:
-              _ls_entities: "{{ (_ls_resp.entity_ids | default([])) if _ls_resp is mapping else [] }}"
-          - if: "{{ _ls_entities | count == 0 }}"
+          - if: "{{ _result is not defined }}"
             then:
+              - action: script.zen_dojotools_inspect
+                data:
+                  mode: integration_entities
+                  integration: "{{ integration | trim }}"
+                  caller_token: "{{ _caller_token }}"
+                response_variable: _ls_resp
               - variables:
-                  _result:
-                    status: error
-                    mode: label_suggest
-                    message: "No entities found for integration '{{ integration }}'. Check the slug via zen_dojotools_inspect mode=integration_entities."
-                    caller_token: "{{ _caller_token }}"
-              - stop: label_suggest no entities
-                response_variable: _result
+                  _ls_entities: "{{ (_ls_resp.get('result', {}).get('entity_ids', [])) if _ls_resp is mapping else [] }}"
+              - if: "{{ _ls_entities | count == 0 }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: label_suggest
+                        message: "No entities found for integration '{{ integration }}'. Check the slug via zen_dojotools_inspect mode=integration_entities."
+                        caller_token: "{{ _caller_token }}"
           # CLASSIFICATION — device_class + entity_id name-pattern heuristics.
           # Deliberately conservative: voltage/breaker_rating/upstream/
           # downstream current are unambiguous bus-level signals (high
@@ -823,141 +882,136 @@ script:
           # produced/net energy and per-circuit instantaneous power have NO
           # Plant slot today — surfaced separately as no_slot[], not
           # silently dropped, so the response stays honest about coverage.
-          - variables:
-              _ls_scan: >-
-                {%- set ns = namespace(candidates=[], no_slot=[]) -%}
-                {%- for e in _ls_entities -%}
-                  {%- set _domain = e.split('.')[0] -%}
-                  {%- set _dc = state_attr(e, 'device_class') | default('', true) -%}
-                  {%- set _existing = labels(e) -%}
-                  {%- set _fname = state_attr(e, 'friendly_name') | default(e, true) -%}
-                  {%- set _eid_l = e | lower -%}
-                  {%- set _sig = namespace(label='', conf='', note='') -%}
-                  {%- if _dc == 'voltage' -%}
-                    {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'panel bus voltage' -%}
-                  {%- elif _dc == 'current' and ('breaker_rating' in _eid_l or 'main_breaker' in _eid_l) -%}
-                    {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'breaker rating diagnostic, bus-level not per-circuit' -%}
-                  {%- elif _dc == 'current' and ('upstream' in _eid_l or 'downstream' in _eid_l) -%}
-                    {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'bus-level upstream/downstream lug current, not a circuit — never tag sub_panel' -%}
-                  {#- import_limit/export_limit is a DSM amperage-CAP setpoint for
-                     the whole panel/site, not a live per-circuit current draw --
-                     the generic current branch below would suggest sub_panel and
-                     pollute mode=circuits sort_by=current with a non-circuit value.
-                     No dedicated Plant slot exists for a DSM limit; route to
-                     no_slot instead of guessing. -#}
-                  {%- elif _dc == 'current' and ('import_limit' in _eid_l or 'export_limit' in _eid_l) -%}
-                    {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'DSM import/export amperage-limit setpoint, not a per-circuit current reading — no dedicated Plant slot today, never tag sub_panel or it will pollute mode=circuits sort_by=current'}] -%}
-                  {%- elif _dc == 'current' -%}
-                    {%- set _sig.label = 'sub_panel' -%}{%- set _sig.conf = 'medium' -%}{%- set _sig.note = 'verify this is a per-circuit current reading before tagging — bus-level current sensors must get main_panel instead' -%}
-                  {%- elif _dc == 'energy' and 'consumed' in _eid_l -%}
-                    {%- set _sig.label = 'consumed_energy' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'feeds mode=circuits sort_by=energy — verify unit (Wh exact fit, kWh sorts fine but do not read the number as literal Wh)' -%}
-                  {%- elif _dc == 'energy' and ('produced' in _eid_l or 'net' in _eid_l) -%}
-                    {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'produced/net energy has no dedicated Plant slot today — only consumed_energy is tracked'}] -%}
-                  {%- elif _dc == 'power' and ('pv' in _eid_l or 'solar' in _eid_l) -%}
-                    {%- set _sig.label = 'zen_plant_pv_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'solar production — summed across all matching entities into mode=electric.solar.pv_power_w, no per-inverter breakdown in v1' -%}
-                  {%- elif _dc == 'power' and 'battery' in _eid_l -%}
-                    {%- set _sig.label = 'zen_plant_battery_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'battery charge/discharge power — summed across all matching entities (multi-bank systems) into mode=electric.solar.battery_power_w' -%}
-                  {#- grid_islandable is a binary_sensor (islanding-capability flag:
-                     does this panel have a Microgrid Interconnect Device present)
-                     that some integrations stamp with device_class 'power' -- a
-                     domain/device_class mismatch that would let it fall into the
-                     generic power+'grid' branch below and get suggested as
-                     zen_plant_grid_power (a numeric watts slot). It's a boolean,
-                     not a power reading, and there's no dedicated islanding-
-                     capability slot in Plant today -- route to no_slot instead.
-                     Must come before the generic power+'grid' check since both
-                     match on the same 'grid' substring. -#}
-                  {%- elif _domain == 'binary_sensor' and ('islandable' in _eid_l or 'islanding' in _eid_l) -%}
-                    {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'grid islanding-capability flag (MID presence), not a power reading — no dedicated Plant slot today, never tag zen_plant_grid_power (that slot expects numeric watts)'}] -%}
-                  {%- elif _dc == 'power' and 'grid' in _eid_l -%}
-                    {%- set _sig.label = 'zen_plant_grid_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'grid import/export power (inverter/solar context) — distinct from zen_plant_site_power, feeds mode=electric.solar.grid_power_w' -%}
-                  {%- elif _dc == 'battery' -%}
-                    {%- set _sig.label = 'zen_plant_battery_soc' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'battery state of charge % — averaged across all matching entities (multi-bank systems) into mode=electric.solar.battery_soc_pct, not capacity-weighted' -%}
-                  {%- elif _domain == 'binary_sensor' and ('off_grid' in _eid_l or 'offgrid' in _eid_l) -%}
-                    {%- set _sig.label = 'zen_plant_off_grid' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'on = inverter running disconnected from grid — feeds mode=electric.solar.grid_connected (inverted)' -%}
-                  {%- elif _dc == 'power' and ('site_power' in _eid_l or 'current_power' in _eid_l) -%}
-                    {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'medium' -%}{%- set _sig.note = 'candidate for zen_plant_site_power override IF this is the true whole-home total — if more than one panel/integration reports a site-power-shaped sensor, pin only ONE (see two_panel_installs in mode=help electric_panel_setup), do not sum them' -%}
-                  {%- elif _dc == 'power' -%}
-                    {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'per-circuit instantaneous power has no dedicated Plant slot today — only consumed_energy (accumulator) and current (amps) feed mode=circuits'}] -%}
-                  {%- elif 'dsm_state' in _eid_l or 'dsm_grid_state' in _eid_l -%}
-                    {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'feeds panel_status.dsm_state in mode=electric' -%}
-                  {%- elif 'relay_state' in _eid_l and 'main' in _eid_l -%}
-                    {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'feeds panel_status.relay_state in mode=electric' -%}
-                  {#- 2026-08-24 (household, real gap found live: a flow-rate
-                     monitoring sensor got manually mislabeled
-                     zen_plant_auto_shutoff -- this waterfall had NO water
-                     branch at all to catch it, electrical-only until now).
-                     moisture device_class is unambiguous -- real leak
-                     puck or aux leak-detect feature, always high
-                     confidence. Actuatable shutoff has no device_class to
-                     key on (it's a plain switch/valve), so domain=valve is
-                     high confidence (HA's own dedicated domain for exactly
-                     this) and a switch name-pattern match is medium --
-                     needs a human glance, same tier as site_power below,
-                     specifically BECAUSE a name match alone can't tell a
-                     real controllable valve from another mislabeled
-                     monitoring entity. Flow/volume sensors are explicitly
-                     routed to no_slot with a warning note instead of
-                     silently ignored, so a human scanning candidates sees
-                     the exact class of thing that caused this bug, not
-                     just an absence. -#}
-                  {%- elif _domain == 'binary_sensor' and _dc == 'moisture' and not ('no_data' in _eid_l or 'below_low_threshold' in _eid_l or 'above_high_threshold' in _eid_l or 'sump_pump_active' in _eid_l) -%}
-                    {%- set _sig.label = 'zen_plant_leak_sensor' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'moisture device_class -- real leak puck or an aux leak-detect feature on another device (e.g. a hardwired light switch)' -%}
-                  {#- excludes no_data/below_low_threshold/above_high_threshold/
-                     sump_pump_active -- diagnostic/operational facets of the SAME
-                     moisture sensor cluster, not a clean leak signal. Same
-                     exclusion already hand-documented in the garage room
-                     package file; missed it on the first pass of this branch,
-                     caught live testing against zwave_js before it ever got
-                     applied to anything. -#}
-                  {%- elif _domain == 'valve' -%}
-                    {%- set _sig.label = 'zen_plant_auto_shutoff' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'HA valve domain -- real actuatable water valve' -%}
-                  {%- elif _domain == 'switch' and ('water_valve' in _eid_l or 'main_water' in _eid_l or 'shutoff' in _eid_l or 'leak_gopher' in _eid_l) -%}
-                    {%- set _sig.label = 'zen_plant_auto_shutoff' -%}{%- set _sig.conf = 'medium' -%}{%- set _sig.note = 'name-pattern match only -- VERIFY this is a real controllable valve switch before tagging, not a monitoring-only entity with a similar name (exact bug found live 2026-08-24: a flow-rate sensor and a valve-position binary_sensor both had plausible names but neither was actuatable)' -%}
-                  {%- elif _dc in ['volume_flow_rate', 'water'] -%}
-                    {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'flow/volume monitoring sensor, NOT a controllable shutoff -- do not tag zen_plant_auto_shutoff even if the name suggests it'}] -%}
-                  {%- endif -%}
-                  {%- if _sig.label != '' and _sig.label not in _existing -%}
-                    {%- set ns.candidates = ns.candidates + [{'entity_id': e, 'friendly_name': _fname, 'domain': _domain, 'device_class': _dc, 'suggested_label': _sig.label, 'confidence': _sig.conf, 'note': _sig.note, 'existing_labels': _existing}] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {{ {'candidates': ns.candidates, 'no_slot': ns.no_slot} }}
-          - if: "{{ not (confirm_action | default(false) | bool) }}"
+          - if: "{{ _result is not defined }}"
             then:
-              - variables:
-                  _result:
-                    status: preview
-                    mode: label_suggest
-                    integration: "{{ integration }}"
-                    entity_count: "{{ _ls_entities | count }}"
-                    candidate_count: "{{ _ls_scan.candidates | count }}"
-                    candidates: "{{ _ls_scan.candidates }}"
-                    no_slot: "{{ _ls_scan.no_slot if _ls_scan.no_slot | count > 0 else none }}"
-                    message: "Preview only — review confidence notes (medium ones need a glance, especially the site_power candidate if this integration exposes more than one panel/meter). Pass confirm_action: true to tag ALL candidates in one shot. no_slot[] lists recognized-but-unmapped entities (produced/net energy, per-circuit instantaneous power) — informational, never auto-tagged."
-                    caller_token: "{{ _caller_token }}"
-              - stop: label_suggest preview
-                response_variable: _result
-          - repeat:
-              for_each: "{{ _ls_scan.candidates }}"
-              sequence:
-                - action: script.zen_dojotools_labels
-                  data:
-                    mode: tag
-                    label_list: ["{{ repeat.item.suggested_label }}"]
-                    target_entities: ["{{ repeat.item.entity_id }}"]
-                    confirm: true
-          - variables:
-              _result:
-                status: ok
-                mode: label_suggest
-                integration: "{{ integration }}"
-                applied_count: "{{ _ls_scan.candidates | count }}"
-                applied: "{{ _ls_scan.candidates }}"
-                no_slot: "{{ _ls_scan.no_slot if _ls_scan.no_slot | count > 0 else none }}"
-                message: "Applied {{ _ls_scan.candidates | count }} label(s). Run mode=validate and mode=circuits to confirm resolution."
-                caller_token: "{{ _caller_token }}"
-          - stop: label_suggest applied
-            response_variable: _result
+            - variables:
+                _ls_scan: >-
+                  {%- set ns = namespace(candidates=[], no_slot=[]) -%}
+                  {%- for e in _ls_entities -%}
+                    {%- set _domain = e.split('.')[0] -%}
+                    {%- set _dc = state_attr(e, 'device_class') | default('', true) -%}
+                    {%- set _existing = labels(e) -%}
+                    {%- set _fname = state_attr(e, 'friendly_name') | default(e, true) -%}
+                    {%- set _eid_l = e | lower -%}
+                    {%- set _sig = namespace(label='', conf='', note='') -%}
+                    {%- if _dc == 'voltage' -%}
+                      {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'panel bus voltage' -%}
+                    {%- elif _dc == 'current' and ('breaker_rating' in _eid_l or 'main_breaker' in _eid_l) -%}
+                      {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'breaker rating diagnostic, bus-level not per-circuit' -%}
+                    {%- elif _dc == 'current' and ('upstream' in _eid_l or 'downstream' in _eid_l) -%}
+                      {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'bus-level upstream/downstream lug current, not a circuit — never tag sub_panel' -%}
+                    {#- import_limit/export_limit is a DSM amperage-CAP setpoint for
+                       the whole panel/site, not a live per-circuit current draw --
+                       the generic current branch below would suggest sub_panel and
+                       pollute mode=circuits sort_by=current with a non-circuit value.
+                       No dedicated Plant slot exists for a DSM limit; route to
+                       no_slot instead of guessing. -#}
+                    {%- elif _dc == 'current' and ('import_limit' in _eid_l or 'export_limit' in _eid_l) -%}
+                      {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'DSM import/export amperage-limit setpoint, not a per-circuit current reading — no dedicated Plant slot today, never tag sub_panel or it will pollute mode=circuits sort_by=current'}] -%}
+                    {%- elif _dc == 'current' -%}
+                      {%- set _sig.label = 'sub_panel' -%}{%- set _sig.conf = 'medium' -%}{%- set _sig.note = 'verify this is a per-circuit current reading before tagging — bus-level current sensors must get main_panel instead' -%}
+                    {%- elif _dc == 'energy' and 'consumed' in _eid_l -%}
+                      {%- set _sig.label = 'consumed_energy' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'feeds mode=circuits sort_by=energy — verify unit (Wh exact fit, kWh sorts fine but do not read the number as literal Wh)' -%}
+                    {%- elif _dc == 'energy' and ('produced' in _eid_l or 'net' in _eid_l) -%}
+                      {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'produced/net energy has no dedicated Plant slot today — only consumed_energy is tracked'}] -%}
+                    {%- elif _dc == 'power' and ('pv' in _eid_l or 'solar' in _eid_l) -%}
+                      {%- set _sig.label = 'zen_plant_pv_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'solar production — summed across all matching entities into mode=electric.solar.pv_power_w, no per-inverter breakdown in v1' -%}
+                    {%- elif _dc == 'power' and 'battery' in _eid_l -%}
+                      {%- set _sig.label = 'zen_plant_battery_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'battery charge/discharge power — summed across all matching entities (multi-bank systems) into mode=electric.solar.battery_power_w' -%}
+                    {#- grid_islandable is a binary_sensor (islanding-capability flag:
+                       does this panel have a Microgrid Interconnect Device present)
+                       that some integrations stamp with device_class 'power' -- a
+                       domain/device_class mismatch that would let it fall into the
+                       generic power+'grid' branch below and get suggested as
+                       zen_plant_grid_power (a numeric watts slot). It's a boolean,
+                       not a power reading, and there's no dedicated islanding-
+                       capability slot in Plant today -- route to no_slot instead.
+                       Must come before the generic power+'grid' check since both
+                       match on the same 'grid' substring. -#}
+                    {%- elif _domain == 'binary_sensor' and ('islandable' in _eid_l or 'islanding' in _eid_l) -%}
+                      {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'grid islanding-capability flag (MID presence), not a power reading — no dedicated Plant slot today, never tag zen_plant_grid_power (that slot expects numeric watts)'}] -%}
+                    {%- elif _dc == 'power' and 'grid' in _eid_l -%}
+                      {%- set _sig.label = 'zen_plant_grid_power' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'grid import/export power (inverter/solar context) — distinct from zen_plant_site_power, feeds mode=electric.solar.grid_power_w' -%}
+                    {%- elif _dc == 'battery' -%}
+                      {%- set _sig.label = 'zen_plant_battery_soc' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'battery state of charge % — averaged across all matching entities (multi-bank systems) into mode=electric.solar.battery_soc_pct, not capacity-weighted' -%}
+                    {%- elif _domain == 'binary_sensor' and ('off_grid' in _eid_l or 'offgrid' in _eid_l) -%}
+                      {%- set _sig.label = 'zen_plant_off_grid' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'on = inverter running disconnected from grid — feeds mode=electric.solar.grid_connected (inverted)' -%}
+                    {%- elif _dc == 'power' and ('site_power' in _eid_l or 'current_power' in _eid_l) -%}
+                      {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'medium' -%}{%- set _sig.note = 'candidate for zen_plant_site_power override IF this is the true whole-home total — if more than one panel/integration reports a site-power-shaped sensor, pin only ONE (see two_panel_installs in mode=help electric_panel_setup), do not sum them' -%}
+                    {%- elif _dc == 'power' -%}
+                      {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'per-circuit instantaneous power has no dedicated Plant slot today — only consumed_energy (accumulator) and current (amps) feed mode=circuits'}] -%}
+                    {%- elif 'dsm_state' in _eid_l or 'dsm_grid_state' in _eid_l -%}
+                      {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'feeds panel_status.dsm_state in mode=electric' -%}
+                    {%- elif 'relay_state' in _eid_l and 'main' in _eid_l -%}
+                      {%- set _sig.label = 'main_panel' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'feeds panel_status.relay_state in mode=electric' -%}
+                    {#- A flow-rate monitoring sensor could get manually
+                       mislabeled zen_plant_auto_shutoff -- this waterfall
+                       needs a water branch to catch it, not electrical-only.
+                       moisture device_class is unambiguous -- real leak
+                       puck or aux leak-detect feature, always high
+                       confidence. Actuatable shutoff has no device_class to
+                       key on (it's a plain switch/valve), so domain=valve is
+                       high confidence (HA's own dedicated domain for exactly
+                       this) and a switch name-pattern match is medium --
+                       needs a human glance, same tier as site_power below,
+                       specifically BECAUSE a name match alone can't tell a
+                       real controllable valve from another mislabeled
+                       monitoring entity. Flow/volume sensors are explicitly
+                       routed to no_slot with a warning note instead of
+                       silently ignored, so a human scanning candidates sees
+                       the exact class of thing that caused this bug, not
+                       just an absence. -#}
+                    {%- elif _domain == 'binary_sensor' and _dc == 'moisture' and not ('no_data' in _eid_l or 'below_low_threshold' in _eid_l or 'above_high_threshold' in _eid_l or 'sump_pump_active' in _eid_l) -%}
+                      {%- set _sig.label = 'zen_plant_leak_sensor' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'moisture device_class -- real leak puck or an aux leak-detect feature on another device (e.g. a hardwired light switch)' -%}
+                    {#- excludes no_data/below_low_threshold/above_high_threshold/
+                       sump_pump_active -- diagnostic/operational facets of the SAME
+                       moisture sensor cluster, not a clean leak signal. -#}
+                    {%- elif _domain == 'valve' -%}
+                      {%- set _sig.label = 'zen_plant_auto_shutoff' -%}{%- set _sig.conf = 'high' -%}{%- set _sig.note = 'HA valve domain -- real actuatable water valve' -%}
+                    {%- elif _domain == 'switch' and ('water_valve' in _eid_l or 'main_water' in _eid_l or 'shutoff' in _eid_l or 'leak_gopher' in _eid_l) -%}
+                      {%- set _sig.label = 'zen_plant_auto_shutoff' -%}{%- set _sig.conf = 'medium' -%}{%- set _sig.note = 'name-pattern match only -- VERIFY this is a real controllable valve switch before tagging, not a monitoring-only entity with a similar name (a flow-rate sensor or a valve-position binary_sensor can both have plausible names without being actuatable)' -%}
+                    {%- elif _dc in ['volume_flow_rate', 'water'] -%}
+                      {%- set ns.no_slot = ns.no_slot + [{'entity_id': e, 'friendly_name': _fname, 'reason': 'flow/volume monitoring sensor, NOT a controllable shutoff -- do not tag zen_plant_auto_shutoff even if the name suggests it'}] -%}
+                    {%- endif -%}
+                    {%- if _sig.label != '' and _sig.label not in _existing -%}
+                      {%- set ns.candidates = ns.candidates + [{'entity_id': e, 'friendly_name': _fname, 'domain': _domain, 'device_class': _dc, 'suggested_label': _sig.label, 'confidence': _sig.conf, 'note': _sig.note, 'existing_labels': _existing}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ {'candidates': ns.candidates, 'no_slot': ns.no_slot} }}
+            - if: "{{ not (confirm_action | default(false) | bool) }}"
+              then:
+                - variables:
+                    _result:
+                      status: preview
+                      mode: label_suggest
+                      integration: "{{ integration }}"
+                      entity_count: "{{ _ls_entities | count }}"
+                      candidate_count: "{{ _ls_scan.candidates | count }}"
+                      candidates: "{{ _ls_scan.candidates }}"
+                      no_slot: "{{ _ls_scan.no_slot if _ls_scan.no_slot | count > 0 else none }}"
+                      message: "Preview only — review confidence notes (medium ones need a glance, especially the site_power candidate if this integration exposes more than one panel/meter). Pass confirm_action: true to tag ALL candidates in one shot. no_slot[] lists recognized-but-unmapped entities (produced/net energy, per-circuit instantaneous power) — informational, never auto-tagged."
+                      caller_token: "{{ _caller_token }}"
+            - if: "{{ _result is not defined }}"
+              then:
+                - repeat:
+                    for_each: "{{ _ls_scan.candidates }}"
+                    sequence:
+                      - action: script.zen_dojotools_labels
+                        data:
+                          mode: tag
+                          label_list: ["{{ repeat.item.suggested_label }}"]
+                          target_entities: ["{{ repeat.item.entity_id }}"]
+                          confirm: true
+                - variables:
+                    _result:
+                      status: ok
+                      mode: label_suggest
+                      integration: "{{ integration }}"
+                      applied_count: "{{ _ls_scan.candidates | count }}"
+                      applied: "{{ _ls_scan.candidates }}"
+                      no_slot: "{{ _ls_scan.no_slot if _ls_scan.no_slot | count > 0 else none }}"
+                      message: "Applied {{ _ls_scan.candidates | count }} label(s). Run mode=validate and mode=circuits to confirm resolution."
+                      caller_token: "{{ _caller_token }}"
 
       # ── VALIDATE ──────────────────────────────────────────────────────────
       - if: "{{ _mode == 'validate' }}"
@@ -1019,8 +1073,6 @@ script:
                   {%- endfor -%}
                   {{ ns.a }}
                 caller_token: "{{ _caller_token }}"
-          - stop: validate
-            response_variable: _result
 
       # ── HVAC BLOCK ────────────────────────────────────────────────────────
       - variables:
@@ -1193,8 +1245,6 @@ script:
                 warnings: []
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: overview
-            response_variable: _result
 
       # ── ELECTRIC ──────────────────────────────────────────────────────────
       - if: "{{ _mode == 'electric' }}"
@@ -1238,8 +1288,6 @@ script:
                 warnings: []
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: electric
-            response_variable: _result
 
       # ── HVAC ──────────────────────────────────────────────────────────────
       - if: "{{ _mode == 'hvac' }}"
@@ -1257,8 +1305,6 @@ script:
                 warnings: []
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: hvac
-            response_variable: _result
 
       # ── WATER ─────────────────────────────────────────────────────────────
       - if: "{{ _mode == 'water' }}"
@@ -1281,8 +1327,6 @@ script:
                 warnings: []
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: water
-            response_variable: _result
 
       # ── GAS ───────────────────────────────────────────────────────────────
       - if: "{{ _mode == 'gas' }}"
@@ -1300,8 +1344,6 @@ script:
                 warnings: []
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: gas
-            response_variable: _result
 
       # ── MECHANICAL ────────────────────────────────────────────────────────
       - if: "{{ _mode == 'mechanical' }}"
@@ -1338,8 +1380,6 @@ script:
                 next_actions: >-
                   {{ ([('Auto-shutoff is already enabled — zen_plant_leak_watch will close ' ~ (label_entities('zen_plant_auto_shutoff') | join(', ')) ~ ' automatically.' if _mech_shutoff_enabled else 'Auto-shutoff is OFF. Call zen_dojotools_plant mode=leak_auto_shutoff_enable leak_auto_shutoff_enabled=true to close valves automatically on future leaks, or confirm with the household before closing ' ~ (label_entities('zen_plant_auto_shutoff') | join(', ')) ~ ' now.')] if (_mech_leak_wet_names | count > 0) else []) }}
                 caller_token: "{{ _caller_token }}"
-          - stop: mechanical
-            response_variable: _result
 
       # ── THERMAL ───────────────────────────────────────────────────────────
       - if: "{{ _mode == 'thermal' }}"
@@ -1355,8 +1395,6 @@ script:
                 warnings: []
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: thermal
-            response_variable: _result
 
       # ── CIRCUITS ──────────────────────────────────────────────────────────
       - if: "{{ _mode == 'circuits' }}"
@@ -1402,13 +1440,11 @@ script:
                 warnings: []
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: circuits
-            response_variable: _result
 
       # ── CIRCUIT DRAW ─────────────────────────────────────────────────────
       # SPAN already hands over everything needed, no Ohm's-law derivation
       # required: each circuit's current/power sensor carries a real
-      # 'voltage' attribute (120 or 240, confirmed live) and a 'tabs'
+      # 'voltage' attribute (120 or 240) and a 'tabs'
       # attribute ('tabs [14]' = one tab = single-pole, 'tabs [1:3]' = two
       # tabs = double-pole) -- pole count reads straight off tabs, doesn't
       # need to be inferred from voltage. Breaker rating is a SEPARATE
@@ -1514,8 +1550,6 @@ script:
                 warnings: "{{ _cd_warnings }}"
                 next_actions: []
                 caller_token: "{{ _caller_token }}"
-          - stop: circuit_draw
-            response_variable: _result
 
       # ── MANAGED ───────────────────────────────────────────────────────────
       # Label-driven managed-machine view. Any machine bootstrapped via
@@ -1646,6 +1680,7 @@ script:
                 {%- set ns = namespace(machines=[], total_due=0, global_chore_ids=[]) -%}
                 {%- for label, prods in _mgd_groups.items() | sort -%}
                   {%- set pa = namespace(areas=[]) -%}
+                  {%- set _prod_ids = prods | map(attribute='id') | map('int') | list -%}
                   {%- for p in prods -%}
                     {%- set _lid = p.get('location_id') | string | trim -%}
                     {%- set _a = _mgd_loc_area.get(_lid) if _lid not in ['', 'None', 'none'] else none -%}
@@ -1659,7 +1694,19 @@ script:
                     {%- if _br is mapping -%}
                       {%- for c in (_br.get('chores', []) | list) -%}
                         {%- set _cid = c.chore_id | string -%}
-                        {%- if _cid not in cn.seen_ids and _cid not in ns.global_chore_ids -%}
+                        {%- set _c_pid = c.get('product_id', none) -%}
+                        {# A chore linked to a SPECIFIC product only belongs to
+                           that product's own group -- never swept into every
+                           other machine sharing the same area. Only a chore
+                           with no product link at all (discovery='tagged',
+                           product_id=none) is genuinely area-wide and fair
+                           game for first-claim dedup below. Fixes #10480:
+                           bicycle (and everything else in a shared garage
+                           area) was claiming every area-tagged OR
+                           product-linked chore regardless of whose product
+                           it actually belonged to. #}
+                        {%- if (_c_pid is none and _cid not in cn.seen_ids and _cid not in ns.global_chore_ids)
+                               or (_c_pid is not none and _c_pid | int in _prod_ids and _cid not in cn.seen_ids) -%}
                           {%- set cn.chores = cn.chores + [c] -%}
                           {%- set cn.seen_ids = cn.seen_ids + [_cid] -%}
                           {%- if c.get('is_due', false) -%}{%- set cn.due = cn.due + 1 -%}{%- endif -%}
@@ -1738,16 +1785,30 @@ script:
                   {%- endfor -%}
                   {{ ns.items }}
                 caller_token: "{{ _caller_token }}"
-          - stop: managed
-            response_variable: _result
 
       # ── FALLTHROUGH ───────────────────────────────────────────────────────
+      - if: "{{ _result is not defined }}"
+        then:
+          - variables:
+              _result:
+                status: error
+                message: "Unknown mode '{{ _mode }}'. Use overview, electric, hvac, water, gas, mechanical, thermal, circuits, circuit_draw, managed, validate, ignore, unignore, leak_auto_shutoff_enable, help."
+                caller_token: "{{ _caller_token }}"
+
+      # ── SINGLE EXIT ───────────────────────────────────────────────────────
       - variables:
-          _result:
-            status: error
-            message: "Unknown mode '{{ _mode }}'. Use overview, electric, hvac, water, gas, mechanical, thermal, circuits, circuit_draw, managed, validate, ignore, unignore, leak_auto_shutoff_enable, help."
-            caller_token: "{{ _caller_token }}"
-      - stop: unknown mode
+          _plant_envelope_raw: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{- OS.envelope(
+              status='error' if (_result is mapping and (_result.get('status') == 'error')) else 'success',
+              mode=_mode,
+              result=_result,
+              tool='zen_dojotools_plant',
+              caller_token=_caller_token
+            ) -}}
+      - variables:
+          _result: "{{ (_plant_envelope_raw | from_json) if _plant_envelope_raw is string else _plant_envelope_raw }}"
+      - stop: zen_dojotools_plant response
         response_variable: _result
 
 ###############################################################################
@@ -1763,7 +1824,7 @@ script:
 #   - enabled=true:  close every zen_plant_auto_shutoff-labeled switch
 #     immediately, no asking. Fires an FYI alert (no ack needed) after.
 #   - enabled=false: asks live, via the SAME chokepoint every other
-#     mandatory-ack flow in this codebase uses tonight
+#     mandatory-ack flow in this codebase uses
 #     (zen_dojotools_identity mode=request_live_ack, breakthrough=true --
 #     this is exactly the "security or life related" bypass class that
 #     must never be suppressed by the sleep gate). TWO independent
@@ -1794,9 +1855,24 @@ automation:
           _plw_shutoff_all: "{{ label_entities('zen_plant_auto_shutoff') }}"
           _plw_shutoff_switches: "{{ _plw_shutoff_all | select('match', '^switch\\.') | list }}"
           _plw_source: "{{ trigger.entity_id | default('unknown', true) }}"
+      # No shutoff switch labeled: nothing to actuate is a legitimate
+      # reason to skip the shutoff branch, but not a reason to skip telling
+      # anyone. Fire a real alert on this path rather than relying on the
+      # entity ALSO carrying the generic 'moisture' label (which
+      # zen_room_manager_dispatch.yaml separately treats as emergency-class)
+      # -- an unenforced, easy-to-forget second label.
       - if: "{{ _plw_shutoff_switches | count == 0 }}"
         then:
-          - stop: no actuatable shutoff switch labeled -- nothing this automation can do
+          - action: script.zen_dojotools_alertmanager
+            continue_on_error: true
+            data:
+              mode: fire
+              alert_key: "leak_no_shutoff_{{ now().timestamp() | int }}"
+              severity: critical
+              breakthrough: true
+              message: "Leak detected ({{ _plw_source }}) -- no zen_plant_auto_shutoff switch is labeled, so nothing could be auto-shut-off. Manual action needed."
+              notify_target: postman
+          - stop: no actuatable shutoff switch labeled -- alerted instead of silently stopping
       - variables:
           _plw_gate_enabled: >-
             {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}

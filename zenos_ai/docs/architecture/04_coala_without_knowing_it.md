@@ -1,0 +1,113 @@
+# 4. CoALA Without Knowing It
+
+I did not design ZenOS from a paper. I built it one problem at a time. Friday forgot things, so she got memory. The memory was too big to read every turn, so it got summarized. She could describe the house but not change it, so she got tools. She could change things she should not, so the tools got gates.
+
+Much later I found out the shape I had arrived at already had a name.
+
+## 4.1 CoALA
+
+*Cognitive Architectures for Language Agents* (CoALA) is a framework from Sumers, Yao, Narasimhan, and Griffiths, first published in September 2023 and in Transactions on Machine Learning Research in 2024. It draws on decades of cognitive science and symbolic AI to describe a language agent in three parts:
+
+* **Memory.** Working memory for what the agent is thinking about now, and long-term memory split three ways: episodic (what happened), semantic (what is true about the world), and procedural (how to do things).
+* **An action space.** Internal actions that work on memory (retrieval, reasoning, learning) and external actions that ground the agent in its environment.
+* **A decision procedure.** A loop that plans (proposing, evaluating, and selecting actions) and then executes.
+
+Friday's Party, the first public write-up of what became ZenOS, started in February 2025. I had not read CoALA. The mapping was noticed in November 2025, in a review of the architecture as it stood then. By that point every part of the framework already had a working counterpart.
+
+## 4.2 The mapping
+
+```mermaid
+graph TB
+  subgraph WM["Working memory"]
+    F["render_prompt() frame"]
+  end
+  subgraph LTM["Long-term memory"]
+    E["Episodic (short-horizon)<br/>Katas, zen_summary,<br/>zen_event"]
+    S["Semantic<br/>cabinets, labels,<br/>index, topology"]
+    P["Procedural<br/>KFCs, tool contracts,<br/>directives"]
+  end
+  subgraph ACT["Actions"]
+    I["Internal<br/>index, Lens Bus, FileCabinet,<br/>the Monastery, Scribe"]
+    X["External<br/>DojoTools"]
+  end
+  E --> F
+  S --> F
+  P --> F
+  F --> I
+  F --> X
+```
+
+| CoALA | ZenOS | Where |
+|---|---|---|
+| Working memory | The prompt frame assembled every turn: identity, directives, manifest, roster, index, Katas, capsule, overview | Chapter 17 |
+| Episodic memory | Today, short-horizon episodic state: component Katas and their `events`, `zen_summary`, the `zen_event` stream. These carry recent experience and continuity, not durable remembered experience; the history cabinet is what completes the category | Chapters 14, 15, 23 |
+| Semantic memory | Cabinets and drawers, the label graph and its index, room topology | Chapters 7, 8, 9 |
+| Procedural memory | KFC definitions (how to summarize a domain), tool contracts and manifests (how to use a capability), system directives (how to behave) | Chapters 12, 13, 14 |
+| Internal action: retrieval | Index, Library and the Lens Bus, FileCabinet reads | Chapters 7, 8, 13 |
+| Internal action: reasoning | The model itself, plus the Monastery's summarizers reasoning over one domain at a time | Chapter 14 |
+| Internal action: learning | Writes back into memory: Katas, acknowledgements, cabinet updates, and Scribe publishing a KFC into live procedural memory | Chapters 8, 15 |
+| External action: grounding | DojoTools acting on the house through Home Assistant | Chapters 10, 13 |
+| Decision procedure | The agent's own tool-use loop in Home Assistant, with the Abbot deciding when background cognition runs | Chapter 22 |
+
+> **Not yet built.** Episodic memory today is short-horizon: each Kata covers its current period, and older detail is summarized away. The history cabinet is the long-term episodic store, in active development. History cabinets are already provisioned and health-checked. Using them as lasting episodic memory is the planned part.
+
+The code even uses the vocabulary without meaning to. The certificate that gates Scribe's KFC publishing describes itself as writing into Friday's live procedural memory.
+
+## 4.3 Where ZenOS differs
+
+**Memory is maintained, not only retrieved.** CoALA describes agents reading from and writing to memory during their own decision cycles. ZenOS also runs a separate background loop whose only job is keeping memory current: the Monastery summarizes every domain on a schedule, whether anyone is talking to Friday or not (Part IV). By the time the agent wakes, its episodic memory is already written.
+
+**The planner is the model.** ZenOS does not implement CoALA's explicit propose, evaluate, and select planning stage. That is left to the model's own tool-use loop. What ZenOS controls is what that loop can see (the frame) and what it can reach (the tools).
+
+**Execution has an authority layer.** CoALA's decision procedure chooses an action and executes it. It says little about whether this agent should be allowed to take that action at all. In ZenOS that question is a whole part of the book: certification, scope, and a live human acknowledgement stand between a chosen action and its execution (Part V). This is the piece CoALA does not have, and it is where the thesis of this book comes from. The graph an agent may traverse is who that agent is.
+
+## 4.4 What the convergence means
+
+Two efforts starting from different places, a cognitive science framework and a home system built by fixing whatever broke next, ended up with the same memory taxonomy, the same internal and external action division, and the same loop, with durable episodic memory the one piece ZenOS is still completing. I do not think that is coincidence. The problem has a shape. An agent that has to live in a real environment for months, stay grounded, and not forget ends up needing working memory, the three kinds of long-term memory, and a clean line between thinking and acting. Anything that solves the problem seriously is pushed toward that shape.
+
+The part ZenOS adds, authority as graph traversal, is what the problem looks like once the environment is someone's home.
+
+## 4.5 The whole mind
+
+Put the mapping back together and it reads as one loop, from the world, through the substrate and the layers of cognition, to action, and back into the world.
+
+```mermaid
+flowchart TD
+  W["The world<br/>people, rooms, devices, weather, services"] --> HA["Home Assistant: the substrate<br/>entities, history, automations, topology,<br/>always on, deterministic"]
+  HA --> KFC["Domain cognition: KFCs<br/>each domain observed and summarized<br/>into a Kata"]
+  KFC --> TK["Ambient cognition: Trapper Keeper<br/>quiet domains compressed<br/>into a navigable index"]
+  KFC --> SS["Global synthesis: SuperSummary<br/>zen_summary: what is true, what matters,<br/>what to watch"]
+  TK --> SS
+  subgraph MEM["Memory"]
+    SEM["Semantic<br/>cabinets, labels, index"]
+    EPI["Episodic (short-horizon)<br/>Katas, zen_summary, zen_event"]
+    PRO["Procedural<br/>KFCs, contracts, directives"]
+  end
+  subgraph SELF["Self model"]
+    ID["Identity and essence<br/>the capsule"]
+    SYS["System state<br/>health sensors, Flynn"]
+    CRT["Certifications<br/>what I may do"]
+    COG["Cognitive state<br/>confidence, urgency, error"]
+  end
+  SS --> CC["Context core: render_prompt()<br/>who I am, what is happening,<br/>what I can do"]
+  MEM --> CC
+  SELF --> CC
+  CC --> FR["Friday: deliberative cognition<br/>understand, reason, plan, choose tools"]
+  FR --> ACT["Action and tool surface<br/>DojoTools, inside the certification gates"]
+  ACT --> W2["The world, updated"]
+  W2 -. "the loop never ends" .-> HA
+```
+
+Everything above the context core runs whether or not anyone is talking to Friday. Everything below it runs when she is asked, or decides, to act.
+
+> **Not yet built.** The fuller self model is design direction: drives and values as distinct layers (id, ego, and superego), and meta-awareness of the agent's own limits that it can learn from and reflect on. SuperSummary's synthesis does not yet project trajectories or make predictions. It reports current state, attention, and a watchlist. Long-term episodic memory is the history cabinet work described in 4.2.
+
+---
+
+*Reference: Theodore R. Sumers, Shunyu Yao, Karthik Narasimhan, Thomas L. Griffiths. "Cognitive Architectures for Language Agents." Transactions on Machine Learning Research, 2024. [arXiv:2309.02427](https://arxiv.org/abs/2309.02427). The earlier mapping is in [the cognitive architectures whitepaper](../research/whitepaper_cognitive_architectures.md).*
+
+<!-- nav -->
+---
+
+[← The Party](03_the_party.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Principles →](05_principles.md)
+<!-- /nav -->

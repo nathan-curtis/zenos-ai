@@ -1,6 +1,6 @@
 # ZenOS-AI Infrastructure Console
 
-**Version:** 1.3.0 (header) / 1.4.2 (tool_manifest)
+**Version:** 1.5.0
 **File:** `dojotools/dojotools_infra.yaml`
 
 **Entities:**
@@ -11,6 +11,8 @@
 - `script.zen_root_portainer` — internal REST broker used by the codex (`plugins/portainer/portainer.yaml`, **not MCP-exposed**)
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_infra` and `zen_admintools_portainer_acl` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -97,6 +99,39 @@ There is currently no mechanism binding an MCP session to a specific persona cab
 ### Fail Policy
 
 Fail-closed throughout: any ambiguity, missing config, insufficient certification, dispatch failure, or a failed/timed-out household-admin acknowledgment denies the action. There is no best-effort or partial-success path in the write gates.
+
+---
+
+## Z-Wave Diagnostics Codex
+
+A second, independent add-on on the same console script. Read-only and always active — `zwave_js` is either installed or it isn't, so unlike the container-control codex there's no `not_configured` gate on the read modes.
+
+`zwave_js` diagnostic sensors (RTT, dropped/successful commands, node status, last-seen) ship **disabled by default** per device, so cross-node correlation is worthless until they're turned on. "Enabled" is inferred from state-object existence (a disabled entity has none at all; an enabled-but-unavailable entity still has a state object) rather than an entity_registry read, since there's no clean write path to the registry anyway.
+
+### Modes
+
+| Mode | Class | Gating |
+|---|---|---|
+| `zwave_diag_audit` | read | None — every `zwave_js` device, which diagnostic sensors it has, and whether each is enabled |
+| `zwave_ping` | read | None — fires a device's `button.*_ping` (resolved via `container=` name substring). Non-destructive despite the name |
+| `zwave_capabilities_discover` | read | None — generic per-device select/number config parameter enumeration plus other entities. `container=` name substring |
+| `zwave_mapping_audit` | read | None — flags devices missing an area assignment or with zero registered entities. Not a full registry-consistency sweep |
+| `zwave_diag_enable` | x (write) | `infra_zwave_control` cert required. Enables a device's disabled diagnostic entities via `homeassistant.enable_entity`. `container=` name substring, required |
+| `zwave_health_correlate` | read (+ optional ticket sync) | None for the scan itself. Live anomaly scan across dropped/timed-out commands, high RTT (>1000ms), and abnormal `node_status`, grouped by area to surface a probable shared cause (2+ anomalous devices in one area) rather than coincidence |
+
+### `zwave_health_correlate` Scoping
+
+`container=` (a name or area substring) scopes the **whole report** returned to the caller — not just ticket-sync filing. A scoped call only sees anomalies matching that device-name or area-name substring.
+
+Auto-resolve (closing tickets for devices no longer anomalous) always evaluates against the full, unscoped anomaly list regardless of the `container=` scope — a scoped call must never wrongly auto-close an out-of-scope device's ticket just because that particular call didn't look at it.
+
+Passing `caller_id=sync_tickets` additionally files/updates/closes Radar/Zammad tickets (tag `zwave_issue_<device slug>` plus a shared `zwave_issue` tag) for anomalous devices — one open ticket per device, a note added only if its flags changed since the last note, never re-filed. Inert (`status: not_available`) if Radar/Zammad isn't configured on the install; scan-only calls (no `caller_id=sync_tickets`) work regardless.
+
+Devices with no diagnostic sensors enabled are invisible to `zwave_health_correlate` — run `zwave_diag_audit` first, then `zwave_diag_enable` (requires `infra_zwave_control`) to close any gaps.
+
+### Cert: `infra_zwave_control`
+
+Gates `zwave_diag_enable` only (x-class, cert only — no live-ack tier). Grant via `persona_editor mode=cert_req_grant cert_component=infra_zwave_control` (or `zen_dojotools_identity mode=cert_list` to see current status).
 
 ---
 

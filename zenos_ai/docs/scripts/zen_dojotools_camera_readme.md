@@ -1,10 +1,12 @@
-# Zen DojoTools Camera — v1.3.0
+# Zen DojoTools Camera — v5.1.2
 
 **File:** `packages/zenos_ai/dojotools/dojotools_camera.yaml`
 **Script:** `zen_dojotools_camera`
 **CANONICAL HA DOMAIN TOOL — camera domain**
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_camera` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -151,6 +153,8 @@ caller_token: ""
 ### `set_alert_policy` — Write Alert Classification Policy
 
 Writes a `_alert_policy` drawer to the camera's cache entry. Defines how motion events from this camera are classified and where they route. Readable via `info`.
+
+Requires the `camera_alert_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md).
 
 ```yaml
 zen_dojotools_camera:

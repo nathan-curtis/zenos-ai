@@ -1,8 +1,10 @@
-# Zen DojoTools Manifest — v6.4.9 (ZenOS-AI 2026.9.0)
+# Zen DojoTools Manifest — v6.4.11 (ZenOS-AI 2026.9.0)
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_manifest` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -51,10 +53,10 @@ The `mode` field routes the broker to the appropriate subsystem. Default is `cab
 | `publish` | Writes three mini-manifests to the household cabinet: `zen_tool_manifest`, `zen_label_manifest`, `zen_automation_manifest`. Also writes the domain routing table — built dynamically from `label_entities('zen_domain_*')`, no hardcoded domain:entity_id list. |
 | `mcp_sync` | Reconciles MCP-visible tools against the known tool roster. Requires `mcp_tool_list` (JSON array of entity_ids the agent can see). |
 | `bootstrap_stacks` | Auto-registers Lens Bus stack providers. Scans all `zen_stack_*` and `zen_sutra_*` scripts **plus** `script.zen_dojotools_library` (which has no `zen_stack_*` wrapper but is a Lens Bus owner). Calls `tool_manifest` on each, registers any that declare `register_mode` and are not already in `lens_registry`. Idempotent — safe to run repeatedly. See [Lens Bus Auto-Registration](../plugins/lens_bus_autoreg.md). |
-| `bootstrap_kfc` | Auto-registers KFC self-declaring tools. Scans tools in `_bkfc_known`, calls `kfc_manifest` on each, writes live drawer mounts into the dojo cabinet. Fires on `homeassistant_start` + daily `00:01`. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). |
+| `bootstrap_kfc` | Auto-registers KFC self-declaring tools. Scans tools in `_bkfc_known`, calls `kfc_manifest` on each, writes live drawer mounts into the dojo cabinet, including each component's declared `pipeline_tier` (default `keeper`). A changed tier triggers a rewrite. Fires on `homeassistant_start` + daily `00:01`. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). |
 | `health_refresh` | Runs a full per-tool compliance scan and caches the result to the `_health_report` cabinet drawer. `mode=health` reads this cache first, falling back to a live check only if the cache is absent. |
 | `domains` | Live tool/domain/peers graph — which tool owns which domain and what else shares that domain. |
-| `audit_help` | Scans `mode=help` across every discovered `zen_*` tool — surfaces tools with a missing or malformed help surface. |
+| `audit_help` | Scans every discovered `zen_*` tool against the help standard (reference: `dojotools_locks.yaml`). Compliant requires **both** `mode=help` returning `{status: help, message: <non-empty string>}` (envelope-aware — unwraps `.result`; `zen_dojotools_index`'s composite help is a documented passthru exception) **and** `mode=tool_manifest` returning a complete manifest (`tool`, `version`, `display_name`, `required_labels`, `health`). `gap_detail` reports `[tool, help_ok, manifest_ok]` so you can see which half failed. Internal-only `zen_sutra_*`/`zen_stack_*`/`zen_codex_*` tools aren't agent-callable (each is fronted by a compliant `zen_dojotools_*` host), so they're skipped without live calls and reported under `exempt`/`exempt_tools`, never `gap`/`gap_tools` — a fully compliant page reports `gap: 0`. Paged via `page`/`page_size`. |
 | `label_audit` | Read-only gap scan: calls `tool_manifest` on every discovered `zen_*` tool, aggregates `missing_required_labels`/`missing_optional_labels` (`include_optional` default `true`). Reports gaps, creates nothing. Scans the full tool roster including `admintools` (see below). |
 | `cert_audit` (`my_certs` included) | Same fan-out shape as `label_audit`, for KFC certifications instead of labels — calls `tool_manifest` on every discovered tool (full roster including `admintools`) and aggregates whatever each one self-declares in its own `certs_required` field into `catalog: {cert_name: {declared_by: [tools], display_name, description, max_level, gates, live_ack_required_for, grant_via}}`. This is the live replacement for a hand-maintained cert catalog file — `zen_dojotools_persona_editor`'s `cert_grant`/`cert_revoke` read this to validate a cert name isn't a flat typo before the real gate (a live household-admin ack) fires. Catalog membership is a spell-check, never the security boundary — a tool can self-declare whatever it wants here; what actually validates the claim is the live ack, unchanged. `status: issues_found` plus a populated `conflicts` array is the one real authoring bug this catches without an external file to typo-check against: the same cert name declared by two or more tools with a mismatched `max_level`. A tool declaring `certs_required` needs no separate registration step anywhere else — calculated fresh on every call, nothing to keep in sync. `my_certs` cross-references the catalog against `target=`'s actual holdings — held/level/scope per cert — read through `zen_admintools_certadmin mode=cert_list`, the same path `persona_editor` uses. `target=` optional, defaults to the default AI user. One call now answers both "what cert types exist" (`catalog`) and "what do I hold" (`my_certs`); `my_certs_note` is populated if the certadmin read fails, and the response still returns `catalog` alone in that case. |
 | `repair` | Confirm-gated remediation — wraps `label_audit`'s scan, creates missing labels and syncs KFC-bound label description/icon/color. Scans the full tool roster including `admintools`. See [`mode=repair`](#moderepair--label-remediation) below. |
@@ -196,7 +198,7 @@ The self-description is produced by `MF.tool_manifest()` from `zenos_ai/zenos_ma
 tool: zen_dojotools_manifest
 display_name: System Manifest Broker
 tier: dojotools
-version: 6.4.0
+version: 6.4.11
 health:
   configured: true
   status: ok

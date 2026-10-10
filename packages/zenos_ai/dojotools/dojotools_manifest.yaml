@@ -1,20 +1,28 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Manifest
-# Version: 6.4.9
+# Version: 6.4.11
 #
 # Scripts:
-#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.4.9)
+#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.4.11)
 #   system_tools_stamp_default_family_cabinet — Cabinet stamping utility
 #   dojotools_zen_inspect — Entity inspection tool
+#
+# v6.4.10: mode=bootstrap_kfc writes pipeline_tier into the mounted drawer
+#   and includes it in the idempotency comparison, so a component's declared
+#   tier reaches the scheduler and a tier change triggers a rewrite. Before
+#   this, every mount fell back to the scheduler default (keeper).
+#
+# v6.4.11: bootstrap_kfc, the repair pool, bootstrap_stacks, and health_report
+#   now unwrap a tool's response through .result before reading fields off it,
+#   matching audit_help's existing behavior. Enveloped tools (OS.envelope())
+#   nest their real payload there.
 #
 # REBUILT: 2026-06-11 (was 5.1.0 — cabinet scanner only)
 #
 # v6.4.2-6.4.9 changes (fan-out consolidation, 2026-08-19):
 #   - New shared collector zen_admintools_toolscan (dojotools_toolscan.yaml)
 #     replaces each mode's own hand-rolled scan-target-builder + per-tool
-#     tool_manifest fan-out loop. toolmap (new mode, PoC-hardened through
-#     three real bugs — self-recursion, self-exclusion regression, excluded-
-#     vs-missing rollup miscount — then promoted to the reference pattern),
+#     tool_manifest fan-out loop. toolmap (new mode, the reference pattern),
 #     domains, label_audit, cert_audit, and audit are now all thin callers
 #     of toolscan mode=scan full=true, aggregating its results instead of
 #     scanning states.script themselves.
@@ -31,8 +39,6 @@
 #     bootstrap_kfc for its KFC label-sync half). Each would either lose a
 #     real behavior or require a second full scan pass — no win, worth
 #     stating plainly rather than leaving unexplained.
-#   - Every migrated mode's live output verified against a captured pre-
-#     migration baseline before mirroring T -> H, one phase at a time.
 #
 # v6.3.1 changes (2026-07-30):
 #   - mode=label_audit: include_optional=true now also sweeps
@@ -48,16 +54,10 @@
 #     mode=create for the distinct missing labels found — never bypasses that
 #     tool's own confirm gate.
 #
-# 2026-08-18: admintools tier re-included in every scan-target builder
-#   (mode=audit/label_audit/cert_audit + the repair-pool scanner). The
-#   'limit' is undefined crash root-caused to zen_admintools_kitchen_sync
-#   having no mode=tool_manifest branch (unconditionally ran `{{ limit | int
-#   }}` before any mode check — the fields: limit default is UI-only, never
-#   injected on a raw service call) — fixed there, plus zen_admintools_
-#   kungfu_loader (silently normalized 'tool_manifest' to 'status' and ran
-#   real filecabinet reads instead of erroring). The prior exclusion was a
-#   2026-07-29 workaround for that bug, not a design decision — this is not
-#   the same thing as the deliberate "security perimeter" admintools
+# (2026-08-18): admintools tier included in every scan-target builder
+#   (mode=audit/label_audit/cert_audit + the repair-pool scanner) now that
+#   every zen_admintools_* script answers a bare mode=tool_manifest. This is
+#   not the same thing as the deliberate "security perimeter" admintools
 #   exclusion on the health_report scan target, which is untouched.
 #
 # v6.2.0 changes (Zen pull, 2026-07-04 — header bump, content already live on H):
@@ -116,7 +116,7 @@ script:
     mode: queued
     max: 20
     description: >-
-      Zen DojoTools Manifest (6.4.0) — ZenOS system introspection broker.
+      Zen DojoTools Manifest (6.4.9) — ZenOS system introspection broker.
       Single lens for the entire system: cabinets, tools, identity, labels,
       automations, certs, and topology. Pure broker — calls authoritative
       subsystems and aggregates, never a separate hand-maintained source of
@@ -308,7 +308,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.4.9',
+                version='6.4.11',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -321,14 +321,21 @@ script:
                        'autotag': 'write', 'publish': 'write', 'all': 'read',
                        'mcp_sync': 'read', 'bootstrap_stacks': 'read/create',
                        'bootstrap_kfc': 'read/create', 'health_refresh': 'write',
-                       'domains': 'read', 'tool_manifest': 'tool_manifest', 'help': 'help'},
+                       'domains': 'read', 'toolmap': 'read',
+                       'tool_manifest': 'tool_manifest', 'help': 'help'},
                 icon='mdi:sitemap',
                 color='blue',
+                dependencies=[
+                    {'tool': 'zen_admintools_toolscan', 'required': true,
+                     'uses': 'Fan-out tool_manifest collection used by audit, label_audit, cert_audit, repair, toolmap, and domains.'},
+                    {'tool': 'zen_dojotools_labels', 'required': false,
+                     'uses': 'label_audit/repair auto_create=true confirm=true creates missing labels.'},
+                    {'tool': 'zen_admintools_certadmin', 'required': false,
+                     'uses': 'cert_audit reads my_certs holdings for the target AI user.'}
+                ],
 
                 caller_token=caller_token | default('')
             ) | from_json }}
-      - stop: tool_manifest
-        response_variable: result
     # ── mode=help early exit. This tool audits every other tool's
     # mode=help compliance (audit_help) but had never had one itself --
     # the top-level description carried the full per-mode reference inline
@@ -372,8 +379,6 @@ script:
               tool_manifest: "UMP self-description, no side effects."
               help: "This reference."
             caller_token: "{{ caller_token | default('') }}"
-      - stop: help complete
-        response_variable: result
     # ── Normalize inputs ─────────────────────────────────────────────────────
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
@@ -619,8 +624,8 @@ script:
           response_variable: _manifest_write
         - variables:
             manifest: "{{- manifest | combine({'caller_token': caller_token | default('')}) if manifest is mapping else manifest -}}"
-        - stop: cabinets manifest complete
-          response_variable: manifest
+        - variables:
+            result: "{{ manifest }}"
 
       # ── mode: identity ───────────────────────────────────────────────────────
       - conditions: "{{ mode_norm == 'identity' }}"
@@ -637,8 +642,6 @@ script:
               manifest: "{{ _id_raw.get('manifest', {}) if _id_raw is mapping else {} }}"
               household_cabinet: "{{ _id_raw.get('household_cabinet', '') if _id_raw is mapping else '' }}"
               caller_token: "{{ caller_token }}"
-        - stop: identity manifest complete
-          response_variable: result
 
       # ── mode: labels ─────────────────────────────────────────────────────────
       - conditions: "{{ mode_norm == 'labels' }}"
@@ -649,14 +652,16 @@ script:
             action_type: read
             caller_token: "{{ caller_token }}"
         - variables:
+            # zen_dojotools_labels wraps in OS.envelope() -- domain fields
+            # live under .result.
+            _lbl_inner: "{{ _lbl_raw.get('result', _lbl_raw) if _lbl_raw is mapping else {} }}"
+        - variables:
             result:
-              status: "{{ 'success' if _lbl_raw is mapping and (_lbl_raw.get('status') in ['ok', 'success']) else 'error' }}"
+              status: "{{ 'success' if _lbl_inner is mapping and (_lbl_inner.get('status') in ['ok', 'success']) else 'error' }}"
               mode: labels
-              index: "{{ _lbl_raw.get('index', []) if _lbl_raw is mapping else [] }}"
-              count: "{{ (_lbl_raw.get('index', []) if _lbl_raw is mapping else []) | length }}"
+              index: "{{ _lbl_inner.get('index', []) if _lbl_inner is mapping else [] }}"
+              count: "{{ (_lbl_inner.get('index', []) if _lbl_inner is mapping else []) | length }}"
               caller_token: "{{ caller_token }}"
-        - stop: labels manifest complete
-          response_variable: result
 
       # ── mode: tools ──────────────────────────────────────────────────────────
       # Fast scan: entity state check + label cross-reference. No serial calls.
@@ -710,8 +715,6 @@ script:
               callable: "{{ _t_callable }}"
               unavailable: "{{ _t_unavailable }}"
               caller_token: "{{ caller_token }}"
-        - stop: tools manifest complete
-          response_variable: result
 
       # ── mode: bootstrap_stacks ───────────────────────────────────────────────
       # Discovers all zen_stack_* scripts, calls tool_manifest on each, and
@@ -777,7 +780,10 @@ script:
               data:
                 mode: tool_manifest
             - variables:
-                _bs_tm: "{{ _bs_tm_raw if _bs_tm_raw is mapping else {} }}"
+                # Enveloped tools nest their payload under .result -- unwrap once.
+                _bs_tm: >-
+                  {%- set r = _bs_tm_raw if _bs_tm_raw is mapping else {} -%}
+                  {{ r.get('result') if r.get('result') is mapping else r }}
                 _bs_register_mode: >-
                   {{ _bs_tm.get('register_mode', '') | string | trim if _bs_tm is mapping else '' }}
                 _bs_provider_key: >-
@@ -859,8 +865,6 @@ script:
               total_scanned: "{{ _bs_stack_scripts | length }}"
               codex_bootstrap: "{{ _bs_codex_result }}"
               caller_token: "{{ caller_token }}"
-        - stop: bootstrap_stacks complete
-          response_variable: result
 
       # ── mode: bootstrap_kfc ──────────────────────────────────────────────────
       # Scans all zen_dojotools_* + zen_stack_* + zen_sutra_* scripts, calls
@@ -905,16 +909,23 @@ script:
             - variables:
                 _bkfc_tool_name: "{{ repeat.item | replace('script.', '') }}"
                 _bkfc_tool_script: "{{ repeat.item }}"
+                # Enveloped tools (OS.envelope()) nest their real payload under
+                # .result -- {status: success, result: {status: ok, kfc: [...]}}.
+                # Unenveloped tools return the payload at the top level directly.
+                # Unwrap once here so downstream reads work for both shapes.
+                _bkfc_mfst: >-
+                  {%- set r = _bkfc_mfst_raw if _bkfc_mfst_raw is mapping else {} -%}
+                  {{ r.get('result') if r.get('result') is mapping else r }}
                 _bkfc_kfc_raw: >-
-                  {%- set _r = _bkfc_mfst_raw.get('kfc', none) if _bkfc_mfst_raw is mapping else none -%}
+                  {%- set _r = _bkfc_mfst.get('kfc', none) if _bkfc_mfst is mapping else none -%}
                   {%- if _r is string and _r | trim not in ['', 'None', 'none', 'null'] -%}
                     {{ _r | from_json(none) }}
                   {%- else -%}
                     {{ _r }}
                   {%- endif -%}
                 _bkfc_ok: >-
-                  {{ _bkfc_mfst_raw is mapping
-                     and _bkfc_mfst_raw.get('status', '') in ['ok', 'success']
+                  {{ _bkfc_mfst is mapping
+                     and _bkfc_mfst.get('status', '') in ['ok', 'success']
                      and _bkfc_kfc_raw is not none }}
             - variables:
                 # Normalize kfc to list — handles both single-component (mapping)
@@ -965,6 +976,7 @@ script:
                           and ex_args.get('tool', '') == _bkfc_tool_name
                           and ex_args.get('params', {}).get('component', '') == _bkfc_kata_key
                           and ex.get('trigger_subscriptions') == _bkfc_comp.get('trigger_subscriptions', '')
+                          and ex.get('pipeline_tier', 'keeper') == (_bkfc_comp.get('pipeline_tier', 'keeper') | lower)
                           and ex.get('component_instructions', '') == ''
                         ) }}
                   - if: "{{ _bkfc_kata_key != '' and _bkfc_needs_write }}"
@@ -996,6 +1008,7 @@ script:
                               'emission_cooldown_minutes': _bkfc_comp.get('emission_cooldown_minutes', 1440),
                               'delay_seconds': _bkfc_comp.get('delay_seconds', 0),
                               'kata_key': _bkfc_kata_key,
+                              'pipeline_tier': (_bkfc_comp.get('pipeline_tier', 'keeper') | lower),
                               'meta': _bkfc_comp.get('meta', {'enabled': true})
                             } | tojson
                           }}
@@ -1044,8 +1057,6 @@ script:
               errors: "{{ _bkfc_errors }}"
               total_scanned: "{{ _bkfc_known | length }}"
               caller_token: "{{ caller_token }}"
-        - stop: bootstrap_kfc complete
-          response_variable: result
 
       # ── mode: automations ────────────────────────────────────────────────────
       - conditions: "{{ mode_norm == 'automations' }}"
@@ -1073,8 +1084,6 @@ script:
                   'caller_token': caller_token
                 }
               }}
-        - stop: automations manifest complete
-          response_variable: result
 
       # ── mode: structure ──────────────────────────────────────────────────────
       - conditions: "{{ mode_norm == 'structure' }}"
@@ -1103,8 +1112,6 @@ script:
               lens_registry: "{{ _lr }}"
               provider_count: "{{ (_lr.get('providers', {}) if _lr is mapping else {}) | length }}"
               caller_token: "{{ caller_token }}"
-        - stop: structure manifest complete
-          response_variable: result
 
       # ── mode: audit ──────────────────────────────────────────────────────────
       # Full drift scan — calls tool_manifest on every zen_* script and reports:
@@ -1116,7 +1123,7 @@ script:
       # Slow (30-60s). Operator diagnostic only.
       - conditions: "{{ mode_norm == 'audit' }}"
         sequence:
-        # Phase 5 of fan-out consolidation (2026-08-19): retrofitted onto
+        # Phase 5 of fan-out consolidation: retrofitted onto
         # zen_admintools_toolscan, same shape as label_audit/cert_audit
         # before it. toolscan only enumerates callable (state in off/on)
         # tools -- _a_unavailable stays a local computation since toolscan
@@ -1231,8 +1238,6 @@ script:
                 help_surface:
                   note: "run mode=audit_help for live help compliance scan"
               caller_token: "{{ caller_token }}"
-        - stop: audit complete
-          response_variable: result
 
       # ── mode: label_audit ────────────────────────────────────────────────────
       # admintools tier is included in scan targets — see header note above
@@ -1248,7 +1253,7 @@ script:
       # creates those too — same confirm gate, no separate override needed.
       - conditions: "{{ mode_norm == 'label_audit' }}"
         sequence:
-        # Phase 3 of fan-out consolidation (2026-08-19): retrofitted onto
+        # Phase 3 of fan-out consolidation: retrofitted onto
         # zen_admintools_toolscan, same shape as toolmap/domains before it.
         # toolscan's default prefix set (dojotools/admintools/stack/sutra)
         # already matches this mode's own scan scope exactly -- no prefixes=
@@ -1336,7 +1341,7 @@ script:
                 label_list: "{{ _la_create_pool }}"
                 confirm: true
             - variables:
-                _la_created: "{{ _la_create_raw.get('created_labels', []) if _la_create_raw is mapping else [] }}"
+                _la_created: "{{ (_la_create_raw.get('result', _la_create_raw) if _la_create_raw is mapping else {}).get('created_labels', []) }}"
                 result:
                   status: "{{ 'remediated' if _la_created | length > 0 else 'issues_found' }}"
                   mode: label_audit
@@ -1367,8 +1372,6 @@ script:
                 note: "{{ 'Pass auto_create=true confirm=true to create these labels via zen_dojotools_labels.' if _la_create_pool | length > 0 else '' }}"
                 errors: "{{ _la_errors }}"
                 caller_token: "{{ caller_token }}"
-        - stop: label_audit complete
-          response_variable: result
 
       # ── mode: cert_audit ──────────────────────────────────────────────────────
       # Same fan-out-tool_manifest-and-aggregate shape as label_audit above, for
@@ -1377,7 +1380,7 @@ script:
       # separate static file (.persona_certs/cert_catalog.json) to keep in
       # sync. A tool's tool_manifest certs_required is the single
       # source of truth for what that cert is/does; a tool can SAY whatever it
-      # wants here, self-escalation is prevented downstream by cert_grant's live-
+      # wants here, self-escalation is prevented downstream by cert_req_grant's live-
       # ack gate (validating the CLAIM, not gatekeeping the catalog) -- not by
       # this broker refusing to list something. conflicts surfaces the one real
       # authoring bug worth flagging: the same cert name declared by two+ tools
@@ -1385,7 +1388,7 @@ script:
       # or duplicated a cert name instead of reusing the shared one). ──
       - conditions: "{{ mode_norm == 'cert_audit' }}"
         sequence:
-        # Phase 4 of fan-out consolidation (2026-08-19): retrofitted onto
+        # Phase 4 of fan-out consolidation: retrofitted onto
         # zen_admintools_toolscan, same shape as label_audit in Phase 3.
         # Same expected coverage gap: toolscan can't audit itself through
         # this path (self-excludes its own entity on a full scan).
@@ -1453,11 +1456,43 @@ script:
                       'gates': (_existing.get('gates', []) + c.get('gates', [])) | unique | list,
                       'live_ack_required_for': (_existing.get('live_ack_required_for', []) + c.get('live_ack_required_for', [])) | unique | list,
                       'grant_via': c.get('grant_via', _existing.get('grant_via', '')),
-                      'declared_by': (_existing.get('declared_by', []) + [entry.get('tool', '')]) | unique | list
+                      'declared_by': (_existing.get('declared_by', []) + [entry.get('tool', '')]) | unique | list,
+                      'bundle': (_existing.get('bundle', []) + (c.get('bundle', []) if c.get('bundle', []) is sequence and c.get('bundle', []) is not string else ([c.get('bundle')] if c.get('bundle') else []))) | unique | list
                     } -%}
                     {%- set ns.map = ns.map | combine({_cn: _merged}) -%}
                   {%- endif -%}
                 {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.map }}
+        # ── Bundles view -- two sources merged. (1) Code-tagged: each
+        # cert's own 'bundle' tag, declared alongside the cert itself, no
+        # separate registry to keep in sync -- opt-in, not automatic.
+        # (2) Custom: household cabinet cert_bundles_custom drawer,
+        # runtime-editable via zen_admintools_certadmin mode=cert_bundle_set
+        # (operator-only, not agent-exposed) without a code change -- for
+        # bundles that need to stay editable, e.g. a "break glass" recovery
+        # set. A name defined in both is merged (union of members), not
+        # one silently overriding the other. ──
+        - variables:
+            _ca_bundles_code: >-
+              {%- set ns = namespace(map={}) -%}
+              {%- for _cn, _entry in _ca_catalog.items() -%}
+                {%- for _bn in _entry.get('bundle', []) -%}
+                  {%- set ns.map = ns.map | combine({_bn: (ns.map.get(_bn, []) + [_cn]) | unique | list}) -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.map }}
+            _ca_bundles_custom_hh: >-
+              {{ states('sensor.zen_default_household_cabinet_resolved') | default('', true) | string | trim }}
+        - variables:
+            _ca_bundles_custom_raw: >-
+              {%- set _hv = state_attr(_ca_bundles_custom_hh, 'variables') | default({}, true) if _ca_bundles_custom_hh not in ['', 'unavailable', 'unknown'] else {} -%}
+              {%- set _d = _hv.get('cert_bundles_custom', {}) if _hv is mapping else {} -%}
+              {{ (_d.get('value', _d) if _d is mapping else {}) }}
+            _ca_bundles: >-
+              {%- set ns = namespace(map=_ca_bundles_code) -%}
+              {%- for _bn, _members in (_ca_bundles_custom_raw if _ca_bundles_custom_raw is mapping else {}).items() -%}
+                {%- set ns.map = ns.map | combine({_bn: (ns.map.get(_bn, []) + (_members if _members is sequence and _members is not string else [])) | unique | list}) -%}
               {%- endfor -%}
               {{ ns.map }}
         - variables:
@@ -1490,6 +1525,8 @@ script:
             target: "{{ target | default('') }}"
             caller_token: "{{ caller_token }}"
         - variables:
+            _ca_my_certs_raw: "{{ _ca_my_certs_raw.get('result', _ca_my_certs_raw) if _ca_my_certs_raw is mapping else _ca_my_certs_raw }}"
+        - variables:
             _ca_my_certs_ok: "{{ _ca_my_certs_raw is mapping and _ca_my_certs_raw.get('status', '') == 'ok' }}"
             _ca_held: "{{ _ca_my_certs_raw.get('certifications', {}) if _ca_my_certs_ok else {} }}"
             _ca_my_certs: >-
@@ -1515,6 +1552,7 @@ script:
               tools_declaring_certs: "{{ _ca_results }}"
               declared_certs: "{{ _ca_declared_certs }}"
               catalog: "{{ _ca_catalog }}"
+              bundles: "{{ _ca_bundles }}"
               my_certs: "{{ _ca_my_certs }}"
               my_certs_target: "{{ _ca_my_certs_raw.get('target', '') if _ca_my_certs_ok else '' }}"
               my_certs_note: >-
@@ -1524,8 +1562,6 @@ script:
                 {{ 'Same cert name declared with mismatched max_level across tools -- authoring bug, pick one canonical declaration.' if _ca_conflicts | length > 0 else '' }}
               errors: "{{ _ca_errors }}"
               caller_token: "{{ caller_token }}"
-        - stop: cert_audit complete
-          response_variable: result
 
       # ── mode: repair ─────────────────────────────────────────────────────────
       # General-purpose remediation entry point — deliberately named 'repair'
@@ -1635,7 +1671,11 @@ script:
                 data:
                   mode: kfc_manifest
               - variables:
-                  _rp_kfc_list: "{{ _rp_kfc_raw.get('kfc', []) if _rp_kfc_raw is mapping else [] }}"
+                  # Enveloped tools nest their payload under .result -- unwrap once.
+                  _rp_kfc_list: >-
+                    {%- set r = _rp_kfc_raw if _rp_kfc_raw is mapping else {} -%}
+                    {%- set r = r.get('result') if r.get('result') is mapping else r -%}
+                    {{ r.get('kfc', []) if r is mapping else [] }}
               - variables:
                   # icon/color: prefer a per-component override if the tool's
                   # kfc_manifest entry ever declares its own icon/color; else
@@ -1691,7 +1731,7 @@ script:
                 label_list: "{{ _rp_plain_create_pool }}"
                 confirm: true
             - variables:
-                _rp_created: "{{ _rp_create_raw.get('created_labels', []) if _rp_create_raw is mapping else [] }}"
+                _rp_created: "{{ (_rp_create_raw.get('result', _rp_create_raw) if _rp_create_raw is mapping else {}).get('created_labels', []) }}"
           default:
           - variables:
               _rp_created: []
@@ -1709,7 +1749,7 @@ script:
                   {{ {'mode': 'create', 'label_list': [repeat.item.label], 'new_description': repeat.item.component_summary, 'confirm': true}
                      | combine({'new_icon': repeat.item.icon} if repeat.item.icon != '' else {})
                      | combine({'new_color': repeat.item.color} if repeat.item.color != '' else {}) }}
-              - if: "{{ repeat.item.label in (_rp_kfc_create_resp.get('created_labels', []) if _rp_kfc_create_resp is mapping else []) }}"
+              - if: "{{ repeat.item.label in ((_rp_kfc_create_resp.get('result', _rp_kfc_create_resp) if _rp_kfc_create_resp is mapping else {}).get('created_labels', [])) }}"
                 then:
                 - variables:
                     _rp_kfc_created: "{{ _rp_kfc_created + [{'label': repeat.item.label, 'tool': repeat.item.tool}] }}"
@@ -1796,8 +1836,6 @@ script:
                 note: "{{ 'Pass confirm=true to create/sync labels now.' if (_rp_create_pool | length > 0 or _rp_kfc_needs_update | length > 0) else '' }}{{ ' Existing KFC labels shown in would_skip_existing_kfc_labels will not be touched unless force=true or force_labels includes them, plus force_ack=\"yes I meant to do that\".' if _rp_kfc_unchanged | length > 0 else '' }}{{ ' force/force_labels requested but force_ack did not match verbatim — ignored this call.' if _rp_force_blocked else '' }}"
                 errors: "{{ _rp_errors }}"
                 caller_token: "{{ caller_token }}"
-        - stop: repair complete
-          response_variable: result
 
       # ── mode: audit_help ─────────────────────────────────────────────────────
       # Calls mode=help on every zen_* tool, checks if response.cases is a mapping.
@@ -1827,29 +1865,74 @@ script:
             _ah_callable: "{{ _ah_all[_ah_start:_ah_end] }}"
             _ah_total: "{{ _ah_all | length }}"
             _ah_results: []
+        - variables:
+            # Tools whose help is a deliberate composite/passthrough of other
+            # tools' help (e.g. index fans out to query+inspect) instead of a
+            # flat locks-style message string. Documented exception, not a gap.
+            _ah_passthru_exceptions: ['zen_dojotools_index']
         - repeat:
             for_each: "{{ _ah_callable }}"
             sequence:
             - variables:
-                _ah_help_raw: {}
-            - action: "{{ repeat.item }}"
-              continue_on_error: true
-              response_variable: _ah_help_raw
-              data:
-                mode: help
+                _ah_tool_name: "{{ repeat.item | replace('script.', '') }}"
+                # Internal-only tiers (sutra/stack/codex): never directly
+                # agent-callable, always fronted by an already-audited
+                # zen_dojotools_* host tool. Reported as exempt, not gap --
+                # skip the live calls entirely rather than judge them against
+                # a contract that was never theirs to meet.
+                _ah_is_exempt_tier: "{{ _ah_tool_name.startswith('zen_sutra_') or _ah_tool_name.startswith('zen_stack_') or _ah_tool_name.startswith('zen_codex_') }}"
             - variables:
-                _ah_ok: >-
+                _ah_help_raw: {}
+                _ah_manifest_raw: {}
+            - if: "{{ not _ah_is_exempt_tier }}"
+              then:
+              - action: "{{ repeat.item }}"
+                continue_on_error: true
+                response_variable: _ah_help_raw
+                data:
+                  mode: help
+              - action: "{{ repeat.item }}"
+                continue_on_error: true
+                response_variable: _ah_manifest_raw
+                data:
+                  mode: tool_manifest
+            - variables:
+                _ah_help_ok: >-
                   {%- set r = _ah_help_raw if _ah_help_raw is mapping else {} -%}
-                  {{ r.get('cases') is mapping }}
+                  {%- set r2 = r.get('result', {}) if r.get('result', {}) is mapping else {} -%}
+                  {%- set ns = namespace(ok=false) -%}
+                  {%- for d in [r, r2] -%}
+                    {%- if d.get('status') == 'help' and d.get('message') is string and d.get('message') | length > 0 -%}
+                      {%- set ns.ok = true -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.ok or (_ah_tool_name in _ah_passthru_exceptions) }}
+                _ah_manifest_ok: >-
+                  {%- set m = _ah_manifest_raw if _ah_manifest_raw is mapping else {} -%}
+                  {%- set m2 = m.get('result', {}) if m.get('result', {}) is mapping else {} -%}
+                  {%- set ns = namespace(ok=false) -%}
+                  {%- for d in [m, m2] -%}
+                    {%- if d.get('tool') and d.get('version') and d.get('display_name') and (d.get('required_labels') is not none) and (d.get('health') is mapping) -%}
+                      {%- set ns.ok = true -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.ok }}
+            - variables:
+                _ah_ok: "{{ _ah_help_ok and _ah_manifest_ok }}"
             - variables:
                 _ah_results: >-
                   {{ _ah_results + [{
-                    'tool': repeat.item | replace('script.', ''),
-                    'compliant': _ah_ok
+                    'tool': _ah_tool_name,
+                    'compliant': _ah_ok,
+                    'exempt': _ah_is_exempt_tier,
+                    'help_ok': _ah_help_ok,
+                    'manifest_ok': _ah_manifest_ok
                   }] }}
         - variables:
-            _ah_compliant: "{{ _ah_results | selectattr('compliant') | map(attribute='tool') | list }}"
-            _ah_gap: "{{ _ah_results | rejectattr('compliant') | map(attribute='tool') | list }}"
+            _ah_real: "{{ _ah_results | rejectattr('exempt') | list }}"
+            _ah_exempt_list: "{{ _ah_results | selectattr('exempt') | map(attribute='tool') | list }}"
+            _ah_compliant: "{{ _ah_results | rejectattr('exempt') | selectattr('compliant') | map(attribute='tool') | list }}"
+            _ah_gap: "{{ _ah_results | rejectattr('exempt') | rejectattr('compliant') | map(attribute='tool') | list }}"
             result:
               status: "{{ 'clean' if _ah_gap | length == 0 else 'issues_found' }}"
               mode: audit_help
@@ -1861,12 +1944,18 @@ script:
               scanned: "{{ _ah_results | length }}"
               compliant: "{{ _ah_compliant | length }}"
               gap: "{{ _ah_gap | length }}"
+              exempt: "{{ _ah_exempt_list | length }}"
               compliant_tools: "{{ _ah_compliant }}"
               gap_tools: "{{ _ah_gap }}"
-              note: "compliant = mode=help returns {cases: mapping}; gap = missing handler or non-cases shape"
+              exempt_tools: "{{ _ah_exempt_list }}"
+              gap_detail: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for r in _ah_real | rejectattr('compliant') -%}
+                  {%- set ns.out = ns.out + [[r.tool, r.help_ok, r.manifest_ok]] -%}
+                {%- endfor -%}
+                {{ ns.out }}
+              note: "compliant requires BOTH: mode=help returns {status: help, message: <string>} (gold standard: dojotools_locks.yaml) or a documented passthru exception (index), AND mode=tool_manifest returns a full manifest (tool, version, display_name, required_labels, health). exempt_tools (zen_sutra_*/zen_stack_*/zen_codex_*) are internal-only, never directly agent-callable, fronted by an already-audited zen_dojotools_* host -- not scanned, not counted toward gap. gap_detail is [tool, help_ok, manifest_ok] per failing real tool."
               caller_token: "{{ caller_token }}"
-        - stop: audit_help complete
-          response_variable: result
 
       # ── mode: health ─────────────────────────────────────────────────────────
       # Reads pre-computed _health_report cabinet drawer (written by health_refresh).
@@ -1910,8 +1999,6 @@ script:
                     deviating: "{{ _h_devs }}"
                   detail_hint: "Call mode=health_refresh for a fresh per-tool compliance scan."
                   caller_token: "{{ caller_token }}"
-            - stop: health cache hit
-              response_variable: result
           default:
           # Cache absent — lightweight fallback (no per-tool manifest calls)
           - action: script.zen_dojotools_identity
@@ -1927,7 +2014,7 @@ script:
           - variables:
               _h_cab_sensor: "{{ states('sensor.zen_cabinet_health') | default('unknown') }}"
               _id_ok: "{{ _h_identity is mapping and (_h_identity.get('status') in ['ok', 'success']) }}"
-              _lbl_ok: "{{ _h_labels is mapping and _h_labels.get('status') == 'ok' }}"
+              _lbl_ok: "{{ _h_labels is mapping and _h_labels.get('status') != 'error' }}"
               _h_callable_ct: >-
                 {%- set ns = namespace(n=0) -%}
                 {%- for e in states.script -%}
@@ -1961,8 +2048,6 @@ script:
                     broken: "{{ _h_unavail_ct }}"
                     deviating: []
                 caller_token: "{{ caller_token }}"
-          - stop: health fallback
-            response_variable: result
 
       # ── mode: health_refresh ─────────────────────────────────────────────────
       # Runs full per-tool compliance scan (slow — 10-30s). Writes result to
@@ -2012,7 +2097,7 @@ script:
               {{ parsed if parsed is mapping else {} }}
             _hr_cab_sensor: "{{ states('sensor.zen_cabinet_health') | default('unknown') }}"
             _hr_id_ok: "{{ _hr_identity is mapping and (_hr_identity.get('status') in ['ok', 'success']) }}"
-            _hr_lbl_ok: "{{ _hr_labels is mapping and _hr_labels.get('status') == 'ok' }}"
+            _hr_lbl_ok: "{{ _hr_labels is mapping and _hr_labels.get('status') != 'error' }}"
             _hr_callable: >-
               {%- set ns = namespace(out=[]) -%}
               {%- for e in states.script -%}
@@ -2102,8 +2187,10 @@ script:
               data:
                 mode: tool_manifest
             - variables:
+                # Enveloped tools nest their payload under .result -- unwrap once.
                 _hr_tm: >-
-                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+                  {%- set r = _hr_tm_raw if _hr_tm_raw is mapping else {} -%}
+                  {{ r.get('result') if r.get('result') is mapping else r }}
             - variables:
                 _hr_tm_ok: >-
                   {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
@@ -2208,8 +2295,10 @@ script:
               data:
                 mode: tool_manifest
             - variables:
+                # Enveloped tools nest their payload under .result -- unwrap once.
                 _hr_tm: >-
-                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+                  {%- set r = _hr_tm_raw if _hr_tm_raw is mapping else {} -%}
+                  {{ r.get('result') if r.get('result') is mapping else r }}
             - variables:
                 _hr_tm_ok: >-
                   {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
@@ -2314,8 +2403,10 @@ script:
               data:
                 mode: tool_manifest
             - variables:
+                # Enveloped tools nest their payload under .result -- unwrap once.
                 _hr_tm: >-
-                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+                  {%- set r = _hr_tm_raw if _hr_tm_raw is mapping else {} -%}
+                  {{ r.get('result') if r.get('result') is mapping else r }}
             - variables:
                 _hr_tm_ok: >-
                   {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
@@ -2420,8 +2511,10 @@ script:
               data:
                 mode: tool_manifest
             - variables:
+                # Enveloped tools nest their payload under .result -- unwrap once.
                 _hr_tm: >-
-                  {{ _hr_tm_raw if _hr_tm_raw is mapping else {} }}
+                  {%- set r = _hr_tm_raw if _hr_tm_raw is mapping else {} -%}
+                  {{ r.get('result') if r.get('result') is mapping else r }}
             - variables:
                 _hr_tm_ok: >-
                   {%- set _tm = _hr_tm if _hr_tm is mapping else {} -%}
@@ -2559,8 +2652,6 @@ script:
                 'cache_written': (_hr_write_raw is mapping and _hr_write_raw.get('status') == 'success'),
                 'caller_token': caller_token
               }) }}
-        - stop: health_refresh complete
-          response_variable: result
 
       # ── mode: autotag ────────────────────────────────────────────────────────
       # Tags tier label (dojotools/admintools/stacks/sutras).
@@ -2631,8 +2722,6 @@ script:
               already_correct: "{{ _at_correct }}"
               skipped: "{{ _at_unavailable }}"
               caller_token: "{{ caller_token }}"
-        - stop: autotag complete
-          response_variable: result
 
       # ── mode: publish ─────────────────────────────────────────────────────────
       # Inlines tools + automations scans to avoid self-call variable scoping.
@@ -2704,6 +2793,8 @@ script:
           data:
             action_type: read
             caller_token: "{{ caller_token }}"
+        - variables:
+            _pub_labels_raw: "{{ (_pub_labels_raw.get('result', _pub_labels_raw)) if _pub_labels_raw is mapping else {} }}"
         - action: script.zen_dojotools_identity
           response_variable: _pub_identity
           continue_on_error: true
@@ -2787,8 +2878,6 @@ script:
               unavailable_count: "{{ _pub_unavailable | length }}"
               domain_map_count: "{{ _pub_domain_map | length }}"
               caller_token: "{{ caller_token }}"
-        - stop: publish complete
-          response_variable: result
 
       # ── mode: all ─────────────────────────────────────────────────────────────
       # Calls subsystems directly — no self-calls (see HA queued script reentrancy
@@ -2798,12 +2887,11 @@ script:
         - choose:
           - conditions: "{{ force_refresh | default(false) }}"
             sequence:
-            # Was "{{ this.entity_id }}" directly — the same blocking
-            # self-call-while-still-executing bug already fixed for
-            # bootstrap_stacks above (HA's recursion guard correctly refuses
-            # it: "Disallowed recursion detected"). script.turn_on spawns an
-            # independent run instead of nesting inside this call stack —
-            # same fix, same reasoning, applied here 2026-08-08.
+            # Not "{{ this.entity_id }}" directly — a blocking
+            # self-call-while-still-executing trips HA's recursion guard
+            # ("Disallowed recursion detected"), same as bootstrap_stacks
+            # above. script.turn_on spawns an independent run instead of
+            # nesting inside this call stack.
             - action: script.turn_on
               continue_on_error: true
               target:
@@ -2824,6 +2912,8 @@ script:
           data:
             action_type: read
             caller_token: "{{ caller_token }}"
+        - variables:
+            _all_labels_raw: "{{ (_all_labels_raw.get('result', _all_labels_raw)) if _all_labels_raw is mapping else {} }}"
         - action: script.zen_dojotools_filecabinet
           response_variable: _all_cabs_raw
           continue_on_error: true
@@ -2883,8 +2973,6 @@ script:
               cabinets: "{{ _all_cabs_raw if _all_cabs_raw is mapping else {} }}"
               structure: "{{ _all_struct_raw if _all_struct_raw is mapping else {} }}"
               caller_token: "{{ caller_token }}"
-        - stop: full system manifest complete
-          response_variable: result
 
       # ── mode: mcp_sync ───────────────────────────────────────────────────────
       # Agent-driven MCP surface check. The agent passes its known MCP tool list
@@ -2937,8 +3025,6 @@ script:
               detail:
                 dojotools_not_in_list: "{{ _ms_dt_not_in_list }}"
               caller_token: "{{ caller_token }}"
-        - stop: mcp_sync complete
-          response_variable: result
 
     # ── mode: domains ────────────────────────────────────────────────────────
     # Scans all zen_ tool_manifests for domain + peers declarations.
@@ -2947,7 +3033,7 @@ script:
     - choose:
       - conditions: "{{ mode_norm == 'domains' }}"
         sequence:
-        # Phase 2 of fan-out consolidation (2026-08-19): retrofitted onto
+        # Phase 2 of fan-out consolidation: retrofitted onto
         # zen_admintools_toolscan, same as toolmap in Phase 1. Real behavior
         # difference caught before migrating: domains scans a DIFFERENT
         # prefix set than toolscan's default (zen_dojotools_/zen_stack_/
@@ -2992,8 +3078,6 @@ script:
               count: "{{ (_dom_filtered | default([])) | length }}"
               graph: "{{ _dom_filtered | default([]) }}"
               caller_token: "{{ caller_token | default('') }}"
-        - stop: domains complete
-          response_variable: result
 
       # ── mode: toolmap ─────────────────────────────────────────────────────
       # Declared-only --
@@ -3011,7 +3095,7 @@ script:
       # safe-degrade case costs nothing to comply with.
       - conditions: "{{ mode_norm == 'toolmap' }}"
         sequence:
-        # Phase 1 of fan-out consolidation (2026-08-19): retrofitted onto
+        # Phase 1 of fan-out consolidation: retrofitted onto
         # zen_admintools_toolscan, a genuinely separate script entity, rather
         # than this mode's own bespoke scan+repeat loop. Originally built as
         # an internal mode on THIS script (_scan_collect) but HA hard-blocks
@@ -3116,22 +3200,35 @@ script:
                 (persona_editor/certadmin/room_manager and their real
                 declared deps), not a full-system rollout yet.
               caller_token: "{{ caller_token }}"
-        - stop: toolmap complete
-          response_variable: result
 
 
-    # ── default: unknown mode ────────────────────────────────────────────────
+    # ── default: unknown mode (only reached if no earlier branch set result) ──
+    - if: "{{ result is not defined }}"
+      then:
+      - variables:
+          result:
+            status: error
+            mode: "{{ mode_norm }}"
+            message: >-
+              Unknown mode '{{ mode_norm }}'. Valid: cabinets, identity, labels,
+              tools, bootstrap_stacks, bootstrap_kfc, automations, structure,
+              audit, health, autotag, publish, all, tool_manifest, domains,
+              toolmap
+            caller_token: "{{ caller_token }}"
+    # ── single true exit for the whole broker ──────────────────────────────
     - variables:
-        result:
-          status: error
-          mode: "{{ mode_norm }}"
-          message: >-
-            Unknown mode '{{ mode_norm }}'. Valid: cabinets, identity, labels,
-            tools, bootstrap_stacks, bootstrap_kfc, automations, structure,
-            audit, health, autotag, publish, all, tool_manifest, domains,
-            toolmap
-          caller_token: "{{ caller_token }}"
-    - stop: unknown mode
+        _mf_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (result is mapping and (result.get('status') == 'error')) else 'success',
+            mode=mode_norm,
+            result=result,
+            tool='zen_dojotools_manifest',
+            caller_token=caller_token
+          ) -}}
+    - variables:
+        result: "{{ (_mf_envelope_raw | from_json) if _mf_envelope_raw is string else _mf_envelope_raw }}"
+    - stop: manifest complete
       response_variable: result
   system_tools_stamp_default_family_cabinet:
     sequence:

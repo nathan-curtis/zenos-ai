@@ -1,118 +1,74 @@
-## **ZenOS-AI Whitepaper "The Book of Friday" — Table of Contents**
+# The Book of Friday, Volume 2: Contents
 
-*(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
+Start with the [Preface](00_preface.md). It states the thesis the rest of the book follows.
 
-*(Content accuracy pass 2026-08-04: chapters 01, 04, 05, 06, 07, 08, 10, 14, 15,
-20, and security_model_ga corrected against current code. Fixed: stale
-entity/script names, fabricated dotted event types, a wrong validation
-signature constant, and several design-target claims (identity_hash
-enforcement, Abbot-level ACL enforcement, ch06/ch14's task-economy/scoring
-model) reframed as not-yet-implemented rather than current behavior. Redirector
-(ch10) documented as shipped — the Cabinet package, `zen_dojotools_filecabinet`.
-Abbot (ch06/ch10/ch14) documented as shipped — the Scheduler + Dispatcher
-working jointly, not a single component. "Monk Summaries" Tier 2 (ch07)
-corrected to `trapper_keeper`, its real and leaner realization; "Monk" clarified
-as the inference-execution step used inside every tier, not a separate layer.)*
+## Part I. Foundations
 
-<img 
-  src="https://github.com/user-attachments/assets/4b337f77-5c3e-4704-9d29-0749b5b7a187"
-  width="512"
-  height="768"
-  alt="image"
-/>
+1. [The Box and the Scrapbook](01_the_box_and_the_scrapbook.md)
+2. [The Sand Dune and the Plinko Board](02_the_sand_dune_and_the_plinko_board.md)
+3. [The Party](03_the_party.md)
+4. [CoALA Without Knowing It](04_coala_without_knowing_it.md)
+5. [Principles](05_principles.md)
 
+## Part II. The Graph
+
+6. [Home Assistant as Substrate](06_home_assistant_substrate.md)
+7. [Labels and the Hypergraph](07_labels_and_the_hypergraph.md)
+8. [Cabinets as Graph](08_cabinets_as_graph.md)
+9. [Spatial Topology](09_spatial_topology.md)
+10. [Exposure: Tools, Not Entities](10_exposure_tools_not_entities.md)
+
+## Part III. The Ontology
+
+11. [Vocabulary](11_vocabulary.md)
+12. [Contracts](12_contracts.md)
+13. [Components](13_components.md)
+
+## Part IV. The Twin
+
+14. [The Monastery](14_the_monastery.md)
+15. [Katas](15_katas.md)
+16. [Live State](16_live_state.md)
+17. [Context Construction](17_context_construction.md)
+
+## Part V. Identity and Authority
+
+18. [Principals](18_principals.md)
+19. [Certification](19_certification.md)
+20. [The Authority Ladder](20_the_authority_ladder.md)
+21. [Identity as Traversal](21_identity_as_traversal.md)
+
+## Part VI. Operation
+
+22. [The Abbot](22_the_abbot.md)
+23. [Resilience](23_resilience.md)
+24. [Developer Standards](24_developer_standards.md)
+25. [Room Manager v3 Reference](25_room_manager_v3.md)
+
+## Closing
+
+26. [Findings](26_findings.md)
+
+## Appendices
+
+27. [Appendices](27_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, the Friday's Party index, and the research cited.
+
+## Beyond the book
+
+The book explains the design. These are the working docs:
+
+* [Documentation Hub](../readme.md): everything, organized by area
+* [Getting Started](../getting_started/readme.md): install, first run, and operator manuals
+* [Script readmes](../scripts/readme.md): one reference per tool, with every mode
+* [Component docs](../components/): Room Manager, Media Manager, ZenLux, AlertManager, and the rest
+* [Kung Fu](../kung_fu/readme.md): building your own components
+* [Cabinets](../cabinets/readme.md), [Library](../library/readme.md), [Templates](../custom_templates/readme.md), [Sensors](../sensors/readme.md)
+* [Release notes](../releases/tron.md)
+
+Volume 1 is the tree at commit `57a935f`.
+
+<!-- nav -->
 ---
 
-## **ZenOS-AI Whitepaper "The Book of Friday" — Table of Contents**
-
-*(Release Target: ZenOS-AI v1.0 — Identity may slip to v1.5)*
-
----
-
-## **0. Preface & Release Notes**
-* **[readme.md](./readme.md)** — Executive overview, architectural intent, release scope.
-* **[00_toc.md](./00_toc.md)** — This document.
-
----
-
-## **1. The Monastery Core**
-* **[01_the_monastery_core.md](./01_the_monastery_core.md)**
-
-## **2. Architectural Overview**
-* **[02_Architectural_Overview.md](./02_Architectural_Overview.md)**
-
-## **3. Cognitive Architecture Foundations**
-* **[03_Cognitive_Architecture_Foundations.md](./03_Cognitive_Architecture_Foundations.md)**
-
-## **4. Cognitive Data Flow**
-* **[04_Cognitive_Data_Flow.md](./04_Cognitive_Data_Flow.md)**
-
-## **5. Reasoning and Kata Design**
-* **[05_Reasoning_and_Kata_Design.md](./05_Reasoning_and_Kata_Design.md)**
-
-## **6. Scheduler and The Abbot**
-* **[06_Scheduler_and_The_Abbot.md](./06_Scheduler_and_The_Abbot.md)**
-
-## **7. Summarizer Pipelines**
-* **[07_Summarizer_Pipelines.md](./07_Summarizer_Pipelines.md)**
-
-## **8. Kata Cabinet**
-* **[08_Kata_Cabinet.md](./08_Kata_Cabinet.md)**
-
-## **9. Identity Architecture**
-* **[09_Identity_Architecture.md](./09_Identity_Architecture.md)**
-
-## **10. Event Substrate and Home Assistant Implementation**
-* **[10_Event_Substrate_and_HomeAssistant_Implementation.md](./10_Event_Substrate_and_HomeAssistant_Implementation.md)**
-
-## **11. RoomState and Perception**
-* **[11_RoomState_and_Perception.md](./11_RoomState_and_Perception.md)**
-
-## **12. LiveState: Authoritative Environment Model**
-* **[12_LiveState_Authoritative_Environment_Model.md](./12_LiveState_Authoritative_Environment_Model.md)**
-
-## **13. Cognitive Context Construction**
-* **[13_Cognitive_Context_Construction.md](./13_Cognitive_Context_Construction.md)**
-
-## **14. Abbot Scheduler and Task Economy**
-* **[14_Abbot_Scheduler_And_Task_Economy.md](./14_Abbot_Scheduler_And_Task_Economy.md)**
-
-## **15. Identity Access Control: Person Capsules**
-* **[15_Identity_AccessControl_PersonCapsules.md](./15_Identity_AccessControl_PersonCapsules.md)**
-
-## **16. Summarizer Engine: Kata Pipeline**
-* **[16_SummarizerEngine_KataPipeline.md](./16_SummarizerEngine_KataPipeline.md)**
-
-## **17. Katas: Structure, Semantics, Validity**
-* **[17_Katas_Structure_Semantics_Validity.md](./17_Katas_Structure_Semantics_Validity.md)**
-
-## **18. Context Frame: Operational Cognitive Surface**
-* **[18_Context_Frame_Operational_Cognitive_Surface.md](./18_Context_Frame_Operational_Cognitive_Surface.md)**
-
-## **19. Resilience and Failure Modes**
-* **[19_Resilience_and_Failure_Modes.md](./19_Resilience_and_Failure_Modes.md)**
-
-## **20. Tool Invocation and Security**
-* **[20_tool_invocation_and_security.md](./20_tool_invocation_and_security.md)**
-
-## **21. Developer Taxonomy and Component Standards**
-* **[21_Developer_Taxonomy_and_Component_Standards.md](./21_Developer_Taxonomy_and_Component_Standards.md)** — Canonical component classes (DojoTool, AdminTool, Root, Sutra, Stack, Codex, KFC, Boot Orchestrator), Stripes, exposure rules, packaging conventions, and the design decision guide for core developers, plugin authors, and reviewers.
-
-## **22. Room Manager v3 & REFLEX: The Living Room-State Engine**
-* **[22_Room_Manager_v3_REFLEX.md](./22_Room_Manager_v3_REFLEX.md)** — The concrete implementation of Chapter 11's RoomState theory: the per-room cascade (`room_state.yaml`), the REFLEX event bus (Signal Dispatcher → scene resolution → nightlight), opt-in constructs (Control Burnout, TV Sleep Timer, Vent Fan Auto), and the one-automation/one-script consolidation. Distinct from `zen_dojotools_room_manager` (RoomReg, spatial topology) — see [components/room_manager_v3_reflex.md](../components/room_manager_v3_reflex.md) for the practical/agent reference and [getting_started/room_manager_operators_manual.md](../getting_started/room_manager_operators_manual.md) for the plain-language operator's manual.
-
----
-
-## **Appendices (Future Work: Sections 23–30)**
-
-Reserved for:
-
-* SSE/MCP v2 architecture  
-* Persona certificates & identity proofs  
-* Kata algebra research  
-* Hypergraph engine v2  
-* External household federation  
-* Distributed Monastery workers  
-* Multimodal pipelines (vision/audio)  
-* Advanced safety model  
-* Formal proofs of invariants
+[← The Book of Friday, Volume 2](00_preface.md) · [The Box and the Scrapbook →](01_the_box_and_the_scrapbook.md)
+<!-- /nav -->

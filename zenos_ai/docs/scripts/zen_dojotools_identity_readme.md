@@ -1,4 +1,4 @@
-# Zen DojoTools Identity — 5.4.0
+# Zen DojoTools Identity — v1.1.2
 
 *Identity resolution, presence, and household/family group management for ZenOS-AI*
 
@@ -67,6 +67,7 @@ flowchart TD
 | Mode | Description | Writes? |
 |---|---|---|
 | `resolve` | Returns identity record for target, or full roster if no target | No |
+| `whoami` | Shared "who is asking" resolver. Human: `console_user`, `resolved_person`, `is_hoh` (from the household cabinet ACLs, never a label; informational only). Agent: `agent`, `agent_entity`, `agent_onboarded`, `is_default`, `is_prime`. Both: household and family memberships. Other tools call this rather than re-deriving identity. | No |
 | `prompt` | Returns rendered prompt capsule for target construct | No |
 | `build_identity_manifest` | Builds `{roster, tree}` and writes to household cabinet | Yes |
 | `household_add_family` | Wires a family cabinet into the household `members.families` list | Yes |
@@ -706,5 +707,5 @@ A Jinja2-callable identity resolver lives at `custom_templates/zenos_ai/zen_iden
 - [User Management](../getting_started/user_management.md) — operator workflow for provisioning and teardown
 - [Profile Editor](zen_dojotools_profile_readme.md) — profile drawer writer
 - [Cabinet Specification](../cabinets/cabinet_spec.md) — valid cabinet and identity shapes
-- [Security Model GA](../architecture/security_model_ga.md) — current policy/caller-token status
+- [Certification](../architecture/19_certification.md) and [Principals](../architecture/18_principals.md): current policy and caller-token status
 - [Script Modules](readme.md) — return path to the internal tool map

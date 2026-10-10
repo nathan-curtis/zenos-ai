@@ -1,8 +1,10 @@
-# Zen DojoTools Summarizers — v5.1.0
+# Zen DojoTools Summarizers — Ninja Summarizer v4.5.3 · SuperSummary v4.5.2
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_supersummary` and `zen_dojotools_ninja_summarizer` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -102,8 +104,9 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 9. **Run library command** — if the component has a `command` field, dispatches it through `command_interpreter.jinja`
 10. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions
 11. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
-12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and monk returned data, writes result to `kata_cabinet[component_slug]`
+12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and the monk's output **parsed into a real, non-empty JSON object**, writes it to `kata_cabinet[component_slug]`. The JSON is extracted by first-`{`/last-`}` (surviving code fences and trailing model prose) and validated with `from_json`; a malformed or fence-stripped response is logged as a parse failure and **not written** — a raw non-empty string is never enough, so a bad run can't stamp a fresh timestamp on an empty drawer. Every successful write also stamps `last_run_at` (unix timestamp) unconditionally — unlike `last_emission_at`, which only updates when urgency crosses `drift_threshold`, so an ambient/low-urgency component like Trapper Keeper still shows it actually ran.
 13. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
+14. **Escalation (action_required components)** — before emitting a `dojotool_call` to `zen_dojotools_urgency_handler`, checks `zen_dojotools_alertmanager mode=check_ack` with `condition_key` = the component's `kata_key`. A live ack suppresses the escalation and fires `emission_suppressed` (`reason: acked`) instead. Coarse, whole-component suppression — see [AlertManager → Acknowledgements](../components/alertmanager.md#acknowledgements) for the key convention.
 
 ### Response
 
@@ -186,7 +189,7 @@ Synthesizes all active component kata drawers into a single `zen_summary` — th
 8. **Build monk prompt** — assembles query, schema (zen_template structure), example, and review data (all component kata values + prompt context)
 9. **Call ai_task.generate_data** — sends prompt to the AI task entity
 10. **Write `zen_supersummary_status`** — records run status + component count to Kata cabinet
-11. **Post `zen_summary`** — if `post_to_kata_cabinet` is true and monk returned data, writes to Kata cabinet as `ZEN_SUMMARY`
+11. **Post `zen_summary`** — if `post_to_kata_cabinet` is true and the monk's output parsed into a real, non-empty JSON object (same first-`{`/last-`}` extraction + `from_json` validation as the Ninja path), writes to Kata cabinet as `ZEN_SUMMARY`. A malformed response is logged and not written.
 12. **Emit event** — fires `zen_dojotools_event_emitter`
 
 ### Pipeline Tier Split (v5.1.0)
@@ -195,14 +198,14 @@ v5.1.0 separates components into three pipeline tiers. Tier is set by the `pipel
 
 | Tier | Values | How SuperSummary handles it |
 |------|--------|----------------------------|
-| `direct` | default when field absent | Full `component_data` included in the monk prompt |
-| `ambient` | `ambient` | Excluded from direct `component_data`. Pre-digested by **Trapper Keeper** into a compact breadcrumb + navigation index. Urgency ≥ 4 promotes the component to `active_components`. |
-| `system` | `system` | Excluded from direct `component_data`. Summary provided via a separate system_summary block. |
+| `keeper` | default when field absent | Full `component_data` included in the monk prompt |
+| `ambient` | `ambient` | Excluded from full `component_data`. Pre-digested by **Trapper Keeper** into a compact breadcrumb + navigation index. Urgency ≥ 4 promotes the component to `active_components`. |
+| `system` | `system` | Excluded from `component_data`. The only system-tier component today is Trapper Keeper, whose output reaches SuperSummary as `ambient_context` (the ambient navigation index). |
 
 **Ambient urgency promotion rule:**
 - Urgency 0–3 → ambient_nav breadcrumb only
 - Urgency 4–5 → also added to `attention` list
-- Urgency 6–10 → promoted to `active_components` (same as direct tier)
+- Urgency 6–10 → promoted to `active_components` (same as keeper tier)
 
 **Trapper Keeper** is SuperSummary's ambient pre-processor. It reads all ambient-tier component kata drawers, extracts a compact breadcrumb (component name, urgency, one-line summary), and builds a navigation index of which ambient components are available and how to reach them via a targeted Ninja run. The Trapper Keeper output is injected into the SuperSummary monk prompt as a navigation aid rather than full data.
 
@@ -265,7 +268,7 @@ The Scheduler drives the summarizers automatically. Default trigger wiring:
 | `ha_start` + `daily_midnight` | Both |
 | `force_summary` | Both (delay skipped) |
 
-Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawer. See [Scheduler readme](zen_dojotools_scheduler_readme.md) and [KFC docs](../../kung_fu/readme.md).
+Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawer. See [Scheduler readme](zen_dojotools_scheduler_readme.md) and [KFC docs](../kung_fu/readme.md).
 
 ---
 
@@ -317,6 +320,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| v4.5.2 | `pipeline_tier` canonical name changed from `direct` to `keeper` (Scheduler already defaulted to `keeper`; docs and `building_a_kfc.md` already used it). Default value, comment block, and prompt-instruction wording updated to match — filter behavior unchanged (`direct` and `keeper` land in the same bucket). Stripped stale incident-narration comments from step 5. |
 | v5.1.0 | Pipeline tier split: `direct`/`ambient`/`system` tiers via `pipeline_tier` KFC field. Trapper Keeper pre-digests ambient-tier components (breadcrumb + navigation index). Ambient urgency promotion rule (0–3=breadcrumb only; 4–5=attention; 6–10=active_components). SuperSummary run governor (`super_burnout_seconds`, default 600s, `force` bypass). Size guard (>200K bytes → abort). Context budget guard (`max_context_tokens`, default 28K). Ninja: `index_call_override`, `parent_component_id`, `staleness_minutes` input fields. `response_variable: result` on all stop steps. Namespace scoping fix on `active_components` iteration. `ZEN_SUMMARY` key case fix. Event→action migration. `library_console` rename. Kata cabinet variable fix. |
 | v4.6.0 | Step 3d — label description resolution: when `component_summary` is empty after reading the Dojo drawer (Scribe `trim_description` path), ninja resolves it from the base label description via `zen_dojotools_labels`. `zen_action_emission_enabled` boolean added (operator-only gate for `suggested_act_event` emission). `emission_cooldown_minutes` Dojo drawer field (default 60 min) gates per-component action event emission; emits `emission_suppressed` on cooldown. FG-38 `from_json` guards on all FileCabinet drawer reads. |
 | v4.3.0 | Dual-seed architecture: new step 3c, `area_id` input field, `_seed_used` gate on HyperIndex, seed whitelist gate (`zen_summarizer_seed_whitelist`). Backward compatible — no seed = old behavior. |

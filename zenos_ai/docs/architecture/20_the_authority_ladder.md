@@ -1,0 +1,154 @@
+# 20. The Authority Ladder
+
+Chapter 19 describes what a certification is. This chapter describes how authority is layered: what an agent must have before it can act, who can change what an agent has, and where a human stays in the loop no matter what the agent holds.
+
+The clearest way I have found to explain the ladder is one ordinary sentence: put the living room back on Auto. If the room is paused, that sentence asks to take back authority a human deliberately removed, and neither the tool nor the model decides whether Friday is trustworthy enough to do it. The tool asks Identity. Putting a room into pause needs no permission at all, because it hands authority back to a human. That asymmetry runs through the whole ladder: actions that increase safety are open, and actions that reclaim authority are gated.
+
+Here is that sentence on a real install, and the push it produces:
+
+<!-- screenshot: ch20_unpause_live_ack.png -->
+> **Screenshot to come.** Friday asked to put a paused room back on Auto, and the live acknowledgement it sends to a household admin's phone. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
+## 20.1 The rungs
+
+Each rung is necessary, and none substitutes for another.
+
+```mermaid
+flowchart TD
+  C["tool call"] --> I{"identity policy"}
+  I -- blocked --> X["denied"]
+  I -- allowed --> AD{"admission<br/>(minted, not yet enforced)"}
+  AD --> DC{"domain cert<br/>and level"}
+  DC -- short --> X
+  DC -- held --> S{"scope"}
+  S -- deny --> X
+  S -- allow --> GO["act"]
+  S -- default --> L{"live ack<br/>needed?"}
+  L -- no --> GO
+  L -- yes --> H{"human"}
+  H -- approved --> GO
+  H -- "declined, timeout,<br/>dispatch failed" --> X
+```
+
+The administrative plane sits beside this path, not on it: it changes the policy the path reads.
+
+| Rung | What it decides | Where it is enforced | Status |
+|---|---|---|---|
+| Identity policy | Is this caller's identity acceptable at all? | `resolve_caller_identity`, `sim_mode_allowed` | Built |
+| Admission | Is this agent a recognized participant in ZenOS? | Base agent certification | Minted at onboarding in 2026.10.0; enforced in 2026.11.0 |
+| Domain certification | May this agent attempt this class of action? | `required_cert` checks in each tool | Built |
+| Scope | Which specific targets does that grant cover or exclude? | `cert_scope_check()` in each tool | Built |
+| Live acknowledgement | Does a human approve this specific action, right now? | `request_live_ack` | Built |
+| Administrative plane | May this caller change the policy itself? | AdminTools, not agent-exposed | Built as an exposure boundary |
+
+A high rung never implies a lower one. Holding a domain certification does not waive the identity policy. A scope `allow` covers the per-call acknowledgement for named targets, but it cannot turn a blocked identity into an allowed one.
+
+## 20.2 Identity policy
+
+The bottom rung is the whole-install policy on simulated identity (Chapter 18). When `sim_mode_allowed` is false and the caller's identity is simulated, `policy_status` is `blocked`, and every certification check fails regardless of what the agent holds. The policy sits in the household cabinet and the factory writes an explicit value on every install, so no install depends on an in-code default.
+
+## 20.3 Admission
+
+> **Built in two phases. Not yet enforced.** Admission is a mandatory base certification an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. The certificate is `zenos.agent.basic`. Flynn requests it at the successful end of onboarding, and like every grant it is issued only after a person approves a live acknowledgement. The approval is the gate, not which tool asked.
+>
+> **Phase 1, 2026.10.0:** the certificate exists in its final dotted shape. Onboarding requests the `zenos_agent_basic` starter bundle, which includes it, so one approval covers both. If the bundle is declined or does not grant it, onboarding asks for the certificate on its own, so a household can admit the agent and still decline the starter capabilities. Agents that already exist recertify through the same live-ack grant instead of a rebuild. Nothing is refused for lacking it yet.
+>
+> **Not yet built:** a check after onboarding that the grant actually landed, and a log-only mode that records what the gate would have denied.
+>
+> **Phase 2, 2026.11.0 'This Is Spinal Tap' (planned):** hook it up and make it meaningful. Once FileCabinet security lands, tools check it, and an agent without it cannot read the tool surface.
+>
+> This section will be rewritten against the code as each phase lands.
+
+## 20.4 Domain certification
+
+This is the rung Chapter 19 covers in full: the tool declares `required_cert` and a level, `resolve_caller_identity` checks it against the resolved identity, and a shortfall returns a `cert_denial()` response. There are 83 of these checks across the tool surface.
+
+The certification boundary is drawn around consequence, not around how dangerous a tool sounds. The cert-gate audit in 2026.10.0 asked "can this action actually hurt something?" of every tool, and gated things that do not sound dangerous but are: sending mail or a Teams message (disclosure of anything the agent has read), deleting a calendar event or to-do item (irreversible loss), setting Teams presence (misrepresenting a person to their organization), editing the mail whitelist (loosening the disclosure policy itself).
+
+## 20.5 Live acknowledgement
+
+For the actions that deserve it, a certified agent still needs a human's approval, every time. `zen_dojotools_identity mode=request_live_ack` is the single chokepoint:
+
+Friday can explain this about herself, because each tool declares it. Asked about the alarm, she describes the system from the twin, then says exactly where her authority ends:
+
+<p align="center">
+  <img src="images/ch20_arm_disarm_authority.jpg" width="400" alt="Friday describes a monitored alarm panel with door, window, motion, and smoke zones, reports it disarmed with all thirteen zones closed and healthy, says she can arm it in four modes if told which, and when asked whether anyone can arm it explains that arming requires the security-control authorization while disarming also requires a fresh household-admin approval every time." />
+</p>
+
+*Friday asked about the security system and whether she can arm it. Arming needs `security_control`; disarming needs that and a fresh household-admin approval every time, and she will not act without an explicit instruction. That is the security tool's own `certs_required` declaration, read back accurately: arm is cert only, disarm is live acknowledgement on every call. Real 2026.10.0 output, September 2026; camera locations redacted.*
+
+1. It fires an actionable notification through `zen_dojotools_alertmanager mode=fire`, to Postman by default, with yes and no buttons and `breakthrough: true` so the quiet-hours gate cannot suppress it.
+2. It polls `get_response` for the answer.
+3. It returns `approved`, `declined`, `timeout`, or `dispatch_failed`. Anything but `approved` denies the action.
+
+The wait defaults to 90 seconds and is capped at 150 in code no matter what the caller passes. A long approval window is an attack surface: the longer a request sits waiting, the better the odds someone approves it without reading it.
+
+The acknowledgement is one-shot. It approves one action. A tool that needs a time-boxed grant writes that grant to its own drawer after an approval, and the grant is that tool's responsibility.
+
+Tools with a per-call acknowledgement tier today:
+
+| Tool | Always asks for |
+|---|---|
+| `zen_dojotools_locks` | Unlocking an exterior lock |
+| `zen_dojotools_covers` | Opening a barrier-class cover (garage door, exterior door, gate) |
+| `zen_dojotools_security_manager` | Disarming |
+| `zen_dojotools_infra` | Stopping or removing a container |
+| `zen_dojotools_labels` | `reset` (no scope waiver available) |
+| `zen_admintools_certadmin` | Every grant, revoke, and bundle change |
+
+A scope `allow` entry covers the ask for the named target only (Chapter 19). A `deny` entry refuses the target without asking.
+
+Here is a deny, which never reaches a human at all:
+
+<!-- screenshot: ch20_scope_deny.png -->
+> **Screenshot to come.** Friday asked to act on a target her scope denies. She is refused outright, with no acknowledgement offered. Real 2026.10.0 output; personal details redacted.
+<!-- /screenshot -->
+
+## 20.6 The administrative plane
+
+Changing what an agent is allowed to do is itself an administrative act, and it lives on the other side of an exposure boundary.
+
+`zen_admintools_certadmin` owns every certification write: `cert_req_grant`, `cert_req_revoke`, `cert_bundle_set`, `cert_bundle_remove`, and `cert_list`. It is `mcp_exposed: false`. An agent cannot reach it, directly or indirectly.
+
+The agent-facing `zen_dojotools_persona_editor` has `cert_req_grant`, `cert_req_revoke`, and `cert_list` modes, but they delegate to CertAdmin and forward only the fields persona_editor itself declares. Fields that matter to the administrative plane, such as `waives_live_ack` and `ack_phrase`, are not declared on persona_editor at all, so there is nothing for an agent to pass through even if it tried. The exclusion is structural, not a permission check on top.
+
+A grant must pass, in order:
+
+1. **Catalog check.** The certification must be declared by some tool (`cert_audit`). This catches typos and dead names.
+2. **Human in the loop.** Either a live acknowledgement from the household admin, or the console-admin path below.
+3. **Write.** The grant is written to the target persona's `zen_ai_certs` drawer.
+
+Revokes and bundle changes also require a live acknowledgement.
+
+### The console-admin path
+
+If the call's own Home Assistant context carries a real logged-in user (`context.user_id` is non-empty), CertAdmin treats that as a human physically at the console and skips the push round-trip for a single-certification grant. Automation-triggered and agent-triggered calls carry no `user_id`, so they cannot take this path. It exists so an install with no working notification target can still grant certifications, from Developer Tools, by a person.
+
+> **Not yet built.** The console-admin path covers single-certification grants only. Bundle grants, revokes, and bundle definition changes still require a live acknowledgement. Extending the console path to bundle grants is planned, since provisioning an agent's full posture is many certifications and a bundle is how that should be done.
+
+AdminTools generally follow the same rule: they are the configuration and recovery plane, not an agent capability, and they are not exposed to conversation agents unless a human deliberately exposes them.
+
+> **Not yet built.** A separate administrative competency certification ("ZenOS Admin Certified, Level X"), admitting an agent to the administrative plane with each AdminTool deciding which functions a given level may use, is design direction for this release line. Today the administrative plane is enforced by exposure (AdminTools are not agent-reachable) and by live acknowledgement, not by an admin certification.
+
+## 20.7 No ambient administrative authority
+
+Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
+
+Identity policy, certification, scope, acknowledgement, and the administrative plane, with admission minted but not yet enforced, read like separate mechanisms. The next chapter shows they are one.
+
+<!-- where -->
+## 20.8 Where to look
+
+Every claim in this chapter can be checked in the code. These are the places to start.
+
+* The identity policy rung: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`, `policy_status`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* Live acknowledgement through AlertManager and Postman: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_control_override`). Docs: [room_manager.md](../components/room_manager.md).
+<!-- /where -->
+
+<!-- nav -->
+---
+
+[← Certification](19_certification.md) · [Contents](00_toc.md) · [Doc hub](../readme.md) · [Identity as Traversal →](21_identity_as_traversal.md)
+<!-- /nav -->

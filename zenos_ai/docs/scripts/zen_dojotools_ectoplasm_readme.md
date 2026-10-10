@@ -1,4 +1,4 @@
-# Zen DojoTools Ectoplasm — 6.0.0
+# Zen DojoTools Ectoplasm — v6.3.0
 
 *Spook/HA extended surface wrapper — repairs, areas, floors, entity lifecycle, labels, integrations*
 
@@ -57,6 +57,8 @@ data:
 
 ## Action Reference
 
+> **New in 6.3.0 (Spook 5.7.0+):** helper create/delete for timer, input_boolean, counter, input_text, input_button, input_datetime, and input_select (same `registry_lifecycle_control` cert as input_number); `entity_set_icon` and `entity_set_aliases`; `category_create`, `category_delete`, `category_assign`, `category_unassign`. `repair_list` and `ghost_list` use Spook's `repairs.list`. Each new action checks that the Spook service exists and returns `spook_version_required` with nothing changed on older Spook.
+
 ### Reads (no confirm required)
 
 | Action | What It Does | Key Fields |
@@ -113,9 +115,11 @@ data:
 |---|---|---|
 | `entity_hide` | Hide an entity from the default UI view. | `entity_id` |
 | `entity_unhide` | Unhide a previously hidden entity. | `entity_id` |
-| `entity_disable` | Disable an entity (stops polling, removes from state machine). | `entity_id` |
-| `entity_enable` | Re-enable a disabled entity. | `entity_id` |
+| `entity_disable` | Disable an entity (stops polling, removes from state machine). Auto-tags the entity `zen_agent_disabled`. | `entity_id` |
+| `entity_enable` | Re-enable a disabled entity. Auto-untags `zen_agent_disabled`. | `entity_id` |
 | `entity_rename` | Set a new friendly name for an entity. | `entity_id`, `new_name` |
+
+**`zen_agent_disabled` label convention.** `disabled_by()` has no template global, so there was previously no way to answer "what has the agent disabled" without a raw registry read. `entity_disable`/`entity_enable` now tag/untag this label automatically — "everything the agent has disabled" is a label filter in the entity list UI, not a manual audit.
 
 ---
 

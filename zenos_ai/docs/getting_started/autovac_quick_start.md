@@ -1,6 +1,6 @@
 # AutoVac Quick Start
 
-> **Version:** 2026.9.0 'Steel Magnolia' | **Last Updated:** Sep 2026
+> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
 >
 > **Requires:** Basic install complete (see [Install Guide](install.md) and [First Run](first_run.md))
 > **Time:** ~15 minutes

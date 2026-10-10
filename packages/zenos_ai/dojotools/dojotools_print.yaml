@@ -1,12 +1,15 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Print Shop
-# Version: 0.1.0-experimental
+# Version: 0.1.1-experimental
+#
+# v0.1.1: default printer resolved by 'printer' label when epson_entity not configured;
+#   literal printer entity fallback removed.
 #
 # EXPERIMENTAL — print path via Rudd-O homeassistant-ipp-printing HACS integration.
 # If test_page does not produce output, this path is abandoned.
 #
 # Scripts:
-#   zen_dojotools_print_shop  — print jobs + printer maintenance (v0.1.0-experimental)
+#   zen_dojotools_print_shop  — print jobs + printer maintenance (v0.1.1-experimental)
 #
 # Prerequisites (manual setup before use):
 #   1. Install HA native IPP integration (Settings → Integrations → IPP):
@@ -66,20 +69,11 @@ script:
   zen_dojotools_print_shop:
     alias: Zen DojoTools Print Shop
     description: >-
-      zen_dojotools_print_shop 0.1.0-experimental — Printer control: submit text
-      print jobs and trigger maintenance on household printers. Uses HA IPP
-      integration + Rudd-O ipp_printing for job submission. Maintenance
-      (clean, nozzle_check) goes direct to printer HTTP interface.
-      PDF/binary printing NOT supported in this version.
-      mode=configure: seed print_shop cabinet (epson_ip, epson_entity).
-      mode=test_page: print timestamped test page.
-      mode=print_text: print content field as plain text.
-      mode=status: printer state + ink levels (no IPP call — reads HA sensors).
-      mode=list_jobs: all jobs via IPP (job_filter: all|incomplete|complete).
-      mode=clean: trigger head cleaning cycle on WF-7840.
-      mode=nozzle_check: trigger nozzle check on WF-7840.
-      mode=help: field reference + examples.
-      printer_entity defaults to print_shop cabinet epson_entity value.
+      Printer control (experimental) — submit text/image print jobs and
+      trigger maintenance on household printers via IPP. PDF/binary not
+      supported. Actuating modes need zenos.media.print_control cert level
+      1. CALL mode=help FIRST for the full mode reference, field list, and
+      examples — do not guess at fields from this description.
       Aliases: ['Zen DojoTools Print Shop', 'Print Shop']
     fields:
       mode:
@@ -170,22 +164,38 @@ script:
     - if: "{{ (mode | default('') | lower) == 'tool_manifest' }}"
       then:
       - variables:
-          result:
+          final_response:
             mode: tool_manifest
             result: ok
             status: ok
             tool: zen_dojotools_print_shop
-            version: 0.1.0-experimental
+            display_name: Print Shop
+            version: 0.1.1-experimental
             tier: dojotools
+            required_labels: ['dojotools']
+            optional_labels: ['printer']
+            health:
+              configured: true
+              status: ok
+              notes: []
             summary: >-
               Printer control: submit text print jobs and trigger maintenance
               on household printers via IPP. Experimental — PDF/binary not supported.
             preferred_state:
               required_labels: ['dojotools']
+              optional_labels: ['printer']
               setup_steps: ['mode=configure with epson_ip + epson_entity to seed print_shop cabinet']
+            certs_required:
+              - cert: zenos.media.print_control
+                display_name: Print Control
+                description: >-
+                  Physical printer actuation (configure/test_page/print_text/
+                  print_image/clean/nozzle_check) via zen_dojotools_print_shop
+                  — consumes real paper/ink.
+                max_level: 1
+                gates: ['mode=configure/test_page/print_text/print_image/clean/nozzle_check (cert only)']
+                grant_via: "persona_editor mode=cert_req_grant cert_component=zenos.media.print_control (or zen_dojotools_identity mode=cert_list to see current status)"
             caller_token: "{{ caller_token | default('') }}"
-      - stop: "print_shop tool_manifest"
-        response_variable: result
 
     - variables:
         _mode: "{{ mode | default('status') | lower }}"
@@ -198,7 +208,7 @@ script:
           {%- set _d = _vars.get('print_shop', {}) | default({}, true) -%}
           {{ (_d.get('value', _d) if _d is mapping else {}) | default({}, true) }}
     - variables:
-        _printer_entity: "{{ printer_entity | default(_ps.get('epson_entity', 'sensor.epson_wf_7840_series'), true) }}"
+        _printer_entity: "{{ printer_entity | default(_ps.get('epson_entity') or (label_entities('printer') | select('match', 'sensor\\.') | list | first | default('', true)), true) }}"
         _content: "{{ content | default('') }}"
         _ts: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         _final_orient: "{{ _orient if _orient != '' else _ps.get('orientation', 'portrait') }}"
@@ -208,311 +218,372 @@ script:
         _text_w: "{{ 740 if _final_orient in ['portrait', 'reverse-portrait'] else 1140 }}"
         _text_h: "{{ 1140 if _final_orient in ['portrait', 'reverse-portrait'] else 740 }}"
 
-    - choose:
-
-      # ── configure ────────────────────────────────────────────────────────────
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'configure' }}"
-        sequence:
-          - variables:
-              _ps_new: >-
-                {{
-                  _ps | combine({
-                    'epson_ip':     epson_ip     | default(_ps.get('epson_ip', ''),                   true),
-                    'epson_entity': epson_entity | default(_ps.get('epson_entity', ''),               true),
-                    'paper_size':   paper_size   | default(_ps.get('paper_size',   'na_letter_8.5x11in'), true),
-                    'orientation':  orientation  | default(_ps.get('orientation',  'portrait'),           true),
-                  })
-                }}
-          - service: script.zen_dojotools_filecabinet
-            data:
-              action_type: create
-              force_action: true
-              set_timestamp: true
-              show_hidden_volumes: false
-              volume_entity_id:
-                - "{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}"
-              key: print_shop
-              value: "{{ _ps_new }}"
-          - variables:
-              final_response:
-                status: ok
-                mode: configure
-                print_shop: "{{ _ps_new }}"
-                message: "print_shop drawer written to AI user cabinet."
-          - stop: Return
-            response_variable: final_response
-
-      # ── test_page ────────────────────────────────────────────────────────────
-      # simpleimageraster.draw renders text → JPEG, then ipp_printing.print sends it.
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'test_page' }}"
-        sequence:
-          - variables:
-              _raster_result: {}
-              _print_result: {}
-          - service: simpleimageraster.draw
-            data:
-              payload:
-                - type: new_multiline
-                  x: 30
-                  y: 30
-                  size: 60
-                  spacing: 30
-                  width: "{{ _text_w }}"
-                  height: "{{ _text_h }}"
-                  fit: true
-                  font: rbm.ttf
-                  value: >-
-                    ZenOS Print Shop Test
-                    Printer: {{ state_attr(_printer_entity, 'friendly_name') | default(_printer_entity) }}
-                    State  : {{ states(_printer_entity) }}
-                    Time   : {{ _ts }}
-              width: "{{ _img_w }}"
-              height: "{{ _img_h }}"
-              mimetype: image/jpeg
-            response_variable: _raster_result
-          - service: ipp_printing.print
-            target:
-              entity_id: "{{ _printer_entity }}"
-            data:
-              data: "{{ _raster_result.image.data }}"
-              mimetype: "{{ _raster_result.image.mimetype }}"
-              paper_size: "{{ _ps.get('paper_size', 'na_letter_8.5x11in') }}"
-              orientation: "{{ _final_orient }}"
-            response_variable: _print_result
+    # zenos.media.print_control cert gate. All 6 actuating modes
+    # (configure writes the cabinet drawer; the other 5 consume real
+    # paper/ink or hit the printer directly) require it. status/list_jobs/
+    # help/tool_manifest are read-only and stay open.
+    - if: >-
+        {{ final_response is not defined and _mode in
+           ['configure', 'test_page', 'print_text', 'print_image', 'clean', 'nozzle_check'] }}
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _ps_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: zenos.media.print_control
+          required_cert_level: 1
+          caller_token: "{{ caller_token | default('') }}"
+      - variables:
+          _ps_id_fields: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _raw = OS.resolve_identity_fields(_ps_id_raw) -%}
+            {{- (_raw | from_json) if _raw is string else _raw -}}
+          _ps_authorized: "{{ _ps_id_fields.authorized }}"
+          _ps_cert_level: "{{ _ps_id_fields.cert_level }}"
+          _ps_policy_status: "{{ _ps_id_fields.policy_status }}"
+      - if: "{{ final_response is not defined and not _ps_authorized }}"
+        then:
           - variables:
               final_response:
-                status: "{{ 'ok' if _print_result is mapping and 'job' in _print_result else 'error' }}"
-                mode: test_page
-                printer_entity: "{{ _printer_entity }}"
-                job: "{{ _print_result.get('job', {}) if _print_result is mapping else {} }}"
-                error: "{{ _print_result if _print_result is string else '' }}"
-          - stop: Return
-            response_variable: final_response
+                status: error
+                error: cert_insufficient
+                message: >-
+                  zenos.media.print_control cert level {{ _ps_cert_level }} is below
+                  the required minimum (1) for mode={{ _mode }}.
+                can_request: "{{ _ps_policy_status == 'allowed' }}"
+                request_via:
+                  tool: zen_dojotools_persona_editor
+                  mode: cert_req_grant
+                  cert_component: zenos.media.print_control
+                  cert_level: 1
+                caller_token: "{{ caller_token | default('') }}"
 
-      # ── print_text ───────────────────────────────────────────────────────────
-      # simpleimageraster.draw renders content text → JPEG, then ipp_printing.print sends it.
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'print_text' }}"
-        sequence:
-          - variables:
-              _raster_result: {}
-              _print_result: {}
-          - service: simpleimageraster.draw
-            data:
-              payload:
-                - type: new_multiline
-                  x: 30
-                  y: 30
-                  size: 60
-                  spacing: 30
-                  width: "{{ _text_w }}"
-                  height: "{{ _text_h }}"
-                  fit: true
-                  font: rbm.ttf
-                  value: "{{ _content }}"
-              width: "{{ _img_w }}"
-              height: "{{ _img_h }}"
-              mimetype: image/jpeg
-            response_variable: _raster_result
-          - service: ipp_printing.print
-            target:
-              entity_id: "{{ _printer_entity }}"
-            data:
-              data: "{{ _raster_result.image.data }}"
-              mimetype: "{{ _raster_result.image.mimetype }}"
-              paper_size: "{{ _ps.get('paper_size', 'na_letter_8.5x11in') }}"
-              orientation: "{{ _final_orient }}"
-            response_variable: _print_result
-            continue_on_error: true
-          - variables:
-              final_response:
-                status: "{{ 'ok' if _print_result is mapping and 'job' in _print_result else 'error' }}"
-                mode: print_text
-                printer_entity: "{{ _printer_entity }}"
-                job: "{{ _print_result.get('job', {}) if _print_result is mapping else {} }}"
-                error: "{{ _print_result if _print_result is string else '' }}"
-          - stop: Return
-            response_variable: final_response
+    - if: "{{ final_response is not defined }}"
+      then:
+      - choose:
 
-      # ── status ───────────────────────────────────────────────────────────────
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'status' }}"
-        sequence:
-          - variables:
-              _base: "{{ _printer_entity | replace('sensor.', '') | replace('_series', '') }}"
-              final_response:
-                status: ok
-                mode: status
-                printer_entity: "{{ _printer_entity }}"
-                printer_state: "{{ states(_printer_entity) }}"
-                printer_name: "{{ state_attr(_printer_entity, 'friendly_name') | default(_printer_entity) }}"
-                printer_ip: "{{ _ps.get('epson_ip', 'not configured') }}"
-                ink:
-                  black: "{{ states(_printer_entity ~ '_black_ink') | default('unknown') }}"
-                  cyan: "{{ states(_printer_entity ~ '_cyan_ink') | default('unknown') }}"
-                  magenta: "{{ states(_printer_entity ~ '_magenta_ink') | default('unknown') }}"
-                  yellow: "{{ states(_printer_entity ~ '_yellow_ink') | default('unknown') }}"
-                uptime_secs: "{{ states(_printer_entity ~ '_uptime') | default('unknown') }}"
-          - stop: Return
-            response_variable: final_response
+        # ── configure ────────────────────────────────────────────────────────────
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'configure' }}"
+          sequence:
+            - variables:
+                _ps_new: >-
+                  {{
+                    _ps | combine({
+                      'epson_ip':     epson_ip     | default(_ps.get('epson_ip', ''),                   true),
+                      'epson_entity': epson_entity | default(_ps.get('epson_entity', ''),               true),
+                      'paper_size':   paper_size   | default(_ps.get('paper_size',   'na_letter_8.5x11in'), true),
+                      'orientation':  orientation  | default(_ps.get('orientation',  'portrait'),           true),
+                    })
+                  }}
+            - service: script.zen_dojotools_filecabinet
+              data:
+                action_type: create
+                force_action: true
+                set_timestamp: true
+                show_hidden_volumes: false
+                volume_entity_id:
+                  - "{{ states('sensor.zen_default_ai_user_cabinet_resolved') }}"
+                key: print_shop
+                value: "{{ _ps_new }}"
+            - variables:
+                final_response:
+                  status: ok
+                  mode: configure
+                  print_shop: "{{ _ps_new }}"
+                  message: "print_shop drawer written to AI user cabinet."
 
-      # ── print_image ──────────────────────────────────────────────────────────
-      # Prints a generated image from a named slot (/config/www/zen_images/<slot>.jpg).
-      # dlimg fetches via http://127.0.0.1:8123/local/ (no auth required).
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'print_image' }}"
-        sequence:
-          - variables:
-              _slot: "{{ slot | default('canvas', true) }}"
-              _img_url: "http://127.0.0.1:8123/local/zen_images/{{ _slot }}.jpg"
-              _raster_result: {}
-              _print_result: {}
-          - service: simpleimageraster.draw
-            data:
-              payload:
-                - type: dlimg
-                  x: 0
-                  y: 0
-                  url: "{{ _img_url }}"
-                  xsize: "{{ _img_w }}"
-                  ysize: "{{ _img_h }}"
-              width: "{{ _img_w }}"
-              height: "{{ _img_h }}"
-              mimetype: image/jpeg
-            response_variable: _raster_result
-          - service: ipp_printing.print
-            target:
-              entity_id: "{{ _printer_entity }}"
-            data:
-              data: "{{ _raster_result.image.data }}"
-              mimetype: "{{ _raster_result.image.mimetype }}"
-              paper_size: "{{ _ps.get('paper_size', 'na_letter_8.5x11in') }}"
-              orientation: "{{ _final_orient }}"
-            response_variable: _print_result
-            continue_on_error: true
-          - variables:
-              final_response:
-                status: "{{ 'ok' if _print_result is mapping and 'job' in _print_result else 'error' }}"
-                mode: print_image
-                slot: "{{ _slot }}"
-                printer_entity: "{{ _printer_entity }}"
-                job: "{{ _print_result.get('job', {}) if _print_result is mapping else {} }}"
-                error: "{{ _print_result if _print_result is string else '' }}"
-          - stop: Return
-            response_variable: final_response
+        # ── test_page ────────────────────────────────────────────────────────────
+        # simpleimageraster.draw renders text → JPEG, then ipp_printing.print sends it.
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'test_page' }}"
+          sequence:
+            - variables:
+                _raster_result: {}
+                _print_result: {}
+            - service: simpleimageraster.draw
+              data:
+                payload:
+                  - type: new_multiline
+                    x: 30
+                    y: 30
+                    size: 60
+                    spacing: 30
+                    width: "{{ _text_w }}"
+                    height: "{{ _text_h }}"
+                    fit: true
+                    font: rbm.ttf
+                    value: >-
+                      ZenOS Print Shop Test
+                      Printer: {{ state_attr(_printer_entity, 'friendly_name') | default(_printer_entity) }}
+                      State  : {{ states(_printer_entity) }}
+                      Time   : {{ _ts }}
+                width: "{{ _img_w }}"
+                height: "{{ _img_h }}"
+                mimetype: image/jpeg
+              response_variable: _raster_result
+            - service: ipp_printing.print
+              target:
+                entity_id: "{{ _printer_entity }}"
+              data:
+                data: "{{ _raster_result.image.data }}"
+                mimetype: "{{ _raster_result.image.mimetype }}"
+                paper_size: "{{ _ps.get('paper_size', 'na_letter_8.5x11in') }}"
+                orientation: "{{ _final_orient }}"
+              response_variable: _print_result
+            - variables:
+                final_response:
+                  status: "{{ 'ok' if _print_result is mapping and 'job' in _print_result else 'error' }}"
+                  mode: test_page
+                  printer_entity: "{{ _printer_entity }}"
+                  job: "{{ _print_result.get('job', {}) if _print_result is mapping else {} }}"
+                  error: "{{ _print_result if _print_result is string else '' }}"
 
-      # ── list_jobs ────────────────────────────────────────────────────────────
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'list_jobs' }}"
-        sequence:
-          - variables:
-              _jf: "{{ job_filter | default('all') | lower }}"
-              _info_result: {}
-          - service: ipp_printing.get_printer_information
-            target:
-              entity_id: "{{ _printer_entity }}"
-            data:
-              job_filter: "{{ _jf }}"
-            response_variable: _info_result
-            continue_on_error: true
-          - variables:
-              final_response:
-                status: "{{ 'ok' if _info_result is mapping and 'jobs' in _info_result else 'error' }}"
-                mode: list_jobs
+        # ── print_text ───────────────────────────────────────────────────────────
+        # simpleimageraster.draw renders content text → JPEG, then ipp_printing.print sends it.
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'print_text' }}"
+          sequence:
+            - variables:
+                _raster_result: {}
+                _print_result: {}
+            - service: simpleimageraster.draw
+              data:
+                payload:
+                  - type: new_multiline
+                    x: 30
+                    y: 30
+                    size: 60
+                    spacing: 30
+                    width: "{{ _text_w }}"
+                    height: "{{ _text_h }}"
+                    fit: true
+                    font: rbm.ttf
+                    value: "{{ _content }}"
+                width: "{{ _img_w }}"
+                height: "{{ _img_h }}"
+                mimetype: image/jpeg
+              response_variable: _raster_result
+            - service: ipp_printing.print
+              target:
+                entity_id: "{{ _printer_entity }}"
+              data:
+                data: "{{ _raster_result.image.data }}"
+                mimetype: "{{ _raster_result.image.mimetype }}"
+                paper_size: "{{ _ps.get('paper_size', 'na_letter_8.5x11in') }}"
+                orientation: "{{ _final_orient }}"
+              response_variable: _print_result
+              continue_on_error: true
+            - variables:
+                final_response:
+                  status: "{{ 'ok' if _print_result is mapping and 'job' in _print_result else 'error' }}"
+                  mode: print_text
+                  printer_entity: "{{ _printer_entity }}"
+                  job: "{{ _print_result.get('job', {}) if _print_result is mapping else {} }}"
+                  error: "{{ _print_result if _print_result is string else '' }}"
+
+        # ── status ───────────────────────────────────────────────────────────────
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'status' }}"
+          sequence:
+            - variables:
+                _base: "{{ _printer_entity | replace('sensor.', '') | replace('_series', '') }}"
+                final_response:
+                  status: ok
+                  mode: status
+                  printer_entity: "{{ _printer_entity }}"
+                  printer_state: "{{ states(_printer_entity) }}"
+                  printer_name: "{{ state_attr(_printer_entity, 'friendly_name') | default(_printer_entity) }}"
+                  printer_ip: "{{ _ps.get('epson_ip', 'not configured') }}"
+                  ink:
+                    black: "{{ states(_printer_entity ~ '_black_ink') | default('unknown') }}"
+                    cyan: "{{ states(_printer_entity ~ '_cyan_ink') | default('unknown') }}"
+                    magenta: "{{ states(_printer_entity ~ '_magenta_ink') | default('unknown') }}"
+                    yellow: "{{ states(_printer_entity ~ '_yellow_ink') | default('unknown') }}"
+                  uptime_secs: "{{ states(_printer_entity ~ '_uptime') | default('unknown') }}"
+
+        # ── print_image ──────────────────────────────────────────────────────────
+        # Prints a generated image from a named slot (/config/www/zen_images/<slot>.jpg).
+        # dlimg fetches via http://127.0.0.1:8123/local/ (no auth required).
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'print_image' }}"
+          sequence:
+            - variables:
+                _slot: "{{ slot | default('canvas', true) }}"
+                _img_url: "http://127.0.0.1:8123/local/zen_images/{{ _slot }}.jpg"
+                _raster_result: {}
+                _print_result: {}
+            - service: simpleimageraster.draw
+              data:
+                payload:
+                  - type: dlimg
+                    x: 0
+                    y: 0
+                    url: "{{ _img_url }}"
+                    xsize: "{{ _img_w }}"
+                    ysize: "{{ _img_h }}"
+                width: "{{ _img_w }}"
+                height: "{{ _img_h }}"
+                mimetype: image/jpeg
+              response_variable: _raster_result
+            - service: ipp_printing.print
+              target:
+                entity_id: "{{ _printer_entity }}"
+              data:
+                data: "{{ _raster_result.image.data }}"
+                mimetype: "{{ _raster_result.image.mimetype }}"
+                paper_size: "{{ _ps.get('paper_size', 'na_letter_8.5x11in') }}"
+                orientation: "{{ _final_orient }}"
+              response_variable: _print_result
+              continue_on_error: true
+            - variables:
+                final_response:
+                  status: "{{ 'ok' if _print_result is mapping and 'job' in _print_result else 'error' }}"
+                  mode: print_image
+                  slot: "{{ _slot }}"
+                  printer_entity: "{{ _printer_entity }}"
+                  job: "{{ _print_result.get('job', {}) if _print_result is mapping else {} }}"
+                  error: "{{ _print_result if _print_result is string else '' }}"
+
+        # ── list_jobs ────────────────────────────────────────────────────────────
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'list_jobs' }}"
+          sequence:
+            - variables:
+                _jf: "{{ job_filter | default('all') | lower }}"
+                _info_result: {}
+            - service: ipp_printing.get_printer_information
+              target:
+                entity_id: "{{ _printer_entity }}"
+              data:
                 job_filter: "{{ _jf }}"
-                printer_entity: "{{ _printer_entity }}"
-                jobs: "{{ _info_result.get('jobs', []) if _info_result is mapping else [] }}"
-                job_count: "{{ (_info_result.get('jobs', []) if _info_result is mapping else []) | length }}"
-                error: "{{ _info_result if _info_result is string else '' }}"
-          - stop: Return
-            response_variable: final_response
+              response_variable: _info_result
+              continue_on_error: true
+            - variables:
+                final_response:
+                  status: "{{ 'ok' if _info_result is mapping and 'jobs' in _info_result else 'error' }}"
+                  mode: list_jobs
+                  job_filter: "{{ _jf }}"
+                  printer_entity: "{{ _printer_entity }}"
+                  jobs: "{{ _info_result.get('jobs', []) if _info_result is mapping else [] }}"
+                  job_count: "{{ (_info_result.get('jobs', []) if _info_result is mapping else []) | length }}"
+                  error: "{{ _info_result if _info_result is string else '' }}"
 
-      # ── clean ────────────────────────────────────────────────────────────────
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'clean' }}"
-        sequence:
-          - variables:
-              _clean_result: {}
-          - service: rest_command.epson_print_clean
-            response_variable: _clean_result
-            continue_on_error: true
-          - variables:
-              final_response:
-                status: "{{ 'ok' if (_clean_result.get('status') | default(0) | int) in [200, 302] else 'error' }}"
-                mode: clean
-                note: "Head cleaning cycle triggered. Takes ~3 minutes. Do not power off printer."
-                http_status: "{{ _clean_result.get('status') | default('unknown') }}"
-          - stop: Return
-            response_variable: final_response
+        # ── clean ────────────────────────────────────────────────────────────────
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'clean' }}"
+          sequence:
+            - variables:
+                _clean_result: {}
+            - service: rest_command.epson_print_clean
+              response_variable: _clean_result
+              continue_on_error: true
+            - variables:
+                final_response:
+                  status: "{{ 'ok' if (_clean_result.get('status') | default(0) | int) in [200, 302] else 'error' }}"
+                  mode: clean
+                  note: "Head cleaning cycle triggered. Takes ~3 minutes. Do not power off printer."
+                  http_status: "{{ _clean_result.get('status') | default('unknown') }}"
 
-      # ── nozzle_check ─────────────────────────────────────────────────────────
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'nozzle_check' }}"
-        sequence:
-          - variables:
-              _nozzle_result: {}
-          - service: rest_command.epson_print_nozzle
-            response_variable: _nozzle_result
-            continue_on_error: true
-          - variables:
-              final_response:
-                status: "{{ 'ok' if (_nozzle_result.get('status') | default(0) | int) in [200, 302] else 'error' }}"
-                mode: nozzle_check
-                note: "Nozzle check page printing. Inspect the pattern for gaps or missing lines."
-                http_status: "{{ _nozzle_result.get('status') | default('unknown') }}"
-          - stop: Return
-            response_variable: final_response
+        # ── nozzle_check ─────────────────────────────────────────────────────────
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'nozzle_check' }}"
+          sequence:
+            - variables:
+                _nozzle_result: {}
+            - service: rest_command.epson_print_nozzle
+              response_variable: _nozzle_result
+              continue_on_error: true
+            - variables:
+                final_response:
+                  status: "{{ 'ok' if (_nozzle_result.get('status') | default(0) | int) in [200, 302] else 'error' }}"
+                  mode: nozzle_check
+                  note: "Nozzle check page printing. Inspect the pattern for gaps or missing lines."
+                  http_status: "{{ _nozzle_result.get('status') | default('unknown') }}"
 
-      # ── help ─────────────────────────────────────────────────────────────────
-      - conditions:
-          - condition: template
-            value_template: "{{ _mode == 'help' }}"
-        sequence:
-          - variables:
-              final_response:
-                status: ok
-                mode: help
-                version: "0.1.0-experimental"
-                modes:
+        # ── help ─────────────────────────────────────────────────────────────────
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'help' }}"
+          sequence:
+            - variables:
+                _ps_modes:
                   configure: "Seed print_shop cabinet. Fields: epson_ip, epson_entity."
                   test_page: "Print a timestamped test page. No extra fields needed."
                   print_text: "Print plain text. Field: content (required)."
+                  print_image: "Print a generated image from a named slot (canvas default). Field: slot."
                   status: "Printer state + ink levels. Reads HA entity states — no IPP call."
                   list_jobs: "All jobs via IPP. Field: job_filter (all|incomplete|complete, default all)."
                   clean: "Trigger WF-7840 head cleaning via printer HTTP. ~3 minutes."
                   nozzle_check: "Print nozzle check page via printer HTTP."
                   help: "This help response."
-                notes:
-                  - "PDF/binary printing not supported in v0.1 — text only."
-                  - "clean/nozzle_check hit printer IP directly (not CUPS). Must configure epson_ip first."
-                  - "printer_entity field overrides cabinet default for multi-printer use."
-                  - "status ink sensors derived from printer_entity name pattern (_black_ink etc)."
-                examples:
-                  - "mode=configure epson_ip=192.168.1.120 epson_entity=sensor.epson_wf_7840_series"
-                  - "mode=status"
-                  - "mode=test_page"
-                  - "mode=print_text content='Hello from ZenOS'"
-                  - "mode=list_jobs job_filter=all"
-                  - "mode=clean"
-          - stop: Return
-            response_variable: final_response
+            - variables:
+                _ps_help_message: >-
+                  {%- set ns = namespace(out='Printer control via IPP -- experimental, PDF/binary not supported, text only. ') -%}
+                  {%- for k, v in _ps_modes.items() -%}
+                    {%- set ns.out = ns.out ~ 'mode=' ~ k ~ ' -- ' ~ v ~ ' ' -%}
+                  {%- endfor -%}
+                  {{ ns.out | trim }}
+            - variables:
+                final_response:
+                  status: help
+                  message: "{{ _ps_help_message }}"
+                  mode: help
+                  version: "0.1.1-experimental"
+                  modes: "{{ _ps_modes }}"
+                  modes_full:
+                    configure: "Seed print_shop cabinet. Fields: epson_ip, epson_entity."
+                    test_page: "Print a timestamped test page. No extra fields needed."
+                    print_text: "Print plain text. Field: content (required)."
+                    print_image: "Print a generated image from a named slot (canvas default). Field: slot."
+                    status: "Printer state + ink levels. Reads HA entity states — no IPP call."
+                    list_jobs: "All jobs via IPP. Field: job_filter (all|incomplete|complete, default all)."
+                    clean: "Trigger WF-7840 head cleaning via printer HTTP. ~3 minutes."
+                    nozzle_check: "Print nozzle check page via printer HTTP."
+                    help: "This help response."
+                  notes:
+                    - "PDF/binary printing not supported in v0.1 — text only."
+                    - "clean/nozzle_check hit printer IP directly (not CUPS). Must configure epson_ip first."
+                    - "printer_entity field overrides cabinet default for multi-printer use."
+                    - "status ink sensors derived from printer_entity name pattern (_black_ink etc)."
+                    - "configure/test_page/print_text/print_image/clean/nozzle_check require zenos.media.print_control cert level 1. status/list_jobs/help stay open."
+                  examples:
+                    - "mode=configure epson_ip=192.168.1.120 epson_entity=sensor.epson_wf_7840_series"
+                    - "mode=status"
+                    - "mode=test_page"
+                    - "mode=print_text content='Hello from ZenOS'"
+                    - "mode=print_image slot=canvas"
+                    - "mode=list_jobs job_filter=all"
+                    - "mode=clean"
 
-      # ── unknown mode ─────────────────────────────────────────────────────────
-      default:
-        - variables:
-            final_response:
-              status: error
-              mode: "{{ _mode }}"
-              message: "Unknown mode. Run mode=help for reference."
-        - stop: Return
-          response_variable: final_response
+        # ── unknown mode ─────────────────────────────────────────────────────────
+        default:
+          - variables:
+              final_response:
+                status: error
+                mode: "{{ _mode }}"
+                message: "Unknown mode. Run mode=help for reference."
+    # ── SINGLE EXIT ──────────────────────────────────────────────────────
+    - variables:
+        _print_envelope_raw: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+            mode=(mode | default('') | lower) if (mode | default('') | lower) == 'tool_manifest' else _mode | default(''),
+            result=final_response,
+            tool='zen_dojotools_print_shop',
+            caller_token=caller_token | default('')
+          ) -}}
+    - variables:
+        final_response: "{{ (_print_envelope_raw | from_json) if _print_envelope_raw is string else _print_envelope_raw }}"
+    - stop: Return
+      response_variable: final_response

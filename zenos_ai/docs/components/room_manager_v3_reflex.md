@@ -24,7 +24,7 @@ chat-callable, through `zen_dojotools_room_manager`'s v3-adjacent modes
 (`label_discover`, `trigger_audit`, `coverage_map`, `wasp_enable`,
 `roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `reflex_wire`,
 `room_signal_fire`, `entertaining_cascade_enable`, `entertaining_cascade_check`) —
-see [Coverage &amp; Diagnostics](#coverage--diagnostics) and
+see [Coverage & Diagnostics](#coverage--diagnostics) and
 [Wiring REFLEX Scenes](#wiring-reflex-scenes) below. Operators interact
 with the live engine through:
 
@@ -33,7 +33,7 @@ with the live engine through:
 - `sensor.<room>_state` — the read surface, one per deployed room
 
 For the full architectural treatment (cascade design, event bus, the
-consolidation history), see [Architecture Ch. 22](../architecture/22_Room_Manager_v3_REFLEX.md).
+consolidation history), see [Architecture Ch. 25](../architecture/25_room_manager_v3.md).
 For the plain-language walkthrough, see the [Room Manager Operator's Manual](../getting_started/room_manager_operators_manual.md).
 
 ---
@@ -165,7 +165,7 @@ never requires touching either file.
    The select never writes its own state — it only ever asks. Everything
    that actually changes state goes through the dispatch script, which
    is what keeps the "Hold can only exit to these five values" rule
-   (§22.2) enforced in one place instead of every caller having to know it.
+   (Architecture §25.7) enforced in one place instead of every caller having to know it.
 
 2. **Deploy the state sensor** via the shared template blueprint:
    ```yaml
@@ -196,7 +196,7 @@ never requires touching either file.
 | `engaged` | media_player(s), monitored docks | Drives `engaged` on start; on stop, arms the shared timer's engaged→occupied decay |
 | `asleep` / `bed_occupancy` | Sleep-detection sensor(s) | Drives `asleep` |
 | `hold` | Any binary_sensor/cover | Floors at `occupied` while true, no clock, instant fall-through on close ("fridge door mode") |
-| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §22.9](../architecture/22_Room_Manager_v3_REFLEX.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. `checking`/`checking_timer` no longer exist. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
+| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §25.7](../architecture/25_room_manager_v3.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
 | `wasp_enabled` | The room's Area, OR any entity carrying the room's label | Room-level opt-in gate — a room needs this AND at least one `wasp_door`-tagged entity before `hold` can ever fire from wasp. Deliberately opt-in: a room connected by an open archway instead of a real door (no way to distinguish "someone's inside with the door shut" from "there is no door") would misfire constantly if wasp were on by default. Read/write via `zen_dojotools_room_manager mode=wasp_enable area=<room>` — omit `wasp_room_enabled=` to read, pass `true`/`false` to write. |
 | `smoke` / `carbon_monoxide` / `moisture` / `siren` | Detector entities | Arms `emergency_latch` — human/agent ack-only clear |
 | `vibration` | Any binary_sensor with a `vibration.detected`/`vibration.cleared` event source | Purpose-neutral by design — this label alone only makes the dispatch resync promptly on vibration edges. To actually feed `occupied`/`engaged`, ALSO apply that label to the same entity (works today with zero code change: `_occ_source_ents`/`_engaged_source_ents` already treat any labeled entity's `on` state as truthy). See `zen_room_manager_dispatch.yaml` ~L590-606. |
@@ -204,7 +204,7 @@ never requires touching either file.
 | `ext_lock` | Exterior lock entities | Live read, no dispatch/timer involved — `room_state.yaml` L388/853-855 computes `ext_unlocked_active` (bool), `ext_unlocked_count`, `ext_lock_count` directly off `label_entities('ext_lock') \| intersect(_room_ents)` on every render. Act on a room's locks via `zen_dojotools_locks` (new, v1.0.0) — `mode=set room=<room> action=lock\|unlock` targets every lock in an area via `area_entities()`, no label required for the action tool itself (only the room_state aggregate needs the label). |
 | ~~`privacy_door`~~ | — | **Dead, as of 2026-08-15.** Used to try to `input_boolean.turn_on/off` the triggering lock entity itself (wrong domain, silently failed) via `zen_room_manager_dispatch.yaml` L138-142 — removed rather than left broken. `room_state.yaml` never consumed it either. If you find this label on a real entity, retag it `ext_lock`. |
 | `room_control_manager` | The room's control select | Enables `Paused`/`Automation`/`Cleaning`/manual-tier overrides. Zero shared entity/label/code path with legacy `room_control`. |
-| `room_timer` + `room_timer_class` | Timer + paired select | Enables decay-backed occupied/engaged/asleep — one shared clock for all three. `asleep` class default is 8h (was 30m). |
+| `room_timer` + `room_timer_class` | Timer + paired select | Enables decay-backed occupied/engaged/asleep — one shared clock for all three. `asleep` class default is 8h (was 30m). **Stale-class self-heal:** a plain hold-release deliberately doesn't restart an `asleep` timer, which can leave the stored `room_timer_class` stuck on `asleep` with the timer cancelled; the motion and door arm gates would then silently never re-arm. On the next motion/door event, if the room isn't wasp-latching, isn't genuinely held/asleep per its **live** state sensor, and its timer is idle, the dispatcher resets the stale class to `''` first, so that same event arms normally. |
 | `entertaining_hold` | `input_boolean.zen_entertaining` + the room's own label | Opt-in per room. Outranks `occupied`/`vacant`, outranked by `engaged`/`asleep`/manual override/emergency. |
 | `guest_hold` | `input_boolean.zen_guest_mode` + the room's own label | Same tier/ranking as `entertaining_hold`, independent source. |
 | `presence_hold` | A continuous-presence (mmWave, not PIR motion) sensor + the room's own label | Same tier/ranking as `entertaining_hold`/`guest_hold`, independent source. Distinct from the generic `hold` label above — `hold` only floors at `occupied` ("fridge door mode"), `presence_hold` resolves to the literal `hold` state. Traces back to legacy Node-RED's deliberate Hold-class wiring for continuous-presence sensors, which v3 had no equivalent for until 2026-08-22. |
@@ -234,7 +234,10 @@ never requires touching either file.
    This runs all four resync passes, including self-labeling — a brand new
    room's helpers get their labels applied automatically as long as they
    follow the naming conventions above, no manual tagging required for the
-   sensor itself.
+   sensor itself. Self-labeling creates any label that doesn't exist yet
+   (the room's own label, `zen_room_state`, a helper class label) before
+   applying it. The cleaning resync dispatches at most one stuck room to
+   AutoVac per pass; any others wait for the next pass.
 
 6. **Reload and verify:**
    ```
@@ -287,7 +290,6 @@ hold (wasp / entertaining / guest / presence) > occupied (or child-occupied, or 
   occupied, not that the parent itself is Engaged. De-escalation is now
   always a single step (occupied → vacant), never two.
 
-`checking` no longer exists as a producible state anywhere in the system.
 
 ---
 
@@ -338,7 +340,7 @@ entertaining_cascade_enabled=true`.
 
 ---
 
-## Coverage &amp; Diagnostics
+## Coverage & Diagnostics
 
 Two `zen_dojotools_room_manager` modes audit a room's real wiring against
 what it's actually labeled to have, both `area=` optional (omit for a
@@ -389,7 +391,7 @@ hand): `zen_dojotools_room_manager mode=reflex_wire area=<room>` — shows
 candidate scenes already matched by name/label/area_id, the full
 `wired_matrix` (every state × every daypart, same resolution REFLEX itself
 uses), and `tier_status` per state (`wired`/`inherited` = covered, `gap` =
-worth wiring, `ok_by_design` = `checking`/`paused`/`automation`, which
+worth wiring, `ok_by_design` = `paused`/`automation`, which
 legitimately have nothing to wire). Omit `area=` for a whole-home rollup.
 
 **Writing an assignment**: `reflex_assignments` takes a list of JSON
@@ -449,7 +451,7 @@ alternative to it; with `reflex_enable` off, nothing happens regardless of
 
 ## Related
 
-- [Architecture Ch. 22 — Room Manager v3 & REFLEX](../architecture/22_Room_Manager_v3_REFLEX.md) — full design rationale, the consolidation history, and the RoomState/RoomReg boundary
+- [Architecture Ch. 25: Room Manager v3 Reference](../architecture/25_room_manager_v3.md) — full design rationale, the consolidation history, and the RoomState/RoomReg boundary
 - [Room Manager Operator's Manual](../getting_started/room_manager_operators_manual.md) — plain-language guide
 - [Room Manager (RoomReg)](room_manager.md) — the spatial/topology tool, a different system
-- [RoomState and Perception](../architecture/11_RoomState_and_Perception.md) — the theoretical layer this system implements
+- [Live State](../architecture/16_live_state.md): the concepts this system implements

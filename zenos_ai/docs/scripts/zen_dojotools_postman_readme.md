@@ -1,10 +1,12 @@
-# Zen DojoTools Postman — v1.6.2
+# Zen DojoTools Postman — v5.1.1
 
 **File:** `packages/zenos_ai/dojotools/dojotools_postman.yaml`
 **Script:** `zen_dojotools_postman`
 **CANONICAL COMMS TOOL — unified household notifications**
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_postman` and `zen_dojotools_announce` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -123,7 +125,7 @@ user cabinet   → postman_profile  (preference: urgency_tiers, push_targets, aw
 
 **Life safety bypass:** urgency >= `life_safety_bypass` (default 9) bypasses all gates including sleep. Use for fire/smoke/CO notifications. Setting `breakthrough: true` has the same effect for gate evaluation without requiring a high urgency level.
 
-**Sleep gate:** When `input_select.zen_home_mode == 'sleep'` or hour >= 23 or < 7, notifications below `block_below_urgency` (default 9) are blocked. Bypassed by life_safety threshold.
+**Sleep gate:** When the `zen_quiet_hours`-labeled binary sensor is `on`, or the `zen_home_mode`-labeled input_select is `Night` or `Night-Late`, notifications below `block_below_urgency` (default 9) are blocked. Bypassed by life_safety threshold.
 
 **Work gate:** `block_tts: true` in `house.work_gate` suppresses TTS during work mode (does not block push).
 
@@ -179,6 +181,7 @@ Use `image_entity` (preferred) or `image_url` for push notification images. `ima
 | `image.zen_image_<slot>` | `/local/zen_<slot>.jpg` |
 | `image.<other>` | `state_attr(entity, 'entity_picture')` |
 | `camera.<entity>` | `/api/camera_proxy/<entity_id>` |
+| a label name (no `.`) | resolved to the first `camera.*` or `image.*` entity carrying that label, then as above |
 
 The companion app fetches `data.image` lazily on notification open — camera and generated images do not need to be pre-fetched before dispatch.
 
@@ -219,14 +222,15 @@ Other automations can also listen for `zen_event(kind: postman_response)` filter
 | `message` | resolve_and_dispatch | — | Text to deliver. |
 | `title` | resolve_and_dispatch | — | Optional notification title. |
 | `channel_hint` | resolve, resolve_and_dispatch | — | Preferred channel (push, tts, teams). Prepended to tier channel list, still subject to gates. |
-| `image_entity` | resolve_and_dispatch | — | HA image or camera entity. Takes precedence over `image_url`. |
+| `image_entity` | resolve_and_dispatch | — | HA image or camera entity, or a label carried by one. Takes precedence over `image_url`. |
 | `image_url` | resolve_and_dispatch | — | URL or local path for push image. |
 | `audio_url` | resolve_and_dispatch | — | Audio file URL. AIFF/WAV/MP3/MPEG4, max 5 MB. Companion app only. |
 | `tag` | resolve_and_dispatch | — | Notification tag for replace/update/clear patterns. Auto-generated when `response_type` is set. |
 | `response_type` | resolve_and_dispatch | `none` | Actionable button preset. |
 | `response_timeout_s` | resolve_and_dispatch | `60` | Seconds to wait for button tap. Range 10–300. |
 | `force_audio` | resolve_and_dispatch | `false` | Bypass urgency >= 9 gate for phone TTS audio attachment. |
-| `open_dashboard` | resolve_and_dispatch | `false` | On tap, navigate to `assist_path` from user profile. Injects `clickAction` and `url` as `homeassistant://navigate/<assist_path>` into the notification data — companion app opens the dashboard directly. Has no effect if `assist_path` is unset in the user profile. |
+| `open_dashboard` | resolve_and_dispatch | `false` | On tap, navigate to `assist_path` from the user profile, or to `dashboard_path_override` if provided. Injects `clickAction` and `url` as a plain relative path into the notification data — companion app opens the dashboard directly. **Not** the `homeassistant://navigate/...` custom URI scheme — that pattern is unreliable on Android (disambiguation dialogs, no verified-link guarantee); a plain relative path resolved against the configured HA server is the tested-working form. No-op if neither `assist_path` nor `dashboard_path_override` is set. |
+| `dashboard_path_override` | resolve_and_dispatch | — | Relative path (e.g. `/zenos-cast/room?session=abc123`) used as the notification's `clickAction`/`url` instead of the user's fixed `postman_profile.assist_path`. Only applies when `open_dashboard=true`. For dynamic per-call destinations (e.g. Zen Display Surface sessions) where the target isn't the user's static assist dashboard. |
 | `notification_data` | resolve_and_dispatch | — | Raw dict passed to notification data field. See Android fields below. |
 | `kata_input` | resolve_and_dispatch | — | Kata payload dict from ninja pipeline. Derives `title`/`message` from `component`, `period`, `attention`, `suggested_act_desc` when explicit values are not set. |
 | `breakthrough` | resolve_and_dispatch | `false` | If true, bypasses house sleep gate regardless of urgency. Equivalent to urgency >= life_safety_bypass for gate evaluation only. |
@@ -295,6 +299,8 @@ Merge order: `notification_data` < `image_url` < `audio_url` < `tag` < `response
   "away_policy": { "push": "allow", "tts": "block" }
 }
 ```
+
+`tts_engine` is optional. When it is unset, Postman uses the first `tts.*` entity carrying the `zen_tts` label.
 
 `tts_engine_label`: when set, resolves the TTS engine from the first `tts.*` entity carrying that label. Falls back to `tts_engine` string if no match.
 

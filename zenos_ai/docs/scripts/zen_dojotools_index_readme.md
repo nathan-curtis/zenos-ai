@@ -132,7 +132,7 @@ For full drawer content, use FileCabinet directly.
 
 - `limit: 0` = no limit (default)
 - `dry_run: true` returns `total_count` so you can plan a paging loop before executing
-- **Auto-cap:** when `expand_entities: true` and a topology/wildcard seed is used with no explicit `limit`, the result is automatically capped at **50 entities**. Set `limit` explicitly to override.
+- **Auto-cap:** any call with no explicit `limit` that resolves to more than **50 entities** is capped at 50 and told to page — regardless of `expand_entities` or seed type, since the plain index/hypergraph response builds a full entity→labels map over the whole resolved set and can blow the context budget on its own. Set `limit` explicitly to override; use `dry_run` first to see `total_count`.
 - **`+history` requires `limit`:** requesting recorder statistics without a limit on a topology/wildcard seed is a hard error. Always set an explicit limit when using `+history`.
 - **`+history` bucket fields are state-class-dependent:** `measurement` sensors (instantaneous readings, e.g. W power) get `mean`/`min`/`max` per hour. `total`/`total_increasing` sensors (accumulating counters, e.g. Wh energy) get `sum`/`state` per hour instead — HA's recorder has no mean/min/max concept for an accumulating counter. Requesting the wrong bucket type used to silently return empty buckets.
 - **`period_total_24h`** (total/total_increasing sensors only, `null` for measurement): precomputed "usage over the last 24h," derived from the `state` series (`last.state - first.state`), not recorder's `sum` statistic. Also returns `period_total_24h_sum_series` as a cross-check and sets `anomaly_diverged: true` if the two disagree by more than 2x — treat both numbers as suspect when that flag is set rather than trusting either. Divergence is commonly caused by a recorder `statistic_id` re-registration (entity relabel/reload), not a real usage spike.
@@ -398,7 +398,7 @@ The Zen Index 5.1.0 provides:
 - Zen Indexer DSL support — flat string or compound/recursive dict (`{operator, index_1, index_2}`)
 - Recursive index_command timeout scaling: `min(timeout × 3, 15)` seconds when compound dict detected
 - Pagination via `limit` / `offset`; `dry_run` returns `total_count` for paging loops
-- Auto-cap of 50 on topology/wildcard seeds with `expand_entities: true` and no limit
+- Auto-cap of 50 on any no-limit call resolving more than 50 entities
 - `+history` flag for 24h recorder stats (requires explicit limit)
 - `+rm` output field: Room Manager spatial + live state snapshot per entity area — `topo`, `light`, `climate`, `covers`, `media` slices injected as `room_context` per entity and in `domain_context.room_manager[area_id]`
 - `+chores` output field: Grocy chores per entity area via `chores_by_area`. Each chore includes `chore_actions{execute, edit, add}` — pre-built call shapes. Chores with `product_id` also include `replace_action{step_1: chores_execute, step_2: stock_open_item}`.

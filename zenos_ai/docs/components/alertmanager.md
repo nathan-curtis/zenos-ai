@@ -1,15 +1,16 @@
 # ZenOS-AI AlertManager
 
-**Version:** 5.1.0
+**Version:** 5.4.3
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**
 - `automation.zen_alert_manager` — fire/clear handler
 - `automation.zen_priority_inject_handler` — priority slot write/clear handler
-- `sensor.zen_priority_context` — live priority status sensor
 - `script.zen_dojotools_alertmanager` — MCP-exposed CRUD tool (**MCP-exposed**)
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_alertmanager` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -40,7 +41,6 @@ flowchart TD
   RawNotify["notify.<service suffix>"]
   Severity{"severity = error?"}
   Priority["Household drawer: _zen_priority_inject"]
-  Sensor["sensor.zen_priority_context"]
   HomeOverview["Room Manager home_overview"]
   Human["Human sees, acknowledges, or acts"]
 
@@ -51,7 +51,7 @@ flowchart TD
   Notify -->|postman| Postman --> Human
   Notify -->|raw notify| RawNotify --> Human
   Active --> Severity
-  Severity -->|yes| Priority --> Sensor --> HomeOverview
+  Severity -->|yes| Priority --> HomeOverview
   Severity -->|no| HomeOverview
 ```
 
@@ -145,8 +145,19 @@ Only `error`-severity alerts are auto-wired to the Room Manager priority inject 
 | `persistent` (default) | Creates HA persistent notification |
 | `mobile` | Sends via HA mobile app notify service |
 | `postman` | Routes via `zen_dojotools_postman` with authority-stack routing. Household/family `postman_profile` policy applied. |
+| `zen_display` | Casts to a room's display surface instead of (or alongside) a push. Requires `display_room` — resolves to that room's `zen_display_target`. Silent by itself (no push); a status-board use case. |
 
 Use `persistent` for first tests and `postman` when profile-based routing is configured.
+
+### Multi-target composition (comma-separated)
+
+`notify_target` accepts a comma-separated list to fire to more than one channel at once, e.g. `notify_target: postman,zen_display`. Composing `postman` with `zen_display`:
+
+- The push becomes tap-to-open only — `response_type` is dropped from the Postman leg (buttons live on the display instead), and the push opens the dashboard (`open_dashboard: true`, routed to the cast room/view).
+- Pass `also_notify_buttons: true` to additionally fire a second, independent push carrying the real response buttons — for the case where you want both a tap-to-open push and a normal actionable one.
+- `display_room` is required whenever `zen_display` is present in the composed list; a `zen_display` fire with no `display_room` returns a warning field reminding you it's silent (nothing was cast).
+
+This is a rendering destination, not a response source — `zen_display`'s on-screen button row and Postman's push buttons render the same underlying `response_type` choice, whichever channel(s) were composed.
 
 ---
 
@@ -196,19 +207,17 @@ Clearing an `error` alert removes it from this drawer.
 
 For alerts, the internal priority provider ID is `alert_<alert_key>`. Users normally do not pass this value to `zen_dojotools_alertmanager`; it is generated when an `error` alert fires and cleared when the alert clears.
 
-### `sensor.zen_priority_context`
+### Reading priority state
 
-Live rollup sensor reading `_zen_priority_inject`:
+There is no priority sensor (`sensor.zen_priority_context` was removed in 5.4.3). Each consumer derives the rollup from `_zen_priority_inject` itself, counting only entries whose `expires` is still in the future:
 
-| Attribute | Description |
-|-----------|-------------|
-| state | `active` or `clear` |
-| `count` | Number of non-expired priority entries |
-| `providers` | List of active provider IDs |
-| `highest_urgency` | `critical`, `urgent`, or `""` |
-| `oldest_since` | ISO timestamp of oldest active entry |
+| Consumer | Fields |
+|----------|--------|
+| `zen_dojotools_alertmanager mode=list` | `priority_context_state`: `active` or `clear` |
+| Room Manager `home_overview` | `alerts.priority_context`, `priority_count`, `highest_urgency`, `priority_providers`, `oldest_since` (see below) |
+| Home Overview helper sensor (`sensor_helpers.yaml`) | `all_quiet`, `priority_count`, `highest_urgency` attributes |
 
-This sensor is the integration point for Room Manager `home_overview`. Its state feeds `signal.all_quiet` and `alerts.priority_context`.
+`highest_urgency` is `critical`, `urgent`, or `""`. `oldest_since` is the ISO timestamp of the oldest active entry.
 
 ---
 
@@ -245,8 +254,9 @@ This sensor is the integration point for Room Manager `home_overview`. Its state
 |--------|--------|------------|
 | `_zen_active_alerts` | `{alert_key: {fired_at, message, severity, expires_at}}` | Default 24h; `clear_after_minutes: 0` disables expiry |
 | `_zen_priority_inject` | `{alert_<alert_key>: {summary, urgency, expires, since, entities}}` | Provider expiry, usually 60 minutes for error alerts |
+| `_zen_alert_acks` | `{condition_key: {acked_at, acked_by, note, expires_at, baseline, change_check}}` | `ttl_days` on the `ack` call, default 7 days |
 
-Both drawers are created automatically on first write. The `_` prefix marks them hidden and protected from generic FileCabinet expiry. AlertManager/Core still perform purpose-built TTL cleanup by emitting `alert_clear` for expired alert entries.
+All three drawers are created automatically on first write. The `_` prefix marks them hidden and protected from generic FileCabinet expiry. AlertManager/Core still perform purpose-built TTL cleanup by emitting `alert_clear` for expired alert entries.
 
 ---
 
@@ -314,7 +324,10 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `clear_all` | Clear all active alerts. Returns count of keys cleared. |
 | `get_response` | Read the cached ack for a fired alert. Returns `{status: pending}` if the response hasn't arrived yet, or `{status: captured, ack_action, ack_timed_out, ack_device_id}` once captured. |
 | `get_policy` | Read the current notify policy from the household cabinet. |
-| `set_policy` | Write a new notify policy entry to the household cabinet. |
+| `set_policy` | Write a new notify policy entry to the household cabinet. Requires the `alert_policy_edit` certification (level 1) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `ack` | Acknowledge a known, non-critical condition so a domain caller can suppress repeat escalation for it. Stores an entry in `_zen_alert_acks` keyed by `condition_key`, expiring after `ttl_days` (default 7). No cert gate — same rationale as `fire`/`clear`. |
+| `check_ack` | Read-only: is `condition_key` currently acknowledged? Returns `suppressed: true` plus the stored `baseline`/`change_check`/`note`/`acked_at`, or `suppressed: false` with `reason: no_ack` / `expired`. |
+| `revoke_ack` | Delete the ack for `condition_key` early. Returns `existed`. |
 | `help` | Return full tool contract and field reference. |
 
 **Default:** No input → `mode: help`.
@@ -327,14 +340,21 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `alert_key` | `fire`, `clear` | string | Alert dedup key — must match the key used at fire time. |
 | `message` | `fire` | string | Human-readable description of the alert condition. |
 | `severity` | `fire` | string | `info` \| `warn` \| `error`. Default: `warn`. |
-| `notify_target` | `fire` | string | `persistent` \| `mobile` \| `postman`. Default: `persistent`. |
+| `notify_target` | `fire` | string | `persistent` \| `mobile` \| `postman` \| `zen_display`, or a comma-separated combination (e.g. `postman,zen_display`). Default: `persistent`. |
 | `clear_after_minutes` | `fire` | number | TTL in minutes. Default: 1440 (24h). Pass `0` for no auto-expiry. |
 | `channel_hint` | `fire` (postman) | string | `push` \| `tts` \| `teams` — used when `notify_target: postman`. |
 | `image_entity` | `fire` (postman) | string | Camera or image entity to attach a snapshot. Used when `notify_target: postman`. |
 | `response_type` | `fire` (postman) | string | Actionable button preset: `none` \| `yes_no` \| `yes_no_ignore` \| `ok_cancel` \| `acknowledge`. Default: `none`. Used when `notify_target: postman`. Response cached to kata cabinet and emitted as `zen_event(kind: alert_response)`. |
+| `display_room` | `fire` (`zen_display` in `notify_target`) | string | Required when `zen_display` is composed. Room/area to cast the ask to — resolves to that room's `zen_display_target`. |
+| `also_notify_buttons` | `fire` (postman + `zen_display` composed) | boolean | Default `false`. When both `postman` and `zen_display` are composed, fires a second, independent push carrying real response buttons in addition to the tap-to-open push. |
 | `label` | `get_policy`, `set_policy` | string | HA label slug. Targets all entities returned by `label_entities()`. |
 | `target_entity` | `get_policy`, `set_policy` | string | Single entity ID. Overrides `label`. |
 | `policy_json` | `set_policy` | JSON string | Routing override shape: `{notify_target, channel_hint, suppress_minutes}`. |
+| `condition_key` | `ack`, `check_ack`, `revoke_ack` | string | Stable slug for the underlying condition — **not** the ephemeral `alert_key` (e.g. `garage_freezer_thermal_model:thermal_anomaly`). |
+| `baseline_json` | `ack` | JSON string | Domain-chosen snapshot of the values `change_check` will later compare against. Handed back verbatim by `check_ack`. |
+| `change_check` | `ack` | string | Free-text description of the domain's own materiality rule (e.g. `abs(current.temp_f - baseline.temp_f) > 5`). Stored and returned, **never executed** — see [Acknowledgements](#acknowledgements). |
+| `ttl_days` | `ack` | number | Days until the ack auto-expires. Default `7`, range 1–90. |
+| `note` | `ack` | string | Free-text context for why the ack was raised. Stored verbatim on the ack entry and returned by `check_ack`. |
 
 ### Response
 
@@ -394,6 +414,28 @@ All modes return a structured response via `response_variable`. Shape varies by 
 ```
 
 The response is read from the kata cabinet drawer `alert_response_<alert_key>`. It is written there when `zen_alert_manager` processes the `alert_response` event from Postman. Call `get_response` after firing with `response_type` set — poll until `status: captured` or until `ack_timed_out: true`.
+
+**`check_ack` response — suppressed:**
+```json
+{
+  "mode": "check_ack",
+  "condition_key": "battery_health",
+  "suppressed": true,
+  "baseline": {},
+  "change_check": "",
+  "acked_at": "2026-09-22T15:00:00+00:00",
+  "note": "",
+  "caller_token": ""
+}
+```
+
+Not suppressed: `{"mode": "check_ack", "condition_key": "...", "suppressed": false, "reason": "no_ack" | "expired", "caller_token": ""}`.
+
+### Acknowledgements
+
+`ack`/`check_ack`/`revoke_ack` are a generic primitive: AlertManager stores and returns the acknowledgement, and the **domain caller** decides what it means. `change_check` is documentation only — stock HA Jinja has no supported way to render a stored string as a fresh template at runtime, so AlertManager never evaluates it. A domain tool that wants materiality checking compares its own current values against the returned `baseline` in its own script logic, and calls `revoke_ack` itself when the condition has materially changed.
+
+**KFC summarizer wiring.** The shared KFC emission chokepoint in `dojotools_summarizers.yaml` calls `check_ack` with `condition_key` set to the component's bare `kata_key` before emitting an escalation to `zen_dojotools_urgency_handler`. If a live ack exists, the escalation is suppressed and an `emission_suppressed` event (`reason: acked`) fires instead. This is coarse, whole-component suppression — a genuinely new problem inside an already-acked component is also suppressed until the ack expires or is revoked. To suppress a KFC-summarized component this way, the ack's `condition_key` **must equal the `kata_key` exactly** (e.g. `battery_health`, no suffix). Suffixed keys (`component:sub_condition`) only make sense for domain tools that call `check_ack` themselves.
 
 ### Notes
 

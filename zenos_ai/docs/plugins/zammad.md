@@ -1,12 +1,14 @@
 # ZenOS-AI Zammad (Radar) Plugin
 
-**Version:** 0.4.0 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
+**Version:** 0.3.1 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
 **Package:** `packages/zenos_ai/plugins/zammad/zammad.yaml`
 **MCP-facing script:** `zen_dojotools_servicedesk`
 **Lens Bus stack provider:** `zen_stack_radar`
 **Internal REST broker:** `zen_sutra_zammad` (not MCP-exposed)
 
 ---
+
+> **Response envelope (2026.10.0):** `zen_dojotools_servicedesk` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Overview
 
@@ -63,6 +65,8 @@ Use `mode=help` for the full field catalog. Key modes:
 `zen_stack_radar` is the Lens Bus stack adapter for Zammad. It maps Library verbs to servicedesk modes and is the correct path when another tool (Library, Room Manager, etc.) needs ticket evidence by HA anchor.
 
 **Do not call `zen_stack_radar` directly for ticket operations.** Use `zen_dojotools_servicedesk` for that.
+
+`zen_stack_radar` modes: `tool_manifest`, `get`, `find`, `list`, `configure`, `by_anchor`, `register`, `unregister`, `help`. `register` and `unregister` add or remove its entry in the Lens registry, matching the other stack providers.
 
 ### Lens Contract
 

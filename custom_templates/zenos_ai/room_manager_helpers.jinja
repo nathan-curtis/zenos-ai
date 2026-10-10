@@ -1,0 +1,113 @@
+{#
+  room_manager_helpers.jinja (2026-09-11)
+  Shared read-only resolution logic extracted from dojotools_room_manager.yaml's
+  branch-collapse pass (ticket #10400). Pure Jinja only -- no service/action
+  calls belong here (macros cannot fire those); write-side logic (identity
+  calls, filecabinet writes, switch entity turn_on/off) stays in the script.
+#}
+
+{#
+  resolve_toggle() -- the shared "master on/off" resolution chain used by
+  roomstate_enable, entertaining_cascade_enable/_check, reflex_enable, and
+  reflex_dry_run. Precedence, always in this order:
+    1. switch_label entities (if any exist) -- any truthy 'on' state wins
+    2. household cabinet drawer[drawer_key][drawer_field]
+    3. default
+  Returns a JSON string (tojson) rather than a bare dict -- this is an
+  internal macro-to-macro/template-internal handoff, never a script's final
+  response_variable value, so it never touches HA's ast.literal_eval
+  coercion on the outer render. Callers reconstitute a real dict in one
+  step: {%- set _t = resolve_toggle(...) | from_json -%}, then read
+  _t.enabled / _t.source / _t.switch_entities. Do NOT capture this macro's
+  return via {% set %} and use it directly without | from_json -- like any
+  Jinja macro call, it always renders to a STRING when assigned that way.
+#}
+{%- macro resolve_toggle(switch_label, hh_cabinet, drawer_key, drawer_field='enabled', default=false) -%}
+  {%- set _sw_ents = label_entities(switch_label) | list if switch_label else [] -%}
+  {%- if _sw_ents | count > 0 -%}
+    {%- set _val = (_sw_ents | map('states') | select('eq', 'on') | list | count) > 0 -%}
+    {{- {'enabled': _val, 'source': 'label_switch', 'switch_entities': _sw_ents} | tojson -}}
+  {%- else -%}
+    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+    {%- set _raw = CABS.cabinet_drawer_value_mounted(hh_cabinet, drawer_key) if hh_cabinet else none -%}
+    {%- set _cfg = (_raw | from_json) if _raw not in [none, ''] else {} -%}
+    {%- set _val = (_cfg.get(drawer_field, default) | bool) if _cfg is mapping else (default | bool) -%}
+    {%- set _source = 'cabinet' if _raw not in [none, ''] else 'published_default' -%}
+    {{- {'enabled': _val, 'source': _source, 'switch_entities': []} | tojson -}}
+  {%- endif -%}
+{%- endmacro -%}
+
+{#
+  find_room_sensors() -- discovers every zen_room_state-labeled sensor and
+  resolves which HA area (room) it belongs to, via the first label on that
+  entity that resolves through area_name(). Shared by trigger_audit and
+  coverage_map, which previously carried byte-identical copies of this loop.
+  Returns a JSON string (tojson) -- see resolve_toggle()'s docstring above
+  for why, and reconstitute with | from_json at the call site.
+#}
+{%- macro find_room_sensors() -%}
+  {%- set nsr = namespace(list=[]) -%}
+  {%- for ent in label_entities('zen_room_state') -%}
+    {%- set _r = namespace(found='') -%}
+    {%- for l in labels(ent) -%}
+      {%- if _r.found == '' and area_name(l) is not none -%}{%- set _r.found = l -%}{%- endif -%}
+    {%- endfor -%}
+    {%- if _r.found != '' -%}{%- set nsr.list = nsr.list + [{'room': _r.found, 'sensor': ent}] -%}{%- endif -%}
+  {%- endfor -%}
+  {{- nsr.list | tojson -}}
+{%- endmacro -%}
+
+{#
+  classify_entity_signal(entity_id, domain, device_class) -- the shared
+  domain+device_class -> {suggested_label, confidence} classification chain,
+  extracted verbatim (byte-for-byte, same branch order, same confidence
+  text) from label_discover. Deliberately does NOT check the entity's
+  existing labels or apply the closet/anti-pattern exclusion logic beyond
+  what's inline here (the 'closet' substring check on entity_id, same as
+  the original) -- callers decide what to do with an empty label result
+  and whether the suggestion is already-applied.
+  Returns a JSON string -- reconstitute with | from_json at the call site.
+#}
+{%- macro classify_entity_signal(entity_id, domain, device_class) -%}
+  {%- set _sig = namespace(label='', conf='') -%}
+  {%- if domain == 'binary_sensor' and device_class == 'motion' -%}{%- set _sig.label='motion' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'occupancy' -%}{%- set _sig.label='occupied' -%}{%- set _sig.conf='high — or bed_occupancy instead if this is specifically a bed sensor' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'presence' -%}{%- set _sig.label='occupied' -%}{%- set _sig.conf='medium' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'door' and 'closet' in entity_id -%}{%- set _sig.label='wasp_door' -%}{%- set _sig.conf="low — entity name suggests an INTERIOR CLOSET, not a room entry/exit threshold. Closets are rarely valid wasp_door candidates (real 2026-08-10 case: guest_room_closet_door — correctly declined, a closet inside a room isn't a threshold you enter/exit the ROOM through). Verify carefully before tagging." -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'door' -%}{%- set _sig.label='wasp_door' -%}{%- set _sig.conf='medium — verify this is a room entry/exit door, not an appliance/cabinet door' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'window' -%}{%- set _sig.label='window' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'garage_door' -%}{%- set _sig.label='garage_door' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'moisture' -%}{%- set _sig.label='moisture' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'smoke' -%}{%- set _sig.label='smoke' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'carbon_monoxide' -%}{%- set _sig.label='carbon_monoxide' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'binary_sensor' and device_class == 'gas' -%}{%- set _sig.label='carbon_monoxide' -%}{%- set _sig.conf='low — generic gas leak, confirm this is actually CO-relevant before tagging' -%}
+  {%- elif domain == 'media_player' -%}{%- set _sig.label='engaged' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'siren' -%}{%- set _sig.label='siren' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'lock' -%}{%- set _sig.label='privacy_door' -%}{%- set _sig.conf="low — only if THIS lock is meant to throw Hold; not every lock is a privacy latch. ANTI-PATTERN: never tag a lock as the room's occupancy/wasp_door signal — lock state (locked/unlocked) doesn't track crossing a threshold the way a door contact does. If a paired binary_sensor.*door* exists for the same physical opening, that's the wasp_door candidate; the lock stays security-exposure-only (ext_lock/privacy_door). Tagging the lock instead of the door, and leaving the door's own binary_sensor unwired from trigger_entities, leaves the room structurally blind to anyone standing at that doorway." -%}
+  {%- elif domain == 'cover' and device_class == 'garage' -%}{%- set _sig.label='garage_door' -%}{%- set _sig.conf='high' -%}
+  {%- elif domain == 'cover' and device_class in ['shade','blind','curtain','awning','shutter','window'] -%}{%- set _sig.label='window_covering' -%}{%- set _sig.conf='medium — tag ONLY the aggregate cover if this room has several layers (rods/blinds), not every individual one' -%}
+  {%- elif domain == 'cover' and device_class == 'damper' -%}{%- set _sig.label='hvac_vent' -%}{%- set _sig.conf='medium — HA has no dedicated vent device_class, damper is the closest fit, verify' -%}
+  {%- endif -%}
+  {{- {'label': _sig.label, 'confidence': _sig.conf} | tojson -}}
+{%- endmacro -%}
+
+{#
+  compute_class_slot(cls, rents, wired) -- the shared trigger-wiring core
+  computation used by trigger_audit and coverage_map: given a class label,
+  a room's entity set (rents), and that room's wired_trigger_entities list,
+  returns which of the room's entities carry this class label (should),
+  which are already wired (wired), and which are missing (missing).
+  Deliberately does NOT decide "covered" (purpose_trigger_covered) or final
+  status shape -- those differ per caller (trigger_audit's covered-classes
+  list happens to match coverage_map's today, but the two build different
+  final per-class dict shapes from these same primitives) and stay in each
+  mode's own code, same principle as zen_rm_check_cert returning only a
+  verdict rather than owning the response envelope.
+  Returns a JSON string -- reconstitute with | from_json at the call site.
+#}
+{%- macro compute_class_slot(cls, rents, wired) -%}
+  {%- set _should = label_entities(cls) | intersect(rents) | list -%}
+  {%- set _wired_subset = _should | select('in', wired) | list -%}
+  {%- set _missing = _should | reject('in', wired) | list -%}
+  {{- {'should': _should, 'wired': _wired_subset, 'missing': _missing} | tojson -}}
+{%- endmacro -%}
