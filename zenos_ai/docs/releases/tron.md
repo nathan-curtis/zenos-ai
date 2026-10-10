@@ -156,6 +156,7 @@ The same pass fixed real defects along the way:
 
 - **FileCabinet** cross-cabinet `move`/`copy` carried an empty value from a cabinet source. It now moves the drawer's real value. A live drawer whose tool call reads the same drawer back, directly or through another mount, is refused with `tool_call_cycle_detected` instead of recursing until the concurrency cap stops it.
 - **AutoVac** status, health, and briefing no longer exhaust the script's run limit. The shared schedule lookup was calling `mode=schedule`, which fell through to the same lookup and called itself again.
+- **Flynn** creates any label it is about to assign, directly and only when missing, and one bad label no longer stops the sentinel. A missing expansion cabinet slot label used to abort label assignment and every gate after it on each 5-minute pass.
 - **Flynn** onboarding now reads and writes its real `_onboarding` and `_onboarding_schema` drawers. It had been reading two sensors that were never created, so each answer replaced the ones before it.
 - **Room Manager v3** label resync creates a missing label before applying it. Cleaning resync dispatches at most one stuck room per pass, since there is one vacuum.
 - **Camera** reports `fc_confirmed` from FileCabinet's `write_verified`, so cached captures no longer read as unconfirmed.

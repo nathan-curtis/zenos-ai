@@ -1,6 +1,12 @@
 ###############################################################################
-# FLYNN — UNIFIED ENGINE (v5.1.1)
+# FLYNN — UNIFIED ENGINE (v5.1.2)
 # Canon-safe, no nested Jinja in service calls, fully HA-legal.
+#
+# v5.1.2: Flynn creates labels with homeassistant.create_label directly
+#   (Gate 0 and a new Step 0 in flynn_assign_labels), never through the
+#   cert-gated labels tool, and only for labels that do not exist yet
+#   (create_label raises on an existing name). A missing label no longer aborts
+#   flynn_assign_labels or the Stepgate Sentinel.
 #
 # v5.1.1: flynn_assign_labels runs on every Stepgate pass past Gates 0-1,
 #   not only from Gate 1, so upgraded installs also get the default helper
@@ -488,17 +494,32 @@ automation:
                   #raw_labels: "{{ state_attr('sensor.zen_label_health', 'required_labels') }}"
                   label_list: >-
                     {%- import 'zenos_ai/zenos_health.jinja' as HEALTH -%}
-                    {{ HEALTH.required_labels() | from_json([]) }}
+                    {%- set wanted = HEALTH.required_labels() | from_json([]) -%}
+                    {%- set have = labels() -%}
+                    {%- set out = namespace(names=[], slugs=[]) -%}
+                    {%- for n in wanted -%}
+                      {%- set sl = n | slugify -%}
+                      {%- if sl not in have and label_id(n) is none and sl not in out.slugs -%}
+                        {%- set out.names = out.names + [n] -%}
+                        {%- set out.slugs = out.slugs + [sl] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ out.names }}
 
               # ---------------------------------------------
               # @related homeassistant.create_label
               # ---------------------------------------------
-              - alias: "Flynn: Create missing labels via DojoTools"
-                action: script.zen_dojotools_labels
-                data:
-                  action_type: create
-                  label_list: "{{ label_list }}"
-                  confirm: true
+              # Direct service call, not zen_dojotools_labels: that create
+              # path is cert-gated, and Flynn runs in admin trustspace
+              # mid-bootstrap, so it must never wait on a certification.
+              - alias: "Flynn: Create missing labels"
+                repeat:
+                  for_each: "{{ label_list }}"
+                  sequence:
+                    - action: homeassistant.create_label
+                      continue_on_error: true
+                      data:
+                        name: "{{ repeat.item }}"
               - action: persistent_notification.create
                 data:
                   title: "ZenOS-AI: Almost there — restart needed"
@@ -529,6 +550,7 @@ automation:
             sequence:
               - alias: "Flynn: Assign labels to cabinet entities"
                 action: script.flynn_assign_labels
+                continue_on_error: true
                 data: {}
               - stop: "Gate 1: Labels assigned, waiting for health update"
 
@@ -547,6 +569,7 @@ automation:
       # whose cabinet labels are already assigned (and never enter Gate 1)
       # still get Step 5's default helper labels. Every step is idempotent.
       - action: script.flynn_assign_labels
+        continue_on_error: true
         data: {}
 
       #####################################################################
@@ -1030,6 +1053,83 @@ script:
               entity: "sensor.zenos_default_user_cabinet"
             - label: "Zen AI User Cabinet"
               entity: "sensor.zenos_default_ai_user_cabinet"
+          # Hoisted from Step 4 below (unchanged content) so Step 0 can see
+          # every label name this script will ever assign, in one place.
+          health_sensor_labels:
+            - entity: sensor.zen_label_health
+              labels: [zen_health, system_status, zen, labels]
+            - entity: sensor.zen_cabinet_health
+              labels: [zen_health, system_status, zen, cabinet]
+            - entity: sensor.zen_monastery_health
+              labels: [zen_health, system_status, zen, monastery, zen_system]
+            - entity: sensor.zen_summarizer_health
+              labels: [zen_health, system_status, zen, zen_system, ninja_summarizer]
+            - entity: sensor.zen_supersummary_health
+              labels: [zen_health, system_status, zen, zen_system, zen_summary]
+            - entity: sensor.zen_flynn_health
+              labels: [zen_health, system_status, zen_flynn]
+            - entity: binary_sensor.flynn_system_ready
+              labels: [zen_health, system_status, zen_flynn]
+            - entity: sensor.zen_agent_health
+              labels: [zen_health, system_status, agent]
+            - entity: sensor.zen_prompt_health
+              labels: [zen_health, system_status, zen]
+            - entity: sensor.zen_prompt_length
+              labels: [zen_health, system_status, zen]
+          # Hoisted from Step 5 below (unchanged content), same reason.
+          default_helper_labels:
+            - label: zen_home_mode
+              entities: [input_select.zen_home_mode, sensor.zen_home_mode]
+            - label: zen_quiet_hours
+              entities: [binary_sensor.zen_quiet_hours]
+            - label: zen_work_hours
+              entities: [binary_sensor.zen_work_hours]
+            - label: zen_image_task
+              entities: [input_text.zenos_image_task]
+            - label: zen_display_surface
+              entities: [sensor.zen_display_surface_state]
+
+      # Step 0: create every label this script will ever reference, before
+      # any add_label_to_entity call runs. Calls homeassistant.create_label
+      # directly, not zen_dojotools_labels (its create path is cert-gated,
+      # and Flynn runs mid-bootstrap, before any cert could be granted).
+      # create_label raises on a name that already exists, and that error
+      # is not swallowed by continue_on_error, so the list is filtered down
+      # to labels that are missing before the loop runs.
+      - variables:
+          _flynn_all_label_names: >-
+            {%- set ns = namespace(names=[parent_label]) -%}
+            {%- for v in slot_to_label.values() -%}
+              {%- if v -%}{%- set ns.names = ns.names + [v] -%}{%- endif -%}
+            {%- endfor -%}
+            {%- for b in broad_labels -%}
+              {%- set ns.names = ns.names + [b.label] -%}
+            {%- endfor -%}
+            {%- for hs in health_sensor_labels -%}
+              {%- for lbl in hs.labels -%}
+                {%- set ns.names = ns.names + [lbl] -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {%- for dhl in default_helper_labels -%}
+              {%- set ns.names = ns.names + [dhl.label] -%}
+            {%- endfor -%}
+            {%- set have = labels() -%}
+            {%- set out = namespace(names=[], slugs=[]) -%}
+            {%- for n in ns.names -%}
+              {%- set sl = n | slugify -%}
+              {%- if sl not in have and label_id(n) is none and sl not in out.slugs -%}
+                {%- set out.names = out.names + [n] -%}
+                {%- set out.slugs = out.slugs + [sl] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ out.names }}
+      - repeat:
+          for_each: "{{ _flynn_all_label_names }}"
+          sequence:
+            - action: homeassistant.create_label
+              continue_on_error: true
+              data:
+                name: "{{ repeat.item }}"
 
       # Step 1: Assign parent 'Zen Cabinet' label to all default entities
       - repeat:
@@ -1068,28 +1168,7 @@ script:
       # Step 4: Tag static health sensor entities
       # These are not in the slot system — must be stamped explicitly on every provision.
       # add_label_to_entity is idempotent — safe to re-run on existing installs.
-      - variables:
-          health_sensor_labels:
-            - entity: sensor.zen_label_health
-              labels: [zen_health, system_status, zen, labels]
-            - entity: sensor.zen_cabinet_health
-              labels: [zen_health, system_status, zen, cabinet]
-            - entity: sensor.zen_monastery_health
-              labels: [zen_health, system_status, zen, monastery, zen_system]
-            - entity: sensor.zen_summarizer_health
-              labels: [zen_health, system_status, zen, zen_system, ninja_summarizer]
-            - entity: sensor.zen_supersummary_health
-              labels: [zen_health, system_status, zen, zen_system, zen_summary]
-            - entity: sensor.zen_flynn_health
-              labels: [zen_health, system_status, zen_flynn]
-            - entity: binary_sensor.flynn_system_ready
-              labels: [zen_health, system_status, zen_flynn]
-            - entity: sensor.zen_agent_health
-              labels: [zen_health, system_status, agent]
-            - entity: sensor.zen_prompt_health
-              labels: [zen_health, system_status, zen]
-            - entity: sensor.zen_prompt_length
-              labels: [zen_health, system_status, zen]
+      # health_sensor_labels is declared in the top variables block (Step 0 needs it too).
       - repeat:
           for_each: "{{ health_sensor_labels }}"
           sequence:
@@ -1108,18 +1187,7 @@ script:
       # These stay label-driven so a user can move the label to a different
       # entity -- only applies the default when the label currently has zero
       # entities, so an existing override is never touched.
-      - variables:
-          default_helper_labels:
-            - label: zen_home_mode
-              entities: [input_select.zen_home_mode, sensor.zen_home_mode]
-            - label: zen_quiet_hours
-              entities: [binary_sensor.zen_quiet_hours]
-            - label: zen_work_hours
-              entities: [binary_sensor.zen_work_hours]
-            - label: zen_image_task
-              entities: [input_text.zenos_image_task]
-            - label: zen_display_surface
-              entities: [sensor.zen_display_surface_state]
+      # default_helper_labels is declared in the top variables block (Step 0 needs it too).
       - repeat:
           for_each: "{{ default_helper_labels }}"
           sequence:

@@ -1,4 +1,4 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.1
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.2
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -65,7 +65,7 @@ If the system is already clean and stable, Flynn steps aside.
 
 **Trigger:** `sensor.zen_label_health == critical`
 
-Labels don't exist yet. Flynn calls DojoTools Labels to create the full required label set, then fires a persistent notification telling you to restart HA. Label creation requires a restart to take effect.
+Labels don't exist yet. Flynn creates the required labels that are missing, with `homeassistant.create_label` directly rather than through the cert-gated labels tool (Flynn runs in admin trustspace, mid-bootstrap, and never waits on a certification), then fires a persistent notification telling you to restart HA. Label creation requires a restart to take effect.
 
 **What you'll see:** Notification — *"Labels Created — Restart Required"*
 
@@ -77,7 +77,7 @@ Labels don't exist yet. Flynn calls DojoTools Labels to create the full required
 
 **Trigger:** `sensor.zen_label_health == warn`
 
-Labels exist but aren't assigned to the right cabinet entities. Flynn calls `script.flynn_assign_labels` to wire each cabinet sensor to its required labels. Five passes:
+Labels exist but aren't assigned to the right cabinet entities. Flynn calls `script.flynn_assign_labels` to wire each cabinet sensor to its required labels. Step 0 first creates every label the script is about to assign that doesn't exist yet (expansion cabinet slot labels, health labels, the default helper labels), so one missing label can't stop the rest. Then five passes:
 
 1. All slot entities → `zen_cabinet` parent label
 2. Each slot → its specific slot label (e.g., `zen_dojo_cabinet`, `zen_kata_cabinet`)
@@ -93,7 +93,7 @@ Labels exist but aren't assigned to the right cabinet entities. Flynn calls `scr
 | `zen_image_task` | `input_text.zenos_image_task` |
 | `zen_display_surface` | `sensor.zen_display_surface_state` |
 
-Step 5 creates a missing label before applying it. Moving one of these labels to another entity overrides the default, and Flynn leaves it there.
+Moving one of these labels to another entity overrides the default, and Flynn leaves it there.
 
 Once complete, Flynn stops and waits for `zen_label_health` to update.
 
@@ -431,7 +431,7 @@ All four Flynn persistent notification messages are written in Flynn's voice and
 | `sensor.zen_label_health` | Gate 0/1 trigger + label assignment data |
 | `sensor.zen_cabinet_health` | Gate 2 trigger + missing cabinet list |
 | `sensor.zen_monastery_health` | Gate 3 trigger |
-| `script.zen_dojotools_labels` | Gate 0 label creation |
+| `homeassistant.create_label` | Gate 0 and Step 0 label creation (direct, never the labels tool) |
 | `script.zen_admintools_cabinetadmin` | Gate 2 cabinet initialization |
 | `script.zen_admintools_reset_template` | Gate 3 schema seed |
 | `script.zen_admintools_zenos_prompt_loader` | Gate 3 prompt substrate |
