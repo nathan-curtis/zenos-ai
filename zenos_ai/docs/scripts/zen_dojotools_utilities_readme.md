@@ -1,6 +1,6 @@
 # Zen DojoTools Utilities
 
-**Script versions** (per-script `tool_manifest`, canonical): `help` 3.1.1 · `calculator` 1.3.0 · `dice_roller` 1.0.0 · `wait` 1.0.0 · `select_control` 1.1.0 · `boolean` 1.1.0 · `number` 1.1.0 · `text` 1.1.0 · `timekeeper` 1.3.0 · `climate` 2.0.0 · `water_heater` 1.1.0 · `datetime` 1.1.0 · `zones` 1.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `help` 3.1.1 · `calculator` 1.3.0 · `dice_roller` 1.0.0 · `wait` 1.0.0 · `select_control` 1.1.1 · `boolean` 1.1.1 · `number` 1.1.1 · `text` 1.1.1 · `timekeeper` 1.3.0 · `climate` 2.0.1 · `water_heater` 1.1.1 · `datetime` 1.1.1 · `zones` 1.1.0.
 
 *Calculator, dice, announcements, music search, system help, wait, cabinet audit, and canonical HA domain control tools*
 
@@ -317,7 +317,7 @@ Entity existence is checked against domain membership, not state — an entity w
 
 ---
 
-### zen_dojotools_climate (v2.0.0 — also owns `fan.*`)
+### zen_dojotools_climate (v2.0.1 — also owns `fan.*`)
 
 GET+SET for `climate` **and, as of 2026-08-16, `fan`** entities — domain auto-detected from `name` after resolution, no separate mode needed. Closes a real gap: before this, there was no general-purpose fan primitive anywhere in the codebase (only `spa_manager`'s hardcoded hot-tub jets/air-purifier fan calls, not usable generally). Inspects `supported_features` before applying — fails closed on unsupported feature, same philosophy for both domains (fan capability detection via the real `FanEntityFeature` bitmask). Multiple setters may be sent in one call. Omit all to read state and capabilities.
 
