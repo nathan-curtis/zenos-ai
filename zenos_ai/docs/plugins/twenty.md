@@ -1,6 +1,6 @@
 # ZenOS-AI Rolodex (Twenty CRM) Plugin
 
-**Version:** 1.14.0  
+**Version:** 1.14.2  
 **Package:** `packages/zenos_ai/plugins/twenty/twenty.yaml`  
 **Primary script:** `zen_dojotools_rolodex`  
 **Internal REST broker:** `zen_sutra_twenty`  
@@ -63,7 +63,7 @@ The URL is stored in `household.integrations_config.twenty.url`. The legacy `inp
 
 Default label slugs can be overridden in configure via `stays_label`, `appointments_label`, `reminders_label`, `tasks_label`.
 
-4. Deploy the ZenOS CRM schema to Twenty (creates `haLabels` and `haPersonId` fields):
+4. Deploy the ZenOS CRM schema to Twenty (custom fields on People and Companies, plus the property-operations objects; see `provision_schema` below):
 
 ```yaml
 zen_dojotools_rolodex:
@@ -200,7 +200,7 @@ Tags are comma-separated label slugs, e.g. `plumber,vendor,active`.
 | Mode | Description |
 |------|-------------|
 | `configure` | Set Twenty URL + CRM routing labels in cabinet. With no `config_json`, inspects current config. |
-| `provision_schema` | Idempotent deploy of ZenOS CRM schema to Twenty — creates `haLabels` (TEXT) on People and Companies, `haPersonId` (TEXT) on People, and `guestPrefs` (TEXT, JSON string) on People if missing. Also idempotently creates the `stay`, `appointment`, and `serviceRequest` custom Twenty objects used by the structured guest-stay/vendor-appointment/service-request modes above. Stamps `crm_schema` to cabinet. Safe to re-run. |
+| `provision_schema` | Idempotent deploy of the ZenOS CRM schema to Twenty. Creates whatever is missing: `haLabels` on People and Companies, `haPersonId` and `guestPrefs` (JSON string) on People, and four custom objects with their fields for the property-operations modes above: `stay`, `reservation`, `appointment` and `serviceRequest`. The response lists each field under `created` (made this run), `skipped` (already present) or `failed`; a re-run on a complete schema returns an empty `created`. A built-in People or Companies object it cannot find is reported in `failed`. Stamps `crm_schema` to the household cabinet only when nothing failed. Safe to re-run. |
 | `vendor_link` | Link a CRM company UUID to a Grocy `shopping_list` or `shopping_location` via `crm_company_id` userfield. Makes the vendor chain schema-level and permanent. Requires `item_id`, `grocy_entity` (`shopping_lists` or `shopping_locations`), `grocy_id`. |
 | `stacks_by_anchor` | Lens bus provider entry point — returns bounded CRM evidence for a company or person anchor. Consumed by the ZenOS lens dispatch layer. `content_redacted: true` always. |
 

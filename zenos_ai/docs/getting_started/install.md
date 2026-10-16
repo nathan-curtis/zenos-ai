@@ -282,23 +282,30 @@ Plugins live under `packages/zenos_ai/plugins/`. Install only the integrations y
 
 Plugins compound. Tier 1 (Mealie + Grocy) gives food and inventory. Tier 2 (2026.7.0 Neo) connects external knowledge: tickets, documents, wiki, contacts, and finance. Each is independent — install only what you have running.
 
+Each plugin gets its server URL one of two ways. A few read an `input_text` URL helper that the plugin package creates. Set it under **Settings → Devices & services → Helpers** after the restart:
+
 | Plugin | File | Requires | Secret Key(s) |
 |---|---|---|---|
 | Mealie | `plugins/mealie/mealie.yaml` | Mealie instance + `input_text.mealie_url` | `mealie_bearer` |
 | Grocy | `plugins/grocy/grocy.yaml` | Grocy instance + `input_text.grocy_url` | `grocy_api_key` |
 | Kitchen Sync | `plugins/mealie/kitchen_sync.yaml` | Mealie + Grocy both installed | — |
-| Zammad | `plugins/zammad/zammad.yaml` | Zammad instance + `input_text.zammad_url` | `zammad_token` |
-| Wiki.js | `plugins/wiki_js/dojotools_wikijs.yaml` | Wiki.js instance + `input_text.wikijs_url` | `wikijs_token_bearer` |
-| Paperless-NGX | `plugins/paperless_ngx/paperless_ngx.yaml` | Paperless-NGX instance + `input_text.paperless_url` | `paperless_ngx_token` |
-| Twenty CRM | `plugins/twenty/twenty.yaml` | Twenty instance + `input_text.twenty_url` | `twenty_bearer` |
-| Firefly III | `plugins/firefly_iii/firefly_iii.yaml` | Firefly III instance + `input_text.firefly_iii_url` | `firefly_iii_bearer` |
+| Firefly III | `plugins/firefly_iii/firefly_iii.yaml` | Firefly III instance + `input_text.firefly_url` | `firefly_iii_bearer` |
 
-Two more plugins exist but don't follow the `input_text.*_url` + secret pattern above — they're configured differently:
+The rest have no URL helper. Their URL lives in the household cabinet's `integrations_config` drawer, written by a configure call. Your AI can make the MCP-exposed calls for you. Run the internal ones yourself from **Developer Tools → Actions**:
 
-| Plugin | File | Configured via | Secret Key(s) |
+| Plugin | File | Configure with | Stored at | Secret Key(s) |
+|---|---|---|---|---|
+| Zammad (Radar) | `plugins/zammad/zammad.yaml` | `zen_dojotools_servicedesk` `mode: configure`, `input_json: {"url": "http://your-zammad-host/"}` | `integrations_config.fulfillment.url` | `zammad_token` |
+| Twenty CRM (Rolodex) | `plugins/twenty/twenty.yaml` | `zen_dojotools_rolodex` `mode: configure`, `config_json: {"url": "https://your-twenty-host"}`. The older `input_text.twenty_url` helper still works as a fallback until you run configure. | `integrations_config.twenty.url` | `twenty_bearer` |
+| Paperless-NGX | `plugins/paperless_ngx/paperless_ngx.yaml` | `zen_dojotools_library` `section: stacks`, `mode: stacks_configure`, `input_json: {"action": "set", "url": "https://your-paperless-host"}` | `integrations_config.paperless_ngx.url` | `paperless_ngx_token` |
+| Wiki.js | `plugins/wiki_js/dojotools_wikijs.yaml` | `script.zen_root_wikijs` `action_type: configure`, `base_url: https://your-wiki-host` (internal, not MCP-exposed) | `integrations_config.wikijs.url` | `wikijs_token_bearer` |
+| Portainer | `plugins/portainer/portainer.yaml` | `script.zen_admintools_portainer_acl` `mode: config_set`, `url: https://your-portainer-host:9443`, `confirm: true` (admin, not MCP-exposed). Containers stay uncontrollable until you also set `controllable_containers`. | `integrations_config.portainer.url` | `portainer_token` |
+
+One more plugin is not configured at all:
+
+| Plugin | File | Notes | Secret Key(s) |
 |---|---|---|---|
-| Portainer | `plugins/portainer/portainer.yaml` | A tool call — `zen_dojotools_portainer mode=configure config_json='{"url":"https://your-portainer-host:9443"}'` (admin-only) | `portainer_token` |
-| Authentik | `plugins/authentik/authentik.yaml` | Nothing yet — this is an internal **placeholder/stub** with no real network call. It exists so identity checks have a stable call-site to swap in real OIDC login later. Nothing to install or configure today. |
+| Authentik | `plugins/authentik/authentik.yaml` | Nothing yet — this is an internal **placeholder/stub** with no real network call. It exists so identity checks have a stable call-site to swap in real OIDC login later. Nothing to install or configure today. | — |
 
 SpaMaster is no longer an optional plugin. It ships as the core DojoTool `dojotools/dojotools_spa_manager.yaml` and discovers ESPHome spa hardware through `spa_*` labels.
 

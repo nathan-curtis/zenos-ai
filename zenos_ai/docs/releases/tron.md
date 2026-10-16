@@ -221,6 +221,46 @@ It's not a small thing to be unnecessary in exactly the right way. Flynn didn't 
 
 ---
 
+## 2026.10.1 — Patch
+
+**Status:** In progress on `feat/2026.10.1` (cut from `v2026.10.0`), not released
+
+Fixes and tooling gaps found running 2026.10.0 on live installs, plus two certification bundles and a Room Manager coverage report.
+
+### Read this before upgrading
+
+- **`transaction_add` previews first.** Finance posts a transaction only with `confirm=true`. Without it, or with `dry_run=true`, the call returns the planned payload and writes nothing. `external_ref` makes a re-sent post refuse as a duplicate.
+- **To-do create and update moved to `todo_control` (level 1).** They no longer need `pii_disclosure_control`. `todo_control` level 1 is in the `zenos_agent_basic` bundle, so an agent that holds the bundle can now write to-do items.
+- **`label_missing` is now `label_absent` and `label_unused`.** The manifest health report distinguishes a label that does not exist (create it) from one nothing carries (tag something); `label_unused` now counts areas and devices as well as entities. Anything matching on the old code needs updating.
+- **Label create and update have their own cert,** `label_lifecycle_control` (create and update at level 1, delete and reset at level 2). Area assign and remove stay under `registry_lifecycle_control`.
+
+### Added
+
+- **Bundles.** `zenos_agent_steward` (running the house model, granted at level 1) and `zenos_agent_advanced` (locks, security, room override, camera alert policy). A person grants them; nothing requests them for you. New `inventory_schema_edit` cert gates Grocy schema and location changes. See the [Security and Certification Manual](../getting_started/security_certification_manual.md).
+- **Room Manager 5.14.0.** `mode=setup_coverage` and `sensor.zen_room_manager_health` (green, yellow, red; informational only). `get` returns `setup_missing`. An empty area no longer reads as "not found". `link` refuses unknown or identical areas. Room Manager now owns its labels.
+- **Grocy 5.7.** `register` repairs the schema on start and daily. The repair widens type drift to text and stamps the schema version. Health warns when Grocy is configured but its schema is not deployed. List reads report `result.truncation`. `locations_metadata_set` accepts area names.
+- **Central Lens writer** (AdminTools 5.4.3). Taskmaster, Inventory, Media and Wiki.js register through one writer that keeps the flat registry and accepts mapping payloads. Taskmaster 0.5.0 adds `by_anchor` (To Do items by area or label, Grocy chores by area). `lens_dispatch` takes `provider=`.
+- **Media Manager 6.2.0.** `volume_set`; a playing player wins when no target is named; group volume and queue transfer, snapshot, restore and sync make no Music Assistant call after a refusal, and the playback cert covers them.
+- **Lights 2.6.4.** `toggle` reports the previous and resulting state; dimming is refused on on/off-only lights.
+- **Scheduler 5.2.4.** Stuck-run guard stops a summarizer that has run over 15 minutes; daily anchors bypass the queue-depth gate; Flynn-health resummarizes only when state changes.
+
+### Fixed
+
+- **Identity:** numeric cabinet GUIDs no longer drop members; `provision_member` finds empty slots and keeps profile fields and the person link; `slot_occupied` points at families. Relationship fields on profiles are read-only.
+- **Cabinets:** one free-slot rule, taken from the canonical slot map, shared by `provision_member`, `expand_drawer` and Room Manager setup. Drawer macros read variables directly instead of through a JSON round trip.
+- **Envelope:** the two-step response pattern is one hop at every call site.
+- **Input guards** return a status error reading "guarded: <what>" (first pass).
+- **Mail:** the MS365 send service comes from the labeled mailbox (`default` plus `e_mail`).
+- **Flynn 5.1.3:** kill switches are found by label.
+- **Health:** stopped components are counted; ambient-tier components are no longer judged against the frequent cadence; `zen_summary` stale thresholds are 25 and 45 minutes.
+- **Finance:** `budget_summary` reads the `budget-limits` endpoint.
+- **Kitchen:** stays under the template output limit.
+- **Radar** `ticket_close` keeps its note; **Twenty** HTTP 0 is no longer counted as connected; **Wiki.js** accepts `mode=` and registers on bootstrap; `zen_stack_media` registers once; Room Manager home_overview weather uses `get_forecasts`; Todo `label_targets` is read correctly; Rolodex metadata paging.
+
+**Deferred to 2026.11.0:** the remaining input-guard coverage and the plugin setup unification.
+
+---
+
 *ZenOS-AI 2026.10.0 'Tron' — end of line?*
 
 *Not while the Grid is still running.*

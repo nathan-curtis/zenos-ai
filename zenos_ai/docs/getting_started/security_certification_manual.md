@@ -72,6 +72,13 @@ A narrower grant held at the same or a lower level than the broader one it sits 
 
 `cert_req_grant` does expose one narrow path to *originate* a brand-new bundle: passing `cert_bundle` (a name that doesn't exist yet) with `cert_bundle_members` (a JSON array of cert names) registers that bundle. This is **define-only by default** — the bundle is created granted to nobody. Pass `also_grant=true` in the same call to also grant it to the target as part of the same live ack. `cert_bundle_members` has no effect if `cert_bundle` already names an existing bundle; changing an existing bundle's membership still requires an operator using `cert_bundle_set` directly.
 
+**Standard bundles.** A bundle grant gives every member the same level, so the level you grant decides what's included.
+
+- `zenos_agent_basic`: everyday control (lights, scenes, covers, climate, water heater, displays, media playback, helper edits, timers, todo delete). Requested at Flynn OOBE completion.
+- `zenos_agent_steward`: running the house model, granted at level 1. Room Manager topology and behavior (`room_topology_edit`, `room_behavior_control`), label create/update (`label_lifecycle_control`), registry cosmetics and area assignment (`registry_lifecycle_control`), Grocy schema and locations (`inventory_schema_edit`), house settings (`zenos.system.home_config_write`), profiles (`zenos.identity.profile_write`), zones (`helper_zones_edit`) and alert policy (`alert_policy_edit`). At level 1 it cannot delete areas, labels, registry objects or Grocy structure.
+- `zenos_agent_advanced`: physical security. `lock_control`, `security_control`, `room_control_override` (clearing a room out of Paused) and `camera_alert_policy_edit`. The bundle grants the ability only: every live acknowledgement these certifications require still goes to a phone.
+- Admin certifications (cabinets, reload/restart, infrastructure, finance, registry purge, plant auto-shutoff, KFC publish, PII whitelist) are never bundled.
+
 ---
 
 ## 4. GRANTING A CERTIFICATION — AND THE MOBILE REQUIREMENT
@@ -192,18 +199,20 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | `zen_dojotools_camera` | `camera_alert_policy_edit` | `set_alert_policy` | — |
 | `zen_dojotools_plant` | `plant_auto_shutoff_config_edit` | `leak_auto_shutoff_enable` | — |
 | `zen_dojotools_alertmanager` | `alert_policy_edit` | `set_policy` | — |
-| `zen_dojotools_labels` | `registry_lifecycle_control` (reused) | `create`, `delete`, `update`, `area_assign`, `area_remove` | `reset` (untags all `zen_` labels house-wide — cert plus a mandatory live ack every time, no scope waiver available for this action) |
+| `zen_dojotools_labels` | `label_lifecycle_control` | `create`, `update` (level 1); `delete`, `reset` (level 2) | `reset` (untags all `zen_` labels house-wide — cert plus a mandatory live ack every time, no scope waiver available for this action) |
+| `zen_dojotools_labels` | `registry_lifecycle_control` (reused) | `area_assign`, `area_remove` (level 1) | — |
 | `zen_dojotools_office` (Mail) | `pii_disclosure_control` | `create` (send, level 1) | — |
 | `zen_dojotools_office` (Mail) | `pii_disclosure_control` (reused) | `whitelist_set` (level 2 — edits the household mail-whitelist cabinet drawer) | — |
 | `zen_dojotools_office` (Teams) | `pii_disclosure_control` (reused) | `send` | — |
 | `zen_dojotools_office` (Teams) | `teams_control` | `set` (Availability/Activity — how the user is represented to their org; level 1) | — |
 | `zen_dojotools_taskmaster` | `pii_disclosure_control` (reused) | `task_create` | — |
-| `zen_dojotools_todo` | `pii_disclosure_control` (reused) | `create`, `update` | — |
+| `zen_dojotools_todo` | `todo_control` | `create`, `update` (level 1, in `zenos_agent_basic`) | — |
 | `zen_dojotools_todo` | `todo_control` | `delete` (level 2 — irreversible item removal) | — |
 | `zen_dojotools_calendar` | `pii_disclosure_control` (reused) | `create`, `update` | — |
 | `zen_dojotools_calendar` | `calendar_control` | `delete` (level 2 — irreversible event removal) | — |
 | `zen_dojotools_ectoplasm` (Spook actions) | `room_topology_edit` (reused) | `area_create`/`area_delete`, `floor_create`/`floor_delete`, `area_assign_device`/`area_unassign_device`, `area_assign_entity`/`area_unassign_entity`, `floor_assign_area`/`floor_unassign_area` (`area_delete`/`floor_delete` at level 2) | — |
-| `zen_dojotools_ectoplasm` (Spook actions) | `registry_lifecycle_control` (reused) | `entity_hide`/`entity_unhide`, `entity_disable`/`entity_enable`, `entity_rename`, `device_disable`/`device_enable`, `integration_disable`/`integration_enable`, `label_assign_area`/`label_unassign_area`, `label_assign_device`/`label_unassign_device`, `automation_snooze`, `automation_turn_on_for`, `input_number_create`/`input_number_delete` | — |
+| `zen_dojotools_ectoplasm` (Spook actions) | `registry_lifecycle_control` (reused) | Level 1: `entity_hide`/`entity_unhide`, `entity_rename`, `entity_set_icon`, `entity_set_aliases`, `label_assign_area`/`label_unassign_area`, `label_assign_device`/`label_unassign_device`, `category_assign`/`category_unassign`. Level 2: entity/device/integration enable and disable, `category_create`/`category_delete`, `automation_snooze`/`automation_turn_on_for`, helper create/delete | — |
+| `zen_dojotools_inventory` (Grocy) | `inventory_schema_edit` | Level 1: `userfields_deploy`/`repair`/`create`, `userentities_create`, `locations_add`/`rename`/`update_description`/`metadata_set`/`reparent_bulk`/`hierarchy_rebuild`, `units_add`/`units_update`, `unit_conversions_add`, `shopping_locations_rename`. Level 2: `userfields_delete`, `userentities_delete`, `locations_delete`/`delete_safe`, `unit_conversions_delete`, `catalog_delete_product`, `products_merge`. Stock, products, chores, tasks, shopping and batteries stay ungated | — |
 | `zen_dojotools_ectoplasm` (Spook actions) | `registry_purge` | `orphan_cleanup` (level 2) | — |
 | `zen_dojotools_scribe` | `scribe_kfc_publish` | `publish_kfc`, `republish_kfc`, and `patch`/`replace`/`clear_field`/`delete` when the target artifact is an already-published `kfc` | — |
 | `zen_dojotools_media_manager` | `media_prefs_edit` | `prefs_set`, `prefs_apply`, `room_default_set`, `setup` | — |
@@ -228,7 +237,7 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | `zen_dojotools_systemtools` | `zenos.system.reload_restart` | `ha_restart`, `ha_reload_all` (checked once `confirm=true` is given, in addition to the confirm gate) | — |
 | `zen_dojotools_systemtools` | `zenos.system.home_config_write` | Write path of `home_mode`, `quiet_hours`, `work_hours`, `scheduler_anchors`, `guest_mode`, `entertaining` (reads stay open) | — |
 
-`pii_disclosure_control` is a shared certification: level 1 gates any action that discloses or transmits household PII outward (mail/Teams send, task/todo/calendar create-update since these can carry personal details to shared surfaces); level 2 gates changing the disclosure policy itself (the mail whitelist). It covers the *disclosure* axis only — irreversible deletes (`todo_control`, `calendar_control`) and presence representation (`teams_control`) are separate, independent risk axes with their own certs, and can apply to the same tool as `pii_disclosure_control` for different actions.
+`pii_disclosure_control` is a shared certification: level 1 gates any action that discloses or transmits household PII outward (mail/Teams send, task/calendar create-update (todo create/update moved to `todo_control` level 1) since these can carry personal details to shared surfaces); level 2 gates changing the disclosure policy itself (the mail whitelist). It covers the *disclosure* axis only — irreversible deletes (`todo_control`, `calendar_control`) and presence representation (`teams_control`) are separate, independent risk axes with their own certs, and can apply to the same tool as `pii_disclosure_control` for different actions.
 
 Every entry in the middle and right columns requires holding the listed certification at the tool's required level as a baseline. The right column additionally requires Section 4's live ack, per call, unless the specific target is covered by a granted allow `cert_scope` (Section 6) — and refused outright, no ack offered, if covered by a `deny` entry instead.
 

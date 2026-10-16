@@ -32,7 +32,7 @@ The policy is read at dispatch time. No policy = no dispatch.
 
 ## One-Time Setup: Seed Your Postman Profile
 
-Run these three `author_policy` calls once. They're idempotent — safe to re-run to update. **If you already ran First Alert's Step 7, Step 2 below is done** — re-running it with the same values is harmless, or skip straight to Steps 1 and 3.
+Run these two `author_policy` calls once. They're idempotent — safe to re-run to update. **If you already ran First Alert's Step 7, Step 2 below is done** — re-running it with the same values is harmless, or skip straight to Step 1.
 
 ### Step 1 — Household Policy (sleep gate + life safety)
 
@@ -88,18 +88,9 @@ zen_dojotools_postman
 
 If you followed [First Alert](first_alert.md) and created `notify.admin_devices`, use `"Admin Devices"` here.
 
-### Step 3 — Family Policy (seed empty for now)
+### Family Policy — nothing to seed yet
 
-```
-zen_dojotools_postman
-  mode: author_policy
-  scope_id: sensor.zen_default_family_cabinet_resolved
-  policy_key: postman_profile
-  policy_type: update_existing
-  channel_definition: {}
-```
-
-Family escalation isn't implemented yet — an empty seed satisfies the resolver.
+Family escalation isn't implemented yet, so there is no family policy to author. Postman treats a missing family `postman_profile` exactly like an empty one (its responses report `family_policy_present: false`). Don't try to seed it with `channel_definition: {}`: `author_policy` requires a non-empty mapping and will refuse.
 
 ---
 
