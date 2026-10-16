@@ -223,7 +223,7 @@ It's not a small thing to be unnecessary in exactly the right way. Flynn didn't 
 
 ## 2026.10.1 — Patch
 
-**Status:** In progress on `feat/2026.10.1` (cut from `v2026.10.0`), not released
+**Status:** Release candidate 1 on `feat/2026.10.1` (cut from `v2026.10.0`)
 
 Fixes and tooling gaps found running 2026.10.0 on live installs, plus two certification bundles and a Room Manager coverage report.
 
