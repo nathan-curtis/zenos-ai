@@ -1,6 +1,11 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.2.6
+# Version: 5.2.7
+# 5.2.7: component freshness follows each component's fastest timed trigger
+#   (ok < max(25, 1.5p), stale < max(60, 3p)); event-driven components are
+#   never stale. zen_system KF5 definition is the single source: hourly_trigger +
+#   force_summary, comma-string trigger_subscriptions, a component_summary,
+#   and component= returns one dict (not_found when unknown).
 # 5.2.6: health report flags 'Grocy configured but schema not deployed' (#10615).
 # 5.2.5: component freshness treats ambient-tier components as frequent only
 #   via hourly_trigger (the scheduler sheds them on quarter_hour/every_10_minutes).
@@ -742,7 +747,7 @@ script:
                 tool='zen_dojotools_systemtools',
                 display_name='SystemTools - ZenOS Platform Kernel',
                 tier='dojotools',
-                version='5.2.0',
+                version='5.2.7',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['system_monitor', 'system_status'],
@@ -812,7 +817,8 @@ script:
             - kata_key: zen_system
               friendly_name: ZenOS System Health
               label: zen_system
-              component_summary: ""
+              component_summary: >-
+                ZenOS pipeline health: cabinets, summarizer kill switches, summary freshness and monk status.
               component_instructions: >-
                 Surface health state first. If any sensor is warn or critical, or any pipeline kill switch is off — lead with that. If all ok — single line nominal.
 
@@ -839,16 +845,14 @@ script:
 
                 CONVERSATIONAL REFERENCE:
                   When the user says "what's the summary", "give me the summary", "what's the zen summary",
-                  "what does the summary say", "summary status", or similar — he means the zen_summary
+                  "what does the summary say", "summary status", or similar — the user means the zen_summary
                   kata from sensor.zenos_kata_cabinet. Read it and present the synthesized view:
                     - active_components with signals → name them and what they're flagging
                     - zen_summary.attention items → mention if anything notable
                     - ambient_nav → sweep in one sentence if nothing urgent
                   Speak the conclusion, not the structure. Don't recite keys — interpret the output.
                   If zen_summary is stale (> 15 min old), note it before presenting.
-              trigger_subscriptions:
-              - ha_start
-              - daily_midnight
+              trigger_subscriptions: "ha_start,daily_midnight,hourly_trigger,force_summary"
               drift_threshold: 5
               emission_cooldown_minutes: 60
               delay_seconds: 0
@@ -874,15 +878,16 @@ script:
               {%- if _kfc_filter == '' -%}
                 {{ _kfc_defs }}
               {%- else -%}
-                {{ _kfc_defs | selectattr('kata_key', 'equalto', _kfc_filter) | list }}
+                {{ _kfc_defs | selectattr('kata_key', 'equalto', _kfc_filter) | list | first | default(none) }}
               {%- endif -%}
             response:
-              status: ok
+              status: "{{ 'not_found' if _kfc_out is none else 'ok' }}"
               tool: zen_dojotools_systemtools
-              version: "5.2.0"
+              version: "5.2.7"
               mode: kfc_manifest
               kfc: "{{ _kfc_out }}"
-              count: "{{ _kfc_out | length }}"
+              count: "{{ 0 if _kfc_out is none else (1 if _kfc_out is mapping else _kfc_out | length) }}"
+              available: "{{ _kfc_defs | map(attribute='kata_key') | list }}"
               caller_token: "{{ caller_token | default('') }}"
 
     # zenos.system.reload_restart cert gate. Supplementary to the
@@ -1827,11 +1832,25 @@ script:
                       {%- set _last_d = _last_d if _last_d is mapping else {} -%}
                       {%- set _ran_at = _last_d.get('run_started_at', '') -%}
                       {%- set _age = ((now() - as_datetime(_ran_at)).total_seconds() / 60) | round(1) if _ran_at and _ran_at != '' else none -%}
-                      {#- The scheduler sheds ambient-tier components on quarter_hour/every_10_minutes, so only hourly_trigger makes them frequent. -#}{%- set _ft = ['hourly_trigger'] if (_sub_d.get('pipeline_tier', 'keeper') | lower) == 'ambient' else _frequent_triggers -%}{%- set _is_frequent = _triggers_list | map('trim') | select('in', _ft) | list | count > 0 -%}
-                      {%- set _cadence = 'frequent' if _is_frequent else 'sparse' -%}
-                      {%- set _ok_max = 20 if _is_frequent else 780 -%}
-                      {%- set _stale_max = 60 if _is_frequent else 1500 -%}
-                      {%- set _fresh = 'ok' if _age is not none and _age | float < _ok_max else ('stale' if _age is not none and _age | float < _stale_max else 'very_stale') -%}
+                      {#- Thresholds follow the fastest timed trigger (period p, minutes): ok under max(25, 1.5p), stale under max(60, 3p).
+                          The scheduler sheds ambient-tier components on quarter_hour/every_10_minutes, so those do not count for them.
+                          noon + midnight together is a 12 h period. No timed trigger = event-driven: never stale, only never-ran. -#}
+                      {%- set _tl = _triggers_list | map('trim') | list -%}
+                      {%- set _amb = (_sub_d.get('pipeline_tier', 'keeper') | lower) == 'ambient' -%}
+                      {%- set _pns = namespace(p=none) -%}
+                      {%- for _t in _tl -%}
+                        {%- set _p = 10 if _t == 'every_10_minutes' else (15 if _t == 'quarter_hour' else (60 if _t == 'hourly_trigger' else (1440 if _t in ['daily_noon', 'daily_midnight'] else (10080 if _t.startswith('weekly_trigger') else none)))) -%}
+                        {%- if _p is not none and not (_amb and _p < 60) and (_pns.p is none or _p < _pns.p) -%}{%- set _pns.p = _p -%}{%- endif -%}
+                      {%- endfor -%}
+                      {%- if _pns.p == 1440 and 'daily_noon' in _tl and 'daily_midnight' in _tl -%}{%- set _pns.p = 720 -%}{%- endif -%}
+                      {%- set _cadence = 'event' if _pns.p is none else ('frequent' if _pns.p <= 60 else 'sparse') -%}
+                      {%- if _pns.p is none -%}
+                        {%- set _fresh = 'ok' if _age is not none else 'very_stale' -%}
+                      {%- else -%}
+                        {%- set _ok_max = [25, _pns.p * 1.5] | max -%}
+                        {%- set _stale_max = [60, _pns.p * 3] | max -%}
+                        {%- set _fresh = 'ok' if _age is not none and _age | float < _ok_max else ('stale' if _age is not none and _age | float < _stale_max else 'very_stale') -%}
+                      {%- endif -%}
                       {%- set _ns.l = _ns.l + [{'slug': slug, 'source': _source, 'last_ran_at': _ran_at, 'age_min': _age, 'freshness': _fresh, 'cadence': _cadence}] -%}
                     {%- endif -%}
                   {%- endif -%}
@@ -2283,11 +2302,25 @@ script:
                       {%- set _ran_at = _last_d.get('run_started_at', '') -%}
                       {%- set _dur = _last_d.get('duration_seconds', none) -%}
                       {%- set _age = ((now() - as_datetime(_ran_at)).total_seconds() / 60) | round(1) if _ran_at and _ran_at != '' else none -%}
-                      {#- The scheduler sheds ambient-tier components on quarter_hour/every_10_minutes, so only hourly_trigger makes them frequent. -#}{%- set _ft = ['hourly_trigger'] if (_sub_d.get('pipeline_tier', 'keeper') | lower) == 'ambient' else _frequent_triggers -%}{%- set _is_frequent = _triggers_list | map('trim') | select('in', _ft) | list | count > 0 -%}
-                      {%- set _cadence = 'frequent' if _is_frequent else 'sparse' -%}
-                      {%- set _ok_max = 20 if _is_frequent else 780 -%}
-                      {%- set _stale_max = 60 if _is_frequent else 1500 -%}
-                      {%- set _fresh = 'ok' if _age is not none and _age | float < _ok_max else ('stale' if _age is not none and _age | float < _stale_max else 'very_stale') -%}
+                      {#- Thresholds follow the fastest timed trigger (period p, minutes): ok under max(25, 1.5p), stale under max(60, 3p).
+                          The scheduler sheds ambient-tier components on quarter_hour/every_10_minutes, so those do not count for them.
+                          noon + midnight together is a 12 h period. No timed trigger = event-driven: never stale, only never-ran. -#}
+                      {%- set _tl = _triggers_list | map('trim') | list -%}
+                      {%- set _amb = (_sub_d.get('pipeline_tier', 'keeper') | lower) == 'ambient' -%}
+                      {%- set _pns = namespace(p=none) -%}
+                      {%- for _t in _tl -%}
+                        {%- set _p = 10 if _t == 'every_10_minutes' else (15 if _t == 'quarter_hour' else (60 if _t == 'hourly_trigger' else (1440 if _t in ['daily_noon', 'daily_midnight'] else (10080 if _t.startswith('weekly_trigger') else none)))) -%}
+                        {%- if _p is not none and not (_amb and _p < 60) and (_pns.p is none or _p < _pns.p) -%}{%- set _pns.p = _p -%}{%- endif -%}
+                      {%- endfor -%}
+                      {%- if _pns.p == 1440 and 'daily_noon' in _tl and 'daily_midnight' in _tl -%}{%- set _pns.p = 720 -%}{%- endif -%}
+                      {%- set _cadence = 'event' if _pns.p is none else ('frequent' if _pns.p <= 60 else 'sparse') -%}
+                      {%- if _pns.p is none -%}
+                        {%- set _fresh = 'ok' if _age is not none else 'very_stale' -%}
+                      {%- else -%}
+                        {%- set _ok_max = [25, _pns.p * 1.5] | max -%}
+                        {%- set _stale_max = [60, _pns.p * 3] | max -%}
+                        {%- set _fresh = 'ok' if _age is not none and _age | float < _ok_max else ('stale' if _age is not none and _age | float < _stale_max else 'very_stale') -%}
+                      {%- endif -%}
                       {%- set _ns.l = _ns.l + [{'slug': slug, 'tier': _sub_d.get('pipeline_tier', _sub_d.get('tier', 'unknown')), 'source': _source, 'triggers': _triggers_list, 'last_ran_at': _ran_at, 'age_min': _age, 'freshness': _fresh, 'duration_sec': _dur, 'cadence': _cadence}] -%}
                     {%- endif -%}
                   {%- endif -%}
