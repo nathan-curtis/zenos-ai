@@ -1,6 +1,6 @@
 # ZenOS-AI Firefly III Finance Component
 
-**Version:** 2.6.0 (`zen_dojotools_finance`)  
+**Version:** 2.6.1 (`zen_dojotools_finance`)  
 **Package:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Primary script:** `zen_dojotools_finance`  
 **Internal REST dispatcher:** `zen_root_firefly` (renamed from `zen_sutra_firefly` in 2.3.0)  
@@ -278,6 +278,7 @@ The YAML notes a planned n8n integration for bank feed → Firefly sync. n8n pus
 
 | Version | Change |
 |---------|--------|
+| v2.6.1 | 2026.10.1: `transaction_add` refuses a named source or destination account that matches no Firefly account (`status: error`, `reason: guarded: ...`) before any preview or post. |
 | v2.6.0 | 2026.10.1: `transaction_add` previews unless `confirm=true` (`dry_run` always previews); `external_ref` makes a re-sent post refuse as a duplicate. `budget_summary` reads the `budget-limits` endpoint. |
 | v2.3.0 | Codex tier introduced: `zen_codex_finance_depreciation` (asset depreciation) and `zen_codex_finance_cogs` (COGS auto-posting), dispatched via new `index`/`inspect`/`bootstrap_codices`/`report`/`kfc_manifest` cases. New cases: `transaction_get`, `budget_summary`, `finance_rollup`, `category_create`. `account_create` sets `account_role: defaultAsset` on asset accounts. `transaction_link` is now confirm-gated. `bill_status`/`bills_list`/`spend_summary` guard against Firefly returning literal `None`/`none` strings. `transactions_search` supports tag-based queries. REST dispatcher renamed `zen_sutra_firefly` → `zen_root_firefly`. |
 | v2.2.0 | Complete rebuild. `zen_stack_firefly` Lens Bus stack provider with auto-registration (`register_mode: register`). r-only security gate on the stack provider. 15 new cases: `account_create/update`, `piggybank_create/update`, `budget_create/budget_limit_set`, `bill_create/status`, `net_worth_snapshot`, `liability_summary`, `reconcile_prepare`, `transaction_normalize`, `project_account_status`, `transaction_link`, `catalog`. New fields: `label` (Firefly tag), `external_ref` (Grocy/Paperless cross-link). REST dispatcher: PUT and DELETE commands added. Auto-registration pattern first established here. |
