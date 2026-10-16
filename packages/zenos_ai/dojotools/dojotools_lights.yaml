@@ -1,7 +1,12 @@
 ###############################################################################
-# zen_dojotools_lights v2.6.2 (codename: ZenLux)
+# zen_dojotools_lights v2.6.4 (codename: ZenLux)
 # Room-aware lighting intent resolver with memory + label-driven topology
 #
+# 2.6.4 — toggle returns previous_state, state and changed (waits up to 5s);
+#   unconfirmed if nothing changed.
+# 2.6.3 — brightness_set: on/off-only lights refuse 1-99% with not_dimmable
+#   (nothing sent); status is ok only when the light reports the requested
+#   level, otherwise unconfirmed.
 # 2.6.2 — queue holds 5 runs (was 3), so a multi-room burst isn't dropped.
 # 2.6.1 — home mode read via zen_home_mode label, not sensor/input_select literal.
 # 2.6.0 (2026-08-30) —
@@ -378,7 +383,7 @@ script:
                     tool='zen_dojotools_lights',
                     display_name='Lights',
                     tier='dojotools',
-                    version='2.6.2',
+                    version='2.6.4',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['light', 'zen_home_mode'],
@@ -1054,7 +1059,7 @@ script:
                         manifest declaration. mode=help — this reference.
                       tool: zen_dojotools_lights
                       codename: ZenLux
-                      version: "2.6.2"
+                      version: "2.6.4"
                       summary: >-
                         Say 'set the office to work mode' and this tool handles it.
                         Discover room layout once, teach a pref, apply it forever.
@@ -1977,12 +1982,30 @@ script:
                     # post-action wait_template below can detect a real
                     # change instead of guessing a fixed delay.
                     _pre_sig: "{{ states(_resolved_entity) ~ '|' ~ (state_attr(_resolved_entity, 'brightness') | default('', true)) }}"
+                    # An on/off-only light cannot dim: only 0 (off) and 100 (on) mean anything.
+                    _bs_onoff_only: >-
+                      {%- set m = state_attr(_resolved_entity, 'supported_color_modes') | default([], true) | list -%}
+                      {{ _resolved_entity.startswith('light.') and m | length > 0 and m | reject('equalto', 'onoff') | list | length == 0 }}
                 - if: "{{ _eff_bri < 0 or _resolved_entity == '' }}"
                   then:
                     - variables:
                         result:
                           status: error
                           error: "brightness (0-100) and room/entity required."
+                          caller_token: "{{ _caller_token }}"
+                - if: "{{ result is not defined and _bs_onoff_only and 0 < _eff_bri < 100 }}"
+                  then:
+                    - variables:
+                        result:
+                          status: error
+                          error: not_dimmable
+                          reason: "guarded: {{ _resolved_entity }} is on/off only, cannot set {{ _eff_bri }}% (use 100 or 0)"
+                          mode: brightness_set
+                          entity: "{{ _resolved_entity }}"
+                          message: >-
+                            {{ _resolved_entity }} is on/off only (supported_color_modes: onoff), so it
+                            cannot be set to {{ _eff_bri }}%. Nothing was sent. Use 100 (on) or 0 (off).
+                          state: "{{ states(_resolved_entity) }}"
                           caller_token: "{{ _caller_token }}"
                 - if: "{{ result is not defined }}"
                   then:
@@ -2045,12 +2068,18 @@ script:
                               data:
                                 transition: "{{ _transition }}"
                           else:
-                            - action: light.turn_on
-                              target:
-                                entity_id: "{{ _resolved_entity }}"
-                              data:
-                                brightness: "{{ (_eff_bri * 2.55) | round(0) | int }}"
-                                transition: "{{ _transition }}"
+                            - if: "{{ _bs_onoff_only }}"
+                              then:
+                                - action: light.turn_on
+                                  target:
+                                    entity_id: "{{ _resolved_entity }}"
+                              else:
+                                - action: light.turn_on
+                                  target:
+                                    entity_id: "{{ _resolved_entity }}"
+                                  data:
+                                    brightness: "{{ (_eff_bri * 2.55) | round(0) | int }}"
+                                    transition: "{{ _transition }}"
                     # Reading state IMMEDIATELY after the service call races
                     # the real hardware -- e.g. a light bridged over WiFi
                     # can read 'off' right after the call and 'on' a few
@@ -2067,8 +2096,20 @@ script:
                       timeout: 5
                       continue_on_timeout: true
                     - variables:
+                        _bs_matches: >-
+                          {%- set st = states(_resolved_entity) -%}
+                          {%- set b = state_attr(_resolved_entity, 'brightness') -%}
+                          {%- if _eff_bri == 0 -%}{{ st == 'off' }}
+                          {%- elif st != 'on' -%}false
+                          {%- elif b is none or _bs_onoff_only -%}true
+                          {%- else -%}{{ ((b | float(0)) / 2.55 - _eff_bri) | abs <= 3 }}
+                          {%- endif -%}
+                    - variables:
                         result:
-                          status: ok
+                          status: "{{ 'ok' if _bs_matches else 'unconfirmed' }}"
+                          message: >-
+                            {{ none if _bs_matches else ('The light did not report the requested level within 5s (state: '
+                               ~ states(_resolved_entity) ~ ', brightness: ' ~ (state_attr(_resolved_entity, 'brightness') | default('n/a', true)) ~ '). Do not tell the user it changed.') }}
                           mode: brightness_set
                           entity: "{{ _resolved_entity }}"
                           brightness_pct: "{{ _eff_bri }}"
@@ -3343,14 +3384,29 @@ script:
                             caller_token: "{{ _caller_token }}"
                   - if: "{{ result is not defined }}"
                     then:
+                    # Toggle is state-blind, so report what it actually did:
+                    # the state before, the state after (waiting up to 5s for
+                    # the device), and the explicit on/off paths to use when
+                    # the caller wants a specific end state.
+                    - variables:
+                        _tg_prev: "{{ states(_entity_id) }}"
                     - action: homeassistant.toggle
                       target:
                         entity_id: "{{ _entity_id }}"
+                    - wait_template: "{{ states(_entity_id) != _tg_prev }}"
+                      timeout: 5
+                      continue_on_timeout: true
                     - variables:
                         result:
-                          status: ok
+                          status: "{{ 'ok' if states(_entity_id) != _tg_prev else 'unconfirmed' }}"
                           mode: toggle
                           entity: "{{ _entity_id }}"
+                          previous_state: "{{ _tg_prev }}"
+                          state: "{{ states(_entity_id) }}"
+                          changed: "{{ states(_entity_id) != _tg_prev }}"
+                          hint: >-
+                            Report the state field, not the intent. For a specific end state use
+                            brightness_set 100/0 (lights) or switch_set on/off (switches).
                           caller_token: "{{ _caller_token }}"
 
             # switch_set -- explicit switch.* write control. entity_id=
@@ -3413,7 +3469,7 @@ script:
       - if: "{{ result is defined }}"
         then:
           - variables:
-              _envelope_raw: >-
+              _envelope: >-
                 {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
                 {{- OS.envelope(
                   status='error' if (result.get('status') == 'error' if result is mapping else false) else 'success',
@@ -3421,8 +3477,6 @@ script:
                   result=result,
                   tool='zen_dojotools_lights',
                   caller_token=_caller_token
-                ) -}}
-          - variables:
-              _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+                ) | from_json -}}
           - stop: zen_dojotools_lights response (SESE)
             response_variable: _envelope

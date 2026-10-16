@@ -1,6 +1,12 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.2.3
+# Version: 5.2.6
+# 5.2.6: health report flags 'Grocy configured but schema not deployed' (#10615).
+# 5.2.5: component freshness treats ambient-tier components as frequent only
+#   via hourly_trigger (the scheduler sheds them on quarter_hour/every_10_minutes).
+# 5.2.4: zen_health_report verdict counts components that ran before and are
+#   now very_stale; only timed triggers set a frequent cadence; zen_summary
+#   stale threshold 25 min (critical 45) to cover a local-model run.
 #
 # 5.2.3 — check_response (config check_config path) parses a raw-string HA
 #   response instead of silently collapsing to {} when Content-Type detection
@@ -758,7 +764,7 @@ script:
                    'description': 'Supplementary to the existing confirm_action gate on ha_restart/ha_reload_all -- a standing cert layer so a compromised/confused agent cannot even attempt the call, not just get refused at the confirm step.',
                    'max_level': 1, 'gates': ['tool=ha_restart/ha_reload_all (cert only, in addition to confirm_action)'],
                    'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.reload_restart (or zen_dojotools_identity mode=cert_list to see current status)'},
-                  {'cert': 'zenos.system.home_config_write', 'display_name': 'Home Config Write',
+                  {'cert': 'zenos.system.home_config_write', 'bundle': ['zenos_agent_steward'], 'display_name': 'Home Config Write',
                    'description': 'Durable household-config writes: home_mode, quiet_hours, work_hours, scheduler_anchors, guest_mode, entertaining. Write path only -- reads stay open.',
                    'max_level': 1, 'gates': ['tool=home_mode/quiet_hours/work_hours/scheduler_anchors/guest_mode/entertaining (write only, cert only)'],
                    'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.home_config_write (or zen_dojotools_identity mode=cert_list to see current status)'}
@@ -829,7 +835,7 @@ script:
                 Nominal report format: "ZenOS nominal. [N] components active. Last summary [X] min ago."
                 Alert format: "ZenOS [warn|critical]: [specific issue]. [switch name|sensor name|cabinet name]."
 
-                MASTER SWITCH RULE: ZenOS pipeline kill switches (zen_summarizers_enabled, zen_ninja_summarizer_enabled, zen_supersummary_enabled, etc.) being OFF IS a monitored deviation — flag it at priority 2 above. Integration/subsystem master switches (Airspace, Grocy, media zones, or any non-ZenOS feature enable) being off is an intentional user choice — treat as informational only, max urgency contribution 1. Distinguish by name: zen_* kill switches → flag. All others → informational.
+                MASTER SWITCH RULE: ZenOS pipeline kill switches (input_boolean entities under label 'zen_system') being OFF IS a monitored deviation — flag it at priority 2 above. Integration/subsystem master switches (Airspace, Grocy, media zones, or any non-ZenOS feature enable) being off is an intentional user choice — treat as informational only, max urgency contribution 1. Distinguish by name: zen_* kill switches → flag. All others → informational.
 
                 CONVERSATIONAL REFERENCE:
                   When the user says "what's the summary", "give me the summary", "what's the zen summary",
@@ -1804,7 +1810,8 @@ script:
             _component_freshness: >-
               {%- set _ns = namespace(l=[]) -%}
               {%- set _protected = ['AI_Cabinet_VolumeInfo', 'kfc_template', 'zen_library_manifest', 'zen_identity_manifest', '_context'] -%}
-              {%- set _frequent_triggers = ['quarter_hour', 'every_10_minutes', 'hourly_trigger', 'home_occupancy_change', 'home_mode_updates', 'default_user_bed_changes', 'secondary_user_bed_changes'] -%}
+              {#- Only timed triggers set a frequent cadence; event-driven components can go quiet for hours legitimately. -#}
+              {%- set _frequent_triggers = ['quarter_hour', 'every_10_minutes', 'hourly_trigger'] -%}
               {%- if _dojo_vars is mapping -%}
                 {%- for slug, drawer in _dojo_vars.items() -%}
                   {%- if not slug.startswith('_') and slug not in _protected -%}
@@ -1820,7 +1827,7 @@ script:
                       {%- set _last_d = _last_d if _last_d is mapping else {} -%}
                       {%- set _ran_at = _last_d.get('run_started_at', '') -%}
                       {%- set _age = ((now() - as_datetime(_ran_at)).total_seconds() / 60) | round(1) if _ran_at and _ran_at != '' else none -%}
-                      {%- set _is_frequent = _triggers_list | map('trim') | select('in', _frequent_triggers) | list | count > 0 -%}
+                      {#- The scheduler sheds ambient-tier components on quarter_hour/every_10_minutes, so only hourly_trigger makes them frequent. -#}{%- set _ft = ['hourly_trigger'] if (_sub_d.get('pipeline_tier', 'keeper') | lower) == 'ambient' else _frequent_triggers -%}{%- set _is_frequent = _triggers_list | map('trim') | select('in', _ft) | list | count > 0 -%}
                       {%- set _cadence = 'frequent' if _is_frequent else 'sparse' -%}
                       {%- set _ok_max = 20 if _is_frequent else 780 -%}
                       {%- set _stale_max = 60 if _is_frequent else 1500 -%}
@@ -1996,10 +2003,11 @@ script:
               {%- endif -%}
               {%- if _ts == '' -%}
                 {%- set _ns.issues = _ns.issues + ['no zen_summary timestamp — pipeline has never run or kata not bootstrapped'] -%}
-              {%- elif _ts_age_min != 'none' and _ts_age_min | float > 30 -%}
-                {%- set _ns.issues = _ns.issues + ['zen_summary critically stale (' ~ _ts_age_min ~ ' min, threshold 30 min)'] -%}
-              {%- elif _ts_age_min != 'none' and _ts_age_min | float > 15 -%}
-                {%- set _ns.issues = _ns.issues + ['zen_summary stale (' ~ _ts_age_min ~ ' min, threshold 15 min)'] -%}
+              {#- quarter_hour cadence plus a local-model run of several minutes: stale only past 25 min. -#}
+              {%- elif _ts_age_min != 'none' and _ts_age_min | float > 45 -%}
+                {%- set _ns.issues = _ns.issues + ['zen_summary critically stale (' ~ _ts_age_min ~ ' min, threshold 45 min)'] -%}
+              {%- elif _ts_age_min != 'none' and _ts_age_min | float > 25 -%}
+                {%- set _ns.issues = _ns.issues + ['zen_summary stale (' ~ _ts_age_min ~ ' min, threshold 25 min)'] -%}
               {%- endif -%}
               {%- if _sched_ts == '' -%}
                 {%- set _ns.issues = _ns.issues + ['no scheduler timestamp — ninja has never run'] -%}
@@ -2025,6 +2033,21 @@ script:
               {%- endif -%}
               {%- if _legacy_cabinets != '' -%}
                 {%- set _ns.issues = _ns.issues + ['Cabinet schema upgrade available: ' ~ _legacy_cabinets ~ ' — say "upgrade my cabinets"'] -%}
+              {%- endif -%}
+              {#- Grocy configured but its schema never deployed: area-scoped inventory
+                  returns nothing until it is. Self-heal runs on boot and daily. -#}
+              {%- set _gurl = states('input_text.grocy_url') | default('', true) | trim -%}
+              {%- if _gurl not in ['', 'unknown', 'unavailable'] -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _gs = CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'grocy_schema') | from_json -%}
+                {%- if not (_gs is mapping and (_gs.get('schema_version', '') | string) != '') -%}
+                  {%- set _ns.issues = _ns.issues + ['Grocy configured but its schema is not deployed yet (self-heals on next boot/daily bootstrap, or run zen_dojotools_inventory mode=userfields_repair)'] -%}
+                {%- endif -%}
+              {%- endif -%}
+              {%- set _stopped = (_component_freshness if _component_freshness is sequence and _component_freshness is not string else [])
+                   | selectattr('freshness', 'eq', 'very_stale') | rejectattr('age_min', 'none') | list -%}
+              {%- if _stopped | count > 0 -%}
+                {%- set _ns.issues = _ns.issues + ['Component(s) stopped running: ' ~ (_stopped | map(attribute='slug') | join(', ')) ~ ' (see component_freshness)'] -%}
               {%- endif -%}
               {%- if _ns.issues | count == 0 -%}
                 All gates nominal.
@@ -2242,7 +2265,8 @@ script:
             _subs_list: >-
               {%- set _ns = namespace(l=[]) -%}
               {%- set _protected = ['AI_Cabinet_VolumeInfo', 'kfc_template', 'zen_library_manifest', 'zen_identity_manifest', '_context'] -%}
-              {%- set _frequent_triggers = ['quarter_hour', 'every_10_minutes', 'hourly_trigger', 'home_occupancy_change', 'home_mode_updates', 'default_user_bed_changes', 'secondary_user_bed_changes'] -%}
+              {#- Only timed triggers set a frequent cadence; event-driven components can go quiet for hours legitimately. -#}
+              {%- set _frequent_triggers = ['quarter_hour', 'every_10_minutes', 'hourly_trigger'] -%}
               {%- if _dojo_vars is mapping -%}
                 {%- for slug, drawer in _dojo_vars.items() -%}
                   {%- if not slug.startswith('_') and slug not in _protected -%}
@@ -2259,7 +2283,7 @@ script:
                       {%- set _ran_at = _last_d.get('run_started_at', '') -%}
                       {%- set _dur = _last_d.get('duration_seconds', none) -%}
                       {%- set _age = ((now() - as_datetime(_ran_at)).total_seconds() / 60) | round(1) if _ran_at and _ran_at != '' else none -%}
-                      {%- set _is_frequent = _triggers_list | map('trim') | select('in', _frequent_triggers) | list | count > 0 -%}
+                      {#- The scheduler sheds ambient-tier components on quarter_hour/every_10_minutes, so only hourly_trigger makes them frequent. -#}{%- set _ft = ['hourly_trigger'] if (_sub_d.get('pipeline_tier', 'keeper') | lower) == 'ambient' else _frequent_triggers -%}{%- set _is_frequent = _triggers_list | map('trim') | select('in', _ft) | list | count > 0 -%}
                       {%- set _cadence = 'frequent' if _is_frequent else 'sparse' -%}
                       {%- set _ok_max = 20 if _is_frequent else 780 -%}
                       {%- set _stale_max = 60 if _is_frequent else 1500 -%}
@@ -3276,7 +3300,7 @@ script:
     - variables:
         response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
     - variables:
-        _envelope_raw: >-
+        _envelope: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (response.get('result') == 'error' if response is mapping else false) else 'success',
@@ -3284,9 +3308,7 @@ script:
             result=response,
             tool='zen_dojotools_systemtools',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+          ) | from_json -}}
     - stop: return
       response_variable: _envelope
     alias: Zen DojoTools SystemTools

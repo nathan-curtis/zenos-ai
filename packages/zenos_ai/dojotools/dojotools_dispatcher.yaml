@@ -1,6 +1,14 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.4.4
+# Version: 5.4.5
+#
+# v5.4.5
+#   + lens_dispatch 1.1.1: provider= narrows the fan-out to the named registry
+#     keys or tools. The per-provider report treats a registry entry without
+#     enabled/status as enabled/available, same as the call path, and an entry
+#     with no tool reports unavailable/provider_no_tool.
+#   + zen_flynn_health_resummarize 1.1.0: fires on state changes only
+#     (to: null); it used to fire on the sensor's per-minute timestamp rewrite.
 #
 # v5.4.4
 #   + zen_dojotools_urgency_handler dedup: a title-match search fallback
@@ -1021,8 +1029,10 @@ automation:
   - id: zen_flynn_health_resummarize
     alias: Zen Flynn Health — Resummarize zen_system on state change
     description: >-
-      zen_flynn_health_resummarize 1.0.0. Fires summary_force for zen_system
+      zen_flynn_health_resummarize 1.1.0. Fires summary_force for zen_system
       whenever sensor.zen_flynn_health changes state, debounced 30s.
+      to: null = state changes only; the sensor rewrites its timestamp
+      attribute every minute, which used to fire this ~1,440 times a day.
       Ensures kata reflects recovery (or degradation) without waiting
       for the next scheduler cycle.
     mode: single
@@ -1030,6 +1040,7 @@ automation:
     triggers:
       - trigger: state
         entity_id: sensor.zen_flynn_health
+        to: ~
         for: "00:00:30"
 
     actions:
@@ -1128,6 +1139,14 @@ script:
         description: Calling consumer name, e.g. inspect.
         selector:
           text:
+      provider:
+        name: Provider
+        description: >-
+          Optional. Only dispatch to these providers: registry key or tool name,
+          comma-separated (e.g. zen_stack_radar). Omit to dispatch to every
+          registered provider that consumes the anchor type.
+        selector:
+          text:
       timeout_ms:
         name: Timeout MS
         description: Advisory timeout budget for providers.
@@ -1159,7 +1178,7 @@ script:
                 status: help
                 message: >-
                   anchors_json=[{"type":"label|person|area_id|zone|transaction|product","id":"X"}]
-                  [consumer=X] [timeout_ms=100-10000] -- generic lens provider dispatcher.
+                  [consumer=X] [provider=key_or_tool,...] [timeout_ms=100-10000] -- generic lens provider dispatcher.
                   Consumers pass typed anchors, registered providers (paperless, radar,
                   wiki, media, library_catalog, etc) return optional enrichment.
                   Provider failures are soft. mode=tool_manifest -- this tool's manifest
@@ -1173,7 +1192,7 @@ script:
                     tool='zen_dojotools_lens_dispatch',
                     display_name='Lens Dispatch',
                     tier='dojotools',
-                    version='1.0.0',
+                    version='1.1.1',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['sutra'],
                     optional_labels=[],
@@ -1320,8 +1339,20 @@ script:
                 {%- set parsed = value | from_json if value is string else value -%}
                 {{ parsed if parsed is mapping else {} }}
           - variables:
+              # provider= narrows the fan-out (matched on registry key or tool
+              # name); without it every registered provider is tried in turn.
               _registered_providers: >-
-                {{ _lens_registry if _lens_registry is mapping else {} }}
+                {%- set reg = _lens_registry if _lens_registry is mapping else {} -%}
+                {%- set want = (provider | default('', true) | string) | regex_findall('[^,\s]+') -%}
+                {%- if want | length == 0 -%}{{ reg }}
+                {%- else -%}
+                  {%- set ns = namespace(o={}) -%}
+                  {%- for k, v in reg.items() -%}
+                    {%- set t = ((v.get('tool', '') if v is mapping else '') | string | replace('script.', '')) -%}
+                    {%- if k in want or t in want -%}{%- set ns.o = ns.o | combine({k: v}) -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.o }}
+                {%- endif -%}
               _provider_outputs: []
 
           - repeat:
@@ -1396,10 +1427,11 @@ script:
                       {%- endif -%}
                     {%- endfor -%}
                   {%- endfor -%}
-                  {%- set _p_enabled = pdecl.get('enabled', false) -%}
-                  {%- set _p_reg_status = pdecl.get('status', 'unavailable') | string | lower | trim -%}
-                  {%- set _prov_status = 'disabled' if not _p_enabled else ('unavailable' if _p_reg_status != 'available' else ('success' if doc_ns.was_called else 'empty')) -%}
-                  {%- set _miss_reason = 'provider_disabled' if not _p_enabled else ('provider_offline' if _p_reg_status != 'available' else ('' if doc_ns.was_called else 'anchor_type_unsupported')) -%}
+                  {%- set _p_enabled = pdecl.get('enabled', true) -%}
+                  {%- set _p_reg_status = pdecl.get('status', 'available') | string | lower | trim -%}
+                  {%- set _p_has_tool = pdecl.get('tool', '') | string | trim != '' -%}
+                  {%- set _prov_status = 'disabled' if not _p_enabled else ('unavailable' if (_p_reg_status != 'available' or not _p_has_tool) else ('success' if doc_ns.was_called else 'empty')) -%}
+                  {%- set _miss_reason = 'provider_disabled' if not _p_enabled else ('provider_no_tool' if not _p_has_tool else ('provider_offline' if _p_reg_status != 'available' else ('' if doc_ns.was_called else 'anchor_type_unsupported'))) -%}
                   {%- set _prov_entry = {
                     'status': _prov_status,
                     'department': pdecl.get('department', pdecl.get('section', '')),
@@ -1450,7 +1482,7 @@ script:
                 content_redacted: true
                 caller_token: "{{ caller_token | default('') }}"
       - variables:
-          _ld_envelope_raw: >-
+          _response: >-
             {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
             {{- OS.envelope(
               status='error' if (_response is mapping and _response.get('status') == 'error') else 'success',
@@ -1458,9 +1490,7 @@ script:
               result=_response,
               tool='zen_dojotools_lens_dispatch',
               caller_token=caller_token | default('')
-            ) -}}
-      - variables:
-          _response: "{{ (_ld_envelope_raw | from_json) if _ld_envelope_raw is string else _ld_envelope_raw }}"
+            ) | from_json -}}
       - stop: lens dispatch complete
         response_variable: _response
 

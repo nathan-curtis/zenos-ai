@@ -1,7 +1,9 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scheduler
-# Version: 5.2.3
+# Version: 5.2.4
 #
+# v5.2.4: stuck-run guard stops a summarizer that has run over 15 minutes so the
+#   next dispatch can start; the daily anchors bypass the queue-depth gate.
 # v5.2.3: the 24h events[] prune compares timestamps, so a stored time
 #   without a UTC offset no longer fails the comparison against now().
 # v5.2.2 (#10553): the vacuum purpose triggers target label_id: autovac
@@ -235,6 +237,29 @@ automation:
     # ── Capture run start time for duration tracking ─────────────────────────
     - variables:
         _run_start_ts: "{{ now().isoformat() }}"
+
+    # Stuck-run guard: a model backend that stops answering mid-call leaves
+    # ai_task waiting forever, and the summarizer never takes another run.
+    # Normal runs take seconds (cloud) to a few minutes (local), so a run
+    # older than 15 minutes is stuck: stop it so the next dispatch can start.
+    - repeat:
+        for_each:
+          - script.zen_dojotools_supersummary
+          - script.zen_dojotools_ninja_summarizer
+        sequence:
+          - if: >-
+              {%- set _lt = state_attr(repeat.item, 'last_triggered') -%}
+              {{ is_state(repeat.item, 'on') and _lt is not none
+                 and (now() - _lt).total_seconds() > 900 }}
+            then:
+              - action: script.turn_off
+                target:
+                  entity_id: "{{ repeat.item }}"
+              - action: system_log.write
+                data:
+                  level: warning
+                  logger: zen_dojotools_scheduler
+                  message: "Stuck-run guard stopped {{ repeat.item }} (running since {{ state_attr(repeat.item, 'last_triggered') }})"
 
     # ── Pre-fetch home overview ──────────────────────────────────────────────
     - action: script.zen_dojotools_inspect
@@ -513,7 +538,12 @@ automation:
           {%- set _raw = [((ns.total / ns.n) if ns.n > 0 else 120) * 2, 60] | max -%}
           {{ [_raw, 120] | min | int }}
 
-    - if: "{{ trigger.id != 'force_supersummary' and _queue_depth | int(0) < 5 }}"
+    # The depth gate sheds frequent ticks when the queue backs up. The daily
+    # anchors fire once with no retry (and midnight always lands in a burst),
+    # so they always dispatch; shedding them leaves a component a day stale.
+    - if: >-
+        {{ trigger.id != 'force_supersummary'
+           and (_queue_depth | int(0) < 5 or trigger.id in ['daily_midnight', 'daily_noon']) }}
       then:
         - repeat:
             for_each: "{{ _subscribers }}"

@@ -1,6 +1,41 @@
 ###############################################################################
 # ZenOS-AI Plugin: Grocy ERP Integration
-# Version: 5.6.1
+# Version: 5.7.4
+#
+# v5.7.4: tool_manifest health warns when Grocy is configured but the schema
+#   has never been deployed (#10615).
+#
+# v5.7.3: list reads pass the broker's total/returned/truncated through as
+#   result.truncation (they were dropped here). tool_version (echoed in responses) and the MCP description carried
+#   5.6.1/5.6.0; both now match the file version.
+#
+# v5.7.2: schema self-heal. register (run on HA start and daily by
+#   bootstrap_stacks) queues userfields_repair, which now also creates missing
+#   user entities and stamps the schema version on a clean run. deploy/repair
+#   are ungated (canonical-only). Lens entry uses tool/mode, not script.
+#   grocy_url 'unknown'/'unavailable' now counts as not configured (was only '').
+#
+# v5.7.1: userfields_repair widens type drift to a text type (no value loss),
+#   reports healthy after its own patches (per-patch failures in failed[]), and
+#   depreciable_asset.attachment_refs joins the canonical schema (108 fields).
+#
+# v5.7.0: inventory_schema_edit cert. Level 1 gates userfields/userentities
+#   create+deploy+repair, location structure and units; level 2 gates deletes and
+#   product merge. Level 1 is in the zenos_agent_steward bundle. Stock, products,
+#   chores, tasks, shopping and batteries stay ungated.
+#
+# v5.6.4: an input that is missing or doesn't resolve returns status error with
+#   reason 'guarded: ...' naming it (e.g. location 'pantry' matched nothing), not a bare
+#   'Unable to resolve endpoint' error (#10590).
+#
+# v5.6.3: broker READ list responses report total / returned / truncated, so a
+#   caller can tell when rows past the cap were dropped (#10597).
+#
+# v5.6.2: locations_metadata_set accepts area_id / homeassistant_area / area as
+#   aliases of homeassistant_area_id (a documented-name call used to report
+#   success and skip the area; #10595). Broker READ gives every objects/locations
+#   row a userfields map so an undeployed schema no longer 500s the area modes
+#   (#10580).
 #
 # v5.6.1 (Radar #10480): room_brief includes product_id on every chore entry
 #   (it was computed internally but not returned), so consumers such as
@@ -424,11 +459,12 @@ script:
               {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": {"overdue_products": ns.ov, "due_dates": ns.ds, "expiring_products": ns.ex}}} }}
               {%- elif _rc is iterable and _rc is not mapping and _rc is not string -%}
               {%- set _cap = 500 if 'limit=' in inv_endpoint else inv_limit | int(25) -%}
+              {#- Rows past _cap are dropped; total/returned/truncated in the result say so. -#}
               {%- set _trimmed = _rc[:_cap] -%}
               {%- if slim_objects -%}
               {%- set ns_sl = namespace(out=[]) -%}
               {%- for o in _trimmed -%}{%- set ns_sl.out = ns_sl.out + [{'id': o.id, 'name': o.name | default('', true)}] -%}{%- endfor -%}
-              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_sl.out}} }}
+              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_sl.out, "total": _rc | length, "returned": _trimmed | length, "truncated": (_rc | length) > (_trimmed | length)}} }}
               {%- elif is_objects_products -%}
               {%- set _zuf_keys = ['zen_safety_type', 'zen_asset_type', 'hazmat_class', 'homeassistant_area', 'ha_labels', 'book_author', 'book_isbn', 'book_series', 'book_genre', 'book_loan_borrower', 'book_loan_date', 'book_loan_due', 'book_loan_home_location_id', 'library_meta', 'library_loan_borrower', 'library_loan_date', 'library_loan_due', 'library_loan_home_location_id'] -%}
               {%- set ns_pr = namespace(out=[]) -%}
@@ -438,9 +474,15 @@ script:
               {%- for k in _zuf_keys -%}{%- set _v = _ouf.get(k) -%}{%- if _v is not none and _v | string | trim != '' -%}{%- set _suf.d = _suf.d | combine({k: _v}) -%}{%- endif -%}{%- endfor -%}
               {%- set ns_pr.out = ns_pr.out + [{'id': o.id, 'name': o.name | default('', true), 'location_id': o.get('location_id'), 'tags': (o.get('tags') or ''), 'userfields': _suf.d}] -%}
               {%- endfor -%}
-              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_pr.out}} }}
+              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_pr.out, "total": _rc | length, "returned": _trimmed | length, "truncated": (_rc | length) > (_trimmed | length)}} }}
+              {%- elif 'objects/locations' in inv_endpoint -%}
+              {#- Grocy omits userfields when the schema was never deployed; every
+                  location case reads userfields.<field>, so give each one a map. -#}
+              {%- set ns_lo = namespace(out=[]) -%}
+              {%- for o in _trimmed -%}{%- set ns_lo.out = ns_lo.out + [(o | combine({'userfields': {}})) if (o is mapping and o.get('userfields') is not mapping) else o] -%}{%- endfor -%}
+              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": ns_lo.out, "total": _rc | length, "returned": _trimmed | length, "truncated": (_rc | length) > (_trimmed | length)}} }}
               {%- else -%}
-              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": _trimmed}} }}
+              {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": {"status": read_response.status | int(200), "content": _trimmed, "total": _rc | length, "returned": _trimmed | length, "truncated": (_rc | length) > (_trimmed | length)}} }}
               {%- endif -%}
               {%- else -%}
               {{ { "status": "success", "message": "GET to '" ~ inv_endpoint ~ "' succeeded.", "result": read_response } }}
@@ -503,7 +545,7 @@ script:
   zen_dojotools_inventory:
     alias: Zen DojoTools Inventory
     description: >-
-      Household inventory (5.6.0) — full ERP stack. Stock, shopping, catalog, locations,
+      Household inventory (5.7.4) — full ERP stack. Stock, shopping, catalog, locations,
       chores, tasks, recipes, units, batteries, userentities, userobjects, userfields CRUD.
       102 operations. Names resolve to IDs.
       mode=help returns a structured cases dict — CONTRACT for tool-to-tool calls.
@@ -1136,12 +1178,14 @@ script:
                 tool='zen_dojotools_inventory',
                 display_name='Inventory',
                 tier='dojotools',
-                version='5.6.1',
-                health={
-                  'configured': (states('input_text.grocy_url') | default('', true) | trim) != '',
-                  'status': 'ok' if (states('input_text.grocy_url') | default('', true) | trim) != '' else 'not_configured',
-                  'notes': [] if (states('input_text.grocy_url') | default('', true) | trim) != '' else ['input_text.grocy_url is empty — set it to your Grocy instance base URL.']
-                },
+                version='5.7.4',
+                health=(
+                  {'configured': false, 'status': 'not_configured', 'notes': ['input_text.grocy_url is not set — set it to your Grocy instance base URL.']}
+                  if (states('input_text.grocy_url') | default('', true) | trim) in ['', 'unknown', 'unavailable']
+                  else ({'configured': true, 'status': 'ok', 'notes': []}
+                        if (((state_attr(states('sensor.zen_default_household_cabinet_resolved'), 'variables') | default({}, true)).get('grocy_schema')) is not none)
+                        else {'configured': true, 'status': 'warn', 'notes': ['Grocy schema not deployed yet: area-scoped inventory returns nothing until it is. Self-heals on the next boot/daily bootstrap, or run mode=userfields_repair.']})
+                ),
                 required_labels=['grocy'],
                 optional_labels=['grocy'],
                 consumes=['grocy_request'],
@@ -1154,7 +1198,13 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token | default('')
-            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'inventory', 'lens_provider': true, 'lens_anchors': ['area_id'], 'lens_returns': ['player_hint']}) }}
+            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'inventory', 'lens_provider': true, 'lens_anchors': ['area_id'], 'lens_returns': ['player_hint'], 'certs_required': [
+                {'cert': 'inventory_schema_edit', 'level': 1, 'modes': ['userfields_create', 'userentities_create', 'locations_add', 'locations_rename', 'locations_update_description', 'locations_metadata_set', 'locations_reparent_bulk', 'locations_hierarchy_rebuild', 'units_add', 'units_update', 'unit_conversions_add', 'shopping_locations_rename'], 'bundle': ['zenos_agent_steward'],
+                 'display_name': 'Inventory Schema Edit', 'max_level': 4,
+                 'description': 'Grocy structure: userfields, user entities, locations, units. Level 2 for delete/merge.',
+                 'grant_via': 'persona_editor mode=cert_req_grant cert_component=inventory_schema_edit'},
+                {'cert': 'inventory_schema_edit', 'level': 2, 'modes': ['userfields_delete', 'userentities_delete', 'locations_delete', 'locations_delete_safe', 'unit_conversions_delete', 'catalog_delete_product', 'products_merge']}
+              ]}) }}
       - stop: tool_manifest
         response_variable: result
 
@@ -1179,25 +1229,43 @@ script:
           _inv_provider:
             consumes: [area_id]
             returns: [player_hint]
-            script: script.zen_dojotools_inventory
-            anchor_mode: by_anchor
+            tool: zen_dojotools_inventory
+            mode: by_anchor
             department: inventory
-      - variables:
-          _inv_merged: "{{ _inv_registry | combine({'inventory': _inv_provider}) }}"
-      - action: script.zen_dojotools_filecabinet
+      # Registered through the central lens writer (prompt_loader
+      # lens_registry): it fills defaults, validates, and replaces the entry whole.
+      - action: script.zen_admintools_prompt_loader
         response_variable: _inv_reg_write
         continue_on_error: true
         data:
-          action_type: update
-          volume_entity_id: "{{ _inv_hh }}"
-          key: lens_registry
-          value: "{{ _inv_merged | tojson }}"
+          mode: lens_registry
+          action_type: register
+          item: inventory
+          payload_json: "{{ _inv_provider | tojson }}"
+      - variables:
+          _inv_reg_write: "{{ _inv_reg_write.get('result', _inv_reg_write) if _inv_reg_write is defined and _inv_reg_write is mapping else {} }}"
+      # Schema self-heal: register runs on HA start and daily via
+      # zen_dojotools_manifest bootstrap_stacks, so the Grocy schema converges
+      # to canonical without anyone calling repair. Spawned, not nested: a
+      # script cannot call itself, and this script is queued so it runs next.
+      - if: "{{ (states('input_text.grocy_url') | default('', true) | trim) not in ['', 'unknown', 'unavailable'] }}"
+        then:
+          - action: script.turn_on
+            continue_on_error: true
+            target:
+              entity_id: script.zen_dojotools_inventory
+            data:
+              variables:
+                mode: userfields_repair
+                dry_run: false
+                caller_token: inventory_schema_selfheal
       - variables:
           result:
             status: "{{ 'success' if _inv_reg_write is mapping and _inv_reg_write.get('status', '') == 'success' else 'error' }}"
             mode: register
             provider: inventory
             registry_entry: "{{ _inv_provider }}"
+            schema_selfheal: "{{ 'queued' if (states('input_text.grocy_url') | default('', true) | trim) not in ['', 'unknown', 'unavailable'] else 'skipped: grocy_url not set' }}"
       - stop: inventory register complete
         response_variable: result
 
@@ -1243,7 +1311,7 @@ script:
     - variables:
         show_trace: '{{ show_trace | default(false) }}'
         tool_name: Zen DojoTools Inventory
-        tool_version: 5.6.1
+        tool_version: 5.7.4
         schema_version: "1.3.0"
     # ─── CASE AUTHORING CHECKLIST ────────────────────────────────────────────────
     # When adding a new mode/case to this script, update ALL of the following:
@@ -1276,7 +1344,10 @@ script:
         report_inventory_norm: '{{ report_inventory | default(true) }}'
         parent_loc_norm: '{{ (parent_location | default('''')) ~ '''' | trim }}'
         parent_lid_in: '{{ parent_location_id | default(none) }}'
-        area_id_norm: "{{ (homeassistant_area_id | default('', true) or area | default('', true)) | string | trim | lower }}"
+        # homeassistant_area_id is canonical; area_id / homeassistant_area / area are
+        # accepted too (the docs and help used them, and HA passes undeclared names
+        # through silently, so a call with area_id used to report success and skip it).
+        area_id_norm: "{{ (homeassistant_area_id | default('', true) or area_id | default('', true) or homeassistant_area | default('', true) or area | default('', true)) | string | trim | lower }}"
         new_name_norm: '{{ (new_name | default('''')) ~ '''' | trim }}'
         placement_priority_in: '{{ placement_priority | default(none) }}'
         pid_keep_in: '{{ product_id_keep | default(none) }}'
@@ -1724,14 +1795,14 @@ script:
             needs:
             - location OR location_id
             - at least one of parent_location, parent_location_id, location_subclass,
-              area_id, placement_priority, note, ha_labels, catalog_class
+              homeassistant_area_id (also accepted as area_id, homeassistant_area or area), placement_priority, note, ha_labels, catalog_class
             does: PUT /userfields/locations/{locationId}
             catalog_class_values:
               __intake__: global catalog intake location (triggers intake semaphore in KFC)
               perishable_storage: location holds perishable items (fridge, pantry, freezer) — triggers best_before coaching when buying/moving a never-expires product here. Children inherit via parent walk.
               non_perishable: explicit override — suppresses perishable_storage inheritance from parent. Use on sub-locations inside a perishable parent that don't hold food (e.g. fridge filter slots, wine racks inside pantry).
             examples:
-            - "{'mode':'locations_metadata_set','location':'Left Twin Bookcase','ha_labels':'bookshelf','area_id':'living_room'}"
+            - "{'mode':'locations_metadata_set','location':'Left Twin Bookcase','ha_labels':'bookshelf','homeassistant_area_id':'living_room'}"
             - "{'mode':'locations_metadata_set','location':'Refrigerator','catalog_class':'perishable_storage'}"
             - "{'mode':'locations_metadata_set','location':'Pantry','catalog_class':'perishable_storage'}"
             - "{'mode':'locations_metadata_set','location':'Kitchen Refrigerator - Water Filter Slot','catalog_class':'non_perishable'}"
@@ -2246,7 +2317,7 @@ script:
             reads: GET /objects/userfields
             notes:
               - caption_drift detected when canonical caption is not contained in existing caption — patched via PUT /objects/userfields/{id}
-              - type_drift reported but NOT auto-fixed (type changes are destructive — manual intervention required)
+              - type_drift to a text type is fixed (values are kept, Grocy stores them as text); any other type change is reported only, fix by hand
           userfields_delete:
             intent: Delete a userfield schema definition by ID. Warns if canonical. Preview without confirm_action.
             needs: [field_id]
@@ -2790,13 +2861,13 @@ script:
       choose:
       - conditions:
         - condition: template
-          value_template: "{{ (states('input_text.grocy_url') | default('', true) | trim) == '' }}"
+          value_template: "{{ (states('input_text.grocy_url') | default('', true) | trim) in ['', 'unknown', 'unavailable'] }}"
           alias: 'Error: Grocy URL unset'
         sequence:
         - variables:
             final_response:
               status: error
-              message: "Grocy is not configured — input_text.grocy_url is empty. Set it in Settings > Helpers (or Developer Tools > States) to your Grocy instance's base URL, e.g. https://grocy.home.example.com, then retry."
+              message: "Grocy is not configured — input_text.grocy_url is not set. Set it in Settings > Helpers (or Developer Tools > States) to your Grocy instance's base URL, e.g. https://grocy.home.example.com, then retry."
               mode: '{{ mode_norm }}'
         - stop: Grocy Not Configured
           response_variable: final_response
@@ -2829,6 +2900,43 @@ script:
               - Provide a location name using the location field.
               - Example "{'mode':'locations_add','location':'Coffee Drawer'}"
         - stop: Missing Location Name
+          response_variable: final_response
+    # ── Cert-gate: inventory_schema_edit. Level 1 for schema and location
+    # structure changes, level 2 for anything that deletes or merges.
+    # Stock, products, chores, tasks, shopping and batteries stay ungated.
+    # userfields_deploy/userfields_repair are ungated too: they only converge
+    # Grocy to the canonical schema defined in this file, never to caller
+    # input, and repair runs itself on boot and daily (see register). ──
+    - variables:
+        _inv_schema_l1: ['userfields_create', 'userentities_create', 'locations_add', 'locations_rename', 'locations_update_description', 'locations_metadata_set', 'locations_reparent_bulk', 'locations_hierarchy_rebuild', 'units_add', 'units_update', 'unit_conversions_add', 'shopping_locations_rename']
+        _inv_schema_l2: ['userfields_delete', 'userentities_delete', 'locations_delete', 'locations_delete_safe', 'unit_conversions_delete', 'catalog_delete_product', 'products_merge']
+    - if: "{{ mode_norm in _inv_schema_l1 or mode_norm in _inv_schema_l2 }}"
+      then:
+      - variables:
+          _inv_cert_level_req: "{{ 2 if mode_norm in _inv_schema_l2 else 1 }}"
+      - action: script.zen_dojotools_identity
+        response_variable: _inv_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: inventory_schema_edit
+          required_cert_level: "{{ _inv_cert_level_req }}"
+          caller_token: "{{ caller_token | default('') }}"
+      - variables:
+          _inv_id_fields: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _raw = OS.resolve_identity_fields(_inv_id_raw) -%}
+            {{- (_raw | from_json) if _raw is string else _raw -}}
+      - if: "{{ _inv_id_fields.policy_status != 'allowed' or not _inv_id_fields.authorized }}"
+        then:
+        - variables:
+            _inv_cd_raw: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {{ OS.cert_denial(_inv_id_fields.policy_status, _inv_id_fields.authorized, _inv_id_fields.cert_level, 'inventory_schema_edit', _inv_cert_level_req | int, mode_norm, _inv_id_fields.block_reason) -}}
+        - variables:
+            final_response: >-
+              {{ ((_inv_cd_raw | from_json) if _inv_cd_raw is string else _inv_cd_raw) | combine({'tool': 'zen_dojotools_inventory', 'mode': mode_norm}) }}
+        - stop: Cert Denied
           response_variable: final_response
     - variables:
         payload_obj: "{% if payload_in is none %}\n  {{ none }}\n{% elif payload_in
@@ -3681,6 +3789,7 @@ script:
                 {'entity':'userentity-depreciable_asset','name':'purchase_transaction_reference','caption':'Firefly purchase transaction ID or external ref','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'userentity-depreciable_asset','name':'project_id','caption':'Project ID (Zammad or internal ref)','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'userentity-depreciable_asset','name':'warranty_expiration','caption':'Warranty expiration date (YYYY-MM-DD)','type':'text-single-line','show_as_column_in_tables':0},
+                {'entity':'userentity-depreciable_asset','name':'attachment_refs','caption':'JSON array of attachment refs [{type,id,label,added_at}]','type':'text-multi-line','show_as_column_in_tables':0},
                 {'entity':'userentity-depreciable_asset','name':'notes','caption':'Free-form notes and audit trail','type':'text-multi-line','show_as_column_in_tables':0},
                 {'entity':'userentity-depreciable_asset','name':'created_at','caption':'Record creation timestamp (ISO)','type':'text-single-line','show_as_column_in_tables':0},
                 {'entity':'userentity-depreciable_asset','name':'updated_at','caption':'Last update timestamp (ISO)','type':'text-single-line','show_as_column_in_tables':0},
@@ -3963,9 +4072,13 @@ script:
                     {%- set match = _uf_existing | selectattr('entity','equalto',f.entity)
                                    | selectattr('name','equalto',f.name) | list | first | default(none) -%}
                     {%- if match is not none and match.get('type','') != f.type -%}
+                      {#- Widening to a text type keeps every stored value (Grocy stores
+                          userfield values as text), so only that direction is auto-fixed. -#}
                       {%- set ns.d = ns.d + [{'field': f.entity ~ '.' ~ f.name,
                                               'expected': f.type, 'actual': match.get('type',''),
-                                              'id': match.get('id')}] -%}
+                                              'id': match.get('id'),
+                                              'safe_fix': f.type.startswith('text-'),
+                                              'patch': match | combine({'type': f.type})}] -%}
                     {%- endif -%}
                   {%- endfor -%}
                   {{ ns.d }}
@@ -4003,11 +4116,40 @@ script:
                   {%- endfor -%}
                   {{ ns.d }}
             - variables:
-                _urp_healthy: >-
+                _urp_type_fixable: "{{ _urp_type_drift | selectattr('safe_fix') | list }}"
+                _urp_type_unsafe: "{{ _urp_type_drift | rejectattr('safe_fix') | list }}"
+                _urp_healthy_before: >-
                   {{ _urp_missing | length == 0
                      and _urp_type_drift | length == 0
                      and _urp_caption_drift | length == 0
                      and _urp_deployed_ver == schema_version }}
+                _urp_failed: []
+            - variables:
+                _urp_ue_missing: >-
+                  {%- set ns = namespace(m=[]) -%}
+                  {%- for ue in _ue_canonical -%}
+                    {%- if _ue_existing | selectattr('name','equalto',ue.name) | list | length == 0 -%}
+                      {%- set ns.m = ns.m + [ue] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.m }}
+            # User entities first: their fields can't exist without them.
+            - if: "{{ not (dry_run | default(false) | bool) and _urp_ue_missing | length > 0 }}"
+              then:
+                - repeat:
+                    for_each: "{{ _urp_ue_missing }}"
+                    sequence:
+                      - action: script.zen_sutra_grocy
+                        data:
+                          action_type: create
+                          endpoint: /objects/userentities
+                          payload: "{{ repeat.item | tojson }}"
+                        response_variable: _urpe_raw
+                        continue_on_error: true
+                      - variables:
+                          _urp_failed: >-
+                            {%- set r = _urpe_raw if _urpe_raw is defined else {} -%}
+                            {{ _urp_failed + ([] if (r is mapping and r.get('status') == 'success' and (r.get('result', {}).get('status', 0) | int(0)) in [200, 201, 204]) else ['userentity:' ~ repeat.item.name]) }}
             - if: "{{ not (dry_run | default(false) | bool) and _urp_missing | length > 0 }}"
               then:
                 - repeat:
@@ -4027,6 +4169,10 @@ script:
                           payload: "{{ repeat.item | tojson }}"
                         response_variable: _urpm_raw
                         continue_on_error: true
+                      - variables:
+                          _urp_failed: >-
+                            {%- set r = _urpm_raw if _urpm_raw is defined else {} -%}
+                            {{ _urp_failed + ([] if (r is mapping and r.get('status') == 'success' and (r.get('result', {}).get('status', 0) | int(0)) in [200, 201, 204]) else [repeat.item.entity ~ '.' ~ repeat.item.name]) }}
             - if: "{{ not (dry_run | default(false) | bool) and _urp_caption_drift | length > 0 }}"
               then:
                 - repeat:
@@ -4039,6 +4185,49 @@ script:
                           payload: "{{ repeat.item.patch | tojson }}"
                         response_variable: _urpc_raw
                         continue_on_error: true
+                      - variables:
+                          _urp_failed: >-
+                            {%- set r = _urpc_raw if _urpc_raw is defined else {} -%}
+                            {{ _urp_failed + ([] if (r is mapping and r.get('status') == 'success' and (r.get('result', {}).get('status', 0) | int(0)) in [200, 201, 204]) else [repeat.item.field]) }}
+            - if: "{{ not (dry_run | default(false) | bool) and _urp_type_fixable | length > 0 }}"
+              then:
+                - repeat:
+                    for_each: "{{ _urp_type_fixable }}"
+                    sequence:
+                      - action: script.zen_sutra_grocy
+                        data:
+                          action_type: update
+                          endpoint: "/objects/userfields/{{ repeat.item.id }}"
+                          payload: "{{ repeat.item.patch | tojson }}"
+                        response_variable: _urpt_raw
+                        continue_on_error: true
+                      - variables:
+                          _urp_failed: >-
+                            {%- set r = _urpt_raw if _urpt_raw is defined else {} -%}
+                            {{ _urp_failed + ([] if (r is mapping and r.get('status') == 'success' and (r.get('result', {}).get('status', 0) | int(0)) in [200, 201, 204]) else [repeat.item.field]) }}
+            # A clean real run stamps the schema version, same as deploy.
+            - if: >-
+                {{ not (dry_run | default(false) | bool) and _uf_hh_cab != ''
+                   and _urp_failed | length == 0 and _urp_type_unsafe | length == 0
+                   and _urp_deployed_ver != schema_version }}
+              then:
+                - action: script.zen_dojotools_filecabinet
+                  continue_on_error: true
+                  response_variable: _urp_stamp_raw
+                  data:
+                    action_type: "{{ 'update' if (state_attr(_uf_hh_cab, 'variables') | default({}, true)).get('grocy_schema') is not none else 'create' }}"
+                    key: grocy_schema
+                    volume_entity_id: "{{ _uf_hh_cab }}"
+                    value: "{{ {'schema_version': schema_version, 'deployed_at': now().isoformat(), 'field_count': _uf_canonical | length, 'userentity_count': _ue_canonical | length} | tojson }}"
+                - variables:
+                    _urp_deployed_ver: "{{ schema_version if (_urp_stamp_raw is defined and _urp_stamp_raw is mapping and _urp_stamp_raw.get('status') == 'success') else _urp_deployed_ver }}"
+            - variables:
+                # Health after this run: a real run counts as healthy when every
+                # patch succeeded and nothing unfixable remains.
+                _urp_healthy: >-
+                  {{ _urp_healthy_before if (dry_run | default(false) | bool)
+                     else (_urp_failed | length == 0 and _urp_type_unsafe | length == 0
+                           and _urp_deployed_ver == schema_version) }}
             - variables:
                 final_response:
                   status: "{{ 'ok' if _urp_healthy else 'issues_found' }}"
@@ -4054,11 +4243,14 @@ script:
                   type_drift: "{{ _urp_type_drift }}"
                   caption_drift: "{{ _urp_caption_drift }}"
                   unknown: "{{ _urp_unknown }}"
+                  failed: "{{ _urp_failed }}"
                   action_taken: >-
                     {%- set acts = [] -%}
                     {%- if not (dry_run | default(false) | bool) -%}
+                      {%- if _urp_ue_missing | length > 0 -%}{%- set acts = acts + ['created_userentities'] -%}{%- endif -%}
                       {%- if _urp_missing | length > 0 -%}{%- set acts = acts + ['created_missing'] -%}{%- endif -%}
                       {%- if _urp_caption_drift | length > 0 -%}{%- set acts = acts + ['patched_captions'] -%}{%- endif -%}
+                      {%- if _urp_type_fixable | length > 0 -%}{%- set acts = acts + ['widened_types_to_text'] -%}{%- endif -%}
                     {%- endif -%}
                     {{ acts | join(',') if acts | length > 0 else 'none' }}
                   caller_token: "{{ _caller_token }}"
@@ -4861,6 +5053,18 @@ script:
         - variables:
             final_response:
               status: error
+              reason: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- if loc_norm | string | trim != '' and location_id_resolved is none -%}
+                  {%- set ns.r = ns.r + ["location '" ~ loc_norm ~ "' matched no Grocy location (find it with locations_find, or pass location_id)"] -%}
+                {%- endif -%}
+                {%- if item_norm | string | trim != '' and product_id_resolved is none and chore_id_resolved is none and task_id_resolved is none -%}
+                  {%- set ns.r = ns.r + ["item '" ~ item_norm ~ "' matched no product, chore or task (try catalog_find_product / chores_find / tasks_find, or pass the id)"] -%}
+                {%- endif -%}
+                {%- if ns.r | length == 0 -%}
+                  {%- set ns.r = ["a required input for " ~ mode_norm ~ " is missing (see mode=help for what it needs)"] -%}
+                {%- endif -%}
+                guarded: {{ ns.r | join('; ') }}
               message: Unable to resolve endpoint for case
               mode: '{{ mode_norm }}'
               item: '{{ item_norm }}'
@@ -5637,7 +5841,7 @@ script:
                 action_type: read
                 endpoint: /objects/locations/{{ location_id_resolved }}
             - variables:
-                _asset_loc_area: "{{ _asset_loc_raw['result']['content']['userfields']['homeassistant_area'] | default(none, true) }}"
+                _asset_loc_area: "{{ ((_asset_loc_raw['result']['content'].get('userfields') or {}) if _asset_loc_raw['result']['content'] is mapping else {}).get('homeassistant_area') | default(none, true) }}"
             - choose:
               - conditions:
                 - condition: template
@@ -10498,7 +10702,7 @@ script:
           \   \"result\": (none if is_error else result_payload),\n    \"error\": (error_result
           if is_error else none),\n\n    \"report\": (\n      inventory_report\n      if
           (not is_error)\n      and mode_norm == 'stock_buy_product'\n      and inventory_report
-          is defined\n      else none\n    ),\n\n    \"pagination\": (\n      {\n        \"supported\": true,\n        \"applied\": true,\n        \"page\": page_effective | default(none),\n        \"per_page\": limit | default(none),\n        \"offset\": offset | default(none),\n        \"source\": (\"user\" if (page_in is number or per_page_in is number) else \"default\"),\n        \"has_more\": (result_payload | length == limit) if (limit is not none and result_payload is not none and result_payload is sequence and result_payload is not string) else none\n      }\n      if (supports_pagination | default(false)) and limit is not none and offset is not none\n      else {\"supported\": supports_pagination | default(false), \"applied\": false}\n    ),\n\n    \"endpoint\": final_endpoint
+          is defined\n      else none\n    ),\n\n    \"pagination\": (\n      {\n        \"supported\": true,\n        \"applied\": true,\n        \"page\": page_effective | default(none),\n        \"per_page\": limit | default(none),\n        \"offset\": offset | default(none),\n        \"source\": (\"user\" if (page_in is number or per_page_in is number) else \"default\"),\n        \"has_more\": (result_payload | length == limit) if (limit is not none and result_payload is not none and result_payload is sequence and result_payload is not string) else none\n      }\n      if (supports_pagination | default(false)) and limit is not none and offset is not none\n      else {\"supported\": supports_pagination | default(false), \"applied\": false}\n    ),\n\n    \"truncation\": ({\"total\": grocy_response.result.total, \"returned\": grocy_response.result.returned, \"truncated\": grocy_response.result.truncated} if (grocy_response is defined and grocy_response is mapping and grocy_response.get(\"result\") is mapping and \"truncated\" in grocy_response.get(\"result\")) else none),\n\n    \"endpoint\": final_endpoint
           | default(endpoint),\n\n    \"hint\": (\n      (\n        \"One or more products have no parent set. If any are varietals/brands, link them: update_product_meta item='<name>' parent_product='<base>'\"\n        if (result_payload | selectattr('parent_product_id', 'equalto', none) | list | length > 0)\n        else none\n      )\n      if (mode_norm == 'catalog_find_product' and not is_error and result_payload is sequence and result_payload is not string)\n      else none\n    ),\n\n    \"coaching\": (\n      (\n        ([\"Product has default_best_before_days=-1 (never expires) but destination is tagged perishable_storage. Consider adding best_before_date to this stock entry, or run update_product_meta best_before_days=N to enable expiry tracking.\"] if ((_perishable_storage_warn | default(false)) and not is_error) else [])\n        +\n        ([\"Destination location is tagged cogs_zone but this product is not ha_labels=cogs_tracked. If this is business-use inventory, tag it: products_tag item='<name>' ha_labels=cogs_tracked (appends, does not overwrite existing labels). If it's personal stock, consider a different location.\"] if ((_cogs_zone_warn | default(false)) and not is_error) else [])\n        +\n        ([\"Product is cogs_tracked but has no stock entries with a positive price — COGS will be skipped on consume (fails silently by design). Fix: stock_entry_update entry_id=<id> price=<amount>, or re-buy with price set. Check config: zen_dojotools_finance mode=run case=cogs_configure.\"] if ((_cogs_cost_basis_warn | default(false)) and not is_error) else [])\n        +\n        ([\"This item's location is tagged cogs_zone but the product is not ha_labels=cogs_tracked. If this is business-use inventory, tag it: products_tag item='<name>' ha_labels=cogs_tracked. If personal, consider a different location.\"] if ((_cogs_zone_read_warn | default(false)) and not is_error) else [])\n        +\n        ([_cogs_coach_msg] if (_cogs_coach_msg is not none and not is_error) else [])\n        +\n        ([_cogs_undo_warn_msg] if (_cogs_undo_warn_msg is not none and not is_error) else [])\n      ) or none\n    ),\n    \"trace\": trace\n  }\n}}"
     - alias: "COGS hook: post stock_consume of cogs_tracked products to Firefly"
       if:
