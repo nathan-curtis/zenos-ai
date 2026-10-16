@@ -1,6 +1,6 @@
 # ZenOS-AI ZenLux — Lighting Manager
 
-**Version:** 2.6.2 (see note below on the version-number reset)
+**Version:** 2.6.4 (see note below on the version-number reset)
 **Script:** `zen_dojotools_lights`
 **Codename:** ZenLux
 
@@ -117,7 +117,7 @@ Confirm all role slots resolve and advisory is clear.
 | `scene_set` | Activate HA scene entity OR apply intent preset. Intent presets: `movie` / `sleep` / `morning` / `work` / `away` / `party` with pre-defined brightness + color_temp. Supports `transition`. |
 | `bleed_set` | Primary room scene + propagate to adjacent rooms via Room Manager topology. See Bleed below. |
 | `reflex_sync` | Fires whatever Room Manager v3's REFLEX Stage 2 currently resolves for this room's live state, by calling `zen_dojotools_room_manager mode=reflex_wire` and reading `wired_matrix` — not a separate re-derivation of resolution logic. Not gated by the room-lock check below: a locked room's own resolved state already accounts for the lock (it fires that state's own wired scene, which isn't a violation of the lock, it *is* the lock's scene). |
-| `toggle` (2026-08-16) | Domain-agnostic — `homeassistant.toggle` on `entity_id=`, works on `light.*` or `switch.*`. `entity_id=`-only, deliberately: `room=` would be ambiguous light-vs-switch without an explicit hint. RM hold gate + room-lock guard + `lighting_control` cert all apply, same as every other write mode. |
+| `toggle` (2026-08-16) | Domain-agnostic — `homeassistant.toggle` on `entity_id=`, works on `light.*` or `switch.*`. `entity_id=`-only, deliberately: `room=` would be ambiguous light-vs-switch without an explicit hint. RM hold gate + room-lock guard + `lighting_control` cert all apply, same as every other write mode. Returns `previous_state`, `state` and `changed`. |
 | `switch_set` (2026-08-16) | Explicit `switch.*` write: `switch_state=on\|off\|toggle`. `entity_id=` overrides; otherwise `room=` (+ optional `target_role=`) resolves via the same room/role/`primary`-tiebreak convention the light modes use — but switches have no fixed role-label taxonomy the way lights do, so `target_role=` here is a plain label filter, not one of the `zen_lm_*` roles. |
 | `scene_stage` (2026-08-16, relocated from Room Manager) | Works around a real HA limitation: `scene.create` doesn't persist. `scene_phase=before` snapshots every light/cover/climate/media_player/switch/fan/humidifier entity in a room before a scene-worthy action; `scene_phase=after` snapshots again; `scene_phase=confirm` auto-detects and tags what actually changed between the two. `room=` required. Room Manager still exposes its own `mode=scene_stage` as a thin backward-compatible delegator to this one — logic lives here now, not there (RBAC locality: the write belongs with the tool that owns the domain it's staging). |
 
@@ -204,6 +204,8 @@ Preferences stored in household cabinet — no additional helpers needed.
 
 | Version | Change |
 |---------|--------|
+| 2.6.4 | `toggle` returns the previous state, the resulting state and whether it changed (it waits up to 5 seconds for the state to settle). |
+| 2.6.3 | `brightness_set` refuses 1-99% on an on/off-only light with `not_dimmable`; 0 and 100 still work. |
 | 2.6.2 | Script queue holds 5 runs (was 3), so a multi-room burst isn't dropped. |
 | 2.6.1 | Home mode read through the `zen_home_mode` label instead of a fixed entity ID. |
 | 2.6.0 | `adjust_only` on `brightness_set`/`color_temp_set`/`rgb_set`; new `brightness_increase`/`brightness_decrease`/`effect_set` modes (all Spook v5.2.0+, capability-probed). 2026.10.0: `effect_set` also turns the light on; the four color/level modes read back `state`/`brightness_pct` after waiting for the device to confirm (`readback_confirmed`). |

@@ -1,4 +1,4 @@
-# Zen DojoTools Scheduler — v5.2.3
+# Zen DojoTools Scheduler — v5.2.4
 
 *Automation — no `tool_manifest`, so the file header version is canonical.*
 
@@ -110,6 +110,12 @@ event_data:
 ```
 
 `zen_pipeline_autofire_on_enable` uses `ninja_force` and `supersummary_force` internally when kill switches are re-enabled.
+
+---
+
+## Stuck-Run Guard
+
+If a model backend stops answering mid-call, the summarizer script waits forever and never takes another run. Normal runs take seconds (cloud) to a few minutes (local), so a `supersummary` or `ninja_summarizer` run older than 15 minutes is stopped and a warning is logged, letting the next dispatch start. The queue-depth gate sheds frequent ticks when the queue backs up; the daily anchors always dispatch, since they fire once with no retry.
 
 ---
 

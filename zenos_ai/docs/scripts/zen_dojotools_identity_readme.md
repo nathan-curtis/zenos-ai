@@ -82,7 +82,7 @@ flowchart TD
 | `set_default_family` | Patches `default_family_guid` on a member's VolumeInfo | Yes |
 | `membership` | Tree view for containers; reverse lookup for members | No |
 | `is_member` | Depth-2 boolean check — is entity A a member of container B? | No |
-| `provision_member` | Full orchestration — provision expansion slot, wire into family, rebuild manifest | Yes |
+| `provision_member` | Full orchestration — provision expansion slot, wire into family, rebuild manifest. Takes the first free slot (no user drawers, not an expansion slave), keeps `profile_payload` fields and the person link | Yes |
 | `resolve_caller_identity` | Platform-wide SP1 identity/cert-check chokepoint — delegates to `zen_root_authentik`, enforces the OS sim_mode policy, optionally runs a cert check on the caller's behalf | No |
 | `request_live_ack` (2026-08-15) | Single shared chokepoint for "get a live human yes/no" — fires an alert via AlertManager, polls for response, returns approved/declined/timeout | No |
 | `cert_list` (2026-08-15) | Combined static cert catalog + live-grant view — what could exist, and what's actually held right now | No |
