@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — v5.2.0
+# Zen DojoTools SystemTools — v5.2.7
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 

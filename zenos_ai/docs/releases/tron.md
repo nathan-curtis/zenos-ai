@@ -252,10 +252,11 @@ Fixes and tooling gaps found running 2026.10.0 on live installs, plus two certif
 - **Input guards** return a status error reading "guarded: <what>" (first pass).
 - **Mail:** the MS365 send service comes from the labeled mailbox (`default` plus `e_mail`).
 - **Flynn 5.1.3:** kill switches are found by label.
-- **Health:** stopped components are counted; ambient-tier components are no longer judged against the frequent cadence; `zen_summary` stale thresholds are 25 and 45 minutes.
+- **Health:** stopped components are counted; ambient-tier components are no longer judged against the frequent cadence; `zen_summary` stale thresholds are 25 and 45 minutes. Component freshness follows each component's fastest timed trigger (ok under the larger of 25 minutes and 1.5 periods, stale under the larger of 60 minutes and 3 periods), and a component with no timed trigger is event-driven and never stale.
+- **KF5:** `zen_system` has one definition, in SystemTools, so the nightly `bootstrap_kfc` no longer rewrites it without its hourly trigger. `bootstrap_kfc` finds providers by the `zen_kfc_provider` label or a declared `kfc_manifest`, and tags the unlabeled ones. The KungFu Loader factory registers `zen_system` through it, and the legacy `alert_manager` Scribe copy is switched off.
 - **Finance:** `budget_summary` reads the `budget-limits` endpoint.
 - **Kitchen:** stays under the template output limit.
-- **Radar** `ticket_close` keeps its note; **Twenty** HTTP 0 is no longer counted as connected; **Wiki.js** accepts `mode=` and registers on bootstrap; `zen_stack_media` registers once; Room Manager home_overview weather uses `get_forecasts`; Todo `label_targets` is read correctly; Rolodex metadata paging.
+- **Radar** `ticket_close` keeps its note; **Twenty** HTTP 0 is no longer counted as connected; **Wiki.js** accepts `mode=` and registers on bootstrap; `zen_stack_media` registers once; Room Manager home_overview weather uses `get_forecasts`; the roomstate blueprint no longer logs `'this' is undefined` on the first render after a start or template reload; Todo `label_targets` is read correctly; Rolodex metadata paging.
 
 **Deferred to 2026.11.0:** the remaining input-guard coverage and the plugin setup unification.
 

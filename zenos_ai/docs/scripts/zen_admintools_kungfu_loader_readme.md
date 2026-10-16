@@ -1,4 +1,4 @@
-# Zen AdminTools KungFu Loader — v5.2.1
+# Zen AdminTools KungFu Loader — v5.3.0
 
 *Deploys KFC (Kung Fu Component) dojo drawers via Scribe, for components that don't self-register*
 
@@ -18,7 +18,7 @@ Extracted from `zen_admintools_prompt_loader` to keep KFC deployment separate fr
 
 | KFC | Status | Notes |
 |---|---|---|
-| `zen_system` | **Still shipped from here** (factory) | Meta-monitoring component — watches pipeline health, cabinet resolvers, kill switches, summarizer staleness across the whole system. No single owning script to self-register from. |
+| `zen_system` | Registered by `zen_dojotools_manifest mode=bootstrap_kfc` (the factory calls it) | Meta-monitoring component — watches pipeline health, cabinet resolvers, kill switches, summarizer staleness across the whole system. Its single definition is the `kfc_manifest` in `zen_dojotools_systemtools`. |
 | `trapper_keeper` | **Still shipped from here** (factory) | Ambient index aggregator, same reason — cross-cutting, no owning script. |
 | `camera_heartbeat` | **Still shipped from here** (deploy-only) | Scheduled camera-cache refresh sibling to `camera_manager`, not yet migrated. |
 | `taskmaster` | Moved to KF5 (2026-07-25) | Self-registers via `zen_dojotools_taskmaster mode=kfc_manifest`. |
@@ -35,7 +35,7 @@ The last three were still carrying dead inline `ship_*` blocks in this loader fo
 | Mode | Description |
 |------|-------------|
 | `status` (default) | No-op. Returns deployment status (version, enabled, last-updated, version-match) for all managed KFCs, including the three that migrated to KF5 — reads their drawers directly. |
-| `factory` | Deploys `zen_system` and `trapper_keeper` (the two remaining factory-flagged KFCs). Intended to be chained from `zen_admintools_prompt_loader` on a factory run. |
+| `factory` | Registers `zen_system` through `bootstrap_kfc` and deploys `trapper_keeper`. Intended to be chained from `zen_admintools_prompt_loader` on a factory run. |
 | `deploy` | Deploys KFCs selected by individual boolean fields (`ship_zen_system`, `ship_trapper_keeper`, `ship_camera_heartbeat`) — all default `false`. Use for selective re-ship from HA Developer Tools. |
 
 ---
