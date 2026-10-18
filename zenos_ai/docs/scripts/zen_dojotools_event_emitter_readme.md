@@ -185,8 +185,8 @@ summary: Friday completed her scheduled reflection cycle.
 
 component: monastery
 severity: debug
-kind: kata_emit
-summary: Monk #4 posted a reflection kata.
+kind: monk_reflection
+summary: Monk #4 posted a reflection.
 monk:
   thought: "Temperature variance within expected tolerance."
 
@@ -199,6 +199,19 @@ summary: Living room occupancy updated.
 kata:
   occupancy: "present"
   confidence: 0.86
+
+
+---
+
+Reserved Kinds
+
+The emitter is reachable by agents, so kinds the system acts on are internal-only. A call with a reserved kind returns status: error with reason "guarded: kind '<kind>' is reserved for internal system events" and fires nothing. Matching ignores case and surrounding whitespace.
+
+Reserved prefixes: deferred_, dojotool_, postman_, priority_inject_, gc_, cabinet_, identity_, alert_, label_, warmup_, image_, autovac_. Reserved exact kind: kata_emit.
+
+Still open: summary_force, supersummary_force, ninja_force, and free-form kinds.
+
+Internal code fires its own kinds directly as zen_event and does not go through this tool. A new zen_event listener that acts on a privileged kind needs its prefix added to the reserved list in dojotools_systemtools.yaml.
 
 
 ---
