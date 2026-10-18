@@ -300,7 +300,9 @@ script.zen_dojotools_identity:
 - First `user` added → also fills `VolumeInfo.acls.owner` (Head of Household slot)
 - First `ai_user` added → also fills `VolumeInfo.acls.partner` with `role: prime`
 
-**Occupied slot behavior:** If the HoH or prime slot is already filled, this mode is blocked. Use an admin operation (SP1) to transfer ownership.
+**This is not how residents join.** For a `user`, this mode fills the Head of Household slot and nothing else. Everyone else who lives in the home joins through a family: add them with `family_add_member`, and attach that family with `household_add_family` (above) if it isn't in the household yet. Family members become residents by traversal.
+
+**Occupied slot behavior:** If the HoH or prime slot is already filled, this mode is blocked with `code: slot_occupied`. For a `user`, the refusal names `family_add_member` and `household_add_family` as the next steps. Changing who holds the slot itself is an admin operation (SP1).
 
 The response includes a `slot_filled` field (`hoh`, `prime`, or empty) so the caller knows whether a privileged slot was assigned.
 

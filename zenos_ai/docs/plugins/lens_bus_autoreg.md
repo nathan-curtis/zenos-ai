@@ -28,6 +28,8 @@ Auto-registration eliminates both steps for standard stack providers. Any `zen_s
    - Otherwise calls `mode={{ register_mode }}` on the script to self-register
 4. Returns: `registered`, `already_registered`, `skipped`, `no_register_mode`, `errors`
 
+Providers write their entry through one central writer (`zen_admintools_prompt_loader mode=lens_registry`). It keeps the registry flat, replaces an existing entry whole, and takes the entry as a mapping or as JSON text. Taskmaster, Inventory, Media and Wiki.js register this way.
+
 > **Gotcha:** the idempotent skip in step 3 means **changing an
 > already-registered provider's `tool_manifest`** (e.g. adding a new
 > entry to `consumes`) does **not** auto-propagate on the next

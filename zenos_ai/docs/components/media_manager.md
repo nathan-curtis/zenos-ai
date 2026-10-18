@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.1.4
+**Version:** 6.2.0
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 
@@ -243,6 +243,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 | `sound_mode_get` | Current `sound_mode` + full `sound_mode_list`. Call before `sound_mode_set`. |
 | `sound_mode_set` | Set AVR or TV sound mode. Use `target_role=zen_mm_av_tuner` for the receiver. |
 | `state_get` | Full device snapshot: source, sound mode, volume, mute, media title, group membership, adjacent room co-playing detection, acoustic zone context. |
+| `volume_set` | Set the volume of one player, 0-100. Needs the `zenos.media.playback_control` certification. |
 | `play_media` | Play media via Music Assistant. When `media_id` is blank and `query` is provided, `query` is passed directly as `media_id` to MA — MA resolves by name. |
 
 ### Preferences

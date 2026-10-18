@@ -1,8 +1,16 @@
 ###############################################################################
-# zen_dojotools_media_manager v6.1.4 (codename: NyxMau5)
+# zen_dojotools_media_manager v6.2.0 (codename: NyxMau5)
 # Room-aware AV intent resolver with memory + label-driven topology
 #
 # CHANGELOG:
+#   6.2.0: volume_set mode (single player, 0-100). With no explicit target,
+#     now_playing/state_get/queue_command/volume_set prefer a player that is
+#     playing in the room. group_volume and queue transfer/snapshot/restore/sync
+#     no longer call MA after their own no-player refusal; volume_set,
+#     group_volume_set and queue transfer/restore/sync need playback_control.
+#   6.1.5: room accepts an area display name ("Master Bedroom" resolves to its
+#     area_id). queue_command refuses a missing/unknown command (status error,
+#     reason guarded:) and no longer calls MA after a no-player refusal.
 #   6.1.4 — queue holds 5 runs (was 3), so a multi-room burst isn't dropped.
 #   6.1.3 — search: within_media_content_id and within_media_content_type are
 #     required together; passing the id without the type returns an error
@@ -140,6 +148,7 @@ script:
               - lyrics
               - group_volume_get
               - group_volume_set
+              - volume_set
               - queue_transfer
               - queue_snapshot
               - queue_restore
@@ -496,7 +505,7 @@ script:
                     tool='zen_dojotools_media_manager',
                     display_name='Media Manager — Media Lens Surface',
                     tier='dojotools',
-                    version='6.1.4',
+                    version='6.2.0',
                     health=_h,
                     required_labels=['dojotools'],
                     optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch', 'zen_home_mode'],
@@ -525,7 +534,7 @@ script:
                            'collection_recommendations': 'collection_recommendations', 'collection_album': 'collection_album',
                            'collection_artist': 'collection_artist', 'collection_playlist': 'collection_playlist',
                            'collection_podcast': 'collection_podcast', 'get_library': 'get_library', 'lyrics': 'lyrics',
-                           'group_volume_get': 'group_volume_get', 'group_volume_set': 'group_volume_set',
+                           'group_volume_get': 'group_volume_get', 'group_volume_set': 'group_volume_set', 'volume_set': 'volume_set',
                            'queue_transfer': 'queue_transfer', 'queue_snapshot': 'queue_snapshot',
                            'queue_restore': 'queue_restore', 'queue_sync': 'queue_sync',
                            'register': 'register', 'unregister': 'unregister',
@@ -564,7 +573,12 @@ script:
           _mode:         "{{ mode | default('discover') | string | trim | lower }}"
           _entity_id:    "{{ entity_id | default('', true) | string | trim }}"
           _room_raw:     "{{ room | default('', true) | string | trim }}"
-          _room_slug:    "{{ _room_raw | lower | replace(' ', '_') }}"
+          # A display name ("Master Bedroom") resolves to its real area_id when
+          # the naive slug is not an area.
+          _room_slug: >-
+            {%- set _s = _room_raw | lower | replace(' ', '_') -%}
+            {%- set _a = area_id(_room_raw) if _room_raw != '' else none -%}
+            {{ _a if (area_name(_s) is none and _a is not none) else _s }}
           _target_role:  "{{ target_role | default('', true) | string | trim | lower }}"
           _intent:       "{{ intent | default('', true) | string | trim | lower }}"
           _source:       "{{ source | default('', true) | string | trim }}"
@@ -651,9 +665,19 @@ script:
             {{ _room_ents | select('in', label_entities('entertainment_center')) | list | first | default('') }}
 
       # ── 0d. Resolve target entity ─────────────────────────────────────────
+      # For control/status calls with no explicit target, a player that is
+      # actually playing in the room wins over an idle one higher in the role
+      # chain (pausing "the TV" while a Cast speaker plays should hit the
+      # speaker). Role order still breaks ties between several playing players.
+      - variables:
+          _r_playing: >-
+            {%- set order = [_r_stored_default, _r_universal, _r_user_player, _r_television, _r_ec] | reject('equalto', '') | list -%}
+            {%- set cand = order + (_room_ents | reject('in', order) | list) -%}
+            {{ cand | select('is_state', 'playing') | list | first | default('') }}
       - variables:
           _auto_resolved: >-
-            {{ _r_stored_default if _r_stored_default != ''
+            {{ _r_playing if (_r_playing != '' and _mode in ['now_playing', 'state_get', 'queue_command', 'volume_set'])
+               else _r_stored_default if _r_stored_default != ''
                else (_r_universal if _r_universal != ''
                else (_r_user_player if _r_user_player != ''
                else (_r_television if _r_television != ''
@@ -721,7 +745,8 @@ script:
               media_prefs_edit
             {%- elif _mode in ['play_media', 'queue_command', 'queue_remove', 'queue_play_item',
                                 'queue_clear_from_here', 'queue_unfavorite', 'source_set',
-                                'sound_mode_set', 'activity_set', 'activity_apply', 'activity_end'] -%}
+                                'sound_mode_set', 'activity_set', 'activity_apply', 'activity_end',
+                                'volume_set', 'group_volume_set', 'queue_transfer', 'queue_restore', 'queue_sync'] -%}
               zenos.media.playback_control
             {%- else -%}
             {%- endif -%}
@@ -888,6 +913,7 @@ script:
                   lyrics: "Fetch plain + LRC timestamped lyrics via LRCLIB. query=track, artist=required, album + duration improve accuracy. synced_available=true when LRC timestamps present."
                   group_volume_get: "Read current group volume for a multi-room player."
                   group_volume_set: "Set group volume (0-100) for a multi-room player."
+                  volume_set: "Set one player's volume (0-100, volume=). Targets room= / entity_id=; with no explicit target a currently playing player in the room wins."
                   register: "Write this provider into lens_registry in household cabinet. Called by bootstrap or operator."
                   unregister: "Remove this provider from lens_registry."
                   health: "Returns zen_sutra_music_assistant availability and stack status."
@@ -2625,17 +2651,18 @@ script:
                   required: r
                   allowed: [r]
                   denied: [w, x, d, a]
-          - variables:
-              _reg_new: "{{ (_reg_registry if _reg_registry is mapping else {}) | combine({'media': _reg_entry}) }}"
-          - action: script.zen_dojotools_filecabinet
+          # Registered through the central lens writer (prompt_loader
+          # lens_registry): it fills defaults, validates, and replaces the entry whole.
+          - action: script.zen_admintools_prompt_loader
             response_variable: _reg_write_raw
             continue_on_error: true
             data:
-              action_type: update
-              volume_entity_id: "{{ _hh }}"
-              key: lens_registry
-              value: "{{ _reg_new | tojson }}"
-              force_action: true
+              mode: lens_registry
+              action_type: register
+              item: media
+              payload_json: "{{ _reg_entry | tojson }}"
+          - variables:
+              _reg_write_raw: "{{ _reg_write_raw.get('result', _reg_write_raw) if _reg_write_raw is defined and _reg_write_raw is mapping else {} }}"
           - event: lens.provider_registered
             event_data:
               provider: media
@@ -3060,26 +3087,30 @@ script:
               _ma_entity: >-
                 {%- set ma_ents = _room_ents | select('in', label_entities('zen_mm_music_assistant')) | list -%}
                 {{ ma_ents | first | default(_resolved_entity, true) }}
-          - if: "{{ _ma_entity == '' }}"
+              _qc_command: "{{ command | default('', true) | string | trim | lower }}"
+              _qc_allowed: [play, pause, stop, next, previous, seek, shuffle, repeat, crossfade, clear_queue]
+          - if: "{{ _qc_command not in _qc_allowed }}"
             then:
               - variables:
-                  _err: {status: error, message: "No MA entity resolved for queue_command.", caller_token: "{{ _caller_token }}"}
+                  _result: {status: error, reason: "guarded: {{ 'missing command' if _qc_command == '' else ('unknown command ' ~ _qc_command) }} (use one of {{ _qc_allowed | join(', ') }})", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined and _ma_entity == '' }}"
+            then:
               - variables:
-                  _result: "{{ _err }}"
-          - action: script.zen_sutra_music_assistant
-            data:
-              mode: queue_command
-              entity_id: "{{ _ma_entity }}"
-              command: "{{ command | default('', true) }}"
-              command_extra: "{{ command_extra | default('', true) }}"
-            response_variable: _qc_result
-            continue_on_error: true
-          - variables:
-              _qc_result: >-
-                {%- set r = _qc_result if _qc_result is mapping else {} -%}
-                {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
-          - variables:
-              _result: "{{ _qc_result }}"
+                  _result: {status: error, reason: "guarded: no Music Assistant player resolved for room '{{ _room_raw }}'", message: "No MA entity resolved for queue_command.", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_sutra_music_assistant
+                data:
+                  mode: queue_command
+                  entity_id: "{{ _ma_entity }}"
+                  command: "{{ _qc_command }}"
+                  command_extra: "{{ command_extra | default('', true) }}"
+                response_variable: _qc_result
+                continue_on_error: true
+              - variables:
+                  _result: >-
+                    {%- set r = _qc_result if _qc_result is defined and _qc_result is mapping else {} -%}
+                    {{ r | combine({'entity_id': _ma_entity, 'room': _room_slug, 'caller_token': _caller_token}) }}
 
       # ── queue_get ─────────────────────────────────────────────────────────
       - if: "{{ _result is not defined and _mode == 'queue_get' }}"
@@ -3272,19 +3303,49 @@ script:
           - if: "{{ _ma_entity == '' }}"
             then:
               - variables:
-                  _err: {status: error, message: "No MA entity resolved for group volume.", caller_token: "{{ _caller_token }}"}
+                  _err: {status: error, reason: "guarded: no Music Assistant player resolved for room '{{ _room_raw }}'", message: "No MA entity resolved for group volume.", caller_token: "{{ _caller_token }}"}
               - variables:
                   _result: "{{ _err }}"
-          - action: script.zen_sutra_music_assistant
-            data:
-              mode: "{{ _mode }}"
-              entity_id: "{{ _ma_entity }}"
-              volume: "{{ volume | default(50) | int(50) }}"
-            response_variable: _result
-            continue_on_error: true
-          - variables:
-              _result: >-
-                {{ (_result if _result is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_sutra_music_assistant
+                data:
+                  mode: "{{ _mode }}"
+                  entity_id: "{{ _ma_entity }}"
+                  volume: "{{ volume | default(50) | int(50) }}"
+                response_variable: _gv_raw
+                continue_on_error: true
+              - variables:
+                  _result: >-
+                    {{ (_gv_raw if _gv_raw is defined and _gv_raw is mapping else {}) | combine({'room': _room_slug, 'caller_token': _caller_token}) }}
+
+      # ── volume_set (single player) ─────────────────────────────────────────
+      - if: "{{ _result is not defined and _mode == 'volume_set' }}"
+        then:
+          - if: "{{ _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, reason: "guarded: no media player resolved; pass room= or entity_id=", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined and (_volume < 0 or _volume > 100) }}"
+            then:
+              - variables:
+                  _result: {status: error, reason: "guarded: volume must be 0-100", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: media_player.volume_set
+                continue_on_error: true
+                target:
+                  entity_id: "{{ _resolved_entity }}"
+                data:
+                  volume_level: "{{ (_volume / 100) | round(2) }}"
+              - variables:
+                  _result:
+                    status: success
+                    mode: volume_set
+                    entity_id: "{{ _resolved_entity }}"
+                    room: "{{ _room_slug }}"
+                    volume: "{{ _volume }}"
+                    caller_token: "{{ _caller_token }}"
 
       # ── queue_transfer / queue_snapshot / queue_restore / queue_sync ────────
       - if: "{{ _mode in ['queue_transfer', 'queue_snapshot', 'queue_restore', 'queue_sync'] }}"
@@ -3296,21 +3357,23 @@ script:
           - if: "{{ _ma_entity == '' and _mode not in ['queue_restore'] }}"
             then:
               - variables:
-                  _err: {status: error, message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player.", caller_token: "{{ _caller_token }}"}
+                  _err: {status: error, reason: "guarded: no Music Assistant player resolved; pass entity_id= or room= with a zen_mm_music_assistant-labeled player", message: "No MA entity resolved. Pass entity_id= or room= with a zen_mm_music_assistant-labeled player.", caller_token: "{{ _caller_token }}"}
               - variables:
                   _result: "{{ _err }}"
-          - action: script.zen_sutra_music_assistant
-            data:
-              mode: "{{ _mode }}"
-              entity_id: "{{ _ma_entity }}"
-              target_entity_id: "{{ target_entity_id | default('', true) }}"
-              snapshot_data: "{{ snapshot_data | default('', true) }}"
-              clear_source: "{{ clear_source | default(false, true) }}"
-            response_variable: _result
-            continue_on_error: true
-          - variables:
-              _result: >-
-                {{ (_result if _result is mapping else {}) | combine({'caller_token': _caller_token}) }}
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_sutra_music_assistant
+                data:
+                  mode: "{{ _mode }}"
+                  entity_id: "{{ _ma_entity }}"
+                  target_entity_id: "{{ target_entity_id | default('', true) }}"
+                  snapshot_data: "{{ snapshot_data | default('', true) }}"
+                  clear_source: "{{ clear_source | default(false, true) }}"
+                response_variable: _qt_raw
+                continue_on_error: true
+              - variables:
+                  _result: >-
+                    {{ (_qt_raw if _qt_raw is defined and _qt_raw is mapping else {}) | combine({'caller_token': _caller_token}) }}
 
       # ── 18. activity_get ──────────────────────────────────────────────────
       - if: "{{ _result is not defined and _mode == 'activity_get' }}"
@@ -3768,7 +3831,7 @@ script:
       # SINGLE EXIT — envelope() wrap
       # ═══════════════════════════════════════════════════════════════════════
       - variables:
-          _envelope_raw: >-
+          _envelope: >-
             {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
             {{- OS.envelope(
               status='error' if (_result is mapping and (
@@ -3780,9 +3843,7 @@ script:
               result=_result,
               tool='zen_dojotools_media_manager',
               caller_token=_caller_token
-            ) -}}
-      - variables:
-          _envelope: "{{ (_envelope_raw | from_json) if _envelope_raw is string else _envelope_raw }}"
+            ) | from_json -}}
       - stop: media_manager response
         response_variable: _envelope
 
@@ -3916,7 +3977,7 @@ script:
                 mcp_exposed=false,
                 lens_provider=true,
                 caller_token=caller_token | default('')
-            ) | from_json | combine({'register_mode': 'register', 'provider_key': 'media'}) -}}
+            ) | from_json | combine({'provider_key': 'media'}) -}}
 
     - if: "{{ _out is not defined }}"
       then:

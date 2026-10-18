@@ -1,9 +1,9 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Manifest
-# Version: 6.4.11
+# Version: 6.4.13
 #
 # Scripts:
-#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.4.11)
+#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.4.13)
 #   system_tools_stamp_default_family_cabinet — Cabinet stamping utility
 #   dojotools_zen_inspect — Entity inspection tool
 #
@@ -12,6 +12,11 @@
 #   tier reaches the scheduler and a tier change triggers a rewrite. Before
 #   this, every mount fell back to the scheduler default (keeper).
 #
+# v6.4.13: bootstrap_kfc finds every KF5 provider (label or a tool_manifest that
+#   declares kfc_manifest) and tags the unlabeled ones zen_kfc_provider, so a
+#   fresh install registers all KF5 components without a factory Scribe copy.
+# v6.4.12: health_report splits label_missing into label_absent (the label does
+#   not exist) and label_unused (no entity, area or device carries it).
 # v6.4.11: bootstrap_kfc, the repair pool, bootstrap_stacks, and health_report
 #   now unwrap a tool's response through .result before reading fields off it,
 #   matching audit_help's existing behavior. Enveloped tools (OS.envelope())
@@ -308,7 +313,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.4.11',
+                version='6.4.13',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -867,11 +872,12 @@ script:
               caller_token: "{{ caller_token }}"
 
       # ── mode: bootstrap_kfc ──────────────────────────────────────────────────
-      # Scans all zen_dojotools_* + zen_stack_* + zen_sutra_* scripts, calls
-      # tool_manifest on each, and collects those that declare kfc_manifest=true.
-      # Then calls kfc_manifest on each discovered tool and upserts a LIVE DRAWER
-      # MOUNT per component into the dojo cabinet. Summarizer resolves mounts at
-      # runtime — always-current KFC config, zero drift. Idempotent upsert.
+      # Finds every KF5 provider: scripts labeled zen_kfc_provider plus every
+      # tool whose tool_manifest declares kfc_manifest (toolscan kfc_active),
+      # tagging the unlabeled ones. Then calls kfc_manifest on each and writes a
+      # LIVE DRAWER MOUNT per component into the dojo cabinet. Summarizer
+      # resolves mounts at runtime -- always-current KFC config, zero drift.
+      # Runs on HA start and daily (zen_manifest_bootstrap_kfc). Idempotent.
       - conditions: "{{ mode_norm == 'bootstrap_kfc' }}"
         sequence:
         - variables:
@@ -880,6 +886,37 @@ script:
             _bkfc_registered: []
             _bkfc_errors: []
             _bkfc_wl_entries: []
+        # The zen_kfc_provider label is the index, but nothing applies it on a
+        # fresh install. Every tool that declares kfc_manifest (flag or mode) is
+        # a provider: tag any that lack the label, then register the union.
+        - action: script.zen_admintools_toolscan
+          continue_on_error: true
+          response_variable: _bkfc_scan
+          data:
+            mode: scan
+            full: true
+            exclude: zen_dojotools_manifest
+            caller_token: "{{ caller_token }}"
+        - variables:
+            _bkfc_declared: >-
+              {%- set _r = (_bkfc_scan.get('results', []) if _bkfc_scan is mapping else []) -%}
+              {{ _r | selectattr('kfc_active', 'equalto', true) | map(attribute='tool') | map('regex_replace', '^', 'script.') | list }}
+        - variables:
+            _bkfc_untagged: "{{ _bkfc_declared | reject('in', _bkfc_known) | list }}"
+        - if: "{{ _bkfc_untagged | length > 0 and label_id('zen_kfc_provider') is not none }}"
+          then:
+          - action: script.zen_dojotools_labels
+            continue_on_error: true
+            response_variable: _bkfc_tag_result
+            data:
+              action_type: tag
+              label_list:
+                - zen_kfc_provider
+              target_entities: "{{ _bkfc_untagged }}"
+              confirm: true
+              caller_token: "{{ caller_token }}"
+        - variables:
+            _bkfc_known: "{{ (_bkfc_known + _bkfc_declared) | unique | list }}"
         - action: script.zen_dojotools_filecabinet
           continue_on_error: true
           response_variable: _bkfc_dojo_read
@@ -1056,6 +1093,8 @@ script:
               registered: "{{ _bkfc_registered }}"
               errors: "{{ _bkfc_errors }}"
               total_scanned: "{{ _bkfc_known | length }}"
+              labeled_now: "{{ _bkfc_untagged }}"
+              label_missing: "{{ label_id('zen_kfc_provider') is none }}"
               caller_token: "{{ caller_token }}"
 
       # ── mode: automations ────────────────────────────────────────────────────
@@ -2208,8 +2247,12 @@ script:
                     {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
                   {%- else -%}
                     {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
-                      {%- if label_entities(lbl) | list | length == 0 -%}
-                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {#- absent = the label does not exist (create it); unused = it
+                          exists but no entity, area or device carries it (tag something). -#}
+                      {%- if lbl not in labels() -%}
+                        {%- set ns.devs = ns.devs + ['label_absent:' ~ lbl] -%}
+                      {%- elif (label_entities(lbl) | list | length) + (label_areas(lbl) | list | length) + (label_devices(lbl) | list | length) == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_unused:' ~ lbl] -%}
                       {%- endif -%}
                     {%- endfor -%}
                     {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
@@ -2247,7 +2290,7 @@ script:
                   {{ ns.devs }}
             - variables:
                 _hr_status: >-
-                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _warn_codes = ['label_absent', 'label_unused', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
                   {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
                   {%- set ns = namespace(s='ok') -%}
                   {%- for d in _hr_devs -%}
@@ -2316,8 +2359,12 @@ script:
                     {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
                   {%- else -%}
                     {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
-                      {%- if label_entities(lbl) | list | length == 0 -%}
-                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {#- absent = the label does not exist (create it); unused = it
+                          exists but no entity, area or device carries it (tag something). -#}
+                      {%- if lbl not in labels() -%}
+                        {%- set ns.devs = ns.devs + ['label_absent:' ~ lbl] -%}
+                      {%- elif (label_entities(lbl) | list | length) + (label_areas(lbl) | list | length) + (label_devices(lbl) | list | length) == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_unused:' ~ lbl] -%}
                       {%- endif -%}
                     {%- endfor -%}
                     {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
@@ -2355,7 +2402,7 @@ script:
                   {{ ns.devs }}
             - variables:
                 _hr_status: >-
-                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _warn_codes = ['label_absent', 'label_unused', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
                   {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
                   {%- set ns = namespace(s='ok') -%}
                   {%- for d in _hr_devs -%}
@@ -2424,8 +2471,12 @@ script:
                     {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
                   {%- else -%}
                     {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
-                      {%- if label_entities(lbl) | list | length == 0 -%}
-                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {#- absent = the label does not exist (create it); unused = it
+                          exists but no entity, area or device carries it (tag something). -#}
+                      {%- if lbl not in labels() -%}
+                        {%- set ns.devs = ns.devs + ['label_absent:' ~ lbl] -%}
+                      {%- elif (label_entities(lbl) | list | length) + (label_areas(lbl) | list | length) + (label_devices(lbl) | list | length) == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_unused:' ~ lbl] -%}
                       {%- endif -%}
                     {%- endfor -%}
                     {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
@@ -2463,7 +2514,7 @@ script:
                   {{ ns.devs }}
             - variables:
                 _hr_status: >-
-                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _warn_codes = ['label_absent', 'label_unused', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
                   {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
                   {%- set ns = namespace(s='ok') -%}
                   {%- for d in _hr_devs -%}
@@ -2532,8 +2583,12 @@ script:
                     {%- set ns.devs = ns.devs + ['no_preferred_state'] -%}
                   {%- else -%}
                     {%- for lbl in (_hr_ps.get('required_labels') or []) -%}
-                      {%- if label_entities(lbl) | list | length == 0 -%}
-                        {%- set ns.devs = ns.devs + ['label_missing:' ~ lbl] -%}
+                      {#- absent = the label does not exist (create it); unused = it
+                          exists but no entity, area or device carries it (tag something). -#}
+                      {%- if lbl not in labels() -%}
+                        {%- set ns.devs = ns.devs + ['label_absent:' ~ lbl] -%}
+                      {%- elif (label_entities(lbl) | list | length) + (label_areas(lbl) | list | length) + (label_devices(lbl) | list | length) == 0 -%}
+                        {%- set ns.devs = ns.devs + ['label_unused:' ~ lbl] -%}
                       {%- endif -%}
                     {%- endfor -%}
                     {%- for lkey in (_hr_ps.get('lens_registry_keys') or []) -%}
@@ -2571,7 +2626,7 @@ script:
                   {{ ns.devs }}
             - variables:
                 _hr_status: >-
-                  {%- set _warn_codes = ['label_missing', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
+                  {%- set _warn_codes = ['label_absent', 'label_unused', 'lens_not_registered', 'codex_not_registered', 'prereq_config_missing', 'no_preferred_state'] -%}
                   {%- set _err_codes = ['manifest_unavailable', 'prereq_tool_down', 'prereq_signal_fail'] -%}
                   {%- set ns = namespace(s='ok') -%}
                   {%- for d in _hr_devs -%}
@@ -3217,7 +3272,7 @@ script:
             caller_token: "{{ caller_token }}"
     # ── single true exit for the whole broker ──────────────────────────────
     - variables:
-        _mf_envelope_raw: >-
+        result: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (result is mapping and (result.get('status') == 'error')) else 'success',
@@ -3225,9 +3280,7 @@ script:
             result=result,
             tool='zen_dojotools_manifest',
             caller_token=caller_token
-          ) -}}
-    - variables:
-        result: "{{ (_mf_envelope_raw | from_json) if _mf_envelope_raw is string else _mf_envelope_raw }}"
+          ) | from_json -}}
     - stop: manifest complete
       response_variable: result
   system_tools_stamp_default_family_cabinet:

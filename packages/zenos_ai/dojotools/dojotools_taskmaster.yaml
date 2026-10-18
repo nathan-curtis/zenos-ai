@@ -1,6 +1,8 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Taskmaster
-# Version: 0.4.1 — briefing's home_mode/is_away/quiet_hours_active/
+# Version: 0.5.0: mode=by_anchor makes taskmaster a real lens provider (To Do
+# items by area/label, Grocy chores by area); register writes tool/mode.
+# 0.4.1 — briefing's home_mode/is_away/quiet_hours_active/
 # work_hours_active now resolve via label instead of a hardcoded entity.
 #
 # v0.3.0 — briefing's context block now also carries prep_schedule
@@ -48,13 +50,13 @@ script:
                 tool='zen_dojotools_taskmaster',
                 display_name='Taskmaster',
                 tier='dojotools',
-                version='0.4.1',
+                version='0.5.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
-                consumes=['area_id', 'label', 'person', 'company'],
+                consumes=['area_id', 'label'],
                 returns=['task_evidence'],
-                modes={'help': 'help', 'setup': 'setup', 'tier_status': 'tier_status', 'task_create': 'task_create', 'task_list': 'task_list', 'task_complete': 'task_complete', 'briefing': 'briefing', 'catch_up': 'catch_up', 'almanac': 'almanac', 'stale_review': 'stale_review', 'facilities_brief': 'facilities_brief', 'register': 'register', 'unregister': 'unregister', 'manifest': 'tool_manifest', 'kfc_manifest': 'kfc_manifest'},
+                modes={'lookup': 'by_anchor', 'help': 'help', 'setup': 'setup', 'tier_status': 'tier_status', 'task_create': 'task_create', 'task_list': 'task_list', 'task_complete': 'task_complete', 'briefing': 'briefing', 'catch_up': 'catch_up', 'almanac': 'almanac', 'stale_review': 'stale_review', 'facilities_brief': 'facilities_brief', 'register': 'register', 'unregister': 'unregister', 'manifest': 'tool_manifest', 'kfc_manifest': 'kfc_manifest'},
                 icon='mdi:checkbox-marked-circle-outline',
                 color='purple',
                 stripe=3,
@@ -175,27 +177,30 @@ script:
             {%- set parsed = val | from_json if val is string else val -%}
             {{ parsed if parsed is mapping else {} }}
           _tm_provider:
-            consumes: [area_id, label, person, company]
+            consumes: [area_id, label]
             returns: [task_evidence]
-            script: script.zen_dojotools_taskmaster
-            anchor_mode: by_anchor
+            tool: zen_dojotools_taskmaster
+            mode: by_anchor
             department: taskmaster
-      - variables:
-          _tm_merged: "{{ _tm_registry | combine({'taskmaster': _tm_provider}) }}"
-      - action: script.zen_dojotools_filecabinet
+      # Registered through the central lens writer (prompt_loader
+      # lens_registry): it fills defaults, validates, and replaces the entry whole.
+      - action: script.zen_admintools_prompt_loader
         response_variable: _tm_reg_write
         continue_on_error: true
         data:
-          action_type: update
-          volume_entity_id: "{{ _tm_hh }}"
-          key: lens_registry
-          value: "{{ _tm_merged | tojson }}"
+          mode: lens_registry
+          action_type: register
+          item: taskmaster
+          payload_json: "{{ _tm_provider | tojson }}"
+      - variables:
+          _tm_reg_write: "{{ _tm_reg_write.get('result', _tm_reg_write) if _tm_reg_write is defined and _tm_reg_write is mapping else {} }}"
       - variables:
           final_response:
             status: "{{ 'success' if _tm_reg_write is mapping and _tm_reg_write.get('status', '') == 'success' else 'error' }}"
             mode: register
             provider: taskmaster
             registry_entry: "{{ _tm_provider }}"
+            registry_write: "{{ {'status': _tm_reg_write.get('status'), 'message': _tm_reg_write.get('message'), 'schema_errors': _tm_reg_write.get('schema_errors')} if _tm_reg_write is mapping else _tm_reg_write }}"
 
     # ── Lens bus: unregister ──────────────────────────────────────────────────
     - if: "{{ (mode | default('') | lower) == 'unregister' }}"
@@ -345,7 +350,7 @@ script:
     # file, so no separate helper script or macro needed (macros can't fire
     # service calls anyway) -- it runs once here, before dispatch, guarded
     # to the three modes that actually need it. ──
-    - if: "{{ mode_norm in ['tier_status', 'task_create', 'task_list'] }}"
+    - if: "{{ mode_norm in ['tier_status', 'task_create', 'task_list', 'by_anchor'] }}"
       then:
       - action: script.zen_dojotools_servicedesk
         response_variable: _tm_radar_mf
@@ -372,6 +377,86 @@ script:
     - if: "{{ final_response is not defined }}"
       then:
       - choose:
+
+        # ── by_anchor (lens provider) ──────────────────────────────────────
+        # Task evidence for lens_dispatch. Radar tickets are left to the radar
+        # provider; this adds what has no other lens: To Do items (base tier,
+        # every household) and Grocy chores when Inventory is configured.
+        #   area_id: To Do lists assigned to the area + Grocy chores_by_area.
+        #   label:   To Do lists carrying the label.
+        - conditions:
+          - condition: template
+            value_template: "{{ mode_norm == 'by_anchor' }}"
+          sequence:
+          - variables:
+              _ba_type: "{{ anchor_type | default('', true) | string | trim | lower }}"
+              _ba_ids: >-
+                {%- set raw = anchor_ids | default('', true) -%}
+                {%- if raw is string and raw | trim != '' -%}
+                  {%- set raw = (raw | from_json) if (raw | trim)[:1] == '[' else raw.split(',') -%}
+                {%- endif -%}
+                {{ (raw if raw is iterable and raw is not string else []) | map('string') | map('trim') | reject('equalto', '') | list }}
+              _ba_ev: []
+          - repeat:
+              for_each: "{{ _ba_ids if _ba_type in ['area_id', 'label'] else [] }}"
+              sequence:
+              - variables:
+                  _ba_anchor: "{{ repeat.item }}"
+                  _ba_lists: >-
+                    {{ (area_entities(repeat.item) if _ba_type == 'area_id' else label_entities(repeat.item))
+                       | select('match', '^todo\\.') | list }}
+              - repeat:
+                  for_each: "{{ _ba_lists }}"
+                  sequence:
+                  - action: script.zen_dojotools_todo
+                    response_variable: _ba_todo
+                    continue_on_error: true
+                    data:
+                      mode: read
+                      list_name: "{{ repeat.item }}"
+                      status: needs_action
+                  - variables:
+                      _ba_ev: >-
+                        {%- set r = _ba_todo.get('result', _ba_todo) if _ba_todo is defined and _ba_todo is mapping else {} -%}
+                        {%- set ns = namespace(e=_ba_ev) -%}
+                        {%- for it in (r.get('items', []) if r is mapping else []) if it is mapping -%}
+                          {%- set ns.e = ns.e + [{'id': 'todo:' ~ repeat.item ~ ':' ~ (it.get('uid') or it.get('summary', '')),
+                                                  'provider': 'taskmaster', 'type': 'task_evidence', 'source': 'todo',
+                                                  'anchor_type': _ba_type, 'anchor_id': _ba_anchor, 'list': repeat.item,
+                                                  'summary': it.get('summary', ''), 'status': it.get('status', ''),
+                                                  'due': it.get('due', ''), 'content_redacted': false}] -%}
+                        {%- endfor -%}
+                        {{ ns.e }}
+              - if: "{{ _ba_type == 'area_id' and _tm_inv_ok }}"
+                then:
+                - action: script.zen_dojotools_inventory
+                  response_variable: _ba_chores
+                  continue_on_error: true
+                  data:
+                    mode: chores_by_area
+                    homeassistant_area_id: "{{ _ba_anchor }}"
+                - variables:
+                    _ba_ev: >-
+                      {%- set r = _ba_chores.get('result', _ba_chores) if _ba_chores is defined and _ba_chores is mapping else {} -%}
+                      {%- set ns = namespace(e=_ba_ev) -%}
+                      {%- for c in (r.get('chores', []) if r is mapping else []) if c is mapping -%}
+                        {%- set ns.e = ns.e + [{'id': 'grocy_chore:' ~ c.get('chore_id', ''),
+                                                'provider': 'taskmaster', 'type': 'task_evidence', 'source': 'grocy_chore',
+                                                'anchor_type': 'area_id', 'anchor_id': _ba_anchor,
+                                                'summary': c.get('name', ''), 'status': 'due' if c.get('is_due') else 'not_due',
+                                                'due': c.get('next_execution') or '', 'content_redacted': false}] -%}
+                      {%- endfor -%}
+                      {{ ns.e }}
+          - variables:
+              final_response:
+                status: "{{ 'success' if _ba_type in ['area_id', 'label'] else 'unsupported' }}"
+                mode: by_anchor
+                provider: taskmaster
+                anchor_type: "{{ _ba_type }}"
+                count: "{{ _ba_ev | length }}"
+                evidence: "{{ _ba_ev }}"
+                content_redacted: false
+                caller_token: "{{ caller_token | default('') }}"
 
         # ── help ──────────────────────────────────────────────────────────────
         - conditions:
@@ -1572,7 +1657,7 @@ script:
               message: "Unknown mode '{{ mode_norm }}'. Run mode=help for the case reference."
               caller_token: "{{ caller_token }}"
     - variables:
-        _tmr_envelope_raw: >-
+        final_response: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
@@ -1580,9 +1665,7 @@ script:
             result=final_response,
             tool='zen_dojotools_taskmaster',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        final_response: "{{ (_tmr_envelope_raw | from_json) if _tmr_envelope_raw is string else _tmr_envelope_raw }}"
+          ) | from_json -}}
     - stop: taskmaster response
       response_variable: final_response
 
@@ -1627,6 +1710,7 @@ script:
               - catch_up
               - register
               - unregister
+              - by_anchor
         default: help
       items:
         description: "For catch_up only — title substrings to restrict the sweep to (case-insensitive). Omit to catch up every stale item found."
@@ -1716,6 +1800,16 @@ script:
           number:
             min: 1
             max: 100
+      anchor_type:
+        description: "by_anchor only (lens provider): area_id or label."
+        required: false
+        selector:
+          text:
+      anchor_ids:
+        description: "by_anchor only: JSON array or comma-separated list of anchor ids."
+        required: false
+        selector:
+          text:
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.

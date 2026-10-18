@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.12.5
+**Version:** 5.14.0
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -101,14 +101,15 @@ Room state is **off until you turn it on**. Nothing in setup, onboarding, or an 
 
 | Mode | Description |
 |------|-------------|
-| `get` | Room intelligence brief: area metadata, spatial topology, live HA state, opt-in context slices. `area=` required. |
+| `get` | Room intelligence brief: area metadata, spatial topology, live HA state, opt-in context slices, and `setup_missing` for the room. `area=` required. An area with no devices or entities is reported as empty, not as "not found". |
 | `set` | Write or patch room topology. Register new room or update walls, portals, windows, safety items, `grocy_location_id`. Upserts non-destructively. `dry_run=true` previews changes. Error responses are bifurcated: household cabinet missing returns a specific "label not assigned" message; `area=` omitted returns a separate "area required" message. |
 | `list` | All registered rooms with `rm_managed` / `layout_labeled` flags. No `area=` needed. |
-| `link` | Bidirectional adjacency + interior portal between `area=` and `area_b=`. Optionally set `link_sound_tx` and `link_light_tx` (0.0–1.0). |
+| `link` | Bidirectional adjacency + interior portal between `area=` and `area_b=`. Refuses an unknown area or the same area twice. Optionally set `link_sound_tx` and `link_light_tx` (0.0–1.0). |
 | `unlink` | Remove bidirectional adjacency and portals between two areas. |
 | `boundary_link` | Non-passable shared boundary (drywall, partition, floor/ceiling). Writes both sides. Requires `boundary_link_sound_tx` and `boundary_link_light_tx`. |
 | `boundary_unlink` | Remove boundary link between two areas. |
 | `emergency` | Crisis snapshot for the whole home or a specific room. `scenario=fire\|burglar\|weather\|medical\|general`. Returns `guidance{action,advisory}`, `exits[]`, `shelter{primary/secondary/avoid}` (floor-tagged), `safety_equipment[]`, `hazards[]`, `likely_occupied[]`, `location{name,address,zip_code,gps}`, `rally_point`. Pass `area=` to add `from_room{room_exits,adjacent_exits,nearest_shelter}`. |
+| `setup_coverage` | Read-only report of how much of the house Room Manager knows: per area registered, layout, managed, floor and exits, plus the household address and rally point. Returns a color (green, yellow, red), `incomplete[]` and a `next_step`. Same definition as `sensor.zen_room_manager_health`. Informational only; nothing is gated on it. |
 | `home_overview` | Whole-house snapshot: `signal{}`, `alerts{}`, `domain_summaries{}`, `floors[]`, `weather{}`, `plant{}`, `home_mode`, `utility_index{}`. Optional: `include_notices=true`, `include_presence=true`. No `area=` needed. |
 | `area_create` | Create a new HA area, apply `room_layout` label, and optionally init topology in one call. `area_name=` required. `floor_id_new=`, `description=`, `walls=` optional. Pre-flight guard: if the area already exists, returns clean `{status: error}` with a "use area_update or mode=set" hint — no exception, chat survives. Invalid `floor_id_new` also returns clean error with valid floor list. |
 | `area_update` | Update floor assignment, topology, and compiled description (`area_note` + adjacency). `area=` required. Rename, icon, and picture must be set via HA Settings → Areas UI (Spook has no `update_area` service — response includes `ha_ui_advisory` when these are requested). Invalid `floor_id_new` returns clean error with valid floor list. |

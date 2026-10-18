@@ -1,6 +1,6 @@
-# Zen DojoTool Dispatcher — v5.4.4
+# Zen DojoTool Dispatcher — v5.4.5
 
-*Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.0.0.*
+*Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.1.1.*
 
 **File:** `packages/zenos_ai/dojotools/dojotools_dispatcher.yaml`
 **Automations:** `zen_dojotool_dispatcher` and supporting routers (single dispatch automation as of v5.2.0 — see below)
@@ -146,7 +146,7 @@ Listens for `zen_event(kind: label_mutation)` (fired by Labels on any successful
 Trickle recovery for shed pipeline components. Fires `summary_force` for the most-stale shed-eligible component when queue depth stays below `drain_below` for `s_min_minutes`. Starvation guard at `/10` minutes forces recovery if any component's kata exceeds `s_max_minutes`. Config in `zen_scheduler_config` drawer of household root cabinet. Mode: `single`.
 
 ### `zen_flynn_health_resummarize`
-Fires `summary_force` for `zen_system` whenever `sensor.zen_flynn_health` changes state, debounced 30s. Ensures kata reflects Flynn recovery or degradation without waiting for the next scheduler cycle. Mode: `single`.
+Fires `summary_force` for `zen_system` whenever `sensor.zen_flynn_health` changes state (not on its per-minute timestamp rewrite), debounced 30s. Ensures kata reflects Flynn recovery or degradation without waiting for the next scheduler cycle. Mode: `single`.
 
 ### `zen_cabinet_vi_autorepair`
 Catches `cabinet_vi_degraded` events emitted by Inspect when a cabinet VolumeInfo is stored as a JSON string. Calls `zen_admintools_cabinetadmin mode=repair_volumeinfo`. Emits `cabinet_vi_repaired` on success, `cabinet_vi_repair_failed` on error. Mode: `queued, max: 5`.

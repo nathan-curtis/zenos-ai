@@ -1,6 +1,11 @@
 ###############################################################################
 # ZenOS-AI Plugin: Firefly III — Finance
-# Version: 2.3.0
+# Version: 2.6.1
+#
+# v2.6.1: transaction_add refuses a named source or destination account that matches no Firefly account
+#   (guarded:) instead of previewing or posting with it unresolved.
+# v2.6.0: transaction_add previews unless confirm=true (dry_run always previews) and
+#   external_ref makes a re-sent post refuse as a duplicate; budget_summary reads the budget-limits endpoint.
 #
 # Scripts:
 #   zen_dojotools_finance       ← MCP-facing finance tool (transactions, accounts, budgets, codex dispatch)
@@ -677,7 +682,7 @@ script:
   zen_dojotools_finance:
     alias: Zen DojoTools Finance
     description: >
-      Finance (v2.5.0) — Household ledger + asset depreciation. Authoritative for all money
+      Finance (v2.6.1) — Household ledger + asset depreciation. Authoritative for all money
       questions. Read: account_balance, transactions_list/search, budget_overview, bills_list,
       category_spend, net_worth_snapshot. Write (confirm=true): transaction_add/update,
       transfer, budget_limit_set, piggybank_update, account_create/update.
@@ -1009,7 +1014,7 @@ script:
                 tool='zen_dojotools_finance',
                 display_name='Finance',
                 tier='dojotools',
-                version='2.5.0',
+                version='2.6.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['firefly'],
                 optional_labels=['finance', 'banking'],
@@ -1030,7 +1035,7 @@ script:
             ]}) }}
     - variables:
         tool_name: Zen DojoTools Finance
-        tool_version: 2.5.0
+        tool_version: 2.6.1
         mode_norm: '{{ mode | default("help") | string | trim | lower }}'
         case_norm: '{{ case | default("") | string | trim | lower }}'
         item_norm: '{{ item | default("") | string | trim }}'
@@ -2104,6 +2109,9 @@ script:
             _ta_dst_id: none
             _ta_cat_id: none
             _ta_bgt_id: none
+            _ta_confirm: '{{ confirm | default(false) | bool }}'
+            _ta_dry_run: '{{ dry_run | default(false) | bool }}'
+            _ta_ext_ref: '{{ external_ref | default("") | string | trim }}'
         - choose:
           - conditions:
             - condition: template
@@ -2222,37 +2230,89 @@ script:
               {%- set tag_list = (tags | trim).split(',') | map('trim') | select | list if (tags is defined and tags | default('') | trim != '') else [] -%}
               {%- if label_norm != '' -%}{%- set tag_list = tag_list + ['label:' ~ label_norm] -%}{%- endif -%}
               {%- if tag_list | length > 0 -%}{%- set txn = txn | combine({'tags': tag_list}) -%}{%- endif -%}
-              {{ {'transactions': [txn]} | tojson }}
-        - action: script.zen_root_firefly
-          response_variable: _ta_post_resp
-          continue_on_error: true
-          data:
-            action_type: post
-            endpoint: transactions
-            payload: '{{ _ta_payload }}'
-        - variables:
-            _ta_result: >-
-              {%- if _ta_post_resp is mapping and 'result' in _ta_post_resp and _ta_post_resp['result'] is mapping -%}
-                {%- set d = _ta_post_resp['result']['content'] | default({}) -%}
-                {%- if d is mapping -%}
-                  {%- set obj = d.get('data', {}) -%}
-                  {%- if obj is mapping -%}
-                    {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) }}
+              {%- set body = {'transactions': [txn]} -%}
+              {#- external_ref becomes Firefly's external_id, and Firefly refuses a
+                  same-hash repeat, so a re-sent batch cannot post twice. -#}
+              {%- if _ta_ext_ref != '' -%}
+                {%- set body = {'transactions': [txn | combine({'external_id': _ta_ext_ref})], 'error_if_duplicate_hash': true} -%}
+              {%- endif -%}
+              {{ body | tojson }}
+        # A named account that matched nothing is refused before any preview or post
+        - if: >-
+            {{ (src_acct_norm != '' and (_ta_src_id | string | trim) in ['', 'none', 'None'])
+               or (dst_acct_norm != '' and (_ta_dst_id | string | trim) in ['', 'none', 'None']) }}
+          then:
+          - variables:
+              final_response:
+                status: error
+                tool: '{{ tool_name }}'
+                version: '{{ tool_version }}'
+                case: transaction_add
+                reason: >-
+                  guarded: {{ 'source account "' ~ src_acct_norm ~ '"' if (src_acct_norm != '' and (_ta_src_id | string | trim) in ['', 'none', 'None']) else 'destination account "' ~ dst_acct_norm ~ '"' }} matched no Firefly account. Nothing was written.
+                message: Name an existing account exactly (case-insensitive), or create it first.
+        # Preview without writing: dry_run always, or a write without confirm
+        - if: "{{ final_response is not defined and (_ta_dry_run or not _ta_confirm) }}"
+          then:
+          - variables:
+              final_response:
+                status: '{{ "dry_run" if _ta_dry_run else "confirm_required" }}'
+                tool: '{{ tool_name }}'
+                version: '{{ tool_version }}'
+                case: transaction_add
+                result:
+                  planned: '{{ (_ta_payload | from_json) if _ta_payload is string else _ta_payload }}'
+                resolution:
+                  source_account_id: '{{ _ta_src_id }}'
+                  dest_account_id: '{{ _ta_dst_id }}'
+                  category_id: '{{ _ta_cat_id }}'
+                  budget_id: '{{ _ta_bgt_id }}'
+                message: '{{ "Preview only, nothing written." if _ta_dry_run else "Set confirm=true to post this transaction." }}'
+        - if: "{{ final_response is not defined }}"
+          then:
+          - action: script.zen_root_firefly
+            response_variable: _ta_post_resp
+            continue_on_error: true
+            data:
+              action_type: post
+              endpoint: transactions
+              payload: '{{ _ta_payload }}'
+          - variables:
+              _ta_result: >-
+                {%- if _ta_post_resp is mapping and 'result' in _ta_post_resp and _ta_post_resp['result'] is mapping -%}
+                  {%- set d = _ta_post_resp['result']['content'] | default({}) -%}
+                  {%- if d is mapping -%}
+                    {%- set obj = d.get('data', {}) -%}
+                    {%- if obj is mapping -%}
+                      {{ obj.get('attributes', {}) | combine({'id': obj.get('id', '')}) }}
+                    {%- else -%}{{ {} }}{%- endif -%}
                   {%- else -%}{{ {} }}{%- endif -%}
                 {%- else -%}{{ {} }}{%- endif -%}
-              {%- else -%}{{ {} }}{%- endif -%}
-        - variables:
-            final_response:
-              status: '{{ _ta_post_resp["status"] | default("error") if _ta_post_resp is mapping else "error" }}'
-              tool: '{{ tool_name }}'
-              version: '{{ tool_version }}'
-              case: transaction_add
-              result: '{{ _ta_result }}'
-              resolution:
-                source_account_id: '{{ _ta_src_id }}'
-                dest_account_id: '{{ _ta_dst_id }}'
-                category_id: '{{ _ta_cat_id }}'
-                budget_id: '{{ _ta_bgt_id }}'
+              _ta_duplicate_of: >-
+                {%- set ns = namespace(dup='') -%}
+                {%- if _ta_post_resp is mapping and _ta_post_resp.get('http_status') | int(0) == 422 -%}
+                  {%- set c = (_ta_post_resp.get('result') or {}).get('content') -%}
+                  {%- set txt = (c | tojson) if c is not string else c -%}
+                  {%- set m = txt | regex_findall('Duplicate of transaction #(\d+)') -%}
+                  {%- if m | length > 0 -%}{%- set ns.dup = m[0] -%}{%- endif -%}
+                {%- endif -%}
+                {{ ns.dup }}
+          - variables:
+              final_response:
+                status: >-
+                  {%- if _ta_duplicate_of | string != '' -%}skipped_duplicate
+                  {%- elif _ta_post_resp is mapping -%}{{ _ta_post_resp.get('status', 'error') }}
+                  {%- else -%}error{%- endif -%}
+                tool: '{{ tool_name }}'
+                version: '{{ tool_version }}'
+                case: transaction_add
+                result: '{{ _ta_result }}'
+                duplicate_of: '{{ _ta_duplicate_of if _ta_duplicate_of | string != "" else none }}'
+                resolution:
+                  source_account_id: '{{ _ta_src_id }}'
+                  dest_account_id: '{{ _ta_dst_id }}'
+                  category_id: '{{ _ta_cat_id }}'
+                  budget_id: '{{ _ta_bgt_id }}'
 
     # ── case: transaction_update ─────────────────────────────────────────────
     - choose:
@@ -2525,7 +2585,7 @@ script:
           continue_on_error: true
           data:
             action_type: get
-            endpoint: 'budgets/limits?start={{ _bsum_start }}&end={{ _bsum_end }}'
+            endpoint: 'budget-limits?start={{ _bsum_start }}&end={{ _bsum_end }}'
             perPage: 100
         - variables:
             _bsum_bgt_raw: >-
@@ -5084,7 +5144,7 @@ script:
               Run mode=run case=bootstrap_codices to register installed codices.
 
     - variables:
-        _fin_envelope_raw: >-
+        final_response: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
@@ -5092,8 +5152,6 @@ script:
             result=final_response,
             tool='zen_dojotools_finance',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        final_response: "{{ (_fin_envelope_raw | from_json) if _fin_envelope_raw is string else _fin_envelope_raw }}"
+          ) | from_json -}}
     - stop: finance response
       response_variable: final_response

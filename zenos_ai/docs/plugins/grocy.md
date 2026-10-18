@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 5.6.1  
+**Version:** 5.7.4  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
 **Internal REST dispatcher:** `zen_sutra_grocy`  
@@ -9,6 +9,8 @@
 ---
 
 ## Overview
+
+Since 5.7: `register` repairs the schema on start and daily, list reads report `result.truncation` (total, returned, truncated), and the health check warns when Grocy is configured but its schema is not deployed.
 
 Grocy is the governed inventory, location, shopping, and chore surface for ZenOS-AI. The plugin does not treat Grocy as a loose pantry lookup. It treats Grocy as a durable ERP-style system with explicit IDs, strict ambiguity checks, and controlled write paths.
 
@@ -114,7 +116,7 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `userfields_list` | List all Grocy userfield schema definitions. Optional `entity=` filter |
 | `userfields_create` | Create a new userfield on a Grocy entity. Idempotent — returns `already_exists` if `entity.field_name` exists. Required: `entity`, `field_name`, `field_caption` |
 | `userfields_deploy` | Idempotent deploy of canonical ZenOS userfield schema — creates missing fields, skips existing, stamps `schema_version` to household cabinet |
-| `userfields_repair` | Diff live Grocy schema vs canonical. Reports `ok/missing/type_drift/unknown` + version delta. Fixes missing unless `dry_run=true` |
+| `userfields_repair` | Diff live Grocy schema vs canonical. Reports `ok/missing/type_drift/caption_drift/unknown` + version delta. Unless `dry_run=true`, creates missing fields, patches captions, and widens type drift to a text type; other type changes are reported only |
 | `userfields_delete` | Delete a userfield schema definition by ID. Warns if canonical. Requires `confirm_action=true` |
 | `userentities_list` | List all custom Grocy userentity types |
 | `userentities_create` | Create a new custom userentity type. Required: `item` (snake_case slug), `field_caption`. Returns `entity_qualifier` — the string used in `userfields_*` and `userentity_values_*` calls |
@@ -496,7 +498,12 @@ Battery KFC was deliberately moved out of this file to `zen_stack_battery` (see 
 
 ## Userfields Schema Management
 
-ZenOS uses Grocy userfields to bind inventory objects to HA topology. The canonical schema defines 13 fields across locations, products, chores, and tasks.
+ZenOS uses Grocy userfields to bind inventory objects to HA topology. The canonical schema (version **1.3.0**) defines **108 userfields**:
+
+- **33 on Grocy's own objects:** products (20), locations (8), chores (2), tasks (1), shopping lists (1), shopping locations (1).
+- **75 on three ZenOS user entities** that `userfields_deploy` also creates: `depreciable_asset` (42, the finance depreciation codex), `catalog_item` (21, Library's physical items) and `asset_allocation` (12).
+
+The exact list for your installed version is what `userfields_repair dry_run: true` reports (see below); treat that as the source of truth if this page falls behind.
 
 ### Deploying the Schema
 
@@ -507,7 +514,7 @@ zen_dojotools_inventory:
   mode: userfields_deploy
 ```
 
-Idempotent — safe to re-run. Creates any missing fields, skips existing ones, stamps `schema_version: "1.0.0"` to the household cabinet under `grocy_schema`.
+Idempotent — safe to re-run. Creates any missing fields, skips existing ones, stamps `schema_version: "1.3.0"` to the household cabinet under `grocy_schema`. **Run it before using any area-scoped inventory mode** (`chores_by_area`, `locations_get_by_area`, `room_brief`); without the schema, locations carry no `homeassistant_area` and those modes return nothing.
 
 ### Auditing the Schema
 
@@ -517,7 +524,7 @@ zen_dojotools_inventory:
   dry_run: true
 ```
 
-Returns `deployed_version`, `healthy: true/false`, and counts for `ok / missing / type_drift / unknown`. Use `dry_run: false` (or omit) to fix missing fields in place.
+Returns `deployed_version`, `healthy: true/false`, and counts for `ok / missing / type_drift / unknown`. Use `dry_run: false` (or omit) to fix in place. After a real run, `healthy` reflects the result of that run, and any patch that failed is listed in `failed`. You rarely need to run it yourself: the schema heals itself. On HA start and daily, `zen_dojotools_manifest bootstrap_stacks` calls inventory `register`, which queues a real `userfields_repair`; that run creates any missing user entities and fields, fixes captions and text-type drift, and stamps the schema version. `userfields_deploy` and `userfields_repair` need no certification because they only converge to the canonical schema.
 
 `unknown` fields are ones Grocy has that are not in the ZenOS canonical schema — `products.mealie_ingredient_id` is a common example (Mealie-owned, expected). Not a bug.
 

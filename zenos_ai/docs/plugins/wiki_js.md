@@ -1,10 +1,10 @@
 # ZenOS-AI Wiki.js Plugin
 
-**Version:** 0.4.1  
+**Version:** 0.4.2  
 **Package:** `packages/zenos_ai/plugins/wiki_js/dojotools_wikijs.yaml`  
 **Public surface:** `zen_dojotools_filecabinet` with `stack=wiki`  
 **Internal sutra:** `zen_sutra_wikijs` (provider_key: `wiki_js`, not MCP-exposed)  
-**Internal GraphQL broker:** `zen_dojotools_wikijs_root` (not MCP-exposed)
+**Internal GraphQL broker:** `zen_root_wikijs` (not MCP-exposed)
 
 > **Auto-registration (2026.7.0):** `zen_sutra_wikijs` now participates in Lens Bus bootstrap registration. On every HA boot, `zen_dojotools_manifest mode=bootstrap_stacks` discovers and registers it automatically. See [Lens Bus Auto-Registration](lens_bus_autoreg.md).
 
@@ -23,7 +23,7 @@ Wiki.js is the internal knowledge base for ZenOS-AI. The plugin bridges Home Ass
 ```
 zen_dojotools_filecabinet (stack=wiki)  ← public surface, MCP-exposed
   → zen_sutra_wikijs                    ← sutra: business logic, stewardship, Lens provider
-    → zen_dojotools_wikijs_root         ← root: GraphQL transport
+    → zen_root_wikijs         ← root: GraphQL transport
       → Wiki.js GraphQL API
 ```
 
@@ -42,7 +42,7 @@ All wiki operations go through `zen_dojotools_filecabinet` with `stack: wiki`. P
 ```yaml
 zen_dojotools_filecabinet:
   stack: wiki
-  action: get
+  action_type: get
   page_id: 42
 ```
 
@@ -96,14 +96,14 @@ Tag a room page and publish it:
 # Tag the page with the area slug
 zen_dojotools_filecabinet:
   stack: wiki
-  action: relabel
+  action_type: relabel
   path: zenai/rooms/kitchen
   tags_json: '["kitchen"]'
 
 # Publish the page
 zen_dojotools_filecabinet:
   stack: wiki
-  action: set_published
+  action_type: set_published
   path: zenai/rooms/kitchen
   is_published: "true"
 ```
@@ -154,23 +154,24 @@ wikijs_token_bearer: "Bearer YOUR_WIKIJS_API_TOKEN"
 
 2. Store the Wiki.js URL in the household cabinet. Run the configure action via the root tool (internal — do this once at setup):
 
+Developer Tools → Actions, action `script.zen_root_wikijs`, data:
+
 ```yaml
-action.script/zen_dojotools_wikijs_root:
-  action_type: configure
-  base_url: "https://your-wikijs-host"
+action_type: configure
+base_url: "https://your-wikijs-host"
 ```
 
 This writes the URL to `integrations_config.wikijs.url` in the household cabinet.
 
-3. Register the Lens provider so other tools can discover wiki content:
+3. Register the Lens provider so other tools can discover wiki content (boot normally does this via `zen_dojotools_manifest mode=bootstrap_stacks`; run it by hand if `manifest audit` reports `lens_declared_not_registered`):
 
 ```yaml
 zen_dojotools_filecabinet:
   stack: wiki
-  action: register
+  action_type: register
 ```
 
-4. Expose `zen_dojotools_filecabinet` to the conversation agent (MCP). Do not expose `zen_sutra_wikijs` or `zen_dojotools_wikijs_root`.
+4. Expose `zen_dojotools_filecabinet` to the conversation agent (MCP). Do not expose `zen_sutra_wikijs` or `zen_root_wikijs`.
 
 ---
 

@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.4.2
+# Version: 5.4.4
+# 5.4.4: legacy alert_manager Scribe ship gated off (KF5 owns it).
+#
+# v5.4.3: prompt_loader lens_registry reads and writes the flat registry
+#   lens_dispatch uses ({provider: declaration}). It used to treat a flat
+#   registry as empty and rewrite it nested, wiping every provider on the
+#   first register. Re-register replaces the whole entry (no stale keys).
+#   payload_json is accepted as a mapping too (HA native typing converted the
+#   JSON text callers send into a dict, which parsed as empty).
 #
 # v5.4.2 — reset_template: period field description no longer names the
 #   home-mode entity directly, describes the label instead.
@@ -121,7 +129,7 @@ script:
                 caller_token=caller_token | default('')
               ) | from_json -}}
         - variables:
-            _rtt_envelope_raw: >-
+            result: >-
               {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
               {{- OS.envelope(
                 status='success',
@@ -129,9 +137,7 @@ script:
                 result=result,
                 tool='zen_admintools_reset_template',
                 caller_token=caller_token | default('')
-              ) -}}
-        - variables:
-            result: "{{ (_rtt_envelope_raw | from_json) if _rtt_envelope_raw is string else _rtt_envelope_raw }}"
+              ) | from_json -}}
         - stop: reset_template tool manifest
           response_variable: result
     - variables:
@@ -679,7 +685,7 @@ script:
               caller_token: "{{- caller_token -}}"
 
     - variables:
-        _rl_envelope_raw: >-
+        result: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (result is mapping and result.get('status') == 'error') else 'success',
@@ -687,9 +693,7 @@ script:
             result=result,
             tool='zen_admintools_reset_labels',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        result: "{{ (_rl_envelope_raw | from_json) if _rl_envelope_raw is string else _rl_envelope_raw }}"
+          ) | from_json -}}
     - stop: reset labels complete
       response_variable: result
 
@@ -1944,7 +1948,7 @@ script:
     # ── single true exit for the whole tool — every op branch above sets
     # `result` itself; this just returns whatever is currently held. ──────
     - variables:
-        _ca_envelope_raw: >-
+        result: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (result is mapping and result.get('status') == 'error') else 'success',
@@ -1952,9 +1956,7 @@ script:
             result=result,
             tool='zen_admintools_cabinetadmin',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        result: "{{ (_ca_envelope_raw | from_json) if _ca_envelope_raw is string else _ca_envelope_raw }}"
+          ) | from_json -}}
     - stop: complete
       response_variable: result
 
@@ -2234,7 +2236,7 @@ script:
     - variables:
         response: "{{ response | combine({'caller_token': caller_token | default('')}) if response is mapping else response }}"
     - variables:
-        _caf_envelope_raw: >-
+        response: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (response is mapping and response.get('status') == 'error') else 'success',
@@ -2242,9 +2244,7 @@ script:
             result=response,
             tool='zen_admintools_cabinetadmin_factory',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        response: "{{ (_caf_envelope_raw | from_json) if _caf_envelope_raw is string else _caf_envelope_raw }}"
+          ) | from_json -}}
     - stop: complete
       response_variable: response
     alias: Zen AdminTools CabinetAdmin Factory
@@ -2499,10 +2499,14 @@ script:
         - variables:
             _lr_action: "{{- action_type | default('list') | lower | trim -}}"
             _lr_provider: "{{- item | default('') | lower | trim -}}"
-            _lr_payload_raw: "{{- payload_json | default('{}') | trim -}}"
+            # HA's native typing turns a '{{ x | tojson }}' argument back into a
+            # dict before it arrives, so accept a mapping as well as JSON text.
+            _lr_payload_raw: "{{- payload_json | default({}) -}}"
             _lr_payload: >-
               {%- set p = _lr_payload_raw -%}
-              {{- (p | from_json) if p is string and p.startswith('{') else {} -}}
+              {%- if p is mapping -%}{{- p -}}
+              {%- elif p is string and (p | trim).startswith('{') -%}{{- p | trim | from_json -}}
+              {%- else -%}{{- {} -}}{%- endif -%}
             _lr_household: >-
               {%- set _sv = state_attr('sensor.zenos_system_cabinet', 'variables') -%}
               {%- set _sv = _sv if _sv is mapping else {} -%}
@@ -2547,29 +2551,26 @@ script:
             _lr_exists: "{{- _lr_drawers is mapping and 'lens_registry' in _lr_drawers -}}"
             _lr_entry: "{{- _lr_drawers.get('lens_registry', {}) if _lr_drawers is mapping else {} -}}"
             _lr_value_raw: "{{- _lr_entry.get('value', _lr_entry) if _lr_entry is mapping else {} -}}"
+            # The live registry is a flat map {provider_key: declaration}; that
+            # is what lens_dispatch and every tool reads. A nested 'providers'
+            # block from the old schema is folded in so nothing is lost, and
+            # meta keys are dropped. Writes go back flat.
             _lr_value: >-
               {%- set v = _lr_value_raw -%}
               {%- set parsed = (v | from_json) if v is string else (v if v is mapping else {}) -%}
-              {%- if parsed is mapping and ('providers' in parsed or 'schema_version' in parsed or 'security_act_model' in parsed) -%}
-                {{- parsed -}}
-              {%- else -%}
-                {{- {} -}}
-              {%- endif -%}
-            _lr_registry: >-
-              {%- set r = _lr_value if _lr_value is mapping else {} -%}
-              {%- set clean = {
-                'schema_version': r.get('schema_version', _lr_default.get('schema_version')),
-                'security_act_model': r.get('security_act_model', _lr_default.get('security_act_model')),
-                'providers': r.get('providers', {}) if r.get('providers', {}) is mapping else {},
-                'note': r.get('note', _lr_default.get('note'))
-              } -%}
-              {%- if r.get('updated_at', '') != '' -%}
-                {%- set clean = clean | combine({'updated_at': r.get('updated_at')}) -%}
-              {%- endif -%}
-              {{- _lr_default | combine(clean, recursive=true) -}}
+              {{- parsed if parsed is mapping else {} -}}
             _lr_providers: >-
-              {%- set p = _lr_registry.get('providers', {}) if _lr_registry is mapping else {} -%}
-              {{- p if p is mapping else {} -}}
+              {%- set meta = ['schema_version', 'security_act_model', 'providers', 'note', 'updated_at'] -%}
+              {%- set ns = namespace(out={}) -%}
+              {%- set nested = _lr_value.get('providers', {}) if _lr_value is mapping else {} -%}
+              {%- for k, v in (nested if nested is mapping else {}).items() if v is mapping -%}
+                {%- set ns.out = ns.out | combine({k: v}) -%}
+              {%- endfor -%}
+              {%- for k, v in _lr_value.items() if k not in meta and v is mapping -%}
+                {%- set ns.out = ns.out | combine({k: v}) -%}
+              {%- endfor -%}
+              {{- ns.out -}}
+            _lr_registry: "{{- _lr_providers -}}"
         - if:
           - condition: template
             value_template: "{{- _lr_action in ['register', 'update', 'unregister'] and _lr_provider == '' -}}"
@@ -2584,7 +2585,7 @@ script:
             value_template: "{{- result is not defined and _lr_action == 'prime' -}}"
           then:
           - variables:
-              _lr_next: "{{- _lr_registry | combine({'updated_at': now().isoformat()}, recursive=true) -}}"
+              _lr_next: "{{- _lr_providers -}}"
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: "{{- 'update' if _lr_exists else 'create' -}}"
@@ -2713,8 +2714,10 @@ script:
                 {%- if s.get('required', '') | string | trim not in allowed -%}{%- set ns.errors = ns.errors + ['security_act.required_not_allowed'] -%}{%- endif -%}
                 {%- if s.get('required', '') | string | trim in denied -%}{%- set ns.errors = ns.errors + ['security_act.required_denied'] -%}{%- endif -%}
                 {{- ns.errors -}}
-              _lr_next_providers: "{{- _lr_providers | combine({_lr_provider: _lr_declaration}, recursive=true) -}}"
-              _lr_next: "{{- _lr_registry | combine({'providers': _lr_next_providers, 'updated_at': now().isoformat()}) -}}"
+              # Whole-entry replace: a re-register must not keep stale keys
+              # (e.g. an old script:/anchor_mode: pair) from the previous entry.
+              _lr_next_providers: "{{- _lr_providers | combine({_lr_provider: _lr_declaration}) -}}"
+              _lr_next: "{{- _lr_next_providers -}}"
           - if:
             - condition: template
               value_template: "{{- _lr_schema_errors | length > 0 -}}"
@@ -2770,7 +2773,7 @@ script:
                   {%- if (k | string | trim | lower) != _lr_provider -%}{%- set ns.out = ns.out | combine({k: v}, recursive=true) -%}{%- endif -%}
                 {%- endfor -%}
                 {{- ns.out -}}
-              _lr_next: "{{- _lr_registry | combine({'providers': _lr_next_providers, 'updated_at': now().isoformat()}) -}}"
+              _lr_next: "{{- _lr_next_providers -}}"
           - action: script.zen_dojotools_filecabinet
             data:
               action_type: "{{- 'update' if _lr_exists else 'create' -}}"
@@ -4036,15 +4039,15 @@ script:
                 Alert format: "ZenOS [warn|critical]: [specific issue]. [switch name|sensor name|cabinet name]."
 
                 MASTER SWITCH RULE:
-                ZenOS pipeline kill switches (zen_summarizers_enabled,
-                zen_ninja_summarizer_enabled, zen_supersummary_enabled, etc.) being OFF
+                ZenOS pipeline kill switches (input_boolean entities under label
+                'zen_system') being OFF
                 IS a monitored deviation — flag it at priority 2 above.
                 Integration/subsystem master switches (Airspace, Grocy, media zones,
                 or any non-ZenOS feature enable) being off is an intentional user choice
                 — treat as informational only, max urgency contribution 1.
                 Distinguish by name: zen_* kill switches → flag. All others → informational.
               label: zen_system
-              trigger_subscriptions: ha_start,daily_midnight
+              trigger_subscriptions: ha_start,daily_midnight,hourly_trigger,force_summary
               caller_id: zen_admintools_prompt_loader
           - alias: 'Ship default KFC: zen_system (Scribe — formalize_scroll)'
             action: script.zen_dojotools_scribe
@@ -4061,7 +4064,9 @@ script:
               caller_id: zen_admintools_prompt_loader
             response_variable: _zen_system_kfc_result
 
-      - if: "{{- ship_alert_manager | default(false) | bool -}}"
+      # alert_manager self-registers via KF5 (its own mode=kfc_manifest); this
+      # Scribe copy would overwrite that live drawer, so it is gated off like zen_system.
+      - if: "{{ false }}"
         then:
           # ── alert_manager — demos action emission (safety/system alerts) ────
           - alias: 'Ship default KFC: alert_manager (Scribe — new_thought)'
@@ -4334,7 +4339,7 @@ script:
             write_report: "{{- _pl_write_report -}}"
             caller_token: "{{- caller_token -}}"
     - variables:
-        _pl_envelope_raw: >-
+        result: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (result is mapping and result.get('status') == 'error') else 'success',
@@ -4342,9 +4347,7 @@ script:
             result=result,
             tool='zen_admintools_prompt_loader',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        result: "{{ (_pl_envelope_raw | from_json) if _pl_envelope_raw is string else _pl_envelope_raw }}"
+          ) | from_json -}}
     - stop: prompt load complete
       response_variable: result
 
@@ -4420,7 +4423,7 @@ script:
                       repair_action: "{{- _repair -}}"
                       message: "Unknown repair_action '{{ _repair }}'. Valid: identity_family_repair_4_5_6, stamp_cab_guid_4_5_6, roster_guid_repair_4_5_6."
     - variables:
-        _rr_envelope_raw: >-
+        response: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
             status='error' if (response is mapping and response.get('status') == 'error') else 'success',
@@ -4428,9 +4431,7 @@ script:
             result=response,
             tool='zen_admintools_run_repair',
             caller_token=caller_token | default('')
-          ) -}}
-    - variables:
-        response: "{{ (_rr_envelope_raw | from_json) if _rr_envelope_raw is string else _rr_envelope_raw }}"
+          ) | from_json -}}
     - stop: run_repair complete
       response_variable: response
     alias: Zen AdminTools Run Repair

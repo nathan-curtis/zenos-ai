@@ -1,7 +1,9 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Identity
-# Version: 5.5.2
+# Version: 5.5.3
 #
+# v5.5.3: household_add_member slot_occupied (user) points at family_add_member
+#   and household_add_family instead of an ownership transfer; adds next_steps.
 # v5.5.2 — declares zenos.agent.basic, the certified-agent badge (gates
 #   nothing). Flynn OOBE requests it at completion; the grant needs a live ack.
 #
@@ -1659,7 +1661,10 @@ script:
                           'mode':          'household_add_member',
                           'status':        'error',
                           'code':          'slot_occupied',
-                          'message':       ('prime AI partner' if member_type == 'ai_user' else 'Head of Household') ~ ' slot is already occupied for this household. Use an admin operation to transfer.',
+                          'message':       ('prime AI partner slot is already occupied for this household. Use an admin operation to transfer.'
+                                            if member_type == 'ai_user' else
+                                            'Head of Household slot is already occupied. household_add_member user only fills that slot; add other residents through a family: family_add_member into a family cabinet, and household_add_family if that family is not in this household yet.'),
+                          'next_steps':    ([] if member_type == 'ai_user' else ['family_add_member', 'household_add_family']),
                           'member_entity': member_entity,
                           'member_type':   member_type,
                           'timestamp':     now().isoformat()
@@ -2200,12 +2205,50 @@ script:
                   {{- _lst | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -}}
             - if: "{{- _already_member | bool -}}"
               then:
+                # Re-adding an existing member with user_entity_id backfills a missing
+                # person_entity_id (same idempotent repair as household_add_member);
+                # never overwrites an entry that already has one.
+                - variables:
+                    _fam_pid_backfill: "{{- user_entity_id | default('') | trim -}}"
+                    _fam_existing_pid: >-
+                      {%- set _lst = _existing_list | from_json if _existing_list is string else _existing_list -%}
+                      {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
+                      {%- set _hit = _lst | selectattr('entity_id', 'equalto', member_entity) | first | default(none) -%}
+                      {{- (_hit.get('person_entity_id', '') | default('', true) | trim) if _hit else '' -}}
+                - if: "{{- _fam_pid_backfill != '' and _fam_existing_pid == '' -}}"
+                  then:
+                    - variables:
+                        _fam_backfilled: >-
+                          {%- set _m = _fam_members_raw | from_json if _fam_members_raw is string else _fam_members_raw -%}
+                          {%- set _m = _m if _m is mapping else {} -%}
+                          {%- set _lst = _m.get(_list_key, []) -%}
+                          {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
+                          {%- set ns = namespace(out=[]) -%}
+                          {%- for _e in _lst -%}
+                            {%- if _e.get('entity_id', '') == member_entity -%}
+                              {%- set ns.out = ns.out + [dict(_e, **{'person_entity_id': _fam_pid_backfill})] -%}
+                            {%- else -%}
+                              {%- set ns.out = ns.out + [_e] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{- dict(_m, **{_list_key: ns.out}) | tojson -}}
+                    - action: script.zen_dojotools_filecabinet
+                      data:
+                        action_type: create
+                        force_action: true
+                        set_timestamp: true
+                        show_hidden_volumes: false
+                        volume_entity_id:
+                          - "{{- family_entity -}}"
+                        key: members
+                        value: "{{- _fam_backfilled -}}"
                 - variables:
                     response: >
                       {{-
                         {
                           'mode':          'family_add_member',
                           'status':        'already_member',
+                          'person_entity_id_backfilled': (_fam_pid_backfill != '' and _fam_existing_pid == ''),
                           'family_entity': family_entity,
                           'member_entity': member_entity,
                           'timestamp':     now().isoformat()
@@ -3094,17 +3137,13 @@ script:
             # Scan expansion slots for first available init slot
             - variables:
                 _pm_slot: >-
-                  {%- set _label_slots = label_entities('expansion_cabinet') | select('match','sensor\\.zenos_expansion_cabinet_') | sort | list -%}
-                  {%- set _ns2 = namespace(s=[]) -%}
-                  {%- if _label_slots | length == 0 -%}
-                    {%- for i in range(1, 6) -%}
-                      {%- set _ns2.s = _ns2.s + ['sensor.zenos_expansion_cabinet_' ~ i] -%}
-                    {%- endfor -%}
-                  {%- endif -%}
-                  {%- set _slots = _label_slots if _label_slots | length > 0 else _ns2.s -%}
+                  {#- One free-slot rule for every tool: slots and their status come from
+                      zenos_cabinets.jinja (cabinet_slot_candidates / cabinet_slot_status).
+                      The provisioner initializes the slot, so ready is not required. -#}
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
                   {%- set ns = namespace(v='') -%}
-                  {%- for s in _slots -%}
-                    {%- if ns.v == '' and states(s) == 'init' -%}
+                  {%- for s in CABS.cabinet_slot_candidates() | from_json([]) -%}
+                    {%- if ns.v == '' and (CABS.cabinet_slot_status(s) | from_json({})).get('free', false) -%}
                       {%- set ns.v = s -%}
                     {%- endif -%}
                   {%- endfor -%}
@@ -3119,7 +3158,7 @@ script:
                         {
                           'mode':      'provision_member',
                           'status':    'error',
-                          'message':   'All 5 expansion slots are occupied. Deprovision an existing cabinet before adding a new member.',
+                          'message':   'No free slot: every member/expansion cabinet is in use or reserved. Deprovision a member cabinet before adding a new one.',
                           'timestamp': now().isoformat()
                         }
                       -}}
@@ -3129,9 +3168,16 @@ script:
             # Build profile payload: merge member_name as preferred_name + name
             - variables:
                 _pm_profile: >-
-                  {%- set _base = _pm_payload_raw | from_json if (_pm_payload_raw is string and _pm_payload_raw != '') else {} -%}
+                  {#- HA hands profile_payload over already parsed when it looks like
+                      JSON, so accept a mapping as well as a JSON string. -#}
+                  {%- set _base = _pm_payload_raw if _pm_payload_raw is mapping else (_pm_payload_raw | from_json({}) if (_pm_payload_raw is string and _pm_payload_raw != '') else {}) -%}
                   {%- set _base = _base if _base is mapping else {} -%}
                   {{- dict(_base, **{'preferred_name': _pm_name, 'name': _pm_name}) | tojson -}}
+                _pm_person: >-
+                  {%- set _b = _pm_payload_raw if _pm_payload_raw is mapping else (_pm_payload_raw | from_json({}) if (_pm_payload_raw is string and _pm_payload_raw != '') else {}) -%}
+                  {%- set _b = _b if _b is mapping else {} -%}
+                  {%- set _p = (_b.get('person_entity_id') or _b.get('person_entity') or '') | string | trim -%}
+                  {{- _p if _p.startswith('person.') else '' -}}
                 _pm_cab_type: "{{- _pm_mtype if _pm_mtype in ['user', 'ai_user', 'family'] else 'user' -}}"
 
             # Provision the expansion slot (auto-stamps init → online_unmounted → mounts)
@@ -3141,6 +3187,7 @@ script:
                 cab_type: "{{- _pm_cab_type -}}"
                 target_cabinet: "{{- _pm_slot -}}"
                 profile_payload: "{{- _pm_profile -}}"
+                person_entity: "{{- _pm_person -}}"
                 caller_token: "{{- caller_token | default('') -}}"
               response_variable: _pm_prov_result
 
@@ -3180,6 +3227,7 @@ script:
                 family_entity: "{{- _pm_fam -}}"
                 member_entity: "{{- _pm_slot -}}"
                 member_type: "{{- _pm_cab_type -}}"
+                user_entity_id: "{{- _pm_person -}}"
                 household_entity: "{{- _hh_target -}}"
                 caller_token: "{{- caller_token | default('') -}}"
               response_variable: _pm_fam_result

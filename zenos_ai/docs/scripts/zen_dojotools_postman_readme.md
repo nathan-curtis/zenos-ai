@@ -393,16 +393,9 @@ Run three calls on first install to seed the authority stack. Safe to re-run wit
         high:     { channels: [push, tts] }
         critical: { channels: [push, tts] }
       away_policy: { push: allow, tts: block }
-
-# 3. Family floor (empty for alpha)
-- action: script.zen_dojotools_postman
-  data:
-    mode: author_policy
-    scope_id: sensor.zen_default_family_cabinet_resolved
-    policy_key: postman_profile
-    policy_type: update_existing
-    channel_definition: {}
 ```
+
+No family floor to seed yet: family escalation isn't implemented, and a missing family `postman_profile` is treated as empty. (`author_policy` refuses an empty `channel_definition`, so don't try to seed `{}`.)
 
 ---
 

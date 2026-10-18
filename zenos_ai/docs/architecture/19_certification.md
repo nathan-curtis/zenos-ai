@@ -98,7 +98,7 @@ A bundle is a named set of certifications granted together, at one level, with o
 
 A bundle grant is deliberately simple: uniform level, no per-member scope, no per-member constraints. Anything finer than that is a set of single grants.
 
-One declared bundle ships: `zenos_agent_basic`, fourteen routine, reversible certifications that Flynn requests with one live acknowledgement when onboarding completes. Anything else is a custom household definition.
+Three declared bundles ship. `zenos_agent_basic` is the routine, reversible set (fourteen certifications and the badge) that Flynn requests with one live acknowledgement when onboarding completes. `zenos_agent_steward` (granted at level 1) covers running the house model: Room Manager topology and behavior, label create and update, registry cosmetics, Grocy schema, house settings, profiles, zones and alert policy. `zenos_agent_advanced` covers physical security: locks, the security system, clearing a room out of Paused, and camera alert policy. Nothing requests the second two automatically; a person grants them. Admin certifications are never bundled. Anything else is a custom household definition.
 
 ## 19.7 What a denial looks like
 

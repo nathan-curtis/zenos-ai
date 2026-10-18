@@ -51,9 +51,12 @@ action: script.zen_dojotools_lens_dispatch
 data:
   anchors_json: '[{"type":"label","id":"dining_room"},{"type":"transaction","id":"1447"}]'
   consumer: my_tool
+  provider: zen_stack_radar   # optional; registry key or tool name, comma-separated
   timeout_ms: 1200
 response_variable: lens_result
 ```
+
+`provider=` narrows the fan-out to the named providers (registry key or tool name, comma-separated). Without it every registered provider that consumes the anchor type is tried. A registry entry with no `enabled` or `status` counts as enabled and available; an entry with no tool reports `unavailable` with `provider_no_tool`.
 
 Response shape:
 ```yaml

@@ -171,7 +171,7 @@ You don't need to re-run OOBE to change anything. Just ask your AI directly:
 
 > "Change your familiar's name to Pip"
 > "Update our household name to The Garcia House"
-> "Add Alex as my partner"
+> "My preferred name is Sam"
 > "What's your current profile?"
 
 Your AI uses `zen_dojotools_profile_editor` under the hood. It reads before it writes, patches only what you specify, and never overwrites existing values unless you explicitly ask it to.
@@ -184,6 +184,8 @@ Fields you can update any time:
 | Household | Name, address, city, state, phone |
 | User | Display name, preferred name, role, birthday, email, preferences |
 | Family | Same as user |
+
+A profile does not hold relationships. A read shows `partners`, `ai_partners` and `children` for reference, but they are marked read-only and the profile editor cannot change them. Delegation partners are identity links, made with `zen_dojotools_identity` `link_partners` (see [User Management](user_management.md)); family membership is managed there too.
 
 ---
 
