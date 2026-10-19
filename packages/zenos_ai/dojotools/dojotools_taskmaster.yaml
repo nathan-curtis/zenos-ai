@@ -1,6 +1,10 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Taskmaster
-# Version: 0.5.0: mode=by_anchor makes taskmaster a real lens provider (To Do
+# Version: 0.6.0: almanac is the WHEN root: headline + now/period/next
+# transition, vacation, events in a tunable horizon (almanac calendars +
+# Rolodex), tasks due now (from briefing), meals, prep, guests, weather; empty
+# sections omitted. New optional fields horizon_hours, lookahead_days, max_items.
+# 0.5.0: mode=by_anchor makes taskmaster a real lens provider (To Do
 # items by area/label, Grocy chores by area); register writes tool/mode.
 # 0.4.1 — briefing's home_mode/is_away/quiet_hours_active/
 # work_hours_active now resolve via label instead of a hardcoded entity.
@@ -50,13 +54,13 @@ script:
                 tool='zen_dojotools_taskmaster',
                 display_name='Taskmaster',
                 tier='dojotools',
-                version='0.5.0',
+                version='0.6.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
                 consumes=['area_id', 'label'],
                 returns=['task_evidence'],
-                modes={'lookup': 'by_anchor', 'help': 'help', 'setup': 'setup', 'tier_status': 'tier_status', 'task_create': 'task_create', 'task_list': 'task_list', 'task_complete': 'task_complete', 'briefing': 'briefing', 'catch_up': 'catch_up', 'almanac': 'almanac', 'stale_review': 'stale_review', 'facilities_brief': 'facilities_brief', 'register': 'register', 'unregister': 'unregister', 'manifest': 'tool_manifest', 'kfc_manifest': 'kfc_manifest'},
+                modes={'when': 'almanac', 'lookup': 'by_anchor', 'help': 'help', 'setup': 'setup', 'tier_status': 'tier_status', 'task_create': 'task_create', 'task_list': 'task_list', 'task_complete': 'task_complete', 'briefing': 'briefing', 'catch_up': 'catch_up', 'almanac': 'almanac', 'stale_review': 'stale_review', 'facilities_brief': 'facilities_brief', 'register': 'register', 'unregister': 'unregister', 'manifest': 'tool_manifest', 'kfc_manifest': 'kfc_manifest'},
                 icon='mdi:checkbox-marked-circle-outline',
                 color='purple',
                 stripe=3,
@@ -294,7 +298,8 @@ script:
             intent: Self-provisioning audit + fix — checks whether zen_kfc_provider label is applied (bootstrap_kfc discovery) and whether zen_dojotools_taskmaster is on the summarizer seed whitelist (live briefing seed vs index-fallback). Both checked live, both fixed automatically unless dry_run=true. Same shape as zen_dojotools_autovac mode=setup.
             optional: [dry_run (report only, no writes, default false)]
           almanac:
-            intent: "Single daily context surface: today's weather (outdoor_ok), meal plan (zen_dojotools_kitchen mealplan_today), and upcoming appointments (Rolodex), plus a flag for any appointment landing inside a household-typical meal window — breakfast/dinner windows derive from scheduler_anchors (morning start / evening start +1h, ±1h and +1h window respectively), lunch derives from the standalone zen_lunch_time helper (+1h window, falls back to noon if unset) — informational only, never blocking. Answers 'what does today look like'."
+            intent: "The WHEN root: one condensed answer to what is relevant now. Leads with a short headline list, then: now (time, home_mode, schedule period, next transition and minutes to it, quiet/work hours), vacation (active, plus upcoming within lookahead_days, from zen_vacation_mode calendars), events inside horizon_hours (calendars labeled almanac plus Rolodex appointments; ongoing ones flagged), tasks due now (due by end of today or action_required, most urgent then oldest first, with overdue/due_today/stale counts), today's meals and prep, guests, weather. Sections with nothing relevant are omitted. Ask here first for any 'when' question; go to zen_dojotools_calendar for full calendar detail and zen_dojotools_history for the past."
+            optional: [horizon_hours (event window, default 24, max 168), lookahead_days (vacation window, default 14, max 60), max_items (per list, default 5, max 20)]
             needs: []
           stale_review:
             intent: "What's been sitting too long — briefing's own scoring, filtered to urgency >= 2 and sorted highest-first, with the due-today/normal noise stripped out. Radar tickets triaged rank=backlog (radar_rank_backlog tag via zen_dojotools_servicedesk triage_set) are suppressed regardless of priority_id, since triage rank is a more deliberate signal than raw priority. No new scoring logic otherwise, just a lens on data briefing already computes."
@@ -1386,17 +1391,35 @@ script:
                   {{ _cu_candidates | map('combine', {'new_due': _cu_today}) | list }}
                 caller_token: "{{ caller_token }}"
 
-        # ── almanac ───────────────────────────────────────────────────────────
-        # A single daily context surface — weather, meal plan, and appointments
-        # in one stack — so the assistant can answer "what does today look
-        # like" without three calls. Reuses the same weather-resolution
-        # pattern already proven in briefing.
+        # ── almanac: the "when" root ─────────────────────────────────────────
+        # One condensed answer to "what is relevant now": where the day is
+        # (home mode, schedule period, next transition), away/vacation, events
+        # inside the horizon, tasks due now, today's meals and prep, weather.
+        # Sections with nothing relevant are left out, and a short headline
+        # list leads. Tuning: horizon_hours (events, default 24, max 168),
+        # lookahead_days (vacations, default 14, max 60), max_items (per list,
+        # default 5, max 20). Event calendars are the ones labeled
+        # almanac; vacation calendars are the ones labeled
+        # zen_vacation_mode; Rolodex appointments always count.
+        # Situational context, weather and tasks come from briefing, so the
+        # two never disagree.
         - conditions:
           - condition: template
             value_template: "{{ mode_norm == 'almanac' }}"
           sequence:
           - variables:
               _al_today: "{{ now().strftime('%Y-%m-%d') }}"
+              _al_horizon_h: "{{ [[horizon_hours | default(24, true) | int(24), 1] | max, 168] | min }}"
+              _al_lookahead_d: "{{ [[lookahead_days | default(14, true) | int(14), 1] | max, 60] | min }}"
+              _al_max: "{{ [[max_items | default(5, true) | int(5), 1] | max, 20] | min }}"
+              _al_event_cals: "{{ label_entities('almanac') | select('match', 'calendar[.]') | list }}"
+              _al_vac_cals: "{{ label_entities('zen_vacation_mode') | select('match', 'calendar[.]') | list }}"
+              _al_cal_events: {}
+          - action: script.zen_dojotools_taskmaster
+            response_variable: _al_br_raw
+            continue_on_error: true
+            data:
+              mode: briefing
           - action: script.zen_dojotools_kitchen
             response_variable: _al_meals_raw
             continue_on_error: true
@@ -1408,48 +1431,156 @@ script:
             continue_on_error: true
             data:
               mode: appointments_list
+          - if: "{{ (_al_event_cals + _al_vac_cals) | length > 0 }}"
+            then:
+              - action: calendar.get_events
+                target:
+                  entity_id: "{{ (_al_event_cals + _al_vac_cals) | unique | list }}"
+                data:
+                  start_date_time: "{{ now().isoformat() }}"
+                  end_date_time: "{{ (now() + timedelta(days=_al_lookahead_d | int)).isoformat() }}"
+                response_variable: _al_cal_resp
+                continue_on_error: true
+              - variables:
+                  _al_cal_events: "{{ _al_cal_resp if _al_cal_resp is mapping else {} }}"
           - variables:
+              _al_br: >-
+                {%- set _b = _al_br_raw.get('result', _al_br_raw) if _al_br_raw is mapping else {} -%}
+                {{ _b if _b is mapping else {} }}
               _al_meals: >-
                 {%- set _m = _al_meals_raw.get('meals', {}) if _al_meals_raw is mapping else {} -%}
-                {{ _m if _m is mapping else {} }}
+                {%- set _m = _m if _m is mapping else {} -%}
+                {%- set ns = namespace(out={}) -%}
+                {%- for k, v in _m.items() if v -%}{%- set ns.out = ns.out | combine({k: v}) -%}{%- endfor -%}
+                {{ ns.out }}
               _al_appts_all: >-
                 {%- set _r = _al_appts_raw.get('result', _al_appts_raw) if _al_appts_raw is mapping else {} -%}
                 {%- set _r = _r if _r is mapping else {} -%}
                 {{ _r.get('appointments', []) if _r.get('appointments', []) is iterable and _r.get('appointments', []) is not string else [] }}
           - variables:
-              _al_appointments: >-
-                {%- set ns = namespace(items=[]) -%}
-                {%- for a in (_al_appts_all if _al_appts_all is iterable else []) -%}
-                  {%- set ns.items = ns.items + [{'title': a.get('title', a.get('summary', '')), 'start': a.get('start', a.get('start_date', none))}] -%}
+              _al_ctx: "{{ _al_br.get('context', {}) if _al_br.get('context', {}) is mapping else {} }}"
+              # Schedule period: same six anchors and vacation shift the home
+              # mode evaluator uses, so "period" matches what the house does.
+              _al_period: >-
+                {%- set names = ['wake', 'morning', 'daytime', 'evening', 'night', 'late_night'] -%}
+                {%- set keys = ['am', 'morning', 'daytime', 'evening', 'night', 'late_night'] -%}
+                {%- set vac_on = is_state('input_boolean.zen_vacation_wake_shift_enabled', 'on')
+                     and (_al_vac_cals | map('states') | select('eq', 'on') | list | count) > 0 -%}
+                {%- set shift = {'am': 1, 'morning': 2, 'daytime': 1} if vac_on else {} -%}
+                {%- set t = now().strftime('%H:%M:%S') -%}
+                {%- set ns = namespace(raw=[], vals=[], cur='late_night', nxt=none, at=none) -%}
+                {%- for k in keys -%}{%- set ns.raw = ns.raw + [states('input_datetime.zen_' ~ k ~ '_start')] -%}{%- endfor -%}
+                {#- Same rule and defaults as zen_hm_evaluate_window: anchors must be
+                    strictly ascending, otherwise the default schedule applies. -#}
+                {%- set valid = ns.raw | select('in', ['unknown', 'unavailable', '']) | list | count == 0
+                     and ns.raw == (ns.raw | sort) and (ns.raw | unique | list | count) == 6 -%}
+                {%- set base = ns.raw if valid else ['06:00:00', '08:00:00', '10:00:00', '17:00:00', '21:00:00', '23:00:00'] -%}
+                {%- for k in keys -%}
+                  {%- set d = strptime(base[loop.index0], '%H:%M:%S', none) -%}
+                  {%- set ns.vals = ns.vals + [((d + timedelta(hours=shift.get(k, 0))).strftime('%H:%M:%S')) if d is not none else none] -%}
                 {%- endfor -%}
-                {{ ns.items }}
-          # ── weather: same resolution pattern as briefing/room_manager ───────
-          - variables:
-              _al_weather_entity: >-
-                {%- set _we = label_entities('zen_weather') | select('match', 'weather\\.') | list | first | default('') -%}
-                {{ _we if _we != '' else (states.weather | map(attribute='entity_id') | list | first | default('')) }}
-              _al_weather_condition: "{{ states(_al_weather_entity) if _al_weather_entity != '' else '' }}"
-          - variables:
-              _al_weather_available: "{{ _al_weather_entity != '' and _al_weather_condition not in ['unavailable', 'unknown', ''] }}"
-              _al_outdoor_ok: >-
-                {{ _al_weather_condition not in ['rainy', 'pouring', 'lightning', 'lightning-rainy', 'snowy', 'snowy-rainy', 'hail'] if _al_weather_available else true }}
-              _al_weather:
-                available: "{{ _al_weather_available }}"
-                condition: "{{ _al_weather_condition if _al_weather_available else none }}"
-                temperature: "{{ state_attr(_al_weather_entity, 'temperature') if _al_weather_available else none }}"
-                outdoor_ok: "{{ _al_outdoor_ok }}"
-          # ── meal/appointment collision check ─────────────────────────────────
-          # No explicit meal times exist in Mealie's mealplan data — these are
-          # household-typical windows, not a real schedule. Flag only, never
-          # block: an appointment landing inside a planned meal's window is
-          # useful context for Monk, not an error condition.
-          # breakfast/dinner derive from the same scheduler_anchors Kitchen's
-          # prep_brief uses (morning start / evening start +1h) — same source,
-          # no separate drift-prone copy. Override via zen_dojotools_systemtools
-          # mode=scheduler_anchors anchor=morning/evening value=HH:MM. lunch
-          # reads the same standalone zen_lunch_time helper prep_brief uses
-          # (deliberately not one of the 6 home-mode anchors — override directly
-          # via Developer Tools > States).
+                {%- if ns.vals | select('none') | list | count == 0 -%}
+                  {%- for v in ns.vals -%}
+                    {%- if v <= t -%}{%- set ns.cur = names[loop.index0] -%}
+                    {%- elif ns.nxt is none -%}{%- set ns.nxt = names[loop.index0] -%}{%- set ns.at = v -%}{%- endif -%}
+                  {%- endfor -%}
+                  {%- set nxt = ns.nxt if ns.nxt is not none else 'wake' -%}
+                  {%- set at = ns.at if ns.at is not none else ns.vals[0] -%}
+                  {%- set at_dt = today_at(at) if ns.nxt is not none else today_at(at) + timedelta(days=1) -%}
+                  {{ {'period': ns.cur, 'next': nxt, 'next_at': at[:5],
+                      'next_in_min': ((at_dt - now()).total_seconds() / 60) | round(0) | int,
+                      'vacation_shift': vac_on,
+                      'error': none if valid else 'schedule anchors are not strictly ascending; using the default schedule (fix with zen_dojotools_systemtools mode=scheduler_anchors)'} }}
+                {%- else -%}
+                  {{ {'period': none, 'next': none, 'error': 'schedule anchors unavailable'} }}
+                {%- endif -%}
+              _al_vacation: >-
+                {%- set ns = namespace(active=[], upcoming=[]) -%}
+                {%- for c in _al_vac_cals -%}
+                  {%- if is_state(c, 'on') -%}
+                    {%- set ns.active = ns.active + [{'title': state_attr(c, 'message'), 'until': state_attr(c, 'end_time')}] -%}
+                  {%- endif -%}
+                  {%- set _ev = _al_cal_events.get(c, {}).get('events', []) if _al_cal_events.get(c) is mapping else [] -%}
+                  {%- for e in _ev -%}
+                    {%- set _ts = as_timestamp(e.get('start'), 0) -%}
+                    {%- if _ts > as_timestamp(now()) -%}
+                      {%- set ns.upcoming = ns.upcoming + [{'title': e.get('summary', ''), 'start': e.get('start'), 'end': e.get('end'), '_ts': _ts}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+                {{ {'active': ns.active, 'upcoming': ns.upcoming | sort(attribute='_ts') | list} }}
+              _al_events: >-
+                {%- set now_ts = as_timestamp(now()) -%}
+                {%- set end_ts = now_ts + (_al_horizon_h | int) * 3600 -%}
+                {%- set ns = namespace(items=[], seen=[]) -%}
+                {%- for c in _al_event_cals if c not in _al_vac_cals -%}
+                  {%- set _ev = _al_cal_events.get(c, {}).get('events', []) if _al_cal_events.get(c) is mapping else [] -%}
+                  {%- for e in _ev -%}
+                    {%- set s_ts = as_timestamp(e.get('start'), none) -%}
+                    {%- set e_ts = as_timestamp(e.get('end'), s_ts) -%}
+                    {%- if s_ts is not none and s_ts <= end_ts and (e_ts or s_ts) > now_ts -%}
+                      {%- set ns.items = ns.items + [{'title': e.get('summary', ''), 'start': e.get('start'), 'all_day': 'T' not in (e.get('start') | string),
+                                                      'location': e.get('location') or none, 'source': state_attr(c, 'friendly_name') or c, '_ts': s_ts}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+                {%- for a in _al_appts_all -%}
+                  {%- set _st = a.get('start', a.get('start_date', none)) -%}
+                  {%- set s_ts = as_timestamp(_st, none) -%}
+                  {%- if s_ts is not none and s_ts <= end_ts and s_ts > now_ts - 3600 -%}
+                    {%- set ns.items = ns.items + [{'title': a.get('title', a.get('summary', '')), 'start': _st, 'all_day': 'T' not in (_st | string),
+                                                    'location': a.get('location') or none, 'source': 'appointments', '_ts': s_ts}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {#- At most 2 per calendar so one busy calendar (awareness days,
+                    releases) cannot crowd out the rest; titles cut at 80. -#}
+                {%- set ns2 = namespace(out=[], seen=[], per={}) -%}
+                {%- set ordered = (ns.items | rejectattr('all_day') | sort(attribute='_ts') | list)
+                                + (ns.items | selectattr('all_day') | sort(attribute='_ts') | list) -%}
+                {%- for e in ordered -%}
+                  {%- set t = e.title | string | trim -%}
+                  {%- set t = (t[:77] ~ '...') if t | length > 80 else t -%}
+                  {%- set k = (t | lower) ~ '|' ~ (e._ts | int) -%}
+                  {%- set n_src = ns2.per.get(e.source, 0) -%}
+                  {%- if k not in ns2.seen and n_src < 2 -%}
+                    {%- set ns2.seen = ns2.seen + [k] -%}
+                    {%- set ns2.per = ns2.per | combine({e.source: n_src + 1}) -%}
+                    {%- set mins = ((e._ts - now_ts) / 60) | round(0) | int -%}
+                    {%- set ns2.out = ns2.out + [{'title': t, 'start': e.start, 'all_day': e.all_day,
+                                                  'starts_in_min': mins if mins > 0 else 0, 'ongoing': mins <= 0,
+                                                  'location': e.location, 'source': e.source}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'list': ns2.out, 'total': ns.items | length} }}
+              _al_tasks: >-
+                {%- set _all = (_al_br.get('conductor_items', []) or []) + (_al_br.get('items', []) or []) -%}
+                {#- WHEN-relevant only: due by end of today, or action required now.
+                    Undated work (e.g. a Radar epic) answers "what", not "when".
+                    To Do / CRM items complete by title, so their long ids are dropped. -#}
+                {%- set eod = as_timestamp(today_at('23:59:59')) -%}
+                {%- set ns = namespace(items=[]) -%}
+                {%- for it in _all if it is mapping -%}
+                  {%- set u = it.get('urgency', 0) if it.get('urgency', 0) is number else 0 -%}
+                  {%- set due = it.get('due') or it.get('next_execution') or none -%}
+                  {%- set due_ts = as_timestamp(due, none) if due else none -%}
+                  {%- if it.get('action_required', false) or (due_ts is not none and due_ts <= eod) -%}
+                    {%- set src = it.get('source', 'conductor') -%}
+                    {%- set row = {'title': it.get('title', it.get('summary', '')), 'source': src, 'urgency': u, 'due': due, '_ts': due_ts or 0} -%}
+                    {%- if src not in ['todo', 'crm'] and it.get('id') -%}{%- set row = row | combine({'id': it.get('id')}) -%}{%- endif -%}
+                    {%- set ns.items = ns.items + [row] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns2 = namespace(out=[], d={}) -%}
+                {%- for r in ns.items | sort(attribute='_ts') | sort(attribute='urgency', reverse=true) -%}
+                  {%- set ns2.d = {} -%}
+                  {%- for k, v in r.items() if k != '_ts' -%}{%- set ns2.d = ns2.d | combine({k: v}) -%}{%- endfor -%}
+                  {%- set ns2.out = ns2.out + [ns2.d] -%}
+                {%- endfor -%}
+                {{ ns2.out }}
+          # ── meal/appointment collision check (unchanged) ─────────────────────
+          # Meal windows derive from the scheduler anchors (morning start /
+          # evening start +1h) and the standalone zen_lunch_time helper.
+          # Informational only, never blocking.
           - variables:
               _al_morning_anchor: "{{ states('input_datetime.zen_morning_start') }}"
               _al_evening_anchor: "{{ states('input_datetime.zen_evening_start') }}"
@@ -1479,30 +1610,59 @@ script:
                 {%- set ns = namespace(items=[]) -%}
                 {%- for entry_type, _win in _al_meal_windows.items() -%}
                   {%- if _al_meals.get(entry_type, []) | length > 0 -%}
-                    {%- set _start_h = _win[0] -%}
-                    {%- set _end_h = _win[1] -%}
-                    {%- for a in _al_appointments -%}
-                      {%- set _a_start = a.get('start', none) -%}
-                      {%- if _a_start -%}
-                        {%- set _a_time = (_a_start | as_datetime).strftime('%H:%M') if (_a_start | as_datetime(none)) is not none else none -%}
-                        {%- if _a_time is not none and _a_time >= _start_h and _a_time <= _end_h -%}
-                          {%- set ns.items = ns.items + [{'meal': entry_type, 'appointment': a.get('title', ''), 'appointment_start': _a_start, 'meal_window': _win}] -%}
-                        {%- endif -%}
+                    {%- for a in _al_events.list if not a.all_day and (a.start | string)[:10] == _al_today -%}
+                      {%- set _a_time = (a.start | as_datetime).strftime('%H:%M') if (a.start | as_datetime(none)) is not none else none -%}
+                      {%- if _a_time is not none and _a_time >= _win[0] and _a_time <= _win[1] -%}
+                        {%- set ns.items = ns.items + [{'meal': entry_type, 'event': a.title, 'start': a.start, 'meal_window': _win}] -%}
                       {%- endif -%}
                     {%- endfor -%}
                   {%- endif -%}
                 {%- endfor -%}
                 {{ ns.items }}
+          # ── condense: lead with a headline, keep only sections with content ──
           - variables:
-              final_response:
-                status: success
-                mode: almanac
-                date: "{{ _al_today }}"
-                weather: "{{ _al_weather }}"
-                meals: "{{ _al_meals }}"
-                appointments: "{{ _al_appointments }}"
-                meal_appointment_conflicts: "{{ _al_conflicts }}"
-                caller_token: "{{ caller_token }}"
+              final_response: >-
+                {%- set mx = _al_max | int -%}
+                {%- set ctx = _al_ctx -%}
+                {%- set w = ctx.get('weather', {}) if ctx.get('weather') is mapping else {} -%}
+                {%- set top = _al_br.get('top_line', {}) if _al_br.get('top_line') is mapping else {} -%}
+                {%- set ns = namespace(h=[]) -%}
+                {%- for v in _al_vacation.active -%}{%- set ns.h = ns.h + ['On vacation: ' ~ (v.title or 'vacation') ~ ((' until ' ~ (v.until | string)[:10]) if v.until else '')] -%}{%- endfor -%}
+                {%- if ctx.get('is_away') and _al_vacation.active | length == 0 -%}{%- set ns.h = ns.h + ['House is in Away mode'] -%}{%- endif -%}
+                {#- Headline: own cap of 5, independent of max_items, ordered by
+                    relevance: away/vacation, timed events, next transition,
+                    tasks, one all-day item, upcoming vacation, bad weather. -#}
+                {%- set od = top.get('overdue_count', 0) | int(0) -%}{%- set dt = top.get('due_today_count', 0) | int(0) -%}
+                {%- for e in _al_events.list | rejectattr('all_day') | list -%}
+                  {%- if loop.index <= 2 -%}
+                    {%- set ns.h = ns.h + [('Now: ' if e.ongoing else (e.start | as_datetime).strftime('%H:%M') ~ ' (in ' ~ e.starts_in_min ~ ' min): ') ~ e.title] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if _al_period.get('next') -%}{%- set ns.h = ns.h + ['Next: ' ~ _al_period.next ~ ' at ' ~ _al_period.next_at ~ ' (in ' ~ _al_period.next_in_min ~ ' min)'] -%}{%- endif -%}
+                {%- if od + dt > 0 -%}{%- set ns.h = ns.h + ['Tasks: ' ~ od ~ ' overdue, ' ~ dt ~ ' due today'] -%}{%- endif -%}
+                {%- for e in (_al_events.list | selectattr('all_day') | list)[:1] -%}{%- set ns.h = ns.h + ['Today: ' ~ e.title] -%}{%- endfor -%}
+                {%- for v in _al_vacation.upcoming[:1] -%}{%- set ns.h = ns.h + ['Coming up: ' ~ v.title ~ ' on ' ~ (v.start | string)[:10]] -%}{%- endfor -%}
+                {%- if w.get('available') and not w.get('outdoor_ok', true) -%}{%- set ns.h = ns.h + ['Weather: ' ~ w.get('condition')] -%}{%- endif -%}
+                {%- set out = {'status': 'success', 'mode': 'almanac', 'date': _al_today,
+                               'now': {'time': now().strftime('%H:%M'), 'weekday': now().strftime('%A'),
+                                       'home_mode': ctx.get('home_mode'), 'period': _al_period.get('period'),
+                                       'next': _al_period.get('next'), 'next_at': _al_period.get('next_at'),
+                                       'next_in_min': _al_period.get('next_in_min'),
+                                       'quiet_hours': ctx.get('quiet_hours_active'), 'work_hours': ctx.get('work_hours_active')},
+                               'headline': ns.h[:5],
+                               'tuning': {'horizon_hours': _al_horizon_h | int, 'lookahead_days': _al_lookahead_d | int, 'max_items': mx,
+                                          'event_calendars': _al_event_cals | length}} -%}
+                {%- if _al_period.get('error') -%}{%- set out = out | combine({'schedule_warning': _al_period.error}) -%}{%- endif -%}
+                {%- if _al_vacation.active or _al_vacation.upcoming -%}{%- set out = out | combine({'vacation': {'active': _al_vacation.active, 'upcoming': _al_vacation.upcoming[:mx]}}) -%}{%- endif -%}
+                {%- if _al_events.list -%}{%- set out = out | combine({'events': _al_events.list[:mx], 'events_total': _al_events.total}) -%}{%- endif -%}
+                {%- if _al_tasks or od + dt > 0 -%}{%- set out = out | combine({'tasks': {'top': _al_tasks[:mx], 'overdue': od, 'due_today': dt, 'stale': top.get('stale_count', 0) | int(0)}}) -%}{%- endif -%}
+                {%- if _al_meals -%}{%- set out = out | combine({'meals': _al_meals}) -%}{%- endif -%}
+                {%- set prep = (ctx.get('prep_schedule', {}) or {}).get('scheduled', []) if ctx.get('prep_schedule') is mapping else [] -%}
+                {%- if prep -%}{%- set out = out | combine({'prep': prep[:mx]}) -%}{%- endif -%}
+                {%- if _al_conflicts -%}{%- set out = out | combine({'meal_event_conflicts': _al_conflicts}) -%}{%- endif -%}
+                {%- if ctx.get('guest_present') -%}{%- set out = out | combine({'guests': ctx.get('guest_note')}) -%}{%- endif -%}
+                {%- if w.get('available') -%}{%- set out = out | combine({'weather': {'condition': w.get('condition'), 'temperature': w.get('temperature'), 'outdoor_ok': w.get('outdoor_ok')}}) -%}{%- endif -%}
+                {{ out | combine({'caller_token': caller_token}) }}
 
         # ── stale_review ──────────────────────────────────────────────────────
         # "What's been sitting too long" — filters briefing's own scoring down
@@ -1671,14 +1831,17 @@ script:
 
     alias: Zen DojoTools Taskmaster
     description: >-
-      Zen DojoTools Taskmaster (0.4.1) — progressive-enhancement task orchestration.
+      Zen DojoTools Taskmaster (0.6.0) — progressive-enhancement task orchestration.
+      almanac is the WHEN root: ask it first for any time question. One condensed
+      answer to what is relevant now (headline, home mode, schedule period and next
+      transition, vacation, events in horizon_hours, tasks due now, meals, prep,
+      guests, weather); empty sections omitted.
       briefing is the scheduled seed (fires on quarter_hour + occupancy triggers, 60min
       cooldown) — urgency-scored items plus a real (not LLM-guessed) situational
       context block: home_mode, guest_present, upcoming_appointments, prep_schedule
       (Kitchen's today's [PREP:N]-tagged dishes + start_by, proactive not pull-only),
-      and weather.outdoor_ok. almanac/stale_review/facilities_brief are on-demand lenses
-      over the same data (today's weather+meals+appointments; urgency>=2 only; the
-      building-super physical-plant view). task_create picks the backend by shape first,
+      and weather.outdoor_ok. stale_review/facilities_brief are on-demand lenses
+      over the same data (urgency>=2 only; the building-super physical-plant view). task_create picks the backend by shape first,
       then by which tiers are configured: an explicit contact_id/company_id always
       wins (Rolodex/Twenty task_link) since it's the most deliberate anchor a caller
       can give; otherwise a chore-shaped task goes to a Grocy chore when Inventory is
@@ -1793,6 +1956,27 @@ script:
         required: false
         selector:
           text:
+      horizon_hours:
+        description: "almanac: event window in hours (default 24, max 168)"
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 168
+      lookahead_days:
+        description: "almanac: vacation lookahead in days (default 14, max 60)"
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 60
+      max_items:
+        description: "almanac: items per list (default 5, max 20)"
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 20
       limit:
         description: Max results for task_list. Default 25.
         required: false

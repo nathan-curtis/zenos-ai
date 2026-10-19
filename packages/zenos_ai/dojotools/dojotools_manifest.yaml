@@ -1,9 +1,17 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Manifest
-# Version: 6.4.13
+# Version: 6.4.15
+# v6.4.15: zen_tool_manifest carries the semantic roots (who/what/when/where/
+#   why/how + knowledge): the first tool to ask for each question word, its
+#   mode when one applies, and where to go next. First existing candidate wins.
+# v6.4.14: publish writes a drawer only when its content changed (volatile
+#   generated/last_triggered ignored). The bootstrap automation also publishes,
+#   triggered by post-reload events (service_registered domain=script,
+#   automation_reloaded) only; never on events its own actions cause (no loop).
+#   Restart mode settles reload bursts.
 #
 # Scripts:
-#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.4.13)
+#   zen_dojotools_manifest — ZenOS System Manifest Broker (v6.4.15)
 #   system_tools_stamp_default_family_cabinet — Cabinet stamping utility
 #   dojotools_zen_inspect — Entity inspection tool
 #
@@ -313,7 +321,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.4.13',
+                version='6.4.15',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -2856,79 +2864,112 @@ script:
           data:
             mode: build_identity_manifest
             caller_token: "{{ caller_token }}"
-        # ── write drawers ──
-        - action: script.zen_dojotools_filecabinet
-          data:
-            action_type: upsert
-            stack: cabinet
-            volume_entity_id: "{{ _hh_cab }}"
-            path: zen_tool_manifest
-            title: zen_tool_manifest
-            value: >-
-              {{
-                {
-                  'status': 'ok',
-                  'generated': now().isoformat(),
-                  'domain_map': _pub_domain_map,
-                  'callable_count': _pub_callable | length,
-                  'unavailable_count': _pub_unavailable | length
-                } | tojson
-              }}
-            mode: replace
-            caller_token: "{{ caller_token }}"
-        - action: script.zen_dojotools_filecabinet
-          data:
-            action_type: upsert
-            stack: cabinet
-            volume_entity_id: "{{ _hh_cab }}"
-            path: zen_label_manifest
-            title: zen_label_manifest
-            value: >-
-              {%- set _all = (_pub_labels_raw.get('index', []) if _pub_labels_raw is mapping else []) -%}
-              {%- set ns = namespace(mini=[]) -%}
-              {%- for lbl in _all -%}
-                {%- set _desc = label_description(lbl) | default('', true) | string | trim -%}
-                {%- set _name_equiv = lbl | replace('_', ' ') | lower -%}
-                {%- set _is_noise = _desc | lower in ['none', 'tbd', '']
-                    or _desc | lower == _name_equiv
-                    or _desc | length < 20 -%}
-                {%- if not _is_noise -%}
-                  {%- set ns.mini = ns.mini + [lbl] -%}
+        # ── build drawer values, then write only the ones whose content changed.
+        # Volatile fields (generated, last_triggered) are ignored when comparing so
+        # a no-change run is a cheap read with zero cabinet writes. ──
+        # ── semantic roots: the first tool to ask for each question word.
+        # Each root condenses its domain and points onward (then). The first
+        # candidate script that exists wins, so an install without the
+        # preferred tool still gets a working root. ──
+        - variables:
+            _pub_roots: >-
+              {%- set have = states.script | map(attribute='object_id') | list -%}
+              {%- set spec = [
+                ['who',   [['zen_dojotools_identity', none]], ['zen_dojotools_rolodex']],
+                ['what',  [['zen_dojotools_index', none]], ['zen_dojotools_inspect']],
+                ['when',  [['zen_dojotools_taskmaster', 'almanac'], ['zen_dojotools_calendar', 'read']], ['zen_dojotools_calendar', 'zen_dojotools_history']],
+                ['where', [['zen_dojotools_room_manager', none]], ['zen_dojotools_zones']],
+                ['why',   [['zen_dojotools_history', none]], ['zen_dojotools_alertmanager', 'zen_dojotools_ha_log_viewer']],
+                ['how',   [['zen_dojotools_help', none]], ['zen_dojotools_index']],
+                ['knowledge', [['zen_dojotools_filecabinet', none]], []]
+              ] -%}
+              {%- set ns = namespace(out={}) -%}
+              {%- for q, cands, then in spec -%}
+                {%- set hit = namespace(c=none) -%}
+                {%- for c in cands if hit.c is none and c[0] in have -%}{%- set hit.c = c -%}{%- endfor -%}
+                {%- if hit.c is not none -%}
+                  {%- set r = {'tool': hit.c[0]} -%}
+                  {%- if hit.c[1] -%}{%- set r = r | combine({'mode': hit.c[1]}) -%}{%- endif -%}
+                  {%- set nxt = then | select('in', have) | reject('eq', hit.c[0]) | list -%}
+                  {%- if nxt -%}{%- set r = r | combine({'then': nxt}) -%}{%- endif -%}
+                  {%- set ns.out = ns.out | combine({q: r}) -%}
                 {%- endif -%}
               {%- endfor -%}
-              {{ {
-                'status': (_pub_labels_raw.get('status') if _pub_labels_raw is mapping else 'error'),
-                'index': ns.mini,
-                'count': ns.mini | length,
-                'full_count': _all | length
-              } | tojson }}
-            mode: replace
-            caller_token: "{{ caller_token }}"
-        - action: script.zen_dojotools_filecabinet
-          data:
-            action_type: upsert
-            stack: cabinet
-            volume_entity_id: "{{ _hh_cab }}"
-            path: zen_automation_manifest
-            title: zen_automation_manifest
-            value: >-
-              {{
-                {
-                  'status': 'ok',
-                  'automations': _pub_autos,
-                  'count': _pub_autos | length
-                } | tojson
-              }}
-            mode: replace
-            caller_token: "{{ caller_token }}"
+              {{ ns.out }}
+        - variables:
+            _pub_values:
+              zen_tool_manifest:
+                status: ok
+                generated: "{{ now().isoformat() }}"
+                roots: "{{ _pub_roots }}"
+                domain_map: "{{ _pub_domain_map }}"
+                callable_count: "{{ _pub_callable | length }}"
+                unavailable_count: "{{ _pub_unavailable | length }}"
+              zen_label_manifest: >-
+                {%- set _all = (_pub_labels_raw.get('index', []) if _pub_labels_raw is mapping else []) -%}
+                {%- set ns = namespace(mini=[]) -%}
+                {%- for lbl in _all -%}
+                  {%- set _desc = label_description(lbl) | default('', true) | string | trim -%}
+                  {%- set _name_equiv = lbl | replace('_', ' ') | lower -%}
+                  {%- set _is_noise = _desc | lower in ['none', 'tbd', '']
+                      or _desc | lower == _name_equiv
+                      or _desc | length < 20 -%}
+                  {%- if not _is_noise -%}
+                    {%- set ns.mini = ns.mini + [lbl] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {
+                  'status': (_pub_labels_raw.get('status') if _pub_labels_raw is mapping else 'error'),
+                  'index': ns.mini,
+                  'count': ns.mini | length,
+                  'full_count': _all | length
+                } }}
+              zen_automation_manifest:
+                status: ok
+                automations: "{{ _pub_autos }}"
+                count: "{{ _pub_autos | length }}"
+        - variables:
+            _pub_changed: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for key, newv in _pub_values.items() -%}
+                {%- set env = CABS.cabinet_drawer_value(_hh_cab, key, '__absent__') | from_json -%}
+                {%- set old = env.get('content', env) if env is mapping else env -%}
+                {%- set old = (old | from_json(old)) if old is string else old -%}
+                {%- set nv = newv | from_json(newv) if newv is string else newv -%}
+                {%- if not (old is mapping) -%}
+                  {%- set ns.out = ns.out + [key] -%}
+                {%- else -%}
+                  {%- set o2 = dict(old) -%}{%- set n2 = dict(nv) -%}
+                  {%- set o2 = o2 | combine({'generated': none}) -%}{%- set n2 = n2 | combine({'generated': none}) -%}
+                  {%- if key == 'zen_automation_manifest' -%}
+                    {%- set o2 = o2 | combine({'automations': (o2.get('automations', []) | map('combine', {'last_triggered': none}) | list)}) -%}
+                    {%- set n2 = n2 | combine({'automations': (n2.get('automations', []) | map('combine', {'last_triggered': none}) | list)}) -%}
+                  {%- endif -%}
+                  {%- if (o2 | tojson) != (n2 | tojson) -%}{%- set ns.out = ns.out + [key] -%}{%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - repeat:
+            for_each: "{{ _pub_changed }}"
+            sequence:
+              - action: script.zen_dojotools_filecabinet
+                data:
+                  action_type: upsert
+                  stack: cabinet
+                  volume_entity_id: "{{ _hh_cab }}"
+                  path: "{{ repeat.item }}"
+                  title: "{{ repeat.item }}"
+                  value: "{{ _pub_values[repeat.item] | tojson }}"
+                  mode: replace
+                  caller_token: "{{ caller_token }}"
         - variables:
             result:
               status: ok
               mode: publish
-              published:
-                - zen_tool_manifest
-                - zen_label_manifest
-                - zen_automation_manifest
+              published: "{{ _pub_changed }}"
+              roots: "{{ _pub_roots }}"
+              unchanged: "{{ _pub_values.keys() | reject('in', _pub_changed) | list }}"
               callable_count: "{{ _pub_callable | length }}"
               unavailable_count: "{{ _pub_unavailable | length }}"
               domain_map_count: "{{ _pub_domain_map | length }}"
@@ -3658,19 +3699,48 @@ automation:
           caller_token: zen_manifest_bootstrap_stacks
 
   - id: zen_manifest_bootstrap_kfc
-    alias: "ZenOS: Bootstrap KFC Dojo Drawers"
+    alias: "ZenOS: Bootstrap KFC Dojo Drawers + Publish Manifest"
     description: >-
-      Runs zen_dojotools_manifest bootstrap_kfc on HA startup and daily at
-      midnight. Writes live drawer mounts into the dojo cabinet for each tool
-      that declares mode=kfc_manifest. Summarizer resolves mounts at runtime.
-      Idempotent — safe to run repeatedly.
+      Runs zen_dojotools_manifest bootstrap_kfc and then publish on HA startup,
+      daily at 00:01, and after a script or automation reload. Reload signals are
+      events fired BY the reload (each re-created script registers its service;
+      automations fire automation_reloaded), so nothing is chained through a
+      reload. It never triggers on anything its own actions cause (no label or
+      identity events), so it cannot loop. Restart mode plus a settle delay turns
+      a reload burst into one run. publish writes a drawer only when its content
+      changed. Idempotent.
+    mode: restart
     triggers:
       - trigger: homeassistant
         event: start
+        id: full
       - trigger: time
         at: "00:01:00"
+        id: full
+      - trigger: event
+        event_type: service_registered
+        event_data:
+          domain: script
+        id: reload
+      - trigger: event
+        event_type: automation_reloaded
+        id: reload
+    # LOOP RULE: only triggers that bootstrap_kfc and publish can never cause.
+    # publish rebuilds the identity manifest (fires identity_manifest_rebuild) and
+    # bootstrap_kfc tags labels (fires label_mutation), so neither event may be a
+    # trigger here; label and identity changes are picked up by the daily run.
     actions:
+      - if: "{{ trigger.id == 'reload' }}"
+        then:
+          - delay:
+              seconds: 30
       - action: script.zen_dojotools_manifest
+        continue_on_error: true
         data:
           mode: bootstrap_kfc
           caller_token: zen_manifest_bootstrap_kfc
+      - action: script.zen_dojotools_manifest
+        continue_on_error: true
+        data:
+          mode: publish
+          caller_token: zen_manifest_publish
