@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 44.2 · `run_repair` 5.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 45 · `run_repair` 5.1.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -27,7 +27,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.6.0 | No | Inspect, restore, reset, hammer, init, expand_drawer, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 44.2 | No | Load versioned Cortex, Directives, and Purpose (v44 = Open Door (default/latest), v43 = Rule Zero, v42 = The Answer). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
+| `zen_admintools_prompt_loader` | 45 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
 | `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -284,7 +284,7 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
-| `cortex_version` | select | `latest` | `latest` or `44` = Open Door (default). `43` = Rule Zero. `42` = The Answer. Only used when `mode=load`. |
+| `cortex_version` | select | `latest` | `latest` or `45` = Open Door (default). `44` = Open Door. `43` = Rule Zero. Only used when `mode=load`. |
 | `ship_zen_system` | boolean | `true` | When ON (default), chains `zen_admintools_kungfu_loader` in factory mode — deploys `zen_system` and `trapper_keeper`. `taskmaster`, `alert_manager`, `camera_manager`, and `security_manager` all self-register via KF5 instead (see each tool's own `mode=kfc_manifest`) and are no longer shipped from here. Turn OFF to load the prompt only, skipping all KFC deployment. |
 | `sim_mode_allowed` | boolean | `false` | Stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level policy switch (see `zen_dojotools_identity resolve_caller_identity`) — `false` (default) fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live. Leave off unless you deliberately want simulated identity resolution accepted platform-wide. |
 | `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
@@ -295,11 +295,11 @@ Use the `cortex_version` field to select which version to load. The three primit
 
 | Version | Codename | Notes |
 |---|---|---|
-| `42` | The Answer | v10.0.0. INSTALLATION OVERRIDE (GetLiveContext blocked). WHO/WHAT/WHEN/WHERE/WHY/HOW tool map. MANAGED MACHINES directive. `inventory` replaces `grocy_helper` in core and domain tools. |
 | `43` | Rule Zero | DojoTools supersede all HA built-ins. Not preference. Authority. Domain routing table in directives. Successor to v42 'The Answer'. |
-| `44` / `latest` | Open Door | v43 plus one clarification: Assist entity exposure is a routing switch, not an existence signal. An entity that is not exposed but is enabled in Home Assistant is still real and current through the Index and DojoTools. Purpose and Directives carry the same text as v43 under a v44 header; only the Cortex changes. |
+| `45` / `latest` | Open Door | v44 with one fix: the `core_tools` list names the real log viewer, `script.zen_dojotools_ha_log_viewer`. Purpose and Directives carry the same text as v44 under a v45 header. |
+| `44` | Open Door | v43 plus one clarification: Assist entity exposure is a routing switch, not an existence signal. An entity that is not exposed but is enabled in Home Assistant is still real and current through the Index and DojoTools. Its `core_tools` list names a log viewer that does not exist; v45 corrects it. |
 
-Selecting `latest` or passing no `cortex_version` loads v44. A load writes purpose, directives, cortex, and `os_release` to the system cabinet with a one-second pause between writes, so consecutive `set_variable` events can't overwrite each other.
+Selecting `latest` or passing no `cortex_version` loads v45. A load writes purpose, directives, cortex, and `os_release` to the system cabinet with a one-second pause between writes, so consecutive `set_variable` events can't overwrite each other.
 
 The response carries a `write_report`, one entry per key (`purpose`, `directives`, `cortex`, `os_release`) with `status` (`ok`/`failed`), `ts_ok`, `content_ok`, `actual`, and `expected`. A key is `ok` only if its timestamp moved and its content carries the version that was loaded. If any key failed, the overall `status` is `error`.
 
@@ -395,6 +395,7 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 
 | Version | Change |
 |---------|--------|
+| v5.4.6 | prompt_loader: cortex v45 (Open Door) replaces the v42 slot; `core_tools` names the real log viewer. Selectable versions: 45, 44, 43. |
 | v5.3.5 | prompt_loader: `mode=load` returns a per-key `write_report` and reports `error` if any write failed, instead of an unconditional success. |
 | v5.3.4 | prompt_loader: v44 has its own purpose/directives copy (header version 44 / Open Door). |
 | v5.3.3 | prompt_loader: v44 loads purpose, directives, and `os_release` (cortex 44, Open Door); unreachable v40 branches removed. One-second settle delay after every system-cabinet write, on every version, so none is dropped. `tool_manifest` 44.2. |
