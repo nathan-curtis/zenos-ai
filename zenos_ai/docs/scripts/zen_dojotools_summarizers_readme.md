@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v4.5.3 · SuperSummary v4.5.2
+# Zen DojoTools Summarizers — Ninja Summarizer v4.5.6 · SuperSummary v4.5.3
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
@@ -320,6 +320,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| v4.5.6 | Ninja never calls the model with nothing to read: an empty input writes an urgency-0 no-input kata and emits `ninja_no_input`. The one-hop index envelope is unwrapped before use, so the inspect supplement receives data. `trapper_keeper` is seeded with `{kata_tier: <tier>}`. (4.5.4: `kata_emit` is fired directly as a `zen_event`.) |
 | v4.5.2 | `pipeline_tier` canonical name changed from `direct` to `keeper` (Scheduler already defaulted to `keeper`; docs and `building_a_kfc.md` already used it). Default value, comment block, and prompt-instruction wording updated to match — filter behavior unchanged (`direct` and `keeper` land in the same bucket). Stripped stale incident-narration comments from step 5. |
 | v5.1.0 | Pipeline tier split: `direct`/`ambient`/`system` tiers via `pipeline_tier` KFC field. Trapper Keeper pre-digests ambient-tier components (breadcrumb + navigation index). Ambient urgency promotion rule (0–3=breadcrumb only; 4–5=attention; 6–10=active_components). SuperSummary run governor (`super_burnout_seconds`, default 600s, `force` bypass). Size guard (>200K bytes → abort). Context budget guard (`max_context_tokens`, default 28K). Ninja: `index_call_override`, `parent_component_id`, `staleness_minutes` input fields. `response_variable: result` on all stop steps. Namespace scoping fix on `active_components` iteration. `ZEN_SUMMARY` key case fix. Event→action migration. `library_console` rename. Kata cabinet variable fix. |
 | v4.6.0 | Step 3d — label description resolution: when `component_summary` is empty after reading the Dojo drawer (Scribe `trim_description` path), ninja resolves it from the base label description via `zen_dojotools_labels`. `zen_action_emission_enabled` boolean added (operator-only gate for `suggested_act_event` emission). `emission_cooldown_minutes` Dojo drawer field (default 60 min) gates per-component action event emission; emits `emission_suppressed` on cooldown. FG-38 `from_json` guards on all FileCabinet drawer reads. |

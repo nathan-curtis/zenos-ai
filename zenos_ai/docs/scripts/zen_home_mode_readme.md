@@ -58,7 +58,7 @@ DojoTools find these through the `zen_home_mode` label, and the quiet- and work-
 
 ## Schedule Anchors
 
-Six `input_datetime` helpers control when mode transitions fire. All are time-only (no date). Defaults:
+Six `input_datetime` helpers control when mode transitions fire. All are time-only (no date). Anchors must be strictly ascending through the day; if they are not (for example, all six at 00:00 on a fresh install), the default schedule is used and `home_mode_anchor_misconfigured` is raised until they are set. Defaults:
 
 | Helper | Default | Mode it triggers |
 |---|---|---|
