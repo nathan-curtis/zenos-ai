@@ -1,6 +1,15 @@
+{#-
 ###############################################################################
 # ZenOS-AI: zen_identity.jinja
-# Version: 1.1.0
+# Version: 1.2.0
+#
+# v1.2.0: the header is a Jinja comment. As plain '#' text its usage example
+#   ran a real import of this file, so any import recursed until it failed.
+#   member_index() walks the household tree from the identity data
+#   (members drawers + VolumeInfo acls). resolve() finds a person.* through it
+#   first (labels are the fallback) and every branch returns memberships; the
+#   person branch also falls back to the member entry for name, person_entity
+#   and member_type.
 #
 # Template-callable identity resolver. Same contract as zen_dojotools_identity
 # mode=resolve but callable from Jinja2 context (sensors, cortex prompt, macros).
@@ -14,11 +23,13 @@
 #
 # Response keys (all types):
 #   is_person, is_group, is_ai  — type discriminators (binary)
+#   memberships                 — [{container, container_type, name, guid, depth, role}]
 #   result                      — 'ok' or 'error'
 #   cabinet                     — resolved cabinet entity_id
 #
 # Person keys (is_person=true):
-#   name, role, spaces, tracking, area_labels, person_entity, mobile, presence
+#   name, role, member_type, spaces, tracking, area_labels, person_entity,
+#   mobile, presence
 #   mobile: {configured, entity_id, zone, battery, battery_entity}
 #   presence: {person_entity, zone, at_home, area_id, area_name}
 #   zone/at_home gated on tracking.gps_zone; area_id/area_name gated on tracking.room
@@ -35,6 +46,85 @@
 # Mobile note: template surface returns zone + battery only.
 #   Full sensor suite: zen_dojotools_identity mode=resolve (script surface).
 ###############################################################################
+-#}
+
+{#-
+@macro: member_index
+@desc:  Every membership in the household tree, one row per (member, container).
+        Walks the household, its families, and their sub-families (depth 0-2)
+        from the identity data itself: each container's members drawer and its
+        VolumeInfo acls (owner = hoh, partner role prime = prime).
+@param  hh_cab  household cabinet; defaults to the resolved default household.
+@returns JSON list of {entity_id, member_type, name, person_entity, container,
+         container_type, container_name, container_guid, depth, role}.
+-#}
+{%- macro member_index(hh_cab='') -%}
+  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+  {%- set _hh = hh_cab if hh_cab | trim != '' else states('sensor.zen_default_household_cabinet_resolved') -%}
+  {%- set ns = namespace(rows=[], seen=[_hh], level=[{'entity_id': _hh, 'type': 'household', 'depth': 0, 'name': ''}]) -%}
+  {%- for _d in range(3) -%}
+    {%- set nx = namespace(next=[]) -%}
+    {%- for c in ns.level -%}
+      {%- set _vi = CABS.cabinet_drawer_value(c.entity_id, 'AI_Cabinet_VolumeInfo', {}) | from_json({}) -%}
+      {%- set _vi = _vi if _vi is mapping else {} -%}
+      {%- set _m = CABS.cabinet_drawer_value(c.entity_id, 'members', {}) | from_json({}) -%}
+      {%- set _m = _m if _m is mapping else {} -%}
+      {%- set _acls = _vi.get('acls', {}) if _vi.get('acls', {}) is mapping else {} -%}
+      {%- set _own = _acls.get('owner', []) if _acls.get('owner', []) is list else [] -%}
+      {%- set _prt = _acls.get('partner', []) if _acls.get('partner', []) is list else [] -%}
+      {%- set _hoh = _own | selectattr('entity_id', 'defined') | map(attribute='entity_id') | list -%}
+      {%- set _prime = _prt | selectattr('entity_id', 'defined') | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | map(attribute='entity_id') | list -%}
+      {%- set _pkey = '_household_profile' if c.type == 'household' else '_family_profile' -%}
+      {%- set _gp = CABS.cabinet_drawer_value(c.entity_id, _pkey, {}) | from_json({}) -%}
+      {%- set _gp = _gp.get('value', _gp) if _gp is mapping and 'value' in _gp else _gp -%}
+      {%- set _gp = _gp if _gp is mapping else {} -%}
+      {%- set _cname = c.name or _vi.get('friendly_name', '') or _vi.get('name', '')
+                       or _gp.get('household_name', '') or _gp.get('family_name', '') or _gp.get('name', '')
+                       or c.entity_id -%}
+      {%- set _cguid = _vi.get('id', _vi.get('guid', '')) -%}
+      {%- for k, t in [['users', 'user'], ['ai_users', 'ai_user'], ['families', 'family']] -%}
+        {%- set _lst = _m.get(k, []) if _m.get(k, []) is list else [] -%}
+        {%- for e in _lst if e is mapping and e.get('entity_id', '') -%}
+          {%- set _role = 'hoh' if e.entity_id in _hoh else ('prime' if e.entity_id in _prime else 'member') -%}
+          {%- set ns.rows = ns.rows + [{
+                'entity_id':      e.entity_id,
+                'member_type':    t,
+                'name':           e.get('name', '') or '',
+                'person_entity':  e.get('person_entity_id', '') or '',
+                'container':      c.entity_id,
+                'container_type': c.type,
+                'container_name': _cname,
+                'container_guid': _cguid,
+                'depth':          c.depth,
+                'role':           _role}] -%}
+          {%- if t == 'family' and e.entity_id not in ns.seen -%}
+            {%- set ns.seen = ns.seen + [e.entity_id] -%}
+            {%- set nx.next = nx.next + [{'entity_id': e.entity_id, 'type': 'family', 'depth': c.depth + 1, 'name': e.get('name', '') or ''}] -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+    {%- endfor -%}
+    {%- set ns.level = nx.next -%}
+  {%- endfor -%}
+  {{- ns.rows | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: memberships_of
+@desc:  The containers one entity belongs to, from member_index rows.
+@param  rows  member_index() output (JSON string or list).
+@returns JSON list of {container, container_type, name, guid, depth, role}.
+-#}
+{%- macro memberships_of(rows, entity_id) -%}
+  {%- set _r = rows | from_json([]) if rows is string else rows -%}
+  {%- set ns = namespace(out=[]) -%}
+  {%- for r in (_r if _r is list else []) if r.entity_id == entity_id -%}
+    {%- set ns.out = ns.out + [{'container': r.container, 'container_type': r.container_type,
+                                'name': r.container_name, 'guid': r.container_guid,
+                                'depth': r.depth, 'role': r.role}] -%}
+  {%- endfor -%}
+  {{- ns.out | tojson -}}
+{%- endmacro -%}
 
 {%- macro resolve(target) -%}
   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -44,10 +134,12 @@
   {%- set _norm = _raw | lower | replace(' ', '_') -%}
 
   {# ── Find cabinet ──────────────────────────────────────────────────────── #}
+  {%- set _idx = member_index() | from_json([]) -%}
   {%- set ns = namespace(ent='') -%}
   {%- if _raw | match('^sensor\\.') -%}
     {%- set ns.ent = _raw -%}
   {%- elif _raw | match('^person\\.') -%}
+    {%- set ns.ent = _idx | selectattr('person_entity', 'equalto', _raw) | map(attribute='entity_id') | first | default('') -%}
     {%- for lbl in labels(_raw) | reject('match', '^zen_') | list if ns.ent == '' -%}
       {%- set _c = label_entities(lbl) | select('in', label_entities('zen_cabinet')) | list | first | default('') -%}
       {%- if _c != '' -%}{%- set ns.ent = _c -%}{%- endif -%}
@@ -62,7 +154,9 @@
   {%- else -%}
     {# ── Type detection ──────────────────────────────────────────────────── #}
     {%- set _lbls    = labels(ns.ent) | list -%}
-    {%- set _is_ai   = 'ai_user'      in _lbls -%}
+    {%- set _mine    = _idx | selectattr('entity_id', 'equalto', ns.ent) | list -%}
+    {%- set _mships  = memberships_of(_mine, ns.ent) | from_json([]) -%}
+    {%- set _is_ai   = 'ai_user' in _lbls or 'ai_user' in (_mine | map(attribute='member_type') | list) -%}
     {%- set _is_hh   = 'household'    in _lbls -%}
     {%- set _is_fg   = 'family_group' in _lbls -%}
     {%- set _is_grp  = _is_hh or _is_fg -%}
@@ -81,7 +175,8 @@
         'pronouns':          _id.get('pronouns', ''),
         'motif':             _id.get('motif', ''),
         'primary_user':      _id.get('primary_user', ''),
-        'familiarity_level': _jk.get('familiarity_level', 'acquainted')
+        'familiarity_level': _jk.get('familiarity_level', 'acquainted'),
+        'memberships':       _mships
       } | tojson -}}
 
     {# ── Group (household / family_group) ────────────────────────────────── #}
@@ -107,7 +202,8 @@
           'member_cabinets':       _mbrs,
           'family_group_cabinets': _fgrps,
           'home_mode':             states('sensor.zen_home_mode') | default(states('input_select.zen_home_mode'), true),
-          'quiet_hours_active':    is_state('binary_sensor.zen_quiet_hours', 'on')
+          'quiet_hours_active':    is_state('binary_sensor.zen_quiet_hours', 'on'),
+          'memberships':           _mships
         } | tojson -}}
       {%- else -%}
         {%- set _mbrs = label_entities(_norm) | select('in', label_entities('zen_cabinet')) | reject('in', label_entities('ai_user')) | list -%}
@@ -116,7 +212,8 @@
           'group_type': 'family_group', 'cabinet': ns.ent,
           'family_name':       _g.get('family_name', _g.get('name', '')),
           'relationship_type': _g.get('relationship_type', ''),
-          'member_cabinets':   _mbrs
+          'member_cabinets':   _mbrs,
+          'memberships':       _mships
         } | tojson -}}
       {%- endif -%}
 
@@ -135,6 +232,9 @@
         {%- set _pe = label_entities(lbl) | select('match', '^person\\.') | list | first | default('') -%}
         {%- if _pe != '' -%}{%- set ns2.person_eid = _pe -%}{%- endif -%}
       {%- endfor -%}
+      {%- if ns2.person_eid == '' -%}
+        {%- set ns2.person_eid = _mine | map(attribute='person_entity') | reject('equalto', '') | first | default('') -%}
+      {%- endif -%}
       {%- if ns2.person_eid != '' -%}
         {%- set _src = state_attr(ns2.person_eid, 'source') | default('') -%}
         {%- if _src != '' -%}{%- set ns2.tracker = _src -%}{%- endif -%}
@@ -170,8 +270,12 @@
         'result': 'ok', 'is_person': true, 'is_group': false, 'is_ai': false,
         'cabinet':        ns.ent,
         'target_normalized': _norm,
-        'name':           _p.get('preferred_name', _p.get('name', '')) if _p is mapping else '',
+        'name':           (_p.get('preferred_name', _p.get('name', '')) if _p is mapping else '')
+                          or (_mine | map(attribute='name') | reject('equalto', '') | first | default(''))
+                          or ns.ent,
         'role':           _p.get('role', '') if _p is mapping else '',
+        'member_type':    _mine | map(attribute='member_type') | first | default(''),
+        'memberships':    _mships,
         'spaces':         _spaces,
         'tracking':       _tracking,
         'area_labels':    _area_lbls,

@@ -1,0 +1,261 @@
+###############################################################################
+# ZENOS-AI ADMINTOOL: CABINET WRITER, the admin door (v1.1.0)
+#
+# The one place admin-plane cabinet writes fire (#10637, epic #10626). The
+# agent-facing door is zen_dojotools_filecabinet; this is the other door, for
+# structural writes FileCabinet refuses by design (AI_Cabinet_VolumeInfo, meta,
+# _label_index, _zen_relationships), the system cabinet, and the vault.
+#
+# Not MCP-exposed. Callers are admin-plane scripts and tools that own a
+# structural write (identity membership, prompt_loader, cabinetadmin, Flynn,
+# maint scripts). Every write names its caller and is logged (zen_event
+# admin_cabinet_write + system_log), so admin writes can be audited now and
+# gated later.
+#
+# Writes go out as the generic set/remove/clear_variables_legacy events with an
+# explicit volume_entity; the Volume Redirector in zenos_cabinets.yaml routes
+# them to the cabinet (with its manifest GUID check). Payloads are built by the
+# caller; this script only validates, writes, and logs.
+#
+# v1.1.0: every write waits until the cabinet shows it (set: drawer timestamp,
+#   remove: key gone, clear: drawers gone) and answers write_verified; an
+#   unverified write is status error. Callers read-modify-write VolumeInfo, so
+#   answering early let the next call overwrite this one. Adds force and
+#   bootstrap passthroughs for cabinetadmin.
+#
+# Modes:
+#   help (default, also any unknown mode): this reference, never a write.
+#   tool_manifest: self-description.
+#   set     volume_entity key value caller [force] [bootstrap]
+#   remove  volume_entity key caller
+#   clear   volume_entity caller confirm=true (wipes every drawer)
+###############################################################################
+
+script:
+  zen_admintools_cabinet_writer:
+    alias: Zen AdminTools Cabinet Writer
+    description: >-
+      Admin door: the single writer for admin-plane cabinet writes
+      (structural drawers FileCabinet refuses, system cabinet, vault). Not for
+      agents. Every write names its caller and is logged. mode=help for usage.
+    mode: queued
+    max: 20
+    icon: mdi:door-closed-lock
+    fields:
+      mode:
+        description: "help (default) | tool_manifest | set | remove | clear"
+        required: false
+        selector:
+          select:
+            options: [help, tool_manifest, set, remove, clear]
+      volume_entity:
+        description: Cabinet sensor entity_id to write.
+        required: false
+        selector:
+          text:
+      key:
+        description: Drawer key (set/remove).
+        required: false
+        selector:
+          text:
+      value:
+        description: Drawer value (set). Mapping, list, or string; written as given.
+        required: false
+        selector:
+          object:
+      set_timestamp:
+        description: Accepted for compatibility; set always stamps the drawer timestamp (verification reads it).
+        required: false
+        selector:
+          boolean:
+      caller:
+        description: Owning admin tool or script, required for every write (logged).
+        required: false
+        selector:
+          text:
+      reason:
+        description: Optional short reason, logged with the write.
+        required: false
+        selector:
+          text:
+      confirm:
+        description: Required (true) for clear.
+        required: false
+        selector:
+          boolean:
+      force:
+        description: Passed to the Volume Redirector (overwrite guard bypass) for writes that own it.
+        required: false
+        selector:
+          boolean:
+      bootstrap:
+        description: >-
+          Cabinet bootstrap write (cabinetadmin init/restore): passed to the
+          Volume Redirector as _cabinetadmin_init so a cabinet not yet in the
+          manifest can be stamped.
+        required: false
+        selector:
+          boolean:
+      caller_token:
+        description: Opaque correlation token, echoed.
+        required: false
+        selector:
+          text:
+    sequence:
+      - variables:
+          _mode: "{{ mode | default('help', true) | string | trim | lower }}"
+          _vol: "{{ volume_entity | default('', true) | string | trim }}"
+          _key: "{{ key | default('', true) | string | trim }}"
+          _caller: "{{ caller | default('', true) | string | trim }}"
+          _reason: "{{ reason | default('', true) | string | trim }}"
+          _token: "{{ caller_token | default('', true) }}"
+          _is_cabinet: >-
+            {{ _vol != '' and _vol in label_entities('zen_cabinet')
+               and states(_vol) not in ['unknown', 'unavailable', ''] }}
+
+      # ── help (default, and any unknown mode) ─────────────────────────────
+      - if: "{{ _mode not in ['tool_manifest', 'set', 'remove', 'clear'] }}"
+        then:
+          - variables:
+              result:
+                status: help
+                tool: zen_admintools_cabinet_writer
+                about: >-
+                  Admin door: the single writer for admin-plane cabinet writes.
+                  Agents use zen_dojotools_filecabinet instead.
+                modes:
+                  set: "volume_entity key value caller [reason] [force] [bootstrap]"
+                  remove: "volume_entity key caller [reason]"
+                  clear: "volume_entity caller confirm=true [reason] (wipes every drawer)"
+                  tool_manifest: self-description
+                rules:
+                  - caller is required on every write and is logged
+                  - volume_entity must be a zen_cabinet-labeled cabinet that is online
+                  - nothing is written without an explicit mode
+                  - every write is verified on the cabinet before the door answers (write_verified)
+                caller_token: "{{ _token }}"
+
+      # ── tool_manifest ─────────────────────────────────────────────────────
+      - if: "{{ result is not defined and _mode == 'tool_manifest' }}"
+        then:
+          - variables:
+              result: >-
+                {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
+                {{- MF.tool_manifest(
+                  tool='zen_admintools_cabinet_writer',
+                  display_name='Cabinet Writer (admin door)',
+                  tier='admintools',
+                  version='1.1.0',
+                  health={'configured': true, 'status': 'ok', 'notes': []},
+                  required_labels=['zen_cabinet'],
+                  consumes=['volume_entity', 'key', 'value'],
+                  returns=['write_ack'],
+                  failure_policy='hard',
+                  modes={'help': 'help', 'manifest': 'tool_manifest', 'set': 'set', 'remove': 'remove', 'clear': 'clear'},
+                  icon='mdi:door-closed-lock',
+                  color='deep-orange',
+                  mcp_exposed=false,
+                  caller_token=_token
+                ) | from_json -}}
+
+      # ── validation for writes ─────────────────────────────────────────────
+      - if: "{{ result is not defined }}"
+        then:
+          - variables:
+              _err: >-
+                {%- if _caller == '' -%}caller is required on every admin write
+                {%- elif not _is_cabinet -%}volume_entity '{{ _vol }}' is not an online zen_cabinet
+                {%- elif _mode in ['set', 'remove'] and _key == '' -%}key is required for {{ _mode }}
+                {%- elif _mode == 'set' and value is not defined -%}value is required for set
+                {%- elif _mode == 'clear' and not (confirm | default(false) | bool) -%}clear wipes every drawer; pass confirm=true
+                {%- else -%}{%- endif -%}
+          - if: "{{ _err != '' }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    tool: zen_admintools_cabinet_writer
+                    mode: "{{ _mode }}"
+                    message: "guarded: {{ _err }}"
+                    caller_token: "{{ _token }}"
+
+      # ── write + log ───────────────────────────────────────────────────────
+      - if: "{{ result is not defined }}"
+        then:
+          - variables:
+              _now: "{{ now().isoformat() }}"
+              _force: "{{ force | default(false) | bool }}"
+              _boot: "{{ bootstrap | default(false) | bool }}"
+          # Each write waits until the cabinet shows it before the door
+          # answers: callers read-modify-write VolumeInfo, and an answer that
+          # comes back before the drawer updates lets the next call read the
+          # old value and overwrite this one.
+          - choose:
+              - conditions: "{{ _mode == 'set' }}"
+                sequence:
+                  - event: set_variable_legacy
+                    event_data:
+                      volume_entity: "{{ _vol }}"
+                      key: "{{ _key }}"
+                      value: "{{ value }}"
+                      set_timestamp: true
+                      force: "{{ _force }}"
+                      _cabinetadmin_init: "{{ _boot }}"
+                  - wait_template: >-
+                      {{ ((state_attr(_vol, 'variables') or {}).get(_key, {}) or {}).get('timestamp', '') | string >= _now }}
+                    timeout: "00:00:10"
+                    continue_on_timeout: true
+              - conditions: "{{ _mode == 'remove' }}"
+                sequence:
+                  - event: remove_variable_legacy
+                    event_data:
+                      volume_entity: "{{ _vol }}"
+                      key: "{{ _key }}"
+                  - wait_template: >-
+                      {{ state_attr(_vol, 'variables') is mapping and state_attr(_vol, 'variables').get(_key) is none }}
+                    timeout: "00:00:10"
+                    continue_on_timeout: true
+              - conditions: "{{ _mode == 'clear' }}"
+                sequence:
+                  - event: clear_variables_legacy
+                    event_data:
+                      volume_entity: "{{ _vol }}"
+                      confirm: true
+                  - wait_template: >-
+                      {{ (state_attr(_vol, 'variables') or {}) | count == 0 }}
+                    timeout: "00:00:10"
+                    continue_on_timeout: true
+          - variables:
+              _verified: "{{ wait.completed if wait is defined else false }}"
+          - event: zen_event
+            event_data:
+              event:
+                timestamp: "{{ now().isoformat() }}"
+                component: zen_admintools_cabinet_writer
+                severity: info
+                kind: admin_cabinet_write
+                summary: "{{ _caller }} {{ _mode }} {{ _vol }}{{ (' ' ~ _key) if _key else '' }}"
+                metadata:
+                  caller: "{{ _caller }}"
+                  op: "{{ _mode }}"
+                  volume_entity: "{{ _vol }}"
+                  key: "{{ _key }}"
+                  reason: "{{ _reason }}"
+          - action: system_log.write
+            data:
+              level: info
+              message: "admin_cabinet_write caller={{ _caller }} op={{ _mode }} volume={{ _vol }} key={{ _key }} reason={{ _reason }}"
+          - variables:
+              result:
+                status: "{{ 'success' if _verified else 'error' }}"
+                tool: zen_admintools_cabinet_writer
+                mode: "{{ _mode }}"
+                volume_entity: "{{ _vol }}"
+                key: "{{ _key }}"
+                caller: "{{ _caller }}"
+                write_verified: "{{ _verified }}"
+                message: "{{ '' if _verified else 'write not visible on the cabinet within 10s' }}"
+                caller_token: "{{ _token }}"
+
+      - stop: cabinet writer done
+        response_variable: result

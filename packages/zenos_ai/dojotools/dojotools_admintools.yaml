@@ -1,6 +1,18 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.4.6
+# Version: 5.4.8
+# v5.4.8: prompt_loader no longer chains zen_admintools_kungfu_loader (retired)
+#   and drops ship_zen_system plus the dead if-false Scribe ship blocks. KFCs
+#   self-register via KF5 (manifest bootstrap_kfc on reload and daily);
+#   camera_heartbeat moved to zen_dojotools_camera's kfc_manifest. A prompt
+#   load now only loads the prompt.
+# v5.4.7: cabinetadmin's refusals now hold. The cert denial, the hammer_ok
+#   guard and the hammer live-ack denial each set result and fell through to
+#   a result reset and the op loop, so the op ran anyway (a hammer without
+#   hammer_ok wiped the cabinet and answered ok). Everything
+#   after the guards now runs only while result is undefined. Same flaw
+#   emptied mode=help; help now answers. reset now asks the same live
+#   household-admin ack as hammer (both wipe every drawer).
 # v5.4.6: prompt_loader cortex 45 (Open Door) replaces the oldest slot (42). 45 = 44
 #   with core_tools naming script.zen_dojotools_ha_log_viewer (44 listed a
 #   nonexistent zen_dojotools_logviewer). latest = 45; slots are 45/44/43.
@@ -964,6 +976,7 @@ script:
                 reset: >-
                   Wipe all drawers from the target cabinet. No _hammered marker.
                   Use when you want a clean cabinet without the destroyed tag.
+                  Asks a live household-admin ack every call, like hammer.
                 mount_status: >-
                   Return mounted/unmounted state for every zen_cabinet entity.
                   No target needed. Useful to see which cabinets are online_mounted
@@ -1020,10 +1033,9 @@ script:
         # moderate-to-nuclear write op
         # (restore, repair_volumeinfo, reset, hammer, init, repair_mount,
         # repair_dismount, flip_schema_version, reset_all, expand_drawer).
-        # inspect/mount_status/help stay ungated (read-only). This runs before
-        # anything else, so a denial `stop`s the whole script -- no downstream
-        # branch (including the repeat loop below) can ever be reached on a
-        # denial, no fall-through guard needed. ──
+        # inspect/mount_status/help stay ungated (read-only). A denial sets
+        # result; the result-is-not-defined gate below keeps every op from
+        # running. ──
       - if:
           - condition: template
             value_template: "{{- op not in ['help', 'inspect', 'mount_status'] -}}"
@@ -1067,13 +1079,13 @@ script:
                 message: 'Hammer mode requires hammer_ok: true'
                 caller_token: "{{- caller_token -}}"
 
-        # ── Mandatory live-ack — hammer. On top of hammer_ok AND
-        # the cert above -- no waiver, no scope override, asks every single
-        # call. Same posture as locks' exterior-unlock / security_manager's
-        # disarm gate. ──
+        # ── Mandatory live-ack — hammer and reset (both wipe every drawer).
+        # On top of the cert above (and hammer_ok for hammer) -- no waiver, no
+        # scope override, asks every single call. Same posture as locks'
+        # exterior-unlock / security_manager's disarm gate. ──
         - conditions:
           - condition: template
-            value_template: "{{- op == 'hammer' -}}"
+            value_template: "{{- op in ['hammer', 'reset'] -}}"
           sequence:
           - action: script.zen_dojotools_identity
             response_variable: _hammer_ack_raw
@@ -1081,10 +1093,15 @@ script:
             data:
               mode: request_live_ack
               ack_message: >-
+                {% if op == 'hammer' -%}
                 Hammer request: {{ target_cabinet | default('all ring-0 cabinets', true) }}.
                 This wipes all drawers and marks the cabinet destroyed
                 (_hammered marker). {{ 'Will also stamp a fresh VolumeInfo immediately after (confirm_init).' if confirm_init | default(false) | bool else '' }}
-                No undo. Approve this hammer? (No standing override exists for
+                No undo. Approve this hammer?
+                {%- else -%}
+                Reset request: {{ target_cabinet | default('all ring-0 cabinets', true) }}.
+                This wipes every drawer on the cabinet. No undo. Approve this reset?
+                {%- endif %} (No standing override exists for
                 this action -- it asks every time by design.)
               caller_token: "{{ caller_token }}"
           - variables:
@@ -1095,791 +1112,704 @@ script:
             - variables:
                 result:
                   status: denied
-                  op: hammer
+                  op: "{{ op }}"
                   reason: "{{ _hammer_ack_reason }}"
-                  message: "Hammer requires a fresh live household-admin ack every time -- not granted."
+                  message: "{{ op | capitalize }} requires a fresh live household-admin ack every time -- not granted."
                   caller_token: "{{ caller_token }}"
-      - variables:
-          inspect_acc: {}
-          result: {}
-          _repair_results: {}
-          _init_halt: false
-      - repeat:
-          for_each: "{{- effective_targets -}}"
-          sequence:
+      # Every guard above (help, tool_manifest, cert denial, hammer_ok,
+      # hammer/reset live ack) answers by setting result. Nothing below runs once
+      # result is set; the single exit at the end returns it.
+      - if: "{{ result is not defined }}"
+        then:
           - variables:
-              cab: "{{- repeat.item -}}"
-              vars: "{{ state_attr(cab,'variables') | default({}, true) }}"
-              drawers: "{{- vars.keys() | list -}}"
-          - choose:
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'inspect' -}}"
+              inspect_acc: {}
+              result: {}
+              _repair_results: {}
+              _init_halt: false
+          - repeat:
+              for_each: "{{- effective_targets -}}"
               sequence:
               - variables:
-                  _scroll_keys: >-
-                    {%- set ns = namespace(s=[]) -%}
-                    {%- for key, drawer in vars.items() if key != '_label_index' -%}
-                      {%- set entry = drawer if drawer is mapping else {} -%}
-                      {%- set mt = entry.get('meta', {}) -%}
-                      {%- set mt = mt if mt is mapping else (mt | from_json if mt is string else {}) -%}
-                      {%- if mt.get('ro', false) -%}
-                        {%- set ns.s = ns.s + [key] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {{- ns.s -}}
-              - variables:
-                  inspect_acc: >-
-                    {{- inspect_acc | combine({
-                      cab: {
-                        'state': states(cab),
-                        'drawers': drawers | reject('in', _scroll_keys) | list,
-                        'scroll': _scroll_keys
-                      }
-                    }) -}}
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'restore' -}}"
-              sequence:
-              - if:
-                - condition: template
-                  value_template: "{{- vars == {} -}}"
-                then:
-                - event: set_variable_legacy
-                  event_data:
-                    volume_entity: "{{- cab -}}"
-                    key: _restored_marker
-                    value:
-                      value: restored
-                      timestamp: "{{- now().isoformat() -}}"
-                    set_timestamp: true
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'repair_volumeinfo' -}}"
-              sequence:
-              - variables:
-                  _vi_raw: "{{ vars.get('AI_Cabinet_VolumeInfo', {}) }}"
-                  _vi_str: "{{ _vi_raw.get('value', '') if _vi_raw is mapping else '' }}"
-                  _vi_is_string: "{{ _vi_str is string and _vi_str | trim not in ['', '{}', 'null'] }}"
-              - if:
-                - condition: template
-                  value_template: "{{ not _vi_is_string }}"
-                then:
-                - if:
+                  cab: "{{- repeat.item -}}"
+                  vars: "{{ state_attr(cab,'variables') | default({}, true) }}"
+                  drawers: "{{- vars.keys() | list -}}"
+              - choose:
+                - conditions:
                   - condition: template
-                    value_template: "{{ 'AI_Cabinet_VolumeInfo' not in vars and states(cab) == 'init' }}"
-                  then:
-                  # No VolumeInfo + init state → stamp a fresh header directly, no rearm needed
-                  - action: script.zen_admintools_cabinetadmin_factory
-                    data:
-                      confirm_action: true
-                      cabinet_entity: "{{- cab -}}"
-                      cabinet_type: "{{- cab_type | default('') -}}"
-                    response_variable: _stamp_result
+                    value_template: "{{- op == 'inspect' -}}"
+                  sequence:
                   - variables:
-                      _repair_note: stamped — no VolumeInfo present, fresh header written
-                  else:
-                  # A doubly-nested {value: {value: {...real...}}} drawer lands
-                  # here too (outer 'value' is a mapping, so _vi_is_string is
-                  # false). Detect it by checking the outer value's ONLY key is
-                  # 'value' itself (real VolumeInfo always carries id/flags/acls/
-                  # etc alongside it) and unwrap one level instead of skipping.
+                      _scroll_keys: >-
+                        {%- set ns = namespace(s=[]) -%}
+                        {%- for key, drawer in vars.items() if key != '_label_index' -%}
+                          {%- set entry = drawer if drawer is mapping else {} -%}
+                          {%- set mt = entry.get('meta', {}) -%}
+                          {%- set mt = mt if mt is mapping else (mt | from_json if mt is string else {}) -%}
+                          {%- if mt.get('ro', false) -%}
+                            {%- set ns.s = ns.s + [key] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{- ns.s -}}
+                  - variables:
+                      inspect_acc: >-
+                        {{- inspect_acc | combine({
+                          cab: {
+                            'state': states(cab),
+                            'drawers': drawers | reject('in', _scroll_keys) | list,
+                            'scroll': _scroll_keys
+                          }
+                        }) -}}
+                - conditions:
+                  - condition: template
+                    value_template: "{{- op == 'restore' -}}"
+                  sequence:
                   - if:
                     - condition: template
-                      value_template: >-
-                        {{ _vi_str is mapping and _vi_str.get('value') is mapping
-                           and (_vi_str.keys() | reject('in', ['value']) | list | count) == 0 }}
+                      value_template: "{{- vars == {} -}}"
                     then:
                     - event: set_variable_legacy
                       event_data:
                         volume_entity: "{{- cab -}}"
-                        key: AI_Cabinet_VolumeInfo
-                        value: "{{ _vi_str.value }}"
+                        key: _restored_marker
+                        value:
+                          value: restored
+                          timestamp: "{{- now().isoformat() -}}"
                         set_timestamp: true
-                    - variables:
-                        _repair_note: repaired — unwrapped doubly-nested VolumeInfo
-                    else:
-                    - variables:
-                        _repair_note: "{{ 'skipped — VolumeInfo already a mapping' if (_vi_raw is mapping and _vi_raw.get('value') is mapping) else 'skipped — no VolumeInfo found (cab not in init state — use hammer to fully reset)' }}"
-              - if:
-                - condition: template
-                  value_template: "{{ _vi_is_string }}"
-                then:
-                - variables:
-                    _vi_parsed: "{{ _vi_str | from_json(none) }}"
-                - if:
+                - conditions:
                   - condition: template
-                    value_template: "{{ _vi_parsed is none }}"
-                  then:
+                    value_template: "{{- op == 'repair_volumeinfo' -}}"
+                  sequence:
                   - variables:
-                      _repair_note: "skipped — VolumeInfo string could not be parsed as JSON"
-                - if:
+                      _vi_raw: "{{ vars.get('AI_Cabinet_VolumeInfo', {}) }}"
+                      _vi_str: "{{ _vi_raw.get('value', '') if _vi_raw is mapping else '' }}"
+                      _vi_is_string: "{{ _vi_str is string and _vi_str | trim not in ['', '{}', 'null'] }}"
+                  - if:
+                    - condition: template
+                      value_template: "{{ not _vi_is_string }}"
+                    then:
+                    - if:
+                      - condition: template
+                        value_template: "{{ 'AI_Cabinet_VolumeInfo' not in vars and states(cab) == 'init' }}"
+                      then:
+                      # No VolumeInfo + init state → stamp a fresh header directly, no rearm needed
+                      - action: script.zen_admintools_cabinetadmin_factory
+                        data:
+                          confirm_action: true
+                          cabinet_entity: "{{- cab -}}"
+                          cabinet_type: "{{- cab_type | default('') -}}"
+                        response_variable: _stamp_result
+                      - variables:
+                          _repair_note: stamped — no VolumeInfo present, fresh header written
+                      else:
+                      # A doubly-nested {value: {value: {...real...}}} drawer lands
+                      # here too (outer 'value' is a mapping, so _vi_is_string is
+                      # false). Detect it by checking the outer value's ONLY key is
+                      # 'value' itself (real VolumeInfo always carries id/flags/acls/
+                      # etc alongside it) and unwrap one level instead of skipping.
+                      - if:
+                        - condition: template
+                          value_template: >-
+                            {{ _vi_str is mapping and _vi_str.get('value') is mapping
+                               and (_vi_str.keys() | reject('in', ['value']) | list | count) == 0 }}
+                        then:
+                        - event: set_variable_legacy
+                          event_data:
+                            volume_entity: "{{- cab -}}"
+                            key: AI_Cabinet_VolumeInfo
+                            value: "{{ _vi_str.value }}"
+                            set_timestamp: true
+                        - variables:
+                            _repair_note: repaired — unwrapped doubly-nested VolumeInfo
+                        else:
+                        - variables:
+                            _repair_note: "{{ 'skipped — VolumeInfo already a mapping' if (_vi_raw is mapping and _vi_raw.get('value') is mapping) else 'skipped — no VolumeInfo found (cab not in init state — use hammer to fully reset)' }}"
+                  - if:
+                    - condition: template
+                      value_template: "{{ _vi_is_string }}"
+                    then:
+                    - variables:
+                        _vi_parsed: "{{ _vi_str | from_json(none) }}"
+                    - if:
+                      - condition: template
+                        value_template: "{{ _vi_parsed is none }}"
+                      then:
+                      - variables:
+                          _repair_note: "skipped — VolumeInfo string could not be parsed as JSON"
+                    - if:
+                      - condition: template
+                        value_template: "{{ _vi_parsed is mapping }}"
+                      then:
+                      - variables:
+                          _vi_repaired: "{{ _vi_parsed | combine({'validation': 'ALLYOURBASEAREBELONGTOUS'}) }}"
+                      - event: set_variable_legacy
+                        event_data:
+                          volume_entity: "{{- cab -}}"
+                          key: AI_Cabinet_VolumeInfo
+                          value: "{{ _vi_repaired }}"
+                          set_timestamp: true
+                      - variables:
+                          _repair_note: repaired
+                  - variables:
+                      _repair_results: "{{ _repair_results | combine({cab: (_repair_note | default('skipped — no branch matched'))}) }}"
+                - conditions:
                   - condition: template
-                    value_template: "{{ _vi_parsed is mapping }}"
-                  then:
-                  - variables:
-                      _vi_repaired: "{{ _vi_parsed | combine({'validation': 'ALLYOURBASEAREBELONGTOUS'}) }}"
+                    value_template: "{{- op == 'reset' -}}"
+                  sequence:
+                  - event: clear_variables_legacy
+                    event_data:
+                      volume_entity: "{{- cab -}}"
+                      key: '*'
+                - conditions:
+                  - condition: template
+                    value_template: "{{- op == 'hammer' -}}"
+                  sequence:
+                  - event: clear_variables_legacy
+                    event_data:
+                      volume_entity: "{{- cab -}}"
+                      key: '*'
                   - event: set_variable_legacy
                     event_data:
                       volume_entity: "{{- cab -}}"
-                      key: AI_Cabinet_VolumeInfo
-                      value: "{{ _vi_repaired }}"
+                      key: _hammered
+                      value:
+                        value: destroyed
+                        timestamp: "{{- now().isoformat() -}}"
                       set_timestamp: true
-                  - variables:
-                      _repair_note: repaired
-              - variables:
-                  _repair_results: "{{ _repair_results | combine({cab: (_repair_note | default('skipped — no branch matched'))}) }}"
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'reset' -}}"
-              sequence:
-              - event: clear_variables_legacy
-                event_data:
-                  volume_entity: "{{- cab -}}"
-                  key: '*'
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'hammer' -}}"
-              sequence:
-              - event: clear_variables_legacy
-                event_data:
-                  volume_entity: "{{- cab -}}"
-                  key: '*'
-              - event: set_variable_legacy
-                event_data:
-                  volume_entity: "{{- cab -}}"
-                  key: _hammered
-                  value:
-                    value: destroyed
-                    timestamp: "{{- now().isoformat() -}}"
-                  set_timestamp: true
-              - if: "{{- confirm_init | default(false) | bool -}}"
-                then:
-                - action: script.zen_admintools_cabinetadmin_factory
-                  data:
-                    confirm_action: true
-                    cabinet_entity: "{{- cab -}}"
-                    cabinet_type: "{{- cab_type | default('') -}}"
-                  response_variable: _hammer_init_result
-                - variables:
-                    _hammer_init_result: "{{- _hammer_init_result.get('result', _hammer_init_result) if _hammer_init_result is mapping else _hammer_init_result -}}"
-                - variables:
-                    _hammer_init_guid: "{{- _hammer_init_result.get('guid', '') if _hammer_init_result is mapping else '' -}}"
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'init' and not (_init_halt | default(false)) -}}"
-              sequence:
-              # ── Boot guard — refuse if cab not yet restored from recorder ──
-              # unavailable = recorder hasn't restored yet, state is indeterminate.
-              # unknown = no recorder history at all = truly virgin. Allow.
-              - if:
-                - condition: template
-                  value_template: "{{- states(cab) == 'unavailable' -}}"
-                then:
-                - variables:
-                    result:
-                      status: refused
-                      mode: init
-                      target: "{{- cab -}}"
-                      action_taken: none
-                      reason: cab_unavailable
-                - variables:
-                    _init_halt: true
-              # ── Unknown guard — require confirm_action when state is unknown ─
-              # unknown = no recorder history. Could be truly virgin OR a wiped
-              # initialized cab. Cannot distinguish without explicit confirmation.
-              # init state = triggered + no VolumeInfo = unambiguously virgin → skip.
-              - if:
-                - condition: template
-                  value_template: "{{- states(cab) == 'unknown' and not (confirm_action | default(false)) -}}"
-                then:
-                - variables:
-                    result:
-                      status: refused
-                      mode: init
-                      target: "{{- cab -}}"
-                      action_taken: none
-                      reason: confirm_required
-                      message: >-
-                        Cabinet state is unknown (no recorder history). Cannot confirm
-                        virgin status. Set confirm_action: true to proceed.
-                - variables:
-                    _init_halt: true
-              # ── Classifier + Route only run if neither guard above halted
-              # this cabinet -- a flat sibling `_init_halt: true` set does NOT
-              # stop the rest of this sequence from executing (HA only checks
-              # a choose branch's own condition once, at entry), so this guard
-              # is load-bearing, not decorative. ──
-              - if: "{{- not (_init_halt | default(false)) -}}"
-                then:
-                # ── Classifier ─────────────────────────────────────────────
-                - variables:
-                    #_vars: >-
-                    #  {%- set v = state_attr(cab, 'variables') | default(none, true) -%}
-                    #  {{ v if v is mapping else {} }}
-                    _vars: >-
-                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                      {{- CABS.cabinet_variables(cab) | from_json() -}}
-                    has_volumeinfo: "{{- 'AI_Cabinet_VolumeInfo' in _vars -}}"
-                    has_label_index: "{{- '_label_index' in _vars -}}"
-                    has_context:     "{{- '_context' in _vars -}}"
-                    non_system_drawers: >-
-                      {%- set sys = ['AI_Cabinet_VolumeInfo','_label_index','_context', '_restored_marker','_hammered'] -%}
-                      {{- _vars.keys() | reject('in', sys) | reject('match', '^_') | list -}}
-                    #_vi_raw: "{{ _vars.get('AI_Cabinet_VolumeInfo', {}) }}"
-                    #_vi_val: >-
-                    #  {%- set r = _vi_raw.get('value', {}) if _vi_raw is mapping else {} -%}
-                    #  {{ r if r is mapping else (r | from_json if r is string else {}) }}
-                    _vi_val: >-
-                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                      {{- CABS.cabinet_drawer_value(cab, 'AI_Cabinet_VolumeInfo', {}) | from_json() -}}
-
-                    cabinet_guid: "{{- _vi_val.get('id', '') | string | trim -}}"
-                    cabinet_state_class: >-
-                      {%- if not has_volumeinfo and not has_label_index and not has_context
-                             and (non_system_drawers | length == 0)
-                             and (cabinet_guid == '') -%}
-                        virgin
-                      {%- elif has_volumeinfo and cabinet_guid != '' -%}
-                        good
-                      {%- else -%}
-                        potentially_bad
-                      {%- endif -%}
-                # ── Route ────────────────────────────────────────────────────
-                - choose:
-                  - conditions: "{{- cabinet_state_class == 'virgin' -}}"
-                    sequence:
+                  - if: "{{- confirm_init | default(false) | bool -}}"
+                    then:
                     - action: script.zen_admintools_cabinetadmin_factory
                       data:
                         confirm_action: true
                         cabinet_entity: "{{- cab -}}"
                         cabinet_type: "{{- cab_type | default('') -}}"
-                      response_variable: _stamp_result
+                      response_variable: _hammer_init_result
                     - variables:
-                        result:
-                          status: success
-                          mode: init
-                          target: "{{- cab -}}"
-                          classification: virgin
-                          action_taken: stamped
-                          reason: initialized
-                          stamp_result: "{{- _stamp_result -}}"
-                    # Fire a completion event so sensor.zen_cabinet_health
-                    # sees a freshly stamped cabinet instead of sitting on a
-                    # stale snapshot (e.g. after Gate 2.1 initializes cabinets
-                    # on a fresh deploy). Reuses the same event reset_all
-                    # already fires, rather than inventing a new one.
-                    - event: zen_resolver_refresh
-                    # ROBOT DONUT FIX: the immediate fire above can
-                    # race the label registry — cabinet_health recomputes before
-                    # label_entities() reflects the tag this same init call just
-                    # applied, storing a wrong 'absent' reading with a timestamp
-                    # that looks fresh. This delayed second fire is NOT a state
-                    # trigger and does NOT read states(entity_id) at any point —
-                    # it's driven purely by "our own write finished a few seconds
-                    # ago," giving the registry time to settle before the retry.
-                    - delay:
-                        seconds: 5
-                    - event: zen_resolver_refresh
-                  - conditions: "{{- cabinet_state_class == 'good' -}}"
-                    sequence:
+                        _hammer_init_result: "{{- _hammer_init_result.get('result', _hammer_init_result) if _hammer_init_result is mapping else _hammer_init_result -}}"
                     - variables:
-                        result:
-                          status: refused
-                          mode: init
-                          target: "{{- cab -}}"
-                          classification: good
-                          action_taken: none
-                          reason: already_initialized
-                    - variables:
-                        _init_halt: true
-                  default:
-                  # ── REARM GATE (potentially_bad only) ──────────────────────
-                  # Virgin and good cabs proceed automatically. Only potentially_bad
-                  # requires manual confirmation — residue present, human decides:
-                  # hammer or repair. Must rearm input_boolean.zenos_cab_init_rearm.
-                  # if/else (not two sequential ifs) -- rearm_required must be
-                  # the FINAL result when rearm is off, never overwritten by the
-                  # repair_required path below it.
+                        _hammer_init_guid: "{{- _hammer_init_result.get('guid', '') if _hammer_init_result is mapping else '' -}}"
+                - conditions:
+                  - condition: template
+                    value_template: "{{- op == 'init' and not (_init_halt | default(false)) -}}"
+                  sequence:
+                  # ── Boot guard — refuse if cab not yet restored from recorder ──
+                  # unavailable = recorder hasn't restored yet, state is indeterminate.
+                  # unknown = no recorder history at all = truly virgin. Allow.
                   - if:
                     - condition: template
-                      value_template: "{{- not is_state('input_boolean.zenos_cab_init_rearm', 'on') -}}"
+                      value_template: "{{- states(cab) == 'unavailable' -}}"
                     then:
                     - variables:
                         result:
                           status: refused
                           mode: init
                           target: "{{- cab -}}"
-                          classification: potentially_bad
                           action_taken: none
-                          reason: rearm_required
+                          reason: cab_unavailable
                     - variables:
                         _init_halt: true
-                    else:
-                    - action: input_boolean.turn_off
-                      target:
-                        entity_id: input_boolean.zenos_cab_init_rearm
+                  # ── Unknown guard — require confirm_action when state is unknown ─
+                  # unknown = no recorder history. Could be truly virgin OR a wiped
+                  # initialized cab. Cannot distinguish without explicit confirmation.
+                  # init state = triggered + no VolumeInfo = unambiguously virgin → skip.
+                  - if:
+                    - condition: template
+                      value_template: "{{- states(cab) == 'unknown' and not (confirm_action | default(false)) -}}"
+                    then:
                     - variables:
                         result:
                           status: refused
                           mode: init
                           target: "{{- cab -}}"
-                          classification: "{{- cabinet_state_class -}}"
                           action_taken: none
-                          reason: repair_required
+                          reason: confirm_required
+                          message: >-
+                            Cabinet state is unknown (no recorder history). Cannot confirm
+                            virgin status. Set confirm_action: true to proceed.
                     - variables:
                         _init_halt: true
-            # ── repair_mount — force meta.mounted: true (bypass state guards) ──
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'repair_mount' -}}"
-              sequence:
-              - event: set_variable_legacy
-                event_data:
-                  volume_entity: "{{- cab -}}"
-                  key: meta
-                  value: "{{ {'mounted': true} }}"
-                  set_timestamp: true
-              - wait_template: "{{- states(cab) == 'online_mounted' -}}"
-                timeout: '00:00:05'
-                continue_on_timeout: true
-              - event: zen_event
-                event_data:
-                  event:
-                    kind: cabinet_mounted
-                    component: "{{- cab -}}"
-                    severity: info
-                    summary: "CabinetAdmin repair_mount: '{{ cab }}' forced to mounted (verified: {{ states(cab) == 'online_mounted' }})."
-              - event: zen_event
-                event_data:
-                  event:
-                    kind: identity_manifest_rebuild
-                    component: zen_admintools_cabinetadmin
-                    severity: info
-                    summary: Manifest rebuild triggered by repair_mount.
-            # ── repair_dismount — force meta.mounted: false (bypass state guards) ─
-            - conditions:
-              - condition: template
-                value_template: "{{- op == 'repair_dismount' -}}"
-              sequence:
-              - event: set_variable_legacy
-                event_data:
-                  volume_entity: "{{- cab -}}"
-                  key: meta
-                  value: "{{ {'mounted': false} }}"
-                  set_timestamp: true
-              - wait_template: "{{- states(cab) in ['online_unmounted', 'dismounted'] -}}"
-                timeout: '00:00:05'
-                continue_on_timeout: true
-              - event: zen_event
-                event_data:
-                  event:
-                    kind: cabinet_dismounted
-                    component: "{{- cab -}}"
-                    severity: info
-                    summary: "CabinetAdmin repair_dismount: '{{ cab }}' forced to dismounted (verified: {{ states(cab) in ['online_unmounted', 'dismounted'] }})."
-              - event: zen_event
-                event_data:
-                  event:
-                    kind: identity_manifest_rebuild
-                    component: zen_admintools_cabinetadmin
-                    severity: info
-                    summary: Manifest rebuild triggered by repair_dismount.
-      # ── inspect — emit accumulated result after loop ─────────────────────────
-      - if:
-        - condition: template
-          value_template: "{{- op == 'inspect' -}}"
-        then:
-        - variables:
-            result: "{{ inspect_acc | combine({'caller_token': caller_token | default('')}) if inspect_acc is mapping else inspect_acc }}"
-      # ── hammer — return result with optional init_guid ────────────────────────
-      - if:
-        - condition: template
-          value_template: "{{- op == 'hammer' -}}"
-        then:
-        - variables:
-            result: >
-              {{-
-                {
-                  'status': 'ok',
-                  'op': 'hammer',
-                  'target': cab,
-                  'init_guid': _hammer_init_guid | default(''),
-                  'auto_init': confirm_init | default(false) | bool,
-                  'caller_token': caller_token | default('')
-                }
-              -}}
-        # Completion event so sensor.zen_cabinet_health sees the cabinet's
-        # content just changed. Same as init.
-        - event: zen_resolver_refresh
-        # ROBOT DONUT FIX: delayed retry, same reasoning as init's —
-        # not a state trigger, doesn't read states(entity_id), purely "our own
-        # write finished a few seconds ago."
-        - delay:
-            seconds: 5
-        - event: zen_resolver_refresh
-      # ── init — return result after classification and stamp (result already
-      # set inside the loop above, either by a success path or an early
-      # _init_halt refusal) ──────────────────────────────────────────────────
-      # ── mount_status — read mount state across all zen_cabinet entities ───────
-      - if:
-        - condition: template
-          value_template: "{{- op == 'mount_status' -}}"
-        then:
-        - variables:
-            _all_cabs: >-
-              {{- label_entities('Zen Cabinet' | slugify) | list -}}
-        - variables:
-            # cabinet_drawer() returns the RAW drawer ({value: {...}, timestamp: ...}),
-            # so 'mounted' must be read from .value, not the top-level wrapper.
-            # cabinet_drawer_value() unwraps 'value' automatically -- same
-            # macro this file's other reads already use elsewhere.
-            result: >-
-              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-              {%- set ns = namespace(m={}) -%}
-              {%- for eid in _all_cabs -%}
-                {%- set _mt = CABS.cabinet_drawer_value(eid, 'meta', {}) | from_json(none) -%}
-                {%- set _mt = _mt if _mt is mapping else {} -%}
-                {%- set ns.m = ns.m | combine({eid: {'state': states(eid), 'mounted': _mt.get('mounted', false)}}) -%}
-              {%- endfor -%}
-              {{ ns.m | combine({'caller_token': caller_token}) }}
-      # ── flip_schema_version — toggle cab_schema_version in syscab ────────────
-      - if:
-        - condition: template
-          value_template: "{{- op == 'flip_schema_version' -}}"
-        then:
-        - variables:
-            #_syscab_vars: "{{ state_attr('sensor.zenos_system_cabinet', 'variables') | default({}, true) }}"
-            #_syscab_mapped: "{{- _syscab_vars if _syscab_vars is mapping else {} -}}"
-            #_csve: "{{ _syscab_mapped.get('cab_schema_version', {}) }}"
-            #_csve_mapped: "{{- _csve if _csve is mapping else {} -}}"
-            #_current_v: "{{- _csve_mapped.get('value', 0) | int(0) -}}"
-            _current_v: >
-              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-              {{- CABS.cabinet_drawer_value('sensor.zenos_system_cabinet', 'cab_schema_version', 0) | from_json() | int(0) -}}
-            _new_v: "{{- schema_version | default(none) | int(-1) if schema_version | default(none) is not none else (1 if _current_v == 0 else 0) -}}"
-        - event: set_variable_legacy
-          event_data:
-            key: cab_schema_version
-            value: "{{ {'value': _new_v} }}"
-            volume_entity: sensor.zenos_system_cabinet
-            set_timestamp: true
-        - variables:
-            result:
-              status: success
-              message: "cab_schema_version {{ _current_v }} → {{ _new_v }} in syscab. Flynn now runs in {{ 'mount-aware' if _new_v >= 1 else 'legacy' }} mode."
-              previous_value: "{{- _current_v -}}"
-              new_value: "{{- _new_v -}}"
-              caller_token: "{{- caller_token -}}"
-        # Completion event, same as init/hammer. schema-version flips are
-        # exactly the kind of state change zen_cabinet_health's mount-aware
-        # logic needs to see fresh.
-        - event: zen_resolver_refresh
-        # ROBOT DONUT FIX: delayed retry, same reasoning as
-        # init/hammer's — not a state trigger, doesn't read states(entity_id).
-        - delay:
-            seconds: 5
-        - event: zen_resolver_refresh
-      # ── reset_all — nuclear cabinet wipe + reseed + Flynn bootstrap ──────────
-      - if:
-        - condition: template
-          value_template: "{{- op == 'reset_all' -}}"
-        then:
-        - if:
-          - condition: template
-            value_template: "{{- not confirm -}}"
-          then:
-          - variables:
-              result:
-                status: error
-                message: >-
-                  reset_all refused — confirm: true required. This wipes all ring-0
-                  canonical cabinets, reseeds schemas, and triggers Flynn bootstrap.
-                  No undo. Set confirm: true to proceed.
-                caller_token: "{{- caller_token -}}"
-        # ── Mandatory live-ack — reset_all. On top of confirm AND
-        # the cert above -- no waiver, no scope override, asks every single
-        # call. Same posture as hammer's gate just above. Nested under
-        # `result is not defined` so a missing-confirm refusal above never
-        # even reaches the live-ack prompt. ──
-        - if: "{{ result is not defined }}"
-          then:
-          - action: script.zen_dojotools_identity
-            response_variable: _resetall_ack_raw
-            continue_on_error: true
-            data:
-              mode: request_live_ack
-              ack_message: >-
-                reset_all request: wipes ALL ring-0 canonical cabinets, reseeds
-                schemas, and triggers Flynn bootstrap. No undo. User and
-                expansion cabinets are NOT touched. Approve this reset_all? (No
-                standing override exists for this action -- it asks every time
-                by design.)
-              caller_token: "{{ caller_token }}"
-          - variables:
-              _resetall_ack_approved: "{{ _resetall_ack_raw.get('approved', false) if _resetall_ack_raw is mapping else false }}"
-              _resetall_ack_reason: "{{ _resetall_ack_raw.get('reason', 'dispatch_failed') if _resetall_ack_raw is mapping else 'dispatch_failed' }}"
-          - if: "{{ not _resetall_ack_approved }}"
+                  # ── Classifier + Route only run if neither guard above halted
+                  # this cabinet -- a flat sibling `_init_halt: true` set does NOT
+                  # stop the rest of this sequence from executing (HA only checks
+                  # a choose branch's own condition once, at entry), so this guard
+                  # is load-bearing, not decorative. ──
+                  - if: "{{- not (_init_halt | default(false)) -}}"
+                    then:
+                    # ── Classifier ─────────────────────────────────────────────
+                    - variables:
+                        #_vars: >-
+                        #  {%- set v = state_attr(cab, 'variables') | default(none, true) -%}
+                        #  {{ v if v is mapping else {} }}
+                        _vars: >-
+                          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                          {{- CABS.cabinet_variables(cab) | from_json() -}}
+                        has_volumeinfo: "{{- 'AI_Cabinet_VolumeInfo' in _vars -}}"
+                        has_label_index: "{{- '_label_index' in _vars -}}"
+                        has_context:     "{{- '_context' in _vars -}}"
+                        non_system_drawers: >-
+                          {%- set sys = ['AI_Cabinet_VolumeInfo','_label_index','_context', '_restored_marker','_hammered'] -%}
+                          {{- _vars.keys() | reject('in', sys) | reject('match', '^_') | list -}}
+                        #_vi_raw: "{{ _vars.get('AI_Cabinet_VolumeInfo', {}) }}"
+                        #_vi_val: >-
+                        #  {%- set r = _vi_raw.get('value', {}) if _vi_raw is mapping else {} -%}
+                        #  {{ r if r is mapping else (r | from_json if r is string else {}) }}
+                        _vi_val: >-
+                          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                          {{- CABS.cabinet_drawer_value(cab, 'AI_Cabinet_VolumeInfo', {}) | from_json() -}}
+
+                        cabinet_guid: "{{- _vi_val.get('id', '') | string | trim -}}"
+                        cabinet_state_class: >-
+                          {%- if not has_volumeinfo and not has_label_index and not has_context
+                                 and (non_system_drawers | length == 0)
+                                 and (cabinet_guid == '') -%}
+                            virgin
+                          {%- elif has_volumeinfo and cabinet_guid != '' -%}
+                            good
+                          {%- else -%}
+                            potentially_bad
+                          {%- endif -%}
+                    # ── Route ────────────────────────────────────────────────────
+                    - choose:
+                      - conditions: "{{- cabinet_state_class == 'virgin' -}}"
+                        sequence:
+                        - action: script.zen_admintools_cabinetadmin_factory
+                          data:
+                            confirm_action: true
+                            cabinet_entity: "{{- cab -}}"
+                            cabinet_type: "{{- cab_type | default('') -}}"
+                          response_variable: _stamp_result
+                        - variables:
+                            result:
+                              status: success
+                              mode: init
+                              target: "{{- cab -}}"
+                              classification: virgin
+                              action_taken: stamped
+                              reason: initialized
+                              stamp_result: "{{- _stamp_result -}}"
+                        # Fire a completion event so sensor.zen_cabinet_health
+                        # sees a freshly stamped cabinet instead of sitting on a
+                        # stale snapshot (e.g. after Gate 2.1 initializes cabinets
+                        # on a fresh deploy). Reuses the same event reset_all
+                        # already fires, rather than inventing a new one.
+                        - event: zen_resolver_refresh
+                        # ROBOT DONUT FIX: the immediate fire above can
+                        # race the label registry — cabinet_health recomputes before
+                        # label_entities() reflects the tag this same init call just
+                        # applied, storing a wrong 'absent' reading with a timestamp
+                        # that looks fresh. This delayed second fire is NOT a state
+                        # trigger and does NOT read states(entity_id) at any point —
+                        # it's driven purely by "our own write finished a few seconds
+                        # ago," giving the registry time to settle before the retry.
+                        - delay:
+                            seconds: 5
+                        - event: zen_resolver_refresh
+                      - conditions: "{{- cabinet_state_class == 'good' -}}"
+                        sequence:
+                        - variables:
+                            result:
+                              status: refused
+                              mode: init
+                              target: "{{- cab -}}"
+                              classification: good
+                              action_taken: none
+                              reason: already_initialized
+                        - variables:
+                            _init_halt: true
+                      default:
+                      # ── REARM GATE (potentially_bad only) ──────────────────────
+                      # Virgin and good cabs proceed automatically. Only potentially_bad
+                      # requires manual confirmation — residue present, human decides:
+                      # hammer or repair. Must rearm input_boolean.zenos_cab_init_rearm.
+                      # if/else (not two sequential ifs) -- rearm_required must be
+                      # the FINAL result when rearm is off, never overwritten by the
+                      # repair_required path below it.
+                      - if:
+                        - condition: template
+                          value_template: "{{- not is_state('input_boolean.zenos_cab_init_rearm', 'on') -}}"
+                        then:
+                        - variables:
+                            result:
+                              status: refused
+                              mode: init
+                              target: "{{- cab -}}"
+                              classification: potentially_bad
+                              action_taken: none
+                              reason: rearm_required
+                        - variables:
+                            _init_halt: true
+                        else:
+                        - action: input_boolean.turn_off
+                          target:
+                            entity_id: input_boolean.zenos_cab_init_rearm
+                        - variables:
+                            result:
+                              status: refused
+                              mode: init
+                              target: "{{- cab -}}"
+                              classification: "{{- cabinet_state_class -}}"
+                              action_taken: none
+                              reason: repair_required
+                        - variables:
+                            _init_halt: true
+                # ── repair_mount — force meta.mounted: true (bypass state guards) ──
+                - conditions:
+                  - condition: template
+                    value_template: "{{- op == 'repair_mount' -}}"
+                  sequence:
+                  - event: set_variable_legacy
+                    event_data:
+                      volume_entity: "{{- cab -}}"
+                      key: meta
+                      value: "{{ {'mounted': true} }}"
+                      set_timestamp: true
+                  - wait_template: "{{- states(cab) == 'online_mounted' -}}"
+                    timeout: '00:00:05'
+                    continue_on_timeout: true
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: cabinet_mounted
+                        component: "{{- cab -}}"
+                        severity: info
+                        summary: "CabinetAdmin repair_mount: '{{ cab }}' forced to mounted (verified: {{ states(cab) == 'online_mounted' }})."
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: identity_manifest_rebuild
+                        component: zen_admintools_cabinetadmin
+                        severity: info
+                        summary: Manifest rebuild triggered by repair_mount.
+                # ── repair_dismount — force meta.mounted: false (bypass state guards) ─
+                - conditions:
+                  - condition: template
+                    value_template: "{{- op == 'repair_dismount' -}}"
+                  sequence:
+                  - event: set_variable_legacy
+                    event_data:
+                      volume_entity: "{{- cab -}}"
+                      key: meta
+                      value: "{{ {'mounted': false} }}"
+                      set_timestamp: true
+                  - wait_template: "{{- states(cab) in ['online_unmounted', 'dismounted'] -}}"
+                    timeout: '00:00:05'
+                    continue_on_timeout: true
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: cabinet_dismounted
+                        component: "{{- cab -}}"
+                        severity: info
+                        summary: "CabinetAdmin repair_dismount: '{{ cab }}' forced to dismounted (verified: {{ states(cab) in ['online_unmounted', 'dismounted'] }})."
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: identity_manifest_rebuild
+                        component: zen_admintools_cabinetadmin
+                        severity: info
+                        summary: Manifest rebuild triggered by repair_dismount.
+          # ── inspect — emit accumulated result after loop ─────────────────────────
+          - if:
+            - condition: template
+              value_template: "{{- op == 'inspect' -}}"
             then:
             - variables:
-                result:
-                  status: denied
-                  op: reset_all
-                  reason: "{{ _resetall_ack_reason }}"
-                  message: "reset_all requires a fresh live household-admin ack every time -- not granted."
-                  caller_token: "{{ caller_token }}"
-          - if: "{{ result is not defined }}"
+                result: "{{ inspect_acc | combine({'caller_token': caller_token | default('')}) if inspect_acc is mapping else inspect_acc }}"
+          # ── hammer — return result with optional init_guid ────────────────────────
+          - if:
+            - condition: template
+              value_template: "{{- op == 'hammer' -}}"
             then:
-            # Step 1 — wipe all ring-0 cabinets
-            - repeat:
-                for_each: "{{- canon_ring0_cabinets -}}"
-                sequence:
-                - event: clear_variables_legacy
-                  event_data:
-                    volume_entity: "{{- repeat.item -}}"
-                    key: '*'
-            # Step 2 — kick resolvers; Flynn sentinel fires from zen_cabinet_health change.
-            # reset_template is deliberately NOT called here anymore — it used to run
-            # immediately after the wipe, which wrote real drawer content (zen_template,
-            # kata_template, etc.) into cabinets that were still in genuinely virgin
-            # 'init' state. That residue made cabinetadmin's own virgin-vs-broken
-            # classifier (non_system_drawers count) see them as 'potentially_bad'
-            # rather than 'virgin', blocking Gate 2.1's simple auto-init path and
-            # forcing the manual rearm/repair flow for no real reason. Flynn's own
-            # Gate 3 already calls reset_template itself, idempotently, at the
-            # correct point — after cabinets are re-stamped and resolvers are
-            # confirmed settled. Letting Flynn do it in the right order means a
-            # reset_all-wiped system goes through the exact same bootstrap path as a
-            # genuinely fresh install, instead of a subtly different one.
+            - variables:
+                result: >
+                  {{-
+                    {
+                      'status': 'ok',
+                      'op': 'hammer',
+                      'target': cab,
+                      'init_guid': _hammer_init_guid | default(''),
+                      'auto_init': confirm_init | default(false) | bool,
+                      'caller_token': caller_token | default('')
+                    }
+                  -}}
+            # Completion event so sensor.zen_cabinet_health sees the cabinet's
+            # content just changed. Same as init.
             - event: zen_resolver_refresh
+            # ROBOT DONUT FIX: delayed retry, same reasoning as init's —
+            # not a state trigger, doesn't read states(entity_id), purely "our own
+            # write finished a few seconds ago."
+            - delay:
+                seconds: 5
+            - event: zen_resolver_refresh
+          # ── init — return result after classification and stamp (result already
+          # set inside the loop above, either by a success path or an early
+          # _init_halt refusal) ──────────────────────────────────────────────────
+          # ── mount_status — read mount state across all zen_cabinet entities ───────
+          - if:
+            - condition: template
+              value_template: "{{- op == 'mount_status' -}}"
+            then:
+            - variables:
+                _all_cabs: >-
+                  {{- label_entities('Zen Cabinet' | slugify) | list -}}
+            - variables:
+                # cabinet_drawer() returns the RAW drawer ({value: {...}, timestamp: ...}),
+                # so 'mounted' must be read from .value, not the top-level wrapper.
+                # cabinet_drawer_value() unwraps 'value' automatically -- same
+                # macro this file's other reads already use elsewhere.
+                result: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set ns = namespace(m={}) -%}
+                  {%- for eid in _all_cabs -%}
+                    {%- set _mt = CABS.cabinet_drawer_value(eid, 'meta', {}) | from_json(none) -%}
+                    {%- set _mt = _mt if _mt is mapping else {} -%}
+                    {%- set ns.m = ns.m | combine({eid: {'state': states(eid), 'mounted': _mt.get('mounted', false)}}) -%}
+                  {%- endfor -%}
+                  {{ ns.m | combine({'caller_token': caller_token}) }}
+          # ── flip_schema_version — toggle cab_schema_version in syscab ────────────
+          - if:
+            - condition: template
+              value_template: "{{- op == 'flip_schema_version' -}}"
+            then:
+            - variables:
+                #_syscab_vars: "{{ state_attr('sensor.zenos_system_cabinet', 'variables') | default({}, true) }}"
+                #_syscab_mapped: "{{- _syscab_vars if _syscab_vars is mapping else {} -}}"
+                #_csve: "{{ _syscab_mapped.get('cab_schema_version', {}) }}"
+                #_csve_mapped: "{{- _csve if _csve is mapping else {} -}}"
+                #_current_v: "{{- _csve_mapped.get('value', 0) | int(0) -}}"
+                _current_v: >
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- CABS.cabinet_drawer_value('sensor.zenos_system_cabinet', 'cab_schema_version', 0) | from_json() | int(0) -}}
+                _new_v: "{{- schema_version | default(none) | int(-1) if schema_version | default(none) is not none else (1 if _current_v == 0 else 0) -}}"
+            - event: set_variable_legacy
+              event_data:
+                key: cab_schema_version
+                value: "{{ {'value': _new_v} }}"
+                volume_entity: sensor.zenos_system_cabinet
+                set_timestamp: true
             - variables:
                 result:
                   status: success
-                  message: >-
-                    reset_all complete. {{ canon_ring0_cabinets | length }} ring-0
-                    cabinet(s) wiped. zen_resolver_refresh fired. Flynn will
-                    re-stamp cabinets and reseed schemas (via its own Gate 2.1 and
-                    Gate 3) on its next sentinel cycle, once resolvers settle.
-                    User cabinets were not touched.
-                  wiped_count: "{{- canon_ring0_cabinets | length -}}"
+                  message: "cab_schema_version {{ _current_v }} → {{ _new_v }} in syscab. Flynn now runs in {{ 'mount-aware' if _new_v >= 1 else 'legacy' }} mode."
+                  previous_value: "{{- _current_v -}}"
+                  new_value: "{{- _new_v -}}"
                   caller_token: "{{- caller_token -}}"
-
-      # ── expand_drawer — atomic drawer migration to expansion cabinet ─────────
-      - if:
-        - condition: template
-          value_template: "{{- op == 'expand_drawer' -}}"
-        then:
-        # Step 0: Validate inputs
-        - variables:
-            _ed_src: "{{ source_cabinet | default('', true) | string | trim }}"
-            _ed_tgt: "{{ target_cabinet | default('', true) | string | trim }}"
-            _ed_key: "{{ source_drawer | default('', true) | string | trim }}"
-            _ed_thresh: "{{ space_threshold | default(85) | int(85) }}"
-            _ed_max: 131072
-        - choose:
-          - conditions:
+            # Completion event, same as init/hammer. schema-version flips are
+            # exactly the kind of state change zen_cabinet_health's mount-aware
+            # logic needs to see fresh.
+            - event: zen_resolver_refresh
+            # ROBOT DONUT FIX: delayed retry, same reasoning as
+            # init/hammer's — not a state trigger, doesn't read states(entity_id).
+            - delay:
+                seconds: 5
+            - event: zen_resolver_refresh
+          # ── reset_all — nuclear cabinet wipe + reseed + Flynn bootstrap ──────────
+          - if:
             - condition: template
-              value_template: "{{ _ed_src == '' or _ed_tgt == '' or _ed_key == '' }}"
-            sequence:
-            - variables:
-                result:
-                  status: error
-                  op: expand_drawer
-                  step_failed: validate
-                  reason: source_cabinet, target_cabinet, and source_drawer are all required
-                  caller_token: "{{ caller_token }}"
-        # Steps 1-6 + success all nested under one guard chain: once `result`
-        # is set by any earlier failure, no later step's variables/events run.
-        - if: "{{ result is not defined }}"
-          then:
-          # Step 1: Read source/target vars, validate drawer exists, no subtree
-          - variables:
-              _ed_src_vars: "{{ state_attr(_ed_src, 'variables') or {} }}"
-              _ed_tgt_vars: "{{ state_attr(_ed_tgt, 'variables') or {} }}"
-          - variables:
-              _ed_subtree_keys: >-
-                {%- set _prefix = _ed_key ~ '/' -%}
-                {%- set ns = namespace(keys=[]) -%}
-                {%- for k in (_ed_src_vars.keys() | list) -%}
-                  {%- if k == _ed_key or k.startswith(_prefix) -%}
-                    {%- set ns.keys = ns.keys + [k] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {{ ns.keys }}
-          - choose:
-            - conditions:
+              value_template: "{{- op == 'reset_all' -}}"
+            then:
+            - if:
               - condition: template
-                value_template: "{{ _ed_key not in _ed_src_vars }}"
-              sequence:
+                value_template: "{{- not confirm -}}"
+              then:
               - variables:
                   result:
                     status: error
-                    op: expand_drawer
-                    step_failed: validate
-                    reason: source_drawer key not found in source_cabinet
-                    source_cabinet: "{{ _ed_src }}"
-                    source_drawer: "{{ _ed_key }}"
-                    caller_token: "{{ caller_token }}"
-          - if: "{{ result is not defined }}"
+                    message: >-
+                      reset_all refused — confirm: true required. This wipes all ring-0
+                      canonical cabinets, reseeds schemas, and triggers Flynn bootstrap.
+                      No undo. Set confirm: true to proceed.
+                    caller_token: "{{- caller_token -}}"
+            # ── Mandatory live-ack — reset_all. On top of confirm AND
+            # the cert above -- no waiver, no scope override, asks every single
+            # call. Same posture as hammer's gate just above. Nested under
+            # `result is not defined` so a missing-confirm refusal above never
+            # even reaches the live-ack prompt. ──
+            - if: "{{ result is not defined }}"
+              then:
+              - action: script.zen_dojotools_identity
+                response_variable: _resetall_ack_raw
+                continue_on_error: true
+                data:
+                  mode: request_live_ack
+                  ack_message: >-
+                    reset_all request: wipes ALL ring-0 canonical cabinets, reseeds
+                    schemas, and triggers Flynn bootstrap. No undo. User and
+                    expansion cabinets are NOT touched. Approve this reset_all? (No
+                    standing override exists for this action -- it asks every time
+                    by design.)
+                  caller_token: "{{ caller_token }}"
+              - variables:
+                  _resetall_ack_approved: "{{ _resetall_ack_raw.get('approved', false) if _resetall_ack_raw is mapping else false }}"
+                  _resetall_ack_reason: "{{ _resetall_ack_raw.get('reason', 'dispatch_failed') if _resetall_ack_raw is mapping else 'dispatch_failed' }}"
+              - if: "{{ not _resetall_ack_approved }}"
+                then:
+                - variables:
+                    result:
+                      status: denied
+                      op: reset_all
+                      reason: "{{ _resetall_ack_reason }}"
+                      message: "reset_all requires a fresh live household-admin ack every time -- not granted."
+                      caller_token: "{{ caller_token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                # Step 1 — wipe all ring-0 cabinets
+                - repeat:
+                    for_each: "{{- canon_ring0_cabinets -}}"
+                    sequence:
+                    - event: clear_variables_legacy
+                      event_data:
+                        volume_entity: "{{- repeat.item -}}"
+                        key: '*'
+                # Step 2 — kick resolvers; Flynn sentinel fires from zen_cabinet_health change.
+                # reset_template is deliberately NOT called here anymore — it used to run
+                # immediately after the wipe, which wrote real drawer content (zen_template,
+                # kata_template, etc.) into cabinets that were still in genuinely virgin
+                # 'init' state. That residue made cabinetadmin's own virgin-vs-broken
+                # classifier (non_system_drawers count) see them as 'potentially_bad'
+                # rather than 'virgin', blocking Gate 2.1's simple auto-init path and
+                # forcing the manual rearm/repair flow for no real reason. Flynn's own
+                # Gate 3 already calls reset_template itself, idempotently, at the
+                # correct point — after cabinets are re-stamped and resolvers are
+                # confirmed settled. Letting Flynn do it in the right order means a
+                # reset_all-wiped system goes through the exact same bootstrap path as a
+                # genuinely fresh install, instead of a subtly different one.
+                - event: zen_resolver_refresh
+                - variables:
+                    result:
+                      status: success
+                      message: >-
+                        reset_all complete. {{ canon_ring0_cabinets | length }} ring-0
+                        cabinet(s) wiped. zen_resolver_refresh fired. Flynn will
+                        re-stamp cabinets and reseed schemas (via its own Gate 2.1 and
+                        Gate 3) on its next sentinel cycle, once resolvers settle.
+                        User cabinets were not touched.
+                      wiped_count: "{{- canon_ring0_cabinets | length -}}"
+                      caller_token: "{{- caller_token -}}"
+
+          # ── expand_drawer — atomic drawer migration to expansion cabinet ─────────
+          - if:
+            - condition: template
+              value_template: "{{- op == 'expand_drawer' -}}"
             then:
+            # Step 0: Validate inputs
+            - variables:
+                _ed_src: "{{ source_cabinet | default('', true) | string | trim }}"
+                _ed_tgt: "{{ target_cabinet | default('', true) | string | trim }}"
+                _ed_key: "{{ source_drawer | default('', true) | string | trim }}"
+                _ed_thresh: "{{ space_threshold | default(85) | int(85) }}"
+                _ed_max: 131072
             - choose:
               - conditions:
                 - condition: template
-                  value_template: "{{ _ed_subtree_keys | length > 1 }}"
+                  value_template: "{{ _ed_src == '' or _ed_tgt == '' or _ed_key == '' }}"
                 sequence:
                 - variables:
                     result:
                       status: error
                       op: expand_drawer
                       step_failed: validate
-                      reason: >-
-                        subtree_not_supported — drawer has Cabception children.
-                        expand_drawer requires a leaf key only.
-                      subtree_keys: "{{ _ed_subtree_keys }}"
+                      reason: source_cabinet, target_cabinet, and source_drawer are all required
                       caller_token: "{{ caller_token }}"
+            # Steps 1-6 + success all nested under one guard chain: once `result`
+            # is set by any earlier failure, no later step's variables/events run.
             - if: "{{ result is not defined }}"
               then:
-              # Step 2: Space check
+              # Step 1: Read source/target vars, validate drawer exists, no subtree
               - variables:
-                  _ed_drawer_size: >-
-                    {{ {_ed_key: _ed_src_vars.get(_ed_key, {})} | tojson | length }}
-                  _ed_src_size: "{{ _ed_src_vars | tojson | length }}"
-                  _ed_tgt_size: "{{ _ed_tgt_vars | tojson | length }}"
+                  _ed_src_vars: "{{ state_attr(_ed_src, 'variables') or {} }}"
+                  _ed_tgt_vars: "{{ state_attr(_ed_tgt, 'variables') or {} }}"
               - variables:
-                  _ed_tgt_post_size: "{{ _ed_tgt_size + _ed_drawer_size }}"
-                  _ed_src_post_pct: "{{ ((_ed_src_size - _ed_drawer_size + 100) * 100 / _ed_max) | round(1) }}"
-                  _ed_src_pre_pct: "{{ (_ed_src_size * 100 / _ed_max) | round(1) }}"
+                  _ed_subtree_keys: >-
+                    {%- set _prefix = _ed_key ~ '/' -%}
+                    {%- set ns = namespace(keys=[]) -%}
+                    {%- for k in (_ed_src_vars.keys() | list) -%}
+                      {%- if k == _ed_key or k.startswith(_prefix) -%}
+                        {%- set ns.keys = ns.keys + [k] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.keys }}
               - choose:
                 - conditions:
                   - condition: template
-                    value_template: "{{ _ed_tgt_post_size > _ed_max }}"
+                    value_template: "{{ _ed_key not in _ed_src_vars }}"
                   sequence:
                   - variables:
                       result:
-                        status: abort
+                        status: error
                         op: expand_drawer
-                        step_failed: space_check
-                        reason: insufficient_target_space
-                        target_cabinet: "{{ _ed_tgt }}"
-                        target_current_size: "{{ _ed_tgt_size }}"
-                        drawer_size: "{{ _ed_drawer_size }}"
-                        target_max: "{{ _ed_max }}"
+                        step_failed: validate
+                        reason: source_drawer key not found in source_cabinet
+                        source_cabinet: "{{ _ed_src }}"
+                        source_drawer: "{{ _ed_key }}"
                         caller_token: "{{ caller_token }}"
               - if: "{{ result is not defined }}"
                 then:
                 - choose:
                   - conditions:
                     - condition: template
-                      value_template: "{{ _ed_src_post_pct | float >= _ed_thresh }}"
+                      value_template: "{{ _ed_subtree_keys | length > 1 }}"
                     sequence:
                     - variables:
                         result:
-                          status: abort
+                          status: error
                           op: expand_drawer
-                          step_failed: space_check
-                          reason: source_will_remain_above_threshold
-                          source_cabinet: "{{ _ed_src }}"
-                          space_before_pct: "{{ _ed_src_pre_pct }}"
-                          space_after_pct: "{{ _ed_src_post_pct }}"
-                          threshold: "{{ _ed_thresh }}"
+                          step_failed: validate
+                          reason: >-
+                            subtree_not_supported — drawer has Cabception children.
+                            expand_drawer requires a leaf key only.
+                          subtree_keys: "{{ _ed_subtree_keys }}"
                           caller_token: "{{ caller_token }}"
                 - if: "{{ result is not defined }}"
                   then:
-                  # Step 3: Copy drawer to target cabinet
+                  # Step 2: Space check
                   - variables:
-                      _ed_copy_value: "{{ _ed_src_vars.get(_ed_key, {}).get('value') }}"
-                  - event: set_variable_legacy
-                    event_data:
-                      key: "{{- _ed_key -}}"
-                      value: "{{ _ed_copy_value }}"
-                      volume_entity: "{{- _ed_tgt -}}"
-                      set_timestamp: true
-                  - wait_template: >-
-                      {{ (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) is not none }}
-                    timeout: "00:00:15"
-                    continue_on_timeout: true
+                      _ed_drawer_size: >-
+                        {{ {_ed_key: _ed_src_vars.get(_ed_key, {})} | tojson | length }}
+                      _ed_src_size: "{{ _ed_src_vars | tojson | length }}"
+                      _ed_tgt_size: "{{ _ed_tgt_vars | tojson | length }}"
                   - variables:
-                      _ed_copy_ok: "{{ wait.completed }}"
+                      _ed_tgt_post_size: "{{ _ed_tgt_size + _ed_drawer_size }}"
+                      _ed_src_post_pct: "{{ ((_ed_src_size - _ed_drawer_size + 100) * 100 / _ed_max) | round(1) }}"
+                      _ed_src_pre_pct: "{{ (_ed_src_size * 100 / _ed_max) | round(1) }}"
                   - choose:
                     - conditions:
                       - condition: template
-                        value_template: "{{ not _ed_copy_ok }}"
+                        value_template: "{{ _ed_tgt_post_size > _ed_max }}"
                       sequence:
                       - variables:
                           result:
-                            status: error
+                            status: abort
                             op: expand_drawer
-                            step_failed: copy
-                            reason: copy_to_target_not_confirmed
-                            source_cabinet: "{{ _ed_src }}"
+                            step_failed: space_check
+                            reason: insufficient_target_space
                             target_cabinet: "{{ _ed_tgt }}"
-                            source_drawer: "{{ _ed_key }}"
+                            target_current_size: "{{ _ed_tgt_size }}"
+                            drawer_size: "{{ _ed_drawer_size }}"
+                            target_max: "{{ _ed_max }}"
                             caller_token: "{{ caller_token }}"
                   - if: "{{ result is not defined }}"
                     then:
-                    # Step 4: Set mount pointer in source (overwrites original with pointer)
-                    - event: set_variable_legacy
-                      event_data:
-                        key: "{{- _ed_key -}}"
-                        value: '{"mount_point": true, "target_entity_id": "{{ _ed_tgt }}"}'
-                        volume_entity: "{{- _ed_src -}}"
-                        set_timestamp: true
-                    - wait_template: >-
-                        {%- set _dr = (state_attr(_ed_src, 'variables') or {}).get(_ed_key) -%}
-                        {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                        {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                        {{ _dv is mapping and _dv.get('mount_point', false) == true }}
-                      timeout: "00:00:15"
-                      continue_on_timeout: true
-                    - variables:
-                        _ed_mount_set: "{{ wait.completed }}"
                     - choose:
                       - conditions:
                         - condition: template
-                          value_template: "{{ not _ed_mount_set }}"
+                          value_template: "{{ _ed_src_post_pct | float >= _ed_thresh }}"
                         sequence:
-                        # Undo: restore original data to source, delete target copy
-                        - event: set_variable_legacy
-                          event_data:
-                            key: "{{- _ed_key -}}"
-                            value: "{{ _ed_copy_value }}"
-                            volume_entity: "{{- _ed_src -}}"
-                            set_timestamp: true
-                        - event: remove_variable_legacy
-                          event_data:
-                            key: "{{- _ed_key -}}"
-                            volume_entity: "{{- _ed_tgt -}}"
                         - variables:
                             result:
-                              status: error
+                              status: abort
                               op: expand_drawer
-                              step_failed: mount_set
-                              reason: mount_pointer_not_confirmed_in_source
+                              step_failed: space_check
+                              reason: source_will_remain_above_threshold
                               source_cabinet: "{{ _ed_src }}"
-                              source_drawer: "{{ _ed_key }}"
+                              space_before_pct: "{{ _ed_src_pre_pct }}"
+                              space_after_pct: "{{ _ed_src_post_pct }}"
+                              threshold: "{{ _ed_thresh }}"
                               caller_token: "{{ caller_token }}"
                     - if: "{{ result is not defined }}"
                       then:
-                      # Step 5: Round trip — write sentinel through mount via FileCabinet (validates Sprint 1)
-                      - action: script.zen_dojotools_filecabinet
-                        data:
-                          mode: upsert
-                          path: "{{ _ed_key }}"
-                          value: '{"_ed_rt": true}'
-                          volume_entity_id: "{{ _ed_src }}"
-                        response_variable: _ed_rt_result
+                      # Step 3: Copy drawer to target cabinet
                       - variables:
-                          _ed_rt_fc_ok: >-
-                            {{ _ed_rt_result is mapping
-                               and _ed_rt_result.get('status') == 'success'
-                               and _ed_rt_result.get('write_verified') == true }}
-                      - variables:
-                          _ed_rt_target_ok: >-
-                            {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
-                            {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                            {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                            {{ _dv is mapping and _dv.get('_ed_rt') == true }}
-                      # Step 6: Restore original data to target (undo sentinel)
+                          _ed_copy_value: "{{ _ed_src_vars.get(_ed_key, {}).get('value') }}"
                       - event: set_variable_legacy
                         event_data:
                           key: "{{- _ed_key -}}"
@@ -1887,83 +1817,175 @@ script:
                           volume_entity: "{{- _ed_tgt -}}"
                           set_timestamp: true
                       - wait_template: >-
-                          {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
-                          {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                          {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                          {{ not (_dv is mapping and _dv.get('_ed_rt') == true) }}
+                          {{ (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) is not none }}
                         timeout: "00:00:15"
                         continue_on_timeout: true
-                      # Evaluate round trip result
+                      - variables:
+                          _ed_copy_ok: "{{ wait.completed }}"
                       - choose:
                         - conditions:
                           - condition: template
-                            value_template: "{{ not _ed_rt_fc_ok or not _ed_rt_target_ok }}"
+                            value_template: "{{ not _ed_copy_ok }}"
                           sequence:
-                          # Undo: restore original to source, remove target copy
-                          - event: set_variable_legacy
-                            event_data:
-                              key: "{{- _ed_key -}}"
-                              value: "{{ _ed_copy_value }}"
-                              volume_entity: "{{- _ed_src -}}"
-                              set_timestamp: true
-                          - event: remove_variable_legacy
-                            event_data:
-                              key: "{{- _ed_key -}}"
-                              volume_entity: "{{- _ed_tgt -}}"
                           - variables:
                               result:
                                 status: error
                                 op: expand_drawer
-                                step_failed: round_trip
-                                reason: write_through_mount_not_verified
-                                fc_ok: "{{ _ed_rt_fc_ok }}"
-                                target_ok: "{{ _ed_rt_target_ok }}"
-                                fc_result: "{{ _ed_rt_result }}"
+                                step_failed: copy
+                                reason: copy_to_target_not_confirmed
+                                source_cabinet: "{{ _ed_src }}"
+                                target_cabinet: "{{ _ed_tgt }}"
+                                source_drawer: "{{ _ed_key }}"
                                 caller_token: "{{ caller_token }}"
                       - if: "{{ result is not defined }}"
                         then:
-                        # SUCCESS
+                        # Step 4: Set mount pointer in source (overwrites original with pointer)
+                        - event: set_variable_legacy
+                          event_data:
+                            key: "{{- _ed_key -}}"
+                            value: '{"mount_point": true, "target_entity_id": "{{ _ed_tgt }}"}'
+                            volume_entity: "{{- _ed_src -}}"
+                            set_timestamp: true
+                        - wait_template: >-
+                            {%- set _dr = (state_attr(_ed_src, 'variables') or {}).get(_ed_key) -%}
+                            {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+                            {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+                            {{ _dv is mapping and _dv.get('mount_point', false) == true }}
+                          timeout: "00:00:15"
+                          continue_on_timeout: true
                         - variables:
-                            result:
-                              status: success
-                              op: expand_drawer
-                              source_cabinet: "{{ _ed_src }}"
-                              source_drawer: "{{ _ed_key }}"
-                              target_cabinet: "{{ _ed_tgt }}"
-                              space_before_pct: "{{ _ed_src_pre_pct }}"
-                              space_after_pct: "{{ _ed_src_post_pct }}"
-                              drawer_size_bytes: "{{ _ed_drawer_size }}"
-                              mount_installed: true
-                              round_trip_verified: true
-                              caller_token: "{{ caller_token }}"
+                            _ed_mount_set: "{{ wait.completed }}"
+                        - choose:
+                          - conditions:
+                            - condition: template
+                              value_template: "{{ not _ed_mount_set }}"
+                            sequence:
+                            # Undo: restore original data to source, delete target copy
+                            - event: set_variable_legacy
+                              event_data:
+                                key: "{{- _ed_key -}}"
+                                value: "{{ _ed_copy_value }}"
+                                volume_entity: "{{- _ed_src -}}"
+                                set_timestamp: true
+                            - event: remove_variable_legacy
+                              event_data:
+                                key: "{{- _ed_key -}}"
+                                volume_entity: "{{- _ed_tgt -}}"
+                            - variables:
+                                result:
+                                  status: error
+                                  op: expand_drawer
+                                  step_failed: mount_set
+                                  reason: mount_pointer_not_confirmed_in_source
+                                  source_cabinet: "{{ _ed_src }}"
+                                  source_drawer: "{{ _ed_key }}"
+                                  caller_token: "{{ caller_token }}"
+                        - if: "{{ result is not defined }}"
+                          then:
+                          # Step 5: Round trip — write sentinel through mount via FileCabinet (validates Sprint 1)
+                          - action: script.zen_dojotools_filecabinet
+                            data:
+                              mode: upsert
+                              path: "{{ _ed_key }}"
+                              value: '{"_ed_rt": true}'
+                              volume_entity_id: "{{ _ed_src }}"
+                            response_variable: _ed_rt_result
+                          - variables:
+                              _ed_rt_fc_ok: >-
+                                {{ _ed_rt_result is mapping
+                                   and _ed_rt_result.get('status') == 'success'
+                                   and _ed_rt_result.get('write_verified') == true }}
+                          - variables:
+                              _ed_rt_target_ok: >-
+                                {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
+                                {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+                                {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+                                {{ _dv is mapping and _dv.get('_ed_rt') == true }}
+                          # Step 6: Restore original data to target (undo sentinel)
+                          - event: set_variable_legacy
+                            event_data:
+                              key: "{{- _ed_key -}}"
+                              value: "{{ _ed_copy_value }}"
+                              volume_entity: "{{- _ed_tgt -}}"
+                              set_timestamp: true
+                          - wait_template: >-
+                              {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
+                              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
+                              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
+                              {{ not (_dv is mapping and _dv.get('_ed_rt') == true) }}
+                            timeout: "00:00:15"
+                            continue_on_timeout: true
+                          # Evaluate round trip result
+                          - choose:
+                            - conditions:
+                              - condition: template
+                                value_template: "{{ not _ed_rt_fc_ok or not _ed_rt_target_ok }}"
+                              sequence:
+                              # Undo: restore original to source, remove target copy
+                              - event: set_variable_legacy
+                                event_data:
+                                  key: "{{- _ed_key -}}"
+                                  value: "{{ _ed_copy_value }}"
+                                  volume_entity: "{{- _ed_src -}}"
+                                  set_timestamp: true
+                              - event: remove_variable_legacy
+                                event_data:
+                                  key: "{{- _ed_key -}}"
+                                  volume_entity: "{{- _ed_tgt -}}"
+                              - variables:
+                                  result:
+                                    status: error
+                                    op: expand_drawer
+                                    step_failed: round_trip
+                                    reason: write_through_mount_not_verified
+                                    fc_ok: "{{ _ed_rt_fc_ok }}"
+                                    target_ok: "{{ _ed_rt_target_ok }}"
+                                    fc_result: "{{ _ed_rt_result }}"
+                                    caller_token: "{{ caller_token }}"
+                          - if: "{{ result is not defined }}"
+                            then:
+                            # SUCCESS
+                            - variables:
+                                result:
+                                  status: success
+                                  op: expand_drawer
+                                  source_cabinet: "{{ _ed_src }}"
+                                  source_drawer: "{{ _ed_key }}"
+                                  target_cabinet: "{{ _ed_tgt }}"
+                                  space_before_pct: "{{ _ed_src_pre_pct }}"
+                                  space_after_pct: "{{ _ed_src_post_pct }}"
+                                  drawer_size_bytes: "{{ _ed_drawer_size }}"
+                                  mount_installed: true
+                                  round_trip_verified: true
+                                  caller_token: "{{ caller_token }}"
 
-      # Generic completion event for restore/repair_volumeinfo/reset
-      # (legacy) — none of these fire one of their own, unlike
-      # init/hammer/flip_schema_version above. Explicitly scoped to
-      # these 3 ops (rather than an implicit "nothing stopped yet" guard) --
-      # every other op now sets `result` itself above and must NOT have it
-      # clobbered here after this block's own single-exit consolidation.
-      - if: "{{ op in ['restore', 'repair_volumeinfo', 'reset'] }}"
-        then:
-        - event: zen_resolver_refresh
-        # ROBOT DONUT FIX: delayed retry, same reasoning as the other
-        # 3 sites — not a state trigger, doesn't read states(entity_id).
-        - delay:
-            seconds: 5
-        - event: zen_resolver_refresh
-        - variables:
-            # Surface real per-cabinet outcomes and downgrade status when any
-            # were skipped, instead of a blanket success.
-            _any_skipped: >-
-              {{ op == 'repair_volumeinfo'
-                 and (_repair_results.values() | select('search', '^skipped') | list | count) > 0 }}
-            result:
-              status: "{{ 'partial' if _any_skipped else 'success' }}"
-              message: "AdminTools completed '{{ op }}' on {{ effective_targets | length }} cabinet(s)."
-              op: "{{- op -}}"
-              target_count: "{{- effective_targets | length -}}"
-              repair_results: "{{ _repair_results if op == 'repair_volumeinfo' else omit }}"
-              caller_token: "{{- caller_token -}}"
+          # Generic completion event for restore/repair_volumeinfo/reset
+          # (legacy) — none of these fire one of their own, unlike
+          # init/hammer/flip_schema_version above. Explicitly scoped to
+          # these 3 ops (rather than an implicit "nothing stopped yet" guard) --
+          # every other op now sets `result` itself above and must NOT have it
+          # clobbered here after this block's own single-exit consolidation.
+          - if: "{{ op in ['restore', 'repair_volumeinfo', 'reset'] }}"
+            then:
+            - event: zen_resolver_refresh
+            # ROBOT DONUT FIX: delayed retry, same reasoning as the other
+            # 3 sites — not a state trigger, doesn't read states(entity_id).
+            - delay:
+                seconds: 5
+            - event: zen_resolver_refresh
+            - variables:
+                # Surface real per-cabinet outcomes and downgrade status when any
+                # were skipped, instead of a blanket success.
+                _any_skipped: >-
+                  {{ op == 'repair_volumeinfo'
+                     and (_repair_results.values() | select('search', '^skipped') | list | count) > 0 }}
+                result:
+                  status: "{{ 'partial' if _any_skipped else 'success' }}"
+                  message: "AdminTools completed '{{ op }}' on {{ effective_targets | length }} cabinet(s)."
+                  op: "{{- op -}}"
+                  target_count: "{{- effective_targets | length -}}"
+                  repair_results: "{{ _repair_results if op == 'repair_volumeinfo' else omit }}"
+                  caller_token: "{{- caller_token -}}"
     # ── single true exit for the whole tool — every op branch above sets
     # `result` itself; this just returns whatever is currently held. ──────
     - variables:
@@ -2453,17 +2475,6 @@ script:
         selector:
           text:
             multiline: true
-      ship_zen_system:
-        name: "Ship Factory KFCs (via KungFu Loader)"
-        description: >-
-          When ON (default), chains zen_admintools_kungfu_loader in factory mode —
-          deploys zen_system and trapper_keeper. (taskmaster, alert_manager,
-          camera_manager, and security_manager all self-register via KF5 instead —
-          see each tool's own mode=kfc_manifest — and no longer ship from here.)
-          Turn OFF to load the prompt only, skipping all KFC deployment.
-        default: true
-        selector:
-          boolean:
       sim_mode_allowed:
         name: "SP1 sim_mode Allowed (Factory Stamp)"
         description: >-
@@ -3959,20 +3970,6 @@ script:
               {'key': 'cortex', 'status': 'ok' if (_pl_cortex_ts_ok and _pl_cortex_content_ok) else 'failed', 'ts_ok': _pl_cortex_ts_ok, 'content_ok': _pl_cortex_content_ok, 'actual': _pl_cortex_actual, 'expected': _pl_expected_cortex_version | string}
             ] }}
 
-      # ── DEFAULT KFC COMPONENTS ────────────────────────────────────────────────
-      # KFC deployment is now handled by zen_admintools_kungfu_loader.
-      # This block chains the factory run — all factory-flagged KFCs ship automatically.
-      # To add a new factory KFC, add it to zen_admintools_kungfu_loader, not here.
-
-      - if: "{{- ship_zen_system | default(true) | bool -}}"
-        then:
-          - alias: 'Chain KungFu Loader — factory deploy (zen_system, trapper_keeper)'
-            action: script.zen_admintools_kungfu_loader
-            data:
-              mode: factory
-              caller_token: zen_admintools_prompt_loader
-            response_variable: _kungfu_loader_result
-
       # ── SP1 sim_mode factory stamp ──────────────────────────────────────────────
       # OS-level policy switch, not per-tool. Always writes an explicit value on
       # factory run so a fresh install never silently inherits an in-code default.
@@ -4008,222 +4005,6 @@ script:
           volume_entity_id: "{{ _pl_hh }}"
           key: integrations_config
           value: "{{ _pl_updated_ic }}"
-
-      # ── Legacy KFC ship blocks (REMOVED — now in zen_admintools_kungfu_loader) ──
-      # Kept as dead reference only. The if-false gate ensures they never run.
-      - if: "{{ false }}"
-        then:
-          - alias: 'Ship default KFC: zen_system (Scribe — new_thought)'
-            action: script.zen_dojotools_scribe
-            data:
-              mode: new_thought
-              key: zen_system
-              friendly_name: ZenOS System Health
-              component_summary: >-
-                Monitors ZenOS pipeline health: cabinet resolvers, kill switches,
-                summarizer staleness, and monk status. The meta-KFC that watches the watchers.
-              component_instructions: >-
-                Surface health state first. If any sensor is warn or critical, or any
-                pipeline kill switch is off — lead with that. If all ok — single line nominal.
-
-                Priority order for reporting:
-                1. Cabinets missing or unavailable — surface before anything else. No cabinets = no cognition.
-                2. Kill switches off — pipeline_master, supersummary_enabled, ninja_summarizer_enabled. Name the specific switch that is off.
-                3. Summarizer staleness — if zen_summary timestamp > 15 min, flag as stale. > 30 min = critical stale.
-                4. Monk errors — if supersummary_status is error/timeout/none, flag with status value.
-                5. Schema health — if schema_ok false, flag. No template = no monk output structure.
-
-                NAVIGATION — do NOT enumerate entity IDs. Express discovery paths instead:
-                - To find system health sensors: query label 'zen_system'
-                - To find all ZenOS entities: query label 'zen'
-                - To find KFC specs: query label 'dojo'
-                - To find kill switches: query label 'zen_system', filter input_boolean domain
-
-                In watchlist and attention fields, write "entities under label 'zen_system'" not a list of sensor.* IDs. Labels are stable; entity IDs are not. The label IS the scope.
-
-                Do NOT expand individual component kata here — this component owns the rollup signal only. If you see warn/critical on a specific component, name it and stop. The per-component monk will have detail.
-
-                Nominal report format: "ZenOS nominal. [N] components active. Last summary [X] min ago."
-                Alert format: "ZenOS [warn|critical]: [specific issue]. [switch name|sensor name|cabinet name]."
-
-                MASTER SWITCH RULE:
-                ZenOS pipeline kill switches (input_boolean entities under label
-                'zen_system') being OFF
-                IS a monitored deviation — flag it at priority 2 above.
-                Integration/subsystem master switches (Airspace, Grocy, media zones,
-                or any non-ZenOS feature enable) being off is an intentional user choice
-                — treat as informational only, max urgency contribution 1.
-                Distinguish by name: zen_* kill switches → flag. All others → informational.
-              label: zen_system
-              trigger_subscriptions: ha_start,daily_midnight,hourly_trigger,force_summary
-              caller_id: zen_admintools_prompt_loader
-          - alias: 'Ship default KFC: zen_system (Scribe — formalize_scroll)'
-            action: script.zen_dojotools_scribe
-            data:
-              mode: formalize_scroll
-              key: zen_system
-              caller_id: zen_admintools_prompt_loader
-          - alias: 'Ship default KFC: zen_system (Scribe — publish_kfc)'
-            action: script.zen_dojotools_scribe
-            data:
-              mode: publish_kfc
-              key: zen_system
-              publish_confirm: true
-              caller_id: zen_admintools_prompt_loader
-            response_variable: _zen_system_kfc_result
-
-      # alert_manager self-registers via KF5 (its own mode=kfc_manifest); this
-      # Scribe copy would overwrite that live drawer, so it is gated off like zen_system.
-      - if: "{{ false }}"
-        then:
-          # ── alert_manager — demos action emission (safety/system alerts) ────
-          - alias: 'Ship default KFC: alert_manager (Scribe — new_thought)'
-            action: script.zen_dojotools_scribe
-            data:
-              mode: new_thought
-              key: alert_manager
-              friendly_name: Alert Manager
-              label: alert_manager
-              version_semantic: "5.1.0"
-              component_summary: >-
-                Monitors label:alert_manager entities across all subsystems:
-                alert_when_off infrastructure (valves, line power, appliances, master switches),
-                alert_when_on/not_off condition sensors (safety, security, maintenance), and
-                informational context (grid state, system health, salt level, backups).
-                Severity tiers: critical/urgent/warning/information. Surfaces active deviations,
-                escalates via postman at configurable urgency thresholds. Error-severity alerts
-                write to priority inject and appear in the AI prompt NOTIFICATIONS block.
-              component_instructions: >-
-                You are reading the home alert surface. This component aggregates alerts
-                from all subsystems and determines whether action is required.
-
-                DATA ACCESS:
-                  review_data.results[] — all labeled entities. Each entry has:
-                    entity_id: the HA entity
-                    friendly_name: human-readable name
-                    state: current state string
-                    attributes: entity attribute dict
-                    labels: dict {slug: description} — keys are label slugs applied to this
-                      entity, values are description strings (empty if no description set).
-                      Iterate keys for label membership; read value for authoritative semantics.
-                    last_changed: when state last changed (parse as string)
-                    domain: entity domain (binary_sensor, input_boolean,
-                      persistent_notification, etc.)
-                  Persistent notifications: domain: persistent_notification.
-                    state: 'notifying' = active. attributes.message = text.
-                  review_data.domain_context.home_mode — current home mode string.
-                  review_data.domain_context.alarm — alarm panel state if available.
-                    States: disarmed / armed_home / armed_away / triggered / pending.
-
-                LABEL SEMANTICS:
-                  The alert_when_* label family is self-describing — the label name encodes
-                  the alert condition. Read the label, apply the rule.
-                  If a label's description value is non-empty, it is authoritative — prefer
-                  it over the inline semantics below.
-
-                  Binary state labels:
-                    alert_when_off — NOMINAL when ON. Flag if state is 'off' or 'unavailable'.
-                    alert_when_on — NOMINAL when OFF. Flag if state is 'on', 'problem', or 'detected'.
-                    alert_when_not_off — NOMINAL when OFF. Flag if state is anything other than 'off'.
-
-                  Numeric threshold labels (pattern: alert_when_under_N):
-                    alert_when_under_N — NOMINAL when numeric state >= N. Flag when state
-                      (parsed as float) drops below N. Extract N from the label slug.
-                      If not numeric, treat as deviation.
-
-                  alert_manager — scope label. No alert condition encoded. Entities without
-                    an alert_when_* label are informational context only.
-
-                  Severity modifiers (may appear alongside alert_when_*):
-                    critical — safety class. Immediate escalation. Smoke, CO, leaks, alarms.
-                    urgent   — high priority. Fast response needed.
-                    warning  — moderate priority. Investigate.
-                    information — state awareness only. No action required.
-
-                TRIAGE PRIORITY:
-                  1. Safety: fire, CO, gas, water leak, security breach, alarm triggered
-                  2. System health: alert_when_off infrastructure unexpectedly off
-                  3. Condition alerts: alert_when_on or alert_when_not_off sensors active
-                  4. Numeric threshold alerts: alert_when_under_N entities below threshold
-                  5. Persistent notifications: unacknowledged HA notifications
-                  6. Informational: low-priority FYIs, context-only entities
-
-                URGENCY RULES:
-                  - Alarm triggered OR label:critical entity deviating -> urgency: 9
-                  - label:critical alert_when_on/not_off active -> urgency: 8
-                  - 3+ alert_when_off entities in OFF/unavailable state -> urgency: 6
-                  - label:urgent entity deviating -> urgency: 5
-                  - 1-2 alert_when_off entities off, label:warning -> urgency: 4
-                  - alert_when_under_N entity below threshold, label:warning -> urgency: 4
-                  - label:information deviating, OR persistent_notifications only -> urgency: 3
-                  - alert_when_under_N entity below threshold, label:information -> urgency: 3
-                  - All entities nominal, no notifications -> urgency: 1
-                  Use highest individual score when multiple deviations exist.
-
-                TRIGGER CONTEXT:
-                  hourly_trigger — routine scan. Emit if urgency >= 3.
-                  daily_midnight — full audit. Always emit. Flag chronic (> 24h) deviations.
-                  home_mode_updates — re-evaluate. 'away'/'sleep': some off states legitimate.
-                    Safety-class alerts never suppressed by mode.
-                  alarm_panel — always evaluate. triggered: urgency 9, action_required true.
-                  force_summary — on-demand. Emit regardless of recency.
-                  ha_start — full scan. Treat unavailable as cautionary, not definitive.
-
-                OUTPUT FORMAT:
-                  List only active deviations. For each include: friendly_name, entity_id,
-                  current state, duration (from last_changed), severity class.
-                  If no deviations: state all monitored entities are nominal.
-
-                ESCALATION RULES:
-                  IMMEDIATE (notify this cycle): alarm triggered, safety sensor active, urgency >= 8.
-                  TRANSIENT (hold notification): last_changed < 10 min — mark 'newly triggered'.
-                    last_changed >= 10 min: confirmed deviation.
-                  MODE-AWARE THRESHOLD:
-                    home: notify at urgency >= 5.
-                    away/sleep: notify at urgency >= 6 for non-safety.
-                    Safety-class: always urgency >= 8 regardless of mode.
-                  DURATION SEVERITY:
-                    > 1 hour: persistent — state duration in output.
-                    > 24 hours: chronic — flag at daily_midnight.
-
-                AVAILABLE ACTIONS (suggested_act_event):
-                  zen_dojotools_postman — deliver urgent alert brief to admin.
-                    Use when: action_required true AND urgency meets mode-aware threshold
-                    AND deviation confirmed (last_changed >= 10 min) OR IMMEDIATE criteria met.
-                  null — urgency below threshold, deviation transient, or action_required false.
-                  DO NOT invent or use any other slug. If unsure, use null.
-
-                MASTER SWITCH RULE:
-                  Subsystem master switches (input_boolean or switch entities that enable/
-                  disable an integration or feature) being in state 'off' is an intentional
-                  user choice, NOT a deviation requiring action.
-                  - Max urgency contribution from any master switch in 'off' state: 1
-                  - Never set action_required based solely on a master switch being off
-                  - Never notify based on a master switch being off
-                  - Treat as informational context only regardless of alert_when_* label
-                  If a SAFETY-CLASS entity (smoke, CO, leak, alarm) happens to be
-                  implemented as a master switch, the safety rule wins — this exception
-                  applies to integration/subsystem enable switches only.
-              trigger_subscriptions: "ha_start,daily_midnight,hourly_trigger,home_mode_updates,alarm_panel,force_summary"
-              drift_threshold: 5
-              emission_cooldown_minutes: 30
-              suggested_act_event: zen_dojotools_postman
-              delay_seconds: 0
-              caller_id: zen_admintools_prompt_loader
-          - alias: 'Ship default KFC: alert_manager (Scribe — formalize_scroll)'
-            action: script.zen_dojotools_scribe
-            data:
-              mode: formalize_scroll
-              key: alert_manager
-              caller_id: zen_admintools_prompt_loader
-          - alias: 'Ship default KFC: alert_manager (Scribe — publish_kfc)'
-            action: script.zen_dojotools_scribe
-            data:
-              mode: publish_kfc
-              key: alert_manager
-              publish_confirm: true
-              caller_id: zen_admintools_prompt_loader
-            response_variable: _alert_manager_kfc_result
 
       # ── Idempotent: ensure syscab VolumeInfo carries cabinet_ro: true ─────────
       # Prompt loader writes directly to syscab via set_variable_zenos_system_cabinet.

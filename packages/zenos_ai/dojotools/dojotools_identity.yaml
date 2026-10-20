@@ -1,6 +1,20 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Identity
-# Version: 5.5.4
+# Version: 5.5.7
+# v5.5.7: resolve answers who from the identity data. A person.* is found
+#   anywhere in the household tree (member_index in zen_identity.jinja, not
+#   just the household's own users), and resolve returns name, member_type,
+#   person_entity and memberships (container, type, depth, role). membership
+#   mode's member lookup uses the same walk; its duplicate walk is retired.
+# v5.5.6: household_remove_member and family_remove_member find the member in
+#   whichever members list holds it (users, ai_users, families) instead of
+#   trusting member_type, which defaults to user. A family removed without
+#   member_type was left in place with status ok, and family_remove_member
+#   scrubbed the family's own VolumeInfo. Not a member now returns not_member
+#   and writes nothing.
+# v5.5.5 (#10637): the 11 AI_Cabinet_VolumeInfo writes (membership, GUID
+#   stamps, partner links) go through zen_admintools_cabinet_writer, the admin
+#   door, instead of raw set_variable_legacy events.
 #
 # v5.5.4: no mode and no identity input returns roots, this tool's own map
 #   (who=resolve, belongs=membership, may=cert_list) from its tool_manifest modes.
@@ -1083,20 +1097,17 @@ script:
             {{- None -}}
           
           {#- --- 1. person.* entity → resolve to cabinet --- -#}
-          {#-     Primary:  member entry with matching person_entity_id         -#}
+          {#-     Primary:  member entry with matching person_entity_id,        -#}
+          {#-               anywhere in the household tree (member_index)     -#}
           {#-     Fallback: slug convention (person.user → label 'user'         -#}
           {#-               ∩ zen_user_cabinet) — self-heals pre-patch members  -#}
           {%- elif rt.startswith('person.') -%}
-          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-          {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
-          {%- set _mbrs = CABS.cabinet_drawer_value(_hh, 'members', {}) | from_json() -%}
-          {%- set _mbrs = _mbrs if _mbrs is mapping else {} -%}
-          {%- set _all = _mbrs.get('users', []) + _mbrs.get('ai_users', []) -%}
-          {%- set _hit = _all | selectattr('person_entity_id', 'defined')
-                               | selectattr('person_entity_id', 'equalto', rt)
-                               | first | default(none) -%}
-          {%- if _hit -%}
-            {{- _hit.entity_id -}}
+          {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+          {%- set _hit = ID.member_index() | from_json([])
+                           | selectattr('person_entity', 'equalto', rt)
+                           | map(attribute='entity_id') | first | default('') -%}
+          {%- if _hit != '' -%}
+            {{- _hit -}}
           {%- else -%}
             {%- set _slug = rt | replace('person.', '') -%}
             {%- set _cands = label_entities(_slug) | select('match', 'sensor\.')
@@ -1410,12 +1421,16 @@ script:
                       {%- set _vi = _fam_vi_raw | from_json if _fam_vi_raw is string else _fam_vi_raw -%}
                       {%- set _vi = _vi if _vi is mapping else {} -%}
                       {{- dict(_vi, **{'guid': _fam_guid}) -}}
-                - event: set_variable_legacy
-                  event_data:
+                # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                - action: script.zen_admintools_cabinet_writer
+                  data:
+                    mode: set
+                    volume_entity: "{{- family_entity -}}"
                     key: AI_Cabinet_VolumeInfo
                     value: "{{- _fam_vi_stamped -}}"
-                    volume_entity: "{{- family_entity -}}"
                     set_timestamp: true
+                    caller: zen_dojotools_identity
+                    reason: "identity {{ mode | default('', true) }}"
             - variables:
                 _existing_fams: >-
                   {%- set _m = _hh_members_raw | from_json if _hh_members_raw is string else _hh_members_raw -%}
@@ -1633,12 +1648,16 @@ script:
                       {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                       {%- set _vi = _vi if _vi is mapping else {} -%}
                       {{- dict(_vi, **{'guid': _mem_guid}) -}}
-                - event: set_variable_legacy
-                  event_data:
+                # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                - action: script.zen_admintools_cabinet_writer
+                  data:
+                    mode: set
+                    volume_entity: "{{- member_entity -}}"
                     key: AI_Cabinet_VolumeInfo
                     value: "{{- _mem_vi_guid_stamped -}}"
-                    volume_entity: "{{- member_entity -}}"
                     set_timestamp: true
+                    caller: zen_dojotools_identity
+                    reason: "identity {{ mode | default('', true) }}"
             - variables:
                 _acls: "{{- _hh_acls | from_json if _hh_acls is string else (_hh_acls if _hh_acls is mapping else {}) -}}"
                 _prime_occupied: >-
@@ -1813,12 +1832,16 @@ script:
                   {%- endif -%}
             - if: "{{- _slot_filled | bool and _hh_vi_updated | trim != '' -}}"
               then:
-                - event: set_variable_legacy
-                  event_data:
+                # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                - action: script.zen_admintools_cabinet_writer
+                  data:
+                    mode: set
+                    volume_entity: "{{- _hh_cab -}}"
                     key: AI_Cabinet_VolumeInfo
                     value: "{{- _hh_vi_updated -}}"
-                    volume_entity: "{{- _hh_cab -}}"
                     set_timestamp: true
+                    caller: zen_dojotools_identity
+                    reason: "identity {{ mode | default('', true) }}"
             - variables:
                 _slot_name: >-
                   {%- if member_type == 'user' and _slot_filled | bool -%}hoh
@@ -1879,7 +1902,6 @@ script:
     - if: "{{- response is not defined and _mode == 'household_remove_member' -}}"
       then:
             - variables:
-                _list_key: "{{- 'ai_users' if member_type == 'ai_user' else 'users' -}}"
                 _hh_members_raw: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
                   {%- set _m = CABS.cabinet_drawer_value(_hh_cab, 'members', {}) | from_json() -%}
@@ -1888,63 +1910,97 @@ script:
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
                   {%- set _vi = CABS.cabinet_drawer_value(_hh_cab, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
                   {{- _vi | tojson -}}
+            # The members drawer is the truth on remove: match the entity in
+            # whichever list holds it, so an omitted member_type cannot miss.
             - variables:
-                _updated_members: >-
+                _found_key: >-
                   {%- set _m = _hh_members_raw | from_json if _hh_members_raw is string else _hh_members_raw -%}
                   {%- set _m = _m if _m is mapping else {} -%}
-                  {%- set _lst = _m.get(_list_key, []) -%}
-                  {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
-                  {%- set _filtered = _lst | rejectattr('entity_id', 'equalto', member_entity) | list -%}
-                  {{- dict(_m, **{_list_key: _filtered}) | tojson -}}
-                _principal_warning: >-
-                  {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _own = _acls.get('owner', []) -%}
-                  {%- set _prt = _acls.get('partner', []) -%}
-                  {%- set _is_hoh = _own | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -%}
-                  {%- set _is_prime = _prt | selectattr('entity_id', 'equalto', member_entity) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
-                  {%- if _is_hoh -%}hoh_slot_stale
-                  {%- elif _is_prime -%}prime_slot_stale
-                  {%- else -%}{%- endif -%}
-            - action: script.zen_dojotools_filecabinet
-              data:
-                action_type: create
-                force_action: true
-                set_timestamp: true
-                show_hidden_volumes: false
-                volume_entity_id:
-                  - "{{- _hh_cab -}}"
-                key: members
-                value: "{{- _updated_members -}}"
-            - event: zen_event
-              event_data:
-                kind: household_member_left
-                household_cabinet: "{{- _hh_cab -}}"
-                member_entity: "{{- member_entity -}}"
-                member_type: "{{- member_type -}}"
-                principal_warning: "{{- _principal_warning -}}"
-                prompt_profile_update: "{{- member_type == 'ai_user' -}}"
+                  {%- set ns = namespace(k='') -%}
+                  {%- for k in ['users', 'ai_users', 'families'] -%}
+                    {%- set _l = _m.get(k, []) -%}
+                    {%- set _l = _l if _l is iterable and _l is not string else [] -%}
+                    {%- if ns.k == '' and (_l | selectattr('entity_id', 'defined') | selectattr('entity_id', 'equalto', member_entity) | list | count > 0) -%}
+                      {%- set ns.k = k -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{- ns.k -}}
             - variables:
-                response: > 
-                  {{-
-                    {
-                      'mode':              'household_remove_member',
-                      'status':            'ok',
-                      'household_cabinet': _hh_cab,
-                      'member_entity':     member_entity,
-                      'member_type':       member_type,
-                      'principal_warning': _principal_warning,
-                      'timestamp':         now().isoformat(),
-                      'caller_token':      caller_token | default('')
-                    }
-                  -}}
-            - action: script.zen_dojotools_identity
-              data:
-                mode: build_identity_manifest
-                household_entity: "{{- _hh_cab -}}"
-              continue_on_error: true
+                _eff_type: "{{- {'users': 'user', 'ai_users': 'ai_user', 'families': 'family'}.get(_found_key, member_type) -}}"
+            - if: "{{- _found_key == '' -}}"
+              then:
+                - variables:
+                    response: >
+                      {{-
+                        {
+                          'mode':          'household_remove_member',
+                          'status':        'error',
+                          'code':          'not_member',
+                          'message':       member_entity ~ ' is not a member of ' ~ _hh_cab ~ '; nothing was written.',
+                          'member_entity': member_entity,
+                          'timestamp':     now().isoformat(),
+                          'caller_token':  caller_token | default('')
+                        }
+                      -}}
+            - if: "{{- _found_key != '' -}}"
+              then:
+                - variables:
+                    _updated_members: >-
+                      {%- set _m = _hh_members_raw | from_json if _hh_members_raw is string else _hh_members_raw -%}
+                      {%- set _m = _m if _m is mapping else {} -%}
+                      {%- set _lst = _m.get(_found_key, []) -%}
+                      {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
+                      {%- set _filtered = _lst | rejectattr('entity_id', 'equalto', member_entity) | list -%}
+                      {{- dict(_m, **{_found_key: _filtered}) | tojson -}}
+                    _principal_warning: >-
+                      {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
+                      {%- set _vi = _vi if _vi is mapping else {} -%}
+                      {%- set _acls = _vi.get('acls', {}) -%}
+                      {%- set _acls = _acls if _acls is mapping else {} -%}
+                      {%- set _own = _acls.get('owner', []) -%}
+                      {%- set _prt = _acls.get('partner', []) -%}
+                      {%- set _is_hoh = _own | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -%}
+                      {%- set _is_prime = _prt | selectattr('entity_id', 'equalto', member_entity) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
+                      {%- if _is_hoh -%}hoh_slot_stale
+                      {%- elif _is_prime -%}prime_slot_stale
+                      {%- else -%}{%- endif -%}
+                - action: script.zen_dojotools_filecabinet
+                  data:
+                    action_type: create
+                    force_action: true
+                    set_timestamp: true
+                    show_hidden_volumes: false
+                    volume_entity_id:
+                      - "{{- _hh_cab -}}"
+                    key: members
+                    value: "{{- _updated_members -}}"
+                - event: zen_event
+                  event_data:
+                    kind: household_member_left
+                    household_cabinet: "{{- _hh_cab -}}"
+                    member_entity: "{{- member_entity -}}"
+                    member_type: "{{- _eff_type -}}"
+                    principal_warning: "{{- _principal_warning -}}"
+                    prompt_profile_update: "{{- _eff_type == 'ai_user' -}}"
+                - variables:
+                    response: > 
+                      {{-
+                        {
+                          'mode':              'household_remove_member',
+                          'status':            'ok',
+                          'household_cabinet': _hh_cab,
+                          'member_entity':     member_entity,
+                          'member_type':       _eff_type,
+                          'principal_warning': _principal_warning,
+                          'timestamp':         now().isoformat(),
+                          'caller_token':      caller_token | default('')
+                        }
+                      -}}
+                - action: script.zen_dojotools_identity
+                  data:
+                    mode: build_identity_manifest
+                    household_entity: "{{- _hh_cab -}}"
+                  continue_on_error: true
 
     # ── Step 3f-2: mode = set_principal ─────────────────────────────────────
     # Works on households or families — family_entity overrides default household.
@@ -2052,12 +2108,16 @@ script:
                         {%- set _acls = dict(_acls, **{'partner': _others + [{'guid': _mguid, 'entity_id': member_entity, 'role': 'prime'}]}) -%}
                       {%- endif -%}
                       {{- dict(_vi, **{'acls': _acls}) -}}
-                - event: set_variable_legacy
-                  event_data:
+                # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                - action: script.zen_admintools_cabinet_writer
+                  data:
+                    mode: set
+                    volume_entity: "{{- _target_cab -}}"
                     key: AI_Cabinet_VolumeInfo
                     value: "{{- _hh_vi_updated -}}"
-                    volume_entity: "{{- _target_cab -}}"
                     set_timestamp: true
+                    caller: zen_dojotools_identity
+                    reason: "identity {{ mode | default('', true) }}"
                 # household_add_member keeps 'members' and 'acls' in sync in one
                 # call; set_principal only ever wrote acls, which left a caller
                 # that used set_principal directly (rather than
@@ -2321,12 +2381,16 @@ script:
                       {%- set _acls = dict(_acls, **{'family': _fam_list}) -%}
                       {%- set _dfg = _fam_guid if _is_first_family | bool else _vi.get('default_family_guid', '') -%}
                       {{- dict(_vi, **{'guid': _mem_guid, 'acls': _acls, 'default_family_guid': _dfg}) -}}
-                - event: set_variable_legacy
-                  event_data:
+                # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                - action: script.zen_admintools_cabinet_writer
+                  data:
+                    mode: set
+                    volume_entity: "{{- member_entity -}}"
                     key: AI_Cabinet_VolumeInfo
                     value: "{{- _mem_vi_updated -}}"
-                    volume_entity: "{{- member_entity -}}"
                     set_timestamp: true
+                    caller: zen_dojotools_identity
+                    reason: "identity {{ mode | default('', true) }}"
             - event: zen_event
               event_data:
                 kind: family_member_joined
@@ -2427,10 +2491,6 @@ script:
                   {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                   {%- set _vi = _vi if _vi is mapping else {} -%}
                   {{- _d if _d != '' else _vi.get('friendly_name', member_entity) -}}
-                _list_key: >-
-                  {%- if member_type == 'ai_user' -%}ai_users
-                  {%- elif member_type == 'family' -%}families
-                  {%- else -%}users{%- endif -%}
                 _was_default: >-
                   {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                   {%- set _vi = _vi if _vi is mapping else {} -%}
@@ -2451,82 +2511,120 @@ script:
                   {%- if _is_hoh -%}hoh_slot_stale
                   {%- elif _is_prime -%}prime_slot_stale
                   {%- else -%}{%- endif -%}
+            # The members drawer is the truth on remove: match the entity in
+            # whichever list holds it, so an omitted member_type cannot miss.
             - variables:
-                _updated_members: >-
+                _found_key: >-
                   {%- set _m = _fam_members_raw | from_json if _fam_members_raw is string else _fam_members_raw -%}
                   {%- set _m = _m if _m is mapping else {} -%}
-                  {%- set _lst = _m.get(_list_key, []) -%}
-                  {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
-                  {%- set _filtered = _lst | rejectattr('entity_id', 'equalto', member_entity) | list -%}
-                  {{- dict(_m, **{_list_key: _filtered}) | tojson -}}
-            - action: script.zen_dojotools_filecabinet
-              data:
-                action_type: create
-                force_action: true
-                set_timestamp: true
-                show_hidden_volumes: false
-                volume_entity_id:
-                  - "{{- family_entity -}}"
-                key: members
-                value: "{{- _updated_members -}}"
-            # — scrub member's VolumeInfo: remove family from acls.family + clear default —
-            - if: "{{- member_type != 'family' -}}"
+                  {%- set ns = namespace(k='') -%}
+                  {%- for k in ['users', 'ai_users', 'families'] -%}
+                    {%- set _l = _m.get(k, []) -%}
+                    {%- set _l = _l if _l is iterable and _l is not string else [] -%}
+                    {%- if ns.k == '' and (_l | selectattr('entity_id', 'defined') | selectattr('entity_id', 'equalto', member_entity) | list | count > 0) -%}
+                      {%- set ns.k = k -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{- ns.k -}}
+            - variables:
+                _eff_type: "{{- {'users': 'user', 'ai_users': 'ai_user', 'families': 'family'}.get(_found_key, member_type) -}}"
+            - if: "{{- _found_key == '' -}}"
               then:
                 - variables:
-                    _mem_vi_updated: >-
-                      {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                      {%- set _vi = _vi if _vi is mapping else {} -%}
-                      {%- set _acls = _vi.get('acls', {}) -%}
-                      {%- set _acls = _acls if _acls is mapping else {} -%}
-                      {%- set _fam_list = _acls.get('family', []) -%}
-                      {%- set _fam_list = _fam_list if _fam_list is iterable and _fam_list is not string else [] -%}
-                      {%- set _fam_list = _fam_list | rejectattr('family_guid', 'equalto', _fam_guid) | list -%}
-                      {%- set _acls = dict(_acls, **{'family': _fam_list}) -%}
-                      {%- set _dfg = '' if _was_default | bool else _vi.get('default_family_guid', '') -%}
-                      {{- dict(_vi, **{'acls': _acls, 'default_family_guid': _dfg}) -}}
-                - event: set_variable_legacy
-                  event_data:
-                    key: AI_Cabinet_VolumeInfo
-                    value: "{{- _mem_vi_updated -}}"
-                    volume_entity: "{{- member_entity -}}"
+                    response: >
+                      {{-
+                        {
+                          'mode':          'family_remove_member',
+                          'status':        'error',
+                          'code':          'not_member',
+                          'message':       member_entity ~ ' is not a member of ' ~ family_entity ~ '; nothing was written.',
+                          'member_entity': member_entity,
+                          'timestamp':     now().isoformat(),
+                          'caller_token':  caller_token | default('')
+                        }
+                      -}}
+            - if: "{{- _found_key != '' -}}"
+              then:
+                - variables:
+                    _updated_members: >-
+                      {%- set _m = _fam_members_raw | from_json if _fam_members_raw is string else _fam_members_raw -%}
+                      {%- set _m = _m if _m is mapping else {} -%}
+                      {%- set _lst = _m.get(_found_key, []) -%}
+                      {%- set _lst = _lst if _lst is iterable and _lst is not string else [] -%}
+                      {%- set _filtered = _lst | rejectattr('entity_id', 'equalto', member_entity) | list -%}
+                      {{- dict(_m, **{_found_key: _filtered}) | tojson -}}
+                - action: script.zen_dojotools_filecabinet
+                  data:
+                    action_type: create
+                    force_action: true
                     set_timestamp: true
-            - event: zen_event
-              event_data:
-                kind: family_member_left
-                family_entity: "{{- family_entity -}}"
-                family_name: "{{- _fam_name -}}"
-                family_guid: "{{- _fam_guid -}}"
-                member_entity: "{{- member_entity -}}"
-                member_name: "{{- _mem_name -}}"
-                member_type: "{{- member_type -}}"
-                is_ai: "{{- member_type == 'ai_user' -}}"
-                was_default_family: "{{- _was_default | bool -}}"
-                principal_warning: "{{- _principal_warning -}}"
-                prompt_profile_update: true
-            - variables:
-                response: >
-                  {{-
-                    {
-                      'mode':              'family_remove_member',
-                      'status':            'ok',
-                      'family_entity':     family_entity,
-                      'family_guid':       _fam_guid,
-                      'family_name':       _fam_name,
-                      'member_entity':     member_entity,
-                      'member_type':       member_type,
-                      'member_guid':       _mem_guid,
-                      'member_name':       _mem_name,
-                      'was_default_family': _was_default | bool,
-                      'principal_warning': _principal_warning,
-                      'timestamp':         now().isoformat(),
-                      'caller_token':      caller_token | default('')
-                    }
-                  -}}
-            - action: script.zen_dojotools_identity
-              data:
-                mode: build_identity_manifest
-                household_entity: "{{- _hh_target -}}"
-              continue_on_error: true
+                    show_hidden_volumes: false
+                    volume_entity_id:
+                      - "{{- family_entity -}}"
+                    key: members
+                    value: "{{- _updated_members -}}"
+                # — scrub member's VolumeInfo: remove family from acls.family + clear default —
+                - if: "{{- _eff_type != 'family' -}}"
+                  then:
+                    - variables:
+                        _mem_vi_updated: >-
+                          {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
+                          {%- set _vi = _vi if _vi is mapping else {} -%}
+                          {%- set _acls = _vi.get('acls', {}) -%}
+                          {%- set _acls = _acls if _acls is mapping else {} -%}
+                          {%- set _fam_list = _acls.get('family', []) -%}
+                          {%- set _fam_list = _fam_list if _fam_list is iterable and _fam_list is not string else [] -%}
+                          {%- set _fam_list = _fam_list | rejectattr('family_guid', 'equalto', _fam_guid) | list -%}
+                          {%- set _acls = dict(_acls, **{'family': _fam_list}) -%}
+                          {%- set _dfg = '' if _was_default | bool else _vi.get('default_family_guid', '') -%}
+                          {{- dict(_vi, **{'acls': _acls, 'default_family_guid': _dfg}) -}}
+                    # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                    - action: script.zen_admintools_cabinet_writer
+                      data:
+                        mode: set
+                        volume_entity: "{{- member_entity -}}"
+                        key: AI_Cabinet_VolumeInfo
+                        value: "{{- _mem_vi_updated -}}"
+                        set_timestamp: true
+                        caller: zen_dojotools_identity
+                        reason: "identity {{ mode | default('', true) }}"
+                - event: zen_event
+                  event_data:
+                    kind: family_member_left
+                    family_entity: "{{- family_entity -}}"
+                    family_name: "{{- _fam_name -}}"
+                    family_guid: "{{- _fam_guid -}}"
+                    member_entity: "{{- member_entity -}}"
+                    member_name: "{{- _mem_name -}}"
+                    member_type: "{{- _eff_type -}}"
+                    is_ai: "{{- _eff_type == 'ai_user' -}}"
+                    was_default_family: "{{- _was_default | bool -}}"
+                    principal_warning: "{{- _principal_warning -}}"
+                    prompt_profile_update: true
+                - variables:
+                    response: >
+                      {{-
+                        {
+                          'mode':              'family_remove_member',
+                          'status':            'ok',
+                          'family_entity':     family_entity,
+                          'family_guid':       _fam_guid,
+                          'family_name':       _fam_name,
+                          'member_entity':     member_entity,
+                          'member_type':       _eff_type,
+                          'member_guid':       _mem_guid,
+                          'member_name':       _mem_name,
+                          'was_default_family': _was_default | bool,
+                          'principal_warning': _principal_warning,
+                          'timestamp':         now().isoformat(),
+                          'caller_token':      caller_token | default('')
+                        }
+                      -}}
+                - action: script.zen_dojotools_identity
+                  data:
+                    mode: build_identity_manifest
+                    household_entity: "{{- _hh_target -}}"
+                  continue_on_error: true
 
     # ── Step 3i: mode = link_partners ─────────────────────────────────────────
     # Works for any entity pair: user↔user, user↔ai_user, ai_user↔ai_user.
@@ -2604,18 +2702,26 @@ script:
                   {%- endif -%}
                   {%- set _acls = dict(_acls, **{'partner': _pts}) -%}
                   {{- dict(_vi, **{'acls': _acls}) -}}
-            - event: set_variable_legacy
-              event_data:
+            # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+            - action: script.zen_admintools_cabinet_writer
+              data:
+                mode: set
+                volume_entity: "{{- member_entity -}}"
                 key: AI_Cabinet_VolumeInfo
                 value: "{{- _a_vi_updated -}}"
-                volume_entity: "{{- member_entity -}}"
                 set_timestamp: true
-            - event: set_variable_legacy
-              event_data:
+                caller: zen_dojotools_identity
+                reason: "identity {{ mode | default('', true) }}"
+            # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+            - action: script.zen_admintools_cabinet_writer
+              data:
+                mode: set
+                volume_entity: "{{- ai_entity -}}"
                 key: AI_Cabinet_VolumeInfo
                 value: "{{- _b_vi_updated -}}"
-                volume_entity: "{{- ai_entity -}}"
                 set_timestamp: true
+                caller: zen_dojotools_identity
+                reason: "identity {{ mode | default('', true) }}"
             - variables:
                 response: >
                   {{-
@@ -2709,18 +2815,26 @@ script:
                   {%- set _filtered = _pts | rejectattr('entity_id', 'equalto', member_entity) | list -%}
                   {%- set _acls = dict(_acls, **{'partner': _filtered}) -%}
                   {{- dict(_vi, **{'acls': _acls}) -}}
-            - event: set_variable_legacy
-              event_data:
+            # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+            - action: script.zen_admintools_cabinet_writer
+              data:
+                mode: set
+                volume_entity: "{{- member_entity -}}"
                 key: AI_Cabinet_VolumeInfo
                 value: "{{- _a_vi_updated -}}"
-                volume_entity: "{{- member_entity -}}"
                 set_timestamp: true
-            - event: set_variable_legacy
-              event_data:
+                caller: zen_dojotools_identity
+                reason: "identity {{ mode | default('', true) }}"
+            # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+            - action: script.zen_admintools_cabinet_writer
+              data:
+                mode: set
+                volume_entity: "{{- ai_entity -}}"
                 key: AI_Cabinet_VolumeInfo
                 value: "{{- _b_vi_updated -}}"
-                volume_entity: "{{- ai_entity -}}"
                 set_timestamp: true
+                caller: zen_dojotools_identity
+                reason: "identity {{ mode | default('', true) }}"
             - event: zen_event
               event_data:
                 event:
@@ -2788,12 +2902,16 @@ script:
                   {%- set _fvi = _fam_vi_raw | from_json if _fam_vi_raw is string else _fam_vi_raw -%}
                   {%- set _fguid = (_fvi if _fvi is mapping else {}).get('id', (_fvi if _fvi is mapping else {}).get('guid', '')) -%}
                   {{- dict(_vi, **{'default_family_guid': _fguid}) -}}
-            - event: set_variable_legacy
-              event_data:
+            # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+            - action: script.zen_admintools_cabinet_writer
+              data:
+                mode: set
+                volume_entity: "{{- member_entity -}}"
                 key: AI_Cabinet_VolumeInfo
                 value: "{{- _mem_vi_updated -}}"
-                volume_entity: "{{- member_entity -}}"
                 set_timestamp: true
+                caller: zen_dojotools_identity
+                reason: "identity {{ mode | default('', true) }}"
             - variables:
                 response: >
                   {{-
@@ -2966,66 +3084,10 @@ script:
                         _lookup_root: "{{- _hh_default -}}"
                         _target_eid: "{{- _root_entity -}}"
                     - variables:
-                        _hh_vi_raw: >-
-                          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                          {%- set _vi = CABS.cabinet_drawer_value(_lookup_root, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
-                          {{- _vi | tojson -}}
-                        _hh_m_raw: >-
-                          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                          {%- set _m = CABS.cabinet_drawer_value(_lookup_root, 'members', {}) | from_json() -%}
-                          {{- _m | tojson -}}
-                    - variables:
+                        # One walk of the household tree, shared with resolve (zen_identity.jinja)
                         _memberships: >-
-                          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                          {%- set _hvi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                          {%- set _hvi = _hvi if _hvi is mapping else {} -%}
-                          {%- set _hm = _hh_m_raw | from_json if _hh_m_raw is string else _hh_m_raw -%}
-                          {%- set _hm = _hm if _hm is mapping else {} -%}
-                          {%- set _eid = _target_eid -%}
-                          {%- set ns = namespace(groups=[]) -%}{# FG-25: namespace required for list mutation inside for-loop #}
-                          {# household direct membership? #}
-                          {%- set _hh_users = _hm.get('users', []) + _hm.get('ai_users', []) -%}
-                          {%- set _in_hh = _hh_users | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
-                          {%- if _in_hh -%}
-                            {%- set _hacls = _hvi.get('acls', {}) | default({}, true) -%}
-                            {%- set _hacls = _hacls if _hacls is mapping else {} -%}
-                            {%- set _own = _hacls.get('owner', []) -%}
-                            {%- set _prt = _hacls.get('partner', []) -%}
-                            {%- set _is_hoh = _own | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
-                            {%- set _is_prime = _prt | selectattr('entity_id', 'equalto', _eid) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
-                            {%- set _role = 'hoh' if _is_hoh else ('prime' if _is_prime else 'member') -%}
-                            {%- set ns.groups = ns.groups + [{'container': _lookup_root, 'container_type': 'household', 'guid': _hvi.get('id', _hvi.get('guid', '')), 'name': _hvi.get('friendly_name', _lookup_root), 'depth': 0, 'role': _role}] -%}
-                          {%- endif -%}
-                          {# scan depth-1 families #}
-                          {%- for fam in _hm.get('families', []) -%}
-                            {%- set _fc_entity_id = fam.get('entity_id', '') -%}
-                            {%- set _fvi = CABS.cabinet_drawer_value(_fc_entity_id, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
-                            {%- set _fm = CABS.cabinet_drawer_value(_fc_entity_id, 'members', {}) | from_json() -%}
-                            {%- set _f_users = _fm.get('users', []) + _fm.get('ai_users', []) -%}
-                            {%- set _in_fam = _f_users | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
-                            {%- if _in_fam -%}
-                              {%- set _facls = _fvi.get('acls', {}) | default({}, true) -%}
-                              {%- set _facls = _facls if _facls is mapping else {} -%}
-                              {%- set _fown = _facls.get('owner', []) -%}
-                              {%- set _fprt = _facls.get('partner', []) -%}
-                              {%- set _is_fhoh = _fown | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
-                              {%- set _is_fprime = _fprt | selectattr('entity_id', 'equalto', _eid) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
-                              {%- set _frole = 'hoh' if _is_fhoh else ('prime' if _is_fprime else 'member') -%}
-                              {%- set ns.groups = ns.groups + [{'container': _fc_entity_id, 'container_type': 'family', 'guid': _fvi.get('id', _fvi.get('guid', '')), 'name': fam.get('name', _fvi.get('friendly_name', _fvi.get('name', _fc_entity_id))), 'depth': 1, 'role': _frole}] -%}
-                            {%- endif -%}
-                            {# scan depth-2 sub-families #}
-                            {%- for sf in _fm.get('families', []) -%}
-                              {%- set _sf_entity_id = sf.get('entity_id', '') -%}
-                              {%- set _sfvi = CABS.cabinet_drawer_value(_sf_entity_id, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
-                              {%- set _sfm = CABS.cabinet_drawer_value(_sf_entity_id, 'members', {}) | from_json() -%}
-                              {%- set _sf_users = _sfm.get('users', []) + _sfm.get('ai_users', []) -%}
-                              {%- set _in_sf = _sf_users | selectattr('entity_id', 'equalto', _eid) | list | count > 0 -%}
-                              {%- if _in_sf -%}
-                                {%- set ns.groups = ns.groups + [{'container': _sf_entity_id, 'container_type': 'family', 'guid': _sfvi.get('id', _sfvi.get('guid', '')), 'name': sf.get('name', _sfvi.get('friendly_name', _sfvi.get('name', _sf_entity_id))), 'depth': 2, 'role': 'member'}] -%}
-                              {%- endif -%}
-                            {%- endfor -%}
-                          {%- endfor -%}
-                          {{- ns.groups | tojson -}}
+                          {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                          {{- ID.memberships_of(ID.member_index(_lookup_root), _target_eid) -}}
                     - variables:
                         response: >
                           {{-
@@ -3033,7 +3095,7 @@ script:
                               'mode':          'membership',
                               'view':          'member_lookup',
                               'member_entity': _root_entity,
-                              'memberships':   _memberships,
+                              'memberships':   (_memberships | from_json([]) if _memberships is string else _memberships),
                               'timestamp':     now().isoformat(),
                               'caller_token':  caller_token | default('')
                             }
@@ -3306,10 +3368,25 @@ script:
           {%- set _norm = normalized | string | trim -%}
           {%- set _is_plain = _norm not in ['', 'None', "''"] and '.' not in _norm -%}
           {{- (_has_err and _is_plain) | bool -}}
+    # Pre-compute: this cabinet's rows in the household tree (who it is to the
+    # identity data: name, person, type, and every container it belongs to)
+    - variables:
+        _r3b_rows: >-
+          {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+          {%- if _r3b_entity == '' -%}{{- [] | tojson -}}
+          {%- else -%}
+            {{- ID.member_index() | from_json([]) | selectattr('entity_id', 'equalto', _r3b_entity) | list | tojson -}}
+          {%- endif -%}
+    - variables:
+        _r3b_memberships: >-
+          {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+          {{- ID.memberships_of(_r3b_rows, _r3b_entity) -}}
     # Pre-compute: entity type flags (step 1b — depend on _r3b_entity, can't be siblings)
     - variables:
         _r3b_is_ai: >-
-          {{- (_r3b_entity != '' and 'ai_user' in labels(_r3b_entity)) | bool -}}
+          {%- set _rows = _r3b_rows | from_json([]) if _r3b_rows is string else _r3b_rows -%}
+          {{- (_r3b_entity != '' and ('ai_user' in labels(_r3b_entity)
+               or 'ai_user' in (_rows | map(attribute='member_type') | list))) | bool -}}
         _r3b_is_group: >-
           {{- (_r3b_entity != '' and
                ('household' in labels(_r3b_entity) or
@@ -3347,6 +3424,7 @@ script:
                       'motif':            _id.get('motif', ''),
                       'primary_user':     _id.get('primary_user', ''),
                       'familiarity_level': _jk.get('familiarity_level', 'acquainted'),
+                      'memberships':      (_r3b_memberships | from_json([]) if _r3b_memberships is string else _r3b_memberships),
                       'target_normalized': normalized,
                       'timestamp':        now().isoformat(),
                       'caller_token':     caller_token | default('')
@@ -3390,6 +3468,7 @@ script:
                         },
                         'member_cabinets':      _members,
                         'family_group_cabinets': _fgroups,
+                        'memberships':          (_r3b_memberships | from_json([]) if _r3b_memberships is string else _r3b_memberships),
                         'home_mode':            states(label_entities('zen_home_mode') | select('match', '(sensor|input_select)\\.') | list | first | default('', true)),
                         'quiet_hours_active':   is_state(label_entities('zen_quiet_hours') | select('match', 'binary_sensor\\.') | list | first | default('none', true), 'on'),
                         'target_normalized':    normalized,
@@ -3410,6 +3489,7 @@ script:
                         'family_name':       _g.get('family_name', _g.get('name', '')),
                         'relationship_type': _g.get('relationship_type', ''),
                         'member_cabinets':   _members,
+                        'memberships':       (_r3b_memberships | from_json([]) if _r3b_memberships is string else _r3b_memberships),
                         'target_normalized': normalized,
                         'timestamp':         now().isoformat(),
                         'caller_token':      caller_token | default('')
@@ -3484,8 +3564,28 @@ script:
               {%- set _pe = label_entities(lbl) | select('match', '^person\\.') | list | first | default('') -%}
               {%- if _pe != '' -%}{%- set ns.person_eid = _pe -%}{%- endif -%}
             {%- endfor -%}
+            {%- if ns.person_eid == '' -%}
+              {%- set _rows = _r3b_rows | from_json([]) if _r3b_rows is string else _r3b_rows -%}
+              {%- set ns.person_eid = _rows | map(attribute='person_entity') | reject('equalto', '') | first | default('') -%}
+            {%- endif -%}
             {{- ns.person_eid -}}
           {%- endif -%}
+        _r3b_name: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {%- set ent = _r3b_entity | trim -%}
+          {%- if ent == '' -%}{{- '' -}}
+          {%- else -%}
+            {%- set _up = CABS.cabinet_drawer_value(ent, '_user_profile', {}) | from_json({}) -%}
+            {%- set _fp = CABS.cabinet_drawer_value(ent, '_family_profile', {}) | from_json({}) -%}
+            {%- set _p = _up if (_up is mapping and _up | length > 0) else (_fp if _fp is mapping else {}) -%}
+            {%- set _rows = _r3b_rows | from_json([]) if _r3b_rows is string else _r3b_rows -%}
+            {{- (_p.get('preferred_name', _p.get('name', '')) | trim)
+                or (_rows | map(attribute='name') | reject('equalto', '') | first | default(''))
+                or ent -}}
+          {%- endif -%}
+        _r3b_member_type: >-
+          {%- set _rows = _r3b_rows | from_json([]) if _r3b_rows is string else _r3b_rows -%}
+          {{- _rows | map(attribute='member_type') | first | default('') -}}
         _r3b_tracking: >-
           {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
           {%- set ent = _r3b_entity | trim -%}
@@ -3632,7 +3732,10 @@ script:
                   'is_group':         _r3b_is_group | bool,
                   'is_ai':            _r3b_is_ai | bool,
                   'cabinet':          _r3b_entity,
+                  'name':             _r3b_name,
+                  'member_type':      _r3b_member_type,
                   'person_entity':    _r3b_person_entity | default('') | trim,
+                  'memberships':      (_r3b_memberships | from_json([]) if _r3b_memberships is string else _r3b_memberships),
                   'target_normalized': normalized,
                   'spaces':      _r3b_spaces      | from_json if _r3b_spaces      is string else _r3b_spaces,
                   'area_labels': _r3b_area_labels  | from_json if _r3b_area_labels  is string else _r3b_area_labels,
