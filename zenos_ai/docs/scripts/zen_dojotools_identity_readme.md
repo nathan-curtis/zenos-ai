@@ -66,7 +66,7 @@ flowchart TD
 
 | Mode | Description | Writes? |
 |---|---|---|
-| `resolve` | Returns identity record for target, or full roster if no target | No |
+| `resolve` | Returns identity record for target, or full roster if no target. A record carries `name`, `person_entity`, `member_type` and `memberships` (each container the member belongs to, with its type, role and depth); a person is found anywhere in the household tree. | No |
 | `whoami` | Shared "who is asking" resolver. Human: `console_user`, `resolved_person`, `is_hoh` (from the household cabinet ACLs, never a label; informational only). Agent: `agent`, `agent_entity`, `agent_onboarded`, `is_default`, `is_prime`. Both: household and family memberships. Other tools call this rather than re-deriving identity. | No |
 | `prompt` | Returns rendered prompt capsule for target construct | No |
 | `build_identity_manifest` | Builds `{roster, tree}` and writes to household cabinet | Yes |
@@ -87,7 +87,7 @@ flowchart TD
 | `request_live_ack` (2026-08-15) | Single shared chokepoint for "get a live human yes/no" — fires an alert via AlertManager, polls for response, returns approved/declined/timeout | No |
 | `cert_list` (2026-08-15) | Combined static cert catalog + live-grant view — what could exist, and what's actually held right now | No |
 
-`resolve` is the default mode — existing callers are unaffected.
+A call with no mode and no input returns the tool's roots (`who`, `belongs`, `may`) and never acts; name `mode=resolve` explicitly.
 
 ---
 

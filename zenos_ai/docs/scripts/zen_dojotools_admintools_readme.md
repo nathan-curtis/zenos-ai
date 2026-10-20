@@ -284,8 +284,7 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
-| `cortex_version` | select | `latest` | `latest` or `45` = Open Door (default). `44` = Open Door. `43` = Rule Zero. Only used when `mode=load`. |
-| `ship_zen_system` | boolean | `true` | When ON (default), chains `zen_admintools_kungfu_loader` in factory mode — deploys `zen_system` and `trapper_keeper`. `taskmaster`, `alert_manager`, `camera_manager`, and `security_manager` all self-register via KF5 instead (see each tool's own `mode=kfc_manifest`) and are no longer shipped from here. Turn OFF to load the prompt only, skipping all KFC deployment. |
+| `cortex_version` | select | `latest` | `latest` or `45` = Open Door (current), `44` = Open Door, `43` = Rule Zero. Only used when `mode=load`. |
 | `sim_mode_allowed` | boolean | `false` | Stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level policy switch (see `zen_dojotools_identity resolve_caller_identity`) — `false` (default) fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live. Leave off unless you deliberately want simulated identity resolution accepted platform-wide. |
 | `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
 | `action_type` | select | `list` | `mode=whitelist` only. `list` \| `add` \| `remove` \| `reset`. |

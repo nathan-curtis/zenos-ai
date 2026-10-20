@@ -252,11 +252,11 @@ packages/zenos_ai/
     dojotools_provisioner.yaml — Identity provisioning (household / user / AI user)
     dojotools_labels.yaml      — Label inspection and management
     dojotools_index.yaml       — Index, HyperIndex, ZQ-1 query engine
-    dojotools_admintools.yaml  — Cabinet repair, manifest write, KFC loader, prompt loader
+    dojotools_admintools.yaml  — Cabinet repair, manifest write, prompt loader
+    dojotools_cabinet_writer.yaml — Admin door for structural cabinet writes
     dojotools_summarizers.yaml — Kata and Supersummary engines
     dojotools_systemtools.yaml — System tools and event emitter
     dojotools_dispatcher.yaml  — Two-level urgency dispatch router
-    dojotools_kungfu_loader.yaml — KFC component loader and lifecycle
 
     — AI Interface —
     dojotools_scribe.yaml      — KF4 artifact authoring (MCP-exposed KFC registration)

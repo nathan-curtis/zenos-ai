@@ -255,10 +255,9 @@ Admin-only cert issuance/revocation authority for AI persona (`ai_user`) cabinet
 
 ---
 
-## 26. Zen AdminTools KungFu Loader — v5.2.1
-**File:** [`zen_admintools_kungfu_loader_readme.md`](zen_admintools_kungfu_loader_readme.md)
+## 26. Zen AdminTools KungFu Loader — retired (2026.11)
 
-Deploys KFC (Kung Fu Component) dojo drawers via Scribe, for components that don't self-register through KF5.
+Retired. Every KFC now self-registers through KF5 (each tool's own `mode=kfc_manifest`, registered by `zen_dojotools_manifest mode=bootstrap_kfc` on reload and daily). Its last component, `camera_heartbeat`, moved to `zen_dojotools_camera`'s `kfc_manifest`. See the [KF5 pattern](zen_kf5_pattern_readme.md).
 
 ---
 
@@ -294,6 +293,13 @@ Deterministic entity selector for Home Assistant — the compiled-filter query e
 **File:** [`zen_dojotools_todo_readme.md`](zen_dojotools_todo_readme.md)
 
 MCP-exposed HA to-do list CRUD. `create`/`update` are cert-gated (`pii_disclosure_control`) and `delete` requires `todo_control` (level 2) as of 2026.10.0; read stays open.
+
+---
+
+## 32. Zen AdminTools Cabinet Writer — v1.1.0
+**File:** [`zen_admintools_cabinet_writer_readme.md`](zen_admintools_cabinet_writer_readme.md)
+
+The admin door: the one writer for structural, system and vault cabinet writes that FileCabinet refuses by design. Not MCP-exposed. Every write names its caller, is logged, and is verified on the cabinet before it answers.
 
 ---
 

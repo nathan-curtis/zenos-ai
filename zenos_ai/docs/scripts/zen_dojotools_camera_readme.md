@@ -1,4 +1,4 @@
-# Zen DojoTools Camera — v5.1.2
+# Zen DojoTools Camera — v5.2.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_camera.yaml`
 **Script:** `zen_dojotools_camera`
@@ -330,6 +330,19 @@ The two labels are orthogonal. A camera can carry either, both, or neither.
 
 1. `zen_dojotools_camera tool=read camera_entity=<id>` — direct drawer read
 2. `zen_dojotools_index expand_entities=true` on a camera label — the inspect enrichment includes `domain_context.camera[entity_id]` with `analysis`, `cached_at`, `cache_age_minutes`, `snapshot_path`, `found`
+
+---
+
+## KFC Components (KF5)
+
+The camera tool hosts two Kung Fu Components through its own `mode=kfc_manifest`. `zen_dojotools_manifest mode=bootstrap_kfc` registers them as live dojo drawers on reload and daily; nothing ships them by hand.
+
+| Component | Data scope | Triggers | Purpose |
+|---|---|---|---|
+| `camera_manager` | `security_camera` cameras + `domain_context.camera` cache | `force_summary` | Reads the scene cache and reports perimeter status, subjects, stale cameras. |
+| `camera_heartbeat` | `security_camera` cameras | `start_home_wake`, `daily_noon`, `start_home_evening`, `daily_midnight` | Scheduled scan daemon: jittered wait, exterior scan every slot, interior scan only when the home is away or the alarm is armed_away/triggered. Urgency always 1. |
+
+`camera_heartbeat` is opt-in by data: it is enabled only while at least one camera carries the `exterior` or `interior` label it scans by. Tag cameras with `zen_dojotools_labels` to turn it on; no redeploy. (It moved here from the retired KungFu Loader in 2026.11.)
 
 ---
 
