@@ -262,6 +262,20 @@ Fixes and tooling gaps found running 2026.10.0 on live installs, plus two certif
 
 ---
 
+## 2026.10.2 — Security Patch
+
+**Status:** Release candidate 1 on `feat/2026.10.2` (cut from `v2026.10.1`)
+
+Three authorization fixes. None changes how a correctly behaving agent works; each closes a way to reach something a tool was supposed to refuse.
+
+### Fixed
+
+- **The event emitter no longer forges internal events.** `zen_dojotools_event_emitter` is reachable by agents and passed any `kind` straight to the event bus. Several listeners act on kinds: scheduled reloads, tool dispatch, approval acknowledgements, prompt injection, garbage collection, and cabinet, identity, alert and label signals. Those kinds are now reserved and refused with a `guarded:` error. Internal callers fire their own events directly. Free-form kinds and the summary and ninja forces still work. If you have a listener that acts on a privileged kind, its prefix belongs in the reserved list in `dojotools_systemtools.yaml`.
+- **The help proxy only reaches ZenOS tools.** `zen_dojotools_help` took any script name and called it with `mode=help`, which runs the default path of a script that has no help handler. It now proxies only existing `zen_dojotools_`, `zen_stack_`, `zen_sutra_` and `zen_codex_` tools and refuses anything else with a `guarded:` error.
+- **Cabinet admin refusals hold.** A cert denial, a missing `hammer_ok`, or a refused live acknowledgement set an error and then fell through to the operation, so the operation ran anyway: a hammer without `hammer_ok` wiped the cabinet. Everything after the guards now runs only when no refusal was set, and `mode=help` answers again. `reset` asks for the same per-call live household-admin acknowledgement as `hammer`.
+
+---
+
 *ZenOS-AI 2026.10.0 'Tron' — end of line?*
 
 *Not while the Grid is still running.*
