@@ -1,6 +1,6 @@
 ###############################################################################
 # DojoTools — Zen Display Surface
-# zen_dojotools_display (v0.5.3, beta in 2026.10.0; finishes in 2026.11.0)
+# zen_dojotools_display (v0.5.4, beta in 2026.10.0; finishes in 2026.11.0)
 #
 # Agent-composable, policy-bound casting of a Lovelace dashboard/view to any
 # display in the house. Descoped from the full 2026.10 spec per the
@@ -83,6 +83,8 @@
 #     Manager's. Not yet wired into play_media/activity_apply, Media
 #     Manager's other watch-intent paths.
 #
+# v0.5.4 -- unregister rewrites the lens registry whole (upsert merged, so the
+#   provider was never removed); status reads a session stored as JSON text.
 # v0.5.3 — marked beta: the shared display dashboard ships in 2026.11.0.
 # v0.5.2 — shared-sensor existence and value resolved by label (zen_display_surface), not by entity ID.
 # v0.5.1 — session auto-expiry: mode=expire_sessions clears any
@@ -534,66 +536,52 @@ script:
                   risk_class: actuator
                   enabled: true
                   status: available
-          - action: script.zen_dojotools_filecabinet
+          # Through the central lens writer (prompt_loader lens_registry): it runs
+          # queued, so two registrations never overwrite each other.
+          - action: script.zen_admintools_prompt_loader
+            continue_on_error: true
+            response_variable: _reg_write_raw
             data:
-              action_type: get
-              volume_entity_id: "{{ _reg_hh }}"
-              key: lens_registry
-            response_variable: _reg_read_raw
+              mode: lens_registry
+              action_type: register
+              item: display
+              payload_json: "{{ _reg_entry['display'] | tojson }}"
           - variables:
-              _reg_current: >-
-                {%- set raw = _reg_read_raw if _reg_read_raw is mapping else {} -%}
-                {%- set val = raw.get('value', {}) -%}
-                {%- set parsed = val | from_json if val is string else val -%}
-                {{ parsed if parsed is mapping else {} }}
-          - action: script.zen_dojotools_filecabinet
-            data:
-              action_type: write
-              volume_entity_id: "{{ _reg_hh }}"
-              key: lens_registry
-              value: "{{ (_reg_current | combine(_reg_entry)) | tojson }}"
+              _reg_write_raw: "{{ _reg_write_raw.get('result', _reg_write_raw) if _reg_write_raw is defined and _reg_write_raw is mapping else {} }}"
+              _reg_ok: "{{ _reg_write_raw is mapping and _reg_write_raw.get('status') == 'success' }}"
           - variables:
               result:
                 mode: register
-                status: ok
+                status: "{{ 'ok' if _reg_ok else 'error' }}"
                 caller_token: "{{ _caller_token }}"
                 provider: display
-                registered: true
+                registered: "{{ _reg_ok }}"
 
       - if: "{{ result is not defined and _mode == 'unregister' }}"
         then:
           - variables:
               _unreg_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
-          - action: script.zen_dojotools_filecabinet
-            data:
-              action_type: get
-              volume_entity_id: "{{ _unreg_hh }}"
-              key: lens_registry
-            response_variable: _unreg_read_raw
           - variables:
-              _unreg_current: >-
-                {%- set raw = _unreg_read_raw if _unreg_read_raw is mapping else {} -%}
-                {%- set val = raw.get('value', {}) -%}
-                {%- set parsed = val | from_json if val is string else val -%}
-                {{ parsed if parsed is mapping else {} }}
-              _unreg_removed: "{{ 'display' in _unreg_current }}"
-          - variables:
-              _unreg_new: >-
-                {%- set ns = namespace(d={}) -%}
-                {%- for k, v in _unreg_current.items() -%}
-                  {%- if k != 'display' -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
-                {%- endfor -%}
-                {{ ns.d }}
-          - action: script.zen_dojotools_filecabinet
+              _unreg_removed: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set v = CABS.cabinet_drawer_value(_unreg_hh, 'lens_registry', {}) | from_json({}) -%}
+                {%- set v = (v | from_json({})) if v is string else v -%}
+                {{ v is mapping and 'display' in v }}
+          # Through the central lens writer (prompt_loader lens_registry).
+          - action: script.zen_admintools_prompt_loader
+            continue_on_error: true
+            response_variable: _unreg_write_raw
             data:
-              action_type: write
-              volume_entity_id: "{{ _unreg_hh }}"
-              key: lens_registry
-              value: "{{ _unreg_new | tojson }}"
+              mode: lens_registry
+              action_type: unregister
+              item: display
+          - variables:
+              _unreg_write_raw: "{{ _unreg_write_raw.get('result', _unreg_write_raw) if _unreg_write_raw is defined and _unreg_write_raw is mapping else {} }}"
+              _unreg_ok: "{{ _unreg_write_raw is mapping and _unreg_write_raw.get('status') == 'success' }}"
           - variables:
               result:
                 mode: unregister
-                status: ok
+                status: "{{ 'ok' if _unreg_ok else 'error' }}"
                 caller_token: "{{ _caller_token }}"
                 provider: display
                 removed: "{{ _unreg_removed }}"
@@ -646,7 +634,7 @@ script:
         then:
           - variables:
               _exp_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
-          - action: script.zen_dojotools_filecabinet
+          - action: script.zen_sutra_filecabinet
             continue_on_error: true
             data:
               action_type: list
@@ -654,11 +642,7 @@ script:
               volume_entity_id: "{{ _exp_hh }}"
             response_variable: _exp_list_raw
           - variables:
-              # list's real response has items at the top level directly --
-              # no wrapping 'result' key (that shape is specific to read/get's
-              # response, not list's). status/update/read calls elsewhere in
-              # this file are unaffected: they use action_type: read/get,
-              # where the result wrapper genuinely is correct.
+              # list answers items at the top level.
               _exp_keys: >-
                 {%- set items = _exp_list_raw.get('items', []) if _exp_list_raw is mapping else [] -%}
                 {{ items | map(attribute='key') | list }}
@@ -666,18 +650,18 @@ script:
           - repeat:
               for_each: "{{ _exp_keys }}"
               sequence:
-                - action: script.zen_dojotools_filecabinet
+                - action: script.zen_sutra_filecabinet
                   continue_on_error: true
                   data:
-                    action_type: read
+                    action_type: get
                     key: "{{ repeat.item }}"
                     volume_entity_id: "{{ _exp_hh }}"
                   response_variable: _exp_read_raw
                 - variables:
                     _exp_session: >-
-                      {%- set r = _exp_read_raw.get('result', {}) if _exp_read_raw is mapping else {} -%}
+                      {%- set r = _exp_read_raw.get('value') if _exp_read_raw is mapping else {} -%}
                       {%- set r = r if r is mapping else (r | from_json({}) if r is string else {}) -%}
-                      {%- set d = r.get(repeat.item, {}) -%}
+                      {%- set d = r -%}
                       {%- set d = d if d is mapping else (d | from_json({}) if d is string else {}) -%}
                       {%- set v = d.get('value', d) if d is mapping else {} -%}
                       {{ v if v is mapping else {} }}
@@ -693,10 +677,11 @@ script:
                           {%- endif -%}
                     - if: "{{ (_exp_age_minutes | float(999)) >= 5 }}"
                       then:
-                        - action: script.zen_dojotools_filecabinet
+                        - action: script.zen_sutra_filecabinet
                           continue_on_error: true
                           data:
                             action_type: update
+                            mode: replace
                             force_action: true
                             key: "{{ repeat.item }}"
                             volume_entity_id: "{{ _exp_hh }}"
@@ -886,18 +871,18 @@ script:
                   - variables:
                       _status_entity: "{{ _resolved[0] }}"
                       _status_key: "display_session_{{ _resolved[0] | replace('.', '_') }}"
-                  - action: script.zen_dojotools_filecabinet
+                  - action: script.zen_sutra_filecabinet
                     continue_on_error: true
                     data:
-                      action_type: read
+                      action_type: get
                       key: "{{ _status_key }}"
                       volume_entity_id: "{{ _hh_cabinet }}"
                     response_variable: _status_read_raw
                   - variables:
                       _status_session: >-
-                        {%- set r = _status_read_raw.get('result', {}) if _status_read_raw is mapping else {} -%}
+                        {%- set r = _status_read_raw.get('value') if _status_read_raw is mapping else {} -%}
                         {%- set r = r if r is mapping else (r | from_json({}) if r is string else {}) -%}
-                        {%- set d = r.get(_status_key, {}) -%}
+                        {%- set d = r -%}
                         {%- set d = d if d is mapping else (d | from_json({}) if d is string else {}) -%}
                         {%- set v = d.get('value', d) if d is mapping else {} -%}
                         {{ v if v is mapping else {} }}
@@ -1161,10 +1146,11 @@ script:
                                 ack_owner: "{{ _ack_owner if _ack_owner != '' else none }}"
                                 ack_context: "{{ _ack_context if _ack_context != '' else none }}"
                                 created_at: "{{ now().isoformat() }}"
-                          - action: script.zen_dojotools_filecabinet
+                          - action: script.zen_sutra_filecabinet
                             continue_on_error: true
                             data:
                               action_type: update
+                              mode: replace
                               force_action: true
                               key: "{{ _show_key }}"
                               volume_entity_id: "{{ _hh_cabinet }}"
@@ -1175,10 +1161,11 @@ script:
                           # view/sensor reads ONLY this fixed key, not the
                           # per-entity one above (that one stays for
                           # status/dismiss's per-target correctness). ──
-                          - action: script.zen_dojotools_filecabinet
+                          - action: script.zen_sutra_filecabinet
                             continue_on_error: true
                             data:
                               action_type: update
+                              mode: replace
                               force_action: true
                               key: display_session_current
                               volume_entity_id: "{{ _hh_cabinet }}"
@@ -1255,18 +1242,18 @@ script:
                             entity_id: "{{ _upd_entity }}"
                   - if: "{{ result is not defined }}"
                     then:
-                      - action: script.zen_dojotools_filecabinet
+                      - action: script.zen_sutra_filecabinet
                         continue_on_error: true
                         data:
-                          action_type: read
+                          action_type: get
                           key: "{{ _upd_key }}"
                           volume_entity_id: "{{ _hh_cabinet }}"
                         response_variable: _upd_read_raw
                       - variables:
                           _upd_session: >-
-                            {%- set r = _upd_read_raw.get('result', {}) if _upd_read_raw is mapping else {} -%}
+                            {%- set r = _upd_read_raw.get('value') if _upd_read_raw is mapping else {} -%}
                             {%- set r = r if r is mapping else (r | from_json({}) if r is string else {}) -%}
-                            {%- set d = r.get(_upd_key, {}) -%}
+                            {%- set d = r -%}
                             {%- set d = d if d is mapping else (d | from_json({}) if d is string else {}) -%}
                             {%- set v = d.get('value', d) if d is mapping else {} -%}
                             {{ v if v is mapping else {} }}
@@ -1398,19 +1385,21 @@ script:
                                       'ack_context': (_ack_context if _ack_context != '' else _upd_session.get('ack_context')),
                                       'updated_at': now().isoformat()
                                     }) }}
-                              - action: script.zen_dojotools_filecabinet
+                              - action: script.zen_sutra_filecabinet
                                 continue_on_error: true
                                 data:
                                   action_type: update
+                                  mode: replace
                                   force_action: true
                                   key: "{{ _upd_key }}"
                                   volume_entity_id: "{{ _hh_cabinet }}"
                                   value: "{{ _upd_new_session | tojson }}"
                               # ── Shared single-view pointer, same as show. ──
-                              - action: script.zen_dojotools_filecabinet
+                              - action: script.zen_sutra_filecabinet
                                 continue_on_error: true
                                 data:
                                   action_type: update
+                                  mode: replace
                                   force_action: true
                                   key: display_session_current
                                   volume_entity_id: "{{ _hh_cabinet }}"
@@ -1480,10 +1469,11 @@ script:
                               cert_level: 1
                   - if: "{{ result is not defined }}"
                     then:
-                      - action: script.zen_dojotools_filecabinet
+                      - action: script.zen_sutra_filecabinet
                         continue_on_error: true
                         data:
                           action_type: update
+                          mode: replace
                           force_action: true
                           key: "{{ _dis_key }}"
                           volume_entity_id: "{{ _hh_cabinet }}"
@@ -1564,7 +1554,7 @@ automation:
       - variables:
           _corr_id: "{{ trigger.event.data.event.correlation_id }}"
           _hh_cabinet: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
-      - action: script.zen_dojotools_filecabinet
+      - action: script.zen_sutra_filecabinet
         continue_on_error: true
         data:
           action_type: list
@@ -1572,16 +1562,14 @@ automation:
           volume_entity_id: "{{ _hh_cabinet }}"
         response_variable: _ic_list_raw
       - variables:
-          # list's real script response has items at the top level directly --
-          # no wrapping 'result' key (that shape is specific to read/get's
-          # response, not list's).
+          # list answers items at the top level.
           _ic_keys: >-
             {%- set items = _ic_list_raw.get('items', []) if _ic_list_raw is mapping else [] -%}
             {{ items | map(attribute='key') | list }}
       - repeat:
           for_each: "{{ _ic_keys }}"
           sequence:
-            - action: script.zen_dojotools_filecabinet
+            - action: script.zen_sutra_filecabinet
               continue_on_error: true
               data:
                 action_type: get
@@ -1595,10 +1583,11 @@ automation:
                   {{ v if v is mapping else {} }}
             - if: "{{ _ic_session.get('session_id', '') == _corr_id }}"
               then:
-                - action: script.zen_dojotools_filecabinet
+                - action: script.zen_sutra_filecabinet
                   continue_on_error: true
                   data:
                     action_type: update
+                    mode: replace
                     force_action: true
                     key: "{{ repeat.item }}"
                     volume_entity_id: "{{ _hh_cabinet }}"

@@ -1,5 +1,5 @@
 ###############################################################################
-# ZENOS-AI ADMINTOOL: CABINET WRITER, the admin door (v1.1.0)
+# ZENOS-AI ADMINTOOL: CABINET WRITER, the admin door (v1.4.0)
 #
 # The one place admin-plane cabinet writes fire (#10637, epic #10626). The
 # agent-facing door is zen_dojotools_filecabinet; this is the other door, for
@@ -22,6 +22,12 @@
 #   unverified write is status error. Callers read-modify-write VolumeInfo, so
 #   answering early let the next call overwrite this one. Adds force and
 #   bootstrap passthroughs for cabinetadmin.
+# v1.2.0: a bootstrap write may target a cabinet still in 'unknown' (virgin);
+#   every other write needs an online cabinet.
+# v1.3.0: a set also checks the stored value equals the value sent
+#   (content_verified); a changed value is an error. Proven lossless for the
+#   prompt_loader brain strings, which now come through here.
+# v1.4.0: optional meta/acl pass through to the drawer envelope.
 #
 # Modes:
 #   help (default, also any unknown mode): this reference, never a write.
@@ -83,6 +89,16 @@ script:
         required: false
         selector:
           boolean:
+      meta:
+        description: Drawer envelope meta (expiry etc.); merged over the stored meta.
+        required: false
+        selector:
+          object:
+      acl:
+        description: Drawer envelope acl; replaces the stored acl when given.
+        required: false
+        selector:
+          object:
       force:
         description: Passed to the Volume Redirector (overwrite guard bypass) for writes that own it.
         required: false
@@ -109,9 +125,13 @@ script:
           _caller: "{{ caller | default('', true) | string | trim }}"
           _reason: "{{ reason | default('', true) | string | trim }}"
           _token: "{{ caller_token | default('', true) }}"
+          # A bootstrap write (cabinetadmin init/restore/factory) may target a
+          # cabinet still in 'unknown' (virgin, no recorder history); every
+          # other write needs an online cabinet. unavailable is never writable.
           _is_cabinet: >-
             {{ _vol != '' and _vol in label_entities('zen_cabinet')
-               and states(_vol) not in ['unknown', 'unavailable', ''] }}
+               and (states(_vol) not in ['unknown', 'unavailable', '']
+                    or ((bootstrap | default(false) | bool) and states(_vol) == 'unknown')) }}
 
       # ── help (default, and any unknown mode) ─────────────────────────────
       - if: "{{ _mode not in ['tool_manifest', 'set', 'remove', 'clear'] }}"
@@ -145,7 +165,7 @@ script:
                   tool='zen_admintools_cabinet_writer',
                   display_name='Cabinet Writer (admin door)',
                   tier='admintools',
-                  version='1.1.0',
+                  version='1.4.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['zen_cabinet'],
                   consumes=['volume_entity', 'key', 'value'],
@@ -198,6 +218,8 @@ script:
                       volume_entity: "{{ _vol }}"
                       key: "{{ _key }}"
                       value: "{{ value }}"
+                      meta: "{{ meta if meta is defined else none }}"
+                      acl: "{{ acl if acl is defined else none }}"
                       set_timestamp: true
                       force: "{{ _force }}"
                       _cabinetadmin_init: "{{ _boot }}"
@@ -227,6 +249,18 @@ script:
                     continue_on_timeout: true
           - variables:
               _verified: "{{ wait.completed if wait is defined else false }}"
+          # A set must land exactly as sent: compare the stored value with the
+          # value given. Each hop re-renders the value and HA's native typing can
+          # change it (a quoted string unwrapped, "45" turned into 45); a changed
+          # value is a failed write, not a success.
+          - variables:
+              _content_ok: >-
+                {%- if _mode != 'set' -%}true
+                {%- else -%}
+                  {%- set d = (state_attr(_vol, 'variables') or {}).get(_key, {}) -%}
+                  {%- set got = d.get('value') if d is mapping else none -%}
+                  {{ (got | tojson) == (value | tojson) }}
+                {%- endif -%}
           - event: zen_event
             event_data:
               event:
@@ -247,14 +281,17 @@ script:
               message: "admin_cabinet_write caller={{ _caller }} op={{ _mode }} volume={{ _vol }} key={{ _key }} reason={{ _reason }}"
           - variables:
               result:
-                status: "{{ 'success' if _verified else 'error' }}"
+                status: "{{ 'success' if (_verified and _content_ok) else 'error' }}"
                 tool: zen_admintools_cabinet_writer
                 mode: "{{ _mode }}"
                 volume_entity: "{{ _vol }}"
                 key: "{{ _key }}"
                 caller: "{{ _caller }}"
                 write_verified: "{{ _verified }}"
-                message: "{{ '' if _verified else 'write not visible on the cabinet within 10s' }}"
+                content_verified: "{{ _content_ok }}"
+                message: >-
+                  {{ 'write not visible on the cabinet within 10s' if not _verified
+                     else ('stored value differs from the value sent' if not _content_ok else '') }}
                 caller_token: "{{ _token }}"
 
       - stop: cabinet writer done

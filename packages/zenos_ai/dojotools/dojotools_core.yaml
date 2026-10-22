@@ -1,6 +1,24 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Core Package
-# Version: 5.1.3
+# Version: 5.2.1
+# v5.2.1: gc reads take content from value (read is get); a duplicated door field is gone.
+# v5.2.0: repair mode (one drawer, normalized in place via CABS.drawer_normalize;
+#   no write when clean or unreadable). Every GC write normalizes the drawer it
+#   touches (nested envelopes unwrapped, v1 expiry moved to meta, meta always
+#   present). hide/unhide/recycle on a missing drawer report not_found instead
+#   of writing an empty drawer.
+# v5.1.5: expiry reads the drawer envelope meta first (v1 value fallback);
+#   hide/unhide carry meta, recycle stamps meta.expires_after, so every
+#   drawer can expire (expiry is universal; meta and value are always present).
+# v5.1.4 (#10637 Phase 5): filecabinet_gc writes through the admin door (11
+#   sites; hidden .keys addressed exactly). Two bugs fixed with it: hide/unhide/
+#   recycle wrote the drawer's {value, timestamp} envelope as the new value
+#   (nesting the drawer a level per move); and expiry was read from an
+#   envelope meta the cabinet never stores, so expires_after never fired for
+#   FileCabinet v1 drawers. Expiry now reads the v1 value (envelope meta as a
+#   fallback). Drawer meta lives on the envelope beside value (cabinets keep
+#   it across writes); hide/unhide carry it and recycle stamps
+#   meta.expires_after, so every drawer can expire.
 # v5.1.3: filecabinet_gc: bare call (no mode/action_type/key/dry_run) returns help
 #   instead of running a GC pass (hide expired, hard-delete hidden).
 #
@@ -89,6 +107,9 @@ script:
           recycle — hide a specific drawer and set expiry to now+24h.
           hide — hide a specific drawer (no expiry change).
           unhide — promote a hidden .drawer back to visible.
+          repair — normalize one drawer in place ({value, meta}; nested envelopes
+          unwrapped; v1 expiry moved to meta). Writes nothing when the drawer is
+          clean or cannot be read. dry_run reports without writing.
         required: false
         default: gc
         selector:
@@ -98,6 +119,7 @@ script:
               - recycle
               - hide
               - unhide
+              - repair
       action_type:
         name: Action (Deprecated)
         description: "Deprecated alias for mode. Use mode instead."
@@ -225,8 +247,10 @@ script:
             - kata_structure
           all_drawers: "{{ state_attr(kata_entity, 'variables') | default({}, true) }}"
 
-      # ── 2. Single-drawer actions: recycle / hide / unhide ─────────────────
-      - alias: Recycle — hide drawer and set expires_after to now+24h
+      # ── 2. Single-drawer actions: recycle / hide / unhide / repair ────────
+      - variables:
+          expiry_ts: "{{ (now() + timedelta(hours=24)).isoformat() }}"
+      - alias: Recycle — hide drawer and set meta.expires_after to now+24h
         if:
           - condition: template
             value_template: >-
@@ -239,28 +263,39 @@ script:
               }}
         then:
           - variables:
-              src_data: "{{ all_drawers.get(target_key, {}) if all_drawers is mapping else {} }}"
-              expiry_ts: "{{ (now() + timedelta(hours=24)).isoformat() }}"
-              recycled_meta: >-
-                {%- set m = src_data.get('meta', {}) if src_data is mapping else {} -%}
-                {{ m | combine({'expires_after': expiry_ts}) }}
-              recycled_entry: "{{ src_data | combine({'meta': recycled_meta}) if src_data is mapping else src_data }}"
-          - event: set_variable_legacy
-            event_data:
-              key: ".{{ target_key }}"
-              value: "{{ recycled_entry }}"
-              volume_entity: "{{ kata_entity }}"
-          - event: remove_variable_legacy
-            event_data:
-              key: "{{ target_key }}"
-              volume_entity: "{{ kata_entity }}"
+              src_data: "{{ all_drawers.get(target_key) if all_drawers is mapping else none }}"
+          # Every drawer GC touches leaves normalized (CABS.drawer_normalize);
+          # a drawer it cannot read is left alone and reported, never written.
+          - variables:
+              _n: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {{ CABS.drawer_normalize(src_data) | from_json }}
+          - if: "{{ _n.ok }}"
+            then:
+              - action: script.zen_admintools_cabinet_writer
+                data:
+                  mode: set
+                  volume_entity: "{{ kata_entity }}"
+                  key: ".{{ target_key }}"
+                  value: "{{ _n.value }}"
+                  meta: "{{ dict(_n.meta, expires_after=expiry_ts) }}"
+                  caller: zen_dojotools_filecabinet_gc
+                  reason: "gc {{ gc_action | default('gc', true) }}"
+              - action: script.zen_admintools_cabinet_writer
+                data:
+                  mode: remove
+                  volume_entity: "{{ kata_entity }}"
+                  key: "{{ target_key }}"
+                  caller: zen_dojotools_filecabinet_gc
+                  reason: "gc {{ gc_action | default('gc', true) }}"
           - variables:
               final:
-                status: complete
+                status: "{{ 'complete' if _n.ok else 'not_found' }}"
                 action: recycle
                 drawer: "{{ target_key }}"
                 hidden_as: ".{{ target_key }}"
                 expires_after: "{{ expiry_ts }}"
+                repairs: "{{ _n.repairs }}"
                 caller_token: '{{ caller_token }}'
 
       - alias: Hide — rename drawer to .drawer
@@ -276,22 +311,38 @@ script:
               }}
         then:
           - variables:
-              src_data: "{{ all_drawers.get(target_key, {}) if all_drawers is mapping else {} }}"
-          - event: set_variable_legacy
-            event_data:
-              key: ".{{ target_key }}"
-              value: "{{ src_data }}"
-              volume_entity: "{{ kata_entity }}"
-          - event: remove_variable_legacy
-            event_data:
-              key: "{{ target_key }}"
-              volume_entity: "{{ kata_entity }}"
+              src_data: "{{ all_drawers.get(target_key) if all_drawers is mapping else none }}"
+          # Every drawer GC touches leaves normalized (CABS.drawer_normalize);
+          # a drawer it cannot read is left alone and reported, never written.
+          - variables:
+              _n: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {{ CABS.drawer_normalize(src_data) | from_json }}
+          - if: "{{ _n.ok }}"
+            then:
+              - action: script.zen_admintools_cabinet_writer
+                data:
+                  mode: set
+                  volume_entity: "{{ kata_entity }}"
+                  key: ".{{ target_key }}"
+                  value: "{{ _n.value }}"
+                  meta: "{{ _n.meta }}"
+                  caller: zen_dojotools_filecabinet_gc
+                  reason: "gc {{ gc_action | default('gc', true) }}"
+              - action: script.zen_admintools_cabinet_writer
+                data:
+                  mode: remove
+                  volume_entity: "{{ kata_entity }}"
+                  key: "{{ target_key }}"
+                  caller: zen_dojotools_filecabinet_gc
+                  reason: "gc {{ gc_action | default('gc', true) }}"
           - variables:
               final:
-                status: complete
+                status: "{{ 'complete' if _n.ok else 'not_found' }}"
                 action: hide
                 drawer: "{{ target_key }}"
                 hidden_as: ".{{ target_key }}"
+                repairs: "{{ _n.repairs }}"
                 caller_token: '{{ caller_token }}'
 
       - alias: Unhide — promote .drawer back to visible
@@ -307,23 +358,75 @@ script:
               }}
         then:
           - variables:
-              hidden_key: ".{{ target_key }}"
-              src_data: "{{ all_drawers.get(hidden_key, {}) if all_drawers is mapping else {} }}"
-          - event: set_variable_legacy
-            event_data:
-              key: "{{ target_key }}"
-              value: "{{ src_data }}"
-              volume_entity: "{{ kata_entity }}"
-          - event: remove_variable_legacy
-            event_data:
-              key: ".{{ target_key }}"
-              volume_entity: "{{ kata_entity }}"
+              src_data: "{{ all_drawers.get('.' ~ target_key) if all_drawers is mapping else none }}"
+          # Every drawer GC touches leaves normalized (CABS.drawer_normalize);
+          # a drawer it cannot read is left alone and reported, never written.
+          - variables:
+              _n: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {{ CABS.drawer_normalize(src_data) | from_json }}
+          - if: "{{ _n.ok }}"
+            then:
+              - action: script.zen_admintools_cabinet_writer
+                data:
+                  mode: set
+                  volume_entity: "{{ kata_entity }}"
+                  key: "{{ target_key }}"
+                  value: "{{ _n.value }}"
+                  meta: "{{ _n.meta }}"
+                  caller: zen_dojotools_filecabinet_gc
+                  reason: "gc {{ gc_action | default('gc', true) }}"
+              - action: script.zen_admintools_cabinet_writer
+                data:
+                  mode: remove
+                  volume_entity: "{{ kata_entity }}"
+                  key: ".{{ target_key }}"
+                  caller: zen_dojotools_filecabinet_gc
+                  reason: "gc {{ gc_action | default('gc', true) }}"
           - variables:
               final:
-                status: complete
+                status: "{{ 'complete' if _n.ok else 'not_found' }}"
                 action: unhide
                 drawer: "{{ target_key }}"
                 restored_from: ".{{ target_key }}"
+                repairs: "{{ _n.repairs }}"
+                caller_token: '{{ caller_token }}'
+
+      - alias: Repair — normalize one drawer in place (no write when clean or unreadable)
+        if:
+          - condition: template
+            value_template: >-
+              {{
+                final is not defined
+                and gc_action == 'repair'
+                and target_key != ''
+                and target_key | lower not in protected_explicit | map('lower') | list
+              }}
+        then:
+          - variables:
+              src_data: "{{ all_drawers.get(target_key) if all_drawers is mapping else none }}"
+          - variables:
+              _n: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {{ CABS.drawer_normalize(src_data) | from_json }}
+          - if: "{{ _n.ok and _n.changed and not dry_run }}"
+            then:
+              - action: script.zen_admintools_cabinet_writer
+                data:
+                  mode: set
+                  volume_entity: "{{ kata_entity }}"
+                  key: "{{ target_key }}"
+                  value: "{{ _n.value }}"
+                  meta: "{{ _n.meta }}"
+                  caller: zen_dojotools_filecabinet_gc
+                  reason: "gc {{ gc_action | default('gc', true) }}"
+          - variables:
+              final:
+                status: "{{ 'not_repairable' if not _n.ok else ('repaired' if (_n.changed and not dry_run) else ('would_repair' if _n.changed else 'clean')) }}"
+                action: repair
+                drawer: "{{ target_key }}"
+                repairs: "{{ _n.repairs }}"
+                dry_run: "{{ dry_run }}"
                 caller_token: '{{ caller_token }}'
 
       # ── 3. Resolve cabinet list for GC scan ───────────────────────────────
@@ -377,7 +480,7 @@ script:
                           {%- set is_hidden = key[:1] == '.' -%}
                           {%- set is_protected = is_system or key | lower in explicit_lc -%}
                           {%- if not is_protected and not is_hidden and val is mapping -%}
-                            {%- set meta = val.get('meta', {}) -%}
+                            {%- set _vv = val.get('value') -%}{%- set _vv = (_vv | from_json(none)) if _vv is string else _vv -%}{%- set meta = val.get('meta') if val.get('meta') is mapping else (_vv if (_vv is mapping and _vv.get('v') == 1) else {}) -%}
                             {%- set no_autoexpire = meta.get('no_autoexpire', false) -%}
                             {%- set exp_raw = meta.get('expires_after', '') | string | trim -%}
                             {%- if not no_autoexpire and exp_raw != '' -%}
@@ -398,7 +501,7 @@ script:
                           {%- set base_key = key[1:] if is_hidden else key -%}
                           {%- set is_protected = base_key | lower in explicit_lc -%}
                           {%- if is_hidden and not is_protected and val is mapping -%}
-                            {%- set meta = val.get('meta', {}) -%}
+                            {%- set _vv = val.get('value') -%}{%- set _vv = (_vv | from_json(none)) if _vv is string else _vv -%}{%- set meta = val.get('meta') if val.get('meta') is mapping else (_vv if (_vv is mapping and _vv.get('v') == 1) else {}) -%}
                             {%- set exp_raw = meta.get('expires_after', '') | string | trim -%}
                             {%- if exp_raw != '' -%}
                               {%- set exp_dt = exp_raw | as_datetime -%}
@@ -416,7 +519,7 @@ script:
                         {%- for key, val in cab_drawers.items() -%}
                           {%- set is_protected = key[:1] in ['_', '.'] or key | lower in explicit_lc -%}
                           {%- if not is_protected and val is mapping -%}
-                            {%- set meta = val.get('meta', {}) -%}
+                            {%- set _vv = val.get('value') -%}{%- set _vv = (_vv | from_json(none)) if _vv is string else _vv -%}{%- set meta = val.get('meta') if val.get('meta') is mapping else (_vv if (_vv is mapping and _vv.get('v') == 1) else {}) -%}
                             {%- set exp_raw = meta.get('expires_after', '') | string | trim -%}
                             {%- set no_autoexpire = meta.get('no_autoexpire', false) -%}
                             {%- if exp_raw == '' and not no_autoexpire -%}
@@ -452,16 +555,27 @@ script:
                         sequence:
                           - variables:
                               _key: "{{ repeat.item }}"
-                              _data: "{{ cab_drawers.get(_key, {}) }}"
-                          - event: set_variable_legacy
-                            event_data:
+                              _nd: >-
+                                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                                {{ CABS.drawer_normalize(cab_drawers.get(_key)) | from_json }}
+                              _data: "{{ _nd.value }}"
+                              _data_meta: "{{ _nd.meta }}"
+                          - action: script.zen_admintools_cabinet_writer
+                            data:
+                              mode: set
+                              volume_entity: "{{ current_cab }}"
                               key: ".{{ _key }}"
                               value: "{{ _data }}"
+                              meta: "{{ _data_meta }}"
+                              caller: zen_dojotools_filecabinet_gc
+                              reason: "gc {{ gc_action | default('gc', true) }}"
+                          - action: script.zen_admintools_cabinet_writer
+                            data:
+                              mode: remove
                               volume_entity: "{{ current_cab }}"
-                          - event: remove_variable_legacy
-                            event_data:
                               key: "{{ _key }}"
-                              volume_entity: "{{ current_cab }}"
+                              caller: zen_dojotools_filecabinet_gc
+                              reason: "gc {{ gc_action | default('gc', true) }}"
                 - alias: Delete expired hidden drawers (.foo → gone)
                   if:
                     - condition: template
@@ -470,10 +584,13 @@ script:
                     - repeat:
                         for_each: "{{ to_delete }}"
                         sequence:
-                          - event: remove_variable_legacy
-                            event_data:
-                              key: "{{ repeat.item }}"
+                          - action: script.zen_admintools_cabinet_writer
+                            data:
+                              mode: remove
                               volume_entity: "{{ current_cab }}"
+                              key: "{{ repeat.item }}"
+                              caller: zen_dojotools_filecabinet_gc
+                              reason: "gc {{ gc_action | default('gc', true) }}"
                 - alias: Evict legacy stale drawers (no expires_after, old timestamp)
                   if:
                     - condition: template
@@ -482,10 +599,13 @@ script:
                     - repeat:
                         for_each: "{{ stale_drawers }}"
                         sequence:
-                          - event: remove_variable_legacy
-                            event_data:
-                              key: "{{ repeat.item }}"
+                          - action: script.zen_admintools_cabinet_writer
+                            data:
+                              mode: remove
                               volume_entity: "{{ current_cab }}"
+                              key: "{{ repeat.item }}"
+                              caller: zen_dojotools_filecabinet_gc
+                              reason: "gc {{ gc_action | default('gc', true) }}"
                 - alias: Track kata drawers actually deleted this pass (scoped resummarize)
                   if:
                     - condition: template
@@ -508,12 +628,14 @@ script:
                           {{ _cab_flags | combine({'gc_eligible': false}) if _cab_flags is mapping else {'gc_eligible': false} }}
                         _new_vol_info: >-
                           {{ _vol_info_raw | combine({'flags': _new_flags}) if _vol_info_raw is mapping else {'flags': _new_flags} }}
-                    - event: set_variable_legacy
-                      event_data:
-                        key: AI_Cabinet_VolumeInfo
-                        value: "{{ _new_vol_info }}"
-                        set_timestamp: false
+                    - action: script.zen_admintools_cabinet_writer
+                      data:
+                        mode: set
                         volume_entity: "{{ current_cab }}"
+                        key: "AI_Cabinet_VolumeInfo"
+                        value: "{{ _new_vol_info }}"
+                        caller: zen_dojotools_filecabinet_gc
+                        reason: "gc {{ gc_action | default('gc', true) }}"
 
       # ── 4b. Priority inject GC — per-entry scan of _zen_priority_inject ────────
       # _-prefixed drawers are protected from the normal GC loop above.
@@ -531,18 +653,18 @@ script:
                 value_template: >-
                   {{ _pi_hh not in ['', 'unavailable', 'unknown'] }}
             then:
-              - action: script.zen_dojotools_filecabinet
+              - action: script.zen_sutra_filecabinet
                 data:
-                  action_type: read
+                  action_type: get
                   volume_entity_id: "{{ _pi_hh }}"
                   key: _zen_priority_inject
                   force_action: true
                 response_variable: _pi_fc_read
               - variables:
                   _pi_slot_json: >-
-                    {%- set r = _pi_fc_read.get('result', '{}') -%}
+                    {%- set r = _pi_fc_read.get('value') -%}
                     {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
-                    {%- set raw = r.get('_zen_priority_inject', {}) -%}
+                    {%- set raw = r -%}
                     {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
                     {{ raw.get('value', raw) | tojson if raw is mapping else '{}' }}
               - variables:
@@ -596,9 +718,10 @@ script:
                   - condition: template
                     value_template: "{{ _pi_slot_json != _pi_final }}"
                 then:
-                  - action: script.zen_dojotools_filecabinet
+                  - action: script.zen_sutra_filecabinet
                     data:
                       action_type: update
+                      mode: replace
                       volume_entity_id: "{{ _pi_hh }}"
                       key: _zen_priority_inject
                       value: "{{ _pi_final }}"
@@ -623,18 +746,18 @@ script:
                 value_template: >-
                   {{ _aa_hh not in ['', 'unavailable', 'unknown'] }}
             then:
-              - action: script.zen_dojotools_filecabinet
+              - action: script.zen_sutra_filecabinet
                 data:
-                  action_type: read
+                  action_type: get
                   volume_entity_id: "{{ _aa_hh }}"
                   key: _zen_active_alerts
                   force_action: true
                 response_variable: _aa_fc_read
               - variables:
                   _aa_alerts: >-
-                    {%- set r = _aa_fc_read.get('result', '{}') -%}
+                    {%- set r = _aa_fc_read.get('value') -%}
                     {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
-                    {%- set raw = r.get('_zen_active_alerts', {}) -%}
+                    {%- set raw = r -%}
                     {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else {}) -%}
                     {{ raw.get('value', raw) if raw is mapping else {} }}
               - variables:
@@ -675,18 +798,18 @@ script:
                 value_template: >-
                   {{ _pl_kata not in ['', 'unavailable', 'unknown'] }}
             then:
-              - action: script.zen_dojotools_filecabinet
+              - action: script.zen_sutra_filecabinet
                 data:
-                  action_type: read
+                  action_type: get
                   volume_entity_id: "{{ _pl_kata }}"
                   key: zen_postman_log
                   force_action: true
                 response_variable: _pl_fc_read
               - variables:
                   _pl_raw_list: >-
-                    {%- set r = _pl_fc_read.get('result', '{}') -%}
+                    {%- set r = _pl_fc_read.get('value') -%}
                     {%- set r = r | from_json if r is string else (r if r is mapping else {}) -%}
-                    {%- set raw = r.get('zen_postman_log', none) -%}
+                    {%- set raw = r -%}
                     {%- set raw = raw if raw is mapping else (raw | from_json if raw is string else none) -%}
                     {%- set log_str = raw.get('value', raw) if raw is mapping else (raw if raw is string else '[]') -%}
                     {%- set log_list = log_str | from_json if log_str is string else (log_str if log_str is sequence else []) -%}
@@ -717,9 +840,10 @@ script:
                   - condition: template
                     value_template: "{{ _pl_raw_list != _pl_cleaned }}"
                 then:
-                  - action: script.zen_dojotools_filecabinet
+                  - action: script.zen_sutra_filecabinet
                     data:
                       action_type: update
+                      mode: replace
                       volume_entity_id: "{{ _pl_kata }}"
                       key: zen_postman_log
                       value: >-

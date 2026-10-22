@@ -667,6 +667,78 @@ Output: A JSON-formatted string of the ACLs data (or fallback if not found).
     {{- _acls | to_json(pretty_print=true) -}}
 {%- endmacro -%}
 
+{#-
+@macro: drawer_acl
+@desc: The ACL that governs one drawer. A drawer's own envelope acl (beside
+       value and meta) wins; a drawer without one inherits its cabinet's
+       VolumeInfo acls. Every drawer-level authorization read goes through here.
+@param: entity_id (string) - cabinet sensor entity_id.
+@param: drawer_key (string) - drawer key.
+@returns: JSON {acl, source: 'drawer'|'cabinet'}.
+-#}
+{%- macro drawer_acl(entity_id, drawer_key) -%}
+    {%- set _env = (state_attr(entity_id, 'variables') or {}).get(drawer_key) -%}
+    {%- set _own = _env.get('acl') if _env is mapping else none -%}
+    {%- if _own is not none and _own != '' and _own != {} -%}
+        {{- {'acl': _own, 'source': 'drawer'} | tojson -}}
+    {%- else -%}
+        {{- {'acl': cabinet_acls(entity_id, {}) | from_json({}), 'source': 'cabinet'} | tojson -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{#-
+@macro: drawer_normalize
+@desc: The one drawer repair rule set (GC repair mode, and every GC write that
+       touches a drawer). Brings a drawer envelope to {value, meta}:
+         - meta missing or not a mapping -> {}
+         - nested envelope (a value that is itself exactly {value, timestamp[, meta]},
+           left by the old GC) -> unwrapped, up to 3 levels, inner meta kept
+         - legacy v1 value carrying expires_after / no_autoexpire / no_autorecycle
+           -> moved into meta (meta wins where both hold a field) and removed
+              from the value; a string-stored value stays a string
+       ok=false (no drawer, no value) means: do not write; nothing is damaged.
+@param: env - the drawer's raw envelope (state_attr(cab, 'variables')[key]).
+@returns: JSON {ok, changed, value, meta, repairs[]}.
+-#}
+{%- macro drawer_normalize(env) -%}
+    {%- set e = env if env is mapping else {} -%}
+    {%- set ns = namespace(v=e.get('value'), m=(e.get('meta') if e.get('meta') is mapping else {}), r=[], ok=true) -%}
+    {%- if env is not mapping -%}
+        {%- set ns.ok = false -%}{%- set ns.r = ['no drawer envelope'] -%}
+    {%- elif 'value' not in e -%}
+        {%- set ns.ok = false -%}{%- set ns.r = ['drawer has no value'] -%}
+    {%- else -%}
+        {%- if e.get('meta') is not mapping -%}{%- set ns.r = ns.r + ['meta added'] -%}{%- endif -%}
+        {%- for _ in range(3) -%}
+            {%- set pv = (ns.v | from_json(none)) if ns.v is string else ns.v -%}
+            {%- if pv is mapping and 'value' in pv and 'timestamp' in pv
+                  and (pv.keys() | reject('in', ['value', 'timestamp', 'meta']) | list | count) == 0 -%}
+                {%- if pv.get('meta') is mapping -%}{%- set ns.m = dict(pv.get('meta'), **ns.m) -%}{%- endif -%}
+                {%- set ns.v = pv.get('value') -%}
+                {%- set ns.r = ns.r + ['nested envelope unwrapped'] -%}
+            {%- endif -%}
+        {%- endfor -%}
+        {%- set was_str = ns.v is string -%}
+        {%- set pv = (ns.v | from_json(none)) if was_str else ns.v -%}
+        {%- if pv is mapping and pv.get('v') == 1 -%}
+            {%- set gcf = ['expires_after', 'no_autoexpire', 'no_autorecycle'] -%}
+            {%- set present = gcf | select('in', pv.keys() | list) | list -%}
+            {%- if present | count > 0 -%}
+                {%- for f in present -%}
+                    {%- if f not in ns.m and (pv.get(f) | string) not in ['', 'None'] -%}
+                        {%- set ns.m = dict(ns.m, **{f: pv.get(f)}) -%}
+                    {%- endif -%}
+                {%- endfor -%}
+                {%- set nv = namespace(d={}) -%}
+                {%- for k, x in pv.items() if k not in gcf -%}{%- set nv.d = dict(nv.d, **{k: x}) -%}{%- endfor -%}
+                {%- set ns.v = (nv.d | tojson) if was_str else nv.d -%}
+                {%- set ns.r = ns.r + ['v1 expiry moved to meta'] -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endif -%}
+    {{- {'ok': ns.ok, 'changed': ns.ok and (ns.r | count) > 0, 'value': ns.v, 'meta': ns.m, 'repairs': ns.r} | tojson -}}
+{%- endmacro -%}
+
 {#- </editor-fold> -#}
 
 {#- <editor-fold desc="UTILITIES" defaultstate="collapsed"> -#}

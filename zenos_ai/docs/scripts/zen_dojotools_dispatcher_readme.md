@@ -58,7 +58,7 @@ Listens for `zen_event(kind: dojotool_call)`. The registry is a single `choose` 
       version: "1"           # optional, defaults to "1"
       correlation_id: "{{ _guid_result.result }}"
       payload:
-        action_type: read
+        action_type: get
         volume_entity_id: "{{ my_cabinet }}"
         key: my_drawer
         caller_token: "{{ caller_token }}"

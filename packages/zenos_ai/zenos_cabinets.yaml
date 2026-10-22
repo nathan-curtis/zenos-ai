@@ -1,7 +1,7 @@
 ###############################################################################
 #  ZENOS-AI — RING-0 CABINET PACKAGE
 #  File: zenos_cabinets.yaml
-#  Version: 5.1.0
+#  Version: 5.1.2
 #
 #  20 canonical Ring-0 Cabinets for ZenOS-AI.
 #  14 core cabinets + 6 expansion slots (v4.3.0 cabset + v4.5.1 rename/add).
@@ -12,6 +12,25 @@
 #    131,072 bytes. remove_variable and clear_variables always execute.
 #
 #  CHANGELOG
+#  v5.1.2  2026-10-21  BOOT GUARD HOLDS THE STATE TOO. A write to a cabinet
+#                      whose contents are unknown (variables null) leaves both
+#                      the data and the state alone: the verdict is
+#                      _boot_blocked, and the state keeps its last value instead
+#                      of reading init ("known empty, provision me"). The size
+#                      verdict skips a null cabinet.
+#  v5.1.1  2026-10-21  SIZE GUARD HOLDS. A stop in a trigger template entity's
+#                      action does not stop the entity rendering, so the guard
+#                      is a verdict the templates read: _size_blocked (one
+#                      serialization), and the attribute and state templates
+#                      keep the cabinet unchanged when it is true.
+#  v4.6.1  2026-10-20  PERF. The size guard in the action stops an oversized
+#                      write (like the boot guard); the attribute template no
+#                      longer serializes the whole cabinet a second time.
+#  v4.6.0  2026-10-20  DRAWER ENVELOPE. All 20 cabinets: a set keeps every
+#                      envelope field beside value/timestamp (meta, acl, ...)
+#                      instead of rebuilding {value, timestamp}; meta is always
+#                      present (incoming meta merges over the stored one);
+#                      incoming acl replaces. Redirector passes meta/acl.
 #  v4.5.2  2026-03-23  BOOT WIPE FIX. Three changes applied to all 20 cabinets:
 #                      (1) Boot guard: action block stops on current is none (recorder
 #                      race). Invariant: none=unknown→block, {}=empty→allow. Break-
@@ -92,9 +111,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -108,14 +129,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -123,10 +145,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -142,6 +174,7 @@ template:
         unique_id: zenos_system_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -150,7 +183,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -164,6 +197,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -184,8 +218,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -227,9 +269,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -243,14 +287,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -258,10 +303,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -277,6 +332,7 @@ template:
         unique_id: zenos_system_history_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -285,7 +341,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -299,6 +355,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -319,8 +376,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -362,9 +427,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -378,14 +445,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -393,10 +461,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -412,6 +490,7 @@ template:
         unique_id: zenos_dojo_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -420,7 +499,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -434,6 +513,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -454,8 +534,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -497,9 +585,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -513,14 +603,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -528,10 +619,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -547,6 +648,7 @@ template:
         unique_id: zenos_kata_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -555,7 +657,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -569,6 +671,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -589,8 +692,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -632,9 +743,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -648,14 +761,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -663,10 +777,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -682,6 +806,7 @@ template:
         unique_id: zenos_history_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -690,7 +815,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -704,6 +829,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -724,8 +850,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -767,9 +901,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -783,14 +919,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -798,10 +935,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -817,6 +964,7 @@ template:
         unique_id: zenos_scratchpad_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -825,7 +973,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -839,6 +987,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -859,8 +1008,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -906,9 +1063,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -922,14 +1081,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -937,10 +1097,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -956,6 +1126,7 @@ template:
         unique_id: zenos_default_household_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -964,7 +1135,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -978,6 +1149,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -998,8 +1170,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -1041,9 +1221,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -1057,14 +1239,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -1072,10 +1255,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -1091,6 +1284,7 @@ template:
         unique_id: zenos_default_household_history_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -1099,7 +1293,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -1113,6 +1307,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -1133,8 +1328,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -1180,9 +1383,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -1196,14 +1401,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -1211,10 +1417,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -1230,6 +1446,7 @@ template:
         unique_id: zenos_default_family_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -1238,7 +1455,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -1252,6 +1469,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -1272,8 +1490,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -1315,9 +1541,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -1331,14 +1559,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -1346,10 +1575,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -1365,6 +1604,7 @@ template:
         unique_id: zenos_default_family_history_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -1373,7 +1613,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -1387,6 +1627,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -1407,8 +1648,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -1454,9 +1703,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -1470,14 +1721,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -1485,10 +1737,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -1504,6 +1766,7 @@ template:
         unique_id: zenos_default_user_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -1512,7 +1775,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -1526,6 +1789,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -1546,8 +1810,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -1589,9 +1861,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -1605,14 +1879,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -1620,10 +1895,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -1639,6 +1924,7 @@ template:
         unique_id: zenos_default_user_history_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -1647,7 +1933,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -1661,6 +1947,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -1681,8 +1968,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -1728,9 +2023,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -1744,14 +2041,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -1759,10 +2057,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -1778,6 +2086,7 @@ template:
         unique_id: zenos_default_ai_user_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -1786,7 +2095,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -1800,6 +2109,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -1820,8 +2130,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -1863,9 +2181,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -1879,14 +2199,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
-            {#-{% set current = this.attributes.get('variables', {}) %}-#}
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -1894,10 +2215,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -1913,6 +2244,7 @@ template:
         unique_id: zenos_default_ai_user_history_cabinet
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -1921,7 +2253,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -1935,6 +2267,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -1955,8 +2288,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -2008,9 +2349,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -2024,13 +2367,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -2038,10 +2383,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -2057,6 +2412,7 @@ template:
         unique_id: zenos_expansion_cabinet_1
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -2065,7 +2421,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -2079,6 +2435,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -2099,8 +2456,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -2142,9 +2507,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -2158,13 +2525,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -2172,10 +2541,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -2191,6 +2570,7 @@ template:
         unique_id: zenos_expansion_cabinet_2
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -2199,7 +2579,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -2213,6 +2593,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -2233,8 +2614,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -2276,9 +2665,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -2292,13 +2683,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -2306,10 +2699,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -2325,6 +2728,7 @@ template:
         unique_id: zenos_expansion_cabinet_3
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -2333,7 +2737,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -2347,6 +2751,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -2367,8 +2772,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -2410,9 +2823,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -2426,13 +2841,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -2440,10 +2857,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -2459,6 +2886,7 @@ template:
         unique_id: zenos_expansion_cabinet_4
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -2467,7 +2895,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -2481,6 +2909,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -2501,8 +2930,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -2544,9 +2981,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -2560,13 +2999,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -2574,10 +3015,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -2593,6 +3044,7 @@ template:
         unique_id: zenos_expansion_cabinet_5
         icon: mdi:file-cabinet
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -2601,7 +3053,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -2615,6 +3067,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -2635,8 +3088,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -2678,9 +3139,11 @@ template:
       # Invariant: none = unknown (block). {} = known empty (allow). {...} = allow.
       # Break-glass: pass force: true in event data to bypass (admin/recovery only).
       # See: boot wipe incident 2026-03-23, bug_cabinet_boot_wipe_regression.md
-      - if: "{{ current is none and not trigger.event.data.get('force', false) }}"
-        then:
-          - stop: "Boot guard — state unconfirmed, all writes suppressed"
+      # The verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The variables
+      # attribute keeps null on its own check; the state keeps its last value.
+      - variables:
+          _boot_blocked: "{{ current is none and not trigger.event.data.get('force', false) }}"
       # ──────────────────────────────────────────────────────────────────────────
       - if: "{{ log_enabled }}"
         then:
@@ -2694,13 +3157,15 @@ template:
                 {%- endif %}
               entity_id: "{{- this_entity_id -}}"
               domain: sensor
-      - if:
-          condition: template
-          value_template: >
+      # The size verdict is a variable, not a stop: a stop in a trigger template
+      # entity's action does not stop the entity rendering. The attribute and
+      # state templates read _size_blocked and keep the cabinet as it was.
+      - variables:
+          _size_blocked: >
             {% set evt = trigger.event.event_type %}
             {% set key = trigger.event.data.key %}
             {% set val = trigger.event.data.value %}
-            {% if evt.startswith('set_variable') and key is defined and val is defined %}
+            {% if current is mapping and evt.startswith('set_variable') and key is defined and val is defined %}
               {% set value = val.isoformat() if val is datetime else val %}
               {% set use_ts = trigger.event.data.get('set_timestamp', state_attr(this_entity_id, 'default_timestamp') | default(false)) %}
               {% if use_ts %}
@@ -2708,10 +3173,20 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
               {{ dict(current, **new) | tojson | length > 131072 }}
             {% else %}
               false
             {% endif %}
+      - if: "{{ ((_size_blocked | default(false) | string | trim | lower) == 'true') }}"
         then:
           - action: logbook.log
             data:
@@ -2727,6 +3202,7 @@ template:
         unique_id: zenos_vault_cabinet
         icon: mdi:safe-square
         state: >-
+          {%- if ((_boot_blocked | default(false) | string | trim | lower) == 'true') -%}{{ this.state }}{%- else -%}
           {%- set current = current if current is mapping else {} -%}
           {%- set _sevt = trigger.event.event_type if trigger.platform == 'event' else '' -%}
           {%- set _sk = trigger.event.data.key | default('') if trigger.platform == 'event' else '' -%}
@@ -2735,7 +3211,7 @@ template:
           {%- if _sevt.startswith('set_variable') and _sk and _sv is not none -%}
             {%- set _svf = _sv.isoformat() if _sv is datetime else _sv -%}
             {%- set _snew = {_sk: {'value': _svf, 'timestamp': now().isoformat()}} if _sts else {_sk: {'value': _svf}} -%}
-            {%- set _eff = dict(current, **_snew) -%}
+            {%- set _eff = current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **_snew) -%}
           {%- elif _sevt.startswith('remove_variable') and _sk -%}
             {%- set _eff = dict(current.items() | rejectattr('0', 'eq', _sk)) -%}
           {%- elif _sevt.startswith('clear_variables') and trigger.event.data.get('confirm') == true -%}
@@ -2749,6 +3225,7 @@ template:
           {%- set _mv = _mraw.get('value', _mraw) if _mraw is mapping else {} -%}
           {%- set _m = _mv if _mv is mapping else (_mv | from_json if _mv is string else {}) -%}
           {%- if not _vi -%}init{%- elif _m.get('mounted', true) != false -%}online_mounted{%- else -%}online_unmounted{%- endif -%}
+          {%- endif -%}
         attributes:
           default_timestamp: true
           log_events: false
@@ -2769,8 +3246,16 @@ template:
               {% else %}
                 {% set new = { key: {'value': value} } %}
               {% endif %}
-              {% set proposed = dict(current, **new) %}
-              {{ current if proposed | tojson | length > 131072 else proposed }}
+              {#- Envelope fields beside value/timestamp (meta, acl, ...) survive a set;
+                  meta is always present (merged over the stored one), an incoming acl replaces it. -#}
+              {% set _old = current.get(key) if current.get(key) is mapping else {} %}
+              {% set _keep = dict(_old.items() | rejectattr('0', 'in', ['value', 'timestamp'])) %}
+              {% set _em = trigger.event.data.get('meta') %}
+              {% set _ea = trigger.event.data.get('acl') %}
+              {% set _keep = dict(_keep, meta=dict((_keep.get('meta') if _keep.get('meta') is mapping else {}), **(_em if _em is mapping else {}))) %}
+              {% if _ea is not none and _ea != '' %}{% set _keep = dict(_keep, acl=_ea) %}{% endif %}
+              {% set new = { key: dict(_keep, **new[key]) } %}
+              {{ current if ((_size_blocked | default(false) | string | trim | lower) == 'true') else dict(current, **new) }}
             {% elif evt.startswith('remove_variable') and key is defined %}
               {{ dict(current.items() | rejectattr('0', 'eq', key)) }}
             {% elif evt.startswith('clear_variables') and trigger.event.data.get('confirm') == true %}
@@ -3078,6 +3563,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_system_cabinet
@@ -3105,6 +3592,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_system_history_cabinet
@@ -3135,6 +3624,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_dojo_cabinet
@@ -3162,6 +3653,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_kata_cabinet
@@ -3189,6 +3682,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_history_cabinet
@@ -3216,6 +3711,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_scratchpad_cabinet
@@ -3246,6 +3743,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_household_cabinet
@@ -3273,6 +3772,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_household_history_cabinet
@@ -3303,6 +3804,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_family_cabinet
@@ -3330,6 +3833,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_family_history_cabinet
@@ -3360,6 +3865,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_user_cabinet
@@ -3387,6 +3894,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_user_history_cabinet
@@ -3417,6 +3926,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_ai_user_cabinet
@@ -3444,6 +3955,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_default_ai_user_history_cabinet
@@ -3474,6 +3987,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_expansion_cabinet_1
@@ -3501,6 +4016,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_expansion_cabinet_2
@@ -3528,6 +4045,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_expansion_cabinet_3
@@ -3555,6 +4074,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_expansion_cabinet_4
@@ -3582,6 +4103,8 @@ automation:
                         value: "{{ value }}"
                         set_timestamp: "{{ set_timestamp }}"
                         force: "{{ force }}"
+                        meta: "{{ trigger.event.data.get('meta') }}"
+                        acl: "{{ trigger.event.data.get('acl') }}"
                 - conditions: "{{ trigger.id == 'remove' }}"
                   sequence:
                     - event: remove_variable_zenos_expansion_cabinet_5

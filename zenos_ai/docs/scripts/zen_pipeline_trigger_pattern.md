@@ -88,18 +88,17 @@ Not elegant, but reliable when you don't need precision.
 Once the wait completes, read the kata drawer via FileCabinet and branch on the monk's output:
 
 ```yaml
-    - action: script.zen_dojotools_filecabinet
+    - action: script.zen_sutra_filecabinet
       data:
-        action_type: read
+        action_type: get
         volume_entity_id:
           - "{{ states('sensor.zen_kata_cabinet_resolved') }}"
         key: water_manager
       response_variable: _kata_read
 
     - variables:
-        _kata_raw: "{{ _kata_read.result | default({}, true) }}"
         _kata_val: >-
-          {%- set v = _kata_raw.get('value', {}) if _kata_raw is mapping else {} -%}
+          {%- set v = _kata_read.get('value', {}) if _kata_read is mapping else {} -%}
           {{ v if v is mapping else (v | from_json if v is string else {}) }}
         _urgency: "{{ _kata_val.get('urgency', 'low') }}"
         _summary: "{{ _kata_val.get('summary', '') }}"
@@ -142,9 +141,9 @@ automation:
         seconds: 90
 
     # 3. Read kata result
-    - action: script.zen_dojotools_filecabinet
+    - action: script.zen_sutra_filecabinet
       data:
-        action_type: read
+        action_type: get
         volume_entity_id:
           - "{{ states('sensor.zen_kata_cabinet_resolved') }}"
         key: water_manager
@@ -152,9 +151,8 @@ automation:
 
     # 4. Unpack
     - variables:
-        _kata_raw: "{{ _kata_read.result | default({}, true) }}"
         _kata_val: >-
-          {%- set v = _kata_raw.get('value', {}) if _kata_raw is mapping else {} -%}
+          {%- set v = _kata_read.get('value', {}) if _kata_read is mapping else {} -%}
           {{ v if v is mapping else (v | from_json if v is string else {}) }}
         _urgency: "{{ _kata_val.get('urgency', 'low') }}"
         _summary: "{{ _kata_val.get('summary', '') }}"
