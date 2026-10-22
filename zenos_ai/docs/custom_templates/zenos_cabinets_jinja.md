@@ -1,6 +1,6 @@
 # zenos_cabinets.jinja — Cabinet Macro Library
 
-**Version:** 1.4.0 (introduced in 2026.4.0 'Ectoplasm'; ACL macros and `fc_resolve` in 2026.11.0 'This Is Spinal Tap')
+**Version:** 1.5.2 (introduced in 2026.4.0 'Ectoplasm'; ACL macros and `fc_resolve` in 2026.11.0 'This Is Spinal Tap')
 **File:** `custom_templates/zenos_ai/zenos_cabinets.jinja`
 **Status:** Stable. Required by `zen_os_1.jinja`, `zenos_health.jinja`, `dojotools_filecabinet`, and any template that reads cabinet drawers.
 
@@ -130,14 +130,39 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | Macro | Returns | Description |
 |-------|---------|-------------|
 | `acl_guid_of(entity_id)` | String | The cabinet's VolumeInfo `id`, falling back to the legacy `guid` |
-| `acl_default_ops()` | JSON object | `{r, w, d, a}`, all open |
-| `acl_record(entity_id, idmap={})` | JSON object | `{v, stored_v, owner, prime, partners, ops, ops_stored, ops_source, unresolved}`. Reads v1 records compatibly. `ops_stored` is what a writer stores back; `idmap` supplies ids for cabinets about to get one |
-| `acl_for(entity_id, drawer_key='')` | JSON object | `{owner, prime, partners, ops, source}`: effective ops for a drawer, each inherited drawer → cabinet → default; `source` names where each op came from |
+| `acl_class_of(entity_id)` | String | The cabinet's stamped class (VolumeInfo `class`), `''` when unstamped |
+| `acl_class_plan(entity_id)` | String | The class `acl_migrate` proposes from the cabinet's labels. Only a migration stamps it; the gate never reads a label |
+| `acl_default_ops(cls='')` | JSON object | `{r, w, d, a}`: the default row for a class (see below) |
+| `acl_builtin_ops(drawer_key)` | JSON object | Fixed rules for credential and approval drawers, `{}` for any other key |
+| `acl_lifecycle_tools()` | JSON list | The `@tool` principals that mount, dismount and provision cabinets (`zen_dojotools_provisioner`, `flynn_initialize_cabinets`); added to every class's `a` rule but the vault's |
+| `acl_schema_current()` | String | The ACL schema version `acl_migrate` brings an install to (3) |
+| `acl_schema_is_current()` | String | `True` when the system cabinet's `acl_schema` stamp is current; Flynn's bootstrap skips the migration then |
+| `acl_record(entity_id, idmap={})` | JSON object | `{v, stored_v, class, self, owner, prime, partners, ops, ops_stored, ops_source, unresolved}`. Reads v1 records compatibly. `ops_stored` is what a writer stores back; `idmap` supplies ids for cabinets about to get one |
+| `acl_for(entity_id, drawer_key='')` | JSON object | `{class, self, owner, prime, partners, ops, source}`: effective ops for a drawer, each from builtin, else drawer, else cabinet, else the class default; `source` names where each op came from. `prime` falls back to the household's prime |
 | `acl_op_class(action)` | String | `r`, `w`, `d` or `a` for a FileCabinet action (unknown actions are `a`) |
-| `acl_check(acl, op, caller_guid)` | JSON object | `{op, who_ok, cert, ack, source, reason}`. `who` may hold `*`, `@owner`, `@prime` or GUIDs |
+| `acl_check(acl, op, subject)` | JSON object | `{op, who_ok, via, cert, ack, source, reason}`. A caller matched by `@tool:<script>` passes on that tool's own gates (`via: tool`, no rule cert or ack). `subject` is `{guid, origin, tool}` or a bare GUID (an agent call) |
 | `acl_schema_check(entity_id)` | JSON object | `{ok, why}`. `why` can name: no VolumeInfo, no id, legacy guid field, no flags, acls not v2, stray VolumeInfo copies |
 
 `cabinet_acls` and `drawer_acl` are retired.
+
+**Principals in `who`:** cabinet GUIDs, `*` (anyone), `@owner`, `@prime`, `@partner` (any of `partners`), `@self` (the cabinet itself), `@internal` (a tool called the engine, not the agent-facing FileCabinet tool) and `@tool:<script>` (an internal call from that script). An empty `who` means only the admin door does that op.
+
+**Default ops by class:**
+
+| Class | r | w | d | a |
+|---|---|---|---|---|
+| system | `*` | door | door | door |
+| vault | `@tool:zen_dojotools_identity` | same | same + ack | door |
+| dojo | `*` | `@internal` | `@internal` | door |
+| kata | `*` | `@owner`, `@internal` | `@internal` | door |
+| history | `@owner`, `@prime`, `@internal` | `@internal` | `@internal` + ack | door |
+| household, family | `*` | `@prime`, `@internal` | `@prime` + ack | `@owner` + cert `zenos.system.cabinet_admin:1` + ack |
+| user | `@self`, `@partner`, `@prime`, `@internal` | same | `@partner`, `@prime` + ack | `@owner` + cert + ack |
+| ai_user | `@self`, `@prime`, `@internal` | `@self`, `@internal` | `@self` + ack | `@self` + cert `zenos.identity.acl_take_ownership:1` + ack |
+| scratchpad | `*` | `*` | `*` | `@prime` |
+| unclassified | `*` | `@prime`, `@internal` | `@prime` | door |
+
+**Built-in locks** (win over every other rule): `zen_ai_certs`, `integrations_config` and `alert_response_*` take `w` and `d` from `@internal` only; `cert_admin_console_bypass` is admin door only.
 
 ---
 

@@ -1,4 +1,13 @@
-{#- zenos_cabinets.jinja — Version: 1.4.0 -#}
+{#- zenos_cabinets.jinja — Version: 1.5.2 -#}
+{#- 1.5.2: acl_class_plan reads zen_index_cabinet (Index scope, also on role
+    cabinets) as scratchpad only when no role label is present. -#}
+{#- 1.5.1: acl_lifecycle_tools (provisioner and Flynn cabinet init administer every
+    class but the vault; a named tool passes without the rule cert or ack, via tool),
+    acl_schema_current / acl_schema_is_current (the acl_schema stamp). -#}
+{#- 1.5.0: the default ops table by cabinet class (VolumeInfo class, stamped
+    by acl_migrate and the factory, never read from a label), built-in drawer
+    locks (acl_builtin_ops, final), caller origin tokens @internal, @tool:<script>,
+    @self and @partner in acl_check. -#}
 {#- 1.4.0: fc_resolve, the one mount resolver (FileCabinet resolves the target before its gate). -#}
 {#- 1.3.2: acl_schema_check (the identity gate and acl_migrate's re-check) and
     volumeinfo_copies (stray VolumeInfo copies acl_migrate repairs from and removes). -#}
@@ -656,14 +665,57 @@ VolumeInfo acls v2:
   {v: 2, owner: <guid>, prime: <guid>, partners: [<guid>],
    ops: {r|w|d|a: {cert: 'name:level' or '', ack: bool, who: [...]}}}
 Principals are cabinet GUIDs (VolumeInfo id), never entity_ids or names.
-who holds GUIDs, '*' (any resolved caller), '@owner' or '@prime'.
+who holds GUIDs, '*' (any caller), '@owner', '@prime', '@partner' (any of
+partners), '@self' (the cabinet itself), '@internal' (the call reached the
+engine from a tool, not through the agent-facing FileCabinet tool) or
+'@tool:<script>' (an internal call from that script). An empty who means
+no FileCabinet caller: only the admin door does that op.
 A v1 record (owner/partner lists of {guid, entity_id}) reads as v2: each
 principal is its cabinet's current VolumeInfo id (v1 identity matched by
 entity_id), else the guid stored on the entry. acls.family is not
 part of the ACL (the members drawers hold that topology).
 Each op inherits on its own: the drawer envelope's acl.ops, else the
-cabinet's acls.ops, else acl_default_ops.
+cabinet's acls.ops, else acl_default_ops for the cabinet's class.
+acl_builtin_ops (credential and approval drawers) wins over all three.
 -#}
+
+{#-
+@macro: acl_class_of
+@desc: A cabinet's class, stamped in VolumeInfo (class). '' when unstamped.
+@returns: plain string.
+-#}
+{%- macro acl_class_of(entity_id) -%}
+    {%- set _env = (state_attr(entity_id, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if entity_id else none -%}
+    {%- set _vi = _env.get('value') if _env is mapping else none -%}
+    {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
+    {%- set _vi = _vi if _vi is mapping else {} -%}
+    {{- (_vi.get('class') or '') | string | lower | trim -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_class_plan
+@desc: The class acl_migrate proposes for a cabinet with none stamped, from
+       its labels. Only a reviewed migration stamps it; the gate reads the
+       stamp (acl_class_of), never a label.
+@returns: plain string, '' when no label names a class.
+-#}
+{%- macro acl_class_plan(entity_id) -%}
+    {%- set _l = labels(entity_id) if entity_id else [] -%}
+    {%- set _hist = _l | select('match', '^zen_.*history_cabinet$') | list | count > 0 -%}
+    {%- if 'zen_vault_cabinet' in _l -%}vault
+    {%- elif 'zen_system_cabinet' in _l -%}system
+    {%- elif _hist -%}history
+    {%- elif 'zen_dojo_cabinet' in _l -%}dojo
+    {%- elif 'zen_kata_cabinet' in _l -%}kata
+    {%- elif 'zen_household_cabinet' in _l -%}household
+    {%- elif 'zen_family_cabinet' in _l -%}family
+    {%- elif 'zen_ai_user_cabinet' in _l -%}ai_user
+    {%- elif 'zen_user_cabinet' in _l -%}user
+    {#- zen_index_cabinet marks Index search scope and sits on role cabinets
+        too: it means scratchpad only when no role label is present. -#}
+    {%- elif 'zen_index_cabinet' in _l -%}scratchpad
+    {%- endif -%}
+{%- endmacro -%}
 
 {#-
 @macro: acl_guid_of
@@ -680,13 +732,100 @@ cabinet's acls.ops, else acl_default_ops.
 
 {#-
 @macro: acl_default_ops
-@desc: The system default for an op no drawer or cabinet acl names. Open, the
-       behavior every cabinet has today; the gate rollout sets the real table.
+@desc: The default for an op no drawer or cabinet acl names, by cabinet class
+       (#10626). An unstamped class gets the unclassified row.
+@param: cls - acl_class_of the cabinet.
 @returns: JSON {r, w, d, a}.
 -#}
-{%- macro acl_default_ops() -%}
-    {%- set _open = {'cert': '', 'ack': false, 'who': ['*']} -%}
-    {{- {'r': _open, 'w': _open, 'd': _open, 'a': _open} | tojson -}}
+{%- macro acl_default_ops(cls='') -%}
+    {%- set O = {'cert': '', 'ack': false, 'who': ['*']} -%}
+    {%- set DOOR = {'cert': '', 'ack': false, 'who': []} -%}
+    {%- set ADM = 'zenos.system.cabinet_admin:1' -%}
+    {%- set T = {
+        'system':     {'r': O, 'w': DOOR, 'd': DOOR, 'a': DOOR},
+        'vault':      {'r': {'cert': '', 'ack': false, 'who': ['@tool:zen_dojotools_identity']},
+                       'w': {'cert': '', 'ack': false, 'who': ['@tool:zen_dojotools_identity']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@tool:zen_dojotools_identity']}, 'a': DOOR},
+        'dojo':       {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@internal']},
+                       'd': {'cert': '', 'ack': false, 'who': ['@internal']}, 'a': DOOR},
+        'kata':       {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@owner', '@internal']},
+                       'd': {'cert': '', 'ack': false, 'who': ['@internal']}, 'a': DOOR},
+        'history':    {'r': {'cert': '', 'ack': false, 'who': ['@owner', '@prime', '@internal']},
+                       'w': {'cert': '', 'ack': false, 'who': ['@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@internal']}, 'a': DOOR},
+        'household':  {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@prime']},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+        'family':     {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@prime']},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+        'user':       {'r': {'cert': '', 'ack': false, 'who': ['@self', '@partner', '@prime', '@internal']},
+                       'w': {'cert': '', 'ack': false, 'who': ['@self', '@partner', '@prime', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@partner', '@prime']},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+        'ai_user':    {'r': {'cert': '', 'ack': false, 'who': ['@self', '@prime', '@internal']},
+                       'w': {'cert': '', 'ack': false, 'who': ['@self', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@self']},
+                       'a': {'cert': 'zenos.identity.acl_take_ownership:1', 'ack': true, 'who': ['@self']}},
+        'scratchpad': {'r': O, 'w': O, 'd': O, 'a': {'cert': '', 'ack': false, 'who': ['@prime']}},
+        '':           {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
+                       'd': {'cert': '', 'ack': false, 'who': ['@prime']}, 'a': DOOR}} -%}
+    {#- The cabinet lifecycle tools (mount, dismount, provision) administer
+        every class but the vault; each carries its own cert gate. -#}
+    {%- set _row = T.get(cls | string | lower | trim) or T[''] -%}
+    {%- if (cls | string | lower | trim) != 'vault' -%}
+        {%- set _row = dict(_row, a=dict(_row.a, who=_row.a.who + acl_lifecycle_tools() | from_json)) -%}
+    {%- endif -%}
+    {{- _row | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_lifecycle_tools
+@desc: The @tool principals that mount, dismount and provision cabinets.
+@returns: JSON list.
+-#}
+{%- macro acl_lifecycle_tools() -%}
+    {{- ['@tool:zen_dojotools_provisioner', '@tool:flynn_initialize_cabinets'] | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_schema_current
+@desc: The ACL schema version acl_migrate brings an install to (3: v2 record
+       plus the stamped class). acl_migrate stamps it on the system cabinet
+       (acl_schema) after a clean full run; Flynn skips the migration while
+       the stamp is current.
+@returns: plain integer string.
+-#}
+{%- macro acl_schema_current() -%}3{%- endmacro -%}
+
+{#-
+@macro: acl_schema_is_current
+@desc: Whether the system cabinet's acl_schema stamp is at acl_schema_current.
+@returns: 'true' or 'false'.
+-#}
+{%- macro acl_schema_is_current() -%}
+    {%- set _m = cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'acl_schema', {}) | from_json({}) -%}
+    {{- ((_m.get('version', 0) if _m is mapping else 0) | int(0)) >= (acl_schema_current() | int) -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_builtin_ops
+@desc: Fixed rules for the drawers that hold credentials, approvals and the
+       identity switch. They win over the drawer, cabinet and class rules
+       (an owner's acl_set cannot open them). w and d: tools only.
+@returns: JSON {op: rule} for the ops it fixes, {} for any other key.
+-#}
+{%- macro acl_builtin_ops(drawer_key) -%}
+    {%- set k = drawer_key | string | trim -%}
+    {%- set TOOLS = {'cert': '', 'ack': false, 'who': ['@internal']} -%}
+    {%- set DOOR = {'cert': '', 'ack': false, 'who': []} -%}
+    {%- if k in ['zen_ai_certs', 'integrations_config'] or k.startswith('alert_response_') -%}
+        {{- {'w': TOOLS, 'd': TOOLS} | tojson -}}
+    {%- elif k == 'cert_admin_console_bypass' -%}
+        {{- {'w': DOOR, 'd': DOOR} | tojson -}}
+    {%- else -%}
+        {{- {} | tojson -}}
+    {%- endif -%}
 {%- endmacro -%}
 
 {#-
@@ -708,7 +847,8 @@ cabinet's acls.ops, else acl_default_ops.
     {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
     {%- set _vi = _vi if _vi is mapping else {} -%}
     {%- set _a = _vi.get('acls') if _vi.get('acls') is mapping else {} -%}
-    {%- set _dflt = acl_default_ops() | from_json -%}
+    {%- set _cls = (_vi.get('class') or '') | string | lower | trim -%}
+    {%- set _dflt = acl_default_ops(_cls) | from_json -%}
     {%- set _sops = _a.get('ops') if _a.get('ops') is mapping else {} -%}
     {%- set ns = namespace(ops={}, partners=[], unresolved=[], owner='', prime='') -%}
     {%- for op in ['r', 'w', 'd', 'a'] -%}
@@ -737,7 +877,8 @@ cabinet's acls.ops, else acl_default_ops.
             {%- endif -%}
         {%- endfor -%}
     {%- endif -%}
-    {{- {'v': 2, 'stored_v': _sv, 'owner': ns.owner, 'prime': ns.prime, 'partners': ns.partners,
+    {{- {'v': 2, 'stored_v': _sv, 'class': _cls, 'self': (_vi.get('id') or _vi.get('guid') or '') | string | trim,
+         'owner': ns.owner, 'prime': ns.prime, 'partners': ns.partners,
          'ops': ns.ops, 'ops_stored': _sops,
          'ops_source': {'r': 'cabinet' if _sops.get('r') is mapping else 'default', 'w': 'cabinet' if _sops.get('w') is mapping else 'default',
                         'd': 'cabinet' if _sops.get('d') is mapping else 'default', 'a': 'cabinet' if _sops.get('a') is mapping else 'default'},
@@ -868,19 +1009,27 @@ cabinet's acls.ops, else acl_default_ops.
 {#-
 @macro: acl_for
 @desc: The ACL that governs one target (resolve mounts first: this reads the
-       cabinet and drawer it is given). Each op comes from the drawer
-       envelope's acl.ops, else the cabinet's acls.ops, else the default.
+       cabinet and drawer it is given). Each op comes from acl_builtin_ops,
+       else the drawer envelope's acl.ops, else the cabinet's acls.ops, else
+       the class default.
 @param: drawer_key - '' for a cabinet-level op.
-@returns: JSON {owner, prime, partners, ops, source: {r|w|d|a: 'drawer'|'cabinet'|'default'}}.
+@returns: JSON {class, self, owner, prime, partners, ops,
+          source: {r|w|d|a: 'builtin'|'drawer'|'cabinet'|'default'}}
+          (prime: the cabinet's, else the household's; read view only, never
+          written back).
 -#}
 {%- macro acl_for(entity_id, drawer_key='') -%}
     {%- set rec = acl_record(entity_id) | from_json -%}
     {%- set _env = (state_attr(entity_id, 'variables') or {}).get(drawer_key) if drawer_key else none -%}
     {%- set _own = _env.get('acl') if _env is mapping else none -%}
     {%- set _dops = (_own.get('ops') if _own is mapping and _own.get('ops') is mapping else {}) -%}
+    {%- set _bops = (acl_builtin_ops(drawer_key) | from_json) if drawer_key else {} -%}
     {%- set ns = namespace(ops={}, src={}) -%}
     {%- for op in ['r', 'w', 'd', 'a'] -%}
-        {%- if _dops.get(op) is mapping -%}
+        {%- if _bops.get(op) is mapping -%}
+            {%- set ns.ops = dict(ns.ops, **{op: _bops[op]}) -%}
+            {%- set ns.src = dict(ns.src, **{op: 'builtin'}) -%}
+        {%- elif _dops.get(op) is mapping -%}
             {%- set ns.ops = dict(ns.ops, **{op: dict(rec.ops[op], **_dops[op])}) -%}
             {%- set ns.src = dict(ns.src, **{op: 'drawer'}) -%}
         {%- else -%}
@@ -888,7 +1037,13 @@ cabinet's acls.ops, else acl_default_ops.
             {%- set ns.src = dict(ns.src, **{op: rec.ops_source[op]}) -%}
         {%- endif -%}
     {%- endfor -%}
-    {{- {'owner': rec.owner, 'prime': rec.prime, 'partners': rec.partners, 'ops': ns.ops, 'source': ns.src} | tojson -}}
+    {#- @prime is the cabinet's prime, else the household's (a cabinet that
+        names no prime answers to the household's prime agent). -#}
+    {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+    {%- set _prime = rec.prime if rec.prime != '' or _hh == entity_id
+                     else ((acl_record(_hh) | from_json).prime if _hh not in ['', 'unknown', 'unavailable'] else '') -%}
+    {{- {'class': rec['class'], 'self': rec['self'], 'owner': rec.owner, 'prime': _prime, 'partners': rec.partners,
+         'ops': ns.ops, 'source': ns.src} | tojson -}}
 {%- endmacro -%}
 
 {#-
@@ -915,22 +1070,34 @@ cabinet's acls.ops, else acl_default_ops.
        (identity resolve_caller_identity, request_live_ack) before it proceeds.
 @param: acl - acl_for output (JSON string or mapping).
 @param: op - r|w|d|a.
-@param: caller_guid - the caller's cabinet GUID.
+@param: subject - the caller: {guid, origin: 'agent'|'internal', tool}, or a bare GUID
+        string (an agent call).
 @returns: JSON {op, who_ok, cert, ack, source, reason}.
 -#}
-{%- macro acl_check(acl, op, caller_guid) -%}
+{%- macro acl_check(acl, op, subject) -%}
     {%- set a = (acl | from_json({})) if acl is string else acl -%}
     {%- set a = a if a is mapping else {} -%}
     {%- set rule = (a.get('ops') or {}).get(op) -%}
     {%- set rule = rule if rule is mapping else {'cert': '', 'ack': true, 'who': []} -%}
     {%- set who = rule.get('who') if rule.get('who') is list else [] -%}
-    {%- set c = caller_guid | string | trim -%}
-    {%- set ok = '*' in who or (c != '' and (c in who
-                 or ('@owner' in who and c == a.get('owner'))
-                 or ('@prime' in who and c == a.get('prime')))) -%}
-    {{- {'op': op, 'who_ok': ok, 'cert': rule.get('cert', '') or '', 'ack': rule.get('ack', false) | bool,
+    {%- set cm = subject if subject is mapping else {'guid': subject} -%}
+    {%- set c = (cm.get('guid') or '') | string | trim -%}
+    {%- set internal = (cm.get('origin') or 'agent') == 'internal' -%}
+    {%- set tool = (cm.get('tool') or '') | string | trim -%}
+    {%- set by_tool = internal and tool != '' and ('@tool:' ~ tool) in who -%}
+    {%- set ok = '*' in who or by_tool
+                 or (internal and '@internal' in who)
+                 or (c != '' and (c in who
+                     or ('@owner' in who and c == a.get('owner'))
+                     or ('@prime' in who and c == a.get('prime'))
+                     or ('@self' in who and c == a.get('self'))
+                     or ('@partner' in who and c in (a.get('partners') or [])))) -%}
+    {#- A named tool passes on its own gates: the rule's cert and ack are for
+        agents and @internal callers. -#}
+    {{- {'op': op, 'who_ok': ok, 'via': 'tool' if by_tool else 'principal',
+         'cert': '' if by_tool else (rule.get('cert', '') or ''), 'ack': false if by_tool else rule.get('ack', false) | bool,
          'source': (a.get('source') or {}).get(op, 'default'),
-         'reason': '' if ok else 'caller is not in ' ~ op ~ '.who'} | tojson -}}
+         'reason': '' if ok else (op ~ ' is admin-door only' if who | count == 0 else 'caller is not in ' ~ op ~ '.who')} | tojson -}}
 {%- endmacro -%}
 
 {#-
