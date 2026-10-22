@@ -10,7 +10,7 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.11.0 'This Is Spinal Tap' — Planned**
+**2026.11.0 'This Is Spinal Tap' — In development (beta), ETA Saturday, November 14, 2026**
 
 It goes to 11. The intended scope is FileCabinet: its full cadillac pass (single exit, the canonical response envelope) and its cert-gate, built on a dedicated security-class design. FileCabinet is the one tool everything else depends on at boot, so this gets the whole month, done carefully enough that it doesn't break running installs.
 
